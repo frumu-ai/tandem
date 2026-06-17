@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a dedicated desktop Settings > Providers tab and a left-rail Providers
+  shortcut so LLM provider setup is no longer buried among general settings.
+  The provider panel now includes Codex account sign-in/import controls,
+  reconnect/disconnect actions, default-model selection, and expanded built-in
+  provider coverage for OpenAI Codex, Groq, Mistral, Together, Cohere, Azure,
+  Bedrock, Vertex, GitHub Copilot-compatible, and existing local/OpenRouter
+  providers.
+
 - Made the per-PR evaluation regression gate fail closed when `eval-runner`
   cannot build or execute (TAN-219). The `critical_path`,
   `tenant_isolation`, and `action_firewall` datasets now run the built
@@ -138,6 +146,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Desktop provider selection now persists an explicit selected model when a
+  provider is enabled or made default, and chat session creation falls back to
+  the enabled/default provider slot when no selected model has been stored.
+- The desktop launcher now passes the managed global provider config path to
+  the engine with `--config`, avoiding split-brain behavior between the desktop
+  provider UI and the sidecar engine's provider registry.
+- Development builds reduce Rust debug-info output at the workspace root to
+  keep local Tauri/engine builds from exhausting disk space.
+
 - Tagged `fintech.protected_action` and `tool.effect.recorded` audit events
   with their originating tenant context so consequential actions are
   attributable on the tenant-scoped audit stream.
@@ -159,6 +176,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   probing/status reporting.
 - Split large prompt execution and memory database modules into smaller
   implementation parts while preserving existing runtime behavior.
+
+### Fixed
+
+- Fixed OpenAI Codex OAuth sign-in from the desktop app by calling the engine's
+  provider OAuth authorize endpoint with the expected HTTP method, surfacing
+  OAuth errors in the provider card, and supporting local Codex session import.
+- Fixed Codex OAuth disconnect/reconnect in desktop settings by adding a local
+  credential-store cleanup fallback when the sidecar OAuth-session delete call
+  cannot complete.
+- Fixed desktop chat session creation after connecting Codex OAuth by resolving
+  provider/model configuration from enabled/default provider slots instead of
+  requiring a separately populated model-picker value.
+- Fixed opaque `500 Internal Server Error` responses during session creation:
+  persistence failures now return structured error details, the engine logs the
+  failing session save, and Windows temp-file sync/replace handling is retried
+  to avoid `Access is denied` failures from transient filesystem interference.
 
 ### Security
 

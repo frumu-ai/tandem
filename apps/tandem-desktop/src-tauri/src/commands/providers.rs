@@ -267,50 +267,46 @@ pub async fn get_providers_config(
 pub fn populate_provider_keys(app: &AppHandle, config: &mut ProvidersConfig) {
     use crate::keystore::ApiKeyType;
 
+    let has_codex_oauth = tandem_core::load_provider_oauth_credential("openai-codex")
+        .is_some_and(|credential| credential.expires_at_ms > crate::logs::now_ms())
+        || tandem_core::load_openai_codex_cli_oauth_credential()
+            .is_some_and(|credential| credential.expires_at_ms > crate::logs::now_ms());
+
     if let Some(keystore) = app.try_state::<SecureKeyStore>() {
-        let openrouter_key = ApiKeyType::OpenRouter.to_key_name();
-        let opencode_zen_key = ApiKeyType::OpenCodeZen.to_key_name();
-        let anthropic_key = ApiKeyType::Anthropic.to_key_name();
-        let openai_key = ApiKeyType::OpenAI.to_key_name();
-        let poe_key = ApiKeyType::Poe.to_key_name();
+        let has_key = |id: &str| keystore.has(&ApiKeyType::from_str(id).to_key_name());
 
-        tracing::info!("[populate_provider_keys] Checking for keys:");
-        tracing::info!(
-            "  OpenRouter key '{}': {}",
-            openrouter_key,
-            keystore.has(&openrouter_key)
-        );
-        tracing::info!(
-            "  TandemZen key '{}': {}",
-            opencode_zen_key,
-            keystore.has(&opencode_zen_key)
-        );
-        tracing::info!(
-            "  Anthropic key '{}': {}",
-            anthropic_key,
-            keystore.has(&anthropic_key)
-        );
-        tracing::info!(
-            "  OpenAI key '{}': {}",
-            openai_key,
-            keystore.has(&openai_key)
-        );
-        tracing::info!("  Poe key '{}': {}", poe_key, keystore.has(&poe_key));
-
-        config.openrouter.has_key = keystore.has(&openrouter_key);
-        config.opencode_zen.has_key = keystore.has(&opencode_zen_key);
-        config.anthropic.has_key = keystore.has(&anthropic_key);
-        config.openai.has_key = keystore.has(&openai_key);
-        config.poe.has_key = keystore.has(&poe_key);
+        config.openrouter.has_key = has_key("openrouter");
+        config.opencode_zen.has_key = has_key("opencode_zen");
+        config.openai_codex.has_key = has_key("openai-codex") || has_codex_oauth;
+        config.anthropic.has_key = has_key("anthropic");
+        config.openai.has_key = has_key("openai");
+        config.poe.has_key = has_key("poe");
+        config.groq.has_key = has_key("groq");
+        config.mistral.has_key = has_key("mistral");
+        config.together.has_key = has_key("together");
+        config.cohere.has_key = has_key("cohere");
+        config.azure.has_key = has_key("azure");
+        config.bedrock.has_key = has_key("bedrock");
+        config.vertex.has_key = has_key("vertex");
+        config.copilot.has_key = has_key("copilot");
         config.llama_cpp.has_key = true;
         config.ollama.has_key = true;
     } else {
         tracing::debug!("[populate_provider_keys] Keystore not available (vault locked?)");
         config.openrouter.has_key = false;
         config.opencode_zen.has_key = false;
+        config.openai_codex.has_key = has_codex_oauth;
         config.anthropic.has_key = false;
         config.openai.has_key = false;
         config.poe.has_key = false;
+        config.groq.has_key = false;
+        config.mistral.has_key = false;
+        config.together.has_key = false;
+        config.cohere.has_key = false;
+        config.azure.has_key = false;
+        config.bedrock.has_key = false;
+        config.vertex.has_key = false;
+        config.copilot.has_key = false;
         config.llama_cpp.has_key = true;
         config.ollama.has_key = true;
     }
@@ -497,16 +493,137 @@ fn selected_provider_model_signature(
     None
 }
 
+fn provider_config_for_slot<'a>(
+    config: &'a ProvidersConfig,
+    slot: &str,
+) -> Option<&'a crate::state::ProviderConfig> {
+    match slot {
+        "openrouter" => Some(&config.openrouter),
+        "opencode_zen" => Some(&config.opencode_zen),
+        "openai-codex" | "openai_codex" => Some(&config.openai_codex),
+        "anthropic" => Some(&config.anthropic),
+        "openai" => Some(&config.openai),
+        "llama_cpp" | "llama.cpp" => Some(&config.llama_cpp),
+        "ollama" => Some(&config.ollama),
+        "poe" => Some(&config.poe),
+        "groq" => Some(&config.groq),
+        "mistral" => Some(&config.mistral),
+        "together" => Some(&config.together),
+        "cohere" => Some(&config.cohere),
+        "azure" => Some(&config.azure),
+        "bedrock" => Some(&config.bedrock),
+        "vertex" => Some(&config.vertex),
+        "copilot" => Some(&config.copilot),
+        _ => None,
+    }
+}
+
+fn provider_settings_selected_slot(config: &ProvidersConfig) -> Option<&'static str> {
+    let provider_id = config
+        .selected_model
+        .as_ref()?
+        .provider_id
+        .trim()
+        .to_ascii_lowercase();
+    match provider_id.as_str() {
+        "openrouter" => Some("openrouter"),
+        "openai-codex" | "openai_codex" => Some("openai-codex"),
+        "openai" => Some("openai"),
+        "anthropic" => Some("anthropic"),
+        "poe" => Some("poe"),
+        "opencode" | "opencode_zen" | "zen" => Some("opencode_zen"),
+        "llama_cpp" | "llama.cpp" => Some("llama_cpp"),
+        "ollama" => Some("ollama"),
+        "groq" => Some("groq"),
+        "mistral" => Some("mistral"),
+        "together" => Some("together"),
+        "cohere" => Some("cohere"),
+        "azure" => Some("azure"),
+        "bedrock" => Some("bedrock"),
+        "vertex" => Some("vertex"),
+        "copilot" => Some("copilot"),
+        "custom" => Some("custom"),
+        _ => None,
+    }
+}
+
+fn provider_settings_slot_active(config: &ProvidersConfig, slot: &str) -> bool {
+    let selected_slot = provider_settings_selected_slot(config);
+    let selected_active = selected_slot.is_some_and(|selected| selected == slot);
+    if slot == "custom" {
+        return config.custom.iter().any(|provider| provider.enabled) || selected_active;
+    }
+    provider_config_for_slot(config, slot)
+        .map(|provider| provider.enabled || selected_active)
+        .unwrap_or(selected_active)
+}
+
+fn configurable_provider_slots<'a>(
+    config: &'a ProvidersConfig,
+) -> Vec<(&'static str, &'a crate::state::ProviderConfig)> {
+    vec![
+        ("openai-codex", &config.openai_codex),
+        ("openrouter", &config.openrouter),
+        ("anthropic", &config.anthropic),
+        ("openai", &config.openai),
+        ("llama_cpp", &config.llama_cpp),
+        ("ollama", &config.ollama),
+        ("poe", &config.poe),
+        ("groq", &config.groq),
+        ("mistral", &config.mistral),
+        ("together", &config.together),
+        ("cohere", &config.cohere),
+        ("azure", &config.azure),
+        ("bedrock", &config.bedrock),
+        ("vertex", &config.vertex),
+        ("copilot", &config.copilot),
+    ]
+}
+
+fn provider_env_var(provider_id: &str) -> Option<&'static str> {
+    match provider_id {
+        "openai-codex" => Some("OPENAI_CODEX_API_KEY"),
+        "openrouter" => Some("OPENROUTER_API_KEY"),
+        "opencode_zen" => Some("OPENCODE_ZEN_API_KEY"),
+        "anthropic" => Some("ANTHROPIC_API_KEY"),
+        "openai" => Some("OPENAI_API_KEY"),
+        "llama_cpp" => Some("LLAMA_CPP_API_KEY"),
+        "poe" => Some("POE_API_KEY"),
+        "groq" => Some("GROQ_API_KEY"),
+        "mistral" => Some("MISTRAL_API_KEY"),
+        "together" => Some("TOGETHER_API_KEY"),
+        "cohere" => Some("COHERE_API_KEY"),
+        "azure" => Some("AZURE_OPENAI_API_KEY"),
+        "bedrock" => Some("BEDROCK_API_KEY"),
+        "vertex" => Some("VERTEX_API_KEY"),
+        "copilot" => Some("GITHUB_TOKEN"),
+        _ => None,
+    }
+}
+
+fn provider_slots_signature(config: &ProvidersConfig) -> serde_json::Value {
+    let entries = configurable_provider_slots(config)
+        .into_iter()
+        .map(|(provider_id, provider)| {
+            (
+                provider_id.to_string(),
+                serde_json::json!({
+                    "enabled": provider.enabled,
+                    "default": provider.default,
+                    "endpoint": provider.endpoint,
+                    "model": provider.model,
+                }),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    serde_json::Value::Object(entries)
+}
+
 fn sync_provider_config_file(config: &ProvidersConfig) -> Result<()> {
     let custom_provider = config
         .custom
         .iter()
         .find(|c| c.enabled && !c.endpoint.trim().is_empty());
-    let llama_cpp_provider = config
-        .llama_cpp
-        .enabled
-        .then_some(&config.llama_cpp)
-        .filter(|provider| !provider.endpoint.trim().is_empty());
     let config_path = crate::tandem_config::global_config_path()?;
     crate::tandem_config::update_config_at(&config_path, |cfg| {
         let root = if let Some(root) = cfg.as_object_mut() {
@@ -552,47 +669,50 @@ fn sync_provider_config_file(config: &ProvidersConfig) -> Result<()> {
             providers.remove("custom");
         }
 
-        if let Some(llama_cpp) = llama_cpp_provider {
-            let endpoint = llama_cpp.endpoint.trim();
-            let default_model = llama_cpp
-                .model
-                .as_ref()
-                .map(|m| m.trim().to_string())
-                .filter(|m| !m.is_empty());
-
-            let mut llama_cpp_cfg = serde_json::Map::new();
-            llama_cpp_cfg.insert(
-                "url".to_string(),
-                serde_json::Value::String(endpoint.to_string()),
-            );
-            if let Some(model) = default_model {
-                llama_cpp_cfg.insert(
-                    "default_model".to_string(),
-                    serde_json::Value::String(model),
+        for (provider_id, provider) in configurable_provider_slots(config) {
+            if provider.enabled && !provider.endpoint.trim().is_empty() {
+                let mut provider_cfg = serde_json::Map::new();
+                provider_cfg.insert(
+                    "url".to_string(),
+                    serde_json::Value::String(provider.endpoint.trim().to_string()),
                 );
+                if let Some(model) = provider
+                    .model
+                    .as_ref()
+                    .map(|m| m.trim().to_string())
+                    .filter(|m| !m.is_empty())
+                {
+                    provider_cfg.insert(
+                        "default_model".to_string(),
+                        serde_json::Value::String(model),
+                    );
+                }
+                providers.insert(
+                    provider_id.to_string(),
+                    serde_json::Value::Object(provider_cfg),
+                );
+            } else {
+                providers.remove(provider_id);
             }
-            providers.insert(
-                "llama_cpp".to_string(),
-                serde_json::Value::Object(llama_cpp_cfg),
-            );
-            providers.remove("llama.cpp");
-        } else {
-            providers.remove("llama_cpp");
-            providers.remove("llama.cpp");
         }
+        providers.remove("llama.cpp");
+        providers.remove("openai_codex");
 
-        let selected_custom = selected_provider_model_signature(config, &["custom"]).is_some();
-        let selected_llama_cpp =
-            selected_provider_model_signature(config, &["llama_cpp", "llama.cpp"]).is_some();
         let default_provider = if custom_provider.is_some_and(|provider| provider.default)
-            || selected_custom
+            || selected_provider_model_signature(config, &["custom"]).is_some()
         {
             Some("custom")
-        } else if llama_cpp_provider.is_some_and(|provider| provider.default) || selected_llama_cpp
-        {
-            Some("llama_cpp")
         } else {
-            None
+            configurable_provider_slots(config)
+                .into_iter()
+                .find_map(|(provider_id, provider)| {
+                    let selected = selected_provider_model_signature(
+                        config,
+                        &[provider_id, &provider_id.replace('-', "_")],
+                    )
+                    .is_some();
+                    (provider.enabled && (provider.default || selected)).then_some(provider_id)
+                })
         };
 
         match default_provider {
@@ -608,8 +728,11 @@ fn sync_provider_config_file(config: &ProvidersConfig) -> Result<()> {
                     .and_then(|v| v.as_str())
                     .map(|v| {
                         v.eq_ignore_ascii_case("custom")
-                            || v.eq_ignore_ascii_case("llama_cpp")
+                            || configurable_provider_slots(config)
+                                .iter()
+                                .any(|(provider_id, _)| v.eq_ignore_ascii_case(provider_id))
                             || v.eq_ignore_ascii_case("llama.cpp")
+                            || v.eq_ignore_ascii_case("openai_codex")
                     })
                     .unwrap_or(false);
                 if should_clear_default {
@@ -693,69 +816,35 @@ pub(crate) async fn sync_channel_tokens_env(app: &AppHandle, state: &AppState) {
 }
 
 async fn sync_provider_keys_env(app: &AppHandle, state: &AppState, config: &ProvidersConfig) {
-    // OPENROUTER
-    if provider_slot_active(config, "openrouter") {
-        if let Ok(Some(key)) = get_api_key(app, "openrouter").await {
-            state.sidecar.set_env("OPENROUTER_API_KEY", &key).await;
+    for provider_id in [
+        "openai-codex",
+        "openrouter",
+        "opencode_zen",
+        "anthropic",
+        "openai",
+        "llama_cpp",
+        "poe",
+        "groq",
+        "mistral",
+        "together",
+        "cohere",
+        "azure",
+        "bedrock",
+        "vertex",
+        "copilot",
+    ] {
+        let Some(env_var) = provider_env_var(provider_id) else {
+            continue;
+        };
+        if provider_settings_slot_active(config, provider_id) {
+            if let Ok(Some(key)) = get_api_key(app, provider_id).await {
+                state.sidecar.set_env(env_var, &key).await;
+            } else {
+                state.sidecar.remove_env(env_var).await;
+            }
         } else {
-            state.sidecar.remove_env("OPENROUTER_API_KEY").await;
+            state.sidecar.remove_env(env_var).await;
         }
-    } else {
-        state.sidecar.remove_env("OPENROUTER_API_KEY").await;
-    }
-
-    // OpenCode Zen
-    if provider_slot_active(config, "opencode_zen") {
-        if let Ok(Some(key)) = get_api_key(app, "opencode_zen").await {
-            state.sidecar.set_env("OPENCODE_ZEN_API_KEY", &key).await;
-        } else {
-            state.sidecar.remove_env("OPENCODE_ZEN_API_KEY").await;
-        }
-    } else {
-        state.sidecar.remove_env("OPENCODE_ZEN_API_KEY").await;
-    }
-
-    // Anthropic
-    if provider_slot_active(config, "anthropic") {
-        if let Ok(Some(key)) = get_api_key(app, "anthropic").await {
-            state.sidecar.set_env("ANTHROPIC_API_KEY", &key).await;
-        } else {
-            state.sidecar.remove_env("ANTHROPIC_API_KEY").await;
-        }
-    } else {
-        state.sidecar.remove_env("ANTHROPIC_API_KEY").await;
-    }
-
-    // OpenAI
-    if provider_slot_active(config, "openai") {
-        if let Ok(Some(key)) = get_api_key(app, "openai").await {
-            state.sidecar.set_env("OPENAI_API_KEY", &key).await;
-        } else {
-            state.sidecar.remove_env("OPENAI_API_KEY").await;
-        }
-    } else {
-        state.sidecar.remove_env("OPENAI_API_KEY").await;
-    }
-
-    if provider_slot_active(config, "llama_cpp") {
-        if let Ok(Some(key)) = get_api_key(app, "llama_cpp").await {
-            state.sidecar.set_env("LLAMA_CPP_API_KEY", &key).await;
-        } else {
-            state.sidecar.remove_env("LLAMA_CPP_API_KEY").await;
-        }
-    } else {
-        state.sidecar.remove_env("LLAMA_CPP_API_KEY").await;
-    }
-
-    // Poe
-    if provider_slot_active(config, "poe") {
-        if let Ok(Some(key)) = get_api_key(app, "poe").await {
-            state.sidecar.set_env("POE_API_KEY", &key).await;
-        } else {
-            state.sidecar.remove_env("POE_API_KEY").await;
-        }
-    } else {
-        state.sidecar.remove_env("POE_API_KEY").await;
     }
 }
 
@@ -768,37 +857,30 @@ async fn sync_provider_keys_runtime_auth(
         return;
     }
 
-    if provider_slot_active(config, "openrouter") {
-        if let Ok(Some(key)) = get_api_key(app, "openrouter").await {
-            let _ = state.sidecar.set_provider_auth("openrouter", &key).await;
+    for (slot, runtime_id) in [
+        ("openai-codex", "openai-codex"),
+        ("openrouter", "openrouter"),
+        ("opencode_zen", "zen"),
+        ("anthropic", "anthropic"),
+        ("openai", "openai"),
+        ("llama_cpp", "llama_cpp"),
+        ("poe", "poe"),
+        ("groq", "groq"),
+        ("mistral", "mistral"),
+        ("together", "together"),
+        ("cohere", "cohere"),
+        ("azure", "azure"),
+        ("bedrock", "bedrock"),
+        ("vertex", "vertex"),
+        ("copilot", "copilot"),
+    ] {
+        if provider_settings_slot_active(config, slot) {
+            if let Ok(Some(key)) = get_api_key(app, slot).await {
+                let _ = state.sidecar.set_provider_auth(runtime_id, &key).await;
+            }
         }
     }
-    if provider_slot_active(config, "opencode_zen") {
-        if let Ok(Some(key)) = get_api_key(app, "opencode_zen").await {
-            let _ = state.sidecar.set_provider_auth("zen", &key).await;
-        }
-    }
-    if provider_slot_active(config, "anthropic") {
-        if let Ok(Some(key)) = get_api_key(app, "anthropic").await {
-            let _ = state.sidecar.set_provider_auth("anthropic", &key).await;
-        }
-    }
-    if provider_slot_active(config, "openai") {
-        if let Ok(Some(key)) = get_api_key(app, "openai").await {
-            let _ = state.sidecar.set_provider_auth("openai", &key).await;
-        }
-    }
-    if provider_slot_active(config, "llama_cpp") {
-        if let Ok(Some(key)) = get_api_key(app, "llama_cpp").await {
-            let _ = state.sidecar.set_provider_auth("llama_cpp", &key).await;
-        }
-    }
-    if provider_slot_active(config, "poe") {
-        if let Ok(Some(key)) = get_api_key(app, "poe").await {
-            let _ = state.sidecar.set_provider_auth("poe", &key).await;
-        }
-    }
-    if provider_slot_active(config, "custom") {
+    if provider_settings_slot_active(config, "custom") {
         if let Ok(Some(key)) = get_api_key(app, "custom_provider").await {
             let _ = state.sidecar.set_provider_auth("custom", &key).await;
         }
@@ -846,13 +928,14 @@ pub async fn set_providers_config(
         || selected_custom_model_signature(&previous_config)
             != selected_custom_model_signature(&config);
 
-    let key_providers_changed = previous_config.openrouter.enabled != config.openrouter.enabled
+    let key_providers_changed = provider_slots_signature(&previous_config)
+        != provider_slots_signature(&config)
         || previous_config.opencode_zen.enabled != config.opencode_zen.enabled
-        || previous_config.anthropic.enabled != config.anthropic.enabled
-        || previous_config.openai.enabled != config.openai.enabled
-        || previous_config.llama_cpp.enabled != config.llama_cpp.enabled
-        || previous_config.poe.enabled != config.poe.enabled
-        || selected_provider_slot(&previous_config) != selected_provider_slot(&config);
+        || previous_config.opencode_zen.default != config.opencode_zen.default
+        || previous_config.opencode_zen.endpoint != config.opencode_zen.endpoint
+        || previous_config.opencode_zen.model != config.opencode_zen.model
+        || provider_settings_selected_slot(&previous_config)
+            != provider_settings_selected_slot(&config);
 
     if ollama_changed || llama_cpp_changed || key_providers_changed || custom_changed {
         sync_ollama_env(&state, &config).await;
@@ -869,6 +952,86 @@ pub async fn set_providers_config(
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub async fn provider_oauth_authorize(
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> Result<serde_json::Value> {
+    state.sidecar.provider_oauth_authorize(&provider_id).await
+}
+
+#[tauri::command]
+pub async fn provider_oauth_status(
+    state: State<'_, AppState>,
+    provider_id: String,
+    session_id: Option<String>,
+) -> Result<serde_json::Value> {
+    state
+        .sidecar
+        .provider_oauth_status(&provider_id, session_id.as_deref())
+        .await
+}
+
+#[tauri::command]
+pub async fn provider_oauth_import_local(
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> Result<serde_json::Value> {
+    state
+        .sidecar
+        .provider_oauth_import_local(&provider_id)
+        .await
+}
+
+#[tauri::command]
+pub async fn delete_provider_oauth_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> Result<()> {
+    match state
+        .sidecar
+        .delete_provider_oauth_session(&provider_id)
+        .await
+    {
+        Ok(()) => Ok(()),
+        Err(error) if provider_id == "openai-codex" || provider_id == "openai_codex" => {
+            tracing::warn!(
+                "Sidecar OAuth disconnect failed for {}; falling back to local credential delete: {}",
+                provider_id,
+                error
+            );
+            let app_data_dir = shared_app_data_dir(&app)?;
+            let security_dir = app_data_dir.join("security");
+            let tenant_context = tandem_types::TenantContext::local_implicit();
+            let removed_from_security_dir =
+                tandem_core::delete_provider_credential_for_tenant_in_dir(
+                    &security_dir,
+                    &tenant_context,
+                    "openai-codex",
+                )
+                .map_err(|delete_error| {
+                    crate::error::TandemError::Sidecar(format!(
+                        "Failed to delete OpenAI Codex OAuth session from sidecar ({error}) and local security store ({delete_error})"
+                    ))
+                })?;
+            let removed_from_global =
+                tandem_core::delete_provider_credential("openai-codex").map_err(|delete_error| {
+                    crate::error::TandemError::Sidecar(format!(
+                        "Failed to delete OpenAI Codex OAuth session from sidecar ({error}) and global store ({delete_error})"
+                    ))
+                })?;
+            tracing::info!(
+                "Deleted OpenAI Codex OAuth session via fallback: security_dir={} global={}",
+                removed_from_security_dir,
+                removed_from_global
+            );
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 #[tauri::command]

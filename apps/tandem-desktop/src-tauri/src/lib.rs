@@ -616,6 +616,10 @@ pub fn run() {
             // Provider configuration
             commands::get_providers_config,
             commands::set_providers_config,
+            commands::provider_oauth_authorize,
+            commands::provider_oauth_status,
+            commands::provider_oauth_import_local,
+            commands::delete_provider_oauth_session,
             commands::get_search_settings,
             commands::set_search_settings,
             commands::get_scheduler_settings,

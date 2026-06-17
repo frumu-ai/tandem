@@ -61,6 +61,12 @@ pub struct ProvidersConfig {
     pub openrouter: ProviderConfig,
     #[serde(default = "default_opencode_zen")]
     pub opencode_zen: ProviderConfig,
+    #[serde(
+        rename = "openai-codex",
+        alias = "openai_codex",
+        default = "default_openai_codex"
+    )]
+    pub openai_codex: ProviderConfig,
     #[serde(default = "default_anthropic")]
     pub anthropic: ProviderConfig,
     #[serde(default = "default_openai")]
@@ -71,6 +77,22 @@ pub struct ProvidersConfig {
     pub ollama: ProviderConfig,
     #[serde(default = "default_poe")]
     pub poe: ProviderConfig,
+    #[serde(default = "default_groq")]
+    pub groq: ProviderConfig,
+    #[serde(default = "default_mistral")]
+    pub mistral: ProviderConfig,
+    #[serde(default = "default_together")]
+    pub together: ProviderConfig,
+    #[serde(default = "default_cohere")]
+    pub cohere: ProviderConfig,
+    #[serde(default = "default_azure")]
+    pub azure: ProviderConfig,
+    #[serde(default = "default_bedrock")]
+    pub bedrock: ProviderConfig,
+    #[serde(default = "default_vertex")]
+    pub vertex: ProviderConfig,
+    #[serde(default = "default_copilot")]
+    pub copilot: ProviderConfig,
     #[serde(default)]
     pub custom: Vec<ProviderConfig>,
     /// If set, overrides the default provider/model selection for outgoing messages.
@@ -95,6 +117,16 @@ fn default_opencode_zen() -> ProviderConfig {
         default: true,
         endpoint: "https://opencode.ai/zen/v1".to_string(),
         model: Some("minimax-m2.1-free".to_string()),
+        has_key: false,
+    }
+}
+
+fn default_openai_codex() -> ProviderConfig {
+    ProviderConfig {
+        enabled: false,
+        default: false,
+        endpoint: "https://chatgpt.com/backend-api/codex".to_string(),
+        model: Some("gpt-5.5".to_string()),
         has_key: false,
     }
 }
@@ -149,16 +181,105 @@ fn default_poe() -> ProviderConfig {
     }
 }
 
+fn default_groq() -> ProviderConfig {
+    ProviderConfig {
+        enabled: false,
+        default: false,
+        endpoint: "https://api.groq.com/openai/v1".to_string(),
+        model: Some("llama-3.1-8b-instant".to_string()),
+        has_key: false,
+    }
+}
+
+fn default_mistral() -> ProviderConfig {
+    ProviderConfig {
+        enabled: false,
+        default: false,
+        endpoint: "https://api.mistral.ai/v1".to_string(),
+        model: Some("mistral-small-latest".to_string()),
+        has_key: false,
+    }
+}
+
+fn default_together() -> ProviderConfig {
+    ProviderConfig {
+        enabled: false,
+        default: false,
+        endpoint: "https://api.together.xyz/v1".to_string(),
+        model: Some("meta-llama/Llama-3.1-8B-Instruct-Turbo".to_string()),
+        has_key: false,
+    }
+}
+
+fn default_cohere() -> ProviderConfig {
+    ProviderConfig {
+        enabled: false,
+        default: false,
+        endpoint: "https://api.cohere.com/v2".to_string(),
+        model: Some("command-r-plus".to_string()),
+        has_key: false,
+    }
+}
+
+fn default_azure() -> ProviderConfig {
+    ProviderConfig {
+        enabled: false,
+        default: false,
+        endpoint: "https://example.openai.azure.com/openai/deployments/default".to_string(),
+        model: Some("gpt-4o-mini".to_string()),
+        has_key: false,
+    }
+}
+
+fn default_bedrock() -> ProviderConfig {
+    ProviderConfig {
+        enabled: false,
+        default: false,
+        endpoint: "https://bedrock-runtime.us-east-1.amazonaws.com".to_string(),
+        model: Some("anthropic.claude-3-5-sonnet-20240620-v1:0".to_string()),
+        has_key: false,
+    }
+}
+
+fn default_vertex() -> ProviderConfig {
+    ProviderConfig {
+        enabled: false,
+        default: false,
+        endpoint: "https://aiplatform.googleapis.com/v1".to_string(),
+        model: Some("gemini-1.5-flash".to_string()),
+        has_key: false,
+    }
+}
+
+fn default_copilot() -> ProviderConfig {
+    ProviderConfig {
+        enabled: false,
+        default: false,
+        endpoint: "https://api.githubcopilot.com".to_string(),
+        model: Some("gpt-4o-mini".to_string()),
+        has_key: false,
+    }
+}
+
 impl Default for ProvidersConfig {
     fn default() -> Self {
         Self {
             openrouter: default_openrouter(),
             opencode_zen: default_opencode_zen(),
+            openai_codex: default_openai_codex(),
             anthropic: default_anthropic(),
             openai: default_openai(),
             llama_cpp: default_llama_cpp(),
             ollama: default_ollama(),
             poe: default_poe(),
+            groq: default_groq(),
+            mistral: default_mistral(),
+            together: default_together(),
+            cohere: default_cohere(),
+            azure: default_azure(),
+            bedrock: default_bedrock(),
+            vertex: default_vertex(),
+            copilot: default_copilot(),
             custom: Vec::new(),
             selected_model: None,
         }

@@ -207,6 +207,9 @@
     "opencode_zen": {
       "description": "Access to free and premium models - includes free options"
     },
+    "openai-codex": {
+      "description": "Use Codex models with ChatGPT sign-in and Codex account auth"
+    },
     "openrouter": {
       "description": "Access 100+ models with one API key"
     },
@@ -224,6 +227,30 @@
     },
     "poe": {
       "description": "Access models via Poe's API"
+    },
+    "groq": {
+      "description": "Fast OpenAI-compatible inference for Llama and open models"
+    },
+    "mistral": {
+      "description": "Direct access to Mistral models"
+    },
+    "together": {
+      "description": "OpenAI-compatible access to Together hosted open models"
+    },
+    "cohere": {
+      "description": "Direct access to Cohere Command models"
+    },
+    "azure": {
+      "description": "Connect an Azure OpenAI-compatible deployment"
+    },
+    "bedrock": {
+      "description": "Connect an Amazon Bedrock-compatible endpoint"
+    },
+    "vertex": {
+      "description": "Connect a Vertex-compatible Gemini endpoint"
+    },
+    "copilot": {
+      "description": "Connect a GitHub Copilot-compatible endpoint"
     }
   },
   "providerCard": {
@@ -249,6 +276,16 @@
       "noModelsInMemory": "No models currently in memory",
       "installedModels": "Installed Models:",
       "loadAndSelect": "Load into memory and select"
+    },
+    "oauth": {
+      "title": "Codex account",
+      "description": "Sign in with ChatGPT/Codex in your browser or import an existing local Codex session.",
+      "signIn": "Sign in with Codex",
+      "importLocal": "Import Local Session",
+      "reconnect": "Reconnect",
+      "disconnect": "Disconnect",
+      "connected": "Account connected",
+      "pending": "Waiting for browser sign-in"
     },
     "errors": {
       "apiKeyRequired": "API key is required",

@@ -2768,6 +2768,7 @@ impl SidecarManager {
             Ok(config_path) => {
                 // Make sure the sidecar loads the file we're managing, even if its
                 // defaults change across versions/platforms.
+                cmd.arg("--config").arg(&config_path);
                 cmd.env("OPENCODE_CONFIG", &config_path);
 
                 // Discover local Ollama models dynamically
@@ -6513,6 +6514,74 @@ impl SidecarManager {
             .send()
             .await
             .map_err(|e| TandemError::Sidecar(format!("Failed to set provider auth: {}", e)))?;
+        let _: serde_json::Value = self.handle_response(response).await?;
+        Ok(())
+    }
+
+    pub async fn provider_oauth_authorize(&self, provider_id: &str) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/provider/{}/oauth/authorize",
+            self.base_url().await?,
+            provider_id
+        );
+        let response =
+            self.http_client.post(&url).send().await.map_err(|e| {
+                TandemError::Sidecar(format!("Failed to start provider OAuth: {}", e))
+            })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn provider_oauth_status(
+        &self,
+        provider_id: &str,
+        session_id: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/provider/{}/oauth/status",
+            self.base_url().await?,
+            provider_id
+        );
+        let mut request = self.http_client.get(&url);
+        if let Some(session_id) = session_id.filter(|value| !value.trim().is_empty()) {
+            request = request.query(&[("session_id", session_id)]);
+        }
+        let response = request.send().await.map_err(|e| {
+            TandemError::Sidecar(format!("Failed to fetch provider OAuth status: {}", e))
+        })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn provider_oauth_import_local(
+        &self,
+        provider_id: &str,
+    ) -> Result<serde_json::Value> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/provider/{}/oauth/session/local",
+            self.base_url().await?,
+            provider_id
+        );
+        let response = self.http_client.post(&url).send().await.map_err(|e| {
+            TandemError::Sidecar(format!(
+                "Failed to import local provider OAuth session: {}",
+                e
+            ))
+        })?;
+        self.handle_response(response).await
+    }
+
+    pub async fn delete_provider_oauth_session(&self, provider_id: &str) -> Result<()> {
+        self.check_circuit_breaker().await?;
+        let url = format!(
+            "{}/provider/{}/oauth/session",
+            self.base_url().await?,
+            provider_id
+        );
+        let response = self.http_client.delete(&url).send().await.map_err(|e| {
+            TandemError::Sidecar(format!("Failed to delete provider OAuth session: {}", e))
+        })?;
         let _: serde_json::Value = self.handle_response(response).await?;
         Ok(())
     }

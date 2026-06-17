@@ -17,12 +17,17 @@ import {
   Square,
   RefreshCw,
   RotateCcw,
+  LogIn,
 } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   storeApiKey,
   deleteApiKey,
   hasApiKey,
+  providerOAuthAuthorize,
+  providerOAuthStatus,
+  providerOAuthImportLocal,
+  deleteProviderOAuthSession,
   listOllamaModels,
   listRunningOllamaModels,
   stopOllamaModel,
@@ -55,6 +60,22 @@ const SUGGESTED_MODELS: Record<string, string[]> = {
     "claude-haiku-4-5-20251001",
   ],
   openai: ["gpt-5.2", "gpt-5.1", "gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-4.1"],
+  "openai-codex": [
+    "gpt-5.5",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex-mini",
+  ],
+  groq: ["llama-3.1-8b-instant", "llama-3.3-70b-versatile", "openai/gpt-oss-120b"],
+  mistral: ["mistral-small-latest", "mistral-medium-latest", "codestral-latest"],
+  together: ["meta-llama/Llama-3.1-8B-Instruct-Turbo", "Qwen/Qwen2.5-Coder-32B-Instruct"],
+  cohere: ["command-r-plus", "command-r", "command-a-03-2025"],
+  azure: ["gpt-4o-mini", "gpt-4.1", "gpt-5"],
+  bedrock: ["anthropic.claude-3-5-sonnet-20240620-v1:0", "amazon.nova-pro-v1:0"],
+  vertex: ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"],
+  copilot: ["gpt-4o-mini", "gpt-4o", "claude-3.5-sonnet"],
   llama_cpp: ["llm", "qwen2.5-coder", "llama-3.2-3b-instruct", "mistral-7b-instruct"],
   openrouter: [
     "anthropic/claude-sonnet-4",
@@ -82,10 +103,19 @@ const SUGGESTED_MODELS: Record<string, string[]> = {
 const TEXT_INPUT_PROVIDERS = [
   "anthropic",
   "openai",
+  "openai-codex",
   "openrouter",
   "llama_cpp",
   "ollama",
   "opencode_zen",
+  "groq",
+  "mistral",
+  "together",
+  "cohere",
+  "azure",
+  "bedrock",
+  "vertex",
+  "copilot",
 ];
 
 function mergeUniqueModelValues(values: string[], currentValue: string) {
@@ -99,6 +129,18 @@ function mergeUniqueModelValues(values: string[], currentValue: string) {
   }
   return merged;
 }
+
+const oauthErrorMessage = (err: unknown, fallback: string) => {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  if (err && typeof err === "object") {
+    const maybeMessage = (err as { message?: unknown; error?: unknown }).message;
+    if (typeof maybeMessage === "string" && maybeMessage.trim()) return maybeMessage;
+    const maybeError = (err as { error?: unknown }).error;
+    if (typeof maybeError === "string" && maybeError.trim()) return maybeError;
+  }
+  return fallback;
+};
 
 interface ProviderCardProps {
   id: ApiKeyType;
@@ -116,6 +158,7 @@ interface ProviderCardProps {
   onSetDefault?: () => void;
   onKeyChange?: () => void; // Called when API key is saved or deleted
   docsUrl?: string;
+  supportsOAuth?: boolean;
 }
 
 export function ProviderCard({
@@ -134,6 +177,7 @@ export function ProviderCard({
   onSetDefault,
   onKeyChange,
   docsUrl,
+  supportsOAuth = false,
 }: ProviderCardProps) {
   const { t } = useTranslation(["common", "settings"]);
   const [apiKey, setApiKey] = useState("");
@@ -150,6 +194,11 @@ export function ProviderCard({
   const [loadingOllama, setLoadingOllama] = useState(false);
   const [endpointInput, setEndpointInput] = useState(endpoint);
   const [isEditingEndpoint, setIsEditingEndpoint] = useState(false);
+  const [oauthStatus, setOauthStatus] = useState<string | null>(null);
+  const [oauthEmail, setOauthEmail] = useState<string | null>(null);
+  const [oauthSessionId, setOauthSessionId] = useState<string | null>(null);
+  const [oauthBusy, setOauthBusy] = useState(false);
+  const [oauthNotice, setOauthNotice] = useState<string | null>(null);
 
   type ModelOption = { id: string; name: string; description?: string };
 
@@ -179,17 +228,20 @@ export function ProviderCard({
   const modelInputPlaceholder =
     id === "openrouter"
       ? t("providerCard.placeholders.modelOpenRouter", { ns: "settings" })
-      : id === "anthropic"
-        ? "claude-sonnet-4-6"
-        : id === "openai"
-          ? "gpt-5.2"
-          : id === "llama_cpp"
-            ? "llm"
-            : t("providerCard.placeholders.modelGeneric", { ns: "settings" });
+      : id === "openai-codex"
+        ? "gpt-5.5"
+        : id === "anthropic"
+          ? "claude-sonnet-4-6"
+          : id === "openai"
+            ? "gpt-5.2"
+            : id === "llama_cpp"
+              ? "llm"
+              : t("providerCard.placeholders.modelGeneric", { ns: "settings" });
 
   const selectedModel = model || availableModels[0]?.id || "";
   const selectedModelInfo = availableModels.find((m) => m.id === selectedModel);
   const requiresApiKey = id !== "ollama" && id !== "llama_cpp";
+  const oauthConnected = oauthStatus === "connected";
 
   // Filter suggestions based on input
   const filteredSuggestions = allSuggestionValues.filter((s) =>
@@ -204,6 +256,40 @@ export function ProviderCard({
     }
     hasApiKey(id).then(setHasKey).catch(console.error);
   }, [id, requiresApiKey]);
+
+  const refreshOAuthStatus = async (sessionId = oauthSessionId) => {
+    if (!supportsOAuth) return;
+    try {
+      const status = await providerOAuthStatus(id, sessionId);
+      if (status.ok) {
+        setOauthStatus(status.status ?? null);
+        setOauthEmail(status.email ?? status.display_name ?? null);
+        if (status.status === "connected") {
+          setHasKey(true);
+          setOauthSessionId(null);
+          onKeyChange?.();
+        }
+      } else if (status.error) {
+        setOauthNotice(status.error);
+      }
+    } catch (err) {
+      setOauthNotice(oauthErrorMessage(err, "Failed to read OAuth status."));
+    }
+  };
+
+  useEffect(() => {
+    void refreshOAuthStatus(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, supportsOAuth]);
+
+  useEffect(() => {
+    if (!supportsOAuth || !oauthSessionId || oauthStatus === "connected") return;
+    const timer = globalThis.setInterval(() => {
+      void refreshOAuthStatus(oauthSessionId);
+    }, 2000);
+    return () => globalThis.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supportsOAuth, oauthSessionId, oauthStatus]);
 
   // Sync modelInput with model prop
   useEffect(() => {
@@ -307,6 +393,60 @@ export function ProviderCard({
     }
   };
 
+  const handleOAuthSignIn = async () => {
+    setOauthBusy(true);
+    setOauthNotice(null);
+    try {
+      const response = await providerOAuthAuthorize(id);
+      if (!response.ok || !response.authorizationUrl || !response.session_id) {
+        throw new Error(response.error || "Failed to start Codex sign-in.");
+      }
+      setOauthSessionId(response.session_id);
+      setOauthStatus("pending");
+      await openUrl(response.authorizationUrl);
+    } catch (err) {
+      setOauthNotice(oauthErrorMessage(err, "Failed to start Codex sign-in."));
+    } finally {
+      setOauthBusy(false);
+    }
+  };
+
+  const handleOAuthImportLocal = async () => {
+    setOauthBusy(true);
+    setOauthNotice(null);
+    try {
+      const response = await providerOAuthImportLocal(id);
+      if (!response.ok) {
+        throw new Error(response.error || "No local Codex session was available to import.");
+      }
+      setOauthStatus("connected");
+      setOauthEmail(response.email ?? response.display_name ?? null);
+      setHasKey(true);
+      onKeyChange?.();
+    } catch (err) {
+      setOauthNotice(oauthErrorMessage(err, "Failed to import local Codex session."));
+    } finally {
+      setOauthBusy(false);
+    }
+  };
+
+  const handleOAuthDisconnect = async () => {
+    setOauthBusy(true);
+    setOauthNotice(null);
+    try {
+      await deleteProviderOAuthSession(id);
+      setOauthStatus("missing");
+      setOauthEmail(null);
+      setOauthSessionId(null);
+      setHasKey(false);
+      onKeyChange?.();
+    } catch (err) {
+      setOauthNotice(oauthErrorMessage(err, "Failed to disconnect Codex."));
+    } finally {
+      setOauthBusy(false);
+    }
+  };
+
   const handleSaveEndpoint = () => {
     if (endpointInput.trim() && endpointInput !== endpoint) {
       onEndpointChange?.(endpointInput.trim());
@@ -322,6 +462,7 @@ export function ProviderCard({
   };
 
   const isEndpointModified = defaultEndpoint && endpoint !== defaultEndpoint;
+  const authReady = hasKey || oauthConnected;
 
   return (
     <Card className="relative overflow-hidden">
@@ -343,9 +484,11 @@ export function ProviderCard({
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {requiresApiKey && hasKey && (
+            {requiresApiKey && authReady && (
               <span className="rounded-full bg-success/15 px-2 py-0.5 text-xs text-success">
-                {t("providerCard.keySaved", { ns: "settings" })}
+                {supportsOAuth && oauthConnected
+                  ? t("providerCard.oauth.connected", { ns: "settings" })
+                  : t("providerCard.keySaved", { ns: "settings" })}
               </span>
             )}
             <Switch checked={enabled} onChange={(e) => onEnabledChange(e.target.checked)} />
@@ -733,6 +876,76 @@ export function ProviderCard({
                     )}
                   </div>
                 </div>
+              ) : supportsOAuth ? (
+                <div className="space-y-3 rounded-lg border border-border bg-surface-elevated/40 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-medium text-text">
+                        {oauthConnected
+                          ? t("providerCard.oauth.connected", { ns: "settings" })
+                          : oauthStatus === "pending"
+                            ? t("providerCard.oauth.pending", { ns: "settings" })
+                            : t("providerCard.oauth.title", { ns: "settings" })}
+                      </p>
+                      <p className="text-xs text-text-muted">
+                        {oauthConnected && oauthEmail
+                          ? oauthEmail
+                          : t("providerCard.oauth.description", { ns: "settings" })}
+                      </p>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => refreshOAuthStatus()}
+                      disabled={oauthBusy}
+                      title={t("actions.refresh", { ns: "common" })}
+                    >
+                      <RefreshCw className={`h-4 w-4 ${oauthBusy ? "animate-spin" : ""}`} />
+                    </Button>
+                  </div>
+
+                  {oauthConnected ? (
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={handleOAuthSignIn}
+                        disabled={oauthBusy}
+                        className="flex-1"
+                      >
+                        <LogIn className="mr-1 h-4 w-4" />
+                        {t("providerCard.oauth.reconnect", { ns: "settings" })}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={handleOAuthDisconnect}
+                        disabled={oauthBusy}
+                        className="flex-1 text-error hover:text-error"
+                      >
+                        <X className="mr-1 h-4 w-4" />
+                        {t("providerCard.oauth.disconnect", { ns: "settings" })}
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      <Button onClick={handleOAuthSignIn} loading={oauthBusy} className="flex-1">
+                        <LogIn className="mr-1 h-4 w-4" />
+                        {t("providerCard.oauth.signIn", { ns: "settings" })}
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        onClick={handleOAuthImportLocal}
+                        disabled={oauthBusy}
+                        className="flex-1"
+                      >
+                        {t("providerCard.oauth.importLocal", { ns: "settings" })}
+                      </Button>
+                    </div>
+                  )}
+
+                  {oauthNotice && <p className="text-xs text-error">{oauthNotice}</p>}
+                </div>
               ) : hasKey ? (
                 <div className="flex items-center justify-between rounded-lg border border-success/30 bg-success/10 p-3">
                   <div className="flex items-center gap-2">
@@ -800,7 +1013,7 @@ export function ProviderCard({
                 </div>
               )}
 
-              {!isDefault && onSetDefault && hasKey && (
+              {!isDefault && onSetDefault && authReady && (
                 <Button variant="secondary" size="sm" onClick={onSetDefault} className="w-full">
                   {t("providerCard.setDefaultProvider", { ns: "settings" })}
                 </Button>

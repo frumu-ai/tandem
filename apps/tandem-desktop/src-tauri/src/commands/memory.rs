@@ -247,8 +247,9 @@ pub fn lock_vault(vault_state: State<'_, VaultState>) -> Result<()> {
 }
 
 fn resolve_default_model_spec(config: &ProvidersConfig) -> Option<ModelSpec> {
-    // Strict routing: only use the explicit selected model/provider.
-    // Do not silently fall back to enabled/default provider slots.
+    // Prefer the explicit model picker route, then fall back to the configured
+    // default provider slot. Settings keeps selected_model in sync, but this
+    // fallback covers older configs and OAuth/provider flows that predate it.
     if let Some(sel) = &config.selected_model {
         let provider_id = if sel.provider_id == "opencode_zen" {
             // Back-compat: frontend uses "opencode_zen", sidecar expects "opencode".
@@ -264,7 +265,22 @@ fn resolve_default_model_spec(config: &ProvidersConfig) -> Option<ModelSpec> {
             });
         }
     }
-    None
+
+    let (provider_id, model_id) = resolve_default_provider_and_model(config);
+    match (
+        provider_id
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty()),
+        model_id
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty()),
+    ) {
+        (Some(provider_id), Some(model_id)) => Some(ModelSpec {
+            provider_id,
+            model_id,
+        }),
+        _ => None,
+    }
 }
 
 fn resolve_required_model_spec(
@@ -316,11 +332,20 @@ fn resolve_default_provider_and_model(
     let candidates: Vec<(&str, &crate::state::ProviderConfig)> = vec![
         ("openrouter", &config.openrouter),
         ("opencode", &config.opencode_zen), // OpenCode expects "opencode" not "opencode_zen"
+        ("openai-codex", &config.openai_codex),
         ("anthropic", &config.anthropic),
         ("openai", &config.openai),
         ("llama_cpp", &config.llama_cpp),
         ("ollama", &config.ollama),
         ("poe", &config.poe),
+        ("groq", &config.groq),
+        ("mistral", &config.mistral),
+        ("together", &config.together),
+        ("cohere", &config.cohere),
+        ("azure", &config.azure),
+        ("bedrock", &config.bedrock),
+        ("vertex", &config.vertex),
+        ("copilot", &config.copilot),
     ];
     let custom_default = config.custom.iter().find(|c| c.enabled && c.default);
     let custom_enabled = config.custom.iter().find(|c| c.enabled);
@@ -350,42 +375,6 @@ fn resolve_default_provider_and_model(
     (None, None)
 }
 
-fn selected_provider_slot(config: &ProvidersConfig) -> Option<&'static str> {
-    let provider_id = config
-        .selected_model
-        .as_ref()?
-        .provider_id
-        .trim()
-        .to_lowercase();
-    match provider_id.as_str() {
-        "openrouter" => Some("openrouter"),
-        "openai" => Some("openai"),
-        "anthropic" => Some("anthropic"),
-        "poe" => Some("poe"),
-        "opencode" | "opencode_zen" | "zen" => Some("opencode_zen"),
-        "llama_cpp" | "llama.cpp" => Some("llama_cpp"),
-        "ollama" => Some("ollama"),
-        "custom" => Some("custom"),
-        _ => None,
-    }
-}
-
-fn provider_slot_active(config: &ProvidersConfig, slot: &str) -> bool {
-    let selected_slot = selected_provider_slot(config);
-    let selected_active = selected_slot.is_some_and(|s| s == slot);
-    match slot {
-        "openrouter" => config.openrouter.enabled || selected_active,
-        "opencode_zen" => config.opencode_zen.enabled || selected_active,
-        "anthropic" => config.anthropic.enabled || selected_active,
-        "openai" => config.openai.enabled || selected_active,
-        "llama_cpp" => config.llama_cpp.enabled || selected_active,
-        "poe" => config.poe.enabled || selected_active,
-        "ollama" => config.ollama.enabled || selected_active,
-        "custom" => config.custom.iter().any(|provider| provider.enabled) || selected_active,
-        _ => selected_active,
-    }
-}
-
 async fn validate_model_provider_auth_if_required(
     app: &AppHandle,
     config: &ProvidersConfig,
@@ -411,6 +400,14 @@ async fn validate_model_provider_auth_if_required(
         "openai" => Some("openai"),
         "anthropic" => Some("anthropic"),
         "poe" => Some("poe"),
+        "groq" => Some("groq"),
+        "mistral" => Some("mistral"),
+        "together" => Some("together"),
+        "cohere" => Some("cohere"),
+        "azure" => Some("azure"),
+        "bedrock" => Some("bedrock"),
+        "vertex" => Some("vertex"),
+        "copilot" => Some("copilot"),
         _ => None,
     };
 

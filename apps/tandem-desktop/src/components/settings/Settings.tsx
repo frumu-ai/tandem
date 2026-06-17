@@ -108,6 +108,167 @@ interface LatestJsonPayload {
   pub_date?: string;
 }
 
+const PROVIDER_SLOTS = [
+  "opencode_zen",
+  "openai-codex",
+  "openrouter",
+  "anthropic",
+  "openai",
+  "groq",
+  "mistral",
+  "together",
+  "cohere",
+  "llama_cpp",
+  "ollama",
+  "poe",
+  "azure",
+  "bedrock",
+  "vertex",
+  "copilot",
+] as const;
+
+type ProviderSlot = (typeof PROVIDER_SLOTS)[number];
+
+const PROVIDER_CARD_DEFINITIONS: {
+  slot: ProviderSlot;
+  name: string;
+  defaultEndpoint: string;
+  docsUrl?: string;
+  supportsOAuth?: boolean;
+}[] = [
+  {
+    slot: "opencode_zen",
+    name: "Opencode Zen",
+    defaultEndpoint: "https://opencode.ai/zen/v1",
+    docsUrl: "https://opencode.ai/auth",
+  },
+  {
+    slot: "openai-codex",
+    name: "OpenAI Codex",
+    defaultEndpoint: "https://chatgpt.com/backend-api/codex",
+    docsUrl: "https://chatgpt.com/codex",
+    supportsOAuth: true,
+  },
+  {
+    slot: "openrouter",
+    name: "OpenRouter",
+    defaultEndpoint: "https://openrouter.ai/api/v1",
+    docsUrl: "https://openrouter.ai/keys",
+  },
+  {
+    slot: "anthropic",
+    name: "Anthropic",
+    defaultEndpoint: "https://api.anthropic.com",
+    docsUrl: "https://console.anthropic.com/settings/keys",
+  },
+  {
+    slot: "openai",
+    name: "OpenAI",
+    defaultEndpoint: "https://api.openai.com/v1",
+    docsUrl: "https://platform.openai.com/api-keys",
+  },
+  {
+    slot: "groq",
+    name: "Groq",
+    defaultEndpoint: "https://api.groq.com/openai/v1",
+    docsUrl: "https://console.groq.com/keys",
+  },
+  {
+    slot: "mistral",
+    name: "Mistral",
+    defaultEndpoint: "https://api.mistral.ai/v1",
+    docsUrl: "https://console.mistral.ai/api-keys",
+  },
+  {
+    slot: "together",
+    name: "Together",
+    defaultEndpoint: "https://api.together.xyz/v1",
+    docsUrl: "https://api.together.xyz/settings/api-keys",
+  },
+  {
+    slot: "cohere",
+    name: "Cohere",
+    defaultEndpoint: "https://api.cohere.com/v2",
+    docsUrl: "https://dashboard.cohere.com/api-keys",
+  },
+  {
+    slot: "llama_cpp",
+    name: "llama.cpp",
+    defaultEndpoint: "http://127.0.0.1:8080/v1",
+    docsUrl: "https://github.com/ggml-org/llama.cpp",
+  },
+  {
+    slot: "ollama",
+    name: "Ollama",
+    defaultEndpoint: "http://localhost:11434",
+    docsUrl: "https://ollama.com",
+  },
+  {
+    slot: "poe",
+    name: "Poe",
+    defaultEndpoint: "https://api.poe.com/v1",
+    docsUrl: "https://poe.com/api",
+  },
+  {
+    slot: "azure",
+    name: "Azure OpenAI-compatible",
+    defaultEndpoint: "https://example.openai.azure.com/openai/deployments/default",
+    docsUrl: "https://learn.microsoft.com/azure/ai-services/openai/",
+  },
+  {
+    slot: "bedrock",
+    name: "Amazon Bedrock-compatible",
+    defaultEndpoint: "https://bedrock-runtime.us-east-1.amazonaws.com",
+    docsUrl: "https://docs.aws.amazon.com/bedrock/",
+  },
+  {
+    slot: "vertex",
+    name: "Vertex-compatible",
+    defaultEndpoint: "https://aiplatform.googleapis.com/v1",
+    docsUrl: "https://cloud.google.com/vertex-ai/generative-ai/docs",
+  },
+  {
+    slot: "copilot",
+    name: "GitHub Copilot-compatible",
+    defaultEndpoint: "https://api.githubcopilot.com",
+    docsUrl: "https://docs.github.com/copilot",
+  },
+];
+
+function updateProviderSlots(
+  config: ProvidersConfig,
+  updater: (
+    slot: ProviderSlot,
+    value: ProvidersConfig[ProviderSlot]
+  ) => ProvidersConfig[ProviderSlot]
+): ProvidersConfig {
+  const next: ProvidersConfig = { ...config };
+  for (const slot of PROVIDER_SLOTS) {
+    next[slot] = updater(slot, config[slot]);
+  }
+  return next;
+}
+
+function selectedModelForProvider(
+  config: ProvidersConfig,
+  provider: ProviderSlot
+): ProvidersConfig["selected_model"] {
+  const modelId = config[provider].model?.trim();
+  return modelId ? { provider_id: provider, model_id: modelId } : null;
+}
+
+function providerMatchesSelected(
+  selectedModel: ProvidersConfig["selected_model"] | undefined | null,
+  provider: ProviderSlot
+) {
+  const selectedProvider = selectedModel?.provider_id?.trim();
+  if (!selectedProvider) return false;
+  return (
+    selectedProvider === provider ||
+    (provider === "opencode_zen" && selectedProvider === "opencode")
+  );
+}
+
 const FALLBACK_IDENTITY_PRESETS: IdentityPreset[] = [
   { id: "balanced", label: "Balanced" },
   { id: "concise", label: "Concise" },
@@ -125,7 +286,9 @@ export function Settings({
   onInitialSectionConsumed,
 }: SettingsProps) {
   const { t } = useTranslation(["common", "settings"]);
-  const [activeTab, setActiveTab] = useState<"settings" | "connections" | "logs">("settings");
+  const [activeTab, setActiveTab] = useState<"settings" | "providers" | "connections" | "logs">(
+    "settings"
+  );
   const {
     status: updateStatus,
     updateInfo,
@@ -263,6 +426,7 @@ export function Settings({
   useEffect(() => {
     if (!initialSection) return;
 
+    if (initialSection === "providers") setActiveTab("providers");
     if (initialSection === "projects") setProjectsExpanded(true);
 
     const target = (() => {
@@ -591,56 +755,25 @@ export function Settings({
     }
   };
 
-  type ProviderSlot = keyof Omit<ProvidersConfig, "custom" | "selected_model">;
-
   const handleProviderChange = async (provider: ProviderSlot, enabled: boolean) => {
     if (!providers) return;
 
-    // When enabling a provider, disable all others
     const updated = enabled
-      ? {
-          openrouter: {
-            ...providers.openrouter,
-            enabled: provider === "openrouter",
-            default: provider === "openrouter",
-          },
-          opencode_zen: {
-            ...providers.opencode_zen,
-            enabled: provider === "opencode_zen",
-            default: provider === "opencode_zen",
-          },
-          anthropic: {
-            ...providers.anthropic,
-            enabled: provider === "anthropic",
-            default: provider === "anthropic",
-          },
-          openai: {
-            ...providers.openai,
-            enabled: provider === "openai",
-            default: provider === "openai",
-          },
-          llama_cpp: {
-            ...providers.llama_cpp,
-            enabled: provider === "llama_cpp",
-            default: provider === "llama_cpp",
-          },
-          ollama: {
-            ...providers.ollama,
-            enabled: provider === "ollama",
-            default: provider === "ollama",
-          },
-          poe: {
-            ...providers.poe,
-            enabled: provider === "poe",
-            default: provider === "poe",
-          },
-          custom: providers.custom,
-          selected_model: providers.selected_model ?? null,
-        }
+      ? updateProviderSlots(providers, (slot, value) => ({
+          ...value,
+          enabled: slot === provider,
+          default: slot === provider,
+        }))
       : {
           ...providers,
           [provider]: { ...providers[provider], enabled: false, default: false },
         };
+
+    updated.selected_model = enabled
+      ? selectedModelForProvider(updated, provider)
+      : providerMatchesSelected(providers.selected_model, provider)
+        ? null
+        : (providers.selected_model ?? null);
 
     setProviders(updated);
     await setProvidersConfig(updated);
@@ -650,18 +783,11 @@ export function Settings({
   const handleSetDefault = async (provider: ProviderSlot) => {
     if (!providers) return;
 
-    // Reset all defaults and set the new one
-    const updated: ProvidersConfig = {
-      openrouter: { ...providers.openrouter, default: provider === "openrouter" },
-      opencode_zen: { ...providers.opencode_zen, default: provider === "opencode_zen" },
-      anthropic: { ...providers.anthropic, default: provider === "anthropic" },
-      openai: { ...providers.openai, default: provider === "openai" },
-      llama_cpp: { ...providers.llama_cpp, default: provider === "llama_cpp" },
-      ollama: { ...providers.ollama, default: provider === "ollama" },
-      poe: { ...providers.poe, default: provider === "poe" },
-      custom: providers.custom,
-      selected_model: providers.selected_model ?? null,
-    };
+    const updated = updateProviderSlots(providers, (slot, value) => ({
+      ...value,
+      default: slot === provider,
+    }));
+    updated.selected_model = selectedModelForProvider(updated, provider);
     setProviders(updated);
     await setProvidersConfig(updated);
     onProviderChange?.();
@@ -674,6 +800,13 @@ export function Settings({
       ...providers,
       [provider]: { ...providers[provider], model },
     };
+    if (
+      providers[provider].default ||
+      providerMatchesSelected(providers.selected_model, provider) ||
+      !providers.selected_model
+    ) {
+      updated.selected_model = selectedModelForProvider(updated, provider);
+    }
     setProviders(updated);
     await setProvidersConfig(updated);
     onProviderChange?.();
@@ -815,15 +948,12 @@ export function Settings({
         ? { provider_id: "custom", model_id: normalizedModel }
         : (providers.selected_model ?? null);
 
-    // When enabling custom provider, disable all others
     const updated: ProvidersConfig = {
-      openrouter: { ...providers.openrouter, enabled: false, default: false },
-      opencode_zen: { ...providers.opencode_zen, enabled: false, default: false },
-      anthropic: { ...providers.anthropic, enabled: false, default: false },
-      openai: { ...providers.openai, enabled: false, default: false },
-      llama_cpp: { ...providers.llama_cpp, enabled: false, default: false },
-      ollama: { ...providers.ollama, enabled: false, default: false },
-      poe: { ...providers.poe, enabled: false, default: false },
+      ...updateProviderSlots(providers, (_slot, value) => ({
+        ...value,
+        enabled: false,
+        default: false,
+      })),
       custom: [
         {
           enabled: customEnabled,
@@ -864,15 +994,12 @@ export function Settings({
 
     if (enabled && providers) {
       const normalizedModel = customModel.trim();
-      // When enabling custom provider, disable all others
       const updated: ProvidersConfig = {
-        openrouter: { ...providers.openrouter, enabled: false, default: false },
-        opencode_zen: { ...providers.opencode_zen, enabled: false, default: false },
-        anthropic: { ...providers.anthropic, enabled: false, default: false },
-        openai: { ...providers.openai, enabled: false, default: false },
-        llama_cpp: { ...providers.llama_cpp, enabled: false, default: false },
-        ollama: { ...providers.ollama, enabled: false, default: false },
-        poe: { ...providers.poe, enabled: false, default: false },
+        ...updateProviderSlots(providers, (_slot, value) => ({
+          ...value,
+          enabled: false,
+          default: false,
+        })),
         custom: [
           {
             enabled: true,
@@ -1019,7 +1146,7 @@ export function Settings({
         transition={{ duration: 0.3 }}
       >
         <div className="mx-auto max-w-2xl space-y-8">
-          <div className="flex items-center justify-between">
+          <div className="settings-shell-keep flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
                 <SettingsIcon className="h-6 w-6 text-primary" />
@@ -1044,6 +1171,14 @@ export function Settings({
             >
               <SettingsIcon className="h-4 w-4" />
               {t("title", { ns: "settings" })}
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("providers")}
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+            >
+              <Cpu className="h-4 w-4" />
+              {t("sections.providers", { ns: "settings" })}
             </button>
             <button
               type="button"
@@ -1080,7 +1215,7 @@ export function Settings({
         transition={{ duration: 0.3 }}
       >
         <div className="mx-auto max-w-2xl space-y-8">
-          <div className="flex items-center justify-between">
+          <div className="settings-shell-keep flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
                 <SettingsIcon className="h-6 w-6 text-primary" />
@@ -1105,6 +1240,14 @@ export function Settings({
             >
               <SettingsIcon className="h-4 w-4" />
               {t("title", { ns: "settings" })}
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("providers")}
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+            >
+              <Cpu className="h-4 w-4" />
+              {t("sections.providers", { ns: "settings" })}
             </button>
             <button
               type="button"
@@ -1137,9 +1280,15 @@ export function Settings({
       animate={{ opacity: 1 }}
       transition={{ duration: 0.3 }}
     >
-      <div className="mx-auto max-w-2xl space-y-8">
+      <div
+        className={`mx-auto max-w-2xl space-y-8 ${
+          activeTab === "providers"
+            ? "[&>*:not(.settings-shell-keep):not(.providers-settings-section)]:hidden"
+            : ""
+        }`}
+      >
         {/* Header */}
-        <div className="flex items-center justify-between">
+        <div className="settings-shell-keep flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
               <SettingsIcon className="h-6 w-6 text-primary" />
@@ -1156,14 +1305,30 @@ export function Settings({
           )}
         </div>
 
-        <div className="flex items-center gap-2 rounded-lg border border-border bg-surface-elevated/40 p-1">
+        <div className="settings-shell-keep flex items-center gap-2 rounded-lg border border-border bg-surface-elevated/40 p-1">
           <button
             type="button"
             onClick={() => setActiveTab("settings")}
-            className="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-primary/15 px-3 py-2 text-sm font-medium text-text transition-colors"
+            className={`inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+              activeTab === "settings"
+                ? "bg-primary/15 text-text"
+                : "text-text-muted hover:bg-surface-elevated hover:text-text"
+            }`}
           >
             <SettingsIcon className="h-4 w-4" />
             {t("title", { ns: "settings" })}
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("providers")}
+            className={`inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+              activeTab === "providers"
+                ? "bg-primary/15 text-text"
+                : "text-text-muted hover:bg-surface-elevated hover:text-text"
+            }`}
+          >
+            <Cpu className="h-4 w-4" />
+            {t("sections.providers", { ns: "settings" })}
           </button>
           <button
             type="button"
@@ -1807,7 +1972,11 @@ export function Settings({
 
         {/* LLM Providers Section */}
         <div ref={providersSectionRef} />
-        <div className="space-y-4">
+        <div
+          className={`providers-settings-section space-y-4 ${
+            activeTab === "settings" ? "hidden" : ""
+          }`}
+        >
           <div className="flex items-center gap-3">
             <Cpu className="h-5 w-5 text-primary" />
             <div>
@@ -1822,131 +1991,32 @@ export function Settings({
 
           {providers && (
             <div className="space-y-4">
-              <ProviderCard
-                id="opencode_zen"
-                name="Opencode Zen"
-                description={t("providersCatalog.opencode_zen.description", { ns: "settings" })}
-                endpoint={providers.opencode_zen.endpoint}
-                defaultEndpoint="https://opencode.ai/zen/v1"
-                model={providers.opencode_zen.model}
-                catalogModelIds={providerCatalogModels.opencode_zen ?? []}
-                isDefault={providers.opencode_zen.default}
-                enabled={providers.opencode_zen.enabled}
-                onEnabledChange={(enabled) => handleProviderChange("opencode_zen", enabled)}
-                onModelChange={(model) => handleModelChange("opencode_zen", model)}
-                onEndpointChange={(endpoint) => handleEndpointChange("opencode_zen", endpoint)}
-                onSetDefault={() => handleSetDefault("opencode_zen")}
-                onKeyChange={onProviderChange}
-                docsUrl="https://opencode.ai/auth"
-              />
-
-              <ProviderCard
-                id="openrouter"
-                name="OpenRouter"
-                description={t("providersCatalog.openrouter.description", { ns: "settings" })}
-                endpoint={providers.openrouter.endpoint}
-                defaultEndpoint="https://openrouter.ai/api/v1"
-                model={providers.openrouter.model}
-                catalogModelIds={providerCatalogModels.openrouter ?? []}
-                isDefault={providers.openrouter.default}
-                enabled={providers.openrouter.enabled}
-                onEnabledChange={(enabled) => handleProviderChange("openrouter", enabled)}
-                onModelChange={(model) => handleModelChange("openrouter", model)}
-                onEndpointChange={(endpoint) => handleEndpointChange("openrouter", endpoint)}
-                onSetDefault={() => handleSetDefault("openrouter")}
-                onKeyChange={onProviderChange}
-                docsUrl="https://openrouter.ai/keys"
-              />
-
-              <ProviderCard
-                id="anthropic"
-                name="Anthropic"
-                description={t("providersCatalog.anthropic.description", { ns: "settings" })}
-                endpoint={providers.anthropic.endpoint}
-                defaultEndpoint="https://api.anthropic.com"
-                model={providers.anthropic.model}
-                catalogModelIds={providerCatalogModels.anthropic ?? []}
-                isDefault={providers.anthropic.default}
-                enabled={providers.anthropic.enabled}
-                onEnabledChange={(enabled) => handleProviderChange("anthropic", enabled)}
-                onModelChange={(model) => handleModelChange("anthropic", model)}
-                onEndpointChange={(endpoint) => handleEndpointChange("anthropic", endpoint)}
-                onSetDefault={() => handleSetDefault("anthropic")}
-                onKeyChange={onProviderChange}
-                docsUrl="https://console.anthropic.com/settings/keys"
-              />
-
-              <ProviderCard
-                id="openai"
-                name="OpenAI"
-                description={t("providersCatalog.openai.description", { ns: "settings" })}
-                endpoint={providers.openai.endpoint}
-                defaultEndpoint="https://api.openai.com/v1"
-                model={providers.openai.model}
-                catalogModelIds={providerCatalogModels.openai ?? []}
-                isDefault={providers.openai.default}
-                enabled={providers.openai.enabled}
-                onEnabledChange={(enabled) => handleProviderChange("openai", enabled)}
-                onModelChange={(model) => handleModelChange("openai", model)}
-                onEndpointChange={(endpoint) => handleEndpointChange("openai", endpoint)}
-                onSetDefault={() => handleSetDefault("openai")}
-                onKeyChange={onProviderChange}
-                docsUrl="https://platform.openai.com/api-keys"
-              />
-
-              <ProviderCard
-                id="llama_cpp"
-                name="llama.cpp"
-                description={t("providersCatalog.llama_cpp.description", { ns: "settings" })}
-                endpoint={providers.llama_cpp.endpoint}
-                defaultEndpoint="http://127.0.0.1:8080/v1"
-                model={providers.llama_cpp.model}
-                catalogModelIds={providerCatalogModels.llama_cpp ?? []}
-                isDefault={providers.llama_cpp.default}
-                enabled={providers.llama_cpp.enabled}
-                onEnabledChange={(enabled) => handleProviderChange("llama_cpp", enabled)}
-                onModelChange={(model) => handleModelChange("llama_cpp", model)}
-                onEndpointChange={(endpoint) => handleEndpointChange("llama_cpp", endpoint)}
-                onSetDefault={() => handleSetDefault("llama_cpp")}
-                onKeyChange={onProviderChange}
-                docsUrl="https://github.com/ggml-org/llama.cpp"
-              />
-
-              <ProviderCard
-                id="ollama"
-                name="Ollama"
-                description={t("providersCatalog.ollama.description", { ns: "settings" })}
-                endpoint={providers.ollama.endpoint}
-                defaultEndpoint="http://localhost:11434"
-                model={providers.ollama.model}
-                catalogModelIds={providerCatalogModels.ollama ?? []}
-                isDefault={providers.ollama.default}
-                enabled={providers.ollama.enabled}
-                onEnabledChange={(enabled) => handleProviderChange("ollama", enabled)}
-                onModelChange={(model) => handleModelChange("ollama", model)}
-                onEndpointChange={(endpoint) => handleEndpointChange("ollama", endpoint)}
-                onSetDefault={() => handleSetDefault("ollama")}
-                onKeyChange={onProviderChange}
-                docsUrl="https://ollama.ai"
-              />
-
-              <ProviderCard
-                id="poe"
-                name="Poe"
-                description={t("providersCatalog.poe.description", { ns: "settings" })}
-                endpoint={providers.poe.endpoint}
-                defaultEndpoint="https://api.poe.com/v1"
-                model={providers.poe.model}
-                catalogModelIds={providerCatalogModels.poe ?? []}
-                isDefault={providers.poe.default}
-                enabled={providers.poe.enabled}
-                onEnabledChange={(enabled) => handleProviderChange("poe", enabled)}
-                onModelChange={(model) => handleModelChange("poe", model)}
-                onEndpointChange={(endpoint) => handleEndpointChange("poe", endpoint)}
-                onSetDefault={() => handleSetDefault("poe")}
-                onKeyChange={onProviderChange}
-                docsUrl="https://poe.com/api"
-              />
+              {PROVIDER_CARD_DEFINITIONS.map((definition) => {
+                const provider = providers[definition.slot];
+                return (
+                  <ProviderCard
+                    key={definition.slot}
+                    id={definition.slot}
+                    name={definition.name}
+                    description={t(`providersCatalog.${definition.slot}.description`, {
+                      ns: "settings",
+                    })}
+                    endpoint={provider.endpoint}
+                    defaultEndpoint={definition.defaultEndpoint}
+                    model={provider.model}
+                    catalogModelIds={providerCatalogModels[definition.slot] ?? []}
+                    isDefault={provider.default}
+                    enabled={provider.enabled}
+                    onEnabledChange={(enabled) => handleProviderChange(definition.slot, enabled)}
+                    onModelChange={(model) => handleModelChange(definition.slot, model)}
+                    onEndpointChange={(endpoint) => handleEndpointChange(definition.slot, endpoint)}
+                    onSetDefault={() => handleSetDefault(definition.slot)}
+                    onKeyChange={onProviderChange}
+                    docsUrl={definition.docsUrl}
+                    supportsOAuth={definition.supportsOAuth}
+                  />
+                );
+              })}
 
               {searchSettingsState && (
                 <Card>
