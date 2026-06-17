@@ -9,13 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Added a dedicated desktop Settings > Providers tab and a left-rail Providers
-  shortcut so LLM provider setup is no longer buried among general settings.
-  The provider panel now includes Codex account sign-in/import controls,
-  reconnect/disconnect actions, default-model selection, and expanded built-in
-  provider coverage for OpenAI Codex, Groq, Mistral, Together, Cohere, Azure,
-  Bedrock, Vertex, GitHub Copilot-compatible, and existing local/OpenRouter
-  providers.
+- Added a dedicated desktop Settings > Providers tab so LLM provider setup is
+  no longer buried among general settings. The provider panel now includes
+  Codex account sign-in/import controls, reconnect/disconnect actions,
+  default-model selection, and expanded built-in provider coverage for OpenAI
+  Codex, Groq, Mistral, Together, Cohere, Azure, Bedrock, Vertex, GitHub
+  Copilot-compatible, and existing local/OpenRouter providers.
+
+- Added EU AI Act operational evidence surfaces: deployment-scope tracking,
+  Article 50 transparency badges/labels, hash-chained audit ledgers, SIEM
+  export guidance, protected-action/approval completeness checks, and
+  provenance-preserving export labels for generated artifacts.
+
+- Added repo-intelligence and workflow/context graph capabilities, including
+  manifest and fact extraction, persistent store/query APIs, context-bundle and
+  failure-causality queries, GraphRAG retrieval improvements, quality
+  regressions, metrics/debug export, and graph-backed planning/rerun/impact
+  analysis queries.
+
+- Added broader CI and runtime assurance coverage: full workspace tests through
+  `cargo-nextest`, an end-to-end `tandem-engine` smoke-test CLI, startup config
+  validation, structured HTTP error codes, persisted runtime observability
+  events, prompt-injection exfiltration/blast-radius evals, and expanded
+  workflow registry coverage.
 
 - Made the per-PR evaluation regression gate fail closed when `eval-runner`
   cannot build or execute (TAN-219). The `critical_path`,
@@ -146,12 +162,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Desktop provider selection now persists an explicit selected model when a
-  provider is enabled or made default, and chat session creation falls back to
-  the enabled/default provider slot when no selected model has been stored.
-- The desktop launcher now passes the managed global provider config path to
-  the engine with `--config`, avoiding split-brain behavior between the desktop
-  provider UI and the sidecar engine's provider registry.
+- Desktop provider selection now persists an explicit selected model only when
+  the provider is authenticated or local/keyless, and chat session creation
+  falls back to the enabled/default provider slot when no selected model has
+  been stored.
+- The engine now honors the managed `OPENCODE_CONFIG` path supplied by the
+  desktop launcher, avoiding split-brain behavior between the desktop provider
+  UI and the sidecar engine's provider registry.
 - Development builds reduce Rust debug-info output at the workspace root to
   keep local Tauri/engine builds from exhausting disk space.
 
@@ -194,6 +211,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to avoid `Access is denied` failures from transient filesystem interference.
 
 ### Security
+
+- Tightened enterprise/runtime hardening with tandem-server panic-surface
+  guards, async runtime hygiene checks, tandem-tools path sandbox regression
+  tests, governed strict memory-read enforcement, actor-bound memory subjects,
+  provider ACL sync classification, public-demo channel security gates, and
+  explicit connector OAuth/control-plane ownership decisions.
 
 - Hardened hosted/enterprise tenant-context assertions: signed Ed25519 JWS
   assertions now enforce key metadata (purpose, status, lifetime, audience,
