@@ -2,22 +2,23 @@
 
 This is the canonical release-notes file used by release tooling.
 
-## v0.5.14 (Unreleased)
+## v0.6.0 (Unreleased)
 
-Tandem 0.5.14 is a security- and assurance-focused release that lays the
+Tandem 0.6.0 is a security- and assurance-focused release that lays the
 foundation for cross-tenant data governance, governed runtime decisions, and
 goal-driven capability composition. It adds eval-backed, CI-enforced proof that
 tenant boundaries hold at runtime, tenant-scopes approval/audit/provider paths,
 hardens MCP and memory egress, and gives operators better ACA cockpit and
-feedback surfaces. The later 0.5.14 hardening work also adds an Action
+feedback surfaces. The later 0.6.0 hardening work also adds an Action
 Firewall eval suite, explicit memory ciphertext-at-rest modes, tenant-scoped
-protected audit evidence, context-budget/provenance guardrails, and the first
-meta-harness evaluation models for scoring workflow candidates.
+protected audit evidence, context-budget/provenance guardrails, EU AI Act
+export evidence, repo-intelligence graph queries, runtime observability, and
+the first meta-harness evaluation models for scoring workflow candidates.
 
 ### Desktop Provider Setup
 
-- Desktop settings now has a dedicated Providers tab, plus a left-rail shortcut,
-  so LLM provider setup is no longer buried in the general Settings page.
+- Desktop settings now has a dedicated Providers tab, so LLM provider setup is
+  no longer buried in the general Settings page.
 - OpenAI Codex account auth is available from the desktop provider panel. Users
   can sign in through the browser, import an existing local Codex session,
   reconnect, or disconnect the stored Codex OAuth session.
@@ -25,13 +26,14 @@ meta-harness evaluation models for scoring workflow candidates.
   Anthropic, OpenAI, Groq, Mistral, Together, Cohere, llama.cpp, Ollama, Poe,
   Azure OpenAI-compatible, Amazon Bedrock-compatible, Vertex-compatible, and
   GitHub Copilot-compatible providers.
-- Provider/model selection is more robust: enabling or defaulting a provider
-  persists the selected model, and chat session creation falls back to the
-  enabled/default provider slot when the model picker has not populated an
-  explicit value yet.
-- The desktop launcher now passes the managed global provider config path to
-  the engine with `--config`, keeping the provider UI and sidecar registry in
-  sync during local Tauri development and packaged desktop runs.
+- Provider/model selection is more robust: authenticated or local/keyless
+  providers can persist the selected model, while unauthenticated hosted
+  provider toggles no longer masquerade as configured chat models. Chat session
+  creation also falls back to the enabled/default provider slot when the model
+  picker has not populated an explicit value yet.
+- The engine now honors the managed `OPENCODE_CONFIG` path supplied by the
+  desktop launcher, keeping the provider UI and sidecar registry in sync during
+  local Tauri development and packaged desktop runs.
 - Session creation persistence errors now return structured details instead of
   a bare `500 Internal Server Error`. Windows temp-file sync/replace handling
   retries transient `Access is denied` failures that can happen while saving the
@@ -63,6 +65,50 @@ meta-harness evaluation models for scoring workflow candidates.
   runner was broken. The gate now builds `eval-runner` as a required step, runs
   each dataset through the binary directly, and reports missing results in the
   PR comment instead of fabricating pass rates.
+- Full workspace test coverage now runs through `cargo-nextest`, and an
+  end-to-end `tandem-engine` smoke-test CLI gives release validation a direct
+  runtime path rather than only unit-level proof.
+- The meta-harness work now includes prompt-injection exfiltration and
+  blast-radius evaluation coverage, expanding the release's regression suite
+  beyond workflow scoring into adversarial context handling.
+
+### Compliance Evidence And Exports
+
+- EU AI Act readiness now includes deployment-scope tracking, Article 50
+  transparency badges/labels, hash-chained audit ledgers, SIEM export guidance,
+  and generated-artifact provenance preservation across exports.
+- Protected-action and approval evidence now records completeness checks, so
+  operators can distinguish complete, incomplete, and unsupported evidence
+  packages when auditing governed runtime decisions.
+- Exported artifacts preserve generation provenance and Article 50 labels,
+  keeping downstream compliance packages tied to the run and policy evidence
+  that produced them.
+
+### Runtime Diagnostics And Release Safety
+
+- Startup config validation catches invalid or surprising runtime configuration
+  before the engine proceeds, reducing silent misconfiguration during desktop,
+  local, and hosted launches.
+- Runtime observability events are persisted, giving operators and debugging
+  tools durable lifecycle evidence rather than relying only on transient logs.
+- Structured HTTP error codes make API failures easier to classify and recover
+  from, including provider/session setup paths that previously collapsed into
+  generic server errors.
+- Tandem-server panic-surface guards, async runtime hygiene checks, and
+  tandem-tools path sandbox regression tests reduce release risk around server
+  crashes, blocking runtime mistakes, and filesystem escape regressions.
+
+### Repo Intelligence And Workflow Graphs
+
+- Repo intelligence now has manifest/fact extraction, persistent store/query
+  APIs, context bundle queries, exposed tools, quality regressions, metrics,
+  debug export, and GraphRAG retrieval improvements.
+- Workflow and run graph foundations now support context graph storage,
+  governed query envelopes, runtime planning queries, memory/rerun queries,
+  failure-causality analysis, workflow impact analysis, routing hints, and
+  benchmark reporting.
+- The graph and repo-intelligence crates are included in release automation so
+  these new diagnostics are built and validated with the shipped workspace.
 
 ### Cross-Tenant Data Governance
 
@@ -256,7 +302,7 @@ meta-harness evaluation models for scoring workflow candidates.
 
 ### Per-Role Sampling Parameters
 
-- The engine runtime and the `tandem-client` Python SDK (now `0.5.14`) accept
+- The engine runtime and the `tandem-client` Python SDK (now `0.6.0`) accept
   per-role sampling parameters — `temperature`, `top_p`, and `max_tokens`.
   Callers set a session-level default on `sessions.create(...)` and may override
   it per prompt on `prompt_async(...)`; the per-prompt value takes precedence
@@ -292,7 +338,7 @@ meta-harness evaluation models for scoring workflow candidates.
 - Added a source-verified Rust runtime security analysis covering command
   execution, HTTP API exposure, secrets/crypto, permission/governance defaults,
   and external integration risks. The report records source-location-backed
-  remediation findings that informed the 0.5.14 hardening work.
+  remediation findings that informed the 0.6.0 hardening work.
 
 ## v0.5.13 (2026-06-02)
 
