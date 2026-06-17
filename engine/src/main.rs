@@ -700,7 +700,7 @@ async fn main() -> anyhow::Result<()> {
                 hostname.clone()
             };
             state.set_server_base_url(format!("http://{internal_host}:{port}"));
-            let init_config_path = config.as_deref().map(PathBuf::from);
+            let init_config_path = resolve_config_override(config.as_deref());
             log_startup_paths(
                 &state_dir,
                 &addr,
@@ -1316,6 +1316,12 @@ fn parse_memory_import_tier(raw: &str) -> anyhow::Result<MemoryTier> {
         "global" => Ok(MemoryTier::Global),
         other => anyhow::bail!("unsupported memory tier `{other}`"),
     }
+}
+
+fn resolve_config_override(cli_config: Option<&str>) -> Option<PathBuf> {
+    cli_config
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("OPENCODE_CONFIG").map(PathBuf::from))
 }
 
 fn log_startup_paths(

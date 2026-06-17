@@ -887,6 +887,48 @@ async fn sync_provider_keys_runtime_auth(
     }
 }
 
+fn provider_oauth_client() -> Result<reqwest::Client> {
+    let token = tandem_core::load_or_create_engine_api_token().token;
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Ok(value) = reqwest::header::HeaderValue::from_str(&token) {
+        headers.insert("x-tandem-token", value);
+    }
+    reqwest::Client::builder()
+        .default_headers(headers)
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| TandemError::Sidecar(format!("Failed to create sidecar client: {error}")))
+}
+
+async fn provider_oauth_base_url(state: &AppState) -> Result<String> {
+    let port = state
+        .sidecar
+        .port()
+        .await
+        .ok_or_else(|| TandemError::Sidecar("Sidecar is not running".to_string()))?;
+    Ok(format!("http://127.0.0.1:{port}"))
+}
+
+async fn provider_oauth_json_response(
+    response: reqwest::Response,
+    context: &str,
+) -> Result<serde_json::Value> {
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if status.is_success() {
+        if body.trim().is_empty() {
+            return Ok(serde_json::json!({}));
+        }
+        return serde_json::from_str(&body).map_err(|error| {
+            TandemError::Sidecar(format!("{context}: invalid sidecar response: {error}"))
+        });
+    }
+    Err(TandemError::Sidecar(format!(
+        "{context}: {status} {}",
+        body.trim()
+    )))
+}
+
 /// Set the providers configuration
 #[tauri::command]
 pub async fn set_providers_config(
@@ -959,7 +1001,19 @@ pub async fn provider_oauth_authorize(
     state: State<'_, AppState>,
     provider_id: String,
 ) -> Result<serde_json::Value> {
-    state.sidecar.provider_oauth_authorize(&provider_id).await
+    let url = format!(
+        "{}/provider/{}/oauth/authorize",
+        provider_oauth_base_url(&state).await?,
+        provider_id
+    );
+    let response = provider_oauth_client()?
+        .post(url)
+        .send()
+        .await
+        .map_err(|error| {
+            TandemError::Sidecar(format!("Failed to start provider OAuth: {error}"))
+        })?;
+    provider_oauth_json_response(response, "Failed to start provider OAuth").await
 }
 
 #[tauri::command]
@@ -968,10 +1022,19 @@ pub async fn provider_oauth_status(
     provider_id: String,
     session_id: Option<String>,
 ) -> Result<serde_json::Value> {
-    state
-        .sidecar
-        .provider_oauth_status(&provider_id, session_id.as_deref())
-        .await
+    let url = format!(
+        "{}/provider/{}/oauth/status",
+        provider_oauth_base_url(&state).await?,
+        provider_id
+    );
+    let mut request = provider_oauth_client()?.get(url);
+    if let Some(session_id) = session_id.filter(|value| !value.trim().is_empty()) {
+        request = request.query(&[("session_id", session_id)]);
+    }
+    let response = request.send().await.map_err(|error| {
+        TandemError::Sidecar(format!("Failed to fetch provider OAuth status: {error}"))
+    })?;
+    provider_oauth_json_response(response, "Failed to fetch provider OAuth status").await
 }
 
 #[tauri::command]
@@ -979,10 +1042,21 @@ pub async fn provider_oauth_import_local(
     state: State<'_, AppState>,
     provider_id: String,
 ) -> Result<serde_json::Value> {
-    state
-        .sidecar
-        .provider_oauth_import_local(&provider_id)
+    let url = format!(
+        "{}/provider/{}/oauth/session/local",
+        provider_oauth_base_url(&state).await?,
+        provider_id
+    );
+    let response = provider_oauth_client()?
+        .post(url)
+        .send()
         .await
+        .map_err(|error| {
+            TandemError::Sidecar(format!(
+                "Failed to import local provider OAuth session: {error}"
+            ))
+        })?;
+    provider_oauth_json_response(response, "Failed to import local provider OAuth session").await
 }
 
 #[tauri::command]
@@ -991,11 +1065,26 @@ pub async fn delete_provider_oauth_session(
     state: State<'_, AppState>,
     provider_id: String,
 ) -> Result<()> {
-    match state
-        .sidecar
-        .delete_provider_oauth_session(&provider_id)
-        .await
-    {
+    let url = format!(
+        "{}/provider/{}/oauth/session",
+        provider_oauth_base_url(&state).await?,
+        provider_id
+    );
+    let delete_result = async {
+        let response = provider_oauth_client()?
+            .delete(url)
+            .send()
+            .await
+            .map_err(|error| {
+                TandemError::Sidecar(format!("Failed to delete provider OAuth session: {error}"))
+            })?;
+        provider_oauth_json_response(response, "Failed to delete provider OAuth session")
+            .await
+            .map(|_| ())
+    }
+    .await;
+
+    match delete_result {
         Ok(()) => Ok(()),
         Err(error) if provider_id == "openai-codex" || provider_id == "openai_codex" => {
             tracing::warn!(

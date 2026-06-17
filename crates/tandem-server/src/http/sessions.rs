@@ -264,11 +264,7 @@ pub(super) async fn create_session(
         .save_session(session.clone())
         .await
         .map_err(|error| {
-            tracing::error!(
-                error = %error,
-                session_id = %session.id,
-                "failed to save created session"
-            );
+            tracing::error!(error = %error, session_id = %session.id, "failed to save created session");
             persistence_error(format!("Failed to save session: {error}"))
         })?;
     apply_session_permission_rules(&state, requested_permission_rules).await;

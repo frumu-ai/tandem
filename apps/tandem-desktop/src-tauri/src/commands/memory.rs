@@ -577,11 +577,20 @@ fn sidecar_permissions_for_mode(
 
 fn env_var_for_key(key_type: &ApiKeyType) -> Option<&'static str> {
     match key_type {
+        ApiKeyType::OpenAICodex => Some("OPENAI_CODEX_API_KEY"),
         ApiKeyType::OpenRouter => Some("OPENROUTER_API_KEY"),
         ApiKeyType::OpenCodeZen => Some("OPENCODE_ZEN_API_KEY"),
         ApiKeyType::Anthropic => Some("ANTHROPIC_API_KEY"),
         ApiKeyType::OpenAI => Some("OPENAI_API_KEY"),
         ApiKeyType::Poe => Some("POE_API_KEY"),
+        ApiKeyType::Groq => Some("GROQ_API_KEY"),
+        ApiKeyType::Mistral => Some("MISTRAL_API_KEY"),
+        ApiKeyType::Together => Some("TOGETHER_API_KEY"),
+        ApiKeyType::Cohere => Some("COHERE_API_KEY"),
+        ApiKeyType::Azure => Some("AZURE_OPENAI_API_KEY"),
+        ApiKeyType::Bedrock => Some("BEDROCK_API_KEY"),
+        ApiKeyType::Vertex => Some("VERTEX_API_KEY"),
+        ApiKeyType::Copilot => Some("GITHUB_TOKEN"),
         ApiKeyType::BraveSearch => Some("TANDEM_BRAVE_SEARCH_API_KEY"),
         ApiKeyType::ExaSearch => Some("TANDEM_EXA_API_KEY"),
         ApiKeyType::Custom(_) => None,

@@ -62,8 +62,6 @@ import {
   type VaultStatus,
   type UserProject,
   type FileEntry,
-  type ProviderConfig,
-  type ProvidersConfig,
 } from "@/lib/tauri";
 import { type FileAttachment } from "@/components/chat/ChatInput";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -84,64 +82,10 @@ import {
   Bot,
   Blocks,
   Loader2,
-  KeyRound,
 } from "lucide-react";
 const RELEASES_BASE_URL = "https://github.com/frumu-ai/tandem/releases";
 
 const WHATS_NEW_SEEN_KEY = "tandem_whats_new_seen_version";
-
-const BUILT_IN_PROVIDER_IDS = [
-  "opencode_zen",
-  "openai-codex",
-  "openrouter",
-  "anthropic",
-  "openai",
-  "groq",
-  "mistral",
-  "together",
-  "cohere",
-  "llama_cpp",
-  "ollama",
-  "poe",
-  "azure",
-  "bedrock",
-  "vertex",
-  "copilot",
-] as const;
-
-type BuiltInProviderId = (typeof BUILT_IN_PROVIDER_IDS)[number];
-
-const PROVIDER_LABELS: Record<BuiltInProviderId | "custom", string> = {
-  opencode_zen: "Opencode Zen",
-  "openai-codex": "OpenAI Codex",
-  openrouter: "OpenRouter",
-  anthropic: "Anthropic",
-  openai: "OpenAI",
-  groq: "Groq",
-  mistral: "Mistral",
-  together: "Together AI",
-  cohere: "Cohere",
-  llama_cpp: "llama.cpp",
-  ollama: "Ollama",
-  poe: "Poe",
-  azure: "Azure OpenAI",
-  bedrock: "Amazon Bedrock",
-  vertex: "Google Vertex AI",
-  copilot: "GitHub Copilot",
-  custom: "Custom",
-};
-
-const getBuiltInProviderConfig = (
-  config: ProvidersConfig,
-  providerId: BuiltInProviderId
-): ProviderConfig => config[providerId];
-
-const providerAuthReady = (providerId: BuiltInProviderId, provider: ProviderConfig) =>
-  provider.enabled &&
-  (provider.has_key ||
-    providerId === "opencode_zen" ||
-    providerId === "llama_cpp" ||
-    providerId === "ollama");
 
 function normalizeVersionTag(version: string): string {
   const trimmed = version.trim();
@@ -649,9 +593,12 @@ function App() {
   // Check if any provider is fully configured (enabled + has key)
   const hasConfiguredProvider =
     !!state?.providers_config &&
-    (BUILT_IN_PROVIDER_IDS.some((providerId) =>
-      providerAuthReady(providerId, getBuiltInProviderConfig(state.providers_config, providerId))
-    ) ||
+    ((state.providers_config.openrouter?.enabled && state.providers_config.openrouter?.has_key) ||
+      (state.providers_config.anthropic?.enabled && state.providers_config.anthropic?.has_key) ||
+      (state.providers_config.openai?.enabled && state.providers_config.openai?.has_key) ||
+      state.providers_config.opencode_zen?.enabled ||
+      (state.providers_config.llama_cpp?.enabled && state.providers_config.llama_cpp?.has_key) ||
+      (state.providers_config.ollama?.enabled && state.providers_config.ollama?.has_key) ||
       // If the user explicitly selected a provider+model from the sidecar catalog, treat as configured.
       (!!state.providers_config.selected_model?.provider_id?.trim() &&
         !!state.providers_config.selected_model?.model_id?.trim()) ||
@@ -663,11 +610,23 @@ function App() {
     if (!config) return null;
 
     const labelForProviderId = (id: string) => {
-      const normalized = id === "opencode" ? "opencode_zen" : id === "llama.cpp" ? "llama_cpp" : id;
-      return (
-        PROVIDER_LABELS[normalized as BuiltInProviderId] ||
-        normalized.charAt(0).toUpperCase() + normalized.slice(1)
-      );
+      switch (id) {
+        case "openrouter":
+          return "OpenRouter";
+        case "opencode_zen":
+          return "Opencode Zen";
+        case "anthropic":
+          return "Anthropic";
+        case "openai":
+          return "OpenAI";
+        case "llama_cpp":
+        case "llama.cpp":
+          return "llama.cpp";
+        case "ollama":
+          return "Ollama";
+        default:
+          return id.charAt(0).toUpperCase() + id.slice(1);
+      }
     };
 
     // Prefer the explicitly selected model/provider (supports Tandem custom providers).
@@ -685,22 +644,16 @@ function App() {
 
     const enabledCustom = (config.custom ?? []).find((c) => c.enabled);
     const candidates = [
-      ...BUILT_IN_PROVIDER_IDS.map((providerId) => ({
-        id: providerId,
-        label: PROVIDER_LABELS[providerId],
-        config: getBuiltInProviderConfig(config, providerId),
-      })),
+      { id: "openrouter", label: "OpenRouter", config: config.openrouter },
+      { id: "opencode_zen", label: "Opencode Zen", config: config.opencode_zen },
+      { id: "anthropic", label: "Anthropic", config: config.anthropic },
+      { id: "openai", label: "OpenAI", config: config.openai },
+      { id: "llama_cpp", label: "llama.cpp", config: config.llama_cpp },
+      { id: "ollama", label: "Ollama", config: config.ollama },
       ...(enabledCustom ? [{ id: "custom", label: "Custom", config: enabledCustom }] : []),
     ];
 
-    const isReadyCandidate = (candidate: (typeof candidates)[number]) =>
-      candidate.id === "custom"
-        ? candidate.config.enabled
-        : providerAuthReady(candidate.id as BuiltInProviderId, candidate.config);
-
     const preferred =
-      candidates.find((c) => isReadyCandidate(c) && c.config.default) ||
-      candidates.find(isReadyCandidate) ||
       candidates.find((c) => c.config.enabled && c.config.default) ||
       candidates.find((c) => c.config.enabled);
 
@@ -1646,20 +1599,6 @@ function App() {
                 title={t("extensions.title", { ns: "common" })}
               >
                 <Blocks className="h-5 w-5" />
-              </button>
-              <button
-                onClick={() => {
-                  setSettingsInitialSection("providers");
-                  setView("settings");
-                }}
-                className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
-                  effectiveView === "settings" && settingsInitialSection === "providers"
-                    ? "bg-primary/20 text-primary"
-                    : "text-text-muted hover:bg-surface-elevated hover:text-text"
-                }`}
-                title={t("sections.providers", { ns: "settings" })}
-              >
-                <KeyRound className="h-5 w-5" />
               </button>
               <button
                 onClick={() => setView("settings")}
