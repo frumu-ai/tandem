@@ -207,6 +207,9 @@
     "opencode_zen": {
       "description": "可访问免费和高级模型，包含免费选项"
     },
+    "openai-codex": {
+      "description": "使用 ChatGPT 登录和 Codex 账户认证访问 Codex 模型"
+    },
     "openrouter": {
       "description": "一个 API 密钥即可访问 100+ 模型"
     },
@@ -224,6 +227,30 @@
     },
     "poe": {
       "description": "通过 Poe 的 API 访问模型"
+    },
+    "groq": {
+      "description": "面向 Llama 和开放模型的高速 OpenAI 兼容推理"
+    },
+    "mistral": {
+      "description": "直接访问 Mistral 模型"
+    },
+    "together": {
+      "description": "通过 OpenAI 兼容接口访问 Together 托管的开放模型"
+    },
+    "cohere": {
+      "description": "直接访问 Cohere Command 模型"
+    },
+    "azure": {
+      "description": "连接 Azure OpenAI 兼容部署"
+    },
+    "bedrock": {
+      "description": "连接 Amazon Bedrock 兼容端点"
+    },
+    "vertex": {
+      "description": "连接 Vertex 兼容的 Gemini 端点"
+    },
+    "copilot": {
+      "description": "连接 GitHub Copilot 兼容端点"
     }
   },
   "providerCard": {
@@ -249,6 +276,16 @@
       "noModelsInMemory": "当前内存中没有模型",
       "installedModels": "已安装模型：",
       "loadAndSelect": "加载到内存并选择"
+    },
+    "oauth": {
+      "title": "Codex 账户",
+      "description": "在浏览器中使用 ChatGPT/Codex 登录，或导入已有的本地 Codex 会话。",
+      "signIn": "使用 Codex 登录",
+      "importLocal": "导入本地会话",
+      "reconnect": "重新连接",
+      "disconnect": "断开连接",
+      "connected": "账户已连接",
+      "pending": "等待浏览器登录"
     },
     "errors": {
       "apiKeyRequired": "API 密钥是必填项",

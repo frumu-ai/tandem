@@ -14,11 +14,20 @@ use std::sync::RwLock;
 /// API key type identifiers for the encrypted keystore
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ApiKeyType {
+    OpenAICodex,
     OpenRouter,
     OpenCodeZen,
     Anthropic,
     OpenAI,
     Poe,
+    Groq,
+    Mistral,
+    Together,
+    Cohere,
+    Azure,
+    Bedrock,
+    Vertex,
+    Copilot,
     BraveSearch,
     ExaSearch,
     Custom(String),
@@ -27,11 +36,20 @@ pub enum ApiKeyType {
 impl ApiKeyType {
     pub fn to_key_name(&self) -> String {
         match self {
+            ApiKeyType::OpenAICodex => "openai_codex_key".to_string(),
             ApiKeyType::OpenRouter => "openrouter_key".to_string(),
             ApiKeyType::OpenCodeZen => "opencode_zen_api_key".to_string(),
             ApiKeyType::Anthropic => "anthropic_key".to_string(),
             ApiKeyType::OpenAI => "openai_key".to_string(),
             ApiKeyType::Poe => "poe_api_key".to_string(),
+            ApiKeyType::Groq => "groq_key".to_string(),
+            ApiKeyType::Mistral => "mistral_key".to_string(),
+            ApiKeyType::Together => "together_key".to_string(),
+            ApiKeyType::Cohere => "cohere_key".to_string(),
+            ApiKeyType::Azure => "azure_key".to_string(),
+            ApiKeyType::Bedrock => "bedrock_key".to_string(),
+            ApiKeyType::Vertex => "vertex_key".to_string(),
+            ApiKeyType::Copilot => "copilot_key".to_string(),
             ApiKeyType::BraveSearch => "brave_search_api_key".to_string(),
             ApiKeyType::ExaSearch => "exa_search_api_key".to_string(),
             ApiKeyType::Custom(name) => format!("custom_{}", name),
@@ -40,11 +58,20 @@ impl ApiKeyType {
 
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
+            "openai-codex" | "openai_codex" => ApiKeyType::OpenAICodex,
             "openrouter" => ApiKeyType::OpenRouter,
             "opencode_zen" | "opencodezen" => ApiKeyType::OpenCodeZen,
             "anthropic" => ApiKeyType::Anthropic,
             "openai" => ApiKeyType::OpenAI,
             "poe" => ApiKeyType::Poe,
+            "groq" => ApiKeyType::Groq,
+            "mistral" => ApiKeyType::Mistral,
+            "together" => ApiKeyType::Together,
+            "cohere" => ApiKeyType::Cohere,
+            "azure" => ApiKeyType::Azure,
+            "bedrock" => ApiKeyType::Bedrock,
+            "vertex" => ApiKeyType::Vertex,
+            "copilot" => ApiKeyType::Copilot,
             "brave_search" | "bravesearch" => ApiKeyType::BraveSearch,
             "exa_search" | "exasearch" => ApiKeyType::ExaSearch,
             other => ApiKeyType::Custom(other.to_string()),
@@ -223,6 +250,10 @@ mod tests {
     #[test]
     fn test_api_key_type_conversion() {
         assert!(matches!(
+            ApiKeyType::from_str("openai-codex"),
+            ApiKeyType::OpenAICodex
+        ));
+        assert!(matches!(
             ApiKeyType::from_str("openrouter"),
             ApiKeyType::OpenRouter
         ));
@@ -240,6 +271,26 @@ mod tests {
         ));
         assert!(matches!(ApiKeyType::from_str("openai"), ApiKeyType::OpenAI));
         assert!(matches!(ApiKeyType::from_str("poe"), ApiKeyType::Poe));
+        assert!(matches!(ApiKeyType::from_str("groq"), ApiKeyType::Groq));
+        assert!(matches!(
+            ApiKeyType::from_str("mistral"),
+            ApiKeyType::Mistral
+        ));
+        assert!(matches!(
+            ApiKeyType::from_str("together"),
+            ApiKeyType::Together
+        ));
+        assert!(matches!(ApiKeyType::from_str("cohere"), ApiKeyType::Cohere));
+        assert!(matches!(ApiKeyType::from_str("azure"), ApiKeyType::Azure));
+        assert!(matches!(
+            ApiKeyType::from_str("bedrock"),
+            ApiKeyType::Bedrock
+        ));
+        assert!(matches!(ApiKeyType::from_str("vertex"), ApiKeyType::Vertex));
+        assert!(matches!(
+            ApiKeyType::from_str("copilot"),
+            ApiKeyType::Copilot
+        ));
         assert!(matches!(
             ApiKeyType::from_str("brave_search"),
             ApiKeyType::BraveSearch

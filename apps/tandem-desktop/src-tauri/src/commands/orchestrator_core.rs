@@ -190,12 +190,10 @@ fn orchestrator_permission_rules() -> Vec<crate::sidecar::PermissionRule> {
 }
 
 fn normalize_provider_id_for_sidecar(provider: Option<String>) -> Option<String> {
-    provider.map(|p| {
-        if p == "opencode_zen" {
-            "opencode".to_string()
-        } else {
-            p
-        }
+    provider.map(|p| match p.as_str() {
+        "opencode_zen" => "opencode".to_string(),
+        "openai_codex" => "openai-codex".to_string(),
+        _ => p,
     })
 }
 

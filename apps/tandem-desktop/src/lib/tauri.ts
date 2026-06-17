@@ -30,11 +30,20 @@ export interface SelectedModel {
 export interface ProvidersConfig {
   openrouter: ProviderConfig;
   opencode_zen: ProviderConfig;
+  "openai-codex": ProviderConfig;
   anthropic: ProviderConfig;
   openai: ProviderConfig;
   llama_cpp: ProviderConfig;
   ollama: ProviderConfig;
   poe: ProviderConfig;
+  groq: ProviderConfig;
+  mistral: ProviderConfig;
+  together: ProviderConfig;
+  cohere: ProviderConfig;
+  azure: ProviderConfig;
+  bedrock: ProviderConfig;
+  vertex: ProviderConfig;
+  copilot: ProviderConfig;
   custom: ProviderConfig[];
   selected_model?: SelectedModel | null;
 }
@@ -75,11 +84,20 @@ export type JsonObject = Record<string, unknown>;
 export type ApiKeyType =
   | "openrouter"
   | "opencode_zen"
+  | "openai-codex"
   | "anthropic"
   | "openai"
   | "llama_cpp"
   | "ollama"
   | "poe"
+  | "groq"
+  | "mistral"
+  | "together"
+  | "cohere"
+  | "azure"
+  | "bedrock"
+  | "vertex"
+  | "copilot"
   | string;
 
 // ============================================================================
@@ -792,6 +810,52 @@ export async function getProvidersConfig(): Promise<ProvidersConfig> {
 
 export async function setProvidersConfig(config: ProvidersConfig): Promise<void> {
   return invoke("set_providers_config", { config });
+}
+
+export interface ProviderOAuthAuthorizeResponse {
+  ok: boolean;
+  provider_id?: string;
+  session_id?: string;
+  authorizationUrl?: string;
+  expires_at_ms?: number;
+  error?: string;
+}
+
+export interface ProviderOAuthStatusResponse {
+  ok: boolean;
+  status?: string;
+  connected?: boolean;
+  session_id?: string;
+  email?: string | null;
+  display_name?: string | null;
+  managed_by?: string | null;
+  account_id?: string | null;
+  expires_at_ms?: number | null;
+  local_session_available?: boolean;
+  error?: string | null;
+}
+
+export async function providerOAuthAuthorize(
+  providerId: string
+): Promise<ProviderOAuthAuthorizeResponse> {
+  return invoke("provider_oauth_authorize", { providerId });
+}
+
+export async function providerOAuthStatus(
+  providerId: string,
+  sessionId?: string | null
+): Promise<ProviderOAuthStatusResponse> {
+  return invoke("provider_oauth_status", { providerId, sessionId });
+}
+
+export async function providerOAuthImportLocal(
+  providerId: string
+): Promise<ProviderOAuthStatusResponse> {
+  return invoke("provider_oauth_import_local", { providerId });
+}
+
+export async function deleteProviderOAuthSession(providerId: string): Promise<void> {
+  return invoke("delete_provider_oauth_session", { providerId });
 }
 
 // ============================================================================

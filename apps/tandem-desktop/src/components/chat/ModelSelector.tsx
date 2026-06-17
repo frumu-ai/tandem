@@ -80,6 +80,8 @@ export function ModelSelector({
         switch (id) {
           case "openai":
             return "OpenAI";
+          case "openai-codex":
+            return "OpenAI Codex";
           case "anthropic":
             return "Anthropic";
           case "openrouter":
@@ -93,6 +95,22 @@ export function ModelSelector({
             return "Ollama";
           case "poe":
             return "Poe";
+          case "groq":
+            return "Groq";
+          case "mistral":
+            return "Mistral";
+          case "together":
+            return "Together";
+          case "cohere":
+            return "Cohere";
+          case "azure":
+            return "Azure";
+          case "bedrock":
+            return "Bedrock";
+          case "vertex":
+            return "Vertex";
+          case "copilot":
+            return "GitHub Copilot";
           default:
             return id.charAt(0).toUpperCase() + id.slice(1);
         }
@@ -140,12 +158,21 @@ export function ModelSelector({
             // 2. Providers with keys configured come next (already filtered, but for ordering)
             const getConf = (pid: string) => {
               if (pid === "openai") return config.openai;
+              if (pid === "openai-codex") return config["openai-codex"];
               if (pid === "anthropic") return config.anthropic;
               if (pid === "openrouter") return config.openrouter;
               if (pid === "opencode_zen") return config.opencode_zen;
               if (pid === "llama_cpp" || pid === "llama.cpp") return config.llama_cpp;
               if (pid === "ollama") return config.ollama;
               if (pid === "poe") return config.poe;
+              if (pid === "groq") return config.groq;
+              if (pid === "mistral") return config.mistral;
+              if (pid === "together") return config.together;
+              if (pid === "cohere") return config.cohere;
+              if (pid === "azure") return config.azure;
+              if (pid === "bedrock") return config.bedrock;
+              if (pid === "vertex") return config.vertex;
+              if (pid === "copilot") return config.copilot;
               return undefined;
             };
 

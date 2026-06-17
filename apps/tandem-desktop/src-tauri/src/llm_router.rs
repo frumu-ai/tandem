@@ -471,8 +471,7 @@ mod tests {
                 model: None,
                 has_key: false,
             },
-            custom: vec![],
-            selected_model: None,
+            ..ProvidersConfig::default()
         }
     }
 

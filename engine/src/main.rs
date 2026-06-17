@@ -700,11 +700,16 @@ async fn main() -> anyhow::Result<()> {
                 hostname.clone()
             };
             state.set_server_base_url(format!("http://{internal_host}:{port}"));
-            log_startup_paths(&state_dir, &addr, &startup_attempt_id);
+            let init_config_path = resolve_config_override(config.as_deref());
+            log_startup_paths(
+                &state_dir,
+                &addr,
+                &startup_attempt_id,
+                init_config_path.as_deref(),
+            );
             let init_state = state.clone();
             let init_state_dir = state_dir.clone();
             let init_overrides = overrides.clone();
-            let init_config_path = config.map(PathBuf::from);
 
             tokio::spawn(async move {
                 if let Err(err) = initialize_runtime(
@@ -1313,10 +1318,23 @@ fn parse_memory_import_tier(raw: &str) -> anyhow::Result<MemoryTier> {
     }
 }
 
-fn log_startup_paths(state_dir: &Path, addr: &SocketAddr, startup_attempt_id: &str) {
+fn resolve_config_override(cli_config: Option<&str>) -> Option<PathBuf> {
+    cli_config
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("OPENCODE_CONFIG").map(PathBuf::from))
+}
+
+fn log_startup_paths(
+    state_dir: &Path,
+    addr: &SocketAddr,
+    startup_attempt_id: &str,
+    config_path: Option<&Path>,
+) {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("<unknown>"));
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("<unknown>"));
-    let config_path = state_dir.join("config.json");
+    let config_path = config_path
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state_dir.join("config.json"));
     info!("starting tandem-engine on http://{addr}");
     info!(
         "startup paths: attempt_id={} exe={} cwd={} state_dir={} config_path={}",

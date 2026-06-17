@@ -14,6 +14,29 @@ Firewall eval suite, explicit memory ciphertext-at-rest modes, tenant-scoped
 protected audit evidence, context-budget/provenance guardrails, and the first
 meta-harness evaluation models for scoring workflow candidates.
 
+### Desktop Provider Setup
+
+- Desktop settings now has a dedicated Providers tab, plus a left-rail shortcut,
+  so LLM provider setup is no longer buried in the general Settings page.
+- OpenAI Codex account auth is available from the desktop provider panel. Users
+  can sign in through the browser, import an existing local Codex session,
+  reconnect, or disconnect the stored Codex OAuth session.
+- Built-in desktop provider coverage now includes OpenAI Codex, OpenRouter,
+  Anthropic, OpenAI, Groq, Mistral, Together, Cohere, llama.cpp, Ollama, Poe,
+  Azure OpenAI-compatible, Amazon Bedrock-compatible, Vertex-compatible, and
+  GitHub Copilot-compatible providers.
+- Provider/model selection is more robust: enabling or defaulting a provider
+  persists the selected model, and chat session creation falls back to the
+  enabled/default provider slot when the model picker has not populated an
+  explicit value yet.
+- The desktop launcher now passes the managed global provider config path to
+  the engine with `--config`, keeping the provider UI and sidecar registry in
+  sync during local Tauri development and packaged desktop runs.
+- Session creation persistence errors now return structured details instead of
+  a bare `500 Internal Server Error`. Windows temp-file sync/replace handling
+  retries transient `Access is denied` failures that can happen while saving the
+  first chat session.
+
 ### Enterprise Hardening Snapshot
 
 - The Action Firewall now has regression coverage and a demo preset for

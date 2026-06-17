@@ -38,3 +38,11 @@ incremental = true
 codegen-units = 32
 opt-level = 2
 lto = "off"
+
+# Windows/MSVC dev builds can produce very large debug artifacts. Keep workspace
+# dev artifacts smaller so local Tauri builds do not exhaust small disks.
+[profile.dev]
+debug = 1
+
+[profile.dev.package."*"]
+debug = 0

@@ -24,11 +24,9 @@ import {
   Link2,
 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
-import { ProviderCard } from "./ProviderCard";
 import { ThemePicker } from "./ThemePicker";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { Switch } from "@/components/ui/Switch";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/Card";
 import { GitInitDialog } from "@/components/dialogs/GitInitDialog";
 import { MemoryStats } from "./MemoryStats";
@@ -36,6 +34,15 @@ import { LogsDrawer } from "@/components/logs";
 import { LanguageSettings } from "./LanguageSettings";
 import { ConnectionsSettings } from "./ConnectionsSettings";
 import { BugMonitorSettings } from "./BugMonitorSettings";
+import { ProvidersSettings } from "./ProvidersSettings";
+import {
+  providerAuthReady,
+  providerMatchesSelected,
+  selectedModelForProvider,
+  updateProviderSlots,
+  type ProviderSlot,
+} from "./providerSettingsModel";
+import { FALLBACK_IDENTITY_PRESETS } from "./identitySettingsModel";
 
 import { useUpdater } from "@/hooks/useUpdater";
 import {
@@ -108,14 +115,6 @@ interface LatestJsonPayload {
   pub_date?: string;
 }
 
-const FALLBACK_IDENTITY_PRESETS: IdentityPreset[] = [
-  { id: "balanced", label: "Balanced" },
-  { id: "concise", label: "Concise" },
-  { id: "friendly", label: "Friendly" },
-  { id: "mentor", label: "Mentor" },
-  { id: "critical", label: "Critical" },
-];
-
 export function Settings({
   onClose,
   onProjectChange,
@@ -125,7 +124,9 @@ export function Settings({
   onInitialSectionConsumed,
 }: SettingsProps) {
   const { t } = useTranslation(["common", "settings"]);
-  const [activeTab, setActiveTab] = useState<"settings" | "connections" | "logs">("settings");
+  const [activeTab, setActiveTab] = useState<"settings" | "providers" | "connections" | "logs">(
+    "settings"
+  );
   const {
     status: updateStatus,
     updateInfo,
@@ -147,7 +148,6 @@ export function Settings({
   const providersSectionRef = useRef<HTMLDivElement>(null);
   const identitySectionRef = useRef<HTMLDivElement>(null);
 
-  // Version info
   const [appVersion, setAppVersion] = useState<string>("");
   const [engineTokenInfo, setEngineTokenInfo] = useState<EngineApiTokenInfo | null>(null);
   const [engineTokenVisible, setEngineTokenVisible] = useState(false);
@@ -161,7 +161,6 @@ export function Settings({
   const bgSaveTimerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
   const bgPreviewFallbackRanRef = useRef(false);
 
-  // Custom provider state
   const [customEndpoint, setCustomEndpoint] = useState("");
   const [customModel, setCustomModel] = useState("");
   const [customApiKey, setCustomApiKey] = useState("");
@@ -184,7 +183,6 @@ export function Settings({
     message: string;
   } | null>(null);
 
-  // Git initialization dialog state
   const [showGitDialog, setShowGitDialog] = useState(false);
   const [pendingProjectPath, setPendingProjectPath] = useState<string | null>(null);
   const [gitStatus, setGitStatus] = useState<{ git_installed: boolean; is_repo: boolean } | null>(
@@ -263,6 +261,7 @@ export function Settings({
   useEffect(() => {
     if (!initialSection) return;
 
+    if (initialSection === "providers") setActiveTab("providers");
     if (initialSection === "projects") setProjectsExpanded(true);
 
     const target = (() => {
@@ -591,56 +590,26 @@ export function Settings({
     }
   };
 
-  type ProviderSlot = keyof Omit<ProvidersConfig, "custom" | "selected_model">;
-
   const handleProviderChange = async (provider: ProviderSlot, enabled: boolean) => {
     if (!providers) return;
 
-    // When enabling a provider, disable all others
     const updated = enabled
-      ? {
-          openrouter: {
-            ...providers.openrouter,
-            enabled: provider === "openrouter",
-            default: provider === "openrouter",
-          },
-          opencode_zen: {
-            ...providers.opencode_zen,
-            enabled: provider === "opencode_zen",
-            default: provider === "opencode_zen",
-          },
-          anthropic: {
-            ...providers.anthropic,
-            enabled: provider === "anthropic",
-            default: provider === "anthropic",
-          },
-          openai: {
-            ...providers.openai,
-            enabled: provider === "openai",
-            default: provider === "openai",
-          },
-          llama_cpp: {
-            ...providers.llama_cpp,
-            enabled: provider === "llama_cpp",
-            default: provider === "llama_cpp",
-          },
-          ollama: {
-            ...providers.ollama,
-            enabled: provider === "ollama",
-            default: provider === "ollama",
-          },
-          poe: {
-            ...providers.poe,
-            enabled: provider === "poe",
-            default: provider === "poe",
-          },
-          custom: providers.custom,
-          selected_model: providers.selected_model ?? null,
-        }
+      ? updateProviderSlots(providers, (slot, value) => ({
+          ...value,
+          enabled: slot === provider,
+          default: slot === provider,
+        }))
       : {
           ...providers,
           [provider]: { ...providers[provider], enabled: false, default: false },
         };
+
+    updated.selected_model =
+      enabled && providerAuthReady(updated[provider], provider)
+        ? selectedModelForProvider(updated, provider)
+        : providerMatchesSelected(providers.selected_model, provider)
+          ? null
+          : (providers.selected_model ?? null);
 
     setProviders(updated);
     await setProvidersConfig(updated);
@@ -650,18 +619,13 @@ export function Settings({
   const handleSetDefault = async (provider: ProviderSlot) => {
     if (!providers) return;
 
-    // Reset all defaults and set the new one
-    const updated: ProvidersConfig = {
-      openrouter: { ...providers.openrouter, default: provider === "openrouter" },
-      opencode_zen: { ...providers.opencode_zen, default: provider === "opencode_zen" },
-      anthropic: { ...providers.anthropic, default: provider === "anthropic" },
-      openai: { ...providers.openai, default: provider === "openai" },
-      llama_cpp: { ...providers.llama_cpp, default: provider === "llama_cpp" },
-      ollama: { ...providers.ollama, default: provider === "ollama" },
-      poe: { ...providers.poe, default: provider === "poe" },
-      custom: providers.custom,
-      selected_model: providers.selected_model ?? null,
-    };
+    const updated = updateProviderSlots(providers, (slot, value) => ({
+      ...value,
+      default: slot === provider,
+    }));
+    updated.selected_model = providerAuthReady(updated[provider], provider)
+      ? selectedModelForProvider(updated, provider)
+      : (providers.selected_model ?? null);
     setProviders(updated);
     await setProvidersConfig(updated);
     onProviderChange?.();
@@ -674,6 +638,15 @@ export function Settings({
       ...providers,
       [provider]: { ...providers[provider], model },
     };
+    if (
+      providers[provider].default ||
+      providerMatchesSelected(providers.selected_model, provider) ||
+      !providers.selected_model
+    ) {
+      updated.selected_model = providerAuthReady(updated[provider], provider)
+        ? selectedModelForProvider(updated, provider)
+        : (providers.selected_model ?? null);
+    }
     setProviders(updated);
     await setProvidersConfig(updated);
     onProviderChange?.();
@@ -815,15 +788,12 @@ export function Settings({
         ? { provider_id: "custom", model_id: normalizedModel }
         : (providers.selected_model ?? null);
 
-    // When enabling custom provider, disable all others
     const updated: ProvidersConfig = {
-      openrouter: { ...providers.openrouter, enabled: false, default: false },
-      opencode_zen: { ...providers.opencode_zen, enabled: false, default: false },
-      anthropic: { ...providers.anthropic, enabled: false, default: false },
-      openai: { ...providers.openai, enabled: false, default: false },
-      llama_cpp: { ...providers.llama_cpp, enabled: false, default: false },
-      ollama: { ...providers.ollama, enabled: false, default: false },
-      poe: { ...providers.poe, enabled: false, default: false },
+      ...updateProviderSlots(providers, (_slot, value) => ({
+        ...value,
+        enabled: false,
+        default: false,
+      })),
       custom: [
         {
           enabled: customEnabled,
@@ -864,15 +834,12 @@ export function Settings({
 
     if (enabled && providers) {
       const normalizedModel = customModel.trim();
-      // When enabling custom provider, disable all others
       const updated: ProvidersConfig = {
-        openrouter: { ...providers.openrouter, enabled: false, default: false },
-        opencode_zen: { ...providers.opencode_zen, enabled: false, default: false },
-        anthropic: { ...providers.anthropic, enabled: false, default: false },
-        openai: { ...providers.openai, enabled: false, default: false },
-        llama_cpp: { ...providers.llama_cpp, enabled: false, default: false },
-        ollama: { ...providers.ollama, enabled: false, default: false },
-        poe: { ...providers.poe, enabled: false, default: false },
+        ...updateProviderSlots(providers, (_slot, value) => ({
+          ...value,
+          enabled: false,
+          default: false,
+        })),
         custom: [
           {
             enabled: true,
@@ -1019,7 +986,7 @@ export function Settings({
         transition={{ duration: 0.3 }}
       >
         <div className="mx-auto max-w-2xl space-y-8">
-          <div className="flex items-center justify-between">
+          <div className="settings-shell-keep flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
                 <SettingsIcon className="h-6 w-6 text-primary" />
@@ -1044,6 +1011,14 @@ export function Settings({
             >
               <SettingsIcon className="h-4 w-4" />
               {t("title", { ns: "settings" })}
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("providers")}
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+            >
+              <Cpu className="h-4 w-4" />
+              {t("sections.providers", { ns: "settings" })}
             </button>
             <button
               type="button"
@@ -1080,7 +1055,7 @@ export function Settings({
         transition={{ duration: 0.3 }}
       >
         <div className="mx-auto max-w-2xl space-y-8">
-          <div className="flex items-center justify-between">
+          <div className="settings-shell-keep flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
                 <SettingsIcon className="h-6 w-6 text-primary" />
@@ -1105,6 +1080,14 @@ export function Settings({
             >
               <SettingsIcon className="h-4 w-4" />
               {t("title", { ns: "settings" })}
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("providers")}
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+            >
+              <Cpu className="h-4 w-4" />
+              {t("sections.providers", { ns: "settings" })}
             </button>
             <button
               type="button"
@@ -1137,9 +1120,15 @@ export function Settings({
       animate={{ opacity: 1 }}
       transition={{ duration: 0.3 }}
     >
-      <div className="mx-auto max-w-2xl space-y-8">
+      <div
+        className={`mx-auto max-w-2xl space-y-8 ${
+          activeTab === "providers"
+            ? "[&>*:not(.settings-shell-keep):not(.providers-settings-section)]:hidden"
+            : ""
+        }`}
+      >
         {/* Header */}
-        <div className="flex items-center justify-between">
+        <div className="settings-shell-keep flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
               <SettingsIcon className="h-6 w-6 text-primary" />
@@ -1156,14 +1145,30 @@ export function Settings({
           )}
         </div>
 
-        <div className="flex items-center gap-2 rounded-lg border border-border bg-surface-elevated/40 p-1">
+        <div className="settings-shell-keep flex items-center gap-2 rounded-lg border border-border bg-surface-elevated/40 p-1">
           <button
             type="button"
             onClick={() => setActiveTab("settings")}
-            className="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-primary/15 px-3 py-2 text-sm font-medium text-text transition-colors"
+            className={`inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+              activeTab === "settings"
+                ? "bg-primary/15 text-text"
+                : "text-text-muted hover:bg-surface-elevated hover:text-text"
+            }`}
           >
             <SettingsIcon className="h-4 w-4" />
             {t("title", { ns: "settings" })}
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("providers")}
+            className={`inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+              activeTab === "providers"
+                ? "bg-primary/15 text-text"
+                : "text-text-muted hover:bg-surface-elevated hover:text-text"
+            }`}
+          >
+            <Cpu className="h-4 w-4" />
+            {t("sections.providers", { ns: "settings" })}
           </button>
           <button
             type="button"
@@ -1807,469 +1812,42 @@ export function Settings({
 
         {/* LLM Providers Section */}
         <div ref={providersSectionRef} />
-        <div className="space-y-4">
-          <div className="flex items-center gap-3">
-            <Cpu className="h-5 w-5 text-primary" />
-            <div>
-              <h2 className="text-lg font-semibold text-text">
-                {t("providers.title", { ns: "settings" })}
-              </h2>
-              <p className="text-sm text-text-muted">
-                {t("providersPanel.description", { ns: "settings" })}
-              </p>
-            </div>
-          </div>
-
-          {providers && (
-            <div className="space-y-4">
-              <ProviderCard
-                id="opencode_zen"
-                name="Opencode Zen"
-                description={t("providersCatalog.opencode_zen.description", { ns: "settings" })}
-                endpoint={providers.opencode_zen.endpoint}
-                defaultEndpoint="https://opencode.ai/zen/v1"
-                model={providers.opencode_zen.model}
-                catalogModelIds={providerCatalogModels.opencode_zen ?? []}
-                isDefault={providers.opencode_zen.default}
-                enabled={providers.opencode_zen.enabled}
-                onEnabledChange={(enabled) => handleProviderChange("opencode_zen", enabled)}
-                onModelChange={(model) => handleModelChange("opencode_zen", model)}
-                onEndpointChange={(endpoint) => handleEndpointChange("opencode_zen", endpoint)}
-                onSetDefault={() => handleSetDefault("opencode_zen")}
-                onKeyChange={onProviderChange}
-                docsUrl="https://opencode.ai/auth"
-              />
-
-              <ProviderCard
-                id="openrouter"
-                name="OpenRouter"
-                description={t("providersCatalog.openrouter.description", { ns: "settings" })}
-                endpoint={providers.openrouter.endpoint}
-                defaultEndpoint="https://openrouter.ai/api/v1"
-                model={providers.openrouter.model}
-                catalogModelIds={providerCatalogModels.openrouter ?? []}
-                isDefault={providers.openrouter.default}
-                enabled={providers.openrouter.enabled}
-                onEnabledChange={(enabled) => handleProviderChange("openrouter", enabled)}
-                onModelChange={(model) => handleModelChange("openrouter", model)}
-                onEndpointChange={(endpoint) => handleEndpointChange("openrouter", endpoint)}
-                onSetDefault={() => handleSetDefault("openrouter")}
-                onKeyChange={onProviderChange}
-                docsUrl="https://openrouter.ai/keys"
-              />
-
-              <ProviderCard
-                id="anthropic"
-                name="Anthropic"
-                description={t("providersCatalog.anthropic.description", { ns: "settings" })}
-                endpoint={providers.anthropic.endpoint}
-                defaultEndpoint="https://api.anthropic.com"
-                model={providers.anthropic.model}
-                catalogModelIds={providerCatalogModels.anthropic ?? []}
-                isDefault={providers.anthropic.default}
-                enabled={providers.anthropic.enabled}
-                onEnabledChange={(enabled) => handleProviderChange("anthropic", enabled)}
-                onModelChange={(model) => handleModelChange("anthropic", model)}
-                onEndpointChange={(endpoint) => handleEndpointChange("anthropic", endpoint)}
-                onSetDefault={() => handleSetDefault("anthropic")}
-                onKeyChange={onProviderChange}
-                docsUrl="https://console.anthropic.com/settings/keys"
-              />
-
-              <ProviderCard
-                id="openai"
-                name="OpenAI"
-                description={t("providersCatalog.openai.description", { ns: "settings" })}
-                endpoint={providers.openai.endpoint}
-                defaultEndpoint="https://api.openai.com/v1"
-                model={providers.openai.model}
-                catalogModelIds={providerCatalogModels.openai ?? []}
-                isDefault={providers.openai.default}
-                enabled={providers.openai.enabled}
-                onEnabledChange={(enabled) => handleProviderChange("openai", enabled)}
-                onModelChange={(model) => handleModelChange("openai", model)}
-                onEndpointChange={(endpoint) => handleEndpointChange("openai", endpoint)}
-                onSetDefault={() => handleSetDefault("openai")}
-                onKeyChange={onProviderChange}
-                docsUrl="https://platform.openai.com/api-keys"
-              />
-
-              <ProviderCard
-                id="llama_cpp"
-                name="llama.cpp"
-                description={t("providersCatalog.llama_cpp.description", { ns: "settings" })}
-                endpoint={providers.llama_cpp.endpoint}
-                defaultEndpoint="http://127.0.0.1:8080/v1"
-                model={providers.llama_cpp.model}
-                catalogModelIds={providerCatalogModels.llama_cpp ?? []}
-                isDefault={providers.llama_cpp.default}
-                enabled={providers.llama_cpp.enabled}
-                onEnabledChange={(enabled) => handleProviderChange("llama_cpp", enabled)}
-                onModelChange={(model) => handleModelChange("llama_cpp", model)}
-                onEndpointChange={(endpoint) => handleEndpointChange("llama_cpp", endpoint)}
-                onSetDefault={() => handleSetDefault("llama_cpp")}
-                onKeyChange={onProviderChange}
-                docsUrl="https://github.com/ggml-org/llama.cpp"
-              />
-
-              <ProviderCard
-                id="ollama"
-                name="Ollama"
-                description={t("providersCatalog.ollama.description", { ns: "settings" })}
-                endpoint={providers.ollama.endpoint}
-                defaultEndpoint="http://localhost:11434"
-                model={providers.ollama.model}
-                catalogModelIds={providerCatalogModels.ollama ?? []}
-                isDefault={providers.ollama.default}
-                enabled={providers.ollama.enabled}
-                onEnabledChange={(enabled) => handleProviderChange("ollama", enabled)}
-                onModelChange={(model) => handleModelChange("ollama", model)}
-                onEndpointChange={(endpoint) => handleEndpointChange("ollama", endpoint)}
-                onSetDefault={() => handleSetDefault("ollama")}
-                onKeyChange={onProviderChange}
-                docsUrl="https://ollama.ai"
-              />
-
-              <ProviderCard
-                id="poe"
-                name="Poe"
-                description={t("providersCatalog.poe.description", { ns: "settings" })}
-                endpoint={providers.poe.endpoint}
-                defaultEndpoint="https://api.poe.com/v1"
-                model={providers.poe.model}
-                catalogModelIds={providerCatalogModels.poe ?? []}
-                isDefault={providers.poe.default}
-                enabled={providers.poe.enabled}
-                onEnabledChange={(enabled) => handleProviderChange("poe", enabled)}
-                onModelChange={(model) => handleModelChange("poe", model)}
-                onEndpointChange={(endpoint) => handleEndpointChange("poe", endpoint)}
-                onSetDefault={() => handleSetDefault("poe")}
-                onKeyChange={onProviderChange}
-                docsUrl="https://poe.com/api"
-              />
-
-              {searchSettingsState && (
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Web Search</CardTitle>
-                    <CardDescription>
-                      Choose the search backend for `websearch` and store Brave or Exa keys in the
-                      encrypted vault.
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <div className="space-y-2">
-                        <label className="text-xs font-medium text-text-subtle">Backend</label>
-                        <select
-                          className="w-full rounded-xl border border-border bg-surface px-3 py-2 text-sm text-text focus:outline-none focus:ring-2 focus:ring-primary/40"
-                          value={searchSettingsState.backend}
-                          onChange={(e) =>
-                            setSearchSettingsState((prev) =>
-                              prev ? { ...prev, backend: e.target.value } : prev
-                            )
-                          }
-                        >
-                          <option value="auto">Auto failover</option>
-                          <option value="brave">Brave Search</option>
-                          <option value="exa">Exa</option>
-                          <option value="searxng">SearxNG</option>
-                          <option value="tandem">Tandem hosted search</option>
-                          <option value="none">Disable websearch</option>
-                        </select>
-                      </div>
-                      <Input
-                        label="Timeout (ms)"
-                        type="number"
-                        min={1000}
-                        max={120000}
-                        value={String(searchSettingsState.timeout_ms ?? 10000)}
-                        onChange={(e) =>
-                          setSearchSettingsState((prev) =>
-                            prev
-                              ? {
-                                  ...prev,
-                                  timeout_ms: Number.parseInt(e.target.value || "10000", 10),
-                                }
-                              : prev
-                          )
-                        }
-                      />
-                    </div>
-
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <Input
-                        label="Tandem search URL"
-                        placeholder="https://search.tandem.ac"
-                        value={searchSettingsState.tandem_url ?? ""}
-                        onChange={(e) =>
-                          setSearchSettingsState((prev) =>
-                            prev ? { ...prev, tandem_url: e.target.value } : prev
-                          )
-                        }
-                      />
-                      <Input
-                        label="SearxNG URL"
-                        placeholder="http://127.0.0.1:8080"
-                        value={searchSettingsState.searxng_url ?? ""}
-                        onChange={(e) =>
-                          setSearchSettingsState((prev) =>
-                            prev ? { ...prev, searxng_url: e.target.value } : prev
-                          )
-                        }
-                      />
-                    </div>
-
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <div className="space-y-2 rounded-xl border border-border bg-surface-elevated/40 p-4">
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-medium text-text">Brave Search key</p>
-                            <p className="text-xs text-text-muted">
-                              Best for fast live lookups. Stored in the encrypted vault.
-                            </p>
-                          </div>
-                          <span className="text-xs text-text-muted">
-                            {searchHasBraveKey ? "Saved" : "Not saved"}
-                          </span>
-                        </div>
-                        <Input
-                          type="password"
-                          placeholder="BSA..."
-                          value={searchBraveKeyInput}
-                          onChange={(e) => setSearchBraveKeyInput(e.target.value)}
-                        />
-                        <div className="flex flex-wrap gap-2">
-                          <Button
-                            variant="secondary"
-                            onClick={() => handleSearchKeySave("brave_search")}
-                            disabled={searchSaving || !searchBraveKeyInput.trim()}
-                          >
-                            Save Brave Key
-                          </Button>
-                          {searchHasBraveKey && (
-                            <Button
-                              variant="ghost"
-                              onClick={() => handleSearchKeyDelete("brave_search")}
-                              disabled={searchSaving}
-                            >
-                              Remove
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="space-y-2 rounded-xl border border-border bg-surface-elevated/40 p-4">
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-medium text-text">Exa key</p>
-                            <p className="text-xs text-text-muted">
-                              Useful as a fallback or primary search backend. Stored in the
-                              encrypted vault.
-                            </p>
-                          </div>
-                          <span className="text-xs text-text-muted">
-                            {searchHasExaKey ? "Saved" : "Not saved"}
-                          </span>
-                        </div>
-                        <Input
-                          type="password"
-                          placeholder="Paste Exa API key"
-                          value={searchExaKeyInput}
-                          onChange={(e) => setSearchExaKeyInput(e.target.value)}
-                        />
-                        <div className="flex flex-wrap gap-2">
-                          <Button
-                            variant="secondary"
-                            onClick={() => handleSearchKeySave("exa_search")}
-                            disabled={searchSaving || !searchExaKeyInput.trim()}
-                          >
-                            Save Exa Key
-                          </Button>
-                          {searchHasExaKey && (
-                            <Button
-                              variant="ghost"
-                              onClick={() => handleSearchKeyDelete("exa_search")}
-                              disabled={searchSaving}
-                            >
-                              Remove
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-3">
-                      <Button onClick={handleSearchSettingsSave} disabled={searchSaving}>
-                        {searchSaving ? "Saving..." : "Save Search Settings"}
-                      </Button>
-                      {searchNotice && (
-                        <p
-                          className={
-                            searchNotice.kind === "success"
-                              ? "text-sm text-emerald-400"
-                              : "text-sm text-rose-400"
-                          }
-                        >
-                          {searchNotice.message}
-                        </p>
-                      )}
-                    </div>
-
-                    <p className="text-xs text-text-muted">
-                      `auto` will try the configured backends with failover. If Brave is
-                      rate-limited, Tandem can continue with Exa when both keys are present.
-                    </p>
-                  </CardContent>
-                </Card>
-              )}
-
-              {schedulerSettingsState && (
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Automation Scheduler</CardTitle>
-                    <CardDescription>
-                      Controls whether automation runs are executed one at a time or in parallel.
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <div className="space-y-2">
-                        <label className="text-xs font-medium text-text-subtle">Mode</label>
-                        <select
-                          className="w-full rounded-xl border border-border bg-surface px-3 py-2 text-sm text-text focus:outline-none focus:ring-2 focus:ring-primary/40"
-                          value={schedulerSettingsState.mode}
-                          onChange={(e) =>
-                            setSchedulerSettingsState((prev) =>
-                              prev ? { ...prev, mode: e.target.value } : prev
-                            )
-                          }
-                        >
-                          <option value="multi">Multi — parallel runs (recommended)</option>
-                          <option value="single">Single — one run at a time</option>
-                        </select>
-                      </div>
-                      <Input
-                        label="Max concurrent runs"
-                        type="number"
-                        min={1}
-                        max={32}
-                        value={
-                          schedulerSettingsState.max_concurrent_runs != null
-                            ? String(schedulerSettingsState.max_concurrent_runs)
-                            : ""
-                        }
-                        placeholder="8 (default)"
-                        onChange={(e) =>
-                          setSchedulerSettingsState((prev) =>
-                            prev
-                              ? {
-                                  ...prev,
-                                  max_concurrent_runs: e.target.value
-                                    ? Number.parseInt(e.target.value, 10)
-                                    : null,
-                                }
-                              : prev
-                          )
-                        }
-                      />
-                    </div>
-                    <div className="flex flex-wrap items-center gap-3">
-                      <Button onClick={handleSchedulerSettingsSave}>Save Scheduler Settings</Button>
-                    </div>
-                    <p className="text-xs text-text-muted">
-                      Multi mode allows several automation runs to execute concurrently. Max
-                      concurrent runs caps parallelism. Changes take effect on the next engine
-                      start.
-                    </p>
-                  </CardContent>
-                </Card>
-              )}
-
-              {/* Custom Provider Section */}
-              <Card className="border-2 border-dashed">
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <CardTitle>
-                        {t("providersPanel.customProviderTitle", { ns: "settings" })}
-                      </CardTitle>
-                      <CardDescription>
-                        {t("providersPanel.customProviderDescription", { ns: "settings" })}
-                      </CardDescription>
-                    </div>
-                    <Switch
-                      checked={customEnabled}
-                      onChange={(e) => handleCustomProviderToggle(e.target.checked)}
-                    />
-                  </div>
-                </CardHeader>
-                <AnimatePresence>
-                  {customEnabled && (
-                    <motion.div
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: "auto", opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.2 }}
-                    >
-                      <CardContent className="space-y-4">
-                        <div>
-                          <label className="text-xs font-medium text-text-subtle">
-                            {t("providersPanel.endpointUrl", { ns: "settings" })}
-                          </label>
-                          <Input
-                            placeholder={t("providers.endpointPlaceholder", { ns: "settings" })}
-                            value={customEndpoint}
-                            onChange={(e) => setCustomEndpoint(e.target.value)}
-                          />
-                        </div>
-                        <div>
-                          <label className="text-xs font-medium text-text-subtle">
-                            {t("providers.model", { ns: "settings" })}
-                          </label>
-                          <Input
-                            placeholder={t("providersPanel.modelPlaceholder", { ns: "settings" })}
-                            value={customModel}
-                            onChange={(e) => setCustomModel(e.target.value)}
-                          />
-                        </div>
-                        <div>
-                          <label className="text-xs font-medium text-text-subtle">
-                            {t("providersPanel.apiKeyOptional", { ns: "settings" })}
-                          </label>
-                          <Input
-                            type="password"
-                            placeholder="sk-..."
-                            value={customApiKey}
-                            onChange={(e) => setCustomApiKey(e.target.value)}
-                          />
-                        </div>
-                        <Button
-                          onClick={handleCustomProviderSave}
-                          disabled={!customEndpoint.trim()}
-                          className="w-full"
-                        >
-                          {t("providersPanel.saveCustomProvider", { ns: "settings" })}
-                        </Button>
-                        {customProviderNotice && (
-                          <p
-                            className={
-                              customProviderNotice.kind === "success"
-                                ? "text-xs text-success"
-                                : "text-xs text-error"
-                            }
-                          >
-                            {customProviderNotice.message}
-                          </p>
-                        )}
-                      </CardContent>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </Card>
-            </div>
-          )}
-        </div>
+        <ProvidersSettings
+          activeTab={activeTab}
+          providers={providers}
+          providerCatalogModels={providerCatalogModels}
+          customEnabled={customEnabled}
+          customEndpoint={customEndpoint}
+          customModel={customModel}
+          customApiKey={customApiKey}
+          customProviderNotice={customProviderNotice}
+          searchSettingsState={searchSettingsState}
+          searchBraveKeyInput={searchBraveKeyInput}
+          searchExaKeyInput={searchExaKeyInput}
+          searchHasBraveKey={searchHasBraveKey}
+          searchHasExaKey={searchHasExaKey}
+          searchSaving={searchSaving}
+          searchNotice={searchNotice}
+          schedulerSettingsState={schedulerSettingsState}
+          onProviderChange={onProviderChange}
+          handleProviderChange={handleProviderChange}
+          handleSetDefault={handleSetDefault}
+          handleModelChange={handleModelChange}
+          handleEndpointChange={handleEndpointChange}
+          handleCustomProviderToggle={handleCustomProviderToggle}
+          handleCustomProviderSave={handleCustomProviderSave}
+          handleSearchSettingsSave={handleSearchSettingsSave}
+          handleSearchKeySave={handleSearchKeySave}
+          handleSearchKeyDelete={handleSearchKeyDelete}
+          handleSchedulerSettingsSave={handleSchedulerSettingsSave}
+          setCustomEndpoint={setCustomEndpoint}
+          setCustomModel={setCustomModel}
+          setCustomApiKey={setCustomApiKey}
+          setSearchSettingsState={setSearchSettingsState}
+          setSearchBraveKeyInput={setSearchBraveKeyInput}
+          setSearchExaKeyInput={setSearchExaKeyInput}
+          setSchedulerSettingsState={setSchedulerSettingsState}
+        />
 
         <div ref={identitySectionRef} />
         <Card variant="glass">

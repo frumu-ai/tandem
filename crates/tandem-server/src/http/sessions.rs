@@ -220,7 +220,7 @@ pub(super) async fn create_session(
     Extension(tenant_context): Extension<TenantContext>,
     verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Json(req): Json<CreateSessionRequest>,
-) -> Result<Json<WireSession>, StatusCode> {
+) -> Result<Json<WireSession>, HttpError> {
     let requested_permission_rules = req.permission.clone();
     let mut session = Session::new(req.title, req.directory);
     session.tenant_context = tenant_context.clone();
@@ -263,7 +263,10 @@ pub(super) async fn create_session(
         .storage
         .save_session(session.clone())
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|error| {
+            tracing::error!(error = %error, session_id = %session.id, "failed to save created session");
+            persistence_error(format!("Failed to save session: {error}"))
+        })?;
     apply_session_permission_rules(&state, requested_permission_rules).await;
     publish_tenant_event(
         &state,

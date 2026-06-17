@@ -790,13 +790,13 @@ impl Storage {
         fs::write(&temp_path, payload).await.with_context(|| {
             format!("failed to write temp storage file {}", temp_path.display())
         })?;
-        let std_temp_path: std::path::PathBuf = temp_path.clone().try_into()?;
-        tokio::task::spawn_blocking(move || {
-            let file = std::fs::File::open(&std_temp_path)?;
-            file.sync_all()?;
-            Ok::<(), std::io::Error>(())
-        })
-        .await??;
+        if let Err(error) = sync_temp_storage_file(&temp_path).await {
+            tracing::warn!(
+                error = %error,
+                path = %temp_path.display(),
+                "continuing after temp storage file sync failed"
+            );
+        }
         commit_temp_file(&temp_path, &path).await.with_context(|| {
             format!(
                 "failed to atomically replace storage file {} with {}",
@@ -814,6 +814,28 @@ impl Storage {
     }
 }
 
+async fn sync_temp_storage_file(path: &Path) -> anyhow::Result<()> {
+    let std_path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let mut last_error = None;
+        for attempt in 0..5 {
+            match std::fs::File::open(&std_path).and_then(|file| file.sync_all()) {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    last_error = Some(error);
+                    std::thread::sleep(std::time::Duration::from_millis(25 * (attempt + 1)));
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::Other, "temp storage file sync failed")
+        }))
+    })
+    .await
+    .context("temp storage file sync task failed")?
+    .with_context(|| format!("failed to sync temp storage file {}", path.display()))
+}
+
 async fn commit_temp_file(temp_path: &Path, path: &Path) -> std::io::Result<()> {
     match tokio::fs::rename(temp_path, path).await {
         Ok(()) => Ok(()),
@@ -827,12 +849,32 @@ async fn commit_temp_file(temp_path: &Path, path: &Path) -> std::io::Result<()> 
                     err.kind(),
                     ErrorKind::PermissionDenied | ErrorKind::AlreadyExists
                 ) {
-                    match tokio::fs::remove_file(path).await {
-                        Ok(()) => {}
-                        Err(remove_err) if remove_err.kind() == ErrorKind::NotFound => {}
-                        Err(remove_err) => return Err(remove_err),
+                    let mut last_err = err;
+                    for attempt in 0..5 {
+                        match tokio::fs::remove_file(path).await {
+                            Ok(()) => {}
+                            Err(remove_err) if remove_err.kind() == ErrorKind::NotFound => {}
+                            Err(remove_err) => {
+                                last_err = remove_err;
+                                tokio::time::sleep(std::time::Duration::from_millis(
+                                    25 * (attempt + 1),
+                                ))
+                                .await;
+                                continue;
+                            }
+                        }
+                        match tokio::fs::rename(temp_path, path).await {
+                            Ok(()) => return Ok(()),
+                            Err(rename_err) => {
+                                last_err = rename_err;
+                                tokio::time::sleep(std::time::Duration::from_millis(
+                                    25 * (attempt + 1),
+                                ))
+                                .await;
+                            }
+                        }
                     }
-                    return tokio::fs::rename(temp_path, path).await;
+                    return Err(last_err);
                 }
             }
             Err(err)
