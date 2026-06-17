@@ -494,7 +494,7 @@ fn selected_provider_model_signature(
 }
 
 fn provider_config_for_slot<'a>(
-    config: &'a ProvidersConfig,
+    config: &ProvidersConfig,
     slot: &str,
 ) -> Option<&'a crate::state::ProviderConfig> {
     match slot {
@@ -558,9 +558,9 @@ fn provider_settings_slot_active(config: &ProvidersConfig, slot: &str) -> bool {
         .unwrap_or(selected_active)
 }
 
-fn configurable_provider_slots<'a>(
-    config: &'a ProvidersConfig,
-) -> Vec<(&'static str, &'a crate::state::ProviderConfig)> {
+fn configurable_provider_slots(
+    config: &ProvidersConfig,
+) -> Vec<(&'static str, &crate::state::ProviderConfig)> {
     vec![
         ("openai-codex", &config.openai_codex),
         ("openrouter", &config.openrouter),

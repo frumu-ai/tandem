@@ -10,7 +10,10 @@ type AIGeneratedBadgeProps = {
   className?: string;
 };
 
-const STATE_CONFIG: Record<AIGeneratedState, { label: string; chip: string; ariaLabel: string }> = {
+const STATE_CONFIG: Record<
+  AIGeneratedState,
+  { label: string; chip: string; ariaLabel: string }
+> = {
   draft: {
     label: "AI-Generated",
     chip: "border-primary/40 bg-primary/10 text-primary",
