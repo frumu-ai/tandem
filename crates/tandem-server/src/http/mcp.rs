@@ -1764,7 +1764,19 @@ pub(super) async fn delete_auth_mcp(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Json<Value> {
-    disconnect_mcp(State(state), Path(name)).await
+    let prefix = format!("mcp.{}.", mcp_namespace_segment(&name));
+    let removed_tool_count = state.tools.unregister_by_prefix(&prefix).await;
+    let ok = state.mcp.clear_auth_material(&name).await;
+    if ok {
+        state.event_bus.publish(EngineEvent::new(
+            "mcp.server.auth.deleted",
+            json!({
+                "name": name,
+                "removedToolCount": removed_tool_count,
+            }),
+        ));
+    }
+    Json(json!({"ok": ok, "removedToolCount": removed_tool_count}))
 }
 
 pub(super) async fn mcp_tools(State(state): State<AppState>) -> Json<Value> {

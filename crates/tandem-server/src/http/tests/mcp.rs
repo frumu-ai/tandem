@@ -962,6 +962,95 @@ async fn mcp_connect_discovers_www_authenticate_oauth_and_callback_connects_serv
 }
 
 #[tokio::test]
+async fn mcp_delete_auth_clears_stale_oauth_material() {
+    let state = test_state().await;
+
+    state
+        .mcp
+        .add_or_update(
+            "notion".to_string(),
+            "https://example.test/mcp".to_string(),
+            HashMap::new(),
+            true,
+        )
+        .await;
+    assert!(state.mcp.set_auth_kind("notion", "oauth".to_string()).await);
+    state
+        .mcp
+        .set_bearer_token("notion", "stale-access-token")
+        .await
+        .expect("store bearer token");
+    state
+        .mcp
+        .set_oauth_refresh_config(
+            "notion",
+            "mcp-oauth::notion".to_string(),
+            "https://example.test/token".to_string(),
+            "stale-client-id".to_string(),
+            Some("stale-client-secret".to_string()),
+        )
+        .await
+        .expect("store oauth refresh config");
+    let challenge = tandem_runtime::McpAuthChallenge {
+        challenge_id: "challenge-1".to_string(),
+        tool_name: "notion_search".to_string(),
+        authorization_url: "https://example.test/authorize".to_string(),
+        message: "Authorization required.".to_string(),
+        requested_at_ms: crate::now_ms(),
+        status: "pending".to_string(),
+    };
+    assert!(
+        state
+            .mcp
+            .record_server_auth_challenge("notion", challenge, None)
+            .await
+    );
+
+    let before = state
+        .mcp
+        .list()
+        .await
+        .get("notion")
+        .cloned()
+        .expect("notion row before delete");
+    assert!(before.secret_headers.contains_key("Authorization"));
+    assert!(before.secret_header_values.contains_key("Authorization"));
+    assert!(before.oauth.is_some());
+    assert!(before.last_auth_challenge.is_some());
+    assert!(!before.pending_auth_by_tool.is_empty());
+
+    let app = app_router(state.clone());
+    let req = Request::builder()
+        .method("DELETE")
+        .uri("/mcp/notion/auth")
+        .body(Body::empty())
+        .expect("delete auth request");
+    let resp = app.oneshot(req).await.expect("delete auth response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("delete auth body");
+    let payload: Value = serde_json::from_slice(&body).expect("delete auth json");
+    assert_eq!(payload.get("ok").and_then(Value::as_bool), Some(true));
+
+    let notion = state
+        .mcp
+        .list()
+        .await
+        .get("notion")
+        .cloned()
+        .expect("notion row after delete");
+    assert!(!notion.connected);
+    assert!(notion.secret_headers.is_empty());
+    assert!(notion.secret_header_values.is_empty());
+    assert!(notion.oauth.is_none());
+    assert!(notion.last_auth_challenge.is_none());
+    assert!(notion.pending_auth_by_tool.is_empty());
+    assert!(notion.tool_cache.is_empty());
+    assert!(notion.tools_fetched_at_ms.is_none());
+}
+
+#[tokio::test]
 async fn mcp_refresh_silently_renews_expired_oauth_token() {
     let state = test_state().await;
     let (endpoint, server) = spawn_fake_hosted_mcp_oauth_server().await;

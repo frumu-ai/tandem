@@ -109,6 +109,28 @@ fn hosted_mode_accepts_matching_transport_token() {
 }
 
 #[test]
+fn public_oauth_callback_paths_bypass_transport_auth() {
+    assert!(is_public_oauth_callback_path("/mcp/linear/auth/callback"));
+    assert!(is_public_oauth_callback_path(
+        "/api/engine/mcp/linear/auth/callback"
+    ));
+    assert!(is_public_oauth_callback_path(
+        "/provider/openai-codex/oauth/callback"
+    ));
+    assert!(is_public_oauth_callback_path(
+        "/api/engine/provider/openai-codex/oauth/callback"
+    ));
+
+    assert!(!is_public_oauth_callback_path("/mcp/linear/auth"));
+    assert!(!is_public_oauth_callback_path(
+        "/mcp/linear/auth/authenticate"
+    ));
+    assert!(!is_public_oauth_callback_path(
+        "/api/engine/mcp/linear/tools"
+    ));
+}
+
+#[test]
 fn hosted_mode_rejects_unsigned_tenant_headers() {
     let mut headers = HeaderMap::new();
     headers.insert("x-tandem-org-id", HeaderValue::from_static("acme"));

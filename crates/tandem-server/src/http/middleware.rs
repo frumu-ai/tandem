@@ -43,6 +43,9 @@ pub(super) async fn auth_gate(
     if path == "/global/health" {
         return next.run(request).await;
     }
+    if is_public_oauth_callback_path(path) {
+        return next.run(request).await;
+    }
     let runtime_auth_mode = resolve_memory_context_runtime_auth_mode();
     if path == "/bug-monitor/intake/report" || path == "/failure-reporter/intake/report" {
         if !runtime_auth_mode_requires_transport_token(runtime_auth_mode)
@@ -270,6 +273,23 @@ fn runtime_auth_mode_requires_transport_token(mode: RuntimeAuthMode) -> bool {
     matches!(
         mode,
         RuntimeAuthMode::HostedSingleTenant | RuntimeAuthMode::EnterpriseRequired
+    )
+}
+
+fn is_public_oauth_callback_path(path: &str) -> bool {
+    let trimmed = path
+        .strip_prefix("/api/engine")
+        .filter(|suffix| suffix.starts_with('/'))
+        .unwrap_or(path);
+    let parts = trimmed
+        .trim_matches('/')
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+
+    matches!(
+        parts.as_slice(),
+        ["mcp", _, "auth", "callback"] | ["provider", _, "oauth", "callback"]
     )
 }
 
