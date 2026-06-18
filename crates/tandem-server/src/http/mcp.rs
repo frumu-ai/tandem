@@ -1047,6 +1047,13 @@ async fn find_pending_mcp_oauth_session(
         .cloned()
 }
 
+async fn remove_mcp_oauth_sessions_for_server(state: &AppState, server_name: &str) -> usize {
+    let mut sessions = state.mcp_oauth_sessions.write().await;
+    let before = sessions.len();
+    sessions.retain(|_, session| session.server_name != server_name);
+    before.saturating_sub(sessions.len())
+}
+
 async fn exchange_mcp_oauth_code(
     session: &McpOAuthSessionRecord,
     code: &str,
@@ -1764,7 +1771,25 @@ pub(super) async fn delete_auth_mcp(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Json<Value> {
-    disconnect_mcp(State(state), Path(name)).await
+    let prefix = format!("mcp.{}.", mcp_namespace_segment(&name));
+    let removed_tool_count = state.tools.unregister_by_prefix(&prefix).await;
+    let removed_oauth_session_count = remove_mcp_oauth_sessions_for_server(&state, &name).await;
+    let ok = state.mcp.clear_auth_material(&name).await;
+    if ok {
+        state.event_bus.publish(EngineEvent::new(
+            "mcp.server.auth.deleted",
+            json!({
+                "name": name,
+                "removedToolCount": removed_tool_count,
+                "removedOauthSessionCount": removed_oauth_session_count,
+            }),
+        ));
+    }
+    Json(json!({
+        "ok": ok,
+        "removedToolCount": removed_tool_count,
+        "removedOauthSessionCount": removed_oauth_session_count,
+    }))
 }
 
 pub(super) async fn mcp_tools(State(state): State<AppState>) -> Json<Value> {

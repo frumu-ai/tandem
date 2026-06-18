@@ -634,6 +634,40 @@ impl McpRegistry {
         false
     }
 
+    pub async fn clear_auth_material(&self, name: &str) -> bool {
+        if let Some(mut child) = self.processes.lock().await.remove(name) {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
+
+        let current_tenant = local_tenant_context();
+        let mut servers = self.servers.write().await;
+        let Some(server) = servers.get_mut(name) else {
+            return false;
+        };
+        delete_secret_header_refs(&server.secret_headers, &current_tenant);
+        delete_oauth_secret_ref(server.oauth.as_ref(), &current_tenant);
+        delete_oauth_credential(
+            server.oauth.as_ref(),
+            &current_tenant,
+            &self.oauth_security_dir,
+        );
+        server.connected = false;
+        server.pid = None;
+        server.last_error = None;
+        server.last_auth_challenge = None;
+        server.mcp_session_id = None;
+        server.secret_headers.clear();
+        server.secret_header_values.clear();
+        server.oauth = None;
+        server.tool_cache.clear();
+        server.tools_fetched_at_ms = None;
+        server.pending_auth_by_tool.clear();
+        drop(servers);
+        self.persist_state().await;
+        true
+    }
+
     pub async fn complete_auth(&self, name: &str) -> bool {
         let mut servers = self.servers.write().await;
         let Some(server) = servers.get_mut(name) else {
@@ -1577,4 +1611,24 @@ fn delete_oauth_secret_ref(oauth: Option<&McpOAuthConfig>, current_tenant: &Tena
             let _ = tandem_core::delete_provider_auth_for_tenant(current_tenant, secret_id);
         }
     }
+}
+
+fn delete_oauth_credential(
+    oauth: Option<&McpOAuthConfig>,
+    current_tenant: &TenantContext,
+    oauth_security_dir: &Path,
+) {
+    let Some(oauth) = oauth else {
+        return;
+    };
+    let provider_id = oauth.provider_id.trim();
+    if provider_id.is_empty() {
+        return;
+    }
+    let _ = tandem_core::delete_provider_credential_for_tenant_in_dir(
+        oauth_security_dir,
+        current_tenant,
+        provider_id,
+    );
+    let _ = tandem_core::delete_provider_credential(provider_id);
 }
