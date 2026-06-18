@@ -40,3 +40,35 @@ export function takeLastReversed<T>(
   }
   return result;
 }
+
+/**
+ * Returns the maximum element in an array according to a comparator function.
+ * This is an O(N) performance optimization over `[...arr].sort(comparator)[0]`,
+ * avoiding the O(N log N) time complexity of sorting and the O(N) memory allocation of array cloning.
+ */
+export function maxBy<T>(array: readonly T[], comparator: (a: T, b: T) => number): T | undefined {
+  if (array.length === 0) return undefined;
+  let max = array[0];
+  for (let i = 1; i < array.length; i++) {
+    if (comparator(array[i], max) > 0) {
+      max = array[i];
+    }
+  }
+  return max;
+}
+
+/**
+ * Returns the minimum element in an array according to a comparator function.
+ * This is an O(N) performance optimization over `[...arr].sort(comparator)[0]`,
+ * avoiding the O(N log N) time complexity of sorting and the O(N) memory allocation of array cloning.
+ */
+export function minBy<T>(array: readonly T[], comparator: (a: T, b: T) => number): T | undefined {
+  if (array.length === 0) return undefined;
+  let min = array[0];
+  for (let i = 1; i < array.length; i++) {
+    if (comparator(array[i], min) < 0) {
+      min = array[i];
+    }
+  }
+  return min;
+}
