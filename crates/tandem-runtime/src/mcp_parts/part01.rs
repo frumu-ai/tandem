@@ -647,6 +647,11 @@ impl McpRegistry {
         };
         delete_secret_header_refs(&server.secret_headers, &current_tenant);
         delete_oauth_secret_ref(server.oauth.as_ref(), &current_tenant);
+        delete_oauth_credential(
+            server.oauth.as_ref(),
+            &current_tenant,
+            &self.oauth_security_dir,
+        );
         server.connected = false;
         server.pid = None;
         server.last_error = None;
@@ -1606,4 +1611,24 @@ fn delete_oauth_secret_ref(oauth: Option<&McpOAuthConfig>, current_tenant: &Tena
             let _ = tandem_core::delete_provider_auth_for_tenant(current_tenant, secret_id);
         }
     }
+}
+
+fn delete_oauth_credential(
+    oauth: Option<&McpOAuthConfig>,
+    current_tenant: &TenantContext,
+    oauth_security_dir: &Path,
+) {
+    let Some(oauth) = oauth else {
+        return;
+    };
+    let provider_id = oauth.provider_id.trim();
+    if provider_id.is_empty() {
+        return;
+    }
+    let _ = tandem_core::delete_provider_credential_for_tenant_in_dir(
+        oauth_security_dir,
+        current_tenant,
+        provider_id,
+    );
+    let _ = tandem_core::delete_provider_credential(provider_id);
 }
