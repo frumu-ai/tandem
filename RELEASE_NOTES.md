@@ -25,6 +25,9 @@ workflow could advance.
 - The unified approvals endpoint now rehydrates Automation V2 list rows through
   the full run record before filtering pending gates, so a stale or skeletal run
   list entry can no longer hide a live approval gate.
+- Sharded Automation V2 run records now hydrate their pending gate details
+  before inbox aggregation, keeping approval cards visible even when the run
+  metadata is stored across state shards.
 - The control-panel inbox now sorts mixed approval sources by requested time,
   putting a fresh demo approval above older ACA approvals.
 
