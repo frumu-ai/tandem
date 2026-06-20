@@ -1090,6 +1090,33 @@ fn automation_node_metadata_has_nonempty_array(node: &AutomationFlowNode, key: &
         })
 }
 
+fn automation_node_default_output_path_disabled(node: &AutomationFlowNode) -> bool {
+    let Some(metadata) = node.metadata.as_ref() else {
+        return false;
+    };
+    if metadata
+        .get("disable_default_output_path")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    metadata
+        .get("builder")
+        .and_then(Value::as_object)
+        .is_some_and(|builder| {
+            builder
+                .get("disable_default_output_path")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                || builder
+                    .get("output_path_mode")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .is_some_and(|value| value.eq_ignore_ascii_case("none"))
+        })
+}
+
 pub(crate) fn automation_node_declares_workspace_writes(node: &AutomationFlowNode) -> bool {
     if automation_node_has_explicit_output_path(node)
         || automation_node_builder_has_nonempty_array(node, "output_files")
@@ -1170,6 +1197,9 @@ pub(crate) fn automation_node_requires_artifact_write_tool(node: &AutomationFlow
 
 pub(crate) fn automation_node_default_output_path(node: &AutomationFlowNode) -> Option<String> {
     if automation_node_is_bug_monitor_context_artifact(node) {
+        return None;
+    }
+    if automation_node_default_output_path_disabled(node) {
         return None;
     }
     let contract_kind = node

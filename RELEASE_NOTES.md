@@ -2,6 +2,38 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.6.1 (2026-06-20)
+
+Tandem 0.6.1 is a focused workflow-runtime patch release for MCP wrapper
+actions. It fixes a failure mode where Automation V2 nodes that only needed to
+call a concrete MCP wrapper tool were still assigned an implicit JSON artifact
+path, which then made the runtime require unrelated workspace writes before the
+workflow could advance.
+
+### Automation V2 MCP Wrapper Actions
+
+- Action nodes can now explicitly disable synthesized default artifact paths
+  with `metadata.disable_default_output_path`,
+  `builder.disable_default_output_path`, or `builder.output_path_mode = "none"`.
+- This lets connector-wrapper workflows, including Composio Gmail draft
+  approval demos, hand off provider results without being forced through a
+  workspace artifact write path.
+- Added regression coverage for the new default-output opt-out behavior.
+
+### Approvals Inbox
+
+- The unified approvals endpoint now rehydrates Automation V2 list rows through
+  the full run record before filtering pending gates, so a stale or skeletal run
+  list entry can no longer hide a live approval gate.
+- The control-panel inbox now sorts mixed approval sources by requested time,
+  putting a fresh demo approval above older ACA approvals.
+
+### Release Metadata
+
+- Bumped Tandem Rust workspace, desktop, npm, and Python manifests to `0.6.1`.
+- Updated the version bump script so the meta-harness crate and desktop Tauri
+  lockfile are included in future release bumps.
+
 ## v0.6.0 (2026-06-17)
 
 Tandem 0.6.0 is a security- and assurance-focused release that lays the

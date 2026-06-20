@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-06-20
+
+### Fixed
+
+- Fixed Automation V2 wrapper-action nodes that intentionally do not produce a
+  workflow artifact. Nodes can now opt out of synthesized default artifact paths
+  with `metadata.disable_default_output_path`, `builder.disable_default_output_path`,
+  or `builder.output_path_mode = "none"`, preventing MCP wrapper actions such as
+  Composio Gmail draft creation from being forced into an unrelated workspace
+  write requirement.
+- Fixed the approvals inbox path for Automation V2 runs whose list row is stale
+  or skeletal while the full run record is awaiting a gate. Pending approval
+  gates are now resolved from the authoritative run detail before the unified
+  approvals endpoint filters them, and the control-panel inbox orders mixed
+  approval sources newest-first.
+
+### Changed
+
+- Bumped Tandem workspace, desktop, npm, and Python package manifests to
+  `0.6.1`.
+- Updated the version bump script to include the meta-harness crate and desktop
+  Tauri lockfile.
+
 ## [0.6.0] - 2026-06-17
 
 ### Added

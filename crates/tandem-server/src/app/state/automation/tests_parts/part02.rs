@@ -416,6 +416,31 @@ fn delivery_nodes_do_not_get_default_artifact_paths() {
 }
 
 #[test]
+fn metadata_can_disable_default_artifact_paths_for_wrapper_nodes() {
+    let mut node = generic_research_artifact_node();
+    node.metadata = Some(json!({
+        "disable_default_output_path": true
+    }));
+
+    assert_eq!(
+        super::node_runtime_impl::automation_node_default_output_path(&node),
+        None
+    );
+
+    let mut builder_node = generic_research_artifact_node();
+    builder_node.metadata = Some(json!({
+        "builder": {
+            "output_path_mode": "none"
+        }
+    }));
+
+    assert_eq!(
+        super::node_runtime_impl::automation_node_default_output_path(&builder_node),
+        None
+    );
+}
+
+#[test]
 fn mcp_servers_allowlist_namespace_pattern_matches_server() {
     // "mcp.my_server.*" should match server named "my-server" (dashes → underscores)
     let enabled = vec!["my-server".to_string(), "other".to_string()];

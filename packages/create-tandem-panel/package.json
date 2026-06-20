@@ -1,6 +1,6 @@
 {
   "name": "create-tandem-panel",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Scaffold an editable Tandem authority-layer control panel app",
   "type": "module",
   "bin": {
