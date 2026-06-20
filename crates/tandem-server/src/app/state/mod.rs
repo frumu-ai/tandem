@@ -780,6 +780,10 @@ fn automation_run_is_terminal(status: &AutomationRunStatus) -> bool {
     )
 }
 
+fn automation_v2_run_is_nonterminal_recovered_context_run(run: &AutomationV2RunRecord) -> bool {
+    run.trigger_type == "recovered_context_run" && !automation_run_is_terminal(&run.status)
+}
+
 fn compact_automation_v2_runs_for_hot_storage(
     runs: &mut std::collections::HashMap<String, AutomationV2RunRecord>,
     automations: &std::collections::HashMap<String, AutomationV2Spec>,
@@ -858,6 +862,10 @@ async fn write_automation_v2_run_history_shard(
     run: &AutomationV2RunRecord,
 ) -> anyhow::Result<PathBuf> {
     let path = automation_v2_run_history_shard_path(active_path, run);
+    if automation_v2_run_is_nonterminal_recovered_context_run(run) {
+        let _ = fs::remove_file(&path).await;
+        return Ok(path);
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
     }
@@ -887,7 +895,9 @@ async fn load_automation_v2_run_history_shard(
                 continue;
             }
             let raw = fs::read_to_string(&path).await.ok()?;
-            return serde_json::from_str::<AutomationV2RunRecord>(&raw).ok();
+            return serde_json::from_str::<AutomationV2RunRecord>(&raw)
+                .ok()
+                .filter(|run| !automation_v2_run_is_nonterminal_recovered_context_run(run));
         }
     }
     None
@@ -926,6 +936,9 @@ async fn load_automation_v2_run_history_shards(active_path: &Path) -> Vec<Automa
                     continue;
                 };
                 if let Ok(run) = serde_json::from_str::<AutomationV2RunRecord>(&raw) {
+                    if automation_v2_run_is_nonterminal_recovered_context_run(&run) {
+                        continue;
+                    }
                     runs.push(run);
                 }
             }

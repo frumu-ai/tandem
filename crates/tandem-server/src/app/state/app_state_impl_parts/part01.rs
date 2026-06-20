@@ -1678,6 +1678,10 @@ impl AppState {
         let recovered_context_runs =
             automation_v2_context_recovery::merge_recovered_automation_v2_runs(self, &mut merged)
                 .await;
+        let before_recovered_context_cleanup = merged.len();
+        merged.retain(|_, run| !automation_v2_run_is_nonterminal_recovered_context_run(run));
+        let dropped_nonterminal_recovered_context_runs =
+            before_recovered_context_cleanup.saturating_sub(merged.len());
         let active_runs_path = self.automation_v2_runs_path.display().to_string();
         let run_path_count_summary = path_counts
             .iter()
@@ -1689,6 +1693,7 @@ impl AppState {
             path_counts = ?run_path_count_summary,
             merged_count = merged.len(),
             recovered_context_runs,
+            dropped_nonterminal_recovered_context_runs,
             "loaded automation v2 runs"
         );
         *self.automation_v2_runs.write().await = merged;
@@ -1707,7 +1712,11 @@ impl AppState {
                 "automation v2 definitions are empty while run history exists"
             );
         }
-        if loaded_from_alternate || recovered > 0 || recovered_context_runs > 0 {
+        if loaded_from_alternate
+            || recovered > 0
+            || recovered_context_runs > 0
+            || dropped_nonterminal_recovered_context_runs > 0
+        {
             let _ = self.persist_automation_v2_runs().await;
         } else if canonical_loaded {
             let _ =
@@ -1726,6 +1735,7 @@ impl AppState {
             write_automation_v2_run_history_shard(&self.automation_v2_runs_path, run).await?;
         }
         let mut compacted = runs_snapshot;
+        compacted.retain(|_, run| !automation_v2_run_is_nonterminal_recovered_context_run(run));
         compact_automation_v2_runs_for_hot_storage(
             &mut compacted,
             &automations_snapshot,

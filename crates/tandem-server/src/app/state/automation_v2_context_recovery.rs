@@ -119,6 +119,9 @@ async fn load_recovered_automation_v2_context_run(
         .and_then(Value::as_u64)
         .unwrap_or(fallback_updated_at_ms.max(created_at_ms));
     let status = automation_status_from_context_value(value.get("status").and_then(Value::as_str));
+    if !automation_run_is_terminal(&status) {
+        return None;
+    }
     let finished_at_ms = value
         .get("ended_at_ms")
         .and_then(Value::as_u64)
