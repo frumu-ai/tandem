@@ -382,6 +382,7 @@ async fn approvals_pending_endpoint_uses_full_run_when_hot_row_is_stale() {
         hot.status = crate::AutomationRunStatus::Queued;
         hot.detail = Some("stale list row".to_string());
         hot.checkpoint.awaiting_gate = None;
+        hot.checkpoint.node_outputs.clear();
         hot.updated_at_ms = hot.updated_at_ms.saturating_add(60_000);
     }
 
