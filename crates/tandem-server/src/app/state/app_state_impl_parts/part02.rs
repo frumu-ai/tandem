@@ -1732,7 +1732,12 @@ impl AppState {
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        rows.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+        rows.sort_by(|a, b| {
+            b.updated_at_ms
+                .cmp(&a.updated_at_ms)
+                .then_with(|| b.created_at_ms.cmp(&a.created_at_ms))
+                .then_with(|| a.optimization_id.cmp(&b.optimization_id))
+        });
         rows
     }
 
