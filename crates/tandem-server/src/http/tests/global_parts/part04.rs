@@ -238,3 +238,322 @@ async fn automation_v2_publish_block_smoke_skips_external_action_receipts() {
         Some(0)
     );
 }
+
+#[tokio::test]
+async fn automations_v2_run_cancel_records_operator_stop_kind_and_clears_active_ids() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let automation = create_test_automation_v2(&state, "auto-v2-stop-kind").await;
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("run");
+    let _ = state
+        .add_automation_v2_session(&run.run_id, "session-a")
+        .await;
+    let _ = state
+        .add_automation_v2_session(&run.run_id, "session-b")
+        .await;
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = crate::AutomationRunStatus::Running;
+            row.active_session_ids = vec!["session-a".to_string(), "session-b".to_string()];
+            row.active_instance_ids = vec!["instance-a".to_string()];
+        })
+        .await
+        .expect("updated run");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/automations/v2/runs/{}/cancel", run.run_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "reason": "kill switch triggered by operator" }).to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    let context_run_id = payload
+        .get("contextRunID")
+        .and_then(Value::as_str)
+        .expect("context run id");
+    assert_eq!(
+        payload.get("linked_context_run_id").and_then(Value::as_str),
+        Some(context_run_id)
+    );
+    assert_eq!(
+        payload
+            .get("run")
+            .and_then(|value| value.get("contextRunID"))
+            .and_then(Value::as_str),
+        Some(context_run_id)
+    );
+    assert_eq!(
+        payload
+            .get("run")
+            .and_then(|value| value.get("status"))
+            .and_then(Value::as_str),
+        Some("cancelled")
+    );
+    assert!(payload
+        .get("run")
+        .and_then(|value| value.get("activeSessionIDs"))
+        .and_then(Value::as_array)
+        .map(|values| values.is_empty())
+        .unwrap_or(true));
+    assert!(payload
+        .get("run")
+        .and_then(|value| value.get("activeInstanceIDs"))
+        .and_then(Value::as_array)
+        .map(|values| values.is_empty())
+        .unwrap_or(true));
+
+    let cancelled = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("cancelled run");
+    assert_eq!(cancelled.status, crate::AutomationRunStatus::Cancelled);
+    assert_eq!(
+        cancelled.stop_kind,
+        Some(crate::AutomationStopKind::OperatorStopped)
+    );
+    assert_eq!(
+        cancelled.stop_reason.as_deref(),
+        Some("kill switch triggered by operator")
+    );
+    assert!(cancelled.active_session_ids.is_empty());
+    assert!(cancelled.active_instance_ids.is_empty());
+    state
+        .apply_provider_usage_to_runs("session-a", 10, 20, 30)
+        .await;
+    let after_usage = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("run after late usage");
+    assert_eq!(after_usage.total_tokens, 0);
+    let stop_event = cancelled
+        .checkpoint
+        .lifecycle_history
+        .iter()
+        .find(|entry| entry.event == "run_stopped")
+        .expect("run stopped event");
+    assert_eq!(
+        stop_event.stop_kind,
+        Some(crate::AutomationStopKind::OperatorStopped)
+    );
+    assert_eq!(
+        stop_event.reason.as_deref(),
+        Some("kill switch triggered by operator")
+    );
+}
+
+#[tokio::test]
+async fn automations_v2_run_cancel_is_idempotent_for_terminal_runs() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let automation = create_test_automation_v2(&state, "auto-v2-terminal-cancel").await;
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("run");
+    let _ = state
+        .add_automation_v2_session(&run.run_id, "session-terminal-a")
+        .await;
+    let _ = state
+        .add_automation_v2_session(&run.run_id, "session-terminal-b")
+        .await;
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = crate::AutomationRunStatus::Completed;
+            row.detail = Some("completed before operator cleanup".to_string());
+            row.active_session_ids = vec![
+                "session-terminal-a".to_string(),
+                "session-terminal-b".to_string(),
+            ];
+            row.latest_session_id = Some("session-terminal-b".to_string());
+            row.active_instance_ids = vec!["instance-terminal-a".to_string()];
+        })
+        .await
+        .expect("completed run");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/automations/v2/runs/{}/cancel", run.run_id))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "reason": "cleanup old row" }).to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(
+        payload.get("alreadyTerminal").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        payload
+            .get("run")
+            .and_then(|value| value.get("status"))
+            .and_then(Value::as_str),
+        Some("completed")
+    );
+    assert!(payload
+        .get("run")
+        .and_then(|value| value.get("activeSessionIDs"))
+        .and_then(Value::as_array)
+        .map(|values| values.is_empty())
+        .unwrap_or(true));
+    assert!(payload
+        .get("run")
+        .and_then(|value| value.get("activeInstanceIDs"))
+        .and_then(Value::as_array)
+        .map(|values| values.is_empty())
+        .unwrap_or(true));
+    let context_run_id = payload
+        .get("contextRunID")
+        .and_then(Value::as_str)
+        .expect("context run id");
+    assert_eq!(
+        payload.get("linked_context_run_id").and_then(Value::as_str),
+        Some(context_run_id)
+    );
+
+    let stored = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("stored run");
+    assert_eq!(stored.status, crate::AutomationRunStatus::Completed);
+    assert_eq!(
+        stored.detail.as_deref(),
+        Some("completed before operator cleanup")
+    );
+    assert!(stored.active_session_ids.is_empty());
+    assert!(stored.active_instance_ids.is_empty());
+    assert!(stored.latest_session_id.is_none());
+    state
+        .apply_provider_usage_to_runs("session-terminal-a", 10, 20, 30)
+        .await;
+    let after_usage = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("run after late usage");
+    assert_eq!(after_usage.total_tokens, 0);
+}
+
+#[tokio::test]
+async fn automations_v2_run_pause_clears_active_sessions_and_instances() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let automation = create_test_automation_v2(&state, "auto-v2-pause-active-cleanup").await;
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("run");
+    let _ = state
+        .add_automation_v2_session(&run.run_id, "session-a")
+        .await;
+    let _ = state
+        .add_automation_v2_session(&run.run_id, "session-b")
+        .await;
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = crate::AutomationRunStatus::Running;
+            row.active_session_ids = vec!["session-a".to_string(), "session-b".to_string()];
+            row.active_instance_ids = vec!["instance-a".to_string(), "instance-b".to_string()];
+        })
+        .await
+        .expect("updated run");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/automations/v2/runs/{}/pause", run.run_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "reason": "pause for operator checkpoint" }).to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    let context_run_id = payload
+        .get("contextRunID")
+        .and_then(Value::as_str)
+        .expect("context run id");
+    assert_eq!(
+        payload.get("linked_context_run_id").and_then(Value::as_str),
+        Some(context_run_id)
+    );
+    assert_eq!(
+        payload
+            .get("run")
+            .and_then(|value| value.get("contextRunID"))
+            .and_then(Value::as_str),
+        Some(context_run_id)
+    );
+    assert_eq!(
+        payload
+            .get("run")
+            .and_then(|value| value.get("status"))
+            .and_then(Value::as_str),
+        Some("paused")
+    );
+    assert!(payload
+        .get("run")
+        .and_then(|value| value.get("activeSessionIDs"))
+        .and_then(Value::as_array)
+        .map(|values| values.is_empty())
+        .unwrap_or(true));
+    assert!(payload
+        .get("run")
+        .and_then(|value| value.get("activeInstanceIDs"))
+        .and_then(Value::as_array)
+        .map(|values| values.is_empty())
+        .unwrap_or(true));
+
+    let paused = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("paused run");
+    assert_eq!(paused.status, crate::AutomationRunStatus::Paused);
+    assert!(paused.active_session_ids.is_empty());
+    assert!(paused.active_instance_ids.is_empty());
+    let pause_event = paused
+        .checkpoint
+        .lifecycle_history
+        .iter()
+        .find(|entry| entry.event == "run_paused")
+        .expect("run paused event");
+    assert_eq!(
+        pause_event.reason.as_deref(),
+        Some("pause for operator checkpoint")
+    );
+    state
+        .apply_provider_usage_to_runs("session-a", 10, 20, 30)
+        .await;
+    let after_usage = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("run after late usage");
+    assert_eq!(after_usage.total_tokens, 0);
+}

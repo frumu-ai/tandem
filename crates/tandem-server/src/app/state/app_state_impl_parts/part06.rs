@@ -1,8 +1,16 @@
 // Continuation of the AppState impl split from part01.rs for the file-size gate.
 // A second `impl AppState` block (Rust permits multiple); included via mod.rs.
 
-impl AppState {
+fn automation_v2_definition_is_context_recovered(automation: &AutomationV2Spec) -> bool {
+    automation
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("recovered_from"))
+        .and_then(Value::as_str)
+        == Some("context_run")
+}
 
+impl AppState {
     async fn recover_automation_definitions_from_run_snapshots(&self) -> anyhow::Result<usize> {
         let runs = self
             .automation_v2_runs
@@ -14,10 +22,23 @@ impl AppState {
         let mut guard = self.automations_v2.write().await;
         let mut recovered = 0usize;
         for run in runs {
+            if run.trigger_type == "recovered_context_run"
+                && !Self::automation_run_is_terminal(&run.status)
+            {
+                continue;
+            }
             let Some(snapshot) = run.automation_snapshot.clone() else {
                 continue;
             };
+            let snapshot_is_context_recovered =
+                automation_v2_definition_is_context_recovered(&snapshot);
             let should_replace = match guard.get(&run.automation_id) {
+                Some(existing)
+                    if snapshot_is_context_recovered
+                        && !automation_v2_definition_is_context_recovered(existing) =>
+                {
+                    false
+                }
                 Some(existing) => existing.updated_at_ms < snapshot.updated_at_ms,
                 None => true,
             };

@@ -811,10 +811,11 @@ mod tests {
             spawn_auth_required_http_mcp_server("Bearer tenant-a-secret").await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
         let registry = McpRegistry::new_with_state_file(file);
+        let server_name = "tenant-server-matching";
         let tenant_a = TenantContext::explicit("tenant-a", "workspace-a", None);
         registry
             .add_or_update_with_secret_refs(
-                "tenant-server".to_string(),
+                server_name.to_string(),
                 endpoint,
                 HashMap::from([(
                     "Authorization".to_string(),
@@ -826,16 +827,16 @@ mod tests {
             )
             .await;
 
-        assert!(registry.connect("tenant-server").await);
+        assert!(registry.connect(server_name).await);
         let result = registry
-            .call_tool_for_tenant("tenant-server", "get_me", json!({}), &tenant_a)
+            .call_tool_for_tenant(server_name, "get_me", json!({}), &tenant_a)
             .await
             .expect("tenant A should execute with tenant A secret");
         assert!(result.output.contains("tenant-authenticated"));
         server.abort();
         let _ = tandem_core::delete_provider_auth_for_tenant(
             &tenant_a,
-            "mcp_header::tenant-server::authorization",
+            &format!("mcp_header::{server_name}::authorization"),
         );
     }
 
@@ -845,11 +846,12 @@ mod tests {
             spawn_auth_required_http_mcp_server("Bearer tenant-a-secret").await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
         let registry = McpRegistry::new_with_state_file(file);
+        let server_name = "tenant-server-mismatch-connected";
         let tenant_a = TenantContext::explicit("tenant-a", "workspace-a", None);
         let tenant_b = TenantContext::explicit("tenant-b", "workspace-b", None);
         registry
             .add_or_update_with_secret_refs(
-                "tenant-server".to_string(),
+                server_name.to_string(),
                 endpoint,
                 HashMap::from([(
                     "Authorization".to_string(),
@@ -861,9 +863,9 @@ mod tests {
             )
             .await;
 
-        assert!(registry.connect("tenant-server").await);
+        assert!(registry.connect(server_name).await);
         let err = registry
-            .call_tool_for_tenant("tenant-server", "get_me", json!({}), &tenant_b)
+            .call_tool_for_tenant(server_name, "get_me", json!({}), &tenant_b)
             .await
             .expect_err("tenant B must not execute with tenant A secret");
         assert!(err.contains("ToolDenied { reason: TenantScope }"));
@@ -871,7 +873,7 @@ mod tests {
         server.abort();
         let _ = tandem_core::delete_provider_auth_for_tenant(
             &tenant_a,
-            "mcp_header::tenant-server::authorization",
+            &format!("mcp_header::{server_name}::authorization"),
         );
     }
 
@@ -881,11 +883,12 @@ mod tests {
             spawn_auth_required_http_mcp_server("Bearer tenant-a-secret").await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
         let registry = McpRegistry::new_with_state_file(file);
+        let server_name = "tenant-server-mismatch-before-reconnect";
         let tenant_a = TenantContext::explicit("tenant-a", "workspace-a", None);
         let tenant_b = TenantContext::explicit("tenant-b", "workspace-b", None);
         registry
             .add_or_update_with_secret_refs(
-                "tenant-server".to_string(),
+                server_name.to_string(),
                 endpoint,
                 HashMap::from([(
                     "Authorization".to_string(),
@@ -898,14 +901,14 @@ mod tests {
             .await;
 
         let err = registry
-            .call_tool_for_tenant("tenant-server", "get_me", json!({}), &tenant_b)
+            .call_tool_for_tenant(server_name, "get_me", json!({}), &tenant_b)
             .await
             .expect_err("tenant B must be denied before reconnecting tenant A server");
         assert!(err.contains("ToolDenied { reason: TenantScope }"));
         let tenant_server = registry
             .list()
             .await
-            .get("tenant-server")
+            .get(server_name)
             .cloned()
             .expect("tenant server row");
         assert!(
@@ -915,7 +918,7 @@ mod tests {
         server.abort();
         let _ = tandem_core::delete_provider_auth_for_tenant(
             &tenant_a,
-            "mcp_header::tenant-server::authorization",
+            &format!("mcp_header::{server_name}::authorization"),
         );
     }
 }

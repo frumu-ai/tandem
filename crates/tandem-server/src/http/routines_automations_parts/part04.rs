@@ -479,12 +479,35 @@ pub(super) async fn automations_v2_run_cancel(
             | AutomationRunStatus::Completed
             | AutomationRunStatus::Failed
     ) {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(
-                json!({"error":"Run already terminal", "code":"AUTOMATION_V2_RUN_TERMINAL", "runID": run_id}),
-            ),
-        ));
+        let session_ids = current.active_session_ids.clone();
+        let instance_ids = current.active_instance_ids.clone();
+        state.forget_automation_v2_sessions(&session_ids).await;
+        let cleaned = if session_ids.is_empty() && instance_ids.is_empty() {
+            current
+        } else {
+            state
+                .update_automation_v2_run(&run_id, |run| {
+                    run.active_session_ids.clear();
+                    run.active_instance_ids.clear();
+                    run.latest_session_id = None;
+                })
+                .await
+                .unwrap_or(current)
+        };
+        spawn_automation_v2_run_cleanup(
+            state.clone(),
+            session_ids,
+            instance_ids,
+            "terminal automation run cleanup",
+        );
+        let context_run_id = super::context_runs::automation_v2_context_run_id(&run_id);
+        return Ok(Json(json!({
+            "ok": true,
+            "alreadyTerminal": true,
+            "run": automation_v2_run_with_context_links(&state, &cleaned).await,
+            "contextRunID": context_run_id,
+            "linked_context_run_id": context_run_id,
+        })));
     }
     let session_ids = current.active_session_ids.clone();
     let instance_ids = current.active_instance_ids.clone();

@@ -95,7 +95,28 @@ async fn automation_v2_recovers_legacy_context_runs_for_history_and_library() {
     )
     .expect("write context run state");
 
+    let queued_context_run_id = "automation-v2-automation-v2-run-context-queued";
+    let queued_context_run_dir = root.join("context_runs").join(queued_context_run_id);
+    std::fs::create_dir_all(&queued_context_run_dir).expect("queued context run dir");
+    let mut queued_run_state = run_state.clone();
+    queued_run_state["run_id"] = json!(queued_context_run_id);
+    queued_run_state["status"] = json!("queued");
+    queued_run_state["tasks"][0]["payload"]["receipt_timeline"]["records"][0]["payload"]
+        ["run_id"] = json!("automation-v2-run-context-queued");
+    queued_run_state["tasks"][0]["payload"]["receipt_timeline"]["records"][0]["payload"]
+        ["automation_id"] = json!("auto-from-queued-context");
+    std::fs::write(
+        queued_context_run_dir.join("run_state.json"),
+        serde_json::to_string_pretty(&queued_run_state).expect("queued run state json"),
+    )
+    .expect("write queued context run state");
+
     let rows = state.list_automation_v2_runs(None, 20).await;
+    assert!(
+        rows.iter()
+            .all(|row| row.run_id != "automation-v2-run-context-queued"),
+        "non-terminal context-run mirrors should not be recovered as queued automation runs"
+    );
     let recovered = rows
         .iter()
         .find(|row| row.run_id == "automation-v2-run-context-history")
@@ -142,6 +163,111 @@ async fn automation_v2_recovers_legacy_context_runs_for_history_and_library() {
     assert_eq!(automation.name, "Recovered automation from context state");
     assert_eq!(automation.workspace_root.as_deref(), Some("/tmp/recovered-workspace"));
     assert_eq!(automation.flow.nodes.len(), 2);
+}
+
+#[tokio::test]
+async fn automation_v2_load_drops_nonterminal_recovered_context_runs() {
+    let mut state = test_state_with_path(tmp_resource_file("automation-recovered-context-state"));
+    state.automation_v2_runs_path = tmp_resource_file("automation-recovered-context-runs");
+    let mut run = AutomationRunBuilder::new("run-recovered-context-queued", "auto-recovered")
+        .status(AutomationRunStatus::Queued)
+        .build();
+    run.trigger_type = "recovered_context_run".to_string();
+    run.automation_snapshot = Some(AutomationSpecBuilder::new("auto-recovered").build());
+    {
+        let mut runs = state.automation_v2_runs.write().await;
+        runs.insert(run.run_id.clone(), run.clone());
+    }
+    state
+        .persist_automation_v2_runs()
+        .await
+        .expect("persist recovered context run");
+    let shard_path = automation_v2_run_history_shard_path(&state.automation_v2_runs_path, &run);
+    std::fs::create_dir_all(shard_path.parent().expect("history shard parent"))
+        .expect("history shard dir");
+    std::fs::write(
+        &shard_path,
+        serde_json::to_string_pretty(&run).expect("history shard json"),
+    )
+    .expect("write stale history shard");
+    state.automation_v2_runs.write().await.clear();
+
+    state
+        .load_automation_v2_runs()
+        .await
+        .expect("reload recovered context runs");
+
+    assert!(state
+        .automation_v2_runs
+        .read()
+        .await
+        .get("run-recovered-context-queued")
+        .is_none());
+    assert!(state
+        .get_automation_v2_run("run-recovered-context-queued")
+        .await
+        .is_none());
+    assert!(state
+        .list_automation_v2_runs(Some("auto-recovered"), 20)
+        .await
+        .is_empty());
+}
+
+#[tokio::test]
+async fn automation_v2_context_recovery_does_not_replace_existing_definition() {
+    let mut state = test_state_with_path(tmp_resource_file("automation-context-definition-state"));
+    state.automations_v2_path = tmp_resource_file("automation-context-definition-defs");
+    state.automation_v2_runs_path = tmp_resource_file("automation-context-definition-runs");
+
+    let mut existing = AutomationSpecBuilder::new("auto-existing")
+        .name("Real Automation")
+        .metadata(json!({ "source": "real" }))
+        .build();
+    existing.updated_at_ms = 10;
+    state
+        .automations_v2
+        .write()
+        .await
+        .insert(existing.automation_id.clone(), existing.clone());
+
+    let mut recovered_snapshot = AutomationSpecBuilder::new("auto-existing")
+        .name("Recovered Automation")
+        .metadata(json!({ "recovered_from": "context_run" }))
+        .build();
+    recovered_snapshot.updated_at_ms = 20;
+    let mut run = AutomationRunBuilder::new("run-recovered-definition", "auto-existing")
+        .status(AutomationRunStatus::Blocked)
+        .build();
+    run.trigger_type = "recovered_context_run".to_string();
+    run.automation_snapshot = Some(recovered_snapshot);
+    {
+        let mut runs = state.automation_v2_runs.write().await;
+        runs.insert(run.run_id.clone(), run);
+    }
+    state
+        .persist_automation_v2_runs()
+        .await
+        .expect("persist recovered context snapshot");
+    state.automation_v2_runs.write().await.clear();
+
+    state
+        .load_automation_v2_runs()
+        .await
+        .expect("reload recovered context snapshot");
+
+    let automation = state
+        .get_automation_v2("auto-existing")
+        .await
+        .expect("existing automation");
+    assert_eq!(automation.name, "Real Automation");
+    assert_eq!(
+        automation
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("source"))
+            .and_then(Value::as_str),
+        Some("real")
+    );
 }
 
 #[tokio::test]

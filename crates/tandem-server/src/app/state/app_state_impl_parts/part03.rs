@@ -1287,7 +1287,13 @@ impl AppState {
     }
 
     pub async fn get_automation_v2_run(&self, run_id: &str) -> Option<AutomationV2RunRecord> {
-        let hot = self.automation_v2_runs.read().await.get(run_id).cloned();
+        let hot = self
+            .automation_v2_runs
+            .read()
+            .await
+            .get(run_id)
+            .cloned()
+            .filter(|run| !automation_v2_run_is_nonterminal_recovered_context_run(run));
         let history =
             load_automation_v2_run_history_shard(&self.automation_v2_runs_path, run_id).await;
         match (hot, history) {
@@ -1334,6 +1340,7 @@ impl AppState {
             .await
             .values()
             .cloned()
+            .filter(|run| !automation_v2_run_is_nonterminal_recovered_context_run(run))
             .map(|run| (run.run_id.clone(), run))
             .collect::<std::collections::HashMap<_, _>>();
         for history_run in
