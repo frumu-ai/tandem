@@ -382,9 +382,25 @@ async fn approvals_pending_endpoint_uses_full_run_when_hot_row_is_stale() {
         hot.status = crate::AutomationRunStatus::Queued;
         hot.detail = Some("stale list row".to_string());
         hot.checkpoint.awaiting_gate = None;
-        hot.checkpoint.node_outputs.clear();
         hot.updated_at_ms = hot.updated_at_ms.saturating_add(60_000);
     }
+
+    let hydrated = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("hydrated run");
+    assert_eq!(
+        hydrated.status,
+        crate::AutomationRunStatus::AwaitingApproval
+    );
+    assert_eq!(
+        hydrated
+            .checkpoint
+            .awaiting_gate
+            .as_ref()
+            .map(|gate| gate.node_id.as_str()),
+        Some("approval")
+    );
 
     let resp = app
         .oneshot(

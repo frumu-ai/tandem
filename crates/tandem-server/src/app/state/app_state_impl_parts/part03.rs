@@ -1292,11 +1292,24 @@ impl AppState {
             load_automation_v2_run_history_shard(&self.automation_v2_runs_path, run_id).await;
         match (hot, history) {
             (Some(hot), Some(history)) => {
+                let history_has_pending_gate = history
+                    .checkpoint
+                    .awaiting_gate
+                    .as_ref()
+                    .is_some_and(|gate| {
+                        !Self::automation_run_is_terminal(&hot.status)
+                            && hot.checkpoint.awaiting_gate.is_none()
+                            && !hot
+                                .checkpoint
+                                .gate_history
+                                .iter()
+                                .any(|record| record.node_id == gate.node_id)
+                    });
                 let history_has_more_detail = history.checkpoint.node_outputs.len()
                     > hot.checkpoint.node_outputs.len()
                     || (hot.runtime_context.is_none() && history.runtime_context.is_some())
                     || (hot.automation_snapshot.is_none() && history.automation_snapshot.is_some());
-                if history_has_more_detail {
+                if history_has_pending_gate || history_has_more_detail {
                     Some(history)
                 } else {
                     Some(hot)
