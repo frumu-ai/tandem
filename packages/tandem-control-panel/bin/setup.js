@@ -5924,7 +5924,7 @@ const handleSwarmApi = createSwarmApiHandler({
 
 const handleCapabilities = createCapabilitiesHandler({
   PROBE_TIMEOUT_MS: Number.parseInt(process.env.ACA_PROBE_TIMEOUT_MS || "5000", 10),
-  ACA_PROBE_GRACE_MS: Number.parseInt(process.env.ACA_PROBE_GRACE_MS || "120000", 10),
+  ACA_PROBE_GRACE_MS: Number.parseInt(process.env.ACA_PROBE_GRACE_MS || "900000", 10),
   ACA_BASE_URL,
   ACA_HEALTH_PATH: process.env.ACA_HEALTH_PATH || "/health",
   getAcaToken,

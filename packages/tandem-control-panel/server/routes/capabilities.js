@@ -1,5 +1,5 @@
 const DEFAULT_CAPABILITY_CACHE_TTL_MS = 45_000;
-const DEFAULT_ACA_PROBE_GRACE_MS = 120_000;
+const DEFAULT_ACA_PROBE_GRACE_MS = 15 * 60_000;
 
 let _cache = {
   value: null,
@@ -130,7 +130,7 @@ export function createCapabilitiesHandler(deps) {
     return { available: false, ...lastFailure };
   }
 
-  function smoothAcaProbeResult(probe) {
+  function smoothAcaProbeResult(probe, { engineOk = false } = {}) {
     if (probe?.available) return probe;
     const reason = String(probe?.reason || "");
     if (!["aca_probe_timeout", "aca_probe_error"].includes(reason)) return probe;
@@ -143,7 +143,8 @@ export function createCapabilitiesHandler(deps) {
       lastHealthyAtMs > 0 &&
       _acaProbeState.lastHealthyBaseUrl === base &&
       Date.now() - lastHealthyAtMs <= graceMs;
-    if (!recentlyHealthy) return probe;
+    const configuredTimeoutWithHealthyEngine = reason === "aca_probe_timeout" && !!base && engineOk;
+    if (!recentlyHealthy && !configuredTimeoutWithHealthyEngine) return probe;
     return {
       available: true,
       reason,
@@ -182,7 +183,7 @@ export function createCapabilitiesHandler(deps) {
     const t0 = Date.now();
     const health = await engineHealth().catch(() => null);
     const engineOk = engineIsHealthy(health);
-    const aca = smoothAcaProbeResult(await probeAca());
+    const aca = smoothAcaProbeResult(await probeAca(), { engineOk });
     const features = await probeEngineFeatures(engineOk, aca.available);
     const durationMs = Date.now() - t0;
     let installProfile = null;

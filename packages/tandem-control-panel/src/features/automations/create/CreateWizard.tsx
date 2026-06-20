@@ -152,8 +152,59 @@ const AUTOMATION_WIZARD_SOURCE = Object.values(AUTOMATION_WIZARD_SOURCES).find(
   (value): value is string => typeof value === "string" && value.trim().length > 0
 );
 
+const AUTOMATION_IMPORT_FIELDS = [
+  "automation_id",
+  "name",
+  "description",
+  "status",
+  "schedule",
+  "agents",
+  "flow",
+  "execution",
+  "output_targets",
+  "creator_id",
+  "workspace_root",
+  "metadata",
+  "scope_policy",
+  "watch_conditions",
+  "handoff_config",
+] as const;
+
 function safeString(value: unknown) {
   return String(value || "").trim();
+}
+
+function objectValue(value: unknown): Record<string, any> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, any>)
+    : null;
+}
+
+function automationSpecFromImportedJson(parsed: unknown) {
+  const root = objectValue(parsed);
+  const candidate =
+    objectValue(root?.automation) ||
+    objectValue(root?.source_automation) ||
+    objectValue(root?.spec) ||
+    root;
+  if (!candidate) throw new Error("Import file must contain a Tandem automation JSON object.");
+  const payload: Record<string, any> = {};
+  for (const field of AUTOMATION_IMPORT_FIELDS) {
+    if (candidate[field] !== undefined) payload[field] = candidate[field];
+  }
+  if (!safeString(payload.name)) {
+    throw new Error("Automation import is missing a name.");
+  }
+  if (!objectValue(payload.schedule)) {
+    throw new Error("Automation import is missing a schedule.");
+  }
+  if (!objectValue(payload.flow)) {
+    throw new Error("Automation import is missing a workflow flow.");
+  }
+  if (payload.agents !== undefined && !Array.isArray(payload.agents)) {
+    throw new Error("Automation import agents must be an array.");
+  }
+  return payload;
 }
 
 function findScrollableParent(node: HTMLElement | null): HTMLElement | null {
@@ -472,6 +523,7 @@ export function CreateWizard({
 }) {
   const queryClient = useQueryClient();
   const wizardRootRef = useRef<HTMLDivElement | null>(null);
+  const importAutomationFileRef = useRef<HTMLInputElement | null>(null);
   const [step, setStep] = useState<WizardStep>(1);
   const [planSource, setPlanSource] = useState<string>("automations_page");
   const [routerMatches, setRouterMatches] = useState<
@@ -955,6 +1007,63 @@ export function CreateWizard({
       toast("err", message);
     },
   });
+  const importAutomationMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const text = await file.text();
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        throw new Error("Import file must be valid JSON.");
+      }
+      const payload = automationSpecFromImportedJson(parsed);
+      const automationId = safeString(payload.automation_id);
+      let existing = false;
+      if (automationId) {
+        try {
+          await api(`/api/engine/automations/v2/${encodeURIComponent(automationId)}`);
+          existing = true;
+        } catch (error) {
+          if ((error as any)?.status && (error as any).status !== 404) {
+            throw error;
+          }
+        }
+      }
+      if (
+        existing &&
+        !window.confirm(
+          `Replace the existing automation "${safeString(payload.name)}" with this imported JSON?`
+        )
+      ) {
+        return { cancelled: true, automation: null, name: safeString(payload.name) };
+      }
+      const response = await api("/api/engine/automations/v2", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      return {
+        cancelled: false,
+        automation: response?.automation || response,
+        name: safeString(payload.name),
+      };
+    },
+    onSuccess: async (result) => {
+      if (result?.cancelled) return;
+      const importedName =
+        safeString(result?.automation?.name) || safeString(result?.name) || "Automation";
+      toast("ok", `Imported "${importedName}".`);
+      await queryClient.invalidateQueries({ queryKey: ["automations"] });
+      onCreated?.();
+    },
+    onError: (error) => {
+      toast("err", error instanceof Error ? error.message : String(error));
+    },
+    onSettled: () => {
+      if (importAutomationFileRef.current) {
+        importAutomationFileRef.current.value = "";
+      }
+    },
+  });
 
   const workspaceRootError = validateWorkspaceRootInput(wizard.workspaceRoot);
   const plannerModelError = validatePlannerModelInput(
@@ -987,11 +1096,18 @@ export function CreateWizard({
         message: "Tandem is creating the automation. Stay on this page until it finishes.",
       };
     }
+    if (importAutomationMutation.isPending) {
+      return {
+        title: "Importing automation",
+        message: "Tandem is importing the automation JSON. Stay on this page until it finishes.",
+      };
+    }
     return null;
   }, [
     compileMutation.isPending,
     deployMutation.isPending,
     generateSkillMutation.isPending,
+    importAutomationMutation.isPending,
     installGeneratedSkillMutation.isPending,
     planningMessageMutation.isPending,
     planningResetMutation.isPending,
@@ -1110,6 +1226,36 @@ export function CreateWizard({
 
   return (
     <div ref={wizardRootRef} className="flex flex-col h-full gap-4 min-h-0 relative">
+      <input
+        ref={importAutomationFileRef}
+        type="file"
+        accept=".json,application/json"
+        className="hidden"
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          if (!file) return;
+          importAutomationMutation.mutate(file);
+        }}
+      />
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border border-slate-800/70 bg-slate-950/30 px-3 py-3">
+        <div className="min-w-0">
+          <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+            Import Automation JSON
+          </div>
+          <div className="mt-1 text-xs text-slate-400">
+            Restore a workflow automation exported from another Tandem control panel.
+          </div>
+        </div>
+        <button
+          type="button"
+          className="tcp-btn h-9 px-3 text-sm"
+          onClick={() => importAutomationFileRef.current?.click()}
+          disabled={importAutomationMutation.isPending}
+        >
+          <i data-lucide="upload"></i>
+          {importAutomationMutation.isPending ? "Importing..." : "Import JSON"}
+        </button>
+      </div>
       <div className="flex items-center gap-2">
         {AUTOMATION_WIZARD_CONFIG.steps.map((label, i) => {
           const num = (i + 1) as WizardStep;

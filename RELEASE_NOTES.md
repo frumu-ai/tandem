@@ -28,6 +28,36 @@ workflow could advance.
 - The control-panel inbox now sorts mixed approval sources by requested time,
   putting a fresh demo approval above older ACA approvals.
 
+### Automation V2 Recovery And Portability
+
+- Legacy `automation-v2-*` context-run directories are now recovered into
+  Automation V2 run history. Tandem reconstructs run records, checkpoint state,
+  and automation snapshots from `run_state.json`, then merges the newest
+  recovered record into history/detail APIs and persists it back to canonical
+  run storage.
+- Recovered context runs also appear in the Automation V2 library when enough
+  snapshot information is present, making interrupted or pre-migration workflow
+  runs discoverable again instead of stranded in context-run storage.
+- The control panel can now export an Automation V2 JSON spec from the edit
+  dialog and import that JSON through the creation wizard, including replacement
+  confirmation when the imported automation id already exists.
+
+### Control Panel Connectivity
+
+- ACA availability probing now has a longer default grace window, so the Coder
+  dashboard is less likely to flip to disconnected while a recently healthy ACA
+  endpoint is slow during task selection or board refresh.
+- When ACA is configured and the Tandem engine is healthy, ACA probe timeouts
+  are smoothed as degraded-but-available instead of immediately hiding Coder
+  actions.
+
+### MCP Provider Guidance
+
+- The automated-agents guide now documents Composio Connect and scoped Composio
+  MCP server URLs separately, including generated MCP URL usage, `x-api-key`
+  requirements, and REST-only setup examples for creating and generating
+  Composio MCP server URLs.
+
 ### Release Metadata
 
 - Bumped Tandem Rust workspace, desktop, npm, and Python manifests to `0.6.1`.

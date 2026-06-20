@@ -1265,6 +1265,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
         automationsV2List={automationsV2 ?? []}
         client={client}
         onRecreateWorkflowAutomation={onRecreateWorkflowAutomation}
+        toast={toast}
       />
       <DeleteAutomationDialog
         deleteConfirm={deleteConfirm}

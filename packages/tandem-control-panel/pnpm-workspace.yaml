@@ -1,2 +1,5 @@
 allowBuilds:
   '@frumu/tandem': true
+minimumReleaseAgeExclude:
+  - '@frumu/tandem-client@0.6.0'
+  - '@frumu/tandem@0.6.0'

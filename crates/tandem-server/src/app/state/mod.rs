@@ -1431,6 +1431,8 @@ include!("app_state_impl_parts/part09.rs");
 pub mod automation;
 pub use automation::*;
 
+mod automation_v2_context_recovery;
+
 pub mod principals;
 
 #[cfg(test)]

@@ -35,6 +35,116 @@ async fn automation_v2_run_history_lists_archived_blocked_runs() {
 }
 
 #[tokio::test]
+async fn automation_v2_recovers_legacy_context_runs_for_history_and_library() {
+    let root = std::env::temp_dir().join(format!(
+        "tandem-context-run-recovery-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let shared_path = root.join("data").join("system").join("shared_resources.json");
+    std::fs::create_dir_all(shared_path.parent().expect("shared parent")).expect("shared dir");
+    let mut state = test_state_with_path(shared_path);
+    state.automations_v2_path = root.join("data").join("automations_v2.json");
+    state.automation_v2_runs_path = root.join("data").join("automation_v2_runs.json");
+
+    let context_run_id = "automation-v2-automation-v2-run-context-history";
+    let context_run_dir = root.join("context_runs").join(context_run_id);
+    std::fs::create_dir_all(&context_run_dir).expect("context run dir");
+    let run_state = json!({
+        "run_id": context_run_id,
+        "run_type": "automation_v2",
+        "tenant_context": {
+            "org_id": "local",
+            "workspace_id": "local",
+            "source": "local_implicit"
+        },
+        "source_client": "automation_v2_scheduler",
+        "status": "blocked",
+        "objective": "Recovered automation from context state",
+        "workspace": {
+            "workspace_id": "",
+            "canonical_path": "/tmp/recovered-workspace",
+            "lease_epoch": 0
+        },
+        "steps": [
+            {"step_id": "inspect", "title": "Inspect repository", "status": "done"},
+            {"step_id": "write", "title": "Write report", "status": "blocked"}
+        ],
+        "tasks": [
+            {
+                "payload": {
+                    "receipt_timeline": {
+                        "records": [
+                            {
+                                "payload": {
+                                    "automation_id": "auto-from-context",
+                                    "run_id": "automation-v2-run-context-history"
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        ],
+        "created_at_ms": 10,
+        "started_at_ms": 11,
+        "updated_at_ms": 20
+    });
+    std::fs::write(
+        context_run_dir.join("run_state.json"),
+        serde_json::to_string_pretty(&run_state).expect("run state json"),
+    )
+    .expect("write context run state");
+
+    let rows = state.list_automation_v2_runs(None, 20).await;
+    let recovered = rows
+        .iter()
+        .find(|row| row.run_id == "automation-v2-run-context-history")
+        .expect("recovered context run listed");
+    assert_eq!(recovered.automation_id, "auto-from-context");
+    assert_eq!(recovered.status, AutomationRunStatus::Blocked);
+    assert_eq!(recovered.checkpoint.completed_nodes, vec!["inspect"]);
+    assert_eq!(recovered.checkpoint.blocked_nodes, vec!["write"]);
+
+    let filtered = state
+        .list_automation_v2_runs(Some("auto-from-context"), 20)
+        .await;
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].run_id, "automation-v2-run-context-history");
+
+    let detail = state
+        .get_automation_v2_run("automation-v2-run-context-history")
+        .await
+        .expect("recovered context run detail");
+    assert_eq!(detail.automation_id, "auto-from-context");
+    assert_eq!(
+        detail
+            .automation_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.name.as_str()),
+        Some("Recovered automation from context state")
+    );
+
+    state
+        .load_automation_v2_runs()
+        .await
+        .expect("load context-recovered automation runs");
+    assert!(state
+        .automation_v2_runs
+        .read()
+        .await
+        .contains_key("automation-v2-run-context-history"));
+
+    let automations = state.list_automations_v2().await;
+    let automation = automations
+        .iter()
+        .find(|row| row.automation_id == "auto-from-context")
+        .expect("context run snapshot recovered as library definition");
+    assert_eq!(automation.name, "Recovered automation from context state");
+    assert_eq!(automation.workspace_root.as_deref(), Some("/tmp/recovered-workspace"));
+    assert_eq!(automation.flow.nodes.len(), 2);
+}
+
+#[tokio::test]
 async fn automation_v2_run_update_hydrates_history_only_run() {
     let mut state = ready_test_state().await;
     state.automation_v2_runs_path = tmp_resource_file("automation-history-update-runs");

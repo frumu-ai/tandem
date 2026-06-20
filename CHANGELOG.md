@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gates are now resolved from the authoritative run detail before the unified
   approvals endpoint filters them, and the control-panel inbox orders mixed
   approval sources newest-first.
+- Fixed Automation V2 run/library recovery for legacy context-run state. The
+  server now scans `automation-v2-*` context run directories, reconstructs run
+  records and automation snapshots from `run_state.json`, merges newer recovered
+  records into history, and persists them so interrupted or older runs remain
+  visible in history, detail, and the automation library.
+- Fixed transient ACA disconnects in the control-panel Coder surface during
+  slow task/board refreshes. ACA probe timeout smoothing now keeps Coder
+  available for a longer grace period after a known-good probe, and configured
+  ACA probes can remain available when the Tandem engine itself is healthy.
 
 ### Changed
 
@@ -27,6 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `0.6.1`.
 - Updated the version bump script to include the meta-harness crate and desktop
   Tauri lockfile.
+- Added control-panel export/import support for Automation V2 JSON specs so
+  operators can download an automation from the edit dialog and restore it from
+  the creation wizard.
+- Expanded the MCP automated-agents guide with current Composio Connect and
+  scoped MCP server setup guidance, including generated URL, `x-api-key`, and
+  REST-only setup notes.
 
 ## [0.6.0] - 2026-06-17
 

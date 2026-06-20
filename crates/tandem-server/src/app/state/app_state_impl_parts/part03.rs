@@ -1303,7 +1303,10 @@ impl AppState {
                 }
             }
             (Some(hot), None) => Some(hot),
-            (None, history) => history,
+            (None, Some(history)) => Some(history),
+            (None, None) => {
+                automation_v2_context_recovery::get_recovered_automation_v2_run(self, run_id).await
+            }
         }
     }
 
@@ -1330,6 +1333,8 @@ impl AppState {
                 }
             }
         }
+        automation_v2_context_recovery::merge_recovered_automation_v2_runs(self, &mut merged)
+            .await;
         let mut rows = merged
             .into_values()
             .filter(|row| automation_id.is_none_or(|id| row.automation_id == id))

@@ -115,6 +115,35 @@ function downloadWorkflowRecoveryBundle(workflowEditDraft: any) {
   URL.revokeObjectURL(url);
 }
 
+function downloadJsonFile(payload: unknown, filename: string) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {
+    type: "application/json;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function downloadWorkflowAutomationSpec(workflowEditDraft: any) {
+  const automationId = String(workflowEditDraft?.automationId || "").trim();
+  if (!automationId) throw new Error("Automation id is required for export.");
+  const response = await api(`/api/engine/automations/v2/${encodeURIComponent(automationId)}`);
+  const automation = response?.automation || response;
+  if (!automation || typeof automation !== "object") {
+    throw new Error("Engine returned an invalid automation export.");
+  }
+  const exportName = safeWorkflowExportName(
+    String((automation as any)?.name || workflowEditDraft?.name || automationId)
+  );
+  downloadJsonFile(automation, `${exportName}.automation.json`);
+  return automation;
+}
+
 function toolLooksSendCapable(tool: string) {
   const value = String(tool || "").toLowerCase();
   return /\bsend\b/.test(value) || value.includes("_send") || value.includes("send_");
@@ -385,11 +414,13 @@ export function WorkflowAutomationEditDialog({
   automationsV2List = [],
   client,
   onRecreateWorkflowAutomation,
+  toast,
 }: any) {
   const dialogRef = useDialogIconRender(!!workflowEditDraft);
   const [workspaceBrowserOpen, setWorkspaceBrowserOpen] = useState(false);
   const [workspaceBrowserDir, setWorkspaceBrowserDir] = useState("");
   const [workspaceBrowserSearch, setWorkspaceBrowserSearch] = useState("");
+  const [exportingAutomation, setExportingAutomation] = useState(false);
   const healthQuery = useQuery({
     queryKey: ["global", "health", "workflow-edit"],
     enabled: !!workflowEditDraft,
@@ -1659,6 +1690,24 @@ export function WorkflowAutomationEditDialog({
           </div>
         </div>
         <div className="tcp-confirm-actions border-t border-slate-800/70 px-4 py-3">
+          <button
+            className="tcp-btn mr-auto"
+            onClick={async () => {
+              try {
+                setExportingAutomation(true);
+                await downloadWorkflowAutomationSpec(workflowEditDraft);
+                toast?.("ok", "Automation JSON exported.");
+              } catch (error) {
+                toast?.("err", error instanceof Error ? error.message : String(error));
+              } finally {
+                setExportingAutomation(false);
+              }
+            }}
+            disabled={!workflowEditDraft?.automationId || exportingAutomation}
+          >
+            <i data-lucide="download"></i>
+            {exportingAutomation ? "Exporting..." : "Export JSON"}
+          </button>
           <button className="tcp-btn" onClick={() => setWorkflowEditDraft(null)}>
             <i data-lucide="x-circle"></i>
             Cancel
