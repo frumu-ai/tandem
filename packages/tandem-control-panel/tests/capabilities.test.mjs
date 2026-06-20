@@ -52,7 +52,7 @@ test("ACA probe timeout increments timeout counter", () => {
 
   return new Promise((resolve) => {
     const s = createServer(async (req, res) => {
-      await delay(50);
+      await delay(200);
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ status: "ok" }));
     });
@@ -240,7 +240,7 @@ test("transient ACA timeout after healthy probe stays connected during grace win
         res.end(JSON.stringify({ status: "ok" }));
         return;
       }
-      await delay(50);
+      await delay(200);
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ status: "ok" }));
     });
@@ -250,7 +250,7 @@ test("transient ACA timeout after healthy probe stays connected during grace win
 
   let body = null;
   const handler = createCapabilitiesHandler({
-    PROBE_TIMEOUT_MS: 5,
+    PROBE_TIMEOUT_MS: 100,
     ACA_PROBE_GRACE_MS: 1_000,
     ACA_BASE_URL: `http://127.0.0.1:${port}`,
     engineHealth: async () => ({ engine: { ready: true, healthy: true } }),
@@ -269,6 +269,60 @@ test("transient ACA timeout after healthy probe stays connected during grace win
   assert.equal(body.aca_integration, true);
   assert.equal(body.aca_reason, "aca_probe_timeout");
   assert.equal(body.aca_probe_degraded, true);
+});
+
+test("default ACA timeout grace covers idle operator task selection", async () => {
+  const realNow = Date.now;
+  let now = 10_000;
+  Date.now = () => now;
+
+  let shouldTimeout = false;
+  const server = await new Promise((resolve) => {
+    const s = createServer(async (req, res) => {
+      if (!shouldTimeout) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ status: "ok" }));
+        return;
+      }
+      await delay(200);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ status: "ok" }));
+    });
+    s.listen(0, "127.0.0.1", () => resolve(s));
+  });
+  const port = server.address().port;
+
+  try {
+    let body = null;
+    const handler = createCapabilitiesHandler({
+      PROBE_TIMEOUT_MS: 100,
+      ACA_BASE_URL: `http://127.0.0.1:${port}`,
+      engineHealth: async () => ({ engine: { ready: true, healthy: true } }),
+      sendJson: (_, __, b) => { body = b; },
+    });
+
+    const fakeRes = { statusCode: 0, end: () => {}, destroy: () => {} };
+    await handler({ url: "/api/capabilities" }, fakeRes);
+    assert.equal(body.aca_integration, true);
+
+    shouldTimeout = true;
+    now += 5 * 60_000;
+    await handler({ url: "/api/capabilities?refresh=1" }, fakeRes);
+
+    assert.equal(body.aca_integration, true);
+    assert.equal(body.aca_reason, "aca_probe_timeout");
+    assert.equal(body.aca_probe_degraded, true);
+
+    now += 11 * 60_000;
+    await handler({ url: "/api/capabilities?refresh=1" }, fakeRes);
+
+    assert.equal(body.aca_integration, true);
+    assert.equal(body.aca_reason, "aca_probe_timeout");
+    assert.equal(body.aca_probe_degraded, true);
+  } finally {
+    server.close();
+    Date.now = realNow;
+  }
 });
 
 test("capabilities refresh query bypasses cached probe result", async () => {

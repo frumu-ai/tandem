@@ -9,11 +9,11 @@ importers:
   .:
     dependencies:
       '@frumu/tandem':
-        specifier: ^0.5.13
-        version: 0.5.13
+        specifier: ^0.6.0
+        version: 0.6.0
       '@frumu/tandem-client':
-        specifier: ^0.5.13
-        version: 0.5.13
+        specifier: ^0.6.0
+        version: 0.6.0
       '@fullcalendar/core':
         specifier: 6.1.20
         version: 6.1.20
@@ -190,12 +190,12 @@ packages:
   '@emnapi/wasi-threads@1.2.1':
     resolution: {integrity: sha512-uTII7OYF+/Mes/MrcIOYp5yOtSMLBWSIoLPpcgwipoiKbli6k322tcoFsxoIIxPDqW01SQGAgko4EzZi2BNv2w==}
 
-  '@frumu/tandem-client@0.5.13':
-    resolution: {integrity: sha512-7xicFME+ClNKW92hgwwt1jTDQgc9IZ7bHqk7WxN8oePz8IC3ycJD+qBGIsD8KW6wAm/uHWWPcSzWdOTvVwP8Gg==}
+  '@frumu/tandem-client@0.6.0':
+    resolution: {integrity: sha512-NnXXH4LEIR2kwCPOCaFQPgrbzu5ZOQFYmoR067+g4E+34ynih/t5SA6E+8j7wFFGz+pTeybY+HQzr753hIeg6w==}
     engines: {node: '>=18'}
 
-  '@frumu/tandem@0.5.13':
-    resolution: {integrity: sha512-ojadOBrIAQRzdbCHtJE2q+TCZNr4jYU4yqZN8ztiAo4cWonHThlGmvaylQt3SfbCWITM4EotCD//1jzmQ2ASdA==}
+  '@frumu/tandem@0.6.0':
+    resolution: {integrity: sha512-mlW+fltNgLmHbN2cBTsaOzsw7xx/GCJIDxG9X+xHCZvZLiQmpPReAI8xkCQoVfNfKJ26zhD61TR0ypTDRzCm9Q==}
     cpu: [x64, arm64]
     os: [darwin, linux, win32]
     hasBin: true
@@ -1232,11 +1232,11 @@ snapshots:
       tslib: 2.8.1
     optional: true
 
-  '@frumu/tandem-client@0.5.13':
+  '@frumu/tandem-client@0.6.0':
     dependencies:
       zod: 4.4.3
 
-  '@frumu/tandem@0.5.13': {}
+  '@frumu/tandem@0.6.0': {}
 
   '@fullcalendar/core@6.1.20':
     dependencies:

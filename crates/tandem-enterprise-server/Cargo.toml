@@ -1,6 +1,6 @@
 [package]
 name = "tandem-enterprise-server"
-version = "0.6.0"
+version = "0.6.1"
 description = "Enterprise HTTP routes and connectors for Tandem server"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
@@ -26,16 +26,16 @@ tracing = "0.1"
 urlencoding = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 
-tandem-core = { path = "../tandem-core", version = "0.6.0" }
-tandem-enterprise-contract = { path = "../tandem-enterprise-contract", version = "0.6.0" }
-tandem-memory = { path = "../tandem-memory", version = "0.6.0" }
-tandem-server = { path = "../tandem-server", version = "0.6.0", default-features = false }
+tandem-core = { path = "../tandem-core", version = "0.6.1" }
+tandem-enterprise-contract = { path = "../tandem-enterprise-contract", version = "0.6.1" }
+tandem-memory = { path = "../tandem-memory", version = "0.6.1" }
+tandem-server = { path = "../tandem-server", version = "0.6.1", default-features = false }
 
 [dev-dependencies]
 serial_test = "3"
 tower = "0.5"
 chrono = { version = "0.4", features = ["serde"] }
-tandem-types = { path = "../tandem-types", version = "0.6.0" }
+tandem-types = { path = "../tandem-types", version = "0.6.1" }
 # Enables tandem-server's test_support seam for the integration tests below
 # (test-only feature union; not active in normal builds).
-tandem-server = { path = "../tandem-server", version = "0.6.0", default-features = false, features = ["test-support"] }
+tandem-server = { path = "../tandem-server", version = "0.6.1", default-features = false, features = ["test-support"] }

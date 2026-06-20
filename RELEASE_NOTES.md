@@ -2,6 +2,68 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.6.1 (2026-06-20)
+
+Tandem 0.6.1 is a focused workflow-runtime patch release for MCP wrapper
+actions. It fixes a failure mode where Automation V2 nodes that only needed to
+call a concrete MCP wrapper tool were still assigned an implicit JSON artifact
+path, which then made the runtime require unrelated workspace writes before the
+workflow could advance.
+
+### Automation V2 MCP Wrapper Actions
+
+- Action nodes can now explicitly disable synthesized default artifact paths
+  with `metadata.disable_default_output_path`,
+  `builder.disable_default_output_path`, or `builder.output_path_mode = "none"`.
+- This lets connector-wrapper workflows, including Composio Gmail draft
+  approval demos, hand off provider results without being forced through a
+  workspace artifact write path.
+- Added regression coverage for the new default-output opt-out behavior.
+
+### Approvals Inbox
+
+- The unified approvals endpoint now rehydrates Automation V2 list rows through
+  the full run record before filtering pending gates, so a stale or skeletal run
+  list entry can no longer hide a live approval gate.
+- The control-panel inbox now sorts mixed approval sources by requested time,
+  putting a fresh demo approval above older ACA approvals.
+
+### Automation V2 Recovery And Portability
+
+- Legacy `automation-v2-*` context-run directories are now recovered into
+  Automation V2 run history. Tandem reconstructs run records, checkpoint state,
+  and automation snapshots from `run_state.json`, then merges the newest
+  recovered record into history/detail APIs and persists it back to canonical
+  run storage.
+- Recovered context runs also appear in the Automation V2 library when enough
+  snapshot information is present, making interrupted or pre-migration workflow
+  runs discoverable again instead of stranded in context-run storage.
+- The control panel can now export an Automation V2 JSON spec from the edit
+  dialog and import that JSON through the creation wizard, including replacement
+  confirmation when the imported automation id already exists.
+
+### Control Panel Connectivity
+
+- ACA availability probing now has a longer default grace window, so the Coder
+  dashboard is less likely to flip to disconnected while a recently healthy ACA
+  endpoint is slow during task selection or board refresh.
+- When ACA is configured and the Tandem engine is healthy, ACA probe timeouts
+  are smoothed as degraded-but-available instead of immediately hiding Coder
+  actions.
+
+### MCP Provider Guidance
+
+- The automated-agents guide now documents Composio Connect and scoped Composio
+  MCP server URLs separately, including generated MCP URL usage, `x-api-key`
+  requirements, and REST-only setup examples for creating and generating
+  Composio MCP server URLs.
+
+### Release Metadata
+
+- Bumped Tandem Rust workspace, desktop, npm, and Python manifests to `0.6.1`.
+- Updated the version bump script so the meta-harness crate and desktop Tauri
+  lockfile are included in future release bumps.
+
 ## v0.6.0 (2026-06-17)
 
 Tandem 0.6.0 is a security- and assurance-focused release that lays the

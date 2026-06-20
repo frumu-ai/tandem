@@ -339,6 +339,106 @@ async fn approvals_pending_endpoint_reads_sharded_automation_v2_runs() {
 }
 
 #[tokio::test]
+async fn approvals_pending_endpoint_uses_full_run_when_hot_row_is_stale() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let automation = create_test_automation_v2(&state, "auto-v2-approvals-stale-hot-row").await;
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("run");
+
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = crate::AutomationRunStatus::AwaitingApproval;
+            row.detail = Some("awaiting approval for gate `approval`".to_string());
+            row.checkpoint.completed_nodes = vec!["draft".to_string(), "review".to_string()];
+            row.checkpoint.pending_nodes = vec!["approval".to_string()];
+            row.checkpoint.node_outputs.insert(
+                "review".to_string(),
+                json!({ "status": "completed", "summary": "ready for approval" }),
+            );
+            row.checkpoint.awaiting_gate = Some(crate::AutomationPendingGate {
+                node_id: "approval".to_string(),
+                title: "Approval".to_string(),
+                instructions: Some("Check the review output".to_string()),
+                decisions: vec![
+                    "approve".to_string(),
+                    "rework".to_string(),
+                    "cancel".to_string(),
+                ],
+                rework_targets: vec!["draft".to_string()],
+                requested_at_ms: crate::now_ms(),
+                upstream_node_ids: vec!["review".to_string()],
+                metadata: None,
+            });
+        })
+        .await
+        .expect("updated run");
+
+    {
+        let mut guard = state.automation_v2_runs.write().await;
+        let hot = guard.get_mut(&run.run_id).expect("hot run row");
+        hot.status = crate::AutomationRunStatus::Queued;
+        hot.detail = Some("stale list row".to_string());
+        hot.checkpoint.awaiting_gate = None;
+        hot.updated_at_ms = hot.updated_at_ms.saturating_add(60_000);
+    }
+
+    let hydrated = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("hydrated run");
+    assert_eq!(
+        hydrated.status,
+        crate::AutomationRunStatus::AwaitingApproval
+    );
+    assert_eq!(
+        hydrated
+            .checkpoint
+            .awaiting_gate
+            .as_ref()
+            .map(|gate| gate.node_id.as_str()),
+        Some("approval")
+    );
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/approvals/pending")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), 200);
+
+    let body = to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .expect("body bytes");
+    let payload: Value = serde_json::from_slice(&body).expect("json body");
+    let approvals = payload
+        .get("approvals")
+        .and_then(Value::as_array)
+        .expect("approvals array");
+    let approval = approvals
+        .iter()
+        .find(|approval| {
+            approval.get("run_id").and_then(Value::as_str) == Some(run.run_id.as_str())
+        })
+        .expect("approval should use full run state instead of stale hot row");
+    assert_eq!(
+        approval.get("source").and_then(Value::as_str),
+        Some("automation_v2")
+    );
+    assert_eq!(
+        approval.get("node_id").and_then(Value::as_str),
+        Some("approval")
+    );
+}
+
+#[tokio::test]
 async fn approvals_pending_endpoint_recovers_automation_v2_gate_from_pending_node() {
     let state = test_state().await;
     let app = app_router(state.clone());

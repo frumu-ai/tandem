@@ -1,6 +1,6 @@
 {
   "name": "@frumu/tandem",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Tandem authority-layer runtime CLI and engine binary distribution",
   "homepage": "https://tandem.ac",
   "bin": {

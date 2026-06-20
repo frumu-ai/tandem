@@ -226,28 +226,120 @@ curl -sS -X POST http://127.0.0.1:39731/mcp/arcade/connect
 
 ### Provider Notes: Composio
 
-For Composio MCP URLs, make sure your project's MCP URL security requirements are satisfied.
+Tandem does not need the Composio TypeScript SDK. Use the SDK, dashboard, or
+REST API only to create or generate the MCP URL, then register that generated
+HTTP MCP endpoint in Tandem.
+
+Composio currently has two common MCP shapes:
+
+- **Composio Connect**: a broad managed endpoint at
+  `https://connect.composio.dev/mcp`. It exposes Composio meta-tools that can
+  search the catalog, manage app connections, and execute discovered tools.
+- **Scoped MCP server URL**: a generated URL for one Composio MCP server and
+  user or connected account, for example
+  `https://backend.composio.dev/v3/mcp/YOUR_SERVER_ID?user_id=YOUR_USER_ID`.
+  You can create/generate this from the Composio dashboard or REST API.
+
+In that scoped URL:
+
+- `YOUR_SERVER_ID` is the Composio MCP server/config id. Copy it from the
+  generated MCP URL, the Composio dashboard's MCP server detail view, the
+  response from `POST /api/v3.1/mcp/servers`, or by listing servers with
+  `GET /api/v3.1/mcp/servers`.
+- `YOUR_USER_ID` is normally an external user id that you choose and keep
+  stable for this Tandem operator or workspace, for example `tandem-local` or
+  your app's user UUID. It must match the `user_id` used when generating the
+  Composio MCP URL and completing auth.
+
+Do not put Composio REST API endpoints such as
+`https://backend.composio.dev/api/v3.1/mcp/servers/generate` into Tandem as the
+MCP `transport`. Those endpoints return or manage MCP URLs; they are not the MCP
+transport endpoint Tandem connects to.
+
+For Composio MCP URLs, make sure your project's MCP URL security requirements
+are satisfied.
 
 Important dates from Composio changelog:
 
 - Since **December 15, 2025**, new projects require `x-api-key` on MCP URL requests.
 - After **April 15, 2026**, requests without `x-api-key` are rejected.
 
-Then in Tandem:
+Composio Connect in Tandem:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:39731/mcp \
   -H "content-type: application/json" \
   -d '{
+    "name": "composio-connect",
+    "transport": "https://connect.composio.dev/mcp",
+    "auth_kind": "x-api-key",
+    "enabled": true,
+    "headers": {
+      "x-api-key": "YOUR_COMPOSIO_API_KEY"
+    }
+  }'
+curl -sS -X POST http://127.0.0.1:39731/mcp/composio-connect/connect
+curl -sS http://127.0.0.1:39731/mcp/tools
+```
+
+Scoped Composio MCP server in Tandem:
+
+```bash
+# First create/generate the MCP URL in Composio. You can do this from the
+# Composio dashboard, the SDK, or the REST API. Use the generated URL that
+# includes a user_id or connected_account_id selector.
+curl -sS -X POST http://127.0.0.1:39731/mcp \
+  -H "content-type: application/json" \
+  -d '{
     "name": "composio",
-    "transport": "https://mcp.composio.dev/YOUR_MCP_PATH",
+    "transport": "https://backend.composio.dev/v3/mcp/YOUR_SERVER_ID?user_id=YOUR_USER_ID",
+    "auth_kind": "x-api-key",
     "enabled": true,
     "headers": {
       "x-api-key": "YOUR_COMPOSIO_API_KEY"
     }
   }'
 curl -sS -X POST http://127.0.0.1:39731/mcp/composio/connect
+curl -sS http://127.0.0.1:39731/mcp/tools
 ```
+
+Tandem stores sensitive headers such as `x-api-key` as secret-backed MCP
+headers. If the key is already in the Tandem engine process environment, you
+can use `"x-api-key": "${env:COMPOSIO_API_KEY}"` instead.
+
+Optional REST-only Composio setup, if you do not want to use their dashboard or
+SDK:
+
+```bash
+export COMPOSIO_API_KEY="YOUR_COMPOSIO_API_KEY"
+
+curl -sS -X POST "https://backend.composio.dev/api/v3.1/mcp/servers" \
+  -H "content-type: application/json" \
+  -H "x-api-key: ${COMPOSIO_API_KEY}" \
+  -d '{
+    "name": "Tandem Gmail",
+    "auth_config_ids": ["ac_YOUR_AUTH_CONFIG_ID"],
+    "allowed_tools": ["GMAIL_FETCH_EMAILS", "GMAIL_SEND_EMAIL"],
+    "managed_auth_via_composio": true
+  }'
+
+curl -sS -X POST "https://backend.composio.dev/api/v3.1/mcp/servers/generate" \
+  -H "content-type: application/json" \
+  -H "x-api-key: ${COMPOSIO_API_KEY}" \
+  -d '{
+    "mcp_server_id": "YOUR_MCP_SERVER_ID",
+    "managed_auth_by_composio": true,
+    "user_ids": ["tandem-local"]
+  }'
+```
+
+Copy the generated MCP URL from the response into Tandem's `transport`.
+
+If a generated Composio URL returns 404, copy the current MCP URL directly from
+Composio's dashboard or `servers/generate` response instead of hand-building an
+old `https://mcp.composio.dev/YOUR_MCP_PATH` URL. If it returns 401, the
+`x-api-key` header is missing, malformed, or belongs to the wrong Composio
+project.
 
 ## 2) Create a Scheduled Agent With Tool Allowlist
 

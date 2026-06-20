@@ -247,7 +247,9 @@ export function ApprovalsInboxPage({ toast }: AppPageProps) {
 
   const approvals = pendingQuery.data?.approvals ?? [];
   const acaApprovals = acaPendingQuery.data?.approvals ?? [];
-  const allApprovals = [...acaApprovals, ...approvals];
+  const allApprovals = [...acaApprovals, ...approvals].sort(
+    (left, right) => Number(right.requested_at_ms || 0) - Number(left.requested_at_ms || 0)
+  );
   const count = allApprovals.length;
   const loadingApprovals =
     pendingQuery.isLoading ||

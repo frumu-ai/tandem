@@ -1675,6 +1675,9 @@ impl AppState {
                 path_counts.push((path.clone(), usize::from(path.exists())));
             }
         }
+        let recovered_context_runs =
+            automation_v2_context_recovery::merge_recovered_automation_v2_runs(self, &mut merged)
+                .await;
         let active_runs_path = self.automation_v2_runs_path.display().to_string();
         let run_path_count_summary = path_counts
             .iter()
@@ -1685,6 +1688,7 @@ impl AppState {
             canonical_loaded,
             path_counts = ?run_path_count_summary,
             merged_count = merged.len(),
+            recovered_context_runs,
             "loaded automation v2 runs"
         );
         *self.automation_v2_runs.write().await = merged;
@@ -1703,7 +1707,7 @@ impl AppState {
                 "automation v2 definitions are empty while run history exists"
             );
         }
-        if loaded_from_alternate || recovered > 0 {
+        if loaded_from_alternate || recovered > 0 || recovered_context_runs > 0 {
             let _ = self.persist_automation_v2_runs().await;
         } else if canonical_loaded {
             let _ =

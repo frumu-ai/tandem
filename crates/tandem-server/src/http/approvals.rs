@@ -54,25 +54,29 @@ pub async fn list_pending_approvals(
         .unwrap_or(true)
     {
         let runs = state.list_automation_v2_runs(None, MAX_PENDING_LIMIT).await;
-        for run in runs.iter() {
+        for listed_run in runs.iter() {
+            let run = state
+                .get_automation_v2_run(&listed_run.run_id)
+                .await
+                .unwrap_or_else(|| listed_run.clone());
             if run.status != AutomationRunStatus::AwaitingApproval {
                 continue;
             }
             let gate = run.checkpoint.awaiting_gate.clone().or_else(|| {
                 run.automation_snapshot
                     .as_ref()
-                    .and_then(|automation| recover_automation_v2_pending_gate(run, automation))
+                    .and_then(|automation| recover_automation_v2_pending_gate(&run, automation))
             });
             let Some(gate) = gate else {
                 continue;
             };
-            if !tenant_matches(filter, run) {
+            if !tenant_matches(filter, &run) {
                 continue;
             }
             let action_preview_markdown =
-                automation_v2_approval_preview_markdown(state, run, &gate).await;
+                automation_v2_approval_preview_markdown(state, &run, &gate).await;
             out.push(automation_v2_run_to_approval_request(
-                run,
+                &run,
                 &gate,
                 action_preview_markdown,
             ));

@@ -1,6 +1,6 @@
 [package]
 name = "tandem-meta-harness-eval"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 description = "Durable trace and scored-version models for Tandem meta-harness evaluation"
 publish = false
