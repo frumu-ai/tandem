@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added actor-qualified MCP secret ids and exact tenant-context secret
   resolution so two employees in the same workspace cannot overwrite or resolve
   each other's stored MCP bearer credentials.
+- Added tenant/actor-scoped MCP OAuth sessions, callback completion, provider
+  credential ids, and audit events so enterprise OAuth sign-ins bind tokens to
+  the initiating MCP connection instead of a shared server-global account.
 
 ## [0.6.1] - 2026-06-20
 

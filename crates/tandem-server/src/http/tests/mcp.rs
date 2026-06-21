@@ -43,6 +43,37 @@ impl Drop for McpEnvGuard {
     }
 }
 
+#[test]
+fn mcp_public_base_url_from_config_trims_trailing_slash() {
+    let cfg = json!({
+        "hosted": {
+            "public_url": "https://test.tandem.ac/"
+        }
+    });
+
+    assert_eq!(
+        crate::http::mcp::mcp_public_base_url_from_config(&cfg).as_deref(),
+        Some("https://test.tandem.ac")
+    );
+}
+
+#[test]
+fn mcp_public_base_url_from_env_uses_control_panel_public_url() {
+    let guard = McpEnvGuard::new(&[
+        "TANDEM_CONTROL_PANEL_PUBLIC_URL",
+        "HOSTED_CONTROL_PANEL_PUBLIC_URL",
+        "HOSTED_PUBLIC_URL",
+    ]);
+    guard.set("TANDEM_CONTROL_PANEL_PUBLIC_URL", "https://test.tandem.ac/");
+    std::env::remove_var("HOSTED_CONTROL_PANEL_PUBLIC_URL");
+    std::env::remove_var("HOSTED_PUBLIC_URL");
+
+    assert_eq!(
+        crate::http::mcp::mcp_public_base_url_from_env().as_deref(),
+        Some("https://test.tandem.ac")
+    );
+}
+
 fn strict_context_with_grant(
     permissions: Vec<tandem_types::AccessPermission>,
     data_classes: Vec<tandem_types::DataClass>,
@@ -86,6 +117,23 @@ fn strict_context_with_grant(
     )
     .with_grants(vec![grant])
     .with_data_boundary(tandem_types::DataBoundary::allow(data_classes))
+}
+
+fn tenant_request(
+    method: &str,
+    uri: impl AsRef<str>,
+    org_id: &str,
+    workspace_id: &str,
+    actor_id: &str,
+) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri.as_ref())
+        .header("x-tandem-org-id", org_id)
+        .header("x-tandem-workspace-id", workspace_id)
+        .header("x-tandem-actor-id", actor_id)
+        .body(Body::empty())
+        .expect("tenant request")
 }
 
 async fn spawn_fake_notion_oauth_mcp_server() -> (String, tokio::task::JoinHandle<()>) {
@@ -832,6 +880,7 @@ async fn mcp_authenticate_clears_pending_oauth_challenge() {
     let Json(connected_payload) = authenticate_mcp(
         axum::extract::State(state.clone()),
         axum::extract::Path("notion".to_string()),
+        axum::extract::Extension(tandem_types::TenantContext::local_implicit()),
         HeaderMap::new(),
     )
     .await;
@@ -935,7 +984,16 @@ async fn mcp_connect_discovers_www_authenticate_oauth_and_callback_connects_serv
         .body(Body::empty())
         .expect("callback request");
     let callback_resp = app.oneshot(callback_req).await.expect("callback response");
-    assert_eq!(callback_resp.status(), StatusCode::OK);
+    let callback_status = callback_resp.status();
+    let callback_body = to_bytes(callback_resp.into_body(), usize::MAX)
+        .await
+        .expect("callback body");
+    assert_eq!(
+        callback_status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&callback_body)
+    );
 
     let notion = state
         .mcp
@@ -956,6 +1014,166 @@ async fn mcp_connect_discovers_www_authenticate_oauth_and_callback_connects_serv
             .get("Authorization")
             .map(String::as_str),
         Some("Bearer access-token-123")
+    );
+
+    drop(server);
+}
+
+#[tokio::test]
+async fn mcp_oauth_session_records_tenant_actor_connection_identity() {
+    let state = test_state().await;
+    let (endpoint, server) = spawn_fake_hosted_mcp_oauth_server().await;
+    state
+        .mcp
+        .add_or_update("notion".to_string(), endpoint, HashMap::new(), true)
+        .await;
+    assert!(state.mcp.set_auth_kind("notion", "oauth".to_string()).await);
+
+    let app = app_router(state.clone());
+    let resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "POST",
+            "/mcp/notion/connect",
+            "org-a",
+            "workspace-a",
+            "alice",
+        ))
+        .await
+        .expect("connect response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let session = state
+        .mcp_oauth_sessions
+        .read()
+        .await
+        .values()
+        .find(|session| session.server_name == "notion")
+        .cloned()
+        .expect("mcp oauth session");
+    let tenant =
+        tandem_types::TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "alice");
+    assert_eq!(session.tenant_context, tenant);
+    assert_eq!(
+        session.principal,
+        tandem_runtime::McpPrincipalRef::HumanActor {
+            actor_id: "alice".to_string()
+        }
+    );
+    assert_eq!(
+        session.connection_id,
+        state.mcp.connection_id_for_tenant("notion", &tenant)
+    );
+    assert_ne!(session.provider_id, "mcp-oauth::notion");
+    assert!(session.provider_id.ends_with(&session.connection_id));
+
+    let bob_resp = app
+        .oneshot(tenant_request(
+            "POST",
+            "/mcp/notion/connect",
+            "org-a",
+            "workspace-a",
+            "bob",
+        ))
+        .await
+        .expect("bob connect response");
+    assert_eq!(bob_resp.status(), StatusCode::OK);
+    let bob_tenant =
+        tandem_types::TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "bob");
+    let bob_session = state
+        .mcp_oauth_sessions
+        .read()
+        .await
+        .values()
+        .find(|candidate| candidate.tenant_context == bob_tenant)
+        .cloned()
+        .expect("bob mcp oauth session");
+    assert_ne!(bob_session.connection_id, session.connection_id);
+    assert_ne!(bob_session.provider_id, session.provider_id);
+    assert_ne!(bob_session.authorization_url, session.authorization_url);
+
+    drop(server);
+}
+
+#[tokio::test]
+async fn mcp_oauth_callback_rejects_cross_actor_context() {
+    let state = test_state().await;
+    let (endpoint, server) = spawn_fake_hosted_mcp_oauth_server().await;
+    state
+        .mcp
+        .add_or_update("notion".to_string(), endpoint, HashMap::new(), true)
+        .await;
+    assert!(state.mcp.set_auth_kind("notion", "oauth".to_string()).await);
+
+    let app = app_router(state.clone());
+    let connect_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "POST",
+            "/mcp/notion/connect",
+            "org-a",
+            "workspace-a",
+            "alice",
+        ))
+        .await
+        .expect("connect response");
+    assert_eq!(connect_resp.status(), StatusCode::OK);
+    let session = state
+        .mcp_oauth_sessions
+        .read()
+        .await
+        .values()
+        .find(|session| session.server_name == "notion")
+        .cloned()
+        .expect("mcp oauth session");
+
+    let callback_app = axum::Router::new()
+        .route(
+            "/mcp/{name}/auth/callback",
+            axum::routing::get(crate::http::mcp::callback_mcp_get),
+        )
+        .layer(axum::extract::Extension(
+            tandem_types::TenantContext::explicit_user_workspace(
+                "org-a",
+                "workspace-a",
+                None,
+                "bob",
+            ),
+        ))
+        .with_state(state.clone());
+    let callback_resp = callback_app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/mcp/notion/auth/callback?code=test-code&state={}",
+                    urlencoding::encode(&session.state)
+                ))
+                .body(Body::empty())
+                .expect("callback request"),
+        )
+        .await
+        .expect("callback response");
+    assert_eq!(callback_resp.status(), StatusCode::OK);
+    let callback_body = to_bytes(callback_resp.into_body(), usize::MAX)
+        .await
+        .expect("callback body");
+    assert!(String::from_utf8_lossy(&callback_body).contains("tenant context did not match"));
+    let session_after = state
+        .mcp_oauth_sessions
+        .read()
+        .await
+        .get(&session.session_id)
+        .cloned()
+        .expect("session remains recorded");
+    assert_eq!(session_after.status, "pending");
+    assert!(
+        !state
+            .mcp
+            .list()
+            .await
+            .get("notion")
+            .expect("notion row")
+            .connected
     );
 
     drop(server);
@@ -1021,6 +1239,12 @@ async fn mcp_delete_auth_clears_stale_oauth_material() {
         McpOAuthSessionRecord {
             session_id: "pending-session-1".to_string(),
             server_name: "notion".to_string(),
+            tenant_context: tandem_types::TenantContext::local_implicit(),
+            principal: tandem_runtime::McpPrincipalRef::LocalImplicit,
+            connection_id: state
+                .mcp
+                .connection_id_for_tenant("notion", &tandem_types::TenantContext::local_implicit()),
+            provider_id: "mcp-oauth::notion".to_string(),
             status: "pending".to_string(),
             created_at_ms: crate::now_ms(),
             expires_at_ms: crate::now_ms().saturating_add(60_000),

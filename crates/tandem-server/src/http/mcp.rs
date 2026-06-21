@@ -8,7 +8,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use tandem_core::tool_name_security_descriptor;
-use tandem_runtime::McpAuthChallenge;
+use tandem_runtime::{McpAuthChallenge, McpPrincipalRef};
 use tandem_types::{RequestPrincipal, StrictTenantContext, TenantContext, VerifiedTenantContext};
 use uuid::Uuid;
 
@@ -22,6 +22,10 @@ const MCP_OAUTH_SESSION_TTL_MS: u64 = 10 * 60 * 1000;
 pub(crate) struct McpOAuthSessionRecord {
     pub session_id: String,
     pub server_name: String,
+    pub tenant_context: TenantContext,
+    pub principal: McpPrincipalRef,
+    pub connection_id: String,
+    pub provider_id: String,
     pub status: String,
     pub created_at_ms: u64,
     pub expires_at_ms: u64,
@@ -567,6 +571,32 @@ async fn current_mcp_auth_challenge(state: &AppState, name: &str) -> Option<McpA
         .and_then(|server| server.last_auth_challenge.clone())
 }
 
+fn mcp_auth_challenge_from_session(session: &McpOAuthSessionRecord) -> McpAuthChallenge {
+    McpAuthChallenge {
+        challenge_id: format!("mcp-oauth-session-{}", session.session_id),
+        tool_name: session.server_name.clone(),
+        authorization_url: session.authorization_url.clone(),
+        message: "Authorization required. Open the link to connect this MCP server.".to_string(),
+        requested_at_ms: session.created_at_ms,
+        status: session.status.clone(),
+    }
+}
+
+async fn current_mcp_auth_challenge_for_tenant(
+    state: &AppState,
+    name: &str,
+    tenant_context: &TenantContext,
+) -> Option<McpAuthChallenge> {
+    if let Some(session) = find_pending_mcp_oauth_session(state, name, tenant_context).await {
+        return Some(mcp_auth_challenge_from_session(&session));
+    }
+    if tenant_context.is_local_implicit() {
+        current_mcp_auth_challenge(state, name).await
+    } else {
+        None
+    }
+}
+
 fn effective_mcp_headers(server: &tandem_runtime::McpServer) -> HashMap<String, String> {
     let mut headers = server.headers.clone();
     for (key, value) in &server.secret_header_values {
@@ -579,7 +609,7 @@ fn mcp_uses_oauth(server: &tandem_runtime::McpServer) -> bool {
     server.auth_kind.trim().eq_ignore_ascii_case("oauth")
 }
 
-fn mcp_public_base_url_from_config(cfg: &Value) -> Option<String> {
+pub(super) fn mcp_public_base_url_from_config(cfg: &Value) -> Option<String> {
     cfg.get("hosted")
         .and_then(Value::as_object)
         .and_then(|hosted| hosted.get("public_url"))
@@ -589,7 +619,7 @@ fn mcp_public_base_url_from_config(cfg: &Value) -> Option<String> {
         .map(|value| value.trim_end_matches('/').to_string())
 }
 
-fn mcp_public_base_url_from_env() -> Option<String> {
+pub(super) fn mcp_public_base_url_from_env() -> Option<String> {
     [
         "TANDEM_CONTROL_PANEL_PUBLIC_URL",
         "HOSTED_CONTROL_PANEL_PUBLIC_URL",
@@ -678,19 +708,13 @@ fn mcp_oauth_redirect_uri_from_authorization_url(authorization_url: &str) -> Opt
 }
 
 fn generate_mcp_oauth_state() -> String {
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!(
-        "{}:{}",
-        Uuid::new_v4(),
-        Uuid::new_v4()
-    ))
+    let entropy = format!("{}:{}", Uuid::new_v4(), Uuid::new_v4());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(entropy)
 }
 
 fn generate_mcp_pkce_pair() -> (String, String) {
-    let verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!(
-        "{}:{}",
-        Uuid::new_v4(),
-        Uuid::new_v4()
-    ));
+    let entropy = format!("{}:{}", Uuid::new_v4(), Uuid::new_v4());
+    let verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(entropy);
     let digest = sha2::Sha256::digest(verifier.as_bytes());
     let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest);
     (verifier, challenge)
@@ -698,6 +722,19 @@ fn generate_mcp_pkce_pair() -> (String, String) {
 
 fn mcp_oauth_provider_id(server_name: &str) -> String {
     format!("mcp-oauth::{}", mcp_namespace_segment(server_name))
+}
+
+fn mcp_oauth_provider_id_for_tenant(
+    server_name: &str,
+    tenant_context: &TenantContext,
+    connection_id: &str,
+) -> String {
+    let base = mcp_oauth_provider_id(server_name);
+    if tenant_context.is_local_implicit() {
+        base
+    } else {
+        format!("{base}::{connection_id}")
+    }
 }
 
 fn www_authenticate_param(header: &str, key: &str) -> Option<String> {
@@ -904,6 +941,7 @@ async fn discover_mcp_oauth_bootstrap(
 async fn start_mcp_oauth_session(
     state: &AppState,
     name: &str,
+    tenant_context: &TenantContext,
     public_base_url_hint: Option<&str>,
 ) -> Result<McpAuthChallenge, String> {
     let server = state
@@ -927,7 +965,12 @@ async fn start_mcp_oauth_session(
         .map(str::to_string)
         .unwrap_or_else(|| mcp_public_base_url(state, &effective_cfg));
     let redirect_uri = mcp_oauth_redirect_uri_for_base(&public_base_url, name);
-    if let Some(existing) = current_mcp_auth_challenge(state, name).await {
+    let existing_challenge = if tenant_context.is_local_implicit() {
+        current_mcp_auth_challenge(state, name).await
+    } else {
+        None
+    };
+    if let Some(existing) = existing_challenge {
         let existing_redirect =
             mcp_oauth_redirect_uri_from_authorization_url(&existing.authorization_url);
         if public_base_url_hint
@@ -939,11 +982,9 @@ async fn start_mcp_oauth_session(
             return Ok(existing);
         }
         let _ = state.mcp.clear_server_auth_challenge(name).await;
-        state
-            .mcp_oauth_sessions
-            .write()
-            .await
-            .retain(|_, session| session.server_name != name);
+        state.mcp_oauth_sessions.write().await.retain(|_, session| {
+            session.server_name != name || session.tenant_context != *tenant_context
+        });
     }
 
     let bootstrap =
@@ -1004,25 +1045,34 @@ async fn start_mcp_oauth_session(
         status: "pending".to_string(),
     };
     let session_id = Uuid::new_v4().to_string();
+    let connection_id = state.mcp.connection_id_for_tenant(name, tenant_context);
+    let provider_id = mcp_oauth_provider_id_for_tenant(name, tenant_context, &connection_id);
     let created_at_ms = crate::now_ms();
-    state.mcp_oauth_sessions.write().await.insert(
-        session_id.clone(),
-        McpOAuthSessionRecord {
-            session_id,
-            server_name: name.to_string(),
-            status: "pending".to_string(),
-            created_at_ms,
-            expires_at_ms: created_at_ms.saturating_add(MCP_OAUTH_SESSION_TTL_MS),
-            redirect_uri,
-            state: state_token,
-            code_verifier,
-            authorization_url: authorization_url.clone(),
-            token_endpoint: bootstrap.token_endpoint,
-            client_id: registration.client_id,
-            client_secret: registration.client_secret,
-            error: None,
-        },
-    );
+    let session = McpOAuthSessionRecord {
+        session_id: session_id.clone(),
+        server_name: name.to_string(),
+        tenant_context: tenant_context.clone(),
+        principal: McpPrincipalRef::from_tenant_context(tenant_context),
+        connection_id,
+        provider_id,
+        status: "pending".to_string(),
+        created_at_ms,
+        expires_at_ms: created_at_ms.saturating_add(MCP_OAUTH_SESSION_TTL_MS),
+        redirect_uri,
+        state: state_token,
+        code_verifier,
+        authorization_url: authorization_url.clone(),
+        token_endpoint: bootstrap.token_endpoint,
+        client_id: registration.client_id,
+        client_secret: registration.client_secret,
+        error: None,
+    };
+    state
+        .mcp_oauth_sessions
+        .write()
+        .await
+        .insert(session_id.clone(), session.clone());
+    publish_mcp_oauth_event(state, "mcp.connection.oauth_started", &session, None).await;
     let _ = state
         .mcp
         .record_server_auth_challenge(name, challenge.clone(), None)
@@ -1033,6 +1083,7 @@ async fn start_mcp_oauth_session(
 async fn find_pending_mcp_oauth_session(
     state: &AppState,
     server_name: &str,
+    tenant_context: &TenantContext,
 ) -> Option<McpOAuthSessionRecord> {
     state
         .mcp_oauth_sessions
@@ -1041,6 +1092,7 @@ async fn find_pending_mcp_oauth_session(
         .values()
         .find(|session| {
             session.server_name == server_name
+                && session.tenant_context == *tenant_context
                 && session.status.trim().eq_ignore_ascii_case("pending")
                 && session.expires_at_ms > crate::now_ms()
         })
@@ -1052,6 +1104,34 @@ async fn remove_mcp_oauth_sessions_for_server(state: &AppState, server_name: &st
     let before = sessions.len();
     sessions.retain(|_, session| session.server_name != server_name);
     before.saturating_sub(sessions.len())
+}
+
+async fn publish_mcp_oauth_event(
+    state: &AppState,
+    event: &str,
+    session: &McpOAuthSessionRecord,
+    reason: Option<&str>,
+) {
+    let payload = json!({
+        "server_name": session.server_name,
+        "connection_id": session.connection_id,
+        "provider_id": session.provider_id,
+        "principal": session.principal,
+        "tenant_context": session.tenant_context,
+        "reason": reason,
+    });
+    state
+        .event_bus
+        .publish(EngineEvent::new(event, payload.clone()));
+    let actor_id = session.tenant_context.actor_id.clone();
+    let _ = crate::audit::append_protected_audit_event(
+        state,
+        event,
+        &session.tenant_context,
+        actor_id,
+        payload,
+    )
+    .await;
 }
 
 async fn exchange_mcp_oauth_code(
@@ -1104,6 +1184,7 @@ async fn exchange_mcp_oauth_code(
 async fn finish_mcp_oauth_callback(
     state: AppState,
     name: String,
+    request_tenant: Option<TenantContext>,
     input: McpOAuthCallbackInput,
 ) -> Result<(), String> {
     let state_token = input
@@ -1120,6 +1201,46 @@ async fn finish_mcp_oauth_callback(
         })
     }
     .ok_or_else(|| "mcp oauth session not found or expired".to_string())?;
+
+    let session = state
+        .mcp_oauth_sessions
+        .read()
+        .await
+        .get(&session_id)
+        .cloned()
+        .ok_or_else(|| "mcp oauth session not found".to_string())?;
+    if let Some(request_tenant) = request_tenant.as_ref() {
+        if &session.tenant_context != request_tenant {
+            publish_mcp_oauth_event(
+                &state,
+                "mcp.connection.oauth_denied",
+                &session,
+                Some("tenant_context_mismatch"),
+            )
+            .await;
+            return Err("mcp oauth callback tenant context did not match session".to_string());
+        }
+    }
+    if !session.status.trim().eq_ignore_ascii_case("pending") {
+        publish_mcp_oauth_event(
+            &state,
+            "mcp.connection.oauth_denied",
+            &session,
+            Some("session_already_completed"),
+        )
+        .await;
+        return Err("mcp oauth session already completed".to_string());
+    }
+    if session.expires_at_ms <= crate::now_ms() {
+        publish_mcp_oauth_event(
+            &state,
+            "mcp.connection.oauth_denied",
+            &session,
+            Some("session_expired"),
+        )
+        .await;
+        return Err("mcp oauth session expired before callback completed".to_string());
+    }
 
     if let Some(error) = input
         .error
@@ -1138,6 +1259,13 @@ async fn finish_mcp_oauth_callback(
             session.status = "error".to_string();
             session.error = Some(detail.clone());
         }
+        publish_mcp_oauth_event(
+            &state,
+            "mcp.connection.oauth_denied",
+            &session,
+            Some("provider_error"),
+        )
+        .await;
         return Err(detail);
     }
 
@@ -1147,17 +1275,6 @@ async fn finish_mcp_oauth_callback(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "missing authorization code".to_string())?;
-
-    let session = state
-        .mcp_oauth_sessions
-        .read()
-        .await
-        .get(&session_id)
-        .cloned()
-        .ok_or_else(|| "mcp oauth session not found".to_string())?;
-    if session.expires_at_ms <= crate::now_ms() {
-        return Err("mcp oauth session expired before callback completed".to_string());
-    }
 
     let exchanged = exchange_mcp_oauth_code(&session, code).await?;
     let access_token = exchanged
@@ -1179,36 +1296,50 @@ async fn finish_mcp_oauth_callback(
 
     state
         .mcp
-        .set_bearer_token(&name, &access_token)
+        .set_bearer_token_for_tenant(&name, &access_token, &session.tenant_context)
         .await
         .map_err(|error| format!("failed to store mcp oauth token: {error}"))?;
     state
         .mcp
-        .set_oauth_refresh_config(
+        .set_oauth_refresh_config_for_tenant(
             &name,
-            mcp_oauth_provider_id(&name),
+            session.provider_id.clone(),
             session.token_endpoint.clone(),
             session.client_id.clone(),
             session.client_secret.clone(),
+            &session.tenant_context,
         )
         .await
         .map_err(|error| format!("failed to store mcp oauth refresh metadata: {error}"))?;
-    let _ = tandem_core::set_provider_oauth_credential(
-        &mcp_oauth_provider_id(&name),
-        tandem_core::OAuthProviderCredential {
-            provider_id: mcp_oauth_provider_id(&name),
-            access_token: access_token.clone(),
-            refresh_token,
-            expires_at_ms,
-            account_id: None,
-            email: None,
-            display_name: None,
-            managed_by: "tandem".to_string(),
-            api_key: None,
-        },
-    );
+    let credential = tandem_core::OAuthProviderCredential {
+        provider_id: session.provider_id.clone(),
+        access_token: access_token.clone(),
+        refresh_token,
+        expires_at_ms,
+        account_id: None,
+        email: None,
+        display_name: None,
+        managed_by: "tandem".to_string(),
+        api_key: None,
+    };
+    let credential_result = if session.tenant_context.is_local_implicit() {
+        tandem_core::set_provider_oauth_credential(&session.provider_id, credential)
+    } else {
+        tandem_core::set_provider_oauth_credential_for_tenant(
+            &session.tenant_context,
+            &session.provider_id,
+            credential,
+        )
+    };
+    if let Err(error) = credential_result {
+        tracing::warn!(%error, provider_id = %session.provider_id, "failed to persist MCP OAuth credential");
+    }
 
-    match state.mcp.refresh(&name).await {
+    match state
+        .mcp
+        .refresh_for_tenant(&name, &session.tenant_context)
+        .await
+    {
         Ok(_) => {
             let count = sync_mcp_tools_for_server(&state, &name).await;
             let _ = state.mcp.clear_server_auth_challenge(&name).await;
@@ -1216,6 +1347,7 @@ async fn finish_mcp_oauth_callback(
                 "mcp.server.connected",
                 json!({
                     "name": name,
+                    "connection_id": session.connection_id,
                     "status": "connected",
                     "source": "oauth_callback"
                 }),
@@ -1237,6 +1369,7 @@ async fn finish_mcp_oauth_callback(
             return Err(error);
         }
     }
+    publish_mcp_oauth_event(&state, "mcp.connection.oauth_completed", &session, None).await;
 
     if let Some(session_mut) = state.mcp_oauth_sessions.write().await.get_mut(&session_id) {
         session_mut.status = "connected".to_string();
@@ -1374,20 +1507,21 @@ pub(crate) async fn sync_mcp_tools_for_server(state: &AppState, name: &str) -> u
 pub(super) async fn connect_mcp(
     State(state): State<AppState>,
     Path(name): Path<String>,
+    axum::extract::Extension(tenant_context): axum::extract::Extension<TenantContext>,
     headers: HeaderMap,
 ) -> Json<Value> {
-    let ok = state.mcp.connect(&name).await;
+    let ok = state.mcp.connect_for_tenant(&name, &tenant_context).await;
     let public_base_url = mcp_public_base_url_from_headers(&headers);
     let auth_challenge = if ok {
         None
     } else {
-        let current = current_mcp_auth_challenge(&state, &name).await;
+        let current = current_mcp_auth_challenge_for_tenant(&state, &name, &tenant_context).await;
         if current.is_some() {
             current
         } else {
             let server = state.mcp.list().await.get(&name).cloned();
             if server.as_ref().is_some_and(mcp_uses_oauth) {
-                start_mcp_oauth_session(&state, &name, public_base_url.as_deref())
+                start_mcp_oauth_session(&state, &name, &tenant_context, public_base_url.as_deref())
                     .await
                     .ok()
             } else {
@@ -1557,9 +1691,10 @@ pub(super) async fn patch_mcp(
 pub(super) async fn refresh_mcp(
     State(state): State<AppState>,
     Path(name): Path<String>,
+    axum::extract::Extension(tenant_context): axum::extract::Extension<TenantContext>,
     headers: HeaderMap,
 ) -> Json<Value> {
-    let result = state.mcp.refresh(&name).await;
+    let result = state.mcp.refresh_for_tenant(&name, &tenant_context).await;
     let public_base_url = mcp_public_base_url_from_headers(&headers);
     match result {
         Ok(tools) => {
@@ -1577,14 +1712,19 @@ pub(super) async fn refresh_mcp(
             }))
         }
         Err(error) => {
-            let mut auth_challenge = current_mcp_auth_challenge(&state, &name).await;
+            let mut auth_challenge =
+                current_mcp_auth_challenge_for_tenant(&state, &name, &tenant_context).await;
             if auth_challenge.is_none() {
                 let server = state.mcp.list().await.get(&name).cloned();
                 if server.as_ref().is_some_and(mcp_uses_oauth) {
-                    auth_challenge =
-                        start_mcp_oauth_session(&state, &name, public_base_url.as_deref())
-                            .await
-                            .ok();
+                    auth_challenge = start_mcp_oauth_session(
+                        &state,
+                        &name,
+                        &tenant_context,
+                        public_base_url.as_deref(),
+                    )
+                    .await
+                    .ok();
                 }
             }
             let prefix = format!("mcp.{}.", mcp_namespace_segment(&name));
@@ -1614,10 +1754,13 @@ pub(super) async fn refresh_mcp(
 pub(super) async fn auth_mcp(
     State(state): State<AppState>,
     Path(name): Path<String>,
+    axum::extract::Extension(tenant_context): axum::extract::Extension<TenantContext>,
     headers: HeaderMap,
 ) -> Json<Value> {
     let public_base_url = mcp_public_base_url_from_headers(&headers);
-    if let Some(auth_challenge) = current_mcp_auth_challenge(&state, &name).await {
+    if let Some(auth_challenge) =
+        current_mcp_auth_challenge_for_tenant(&state, &name, &tenant_context).await
+    {
         let existing_redirect =
             mcp_oauth_redirect_uri_from_authorization_url(&auth_challenge.authorization_url);
         let desired_redirect = public_base_url
@@ -1636,16 +1779,15 @@ pub(super) async fn auth_mcp(
             }));
         }
         let _ = state.mcp.clear_server_auth_challenge(&name).await;
-        state
-            .mcp_oauth_sessions
-            .write()
-            .await
-            .retain(|_, pending| pending.server_name != name);
+        state.mcp_oauth_sessions.write().await.retain(|_, pending| {
+            pending.server_name != name || pending.tenant_context != tenant_context
+        });
     }
     let server = state.mcp.list().await.get(&name).cloned();
     if server.as_ref().is_some_and(mcp_uses_oauth) {
         if let Ok(auth_challenge) =
-            start_mcp_oauth_session(&state, &name, public_base_url.as_deref()).await
+            start_mcp_oauth_session(&state, &name, &tenant_context, public_base_url.as_deref())
+                .await
         {
             return Json(json!({
                 "ok": true,
@@ -1666,17 +1808,29 @@ pub(super) async fn auth_mcp(
 pub(super) async fn callback_mcp(
     State(state): State<AppState>,
     Path(name): Path<String>,
+    tenant_context: Option<axum::extract::Extension<TenantContext>>,
     headers: HeaderMap,
 ) -> Json<Value> {
-    authenticate_mcp(State(state), Path(name), headers).await
+    let tenant_context = tenant_context
+        .map(|extension| extension.0)
+        .unwrap_or_else(TenantContext::local_implicit);
+    authenticate_mcp(
+        State(state),
+        Path(name),
+        axum::extract::Extension(tenant_context),
+        headers,
+    )
+    .await
 }
 
 pub(super) async fn callback_mcp_get(
     State(state): State<AppState>,
     Path(name): Path<String>,
+    tenant_context: Option<axum::extract::Extension<TenantContext>>,
     Query(input): Query<McpOAuthCallbackInput>,
 ) -> impl IntoResponse {
-    match finish_mcp_oauth_callback(state, name, input).await {
+    let request_tenant = tenant_context.map(|extension| extension.0);
+    match finish_mcp_oauth_callback(state, name, request_tenant, input).await {
         Ok(()) => mcp_oauth_callback_html(
             true,
             "Tandem MCP Connected",
@@ -1692,10 +1846,11 @@ pub(super) async fn callback_mcp_get(
 pub(super) async fn authenticate_mcp(
     State(state): State<AppState>,
     Path(name): Path<String>,
+    axum::extract::Extension(tenant_context): axum::extract::Extension<TenantContext>,
     headers: HeaderMap,
 ) -> Json<Value> {
     let public_base_url = mcp_public_base_url_from_headers(&headers);
-    if let Some(session) = find_pending_mcp_oauth_session(&state, &name).await {
+    if let Some(session) = find_pending_mcp_oauth_session(&state, &name, &tenant_context).await {
         let desired_redirect_uri = public_base_url
             .as_deref()
             .map(|base_url| mcp_oauth_redirect_uri_for_base(base_url, &name));
@@ -1704,11 +1859,9 @@ pub(super) async fn authenticate_mcp(
             .is_some_and(|redirect_uri| redirect_uri != session.redirect_uri)
         {
             let _ = state.mcp.clear_server_auth_challenge(&name).await;
-            state
-                .mcp_oauth_sessions
-                .write()
-                .await
-                .retain(|_, pending| pending.server_name != name);
+            state.mcp_oauth_sessions.write().await.retain(|_, pending| {
+                pending.server_name != name || pending.tenant_context != tenant_context
+            });
         } else {
             let last_auth_challenge = current_mcp_auth_challenge(&state, &name).await;
             return Json(json!({
@@ -1722,7 +1875,7 @@ pub(super) async fn authenticate_mcp(
         }
     }
 
-    let refresh = state.mcp.refresh(&name).await;
+    let refresh = state.mcp.refresh_for_tenant(&name, &tenant_context).await;
     let current = state.mcp.list().await.get(&name).cloned();
     let last_auth_challenge = current
         .as_ref()
@@ -1746,10 +1899,14 @@ pub(super) async fn authenticate_mcp(
             if auth_challenge.is_none() {
                 let server = state.mcp.list().await.get(&name).cloned();
                 if server.as_ref().is_some_and(mcp_uses_oauth) {
-                    auth_challenge =
-                        start_mcp_oauth_session(&state, &name, public_base_url.as_deref())
-                            .await
-                            .ok();
+                    auth_challenge = start_mcp_oauth_session(
+                        &state,
+                        &name,
+                        &tenant_context,
+                        public_base_url.as_deref(),
+                    )
+                    .await
+                    .ok();
                 }
             }
             Json(json!({
@@ -1814,55 +1971,4 @@ pub(super) async fn mcp_resources(State(state): State<AppState>) -> Json<Value> 
         })
         .collect::<Vec<_>>();
     Json(json!(resources))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    #[test]
-    fn mcp_public_base_url_from_config_trims_trailing_slash() {
-        let cfg = json!({
-            "hosted": {
-                "public_url": "https://test.tandem.ac/"
-            }
-        });
-
-        assert_eq!(
-            mcp_public_base_url_from_config(&cfg).as_deref(),
-            Some("https://test.tandem.ac")
-        );
-    }
-
-    #[test]
-    fn mcp_public_base_url_from_env_uses_control_panel_public_url() {
-        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
-        let previous_control_panel = std::env::var("TANDEM_CONTROL_PANEL_PUBLIC_URL").ok();
-        let previous_hosted_panel = std::env::var("HOSTED_CONTROL_PANEL_PUBLIC_URL").ok();
-        let previous_hosted = std::env::var("HOSTED_PUBLIC_URL").ok();
-        std::env::set_var("TANDEM_CONTROL_PANEL_PUBLIC_URL", "https://test.tandem.ac/");
-        std::env::remove_var("HOSTED_CONTROL_PANEL_PUBLIC_URL");
-        std::env::remove_var("HOSTED_PUBLIC_URL");
-
-        assert_eq!(
-            mcp_public_base_url_from_env().as_deref(),
-            Some("https://test.tandem.ac")
-        );
-
-        match previous_control_panel {
-            Some(value) => std::env::set_var("TANDEM_CONTROL_PANEL_PUBLIC_URL", value),
-            None => std::env::remove_var("TANDEM_CONTROL_PANEL_PUBLIC_URL"),
-        }
-        match previous_hosted_panel {
-            Some(value) => std::env::set_var("HOSTED_CONTROL_PANEL_PUBLIC_URL", value),
-            None => std::env::remove_var("HOSTED_CONTROL_PANEL_PUBLIC_URL"),
-        }
-        match previous_hosted {
-            Some(value) => std::env::set_var("HOSTED_PUBLIC_URL", value),
-            None => std::env::remove_var("HOSTED_PUBLIC_URL"),
-        }
-    }
 }

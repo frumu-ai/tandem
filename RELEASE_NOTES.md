@@ -28,6 +28,11 @@ MCP connections.
 - Added actor-qualified MCP secret ids and exact tenant-context secret
   resolution so two employees in the same workspace cannot overwrite or resolve
   each other's stored MCP bearer credentials.
+- Added tenant/actor-scoped MCP OAuth sessions and callbacks. Hosted OAuth
+  sign-ins now record the initiating tenant context, principal, connection id,
+  and provider credential id, reject mismatched authenticated callbacks, and
+  persist refreshed tokens under the scoped connection instead of a shared
+  server-global provider account.
 - Documented that hosted/enterprise MCP OAuth should follow the existing
   connector control-plane ownership precedent: long-lived secret material stays
   outside the runtime, while the runtime stores credential references and

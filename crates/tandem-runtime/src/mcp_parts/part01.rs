@@ -257,6 +257,15 @@ impl McpRegistry {
         self.connections.read().await.clone()
     }
 
+    pub fn connection_id_for_tenant(
+        &self,
+        server_id: &str,
+        current_tenant: &TenantContext,
+    ) -> String {
+        let owner = McpPrincipalRef::from_tenant_context(current_tenant);
+        mcp_connection_id(server_id, current_tenant, &owner)
+    }
+
     pub async fn add(&self, name: String, transport: String) {
         self.add_or_update(name, transport, HashMap::new(), true)
             .await;
@@ -780,7 +789,7 @@ impl McpRegistry {
             .await
     }
 
-    async fn set_bearer_token_for_tenant(
+    pub async fn set_bearer_token_for_tenant(
         &self,
         name: &str,
         token: &str,
