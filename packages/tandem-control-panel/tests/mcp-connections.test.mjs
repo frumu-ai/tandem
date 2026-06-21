@@ -5,6 +5,7 @@ import {
   mcpConnectionOwnerLabel,
   normalizeMcpConnectionGrants,
   normalizeMcpConnectionsFromInventory,
+  normalizeMcpInventoryServerRows,
 } from "../src/features/mcp/mcpConnections.ts";
 
 test("normalizes tenant-scoped MCP connections from server inventory", () => {
@@ -58,6 +59,10 @@ test("normalizes tenant-scoped MCP connections from server inventory", () => {
   assert.deepEqual(rows[0].toolCache, ["mcp.github.list_issues"]);
   assert.equal(rows[1].connectionClass, "shared_read_write");
   assert.deepEqual(rows[1].toolCache, ["mcp.slack.send_message"]);
+  assert.deepEqual(
+    normalizeMcpInventoryServerRows({ github: { connections: [] } }).map((row) => row.name),
+    ["github"]
+  );
 });
 
 test("deduplicates MCP connection grants by server, connection, and run_as", () => {

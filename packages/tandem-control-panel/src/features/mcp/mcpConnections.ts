@@ -28,6 +28,10 @@ export type McpConnectionSummary = {
   updatedAtMs: number;
 };
 
+export type McpInventoryServerRow = Record<string, any> & {
+  name: string;
+};
+
 function safeString(value: unknown) {
   return String(value || "").trim();
 }
@@ -185,6 +189,16 @@ export function normalizeMcpConnectionsFromInventory(raw: unknown): McpConnectio
   }
 
   return rows.sort(compareMcpConnections);
+}
+
+export function normalizeMcpInventoryServerRows(raw: unknown): McpInventoryServerRow[] {
+  const record = safeObject(raw);
+  if (Array.isArray((record as any)?.servers)) return (record as any).servers;
+  if (!record) return [];
+  return Object.entries(record).map(([name, row]) => ({
+    ...((row && typeof row === "object" ? row : {}) as Record<string, any>),
+    name,
+  }));
 }
 
 export function compareMcpConnections(left: McpConnectionSummary, right: McpConnectionSummary) {

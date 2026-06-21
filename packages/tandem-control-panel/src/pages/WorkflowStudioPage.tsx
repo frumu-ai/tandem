@@ -24,6 +24,7 @@ import { EmptyState, PageCard } from "./ui";
 import type { AppPageProps } from "./pageTypes";
 import { buildPlannerProviderOptions } from "../features/planner/plannerShared";
 import {
+  normalizeMcpInventoryServerRows,
   normalizeMcpConnectionsFromInventory,
   type McpConnectionSummary,
 } from "../features/mcp/mcpConnections";
@@ -91,15 +92,6 @@ type StudioMcpServerRow = {
   name: string;
   toolCache: string[];
 };
-
-function mcpInventoryServerRows(raw: any) {
-  if (Array.isArray(raw?.servers)) return raw.servers;
-  if (!raw || typeof raw !== "object") return [];
-  return Object.entries(raw).map(([name, row]) => ({
-    ...((row && typeof row === "object" ? row : {}) as Record<string, any>),
-    name,
-  }));
-}
 
 export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProps) {
   const queryClient = useQueryClient();
@@ -230,7 +222,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
       const current = connectionToolsByServer.get(connection.server) || [];
       connectionToolsByServer.set(connection.server, [...current, ...connection.toolCache]);
     });
-    return mcpInventoryServerRows(mcpQuery.data)
+    return normalizeMcpInventoryServerRows(mcpQuery.data)
       .map((row: any) => {
         const name = safeString(row?.name);
         if (!name) return null;
