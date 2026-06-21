@@ -7610,6 +7610,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tandem-automation"
+version = "0.6.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tandem-enterprise-contract",
+ "tandem-orchestrator",
+ "tandem-plan-compiler",
+ "tandem-types",
+ "tandem-workflows",
+]
+
+[[package]]
 name = "tandem-browser"
 version = "0.6.1"
 dependencies = [
@@ -7900,6 +7913,7 @@ dependencies = [
  "serde_yaml",
  "serial_test",
  "sha2",
+ "tandem-automation",
  "tandem-browser",
  "tandem-channels",
  "tandem-core",

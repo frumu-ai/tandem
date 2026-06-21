@@ -51,6 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added shell sandbox security documentation and regression coverage for Linux
   bubblewrap argv/write-boundary behavior, POSIX fail-closed guardrails, and
   Windows shell command translation/rejection policy.
+- Added a new `tandem-automation` crate for Automation V2 model types,
+  execution-profile policy helpers, MCP run-as policy records, routine misfire
+  policy, scheduler queue metadata, and shared-context metadata parsing, with
+  server compatibility re-exports and ported unit coverage.
 
 ### Fixed
 

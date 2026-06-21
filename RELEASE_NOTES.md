@@ -74,6 +74,11 @@ MCP connections.
 - Added shell sandbox security coverage and documentation for Linux bubblewrap
   argv/write-boundary behavior, fail-closed POSIX sandbox guardrails, and
   Windows shell command translation/rejection policy.
+- Extracted the first Automation V2 runtime model layer into the new
+  `tandem-automation` crate. Automation specs/runs, execution-profile helpers,
+  MCP run-as policy records, routine misfire policy, scheduler queue metadata,
+  and shared-context metadata parsing now compile outside `tandem-server`, while
+  the server keeps compatibility re-exports for existing call sites.
 - Fixed opaque/in-memory MCP reconnects so startup runtime-state resets no
   longer erase seeded tool inventories for local compatibility servers such as
   the test GitHub MCP fixture.
