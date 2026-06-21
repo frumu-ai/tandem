@@ -37,6 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reject cross-actor and actor-supplied service-principal selection before
   upstream dispatch, and record the actual acting MCP principal/connection in
   protected audit events.
+- Added enterprise MCP isolation regression coverage for cross-tenant
+  connection-id denial, sanitized OAuth callback mismatch audit records, and
+  tenant-tagged MCP connect/discovery runtime events.
 
 ### Fixed
 

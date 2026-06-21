@@ -1344,6 +1344,14 @@ async fn mcp_oauth_callback_rejects_cross_actor_context() {
             .expect("notion row")
             .connected
     );
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .expect("protected audit file");
+    assert!(audit.contains("\"event_type\":\"mcp.connection.oauth_denied\""));
+    assert!(audit.contains("tenant_context_mismatch"));
+    assert!(audit.contains(&session.connection_id));
+    assert!(!audit.contains("test-code"));
+    assert!(!audit.contains(&session.code_verifier));
 
     drop(server);
 }

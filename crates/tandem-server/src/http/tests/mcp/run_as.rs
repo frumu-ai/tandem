@@ -172,6 +172,123 @@ async fn mcp_run_as_denies_cross_actor_connection_id() {
 }
 
 #[tokio::test]
+async fn mcp_run_as_denies_cross_tenant_connection_id() {
+    let state = test_state().await;
+    let (endpoint, server) = spawn_fake_notion_oauth_mcp_server().await;
+    state
+        .mcp
+        .add_or_update("notion".to_string(), endpoint, HashMap::new(), true)
+        .await;
+    let tenant_a =
+        tandem_types::TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "alice");
+    let tenant_b =
+        tandem_types::TenantContext::explicit_user_workspace("org-b", "workspace-b", None, "alice");
+    state
+        .mcp
+        .set_bearer_token_for_tenant("notion", "tenant-a-alice-token", &tenant_a)
+        .await
+        .expect("store tenant a token");
+    state
+        .mcp
+        .refresh_for_tenant("notion", &tenant_a)
+        .await
+        .expect("refresh tenant a tools");
+    state
+        .mcp
+        .set_bearer_token_for_tenant("notion", "tenant-b-alice-token", &tenant_b)
+        .await
+        .expect("store tenant b token");
+    state
+        .mcp
+        .refresh_for_tenant("notion", &tenant_b)
+        .await
+        .expect("refresh tenant b tools");
+    let tenant_b_connection_id = state.mcp.connection_id_for_tenant("notion", &tenant_b);
+
+    let err = crate::http::mcp::call_mcp_tool_for_tenant_with_audit(
+        &state,
+        "notion",
+        "alice_search",
+        json!({
+            "query": "roadmap",
+            "__mcp_connection_id": tenant_b_connection_id.clone(),
+        }),
+        &tenant_a,
+    )
+    .await
+    .expect_err("tenant a must not execute with tenant b's MCP connection");
+
+    assert!(err.contains("ToolDenied { reason: McpRunAsPolicy }"));
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .expect("protected audit file");
+    assert!(audit.contains("\"event_type\":\"mcp.run_as_denied\""));
+    assert!(audit.contains(&tenant_b_connection_id));
+    assert!(audit.contains("requested connection"));
+    assert!(!audit.contains("tenant-b-alice-token"));
+    drop(server);
+}
+
+#[tokio::test]
+async fn mcp_connect_events_are_tenant_tagged_and_content_free() {
+    let state = test_state().await;
+    let mut rx = state.event_bus.subscribe();
+    let (endpoint, server) = spawn_fake_notion_oauth_mcp_server().await;
+    state
+        .mcp
+        .add_or_update("notion".to_string(), endpoint, HashMap::new(), true)
+        .await;
+    let alice =
+        tandem_types::TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "alice");
+    state
+        .mcp
+        .set_bearer_token_for_tenant("notion", "alice-union-token", &alice)
+        .await
+        .expect("store alice token");
+    let connection_id = state.mcp.connection_id_for_tenant("notion", &alice);
+
+    let app = app_router(state.clone());
+    let connect_resp = app
+        .oneshot(tenant_request(
+            "POST",
+            "/mcp/notion/connect",
+            "org-a",
+            "workspace-a",
+            "alice",
+        ))
+        .await
+        .expect("connect response");
+    assert_eq!(connect_resp.status(), StatusCode::OK);
+
+    let connected = crate::test_support::next_event_of_type(&mut rx, "mcp.server.connected").await;
+    let tools = crate::test_support::next_event_of_type(&mut rx, "mcp.tools.updated").await;
+    for event in [&connected, &tools] {
+        assert_eq!(
+            event.properties.get("connectionId").and_then(Value::as_str),
+            Some(connection_id.as_str())
+        );
+        assert_eq!(
+            event
+                .properties
+                .pointer("/tenantContext/actor_id")
+                .and_then(Value::as_str),
+            Some("alice")
+        );
+        assert_eq!(
+            event
+                .properties
+                .pointer("/principal/type")
+                .and_then(Value::as_str),
+            Some("human_actor")
+        );
+        let properties = serde_json::to_string(&event.properties).expect("event properties json");
+        assert!(!properties.contains("alice-union-token"));
+    }
+
+    drop(server);
+}
+
+#[tokio::test]
 async fn mcp_run_as_denies_unsupported_shared_connection_with_audit() {
     let state = test_state().await;
     let (endpoint, server) = spawn_fake_notion_oauth_mcp_server().await;

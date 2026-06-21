@@ -1029,10 +1029,14 @@ async fn publish_mcp_oauth_event(
 ) {
     let payload = json!({
         "server_name": session.server_name,
+        "serverName": session.server_name,
         "connection_id": session.connection_id,
+        "connectionId": session.connection_id,
         "provider_id": session.provider_id,
+        "providerId": session.provider_id,
         "principal": session.principal,
         "tenant_context": session.tenant_context,
+        "tenantContext": session.tenant_context,
         "reason": reason,
     });
     state
@@ -1047,6 +1051,25 @@ async fn publish_mcp_oauth_event(
         payload,
     )
     .await;
+}
+
+fn mcp_tenant_event_payload(
+    state: &AppState,
+    name: &str,
+    tenant_context: &TenantContext,
+    extras: Value,
+) -> Value {
+    let mut payload = json!({
+        "name": name,
+        "serverName": name,
+        "connectionId": state.mcp.connection_id_for_tenant(name, tenant_context),
+        "principal": McpPrincipalRef::from_tenant_context(tenant_context),
+        "tenantContext": tenant_context,
+    });
+    if let (Some(payload), Some(extras)) = (payload.as_object_mut(), extras.as_object()) {
+        payload.extend(extras.clone());
+    }
+    payload
 }
 
 async fn exchange_mcp_oauth_code(
@@ -1264,20 +1287,28 @@ async fn finish_mcp_oauth_callback(
                 .await;
             state.event_bus.publish(EngineEvent::new(
                 "mcp.server.connected",
-                json!({
-                    "name": name,
-                    "connection_id": session.connection_id,
-                    "status": "connected",
-                    "source": "oauth_callback"
-                }),
+                mcp_tenant_event_payload(
+                    &state,
+                    &name,
+                    &session.tenant_context,
+                    json!({
+                        "connection_id": session.connection_id,
+                        "status": "connected",
+                        "source": "oauth_callback"
+                    }),
+                ),
             ));
             state.event_bus.publish(EngineEvent::new(
                 "mcp.tools.updated",
-                json!({
-                    "name": name,
-                    "count": count,
-                    "source": "oauth_callback"
-                }),
+                mcp_tenant_event_payload(
+                    &state,
+                    &name,
+                    &session.tenant_context,
+                    json!({
+                        "count": count,
+                        "source": "oauth_callback"
+                    }),
+                ),
             ));
         }
         Err(error) => {
@@ -1470,28 +1501,40 @@ pub(super) async fn connect_mcp(
         let count = sync_mcp_tools_for_server_for_tenant(&state, &name, &tenant_context).await;
         state.event_bus.publish(EngineEvent::new(
             "mcp.server.connected",
-            json!({
-                "name": name,
-                "status": "connected",
-            }),
+            mcp_tenant_event_payload(
+                &state,
+                &name,
+                &tenant_context,
+                json!({
+                    "status": "connected",
+                }),
+            ),
         ));
         state.event_bus.publish(EngineEvent::new(
             "mcp.tools.updated",
-            json!({
-                "name": name,
-                "count": count,
-            }),
+            mcp_tenant_event_payload(
+                &state,
+                &name,
+                &tenant_context,
+                json!({
+                    "count": count,
+                }),
+            ),
         ));
     } else {
         let (removed, remaining) = resync_mcp_bridge_tools_for_server(&state, &name).await;
         state.event_bus.publish(EngineEvent::new(
             "mcp.server.disconnected",
-            json!({
-                "name": name,
-                "removedToolCount": removed,
-                "remainingToolCount": remaining,
-                "reason": "connect_failed"
-            }),
+            mcp_tenant_event_payload(
+                &state,
+                &name,
+                &tenant_context,
+                json!({
+                    "removedToolCount": removed,
+                    "remainingToolCount": remaining,
+                    "reason": "connect_failed"
+                }),
+            ),
         ));
     }
     Json(json!({
@@ -1638,10 +1681,14 @@ pub(super) async fn refresh_mcp(
             let count = sync_mcp_tools_for_server_for_tenant(&state, &name, &tenant_context).await;
             state.event_bus.publish(EngineEvent::new(
                 "mcp.tools.updated",
-                json!({
-                    "name": name,
-                    "count": count,
-                }),
+                mcp_tenant_event_payload(
+                    &state,
+                    &name,
+                    &tenant_context,
+                    json!({
+                        "count": count,
+                    }),
+                ),
             ));
             Json(json!({
                 "ok": true,
@@ -1667,12 +1714,16 @@ pub(super) async fn refresh_mcp(
             let (removed, remaining) = resync_mcp_bridge_tools_for_server(&state, &name).await;
             state.event_bus.publish(EngineEvent::new(
                 "mcp.server.disconnected",
-                json!({
-                    "name": name,
-                    "removedToolCount": removed,
-                    "remainingToolCount": remaining,
-                    "reason": "refresh_failed"
-                }),
+                mcp_tenant_event_payload(
+                    &state,
+                    &name,
+                    &tenant_context,
+                    json!({
+                        "removedToolCount": removed,
+                        "remainingToolCount": remaining,
+                        "reason": "refresh_failed"
+                    }),
+                ),
             ));
             Json(json!({
                 "ok": false,

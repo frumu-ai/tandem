@@ -47,6 +47,9 @@ MCP connections.
   cross-actor connection ids and actor-supplied service-principal selection fail
   closed before upstream dispatch, and protected audit records include the
   actual acting MCP principal and connection.
+- Added enterprise MCP isolation regressions for cross-tenant connection-id
+  denial and OAuth callback mismatch auditing. MCP connect/discovery events now
+  include tenant, principal, and connection metadata without credential content.
 - Updated Automation V2 MCP preflight discovery to use tenant-scoped readiness,
   connection-grant run-as context, tool sync, and remote tool inventory, and
   preserved connection grants through the control-panel workflow editing
