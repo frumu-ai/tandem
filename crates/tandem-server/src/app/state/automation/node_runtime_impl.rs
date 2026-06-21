@@ -401,6 +401,7 @@ pub(crate) fn normalize_automation_requested_tools(
                     "glob".to_string(),
                     "read".to_string(),
                     "edit".to_string(),
+                    "apply_patch".to_string(),
                     "write".to_string(),
                     "bash".to_string(),
                 ]);

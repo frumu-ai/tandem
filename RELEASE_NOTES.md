@@ -67,6 +67,9 @@ MCP connections.
 - Fixed opaque/in-memory MCP reconnects so startup runtime-state resets no
   longer erase seeded tool inventories for local compatibility servers such as
   the test GitHub MCP fixture.
+- Fixed Automation V2 filesystem code workflows so connector-only MCP
+  allowlists still keep `apply_patch` available for repository edits, and
+  removed the related regression from the nextest CI quarantine list.
 - Documented that hosted/enterprise MCP OAuth should follow the existing
   connector control-plane ownership precedent: long-lived secret material stays
   outside the runtime, while the runtime stores credential references and

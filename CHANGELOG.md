@@ -61,6 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connection-grant run-as context, tool sync, and remote tool inventory so
   scheduled and enterprise runs do not fall back to local-implicit or workflow
   creator MCP state while preparing scoped connector tools.
+- Fixed filesystem-scoped Automation V2 code workflows so MCP-only explicit
+  tool allowlists still retain `apply_patch`, matching Git-backed code workflow
+  behavior and allowing the regression test to leave the CI quarantine list.
 
 ## [0.6.1] - 2026-06-20
 

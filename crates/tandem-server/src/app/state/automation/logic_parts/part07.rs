@@ -235,6 +235,7 @@ pub(crate) fn normalize_automation_requested_tools(
                     "glob".to_string(),
                     "read".to_string(),
                     "edit".to_string(),
+                    "apply_patch".to_string(),
                     "write".to_string(),
                     "bash".to_string(),
                 ]);
@@ -264,14 +265,12 @@ pub(crate) fn normalize_automation_requested_tools(
         normalized.push("read".to_string());
     }
     let has_read = normalized.iter().any(|tool| tool == "read");
-    let has_workspace_probe = normalized
-        .iter()
-        .any(|tool| {
-            matches!(
-                tool.as_str(),
-                "glob" | "ls" | "list" | "repo.context_bundle" | "repo.search" | "repo.symbol"
-            )
-        });
+    let has_workspace_probe = normalized.iter().any(|tool| {
+        matches!(
+            tool.as_str(),
+            "glob" | "ls" | "list" | "repo.context_bundle" | "repo.search" | "repo.symbol"
+        )
+    });
     if has_read
         && !has_workspace_probe
         && !explicit_connector_tool_allowlist
@@ -369,23 +368,21 @@ pub(crate) fn automation_node_prewrite_requirements_impl(
     let connector_source_node = !automation_node_is_code_workflow(node)
         && !enforcement::automation_node_allows_optional_connector_references(node)
         && !super::prompting_impl::automation_node_concrete_mcp_tool_allowlist(node).is_empty();
-    let workspace_inspection_required = requested_tools
-        .iter()
-        .any(|tool| {
-            matches!(
-                tool.as_str(),
-                "glob"
-                    | "ls"
-                    | "list"
-                    | "read"
-                    | "repo.context_bundle"
-                    | "repo.search"
-                    | "repo.symbol"
-                    | "repo.neighbors"
-                    | "repo.impact"
-                    | "repo.test_targets"
-            )
-        });
+    let workspace_inspection_required = requested_tools.iter().any(|tool| {
+        matches!(
+            tool.as_str(),
+            "glob"
+                | "ls"
+                | "list"
+                | "read"
+                | "repo.context_bundle"
+                | "repo.search"
+                | "repo.symbol"
+                | "repo.neighbors"
+                | "repo.impact"
+                | "repo.test_targets"
+        )
+    });
     let legacy_web_research_expected = node
         .metadata
         .as_ref()
