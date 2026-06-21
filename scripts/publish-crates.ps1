@@ -35,6 +35,7 @@ $crates = @(
     "crates/tandem-channels",
     "crates/tandem-workflows",
     "crates/tandem-plan-compiler",
+    "crates/tandem-automation",
     "crates/tandem-governance-engine",
     "crates/tandem-server",
     "crates/tandem-enterprise-server",

@@ -197,7 +197,7 @@ jobs:
 
       - name: Cargo dependency graph check
         run: |
-          cargo check -p tandem-ai -p tandem-tui -p tandem-server -p tandem-core -p tandem-tools -p tandem-memory -p tandem-graph-core -p tandem-repo-intelligence
+          cargo check -p tandem-ai -p tandem-tui -p tandem-server -p tandem-core -p tandem-tools -p tandem-memory -p tandem-graph-core -p tandem-repo-intelligence -p tandem-automation
 
       - name: Cargo publish-order manifest precheck
         shell: bash
@@ -232,6 +232,7 @@ jobs:
               "crates/tandem-workflows",
               "crates/tandem-browser",
               "crates/tandem-plan-compiler",
+              "crates/tandem-automation",
               "crates/tandem-governance-engine",
               "crates/tandem-tui",
               "crates/tandem-server",
