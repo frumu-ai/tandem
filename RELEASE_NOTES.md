@@ -2,6 +2,34 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.6.2 (Unreleased)
+
+Tandem 0.6.2 starts the enterprise MCP identity workstream for multi-employee
+runtime deployments. The first change is a source-of-truth design for separating
+MCP server definitions from user-owned, service-principal, shared, and delegated
+MCP connections.
+
+### Enterprise MCP Identity
+
+- Added the enterprise MCP identity and delegation design for principal-scoped
+  MCP connection records, tenant/actor-bound OAuth ownership, explicit run-as
+  resolution, local single-user migration behavior, and MCP audit identity
+  fields.
+- Added the first runtime scaffolding for scoped MCP connection records. The MCP
+  registry can now persist V2 state with separate server definitions and
+  connection records, backfill local compatibility connections from legacy
+  `mcp_servers.json`, and preserve server definitions that intentionally have no
+  bound account credential.
+- Added tenant-aware MCP reconnect and refresh paths for tool execution. When an
+  enterprise request carries an explicit tenant/actor context, readiness checks
+  now connect and discover tools with that same context, and OAuth refresh uses
+  tenant-scoped credential helpers instead of silently falling back to local
+  credentials.
+- Documented that hosted/enterprise MCP OAuth should follow the existing
+  connector control-plane ownership precedent: long-lived secret material stays
+  outside the runtime, while the runtime stores credential references and
+  enforces asserted authority.
+
 ## v0.6.1 (2026-06-20)
 
 Tandem 0.6.1 is a focused workflow-runtime patch release for MCP wrapper

@@ -27,6 +27,7 @@
 use std::time::Duration;
 
 use crate::mcp::{McpRegistry, McpServer};
+use tandem_types::TenantContext;
 
 /// Why an MCP server is not ready for tool dispatch.
 ///
@@ -112,6 +113,19 @@ impl McpRegistry {
         server_name: &str,
         policy: EnsureReadyPolicy,
     ) -> Result<McpServer, McpReadyError> {
+        self.ensure_ready_for_tenant(server_name, &TenantContext::local_implicit(), policy)
+            .await
+    }
+
+    /// Tenant-aware readiness gate for enterprise MCP tool dispatch. This
+    /// preserves the acting tenant/principal through reconnect and refresh,
+    /// instead of falling back to the legacy local-implicit connection path.
+    pub async fn ensure_ready_for_tenant(
+        &self,
+        server_name: &str,
+        current_tenant: &TenantContext,
+        policy: EnsureReadyPolicy,
+    ) -> Result<McpServer, McpReadyError> {
         let initial = self.list().await.get(server_name).cloned();
         let Some(server) = initial else {
             return Err(McpReadyError::NotFound);
@@ -132,7 +146,7 @@ impl McpRegistry {
                 }
                 next_delay_ms = next_delay_ms.saturating_mul(policy.backoff_factor.max(1) as u64);
             }
-            if self.connect(server_name).await {
+            if self.connect_for_tenant(server_name, current_tenant).await {
                 if let Some(server) = self.list().await.get(server_name).cloned() {
                     if server.connected {
                         return Ok(server);

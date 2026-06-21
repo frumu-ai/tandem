@@ -5,6 +5,8 @@ mod tests {
     use tokio::net::TcpListener;
     use uuid::Uuid;
 
+    static PROVIDER_AUTH_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     async fn spawn_fake_http_mcp_server() -> (String, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -148,6 +150,109 @@ mod tests {
             }
         });
         (format!("http://{addr}/mcp"), handle)
+    }
+
+    async fn spawn_discovery_auth_required_http_mcp_server(
+        expected_authorization: &'static str,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake discovery auth mcp server");
+        let addr = listener.local_addr().expect("fake discovery auth mcp addr");
+        let handle = tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buf = vec![0_u8; 8192];
+                    let Ok(n) = socket.read(&mut buf).await else {
+                        return;
+                    };
+                    let request = String::from_utf8_lossy(&buf[..n]);
+                    let request_lower = request.to_ascii_lowercase();
+                    let authorized = request_lower.contains(&format!(
+                        "authorization: {}",
+                        expected_authorization.to_ascii_lowercase()
+                    ));
+                    let body = if !authorized {
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": "auth-required",
+                            "error": {"code": -32001, "message": "unauthorized"}
+                        })
+                    } else if request.contains("\"initialize\"") {
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": "initialize-1",
+                            "result": {
+                                "protocolVersion": MCP_PROTOCOL_VERSION,
+                                "capabilities": {},
+                                "serverInfo": {"name": "fake", "version": "test"}
+                            }
+                        })
+                    } else if request.contains("\"tools/list\"") {
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": "tools-list-1",
+                            "result": {
+                                "tools": [{
+                                    "name": "get_me",
+                                    "description": "Get authenticated user",
+                                    "inputSchema": {"type": "object", "properties": {}}
+                                }]
+                            }
+                        })
+                    } else if request.contains("\"tools/call\"") {
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": "call-1",
+                            "result": {
+                                "content": [{"type": "text", "text": "tenant-authenticated"}]
+                            }
+                        })
+                    } else {
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": "unknown",
+                            "error": {"code": -32601, "message": "unknown method"}
+                        })
+                    };
+                    let payload = body.to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nmcp-session-id: test-session\r\nconnection: close\r\n\r\n{}",
+                        payload.len(),
+                        payload
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        (format!("http://{addr}/mcp"), handle)
+    }
+
+    fn test_mcp_server(name: &str) -> McpServer {
+        McpServer {
+            name: name.to_string(),
+            transport: "https://example.com/mcp".to_string(),
+            auth_kind: String::new(),
+            enabled: true,
+            connected: false,
+            pid: None,
+            last_error: None,
+            last_auth_challenge: None,
+            mcp_session_id: None,
+            headers: HashMap::new(),
+            secret_headers: HashMap::new(),
+            tool_cache: Vec::new(),
+            tools_fetched_at_ms: None,
+            pending_auth_by_tool: HashMap::new(),
+            allowed_tools: None,
+            purpose: String::new(),
+            grounding_required: false,
+            secret_header_values: HashMap::new(),
+            oauth: None,
+        }
     }
 
     #[tokio::test]
@@ -609,8 +714,7 @@ mod tests {
         let security_dir = std::env::temp_dir().join(format!("mcp-auth-test-{suffix}"));
         let secret_id = format!("mcp_header::tenant::{suffix}::authorization");
 
-        let current_tenant =
-            TenantContext::explicit(format!("tenant-{suffix}"), "workspace", None);
+        let current_tenant = TenantContext::explicit(format!("tenant-{suffix}"), "workspace", None);
         tandem_core::set_provider_auth_for_tenant_in_dir(
             &security_dir,
             &current_tenant,
@@ -623,9 +727,13 @@ mod tests {
             tenant_context: current_tenant.clone(),
         };
         assert_eq!(
-            resolve_secret_ref_value_with_loader(&matching_ref, &current_tenant, |tenant_context| {
-                tandem_core::load_provider_auth_for_tenant_in_dir(&security_dir, tenant_context)
-            })
+            resolve_secret_ref_value_with_loader(
+                &matching_ref,
+                &current_tenant,
+                |tenant_context| {
+                    tandem_core::load_provider_auth_for_tenant_in_dir(&security_dir, tenant_context)
+                }
+            )
             .as_deref(),
             Some("tenant-secret")
         );
@@ -673,6 +781,131 @@ mod tests {
         std::env::remove_var("TANDEM_TEST_MCP_SECRET");
     }
 
+    #[test]
+    fn scoped_connection_identity_separates_human_actors() {
+        let alice_tenant =
+            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "alice");
+        let bob_tenant =
+            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "bob");
+        let alice_owner = McpPrincipalRef::from_tenant_context(&alice_tenant);
+        let bob_owner = McpPrincipalRef::from_tenant_context(&bob_tenant);
+
+        assert_ne!(
+            mcp_connection_id("notion", &alice_tenant, &alice_owner),
+            mcp_connection_id("notion", &bob_tenant, &bob_owner),
+            "two actors in the same workspace need separate MCP connection ids"
+        );
+        assert!(
+            mcp_connection_identity_key("notion", &alice_tenant, &alice_owner)
+                .contains("human:alice")
+        );
+        assert!(
+            mcp_connection_identity_key("notion", &bob_tenant, &bob_owner).contains("human:bob")
+        );
+
+        let tenant_only = TenantContext::explicit("org-a", "workspace-a", None);
+        assert!(matches!(
+            McpPrincipalRef::from_tenant_context(&tenant_only),
+            McpPrincipalRef::ServicePrincipal { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn v2_state_allows_server_definition_without_connection() {
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let server = test_mcp_server("public-docs");
+        std::fs::write(
+            &file,
+            json!({
+                "schema_version": 2,
+                "servers": {
+                    "public-docs": server,
+                },
+                "connections": {}
+            })
+            .to_string(),
+        )
+        .expect("write v2 mcp state");
+
+        let registry = McpRegistry::new_with_state_file(file.clone());
+        assert!(registry
+            .list_server_definitions()
+            .await
+            .contains_key("public-docs"));
+        assert!(
+            registry.list_connections().await.is_empty(),
+            "v2 state must allow catalog/server definitions without account connections"
+        );
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[tokio::test]
+    async fn legacy_state_backfills_local_compatibility_connection() {
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let mut server = test_mcp_server("legacy-secure");
+        server.secret_headers.insert(
+            "Authorization".to_string(),
+            McpSecretRef::Store {
+                secret_id: "legacy-secret".to_string(),
+                tenant_context: TenantContext::local_implicit(),
+            },
+        );
+        std::fs::write(
+            &file,
+            serde_json::to_string_pretty(&HashMap::from([("legacy-secure".to_string(), server)]))
+                .expect("serialize legacy mcp state"),
+        )
+        .expect("write legacy mcp state");
+
+        let registry = McpRegistry::new_with_state_file(file.clone());
+        let connections = registry.list_connections().await;
+        assert_eq!(connections.len(), 1);
+        let connection = connections.values().next().expect("compat connection");
+        assert_eq!(connection.server_id, "legacy-secure");
+        assert_eq!(connection.owner, McpPrincipalRef::LocalImplicit);
+        assert_eq!(connection.connection_class, McpConnectionClass::UserOwned);
+        assert!(
+            connection.credential_ref.is_some(),
+            "legacy secret-backed server should expose a non-secret credential reference"
+        );
+
+        let persisted = std::fs::read_to_string(&file).expect("read migrated state");
+        assert!(persisted.contains("\"schema_version\": 2"));
+        assert!(persisted.contains("\"connections\""));
+        assert!(!persisted.contains("Bearer "));
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[tokio::test]
+    async fn persisted_connection_state_does_not_store_raw_bearer_token() {
+        let _provider_auth_guard = PROVIDER_AUTH_TEST_LOCK.lock().await;
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file.clone());
+        registry
+            .add_or_update(
+                "secure".to_string(),
+                "https://example.com/mcp".to_string(),
+                HashMap::from([(
+                    "Authorization".to_string(),
+                    "Bearer super-secret-token".to_string(),
+                )]),
+                true,
+            )
+            .await;
+
+        let persisted = std::fs::read_to_string(&file).expect("read persisted state");
+        assert!(persisted.contains("\"schema_version\": 2"));
+        assert!(persisted.contains("\"connections\""));
+        assert!(
+            !persisted.contains("super-secret-token"),
+            "raw bearer tokens must stay out of persisted MCP state"
+        );
+        assert_eq!(registry.list_connections().await.len(), 1);
+
+        let _ = tandem_core::delete_provider_auth("mcp_header::secure::authorization");
+        let _ = std::fs::remove_file(file);
+    }
+
     #[tokio::test]
     async fn strict_mode_denies_local_implicit_tool_calls_before_dispatch() {
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
@@ -709,7 +942,8 @@ mod tests {
 
     #[test]
     fn mismatched_store_secret_headers_flags_only_foreign_store_refs() {
-        let tenant_a = TenantContext::explicit("tenant-a", "workspace-a", None);
+        let tenant_a =
+            TenantContext::explicit(format!("tenant-a-{}", Uuid::new_v4()), "workspace-a", None);
         let tenant_b = TenantContext::explicit("tenant-b", "workspace-b", None);
 
         let secret_headers = HashMap::from([
@@ -779,8 +1013,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn explicit_tenant_mcp_secret_headers_are_not_cached_globally() {
+    #[tokio::test]
+    async fn explicit_tenant_mcp_secret_headers_are_not_cached_globally() {
+        let _provider_auth_guard = PROVIDER_AUTH_TEST_LOCK.lock().await;
         let current_tenant = TenantContext::explicit("tenant", "workspace", None);
         let (headers, secret_headers, secret_values) = split_headers_for_storage(
             "tenant-server",
@@ -807,6 +1042,7 @@ mod tests {
 
     #[tokio::test]
     async fn call_tool_for_tenant_resolves_matching_tenant_store_secret() {
+        let _provider_auth_guard = PROVIDER_AUTH_TEST_LOCK.lock().await;
         let (endpoint, server) =
             spawn_auth_required_http_mcp_server("Bearer tenant-a-secret").await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
@@ -841,14 +1077,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn call_tool_for_tenant_reconnects_with_matching_tenant_secret() {
+        let _provider_auth_guard = PROVIDER_AUTH_TEST_LOCK.lock().await;
+        let (endpoint, server) =
+            spawn_discovery_auth_required_http_mcp_server("Bearer tenant-a-secret").await;
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file);
+        let server_name = "tenant-server-reconnects-with-tenant";
+        let tenant_a = TenantContext::explicit_user_workspace(
+            format!("tenant-a-{}", Uuid::new_v4()),
+            "workspace-a",
+            None,
+            "alice",
+        );
+        registry
+            .add_or_update_with_secret_refs(
+                server_name.to_string(),
+                endpoint,
+                HashMap::from([(
+                    "Authorization".to_string(),
+                    "Bearer tenant-a-secret".to_string(),
+                )]),
+                HashMap::new(),
+                &tenant_a,
+                true,
+            )
+            .await;
+
+        let result = registry
+            .call_tool_for_tenant(server_name, "get_me", json!({}), &tenant_a)
+            .await
+            .expect("tenant A readiness should reconnect with tenant A secret");
+        assert!(result.output.contains("tenant-authenticated"));
+        let connected = registry
+            .list()
+            .await
+            .get(server_name)
+            .map(|row| row.connected)
+            .unwrap_or(false);
+        assert!(
+            connected,
+            "tenant-aware readiness should connect the server"
+        );
+        let connections = registry.list_connections().await;
+        assert!(connections.values().any(|connection| {
+            connection.server_id == server_name
+                && connection.owner
+                    == (McpPrincipalRef::HumanActor {
+                        actor_id: "alice".to_string(),
+                    })
+        }));
+
+        server.abort();
+        let _ = tandem_core::delete_provider_auth_for_tenant(
+            &tenant_a,
+            &format!("mcp_header::{server_name}::authorization"),
+        );
+    }
+
+    #[tokio::test]
     async fn call_tool_for_tenant_rejects_mismatched_tenant_store_secret() {
+        let _provider_auth_guard = PROVIDER_AUTH_TEST_LOCK.lock().await;
         let (endpoint, server) =
             spawn_auth_required_http_mcp_server("Bearer tenant-a-secret").await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
         let registry = McpRegistry::new_with_state_file(file);
         let server_name = "tenant-server-mismatch-connected";
-        let tenant_a = TenantContext::explicit("tenant-a", "workspace-a", None);
-        let tenant_b = TenantContext::explicit("tenant-b", "workspace-b", None);
+        let tenant_a =
+            TenantContext::explicit(format!("tenant-a-{}", Uuid::new_v4()), "workspace-a", None);
+        let tenant_b =
+            TenantContext::explicit(format!("tenant-b-{}", Uuid::new_v4()), "workspace-b", None);
         registry
             .add_or_update_with_secret_refs(
                 server_name.to_string(),
@@ -879,13 +1177,16 @@ mod tests {
 
     #[tokio::test]
     async fn call_tool_for_tenant_rejects_mismatched_secret_before_reconnect() {
+        let _provider_auth_guard = PROVIDER_AUTH_TEST_LOCK.lock().await;
         let (endpoint, server) =
             spawn_auth_required_http_mcp_server("Bearer tenant-a-secret").await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
         let registry = McpRegistry::new_with_state_file(file);
         let server_name = "tenant-server-mismatch-before-reconnect";
-        let tenant_a = TenantContext::explicit("tenant-a", "workspace-a", None);
-        let tenant_b = TenantContext::explicit("tenant-b", "workspace-b", None);
+        let tenant_a =
+            TenantContext::explicit(format!("tenant-a-{}", Uuid::new_v4()), "workspace-a", None);
+        let tenant_b =
+            TenantContext::explicit(format!("tenant-b-{}", Uuid::new_v4()), "workspace-b", None);
         registry
             .add_or_update_with_secret_refs(
                 server_name.to_string(),

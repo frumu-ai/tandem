@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - Unreleased
+
+### Added
+
+- Added the enterprise MCP identity and delegation design for principal-scoped
+  MCP connections, tenant/actor-bound OAuth ownership, run-as policy, local
+  compatibility migration, and audit evidence needed before implementing
+  multi-employee MCP account separation.
+- Added first runtime data structures for enterprise MCP server definitions and
+  principal-scoped connection records, including legacy local compatibility
+  connection backfill and V2 MCP registry state that can represent server
+  definitions without account credentials.
+- Added tenant-aware MCP connect, refresh, and readiness entry points so
+  enterprise tool execution reconnects with the same tenant/actor context used
+  for dispatch instead of falling back to the legacy local-implicit connection
+  path. OAuth token refresh now uses tenant-scoped credential helpers when an
+  explicit tenant context is present.
+
 ## [0.6.1] - 2026-06-20
 
 ### Fixed
