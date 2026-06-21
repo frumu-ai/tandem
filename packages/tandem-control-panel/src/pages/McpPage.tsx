@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { McpToolAllowlistEditor } from "../components/McpToolAllowlistEditor";
+import {
+  mcpConnectionClassLabel,
+  mcpConnectionClassTone,
+  mcpConnectionOwnerLabel,
+  mcpConnectionScopeLabel,
+  mcpConnectionStatusLabel,
+  normalizeMcpConnectionSummaries,
+  normalizeMcpConnectionsFromInventory,
+  type McpConnectionSummary,
+} from "../features/mcp/mcpConnections";
 import type { AppPageProps } from "./pageTypes";
 import { PageCard } from "./ui";
 
@@ -20,6 +30,7 @@ type McpServer = {
   headers: Record<string, string>;
   toolCache: any[];
   allowedTools: string[] | null;
+  connections: McpConnectionSummary[];
 };
 
 type CatalogServer = {
@@ -93,9 +104,9 @@ function getOauthGuidance(name: string, transport: string) {
     .trim()
     .toLowerCase();
   if (normalizedName === "notion" || isNotionMcpTransport(transport)) {
-    return "Notion uses browser OAuth. Add the server, finish Notion sign-in in your browser, then return here and click Mark sign-in complete.";
+    return "Notion uses browser OAuth. Add the provider, finish Notion sign-in in your browser, then return here and click Mark sign-in complete for your account.";
   }
-  return "OAuth-backed MCP servers start a browser sign-in on connect. Finish the authorization page, then return to Tandem to complete setup.";
+  return "OAuth-backed MCP providers start a browser sign-in for the current actor. Finish the authorization page, then return to Tandem to complete setup.";
 }
 
 const CONTROL_PANEL_READINESS_WORKFLOW_ID = "control-panel-readiness";
@@ -128,6 +139,7 @@ function normalizeServerRow(input: any, fallbackName = ""): McpServer | null {
           .map((entry: any) => String(entry || "").trim())
           .filter(Boolean)
       : null,
+    connections: normalizeMcpConnectionSummaries(row.connections, name),
   };
 }
 
@@ -333,6 +345,10 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
   });
 
   const servers = useMemo(() => normalizeServers(serversQuery.data), [serversQuery.data]);
+  const connectionRows = useMemo(
+    () => normalizeMcpConnectionsFromInventory(serversQuery.data),
+    [serversQuery.data]
+  );
   const toolIds = useMemo(() => normalizeTools(toolsQuery.data), [toolsQuery.data]);
   const catalog = useMemo(
     () => normalizeCatalog((catalogQuery.data as any)?.catalog || catalogQuery.data || null),
@@ -554,10 +570,10 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
               : `Failed to connect ${vars.server?.name}.`
           );
         } else {
-          toast("ok", `Connected ${vars.server?.name}.`);
+          toast("ok", `Connected your ${vars.server?.name} account.`);
         }
       }
-      if (vars.action === "disconnect") toast("ok", `Disconnected ${vars.server?.name}.`);
+      if (vars.action === "disconnect") toast("ok", `Disconnected provider ${vars.server?.name}.`);
       if (vars.action === "refresh") {
         if (pendingAuth || (!actionOk && serverAuthKind === "oauth")) {
           const challenge = (result as any)?.lastAuthChallenge || {};
@@ -579,7 +595,7 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
               : `Failed to refresh ${vars.server?.name}.`
           );
         } else {
-          toast("ok", `Refreshed ${vars.server?.name}.`);
+          toast("ok", `Refreshed your ${vars.server?.name} connection.`);
         }
       }
       if (vars.action === "authenticate") {
@@ -604,7 +620,7 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
               : `OAuth authorization still pending for ${vars.server?.name}.`
           );
         } else {
-          toast("ok", `Marked ${vars.server?.name} as signed in.`);
+          toast("ok", `Marked your ${vars.server?.name} sign-in as complete.`);
         }
       }
       if (vars.action === "toggle-enabled") {
@@ -628,18 +644,18 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
           toast(
             "warn",
             message
-              ? `MCP "${serverName}" added and OAuth authorization is still required: ${message}`
-              : `MCP "${serverName}" added and OAuth authorization is still required.`
+              ? `MCP provider "${serverName}" added and account authorization is still required: ${message}`
+              : `MCP provider "${serverName}" added and account authorization is still required.`
           );
         } else if (connectAfterAdd && authKind === "oauth" && connectResult?.ok !== true) {
           toast(
             "warn",
-            `MCP "${serverName}" was added as OAuth-backed. If it still needs authorization, open the auth link from the server row and refresh after signing in.`
+            `MCP provider "${serverName}" was added as OAuth-backed. If it still needs authorization, open the sign-in link from the provider row and refresh after signing in.`
           );
         } else if (connectAfterAdd) {
-          toast("ok", `MCP "${serverName}" added and connected.`);
+          toast("ok", `MCP provider "${serverName}" added and your account connected.`);
         } else {
-          toast("ok", `MCP "${serverName}" added.`);
+          toast("ok", `MCP provider "${serverName}" added.`);
         }
       }
     },
@@ -776,8 +792,8 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
 
       <div className="grid gap-4 xl:grid-cols-[440px_1fr]">
         <PageCard
-          title="Add MCP Server"
-          subtitle="Paste endpoint URL and optional auth token/header."
+          title="Add MCP Provider"
+          subtitle="Register a provider endpoint, then connect accounts against it."
         >
           <div className="grid gap-3">
             <div>
@@ -874,7 +890,7 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
                 disabled={actionMutation.isPending}
               >
                 <i data-lucide="plug-zap"></i>
-                Add + Connect
+                Add + Connect My Account
               </button>
             </div>
           </div>
@@ -888,8 +904,7 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
             }
           >
             <p className="tcp-subtle mb-3 text-xs">
-              Remote MCP packs exported as per-server TOML templates. Apply to prefill
-              transport/name.
+              Remote MCP packs exported as provider TOML templates. Apply to prefill transport/name.
             </p>
             <div className="mb-3 grid gap-2 md:grid-cols-[1fr_auto]">
               <input
@@ -938,8 +953,8 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
                       ) : null}
                       {row.authKind === "oauth" ? (
                         <div className="rounded-xl border border-sky-700/40 bg-sky-950/20 px-3 py-2 text-xs text-sky-100">
-                          Add this pack, then finish the browser sign-in flow. Tandem will keep the
-                          server pending until authorization completes.
+                          Add this pack, then finish browser sign-in for your account. Tandem will
+                          keep the connection pending until authorization completes.
                         </div>
                       ) : null}
                       <div className="mt-auto flex flex-wrap gap-2">
@@ -953,8 +968,8 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
                             toast(
                               "ok",
                               row.authKind === "oauth"
-                                ? `Loaded pack ${row.name}. Add it to start browser sign-in.`
-                                : `Loaded pack ${row.name}. Add + Connect when ready.`
+                                ? `Loaded pack ${row.name}. Add it to start browser sign-in for your account.`
+                                : `Loaded pack ${row.name}. Add + Connect My Account when ready.`
                             );
                           }}
                         >
@@ -983,8 +998,8 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
                           {alreadyConfigured
                             ? "Added"
                             : row.authKind === "oauth"
-                              ? "Add + Start OAuth"
-                              : "Add + Connect"}
+                              ? "Add + Start My OAuth"
+                              : "Add + Connect My Account"}
                         </button>
                         <button
                           className="tcp-btn"
@@ -1047,8 +1062,68 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
           </PageCard>
 
           <PageCard
-            title={`Servers (${servers.length})`}
-            subtitle="Configured MCP servers and controls"
+            title={`Connections (${connectionRows.length})`}
+            subtitle="Actor-scoped accounts, shared connections, and service principals visible to this tenant."
+          >
+            {connectionRows.length ? (
+              <div className="grid gap-2 md:grid-cols-2">
+                {connectionRows.map((connection) => (
+                  <div key={connection.connectionId} className="tcp-list-item grid gap-2">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="break-words font-semibold">
+                          {mcpConnectionOwnerLabel(connection)}
+                        </div>
+                        <div className="tcp-subtle text-xs">{connection.server}</div>
+                      </div>
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <span className={mcpConnectionClassTone(connection)}>
+                          {mcpConnectionClassLabel(connection)}
+                        </span>
+                        <span className={connection.connected ? "tcp-badge-ok" : "tcp-badge-warn"}>
+                          {mcpConnectionStatusLabel(connection)}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="grid gap-1 text-xs text-slate-400">
+                      <div className="break-words">{mcpConnectionScopeLabel(connection)}</div>
+                      <div className="break-all">{connection.connectionId}</div>
+                      <div>Tools: {connection.toolCount}</div>
+                    </div>
+                    {connection.lastError ? (
+                      <div className="rounded-lg border border-rose-700/60 bg-rose-950/20 px-3 py-2 text-xs text-rose-200">
+                        {connection.lastError}
+                      </div>
+                    ) : null}
+                    {connection.pendingAuth ? (
+                      <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                        <div>Browser sign-in is pending for this connection.</div>
+                        {connection.authorizationUrl ? (
+                          <a
+                            className="tcp-btn mt-2 inline-flex h-7 px-2 text-xs"
+                            href={connection.authorizationUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Open Sign-In
+                          </a>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="tcp-subtle">
+                No scoped MCP connections are visible yet. Connect an account from a provider row to
+                create one.
+              </p>
+            )}
+          </PageCard>
+
+          <PageCard
+            title={`Providers (${servers.length})`}
+            subtitle="Configured provider definitions and admin-managed controls"
           >
             <div className="mb-3 flex items-center justify-end">
               <button className="tcp-btn" onClick={() => void invalidateMcp()}>
@@ -1090,7 +1165,7 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
                           <div className="font-medium">OAuth authorization pending</div>
                           <div className="tcp-subtle mt-1">
                             {String(server.lastAuthChallenge.message || "").trim() ||
-                              "Open the authorization URL to finish connecting this MCP server."}
+                              "Open the authorization URL to finish connecting this account."}
                           </div>
                           <div className="tcp-subtle mt-1">
                             Tandem will keep checking for completion automatically while this page
@@ -1114,7 +1189,7 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
                                 target="_blank"
                                 rel="noreferrer"
                               >
-                                Open auth URL
+                                Open Sign-In
                               </a>
                               <button
                                 type="button"
@@ -1124,7 +1199,7 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
                                   actionMutation.mutate({ action: "authenticate", server })
                                 }
                               >
-                                Mark sign-in complete
+                                Mark My Sign-In Complete
                               </button>
                             </div>
                           ) : null}
@@ -1132,12 +1207,12 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
                       ) : null}
                       <div className="tcp-subtle text-xs">
                         {headerKeys.length
-                          ? `Auth headers: ${headerKeys.join(", ")}`
-                          : "No stored auth headers."}
+                          ? `Provider auth headers: ${headerKeys.join(", ")}`
+                          : "No provider auth headers stored."}
                       </div>
                       <McpToolAllowlistEditor
-                        title="Tool access"
-                        subtitle="Leave all discovered tools selected to expose the full MCP server, or uncheck tools to hide them from agents and workflows."
+                        title="Provider tool access"
+                        subtitle="Leave all discovered tools selected to expose the provider, or uncheck tools to hide them from agents and workflows."
                         discoveredTools={Array.isArray(server.toolCache) ? server.toolCache : []}
                         value={server.allowedTools}
                         disabled={mcpToolPolicyMutation.isPending}
@@ -1148,51 +1223,72 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
                           })
                         }
                       />
-                      <div className="flex flex-wrap gap-2">
-                        <button className="tcp-btn" onClick={() => loadServerIntoForm(server)}>
-                          Edit
-                        </button>
-                        <button
-                          className="tcp-btn"
-                          disabled={actionMutation.isPending}
-                          onClick={() =>
-                            actionMutation.mutate({
-                              action: server.connected ? "disconnect" : "connect",
-                              server,
-                            })
-                          }
-                        >
-                          {server.connected ? "Disconnect" : "Connect"}
-                        </button>
-                        <button
-                          className="tcp-btn"
-                          disabled={actionMutation.isPending}
-                          onClick={() => actionMutation.mutate({ action: "refresh", server })}
-                        >
-                          Refresh
-                        </button>
-                        <button
-                          className="tcp-btn"
-                          disabled={actionMutation.isPending}
-                          onClick={() =>
-                            actionMutation.mutate({ action: "toggle-enabled", server })
-                          }
-                        >
-                          {server.enabled ? "Disable" : "Enable"}
-                        </button>
-                        <button
-                          className="tcp-btn-danger"
-                          disabled={actionMutation.isPending}
-                          onClick={() => actionMutation.mutate({ action: "delete", server })}
-                        >
-                          Delete
-                        </button>
+                      <div className="grid gap-2">
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            className="tcp-btn-primary"
+                            disabled={actionMutation.isPending}
+                            onClick={() =>
+                              actionMutation.mutate({
+                                action: "connect",
+                                server,
+                              })
+                            }
+                          >
+                            <i data-lucide="user-plus"></i>
+                            Connect My Account
+                          </button>
+                          <button
+                            className="tcp-btn"
+                            disabled={actionMutation.isPending}
+                            onClick={() => actionMutation.mutate({ action: "refresh", server })}
+                          >
+                            <i data-lucide="refresh-cw"></i>
+                            Refresh My Connection
+                          </button>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 border-t border-slate-800 pt-2">
+                          <span className="text-[11px] uppercase tracking-wide text-slate-500">
+                            Provider Definition
+                          </span>
+                          <button className="tcp-btn" onClick={() => loadServerIntoForm(server)}>
+                            Edit
+                          </button>
+                          <button
+                            className="tcp-btn"
+                            disabled={actionMutation.isPending}
+                            onClick={() =>
+                              actionMutation.mutate({
+                                action: "disconnect",
+                                server,
+                              })
+                            }
+                          >
+                            Disconnect Provider
+                          </button>
+                          <button
+                            className="tcp-btn"
+                            disabled={actionMutation.isPending}
+                            onClick={() =>
+                              actionMutation.mutate({ action: "toggle-enabled", server })
+                            }
+                          >
+                            {server.enabled ? "Disable" : "Enable"}
+                          </button>
+                          <button
+                            className="tcp-btn-danger"
+                            disabled={actionMutation.isPending}
+                            onClick={() => actionMutation.mutate({ action: "delete", server })}
+                          >
+                            Delete
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );
                 })
               ) : (
-                <p className="tcp-subtle">No MCP servers configured.</p>
+                <p className="tcp-subtle">No MCP providers configured.</p>
               )}
             </div>
           </PageCard>

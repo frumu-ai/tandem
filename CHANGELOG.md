@@ -40,6 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added enterprise MCP isolation regression coverage for cross-tenant
   connection-id denial, sanitized OAuth callback mismatch audit records, and
   tenant-tagged MCP connect/discovery runtime events.
+- Added redacted MCP connection summaries to the control-plane inventory so
+  enterprise tenants can see actor-owned, shared, service-principal, and
+  admin-managed connections without exposing credential references, secret
+  headers, OAuth client secrets, or another actor's pending sign-in state.
+- Added control-panel MCP provider/connection separation, including visible
+  connection ownership/status/scope, account-scoped connect/refresh copy, and
+  explicit Workflow Studio acting-connection selectors for agent and task MCP
+  policies.
 
 ### Fixed
 

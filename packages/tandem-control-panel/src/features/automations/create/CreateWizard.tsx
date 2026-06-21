@@ -64,6 +64,7 @@ interface McpServerOption {
   pendingAuth: boolean;
   authMessage: string;
   authorizationUrl: string;
+  connectionCount: number;
 }
 
 type PlannerClarificationState = {
@@ -326,6 +327,7 @@ function normalizeMcpServers(raw: any): McpServerOption[] {
           pendingAuth: !!lastAuthChallenge || !!authorizationUrl,
           authMessage,
           authorizationUrl,
+          connectionCount: Array.isArray(row?.connections) ? row.connections.length : 0,
         };
       })
       .filter((row): row is McpServerOption => !!row)
@@ -355,6 +357,9 @@ function normalizeMcpServers(raw: any): McpServerOption[] {
           pendingAuth: !!lastAuthChallenge || !!authorizationUrl,
           authMessage,
           authorizationUrl,
+          connectionCount: Array.isArray((cfg as any).connections)
+            ? (cfg as any).connections.length
+            : 0,
         };
       })
       .filter((row): row is McpServerOption => !!row)

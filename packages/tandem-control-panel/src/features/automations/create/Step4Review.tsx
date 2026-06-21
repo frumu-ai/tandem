@@ -346,7 +346,7 @@ export function Step4Review({
         </div>
         {hasPlanPreview || effectiveMcpServers.length ? (
           <div className="grid gap-1">
-            <span className="text-xs uppercase tracking-wide text-slate-500">MCP Servers</span>
+            <span className="text-xs uppercase tracking-wide text-slate-500">MCP Providers</span>
             {effectiveMcpServers.length ? (
               <div className="flex flex-wrap gap-1">
                 {effectiveMcpServers.map((name: string) => (

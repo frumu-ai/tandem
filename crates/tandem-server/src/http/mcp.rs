@@ -409,10 +409,6 @@ impl Tool for McpBridgeTool {
     }
 }
 
-pub(super) async fn list_mcp(State(state): State<AppState>) -> Json<Value> {
-    Json(json!(state.mcp.list_public().await))
-}
-
 fn strict_context_from_tool_args(args: &Value) -> Option<StrictTenantContext> {
     args.get("__strict_tenant_context")
         .cloned()

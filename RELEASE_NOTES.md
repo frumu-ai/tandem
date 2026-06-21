@@ -50,10 +50,20 @@ MCP connections.
 - Added enterprise MCP isolation regressions for cross-tenant connection-id
   denial and OAuth callback mismatch auditing. MCP connect/discovery events now
   include tenant, principal, and connection metadata without credential content.
+- MCP inventory now includes redacted scoped connection summaries filtered to
+  the requesting tenant/actor plus shared/service/admin-managed rows. The
+  control plane can display connection class, owner/upstream account, tenant
+  scope, status, and safe tool-name cache entries without exposing credential
+  refs, secret headers, OAuth client secrets, or another actor's pending sign-in.
 - Updated Automation V2 MCP preflight discovery to use tenant-scoped readiness,
   connection-grant run-as context, tool sync, and remote tool inventory, and
   preserved connection grants through the control-panel workflow editing
   surfaces.
+- Updated the control panel to separate MCP provider definitions from acting
+  connections. MCP Settings now shows account/shared/service connection
+  inventory and uses account-scoped connect/refresh language, while Workflow
+  Studio can explicitly select acting MCP connections for agents and custom
+  task overrides.
 - Fixed opaque/in-memory MCP reconnects so startup runtime-state resets no
   longer erase seeded tool inventories for local compatibility servers such as
   the test GitHub MCP fixture.
