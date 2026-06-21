@@ -64,6 +64,9 @@ MCP connections.
   inventory and uses account-scoped connect/refresh language, while Workflow
   Studio can explicitly select acting MCP connections for agents and custom
   task overrides.
+- Added shell sandbox security coverage and documentation for Linux bubblewrap
+  argv/write-boundary behavior, fail-closed POSIX sandbox guardrails, and
+  Windows shell command translation/rejection policy.
 - Fixed opaque/in-memory MCP reconnects so startup runtime-state resets no
   longer erase seeded tool inventories for local compatibility servers such as
   the test GitHub MCP fixture.
