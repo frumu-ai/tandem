@@ -1,6 +1,8 @@
 import { EmptyState, PageCard } from "./ui";
+import { McpConnectionGrantPicker } from "../components/McpConnectionGrantPicker";
 import { McpToolAllowlistEditor } from "../components/McpToolAllowlistEditor";
 import type { StudioRole } from "../features/studio/schema";
+import type { McpConnectionSummary } from "../features/mcp/mcpConnections";
 import {
   ROLE_OPTIONS,
   composePromptSections,
@@ -26,6 +28,7 @@ type InspectorPanelsProps = {
   providerOptions: ProviderOption[];
   mcpServers: string[];
   mcpServerRows: Array<{ name: string; toolCache: string[] }>;
+  mcpConnections: McpConnectionSummary[];
   removeSelectedNode: () => void;
   removeSelectedAgent: () => void;
   updateNode: (nodeId: string, patch: any) => void;
@@ -108,6 +111,7 @@ export function WorkflowStudioInspectorPanels(props: InspectorPanelsProps) {
     providerOptions,
     mcpServers,
     mcpServerRows,
+    mcpConnections,
     removeSelectedNode,
     removeSelectedAgent,
     updateNode,
@@ -517,6 +521,7 @@ export function WorkflowStudioInspectorPanels(props: InspectorPanelsProps) {
                         mcpAllowedServers: [],
                         mcpAllowedTools: null,
                         mcpOtherAllowedTools: [],
+                        mcpAllowedConnections: [],
                       })
                     }
                   >
@@ -547,6 +552,9 @@ export function WorkflowStudioInspectorPanels(props: InspectorPanelsProps) {
                           selectedNode.mcpOtherAllowedTools ||
                           selectedAgent?.mcpOtherAllowedTools ||
                           [],
+                        mcpAllowedConnections: selectedNode.mcpAllowedConnections?.length
+                          ? selectedNode.mcpAllowedConnections
+                          : selectedAgent?.mcpAllowedConnections || [],
                       })
                     }
                   >
@@ -619,9 +627,15 @@ export function WorkflowStudioInspectorPanels(props: InspectorPanelsProps) {
                                           !mcpToolBelongsToServer(toolName, server.name)
                                       )
                                     : selectedNode.mcpAllowedTools;
+                                  const nextAllowedConnections = selected
+                                    ? (selectedNode.mcpAllowedConnections || []).filter(
+                                        (grant: any) => grant?.server !== server.name
+                                      )
+                                    : selectedNode.mcpAllowedConnections || [];
                                   updateNode(selectedNode.nodeId, {
                                     mcpAllowedServers: nextServers,
                                     mcpAllowedTools: nextAllowedTools,
+                                    mcpAllowedConnections: nextAllowedConnections,
                                   });
                                 }}
                               >
@@ -636,6 +650,25 @@ export function WorkflowStudioInspectorPanels(props: InspectorPanelsProps) {
                         </div>
                       )}
                     </div>
+                    <McpConnectionGrantPicker
+                      title="Task MCP acting connections"
+                      subtitle="Choose the account, shared connection, or service principal this task may use."
+                      connections={mcpConnections}
+                      value={selectedNode.mcpAllowedConnections || []}
+                      selectedServers={selectedNodeMcpServerNames}
+                      onSelectedServersChange={(nextServers) =>
+                        updateNode(selectedNode.nodeId, { mcpAllowedServers: nextServers })
+                      }
+                      onChange={(nextConnections) =>
+                        updateNode(selectedNode.nodeId, {
+                          mcpAllowedConnections: nextConnections,
+                          mcpAllowedServers: uniqueStrings([
+                            ...(selectedNode.mcpAllowedServers || []),
+                            ...nextConnections.map((grant) => grant.server),
+                          ]),
+                        })
+                      }
+                    />
                     <McpToolAllowlistEditor
                       title="Task MCP tool access"
                       subtitle="This list applies only to the selected task. Unchecked tools stay visible so they can be restored."
@@ -883,13 +916,45 @@ export function WorkflowStudioInspectorPanels(props: InspectorPanelsProps) {
                   className="tcp-input text-sm"
                   value={joinCsv(selectedAgent.mcpAllowedServers)}
                   onInput={(event) =>
-                    updateAgent(selectedAgent.agentId, {
-                      mcpAllowedServers: splitCsv((event.target as HTMLInputElement).value),
-                    })
+                    updateAgent(
+                      selectedAgent.agentId,
+                      (() => {
+                        const mcpAllowedServers = splitCsv(
+                          (event.target as HTMLInputElement).value
+                        );
+                        return {
+                          mcpAllowedServers,
+                          mcpAllowedConnections: (selectedAgent.mcpAllowedConnections || []).filter(
+                            (grant: any) => mcpAllowedServers.includes(grant?.server)
+                          ),
+                        };
+                      })()
+                    )
                   }
                   placeholder={joinCsv(mcpServers) || "No MCP servers detected"}
                 />
               </label>
+              <div className="md:col-span-2">
+                <McpConnectionGrantPicker
+                  title="Agent MCP acting connections"
+                  subtitle="Choose explicit accounts, shared connections, or service principals for this agent."
+                  connections={mcpConnections}
+                  value={selectedAgent.mcpAllowedConnections || []}
+                  selectedServers={selectedAgent.mcpAllowedServers || []}
+                  onSelectedServersChange={(nextServers) =>
+                    updateAgent(selectedAgent.agentId, { mcpAllowedServers: nextServers })
+                  }
+                  onChange={(nextConnections) =>
+                    updateAgent(selectedAgent.agentId, {
+                      mcpAllowedConnections: nextConnections,
+                      mcpAllowedServers: uniqueStrings([
+                        ...(selectedAgent.mcpAllowedServers || []),
+                        ...nextConnections.map((grant) => grant.server),
+                      ]),
+                    })
+                  }
+                />
+              </div>
               {selectedAgent.mcpAllowedServers.length ? (
                 <div className="md:col-span-2">
                   <McpToolAllowlistEditor

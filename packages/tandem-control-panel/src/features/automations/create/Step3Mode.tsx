@@ -18,6 +18,7 @@ type McpServerOption = {
   pendingAuth: boolean;
   authMessage: string;
   authorizationUrl: string;
+  connectionCount: number;
 };
 type ExecutionModeInfo = {
   id: ExecutionMode;
@@ -391,7 +392,7 @@ export function Step3Mode(props: Step3ModeProps) {
       </div>
       <div className="grid gap-2 rounded-xl border border-slate-700/50 bg-slate-900/30 p-3">
         <div className="flex items-center justify-between gap-2">
-          <div className="text-xs uppercase tracking-wide text-slate-500">MCP Servers</div>
+          <div className="text-xs uppercase tracking-wide text-slate-500">MCP Providers</div>
           <div className="flex flex-wrap gap-2">
             <button
               className="tcp-btn h-7 px-2 text-xs"
@@ -406,8 +407,8 @@ export function Step3Mode(props: Step3ModeProps) {
           </div>
         </div>
         <div className="text-xs text-slate-500">
-          Select the servers this automation may use. You can connect existing servers here, or open
-          MCP Settings to add/edit servers without losing this draft.
+          Select the providers this automation may use. Connect your account here, or open MCP
+          Settings to add/edit providers without losing this draft.
         </div>
         {mcpServers.length ? (
           <div className="grid gap-2">
@@ -447,6 +448,7 @@ export function Step3Mode(props: Step3ModeProps) {
                       <span className={server.enabled ? "tcp-badge-info" : "tcp-badge-warn"}>
                         {server.enabled ? "Enabled" : "Disabled"}
                       </span>
+                      <span className="tcp-badge-info">Connections: {server.connectionCount}</span>
                     </div>
                   </div>
                   {server.lastError ? (
@@ -457,7 +459,7 @@ export function Step3Mode(props: Step3ModeProps) {
                   {server.pendingAuth ? (
                     <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
                       {server.authMessage ||
-                        "Browser sign-in is still required for this MCP server."}
+                        "Browser sign-in is still required for your MCP connection."}
                     </div>
                   ) : null}
                   <div className="flex flex-wrap gap-2">
@@ -468,7 +470,7 @@ export function Step3Mode(props: Step3ModeProps) {
                         onClick={() => onConnectMcpServer(server.name)}
                         disabled={actionPendingForServer}
                       >
-                        {connectPending ? "Connecting..." : "Connect"}
+                        {connectPending ? "Connecting..." : "Connect My Account"}
                       </button>
                     ) : null}
                     {(server.pendingAuth || server.authKind === "oauth") && !server.connected ? (
@@ -497,7 +499,7 @@ export function Step3Mode(props: Step3ModeProps) {
             })}
           </div>
         ) : (
-          <div className="text-xs text-slate-400">No MCP servers configured yet.</div>
+          <div className="text-xs text-slate-400">No MCP providers configured yet.</div>
         )}
       </div>
     </div>

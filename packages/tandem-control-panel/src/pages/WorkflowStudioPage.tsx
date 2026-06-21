@@ -23,6 +23,11 @@ import {
 import { EmptyState, PageCard } from "./ui";
 import type { AppPageProps } from "./pageTypes";
 import { buildPlannerProviderOptions } from "../features/planner/plannerShared";
+import {
+  normalizeMcpInventoryServerRows,
+  normalizeMcpConnectionsFromInventory,
+  type McpConnectionSummary,
+} from "../features/mcp/mcpConnections";
 import { WorkflowStudioInspectorPanels } from "./WorkflowStudioInspectorPanels";
 import {
   AGENT_CATALOG_HANDOFF_KEY,
@@ -87,6 +92,7 @@ type StudioMcpServerRow = {
   name: string;
   toolCache: string[];
 };
+
 export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProps) {
   const queryClient = useQueryClient();
   const healthQuery = useSystemHealth(true);
@@ -206,11 +212,17 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
     return map;
   }, [studioWorkflowRunsQuery.data]);
   const mcpServers = useMemo(() => extractMcpServers(mcpQuery.data), [mcpQuery.data]);
+  const mcpConnectionRows = useMemo<McpConnectionSummary[]>(
+    () => normalizeMcpConnectionsFromInventory(mcpQuery.data),
+    [mcpQuery.data]
+  );
   const mcpServerRows = useMemo<StudioMcpServerRow[]>(() => {
-    const rows = Array.isArray((mcpQuery.data as any)?.servers)
-      ? (mcpQuery.data as any).servers
-      : [];
-    return rows
+    const connectionToolsByServer = new Map<string, string[]>();
+    mcpConnectionRows.forEach((connection) => {
+      const current = connectionToolsByServer.get(connection.server) || [];
+      connectionToolsByServer.set(connection.server, [...current, ...connection.toolCache]);
+    });
+    return normalizeMcpInventoryServerRows(mcpQuery.data)
       .map((row: any) => {
         const name = safeString(row?.name);
         if (!name) return null;
@@ -223,11 +235,16 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
               )
               .filter(Boolean)
           : [];
-        return { name, toolCache };
+        return {
+          name,
+          toolCache: Array.from(
+            new Set([...toolCache, ...(connectionToolsByServer.get(name) || [])])
+          ).sort(),
+        };
       })
       .filter((row): row is StudioMcpServerRow => !!row)
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [mcpQuery.data]);
+  }, [mcpConnectionRows, mcpQuery.data]);
   const [draft, setDraft] = useState<StudioWorkflowDraft>(() =>
     createWorkflowDraftFromTemplate(STUDIO_TEMPLATE_CATALOG[0], "")
   );
@@ -2054,6 +2071,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
               providerOptions={providerOptions}
               mcpServers={mcpServers}
               mcpServerRows={mcpServerRows}
+              mcpConnections={mcpConnectionRows}
               removeSelectedNode={removeSelectedNode}
               removeSelectedAgent={removeSelectedAgent}
               updateNode={updateNode}
