@@ -25,6 +25,9 @@ MCP connections.
   now connect and discover tools with that same context, and OAuth refresh uses
   tenant-scoped credential helpers instead of silently falling back to local
   credentials.
+- Added actor-qualified MCP secret ids and exact tenant-context secret
+  resolution so two employees in the same workspace cannot overwrite or resolve
+  each other's stored MCP bearer credentials.
 - Documented that hosted/enterprise MCP OAuth should follow the existing
   connector control-plane ownership precedent: long-lived secret material stays
   outside the runtime, while the runtime stores credential references and

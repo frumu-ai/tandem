@@ -17,6 +17,9 @@ fn resolve_secret_ref_value_with_loader(
             secret_id,
             tenant_context,
         } => {
+            if tenant_context != current_tenant {
+                return None;
+            }
             let secret_ref = SecretRef {
                 org_id: tenant_context.org_id.clone(),
                 workspace_id: tenant_context.workspace_id.clone(),
@@ -167,10 +170,54 @@ fn mcp_header_secret_id(server_name: &str, header_name: &str) -> String {
     )
 }
 
+fn mcp_header_secret_id_for_tenant(
+    server_name: &str,
+    header_name: &str,
+    current_tenant: &TenantContext,
+) -> String {
+    if current_tenant.is_local_implicit() {
+        return mcp_header_secret_id(server_name, header_name);
+    }
+    format!(
+        "mcp_header::{}::{}::{}",
+        sanitize_namespace_segment(server_name),
+        mcp_principal_secret_scope(current_tenant),
+        sanitize_namespace_segment(header_name)
+    )
+}
+
 fn mcp_oauth_client_secret_id(server_name: &str) -> String {
     format!(
         "mcp_oauth_client_secret::{}",
         sanitize_namespace_segment(server_name)
+    )
+}
+
+fn mcp_oauth_client_secret_id_for_tenant(
+    server_name: &str,
+    current_tenant: &TenantContext,
+) -> String {
+    if current_tenant.is_local_implicit() {
+        return mcp_oauth_client_secret_id(server_name);
+    }
+    format!(
+        "mcp_oauth_client_secret::{}::{}",
+        sanitize_namespace_segment(server_name),
+        mcp_principal_secret_scope(current_tenant)
+    )
+}
+
+fn mcp_principal_secret_scope(current_tenant: &TenantContext) -> String {
+    let stable_key = McpPrincipalRef::from_tenant_context(current_tenant).stable_key();
+    let hash = sha256_hex(&mcp_connection_identity_key(
+        "credential",
+        current_tenant,
+        &McpPrincipalRef::from_tenant_context(current_tenant),
+    ));
+    format!(
+        "{}_{}",
+        sanitize_namespace_segment(&stable_key),
+        &hash[..16]
     )
 }
 

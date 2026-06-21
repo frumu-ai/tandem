@@ -751,6 +751,20 @@ mod tests {
             "tenant mismatch should block secret lookup"
         );
 
+        let mut actor_mismatch = current_tenant.clone();
+        actor_mismatch.actor_id = Some("other-actor".to_string());
+        assert!(
+            resolve_secret_ref_value_with_loader(
+                &matching_ref,
+                &actor_mismatch,
+                |tenant_context| {
+                    tandem_core::load_provider_auth_for_tenant_in_dir(&security_dir, tenant_context)
+                },
+            )
+            .is_none(),
+            "actor mismatch should block secret lookup even inside one workspace"
+        );
+
         let _ = tandem_core::delete_provider_auth_for_tenant_in_dir(
             &security_dir,
             &current_tenant,
@@ -1036,7 +1050,72 @@ mod tests {
 
         let _ = tandem_core::delete_provider_auth_for_tenant(
             &current_tenant,
-            "mcp_header::tenant-server::authorization",
+            &mcp_header_secret_id_for_tenant("tenant-server", "Authorization", &current_tenant),
+        );
+    }
+
+    #[tokio::test]
+    async fn actor_scoped_mcp_header_secret_ids_do_not_collide() {
+        let _provider_auth_guard = PROVIDER_AUTH_TEST_LOCK.lock().await;
+        let alice = TenantContext::explicit_user_workspace(
+            format!("tenant-a-{}", Uuid::new_v4()),
+            "workspace-a",
+            None,
+            "alice",
+        );
+        let bob = TenantContext::explicit_user_workspace(
+            alice.org_id.clone(),
+            alice.workspace_id.clone(),
+            None,
+            "bob",
+        );
+
+        let (_, alice_secret_headers, _) = split_headers_for_storage(
+            "shared-provider",
+            HashMap::from([(
+                "Authorization".to_string(),
+                "Bearer alice-secret".to_string(),
+            )]),
+            HashMap::new(),
+            &alice,
+        );
+        let (_, bob_secret_headers, _) = split_headers_for_storage(
+            "shared-provider",
+            HashMap::from([("Authorization".to_string(), "Bearer bob-secret".to_string())]),
+            HashMap::new(),
+            &bob,
+        );
+
+        let alice_ref = alice_secret_headers
+            .get("Authorization")
+            .expect("alice authorization secret ref");
+        let bob_ref = bob_secret_headers
+            .get("Authorization")
+            .expect("bob authorization secret ref");
+        assert_ne!(
+            alice_ref, bob_ref,
+            "same workspace actors must not share one provider-auth secret id"
+        );
+        assert_eq!(
+            resolve_secret_ref_value(alice_ref, &alice).as_deref(),
+            Some("Bearer alice-secret")
+        );
+        assert_eq!(
+            resolve_secret_ref_value(bob_ref, &bob).as_deref(),
+            Some("Bearer bob-secret")
+        );
+        assert!(
+            resolve_secret_ref_value(alice_ref, &bob).is_none(),
+            "Bob must not resolve Alice's actor-scoped MCP secret"
+        );
+
+        let _ = tandem_core::delete_provider_auth_for_tenant(
+            &alice,
+            &mcp_header_secret_id_for_tenant("shared-provider", "Authorization", &alice),
+        );
+        let _ = tandem_core::delete_provider_auth_for_tenant(
+            &bob,
+            &mcp_header_secret_id_for_tenant("shared-provider", "Authorization", &bob),
         );
     }
 
@@ -1072,7 +1151,7 @@ mod tests {
         server.abort();
         let _ = tandem_core::delete_provider_auth_for_tenant(
             &tenant_a,
-            &format!("mcp_header::{server_name}::authorization"),
+            &mcp_header_secret_id_for_tenant(server_name, "Authorization", &tenant_a),
         );
     }
 
@@ -1131,7 +1210,7 @@ mod tests {
         server.abort();
         let _ = tandem_core::delete_provider_auth_for_tenant(
             &tenant_a,
-            &format!("mcp_header::{server_name}::authorization"),
+            &mcp_header_secret_id_for_tenant(server_name, "Authorization", &tenant_a),
         );
     }
 
@@ -1171,7 +1250,7 @@ mod tests {
         server.abort();
         let _ = tandem_core::delete_provider_auth_for_tenant(
             &tenant_a,
-            &format!("mcp_header::{server_name}::authorization"),
+            &mcp_header_secret_id_for_tenant(server_name, "Authorization", &tenant_a),
         );
     }
 
@@ -1219,7 +1298,7 @@ mod tests {
         server.abort();
         let _ = tandem_core::delete_provider_auth_for_tenant(
             &tenant_a,
-            &format!("mcp_header::{server_name}::authorization"),
+            &mcp_header_secret_id_for_tenant(server_name, "Authorization", &tenant_a),
         );
     }
 }

@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for dispatch instead of falling back to the legacy local-implicit connection
   path. OAuth token refresh now uses tenant-scoped credential helpers when an
   explicit tenant context is present.
+- Added actor-qualified MCP secret ids and exact tenant-context secret
+  resolution so two employees in the same workspace cannot overwrite or resolve
+  each other's stored MCP bearer credentials.
 
 ## [0.6.1] - 2026-06-20
 
