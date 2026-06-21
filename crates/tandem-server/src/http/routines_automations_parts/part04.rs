@@ -1,7 +1,6 @@
 // Continuation of routines_automations handlers (split from part02.rs to satisfy
 // the 2000-line file-size gate). Included into the same module via routines_automations.rs.
 
-
 pub(super) async fn automations_v2_pause(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
@@ -15,7 +14,10 @@ pub(super) async fn automations_v2_pause(
         return Err(automation_v2_not_found(&id));
     };
     ensure_automation_v2_tenant(&tenant_context, &automation)?;
-    ensure_automation_v2_owner_or_admin(&automation, verified_tenant_context.as_ref().map(|context| &context.0))?;
+    ensure_automation_v2_owner_or_admin(
+        &automation,
+        verified_tenant_context.as_ref().map(|context| &context.0),
+    )?;
     let actor =
         super::governance::resolve_governance_actor(&headers, &tenant_context, &request_principal);
     let _ = state
@@ -102,7 +104,10 @@ pub(super) async fn automations_v2_resume(
         return Err(automation_v2_not_found(&id));
     };
     ensure_automation_v2_tenant(&tenant_context, &automation)?;
-    ensure_automation_v2_owner_or_admin(&automation, verified_tenant_context.as_ref().map(|context| &context.0))?;
+    ensure_automation_v2_owner_or_admin(
+        &automation,
+        verified_tenant_context.as_ref().map(|context| &context.0),
+    )?;
     let actor =
         super::governance::resolve_governance_actor(&headers, &tenant_context, &request_principal);
     let _ = state
@@ -614,12 +619,9 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
     }
     // GOV-B1/B9: approving a gate is at least as privileged as resuming/cancelling
     // a run, so require owner-or-admin rather than mere read visibility.
-    let automation_for_access = ensure_automation_v2_run_owner_or_admin(
-        &state,
-        &current,
-        verified_tenant_context.as_ref(),
-    )
-    .await?;
+    let automation_for_access =
+        ensure_automation_v2_run_owner_or_admin(&state, &current, verified_tenant_context.as_ref())
+            .await?;
     if current.status != AutomationRunStatus::AwaitingApproval {
         // Race UX: when a second surface tries to decide a gate that has just
         // been resolved by another surface (Slack click + control-panel click,
@@ -807,10 +809,7 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
         &state,
         "automation.governance.gate_decided",
         &current.tenant_context,
-        decider
-            .actor_id
-            .clone()
-            .or_else(|| decider.source.clone()),
+        decider.actor_id.clone().or_else(|| decider.source.clone()),
         json!({
             "runID": run_id.clone(),
             "automationID": automation.automation_id.clone(),
@@ -863,12 +862,7 @@ fn authorize_gate_decider(
             gate_requester_actor_id(run, automation).as_deref(),
             decider.actor_id.as_deref(),
         ) {
-            if actor_identity_matches(
-                requester,
-                None,
-                reviewer,
-                decider.source.as_deref(),
-            ) {
+            if actor_identity_matches(requester, None, reviewer, decider.source.as_deref()) {
                 return Err((
                     "AUTOMATION_V2_GATE_SELF_APPROVAL_FORBIDDEN",
                     "Requester cannot approve their own consequential action",
@@ -1042,29 +1036,45 @@ fn gate_requester_actor_id(
 }
 
 fn metadata_reviewer_eligibility(value: &Value) -> Option<tandem_types::ReviewerEligibility> {
-    metadata_pointer(value, &["/gate/reviewer_eligibility", "/reviewer_eligibility"])
-        .cloned()
-        .and_then(|value| serde_json::from_value(value).ok())
+    metadata_pointer(
+        value,
+        &["/gate/reviewer_eligibility", "/reviewer_eligibility"],
+    )
+    .cloned()
+    .and_then(|value| serde_json::from_value(value).ok())
 }
 
 fn metadata_risk_tier(value: &Value) -> Option<tandem_types::ToolRiskTier> {
-    metadata_pointer(value, &["/gate/risk_tier", "/policy/risk_tier", "/risk_tier"])
-        .cloned()
-        .and_then(|value| serde_json::from_value(value).ok())
+    metadata_pointer(
+        value,
+        &["/gate/risk_tier", "/policy/risk_tier", "/risk_tier"],
+    )
+    .cloned()
+    .and_then(|value| serde_json::from_value(value).ok())
 }
 
 fn metadata_data_classes(value: &Value) -> Vec<tandem_types::DataClass> {
-    metadata_pointer(value, &["/gate/data_classes", "/policy/data_classes", "/data_classes"])
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|value| serde_json::from_value(value.clone()).ok())
-        .chain(
-            metadata_pointer(value, &["/gate/data_class", "/policy/data_class", "/data_class"])
-                .cloned()
-                .and_then(|value| serde_json::from_value(value).ok()),
+    metadata_pointer(
+        value,
+        &[
+            "/gate/data_classes",
+            "/policy/data_classes",
+            "/data_classes",
+        ],
+    )
+    .and_then(Value::as_array)
+    .into_iter()
+    .flatten()
+    .filter_map(|value| serde_json::from_value(value.clone()).ok())
+    .chain(
+        metadata_pointer(
+            value,
+            &["/gate/data_class", "/policy/data_class", "/data_class"],
         )
-        .collect::<Vec<_>>()
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok()),
+    )
+    .collect::<Vec<_>>()
 }
 
 fn metadata_resource_ref(value: &Value) -> Option<tandem_types::ResourceRef> {
@@ -1795,7 +1805,6 @@ async fn automation_v2_reset_task_subtree(
             clear_automation_run_execution_handles(run);
             for reset_node_id in &reset_nodes {
                 run.checkpoint.node_outputs.remove(reset_node_id);
-                run.checkpoint.node_attempts.remove(reset_node_id);
             }
             run.checkpoint
                 .blocked_nodes

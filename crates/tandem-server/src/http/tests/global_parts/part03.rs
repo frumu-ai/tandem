@@ -409,7 +409,7 @@ async fn automations_v2_run_repair_resets_descendants_and_records_diff_metadata(
 }
 
 #[tokio::test]
-async fn automations_v2_run_task_retry_resets_selected_subtree() {
+async fn automations_v2_run_task_retry_preserves_attempts_and_resets_subtree() {
     let state = test_state().await;
     let app = app_router(state.clone());
     let automation = create_test_automation_v2(&state, "auto-v2-task-retry").await;
@@ -496,7 +496,7 @@ async fn automations_v2_run_task_retry_resets_selected_subtree() {
         .any(|node_id| node_id == "approval"));
     assert!(retried.checkpoint.node_outputs.contains_key("draft"));
     assert!(!retried.checkpoint.node_outputs.contains_key("review"));
-    assert!(retried.checkpoint.node_attempts.get("review").is_none());
+    assert_eq!(retried.checkpoint.node_attempts.get("review"), Some(&2));
     assert!(retried
         .checkpoint
         .pending_nodes
@@ -521,7 +521,7 @@ async fn automations_v2_run_task_retry_resets_selected_subtree() {
 }
 
 #[tokio::test]
-async fn automations_v2_run_task_requeue_resets_selected_subtree() {
+async fn automations_v2_run_task_requeue_preserves_attempts_and_resets_subtree() {
     let state = test_state().await;
     let app = app_router(state.clone());
     let automation = create_test_automation_v2(&state, "auto-v2-task-requeue").await;
@@ -602,7 +602,7 @@ async fn automations_v2_run_task_requeue_resets_selected_subtree() {
         .any(|node_id| node_id == "review"));
     assert!(!requeued.checkpoint.node_outputs.contains_key("draft"));
     assert!(!requeued.checkpoint.node_outputs.contains_key("review"));
-    assert!(requeued.checkpoint.node_attempts.get("draft").is_none());
+    assert_eq!(requeued.checkpoint.node_attempts.get("draft"), Some(&2));
     assert!(requeued.active_session_ids.is_empty());
     assert!(requeued.active_instance_ids.is_empty());
     assert!(requeued.latest_session_id.is_none());

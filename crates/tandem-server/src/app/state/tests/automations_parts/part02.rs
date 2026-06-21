@@ -40,7 +40,10 @@ async fn automation_v2_recovers_legacy_context_runs_for_history_and_library() {
         "tandem-context-run-recovery-{}",
         uuid::Uuid::new_v4()
     ));
-    let shared_path = root.join("data").join("system").join("shared_resources.json");
+    let shared_path = root
+        .join("data")
+        .join("system")
+        .join("shared_resources.json");
     std::fs::create_dir_all(shared_path.parent().expect("shared parent")).expect("shared dir");
     let mut state = test_state_with_path(shared_path);
     state.automations_v2_path = root.join("data").join("automations_v2.json");
@@ -161,7 +164,10 @@ async fn automation_v2_recovers_legacy_context_runs_for_history_and_library() {
         .find(|row| row.automation_id == "auto-from-context")
         .expect("context run snapshot recovered as library definition");
     assert_eq!(automation.name, "Recovered automation from context state");
-    assert_eq!(automation.workspace_root.as_deref(), Some("/tmp/recovered-workspace"));
+    assert_eq!(
+        automation.workspace_root.as_deref(),
+        Some("/tmp/recovered-workspace")
+    );
     assert_eq!(automation.flow.nodes.len(), 2);
 }
 
@@ -311,189 +317,6 @@ async fn automation_v2_run_update_hydrates_history_only_run() {
         .await
         .get("run-history-update")
         .is_some());
-}
-
-#[tokio::test]
-async fn automation_run_requeue_increments_attempt_counter() {
-    let _guard = automation_executor_test_lock().lock().await;
-    let workspace_root =
-        std::env::temp_dir().join(format!("tandem-requeue-attempts-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&workspace_root).expect("workspace");
-
-    let automation = AutomationV2Spec {
-        automation_id: "automation-inline-requeue-attempts".to_string(),
-        name: "Requeue Attempt Increments".to_string(),
-        description: None,
-        status: crate::AutomationV2Status::Active,
-        schedule: crate::AutomationV2Schedule {
-            schedule_type: crate::AutomationV2ScheduleType::Manual,
-            cron_expression: None,
-            interval_seconds: None,
-            timezone: "UTC".to_string(),
-            misfire_policy: RoutineMisfirePolicy::RunOnce,
-        },
-        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
-        agents: vec![AutomationAgentProfile {
-            agent_id: "agent_planner".to_string(),
-            template_id: None,
-            display_name: "Planner".to_string(),
-            avatar_url: None,
-            model_policy: Some(json!({
-                "default_model": "openrouter/not-a-real-model"
-            })),
-            skills: Vec::new(),
-            tool_policy: AutomationAgentToolPolicy {
-                allowlist: vec!["*".to_string()],
-                denylist: Vec::new(),
-            },
-            mcp_policy: AutomationAgentMcpPolicy {
-                allowed_servers: Vec::new(),
-                allowed_tools: None,
-                allowed_connections: Vec::new(),
-            },
-            approval_policy: None,
-        }],
-        flow: AutomationFlowSpec {
-            nodes: vec![AutomationFlowNode {
-                knowledge: tandem_orchestrator::KnowledgeBinding::default(),
-                node_id: "collect_inputs".to_string(),
-                agent_id: "agent_planner".to_string(),
-                objective: "Capture the report topic, delivery target, and formatting constraints."
-                    .to_string(),
-                depends_on: Vec::new(),
-                input_refs: Vec::new(),
-                output_contract: Some(AutomationFlowOutputContract {
-                    kind: "brief".to_string(),
-                    validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
-                    enforcement: None,
-                    schema: None,
-                    summary_guidance: None,
-                }),
-                tool_policy: None,
-                mcp_policy: None,
-                retry_policy: None,
-                timeout_ms: None,
-                max_tool_calls: None,
-                stage_kind: None,
-                gate: None,
-                metadata: Some(json!({
-                    "inputs": {
-                        "topic": "autonomous AI agentic workflows",
-                        "delivery_email": "recipient@example.com",
-                        "email_format": "simple html",
-                        "attachments_allowed": false
-                    }
-                })),
-            }],
-        },
-        execution: AutomationExecutionPolicy {
-            profile: None,
-            max_parallel_agents: Some(1),
-            max_total_runtime_ms: None,
-            max_total_tool_calls: None,
-            max_total_tokens: None,
-            max_total_cost_usd: None,
-        },
-        output_targets: Vec::new(),
-        created_at_ms: crate::now_ms(),
-        updated_at_ms: crate::now_ms(),
-        creator_id: "test".to_string(),
-        workspace_root: Some(workspace_root.to_string_lossy().to_string()),
-        metadata: Some(json!({
-            "context_materialization": {
-                "routines": [
-                    {
-                        "routine_id": "collect_inputs",
-                        "visible_context_objects": [],
-                        "step_context_bindings": [
-                            {
-                                "step_id": "collect_inputs",
-                                "context_reads": ["ctx:collect_inputs:mission.goal"],
-                                "context_writes": []
-                            }
-                        ]
-                    }
-                ]
-            }
-        })),
-        next_fire_at_ms: None,
-        last_fired_at_ms: None,
-        scope_policy: None,
-        watch_conditions: Vec::new(),
-        handoff_config: None,
-    };
-
-    let state = ready_test_state().await;
-    let run = state
-        .create_automation_v2_run(&automation, "manual")
-        .await
-        .expect("create run");
-    let run_id = run.run_id.clone();
-
-    crate::automation_v2::executor::run_automation_v2_run(state.clone(), run).await;
-    let first = state
-        .get_automation_v2_run(&run_id)
-        .await
-        .expect("first run");
-    assert_eq!(
-        first.checkpoint.node_attempts.get("collect_inputs"),
-        Some(&1)
-    );
-
-    state
-        .update_automation_v2_run(&run_id, |row| {
-            row.status = AutomationRunStatus::Queued;
-            row.detail = Some("requeue collect_inputs".to_string());
-            row.resume_reason = Some("requeue collect_inputs".to_string());
-            row.stop_kind = None;
-            row.stop_reason = None;
-            row.pause_reason = None;
-            row.checkpoint.awaiting_gate = None;
-            row.checkpoint.node_outputs.remove("collect_inputs");
-            row.checkpoint
-                .completed_nodes
-                .retain(|node_id| node_id != "collect_inputs");
-            row.checkpoint
-                .blocked_nodes
-                .retain(|node_id| node_id != "collect_inputs");
-            if !row
-                .checkpoint
-                .pending_nodes
-                .iter()
-                .any(|node_id| node_id == "collect_inputs")
-            {
-                row.checkpoint
-                    .pending_nodes
-                    .push("collect_inputs".to_string());
-            }
-            if row
-                .checkpoint
-                .last_failure
-                .as_ref()
-                .is_some_and(|failure| failure.node_id == "collect_inputs")
-            {
-                row.checkpoint.last_failure = None;
-            }
-        })
-        .await
-        .expect("requeue run");
-
-    let rerun = state.get_automation_v2_run(&run_id).await.expect("rerun");
-    crate::automation_v2::executor::run_automation_v2_run(state.clone(), rerun).await;
-    let second = state
-        .get_automation_v2_run(&run_id)
-        .await
-        .expect("second run");
-    assert_eq!(
-        second.checkpoint.node_attempts.get("collect_inputs"),
-        Some(&2)
-    );
-    assert!(second
-        .checkpoint
-        .node_outputs
-        .contains_key("collect_inputs"));
-
-    let _ = std::fs::remove_dir_all(&workspace_root);
 }
 
 #[tokio::test]
@@ -1147,7 +970,6 @@ async fn stale_running_automation_runs_mark_in_progress_nodes_as_repairable() {
         .any(|entry| entry.event == "run_auto_resumed"));
 }
 
-
 #[tokio::test]
 async fn guardrail_stopped_run_auto_resumes_after_quota_override_approval() {
     let agent_id = "agent-guardrail-resume";
@@ -1204,7 +1026,10 @@ async fn guardrail_stopped_run_auto_resumes_after_quota_override_approval() {
         handoff_config: None,
     };
     let state = ready_test_state().await;
-    state.put_automation_v2(automation.clone()).await.expect("put automation");
+    state
+        .put_automation_v2(automation.clone())
+        .await
+        .expect("put automation");
     let mut run = state
         .create_automation_v2_run(&automation, "manual")
         .await
@@ -1238,7 +1063,8 @@ async fn guardrail_stopped_run_auto_resumes_after_quota_override_approval() {
             "approval-guardrail-resume".to_string(),
             crate::automation_v2::governance::GovernanceApprovalRequest {
                 approval_id: "approval-guardrail-resume".to_string(),
-                request_type: crate::automation_v2::governance::GovernanceApprovalRequestType::QuotaOverride,
+                request_type:
+                    crate::automation_v2::governance::GovernanceApprovalRequestType::QuotaOverride,
                 requested_by: crate::automation_v2::governance::GovernanceActorRef {
                     kind: crate::automation_v2::governance::GovernanceActorKind::Human,
                     actor_id: Some("reviewer".to_string()),
@@ -1585,7 +1411,6 @@ async fn stale_running_automation_runs_ignore_recent_session_activity() {
     assert!(!cancellation.is_cancelled());
 }
 
-
 // --- TAN-214: golden tests for the email approval workflow ------------------
 //
 // The flagship contract: an agent composes an email, the run pauses at a
@@ -1638,7 +1463,11 @@ fn email_approval_automation(automation_id: &str) -> AutomationV2Spec {
                     "Human review",
                     vec!["compose_email".to_string()],
                 ),
-                email_flow_node("send_email", "Send the email", vec!["approval_gate".to_string()]),
+                email_flow_node(
+                    "send_email",
+                    "Send the email",
+                    vec!["approval_gate".to_string()],
+                ),
             ],
         },
         execution: AutomationExecutionPolicy {
@@ -1734,9 +1563,15 @@ async fn email_approval_golden_approve_path() {
 
     // Golden pre-approval state: paused, send not executed, gate visible.
     assert_eq!(run.status, AutomationRunStatus::AwaitingApproval);
-    assert!(!send_email_completed(&run), "send must not run before approval");
+    assert!(
+        !send_email_completed(&run),
+        "send must not run before approval"
+    );
     assert_eq!(
-        run.checkpoint.awaiting_gate.as_ref().map(|g| g.node_id.as_str()),
+        run.checkpoint
+            .awaiting_gate
+            .as_ref()
+            .map(|g| g.node_id.as_str()),
         Some("approval_gate")
     );
     assert!(run.checkpoint.gate_history.is_empty());
@@ -1784,7 +1619,10 @@ async fn email_approval_golden_approve_path() {
         json!("completed")
     );
     assert!(
-        run.checkpoint.pending_nodes.iter().any(|n| n == "send_email"),
+        run.checkpoint
+            .pending_nodes
+            .iter()
+            .any(|n| n == "send_email"),
         "send node is released for execution only after approval"
     );
     assert!(!send_email_completed(&run));
@@ -1812,7 +1650,10 @@ async fn email_approval_golden_cancel_path_never_sends() {
 
     assert_eq!(run.status, AutomationRunStatus::Cancelled);
     assert_eq!(run.stop_kind, Some(AutomationStopKind::Cancelled));
-    assert!(!send_email_completed(&run), "send must never run after cancel");
+    assert!(
+        !send_email_completed(&run),
+        "send must never run after cancel"
+    );
     assert!(!run
         .checkpoint
         .completed_nodes
@@ -1865,7 +1706,9 @@ async fn email_approval_golden_rework_rearms_and_second_approval_releases_send()
     assert_eq!(run.checkpoint.gate_history.len(), 1);
 
     // Second round: compose finishes again, gate re-arms, approval releases send.
-    run.checkpoint.completed_nodes.push("compose_email".to_string());
+    run.checkpoint
+        .completed_nodes
+        .push("compose_email".to_string());
     run.checkpoint
         .pending_nodes
         .retain(|node| node != "compose_email");
@@ -1892,7 +1735,11 @@ async fn email_approval_golden_rework_rearms_and_second_approval_releases_send()
     assert_eq!(run.checkpoint.gate_history[0].decision, "rework");
     assert_eq!(run.checkpoint.gate_history[1].decision, "approve");
     assert_eq!(run.status, AutomationRunStatus::Queued);
-    assert!(run.checkpoint.pending_nodes.iter().any(|n| n == "send_email"));
+    assert!(run
+        .checkpoint
+        .pending_nodes
+        .iter()
+        .any(|n| n == "send_email"));
 }
 
 #[tokio::test]
