@@ -562,15 +562,6 @@ fn normalize_mcp_auth_kind(raw: &str) -> String {
     }
 }
 
-async fn current_mcp_auth_challenge(state: &AppState, name: &str) -> Option<McpAuthChallenge> {
-    state
-        .mcp
-        .list()
-        .await
-        .get(name)
-        .and_then(|server| server.last_auth_challenge.clone())
-}
-
 fn mcp_auth_challenge_from_session(session: &McpOAuthSessionRecord) -> McpAuthChallenge {
     McpAuthChallenge {
         challenge_id: format!("mcp-oauth-session-{}", session.session_id),
@@ -581,7 +572,6 @@ fn mcp_auth_challenge_from_session(session: &McpOAuthSessionRecord) -> McpAuthCh
         status: session.status.clone(),
     }
 }
-
 async fn current_mcp_auth_challenge_for_tenant(
     state: &AppState,
     name: &str,
@@ -590,13 +580,11 @@ async fn current_mcp_auth_challenge_for_tenant(
     if let Some(session) = find_pending_mcp_oauth_session(state, name, tenant_context).await {
         return Some(mcp_auth_challenge_from_session(&session));
     }
-    if tenant_context.is_local_implicit() {
-        current_mcp_auth_challenge(state, name).await
-    } else {
-        None
-    }
+    state
+        .mcp
+        .auth_challenge_for_tenant(name, tenant_context)
+        .await
 }
-
 fn effective_mcp_headers(server: &tandem_runtime::McpServer) -> HashMap<String, String> {
     let mut headers = server.headers.clone();
     for (key, value) in &server.secret_header_values {
@@ -604,11 +592,9 @@ fn effective_mcp_headers(server: &tandem_runtime::McpServer) -> HashMap<String, 
     }
     headers
 }
-
 fn mcp_uses_oauth(server: &tandem_runtime::McpServer) -> bool {
     server.auth_kind.trim().eq_ignore_ascii_case("oauth")
 }
-
 pub(super) fn mcp_public_base_url_from_config(cfg: &Value) -> Option<String> {
     cfg.get("hosted")
         .and_then(Value::as_object)
@@ -618,7 +604,6 @@ pub(super) fn mcp_public_base_url_from_config(cfg: &Value) -> Option<String> {
         .filter(|value| !value.is_empty())
         .map(|value| value.trim_end_matches('/').to_string())
 }
-
 pub(super) fn mcp_public_base_url_from_env() -> Option<String> {
     [
         "TANDEM_CONTROL_PANEL_PUBLIC_URL",
@@ -633,13 +618,11 @@ pub(super) fn mcp_public_base_url_from_env() -> Option<String> {
             .filter(|value| !value.is_empty())
     })
 }
-
 fn mcp_public_base_url(state: &AppState, cfg: &Value) -> String {
     mcp_public_base_url_from_config(cfg)
         .or_else(mcp_public_base_url_from_env)
         .unwrap_or_else(|| state.server_base_url())
 }
-
 fn mcp_public_base_url_from_headers(headers: &HeaderMap) -> Option<String> {
     if let Some(origin) = headers
         .get("origin")
@@ -690,7 +673,6 @@ fn mcp_public_base_url_from_headers(headers: &HeaderMap) -> Option<String> {
         .unwrap_or("http");
     Some(format!("{proto}://{host}"))
 }
-
 fn mcp_oauth_redirect_uri_for_base(base_url: &str, server_name: &str) -> String {
     let base = base_url.trim().trim_end_matches('/');
     format!(
@@ -698,7 +680,6 @@ fn mcp_oauth_redirect_uri_for_base(base_url: &str, server_name: &str) -> String 
         urlencoding::encode(server_name)
     )
 }
-
 fn mcp_oauth_redirect_uri_from_authorization_url(authorization_url: &str) -> Option<String> {
     let parsed = reqwest::Url::parse(authorization_url).ok()?;
     parsed
@@ -706,12 +687,10 @@ fn mcp_oauth_redirect_uri_from_authorization_url(authorization_url: &str) -> Opt
         .find(|(key, _)| key == "redirect_uri")
         .map(|(_, value)| value.into_owned())
 }
-
 fn generate_mcp_oauth_state() -> String {
     let entropy = format!("{}:{}", Uuid::new_v4(), Uuid::new_v4());
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(entropy)
 }
-
 fn generate_mcp_pkce_pair() -> (String, String) {
     let entropy = format!("{}:{}", Uuid::new_v4(), Uuid::new_v4());
     let verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(entropy);
@@ -719,11 +698,9 @@ fn generate_mcp_pkce_pair() -> (String, String) {
     let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest);
     (verifier, challenge)
 }
-
 fn mcp_oauth_provider_id(server_name: &str) -> String {
     format!("mcp-oauth::{}", mcp_namespace_segment(server_name))
 }
-
 fn mcp_oauth_provider_id_for_tenant(
     server_name: &str,
     tenant_context: &TenantContext,
@@ -736,7 +713,6 @@ fn mcp_oauth_provider_id_for_tenant(
         format!("{base}::{connection_id}")
     }
 }
-
 fn www_authenticate_param(header: &str, key: &str) -> Option<String> {
     for part in header.split(',') {
         let trimmed = part.trim();
@@ -751,7 +727,6 @@ fn www_authenticate_param(header: &str, key: &str) -> Option<String> {
     }
     None
 }
-
 fn default_mcp_resource_metadata_url(endpoint: &str) -> Option<String> {
     let parsed = reqwest::Url::parse(endpoint).ok()?;
     let host = parsed.host_str()?;
@@ -764,7 +739,6 @@ fn default_mcp_resource_metadata_url(endpoint: &str) -> Option<String> {
     out.push_str(parsed.path());
     Some(out)
 }
-
 fn authorization_server_metadata_url(base: &str) -> String {
     let trimmed = base.trim().trim_end_matches('/');
     if trimmed.ends_with("/.well-known/oauth-authorization-server") {
@@ -773,7 +747,6 @@ fn authorization_server_metadata_url(base: &str) -> String {
         format!("{trimmed}/.well-known/oauth-authorization-server")
     }
 }
-
 fn build_mcp_authorization_url(
     authorization_endpoint: &str,
     client_id: &str,
@@ -965,11 +938,10 @@ async fn start_mcp_oauth_session(
         .map(str::to_string)
         .unwrap_or_else(|| mcp_public_base_url(state, &effective_cfg));
     let redirect_uri = mcp_oauth_redirect_uri_for_base(&public_base_url, name);
-    let existing_challenge = if tenant_context.is_local_implicit() {
-        current_mcp_auth_challenge(state, name).await
-    } else {
-        None
-    };
+    let existing_challenge = state
+        .mcp
+        .auth_challenge_for_tenant(name, tenant_context)
+        .await;
     if let Some(existing) = existing_challenge {
         let existing_redirect =
             mcp_oauth_redirect_uri_from_authorization_url(&existing.authorization_url);
@@ -981,7 +953,10 @@ async fn start_mcp_oauth_session(
         {
             return Ok(existing);
         }
-        let _ = state.mcp.clear_server_auth_challenge(name).await;
+        let _ = state
+            .mcp
+            .clear_auth_challenge_for_tenant(name, tenant_context)
+            .await;
         state.mcp_oauth_sessions.write().await.retain(|_, session| {
             session.server_name != name || session.tenant_context != *tenant_context
         });
@@ -1075,7 +1050,7 @@ async fn start_mcp_oauth_session(
     publish_mcp_oauth_event(state, "mcp.connection.oauth_started", &session, None).await;
     let _ = state
         .mcp
-        .record_server_auth_challenge(name, challenge.clone(), None)
+        .record_auth_challenge_for_tenant(name, tenant_context, challenge.clone(), None)
         .await;
     Ok(challenge)
 }
@@ -1341,8 +1316,12 @@ async fn finish_mcp_oauth_callback(
         .await
     {
         Ok(_) => {
-            let count = sync_mcp_tools_for_server(&state, &name).await;
-            let _ = state.mcp.clear_server_auth_challenge(&name).await;
+            let count =
+                sync_mcp_tools_for_server_for_tenant(&state, &name, &session.tenant_context).await;
+            let _ = state
+                .mcp
+                .clear_auth_challenge_for_tenant(&name, &session.tenant_context)
+                .await;
             state.event_bus.publish(EngineEvent::new(
                 "mcp.server.connected",
                 json!({
@@ -1474,9 +1453,27 @@ pub(crate) fn mcp_namespace_segment(raw: &str) -> String {
 }
 
 pub(crate) async fn sync_mcp_tools_for_server(state: &AppState, name: &str) -> usize {
+    sync_mcp_tools_for_server_for_tenant(state, name, &TenantContext::local_implicit()).await
+}
+
+pub(crate) async fn sync_mcp_tools_for_server_for_tenant(
+    state: &AppState,
+    name: &str,
+    tenant_context: &TenantContext,
+) -> usize {
+    let scoped_count = state
+        .mcp
+        .server_tools_for_tenant(name, tenant_context)
+        .await
+        .len();
+    let _ = resync_mcp_bridge_tools_for_server(state, name).await;
+    scoped_count
+}
+
+async fn resync_mcp_bridge_tools_for_server(state: &AppState, name: &str) -> (usize, usize) {
     let prefix = format!("mcp.{}.", mcp_namespace_segment(name));
-    state.tools.unregister_by_prefix(&prefix).await;
-    let tools = state.mcp.server_tools(name).await;
+    let removed = state.tools.unregister_by_prefix(&prefix).await;
+    let tools = state.mcp.bridge_tools_for_server(name).await;
     for tool in &tools {
         let schema = ToolSchema::new(
             tool.namespaced_name.clone(),
@@ -1501,7 +1498,7 @@ pub(crate) async fn sync_mcp_tools_for_server(state: &AppState, name: &str) -> u
             )
             .await;
     }
-    tools.len()
+    (removed, tools.len())
 }
 
 pub(super) async fn connect_mcp(
@@ -1530,7 +1527,7 @@ pub(super) async fn connect_mcp(
         }
     };
     if ok {
-        let count = sync_mcp_tools_for_server(&state, &name).await;
+        let count = sync_mcp_tools_for_server_for_tenant(&state, &name, &tenant_context).await;
         state.event_bus.publish(EngineEvent::new(
             "mcp.server.connected",
             json!({
@@ -1546,13 +1543,13 @@ pub(super) async fn connect_mcp(
             }),
         ));
     } else {
-        let prefix = format!("mcp.{}.", mcp_namespace_segment(&name));
-        let removed = state.tools.unregister_by_prefix(&prefix).await;
+        let (removed, remaining) = resync_mcp_bridge_tools_for_server(&state, &name).await;
         state.event_bus.publish(EngineEvent::new(
             "mcp.server.disconnected",
             json!({
                 "name": name,
                 "removedToolCount": removed,
+                "remainingToolCount": remaining,
                 "reason": "connect_failed"
             }),
         ));
@@ -1698,7 +1695,7 @@ pub(super) async fn refresh_mcp(
     let public_base_url = mcp_public_base_url_from_headers(&headers);
     match result {
         Ok(tools) => {
-            let count = sync_mcp_tools_for_server(&state, &name).await;
+            let count = sync_mcp_tools_for_server_for_tenant(&state, &name, &tenant_context).await;
             state.event_bus.publish(EngineEvent::new(
                 "mcp.tools.updated",
                 json!({
@@ -1727,13 +1724,13 @@ pub(super) async fn refresh_mcp(
                     .ok();
                 }
             }
-            let prefix = format!("mcp.{}.", mcp_namespace_segment(&name));
-            let removed = state.tools.unregister_by_prefix(&prefix).await;
+            let (removed, remaining) = resync_mcp_bridge_tools_for_server(&state, &name).await;
             state.event_bus.publish(EngineEvent::new(
                 "mcp.server.disconnected",
                 json!({
                     "name": name,
                     "removedToolCount": removed,
+                    "remainingToolCount": remaining,
                     "reason": "refresh_failed"
                 }),
             ));
@@ -1778,7 +1775,10 @@ pub(super) async fn auth_mcp(
                 "authorizationUrl": auth_challenge.authorization_url,
             }));
         }
-        let _ = state.mcp.clear_server_auth_challenge(&name).await;
+        let _ = state
+            .mcp
+            .clear_auth_challenge_for_tenant(&name, &tenant_context)
+            .await;
         state.mcp_oauth_sessions.write().await.retain(|_, pending| {
             pending.server_name != name || pending.tenant_context != tenant_context
         });
@@ -1858,7 +1858,10 @@ pub(super) async fn authenticate_mcp(
             .as_deref()
             .is_some_and(|redirect_uri| redirect_uri != session.redirect_uri)
         {
-            let _ = state.mcp.clear_server_auth_challenge(&name).await;
+            let _ = state
+                .mcp
+                .clear_auth_challenge_for_tenant(&name, &tenant_context)
+                .await;
             state.mcp_oauth_sessions.write().await.retain(|_, pending| {
                 pending.server_name != name || pending.tenant_context != tenant_context
             });
@@ -1878,13 +1881,17 @@ pub(super) async fn authenticate_mcp(
 
     let refresh = state.mcp.refresh_for_tenant(&name, &tenant_context).await;
     let current = state.mcp.list().await.get(&name).cloned();
-    let last_auth_challenge = current
-        .as_ref()
-        .and_then(|server| server.last_auth_challenge.clone());
+    let last_auth_challenge = state
+        .mcp
+        .auth_challenge_for_tenant(&name, &tenant_context)
+        .await;
     match refresh {
         Ok(tools) => {
-            let count = sync_mcp_tools_for_server(&state, &name).await;
-            let _ = state.mcp.clear_server_auth_challenge(&name).await;
+            let count = sync_mcp_tools_for_server_for_tenant(&state, &name, &tenant_context).await;
+            let _ = state
+                .mcp
+                .clear_auth_challenge_for_tenant(&name, &tenant_context)
+                .await;
             Json(json!({
                 "ok": true,
                 "authenticated": true,
@@ -1897,6 +1904,14 @@ pub(super) async fn authenticate_mcp(
         }
         Err(error) => {
             let mut auth_challenge = last_auth_challenge;
+            let connected = if let Some(server) = current.as_ref() {
+                state
+                    .mcp
+                    .runtime_connected_for_tenant(&name, server, &tenant_context)
+                    .await
+            } else {
+                false
+            };
             if auth_challenge.is_none() {
                 let server = state.mcp.list().await.get(&name).cloned();
                 if server.as_ref().is_some_and(mcp_uses_oauth) {
@@ -1913,7 +1928,7 @@ pub(super) async fn authenticate_mcp(
             Json(json!({
                 "ok": false,
                 "authenticated": false,
-                "connected": current.as_ref().map(|server| server.connected).unwrap_or(false),
+                "connected": connected,
                 "pendingAuth": auth_challenge.is_some(),
                 "lastAuthChallenge": auth_challenge,
                 "authorizationUrl": auth_challenge.as_ref().map(|challenge| challenge.authorization_url.clone()),
@@ -1950,8 +1965,16 @@ pub(super) async fn delete_auth_mcp(
     }))
 }
 
-pub(super) async fn mcp_tools(State(state): State<AppState>) -> Json<Value> {
-    Json(json!(state.mcp.list_tools().await))
+pub(super) async fn mcp_tools(
+    State(state): State<AppState>,
+    tenant_context: Option<axum::extract::Extension<TenantContext>>,
+) -> Json<Value> {
+    let tenant_context = tenant_context
+        .map(|extension| extension.0)
+        .unwrap_or_else(TenantContext::local_implicit);
+    Json(json!(
+        state.mcp.list_tools_for_tenant(&tenant_context).await
+    ))
 }
 
 pub(super) async fn mcp_resources(State(state): State<AppState>) -> Json<Value> {

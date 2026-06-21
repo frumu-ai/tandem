@@ -262,9 +262,24 @@ mod tests {
         registry
             .add("example".to_string(), "sse:https://example.com".to_string())
             .await;
+        {
+            let mut servers = registry.servers.write().await;
+            let server = servers.get_mut("example").expect("server");
+            server.tool_cache = vec![McpToolCacheEntry {
+                tool_name: "seeded_tool".to_string(),
+                description: "Seeded test tool".to_string(),
+                input_schema: json!({"type": "object"}),
+                fetched_at_ms: 7,
+                schema_hash: "seeded".to_string(),
+            }];
+            server.tools_fetched_at_ms = Some(7);
+        }
         assert!(registry.connect("example").await);
         let listed = registry.list().await;
         assert!(listed.get("example").map(|s| s.connected).unwrap_or(false));
+        let tools = registry.server_tools("example").await;
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].namespaced_name, "mcp.example.seeded_tool");
         assert!(registry.disconnect("example").await);
     }
 
@@ -384,6 +399,142 @@ mod tests {
             .await
             .expect_err("unreachable endpoint should permanently fail");
         assert!(matches!(err, McpReadyError::PermanentlyFailed { .. }));
+    }
+
+    #[tokio::test]
+    async fn persisted_scoped_connection_runtime_resets_on_startup() {
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let server = test_mcp_server("notion");
+        let tenant = TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "alice");
+        let owner = McpPrincipalRef::from_tenant_context(&tenant);
+        let now = now_ms();
+        let mut connection = McpConnection::tenant_connection_from_server(
+            "notion",
+            &server,
+            tenant.clone(),
+            owner,
+            now,
+        );
+        let challenge = McpAuthChallenge {
+            challenge_id: "challenge-1".to_string(),
+            tool_name: "search".to_string(),
+            authorization_url: "https://auth.example.test".to_string(),
+            message: "authorize".to_string(),
+            requested_at_ms: now,
+            status: "pending".to_string(),
+        };
+        connection.connected = true;
+        connection.last_error = Some("stale error".to_string());
+        connection.last_auth_challenge = Some(challenge.clone());
+        connection.mcp_session_id = Some("stale-session".to_string());
+        connection.tool_cache = vec![McpToolCacheEntry {
+            tool_name: "search".to_string(),
+            description: "Search".to_string(),
+            input_schema: json!({"type": "object"}),
+            fetched_at_ms: now,
+            schema_hash: "hash".to_string(),
+        }];
+        connection.tools_fetched_at_ms = Some(now);
+        connection.pending_auth_by_tool.insert(
+            "search".to_string(),
+            pending_auth_from_challenge(&challenge),
+        );
+        let connection_id = connection.connection_id.clone();
+        let persisted = McpRegistryPersistedState {
+            schema_version: MCP_REGISTRY_STATE_SCHEMA_VERSION,
+            servers: HashMap::from([("notion".to_string(), server)]),
+            connections: HashMap::from([(connection_id.clone(), connection)]),
+        };
+        std::fs::write(&file, serde_json::to_string_pretty(&persisted).unwrap())
+            .expect("write persisted mcp state");
+
+        let registry = McpRegistry::new_with_state_file(file.clone());
+        let connections = registry.list_connections().await;
+        let loaded = connections
+            .get(&connection_id)
+            .expect("scoped connection should remain persisted");
+        assert!(!loaded.connected);
+        assert!(loaded.last_error.is_none());
+        assert!(loaded.last_auth_challenge.is_none());
+        assert!(loaded.mcp_session_id.is_none());
+        assert!(loaded.tool_cache.is_empty());
+        assert!(loaded.tools_fetched_at_ms.is_none());
+        assert!(loaded.pending_auth_by_tool.is_empty());
+        assert!(registry
+            .server_tools_for_tenant("notion", &tenant)
+            .await
+            .is_empty());
+        assert!(registry.bridge_tools_for_server("notion").await.is_empty());
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[tokio::test]
+    async fn bridge_tools_for_server_unions_connected_scoped_caches() {
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file.clone());
+        registry
+            .add_or_update(
+                "notion".to_string(),
+                "https://example.com/mcp".to_string(),
+                HashMap::new(),
+                true,
+            )
+            .await;
+        let tenant_a =
+            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "alice");
+        let tenant_b = TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "bob");
+        let now = now_ms();
+        registry
+            .set_runtime_state_for_current_tenant(
+                "notion",
+                &tenant_a,
+                McpRuntimeState::connected(
+                    Some("alice-session".to_string()),
+                    vec![McpToolCacheEntry {
+                        tool_name: "alice_search".to_string(),
+                        description: "Alice Search".to_string(),
+                        input_schema: json!({"type": "object"}),
+                        fetched_at_ms: now,
+                        schema_hash: "alice-hash".to_string(),
+                    }],
+                    now,
+                ),
+            )
+            .await;
+        registry
+            .set_runtime_state_for_current_tenant(
+                "notion",
+                &tenant_b,
+                McpRuntimeState::connected(
+                    Some("bob-session".to_string()),
+                    vec![McpToolCacheEntry {
+                        tool_name: "bob_search".to_string(),
+                        description: "Bob Search".to_string(),
+                        input_schema: json!({"type": "object"}),
+                        fetched_at_ms: now,
+                        schema_hash: "bob-hash".to_string(),
+                    }],
+                    now,
+                ),
+            )
+            .await;
+
+        let bridge_names = registry
+            .bridge_tools_for_server("notion")
+            .await
+            .into_iter()
+            .map(|tool| tool.namespaced_name)
+            .collect::<Vec<_>>();
+        assert!(bridge_names.contains(&"mcp.notion.alice_search".to_string()));
+        assert!(bridge_names.contains(&"mcp.notion.bob_search".to_string()));
+        let alice_names = registry
+            .server_tools_for_tenant("notion", &tenant_a)
+            .await
+            .into_iter()
+            .map(|tool| tool.namespaced_name)
+            .collect::<Vec<_>>();
+        assert_eq!(alice_names, vec!["mcp.notion.alice_search".to_string()]);
+        let _ = std::fs::remove_file(file);
     }
 
     #[test]
@@ -604,9 +755,14 @@ mod tests {
                 last_probe_ms: 2_000,
             },
         );
-        let blocked =
-            pending_auth_short_circuit(&server, "clickup_whoami", "Clickup_WhoAmI", 10_000, 15_000)
-                .expect("should block");
+        let blocked = pending_auth_short_circuit(
+            &server.pending_auth_by_tool,
+            "clickup_whoami",
+            "Clickup_WhoAmI",
+            10_000,
+            15_000,
+        )
+        .expect("should block");
         assert!(blocked.output.contains("Authorization pending"));
         assert!(blocked
             .mcp_auth
@@ -650,8 +806,14 @@ mod tests {
             },
         );
         assert!(
-            pending_auth_short_circuit(&server, "clickup_whoami", "Clickup_WhoAmI", 17_001, 15_000)
-                .is_none(),
+            pending_auth_short_circuit(
+                &server.pending_auth_by_tool,
+                "clickup_whoami",
+                "Clickup_WhoAmI",
+                17_001,
+                15_000
+            )
+            .is_none(),
             "cooldown elapsed should allow re-probe"
         );
     }
@@ -691,7 +853,7 @@ mod tests {
             },
         );
         assert!(pending_auth_short_circuit(
-            &server,
+            &server.pending_auth_by_tool,
             "gmail_sendemail",
             "Gmail_SendEmail",
             2_100,
@@ -699,7 +861,7 @@ mod tests {
         )
         .is_some());
         assert!(pending_auth_short_circuit(
-            &server,
+            &server.pending_auth_by_tool,
             "clickup_whoami",
             "Clickup_WhoAmI",
             2_100,
@@ -1188,24 +1350,37 @@ mod tests {
             .await
             .expect("tenant A readiness should reconnect with tenant A secret");
         assert!(result.output.contains("tenant-authenticated"));
-        let connected = registry
+        let server_row = registry
             .list()
             .await
             .get(server_name)
-            .map(|row| row.connected)
-            .unwrap_or(false);
+            .cloned()
+            .expect("server row");
         assert!(
-            connected,
-            "tenant-aware readiness should connect the server"
+            server_row.tool_cache.is_empty(),
+            "explicit tenant discovery must not cache authenticated tools on the shared server row"
         );
         let connections = registry.list_connections().await;
-        assert!(connections.values().any(|connection| {
-            connection.server_id == server_name
-                && connection.owner
-                    == (McpPrincipalRef::HumanActor {
-                        actor_id: "alice".to_string(),
-                    })
-        }));
+        let connection = connections
+            .values()
+            .find(|connection| {
+                connection.server_id == server_name
+                    && connection.owner
+                        == (McpPrincipalRef::HumanActor {
+                            actor_id: "alice".to_string(),
+                        })
+            })
+            .expect("alice scoped connection");
+        assert!(connection.connected);
+        assert_eq!(connection.mcp_session_id.as_deref(), Some("test-session"));
+        assert!(connection
+            .tool_cache
+            .iter()
+            .any(|tool| tool.tool_name == "get_me"));
+        let scoped_tools = registry
+            .server_tools_for_tenant(server_name, &tenant_a)
+            .await;
+        assert_eq!(scoped_tools.len(), 1);
 
         server.abort();
         let _ = tandem_core::delete_provider_auth_for_tenant(

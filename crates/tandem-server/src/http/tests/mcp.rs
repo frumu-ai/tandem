@@ -137,9 +137,23 @@ fn tenant_request(
 }
 
 async fn spawn_fake_notion_oauth_mcp_server() -> (String, tokio::task::JoinHandle<()>) {
-    async fn handle(axum::Json(payload): axum::Json<Value>) -> axum::Json<Value> {
+    async fn handle(
+        headers: axum::http::HeaderMap,
+        axum::Json(payload): axum::Json<Value>,
+    ) -> axum::Json<Value> {
         let id = payload.get("id").cloned().unwrap_or_else(|| json!(1));
         let method = payload.get("method").and_then(Value::as_str).unwrap_or("");
+        let auth = headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        let tool_name = if auth.contains("alice-union-token") {
+            "alice_search"
+        } else if auth.contains("bob-union-token") {
+            "bob_search"
+        } else {
+            "notion_search"
+        };
         let response = match method {
             "initialize" => json!({
                 "jsonrpc": "2.0",
@@ -159,7 +173,7 @@ async fn spawn_fake_notion_oauth_mcp_server() -> (String, tokio::task::JoinHandl
                 "result": {
                     "tools": [
                         {
-                            "name": "notion_search",
+                            "name": tool_name,
                             "description": "Search Notion",
                             "inputSchema": {
                                 "type": "object",
@@ -1066,6 +1080,28 @@ async fn mcp_oauth_session_records_tenant_actor_connection_identity() {
     );
     assert_ne!(session.provider_id, "mcp-oauth::notion");
     assert!(session.provider_id.ends_with(&session.connection_id));
+    let server_row_after_start = state
+        .mcp
+        .list()
+        .await
+        .get("notion")
+        .cloned()
+        .expect("notion row after oauth start");
+    assert!(
+        server_row_after_start.last_auth_challenge.is_none(),
+        "explicit tenant OAuth challenges must not be written into the shared server row"
+    );
+    let connections_after_start = state.mcp.list_connections().await;
+    let alice_pending_connection = connections_after_start
+        .get(&session.connection_id)
+        .expect("alice pending scoped connection");
+    assert_eq!(
+        alice_pending_connection
+            .last_auth_challenge
+            .as_ref()
+            .map(|challenge| challenge.authorization_url.as_str()),
+        Some(session.authorization_url.as_str())
+    );
 
     let bob_resp = app
         .clone()
@@ -1147,10 +1183,19 @@ async fn mcp_oauth_session_records_tenant_actor_connection_identity() {
         !server_row.secret_headers.contains_key("Authorization"),
         "explicit tenant OAuth must not write bearer refs into the shared server row"
     );
+    assert!(
+        server_row.tool_cache.is_empty(),
+        "explicit tenant OAuth discovery must not write authenticated tools into the shared server row"
+    );
     let connections = state.mcp.list_connections().await;
     let alice_connection = connections
         .get(&session.connection_id)
         .expect("alice scoped connection");
+    assert!(alice_connection.connected);
+    assert!(alice_connection
+        .tool_cache
+        .iter()
+        .any(|tool| tool.tool_name == "notion_search"));
     assert!(alice_connection
         .secret_headers
         .contains_key("Authorization"));
@@ -1162,6 +1207,58 @@ async fn mcp_oauth_session_records_tenant_actor_connection_identity() {
         Some(session.provider_id.as_str())
     );
 
+    drop(server);
+}
+
+#[tokio::test]
+async fn tenant_tool_sync_preserves_other_actor_bridge_tools() {
+    let state = test_state().await;
+    let (endpoint, server) = spawn_fake_notion_oauth_mcp_server().await;
+    state
+        .mcp
+        .add_or_update("notion".to_string(), endpoint, HashMap::new(), true)
+        .await;
+    let alice =
+        tandem_types::TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "alice");
+    let bob =
+        tandem_types::TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "bob");
+    state
+        .mcp
+        .set_bearer_token_for_tenant("notion", "alice-union-token", &alice)
+        .await
+        .expect("store alice token");
+    state
+        .mcp
+        .refresh_for_tenant("notion", &alice)
+        .await
+        .expect("refresh alice tools");
+    assert_eq!(
+        crate::http::mcp::sync_mcp_tools_for_server_for_tenant(&state, "notion", &alice).await,
+        1
+    );
+    state
+        .mcp
+        .set_bearer_token_for_tenant("notion", "bob-union-token", &bob)
+        .await
+        .expect("store bob token");
+    state
+        .mcp
+        .refresh_for_tenant("notion", &bob)
+        .await
+        .expect("refresh bob tools");
+    assert_eq!(
+        crate::http::mcp::sync_mcp_tools_for_server_for_tenant(&state, "notion", &bob).await,
+        1
+    );
+    let registered = state
+        .tools
+        .list()
+        .await
+        .into_iter()
+        .map(|schema| schema.name)
+        .collect::<Vec<_>>();
+    assert!(registered.contains(&"mcp.notion.alice_search".to_string()));
+    assert!(registered.contains(&"mcp.notion.bob_search".to_string()));
     drop(server);
 }
 

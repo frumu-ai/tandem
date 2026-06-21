@@ -20,7 +20,7 @@ const MCP_AUTH_REPROBE_COOLDOWN_MS: u64 = 15_000;
 const MCP_SECRET_PLACEHOLDER: &str = "";
 const MCP_HTTP_RESPONSE_MAX_BYTES: usize = 2 * 1024 * 1024;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpToolCacheEntry {
     pub tool_name: String,
     pub description: String,
@@ -85,7 +85,7 @@ pub enum McpSecretRef {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpAuthChallenge {
     pub challenge_id: String,
     pub tool_name: String,
@@ -95,7 +95,7 @@ pub struct McpAuthChallenge {
     pub status: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PendingMcpAuth {
     pub challenge_id: String,
     pub authorization_url: String,
@@ -178,6 +178,13 @@ impl McpRegistry {
             .map(|parent| parent.join("security"))
             .unwrap_or_else(|| PathBuf::from("security"));
         let (loaded_state, loaded_connections, migrated) = load_state(&state_file);
+        let loaded_connections = loaded_connections
+            .into_iter()
+            .map(|(connection_id, mut connection)| {
+                connection.reset_transient_runtime_state();
+                (connection_id, connection)
+            })
+            .collect::<HashMap<_, _>>();
         let loaded = loaded_state
             .into_iter()
             .map(|(k, mut v)| {
@@ -465,16 +472,12 @@ impl McpRegistry {
         };
 
         if !server.enabled {
-            let mut servers = self.servers.write().await;
-            if let Some(entry) = servers.get_mut(name) {
-                entry.connected = false;
-                entry.pid = None;
-                entry.last_error = Some("MCP server is disabled".to_string());
-                entry.last_auth_challenge = None;
-                entry.mcp_session_id = None;
-                entry.pending_auth_by_tool.clear();
-            }
-            drop(servers);
+            self.set_runtime_state_for_current_tenant(
+                name,
+                current_tenant,
+                McpRuntimeState::disconnected(Some("MCP server is disabled".to_string()), None),
+            )
+            .await;
             self.persist_state().await;
             return false;
         }
@@ -487,18 +490,24 @@ impl McpRegistry {
             return self.refresh_for_tenant(name, current_tenant).await.is_ok();
         }
 
-        let mut servers = self.servers.write().await;
-        if let Some(entry) = servers.get_mut(name) {
-            entry.connected = true;
-            entry.pid = None;
-            entry.last_error = None;
-            entry.last_auth_challenge = None;
-            entry.mcp_session_id = None;
-            entry.pending_auth_by_tool.clear();
-        }
-        drop(servers);
-        self.upsert_compatibility_connection_for_server(name, current_tenant)
-            .await;
+        let (tool_cache, tools_fetched_at_ms) = if current_tenant.is_local_implicit() {
+            (server.tool_cache.clone(), server.tools_fetched_at_ms)
+        } else {
+            self.connection_for_tenant(name, current_tenant)
+                .await
+                .map(|connection| (connection.tool_cache, connection.tools_fetched_at_ms))
+                .unwrap_or_default()
+        };
+        self.set_runtime_state_for_current_tenant(
+            name,
+            current_tenant,
+            McpRuntimeState::connected(
+                None,
+                tool_cache,
+                tools_fetched_at_ms.unwrap_or_else(now_ms),
+            ),
+        )
+        .await;
         self.persist_state().await;
         true
     }
@@ -546,18 +555,15 @@ impl McpRegistry {
         let (tools, session_id) = match discovery {
             Ok(result) => result,
             Err(DiscoverRemoteToolsError::AuthChallenge(challenge)) => {
-                let mut servers = self.servers.write().await;
-                if let Some(entry) = servers.get_mut(name) {
-                    entry.connected = false;
-                    entry.pid = None;
-                    entry.last_error = Some(challenge.message.clone());
-                    entry.last_auth_challenge = Some(challenge.clone());
-                    entry.mcp_session_id = None;
-                    entry.pending_auth_by_tool.clear();
-                    entry.tool_cache.clear();
-                    entry.tools_fetched_at_ms = None;
-                }
-                drop(servers);
+                self.set_runtime_state_for_current_tenant(
+                    name,
+                    current_tenant,
+                    McpRuntimeState::disconnected(
+                        Some(challenge.message.clone()),
+                        Some(challenge.clone()),
+                    ),
+                )
+                .await;
                 self.persist_state().await;
                 return Err(format!(
                     "MCP server '{name}' requires authorization: {}",
@@ -593,18 +599,15 @@ impl McpRegistry {
                     {
                         Ok(result) => result,
                         Err(DiscoverRemoteToolsError::AuthChallenge(challenge)) => {
-                            let mut servers = self.servers.write().await;
-                            if let Some(entry) = servers.get_mut(name) {
-                                entry.connected = false;
-                                entry.pid = None;
-                                entry.last_error = Some(challenge.message.clone());
-                                entry.last_auth_challenge = Some(challenge.clone());
-                                entry.mcp_session_id = None;
-                                entry.pending_auth_by_tool.clear();
-                                entry.tool_cache.clear();
-                                entry.tools_fetched_at_ms = None;
-                            }
-                            drop(servers);
+                            self.set_runtime_state_for_current_tenant(
+                                name,
+                                current_tenant,
+                                McpRuntimeState::disconnected(
+                                    Some(challenge.message.clone()),
+                                    Some(challenge.clone()),
+                                ),
+                            )
+                            .await;
                             self.persist_state().await;
                             return Err(format!(
                                 "MCP server '{name}' requires authorization: {}",
@@ -612,35 +615,23 @@ impl McpRegistry {
                             ));
                         }
                         Err(DiscoverRemoteToolsError::Message(retry_err)) => {
-                            let mut servers = self.servers.write().await;
-                            if let Some(entry) = servers.get_mut(name) {
-                                entry.connected = false;
-                                entry.pid = None;
-                                entry.last_error = Some(retry_err.clone());
-                                entry.last_auth_challenge = None;
-                                entry.mcp_session_id = None;
-                                entry.pending_auth_by_tool.clear();
-                                entry.tool_cache.clear();
-                                entry.tools_fetched_at_ms = None;
-                            }
-                            drop(servers);
+                            self.set_runtime_state_for_current_tenant(
+                                name,
+                                current_tenant,
+                                McpRuntimeState::disconnected(Some(retry_err.clone()), None),
+                            )
+                            .await;
                             self.persist_state().await;
                             return Err(retry_err);
                         }
                     }
                 } else {
-                    let mut servers = self.servers.write().await;
-                    if let Some(entry) = servers.get_mut(name) {
-                        entry.connected = false;
-                        entry.pid = None;
-                        entry.last_error = Some(err.clone());
-                        entry.last_auth_challenge = None;
-                        entry.mcp_session_id = None;
-                        entry.pending_auth_by_tool.clear();
-                        entry.tool_cache.clear();
-                        entry.tools_fetched_at_ms = None;
-                    }
-                    drop(servers);
+                    self.set_runtime_state_for_current_tenant(
+                        name,
+                        current_tenant,
+                        McpRuntimeState::disconnected(Some(err.clone()), None),
+                    )
+                    .await;
                     self.persist_state().await;
                     return Err(err);
                 }
@@ -659,22 +650,14 @@ impl McpRegistry {
             })
             .collect::<Vec<_>>();
 
-        let mut servers = self.servers.write().await;
-        if let Some(entry) = servers.get_mut(name) {
-            entry.connected = true;
-            entry.pid = None;
-            entry.last_error = None;
-            entry.last_auth_challenge = None;
-            entry.mcp_session_id = session_id;
-            entry.tool_cache = cache;
-            entry.tools_fetched_at_ms = Some(now);
-            entry.pending_auth_by_tool.clear();
-        }
-        drop(servers);
-        self.upsert_compatibility_connection_for_server(name, current_tenant)
-            .await;
+        self.set_runtime_state_for_current_tenant(
+            name,
+            current_tenant,
+            McpRuntimeState::connected(session_id, cache, now),
+        )
+        .await;
         self.persist_state().await;
-        Ok(self.server_tools(name).await)
+        Ok(self.server_tools_for_tenant(name, current_tenant).await)
     }
 
     pub async fn disconnect(&self, name: &str) -> bool {
@@ -1038,8 +1021,11 @@ impl McpRegistry {
             };
             server.clone()
         };
+        let mut runtime = self
+            .runtime_state_for_current_tenant(server_name, &server, current_tenant)
+            .await;
         if let Some(blocked) = pending_auth_short_circuit(
-            &server,
+            &runtime.pending_auth_by_tool,
             &canonical_tool,
             tool_name,
             now,
@@ -1055,19 +1041,18 @@ impl McpRegistry {
                 }),
             });
         }
-        let normalized_args = normalize_mcp_tool_args(&server, tool_name, args);
+        let normalized_args =
+            normalize_mcp_tool_args_with_cache(&server, &runtime.tool_cache, tool_name, args);
         let request_headers = self
             .effective_headers_for_current_tenant(server_name, &server, current_tenant)
             .await;
 
-        {
-            let mut servers = self.servers.write().await;
-            if let Some(row) = servers.get_mut(server_name) {
-                if let Some(pending) = row.pending_auth_by_tool.get_mut(&canonical_tool) {
-                    pending.last_probe_ms = now;
-                }
-            }
+        if let Some(pending) = runtime.pending_auth_by_tool.get_mut(&canonical_tool) {
+            pending.last_probe_ms = now;
+            self.set_runtime_state_for_current_tenant(server_name, current_tenant, runtime.clone())
+                .await;
         }
+        let request_session_id = runtime.mcp_session_id.clone();
 
         let request = json!({
             "jsonrpc": "2.0",
@@ -1082,7 +1067,7 @@ impl McpRegistry {
             &endpoint,
             &request_headers,
             request.clone(),
-            server.mcp_session_id.as_deref(),
+            request_session_id.as_deref(),
         )
         .await
         {
@@ -1111,11 +1096,18 @@ impl McpRegistry {
                             current_tenant,
                         )
                         .await;
+                    let refreshed_runtime = self
+                        .runtime_state_for_current_tenant(
+                            server_name,
+                            &refreshed_server,
+                            current_tenant,
+                        )
+                        .await;
                     post_json_rpc_with_session(
                         &endpoint,
                         &refreshed_headers,
                         request,
-                        refreshed_server.mcp_session_id.as_deref(),
+                        refreshed_runtime.mcp_session_id.as_deref(),
                     )
                     .await?
                 } else {
@@ -1124,11 +1116,19 @@ impl McpRegistry {
             }
         };
         if session_id.is_some() {
-            let mut servers = self.servers.write().await;
-            if let Some(row) = servers.get_mut(server_name) {
-                row.mcp_session_id = session_id;
-            }
-            drop(servers);
+            let current_server = self
+                .servers
+                .read()
+                .await
+                .get(server_name)
+                .cloned()
+                .ok_or_else(|| format!("MCP server '{server_name}' not found"))?;
+            let mut runtime = self
+                .runtime_state_for_current_tenant(server_name, &current_server, current_tenant)
+                .await;
+            runtime.mcp_session_id = session_id;
+            self.set_runtime_state_for_current_tenant(server_name, current_tenant, runtime)
+                .await;
             self.persist_state().await;
         }
 
@@ -1139,15 +1139,28 @@ impl McpRegistry {
                     challenge.message, challenge.authorization_url
                 );
                 {
-                    let mut servers = self.servers.write().await;
-                    if let Some(row) = servers.get_mut(server_name) {
-                        row.last_auth_challenge = Some(challenge.clone());
-                        row.last_error = None;
-                        row.pending_auth_by_tool.insert(
-                            canonical_tool.clone(),
-                            pending_auth_from_challenge(&challenge),
-                        );
-                    }
+                    let current_server = self
+                        .servers
+                        .read()
+                        .await
+                        .get(server_name)
+                        .cloned()
+                        .ok_or_else(|| format!("MCP server '{server_name}' not found"))?;
+                    let mut runtime = self
+                        .runtime_state_for_current_tenant(
+                            server_name,
+                            &current_server,
+                            current_tenant,
+                        )
+                        .await;
+                    runtime.last_auth_challenge = Some(challenge.clone());
+                    runtime.last_error = None;
+                    runtime.pending_auth_by_tool.insert(
+                        canonical_tool.clone(),
+                        pending_auth_from_challenge(&challenge),
+                    );
+                    self.set_runtime_state_for_current_tenant(server_name, current_tenant, runtime)
+                        .await;
                 }
                 self.persist_state().await;
                 return Ok(ToolResult {
@@ -1190,18 +1203,27 @@ impl McpRegistry {
         };
 
         {
-            let mut servers = self.servers.write().await;
-            if let Some(row) = servers.get_mut(server_name) {
-                row.last_auth_challenge = auth_challenge.clone();
-                if let Some(challenge) = auth_challenge.as_ref() {
-                    row.pending_auth_by_tool.insert(
-                        canonical_tool.clone(),
-                        pending_auth_from_challenge(challenge),
-                    );
-                } else {
-                    row.pending_auth_by_tool.remove(&canonical_tool);
-                }
+            let current_server = self
+                .servers
+                .read()
+                .await
+                .get(server_name)
+                .cloned()
+                .ok_or_else(|| format!("MCP server '{server_name}' not found"))?;
+            let mut runtime = self
+                .runtime_state_for_current_tenant(server_name, &current_server, current_tenant)
+                .await;
+            runtime.last_auth_challenge = auth_challenge.clone();
+            if let Some(challenge) = auth_challenge.as_ref() {
+                runtime.pending_auth_by_tool.insert(
+                    canonical_tool.clone(),
+                    pending_auth_from_challenge(challenge),
+                );
+            } else {
+                runtime.pending_auth_by_tool.remove(&canonical_tool);
             }
+            self.set_runtime_state_for_current_tenant(server_name, current_tenant, runtime)
+                .await;
         }
         self.persist_state().await;
 

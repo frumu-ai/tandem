@@ -110,6 +110,20 @@ pub struct McpConnection {
     pub secret_headers: HashMap<String, McpSecretRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth: Option<McpOAuthConfig>,
+    #[serde(default)]
+    pub connected: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_auth_challenge: Option<McpAuthChallenge>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_session_id: Option<String>,
+    #[serde(default)]
+    pub tool_cache: Vec<McpToolCacheEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools_fetched_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub pending_auth_by_tool: HashMap<String, PendingMcpAuth>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_account: Option<McpUpstreamAccount>,
     pub connection_class: McpConnectionClass,
@@ -124,6 +138,16 @@ impl McpConnection {
         mcp_connection_identity_key(&self.server_id, &self.tenant_context, &self.owner)
     }
 
+    pub(crate) fn reset_transient_runtime_state(&mut self) {
+        self.connected = false;
+        self.last_error = None;
+        self.last_auth_challenge = None;
+        self.mcp_session_id = None;
+        self.tool_cache.clear();
+        self.tools_fetched_at_ms = None;
+        self.pending_auth_by_tool.clear();
+    }
+
     fn local_compatibility_from_server(server_id: &str, server: &McpServer, now_ms: u64) -> Self {
         let tenant_context = local_tenant_context();
         let owner = McpPrincipalRef::LocalImplicit;
@@ -136,11 +160,132 @@ impl McpConnection {
             credential_ref,
             secret_headers: server.secret_headers.clone(),
             oauth: server.oauth.clone(),
+            connected: server.connected,
+            last_error: server.last_error.clone(),
+            last_auth_challenge: server.last_auth_challenge.clone(),
+            mcp_session_id: server.mcp_session_id.clone(),
+            tool_cache: server.tool_cache.clone(),
+            tools_fetched_at_ms: server.tools_fetched_at_ms,
+            pending_auth_by_tool: server.pending_auth_by_tool.clone(),
             upstream_account: None,
             connection_class: McpConnectionClass::UserOwned,
             enabled: server.enabled,
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
+        }
+    }
+
+    fn tenant_connection_from_server(
+        server_id: &str,
+        server: &McpServer,
+        tenant_context: TenantContext,
+        owner: McpPrincipalRef,
+        now_ms: u64,
+    ) -> Self {
+        let credential_ref = compatibility_credential_ref(server_id, server);
+        let is_local = tenant_context.is_local_implicit();
+        Self {
+            connection_id: mcp_connection_id(server_id, &tenant_context, &owner),
+            server_id: server_id.trim().to_string(),
+            tenant_context,
+            owner,
+            credential_ref,
+            secret_headers: server.secret_headers.clone(),
+            oauth: server.oauth.clone(),
+            connected: is_local && server.connected,
+            last_error: is_local.then(|| server.last_error.clone()).flatten(),
+            last_auth_challenge: is_local
+                .then(|| server.last_auth_challenge.clone())
+                .flatten(),
+            mcp_session_id: is_local.then(|| server.mcp_session_id.clone()).flatten(),
+            tool_cache: if is_local {
+                server.tool_cache.clone()
+            } else {
+                Vec::new()
+            },
+            tools_fetched_at_ms: is_local.then_some(server.tools_fetched_at_ms).flatten(),
+            pending_auth_by_tool: if is_local {
+                server.pending_auth_by_tool.clone()
+            } else {
+                HashMap::new()
+            },
+            upstream_account: None,
+            connection_class: McpConnectionClass::UserOwned,
+            enabled: server.enabled,
+            created_at_ms: now_ms,
+            updated_at_ms: now_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct McpRuntimeState {
+    connected: bool,
+    last_error: Option<String>,
+    last_auth_challenge: Option<McpAuthChallenge>,
+    mcp_session_id: Option<String>,
+    tool_cache: Vec<McpToolCacheEntry>,
+    tools_fetched_at_ms: Option<u64>,
+    pending_auth_by_tool: HashMap<String, PendingMcpAuth>,
+}
+
+impl McpRuntimeState {
+    fn from_server(server: &McpServer) -> Self {
+        Self {
+            connected: server.connected,
+            last_error: server.last_error.clone(),
+            last_auth_challenge: server.last_auth_challenge.clone(),
+            mcp_session_id: server.mcp_session_id.clone(),
+            tool_cache: server.tool_cache.clone(),
+            tools_fetched_at_ms: server.tools_fetched_at_ms,
+            pending_auth_by_tool: server.pending_auth_by_tool.clone(),
+        }
+    }
+
+    fn from_connection(connection: &McpConnection) -> Self {
+        Self {
+            connected: connection.connected,
+            last_error: connection.last_error.clone(),
+            last_auth_challenge: connection.last_auth_challenge.clone(),
+            mcp_session_id: connection.mcp_session_id.clone(),
+            tool_cache: connection.tool_cache.clone(),
+            tools_fetched_at_ms: connection.tools_fetched_at_ms,
+            pending_auth_by_tool: connection.pending_auth_by_tool.clone(),
+        }
+    }
+
+    fn connected(
+        session_id: Option<String>,
+        tool_cache: Vec<McpToolCacheEntry>,
+        now_ms: u64,
+    ) -> Self {
+        Self {
+            connected: true,
+            last_error: None,
+            last_auth_challenge: None,
+            mcp_session_id: session_id,
+            tool_cache,
+            tools_fetched_at_ms: Some(now_ms),
+            pending_auth_by_tool: HashMap::new(),
+        }
+    }
+
+    fn disconnected(last_error: Option<String>, auth_challenge: Option<McpAuthChallenge>) -> Self {
+        let mut pending_auth_by_tool = HashMap::new();
+        if let Some(challenge) = auth_challenge.as_ref() {
+            pending_auth_by_tool.insert(
+                canonical_tool_key(&challenge.tool_name),
+                pending_auth_from_challenge(challenge),
+            );
+        }
+        Self {
+            connected: false,
+            last_error,
+            last_auth_challenge: auth_challenge,
+            mcp_session_id: None,
+            tool_cache: Vec::new(),
+            tools_fetched_at_ms: None,
+            pending_auth_by_tool,
         }
     }
 }
@@ -175,6 +320,13 @@ impl McpRegistry {
                 existing.credential_ref = credential_ref;
                 existing.secret_headers = server.secret_headers.clone();
                 existing.oauth = server.oauth.clone();
+                existing.connected = server.connected;
+                existing.last_error = server.last_error.clone();
+                existing.last_auth_challenge = server.last_auth_challenge.clone();
+                existing.mcp_session_id = server.mcp_session_id.clone();
+                existing.tool_cache = server.tool_cache.clone();
+                existing.tools_fetched_at_ms = server.tools_fetched_at_ms;
+                existing.pending_auth_by_tool = server.pending_auth_by_tool.clone();
             } else if existing.credential_ref.is_none() {
                 existing.credential_ref = credential_ref;
             }
@@ -182,21 +334,14 @@ impl McpRegistry {
             return;
         }
         connections.insert(
-            connection_id.clone(),
-            McpConnection {
-                connection_id,
-                server_id: server_id.trim().to_string(),
-                tenant_context: current_tenant.clone(),
+            connection_id,
+            McpConnection::tenant_connection_from_server(
+                server_id,
+                &server,
+                current_tenant.clone(),
                 owner,
-                credential_ref,
-                secret_headers: server.secret_headers.clone(),
-                oauth: server.oauth.clone(),
-                upstream_account: None,
-                connection_class: McpConnectionClass::UserOwned,
-                enabled: server.enabled,
-                created_at_ms: now,
-                updated_at_ms: now,
-            },
+                now,
+            ),
         );
     }
 
@@ -270,6 +415,13 @@ impl McpRegistry {
                 credential_ref: Some(header_credential_ref),
                 secret_headers,
                 oauth: None,
+                connected: false,
+                last_error: None,
+                last_auth_challenge: None,
+                mcp_session_id: None,
+                tool_cache: Vec::new(),
+                tools_fetched_at_ms: None,
+                pending_auth_by_tool: HashMap::new(),
                 upstream_account: None,
                 connection_class: McpConnectionClass::UserOwned,
                 enabled: server.enabled,
@@ -315,6 +467,13 @@ impl McpRegistry {
                 credential_ref: Some(credential_ref),
                 secret_headers: HashMap::new(),
                 oauth: Some(oauth),
+                connected: false,
+                last_error: None,
+                last_auth_challenge: None,
+                mcp_session_id: None,
+                tool_cache: Vec::new(),
+                tools_fetched_at_ms: None,
+                pending_auth_by_tool: HashMap::new(),
                 upstream_account: None,
                 connection_class: McpConnectionClass::UserOwned,
                 enabled: server.enabled,
@@ -361,5 +520,242 @@ impl McpRegistry {
             }
         }
         headers
+    }
+
+    async fn runtime_state_for_current_tenant(
+        &self,
+        server_id: &str,
+        server: &McpServer,
+        current_tenant: &TenantContext,
+    ) -> McpRuntimeState {
+        if current_tenant.is_local_implicit() {
+            return McpRuntimeState::from_server(server);
+        }
+        self.connection_for_tenant(server_id, current_tenant)
+            .await
+            .as_ref()
+            .map(McpRuntimeState::from_connection)
+            .unwrap_or_default()
+    }
+
+    async fn set_runtime_state_for_current_tenant(
+        &self,
+        server_id: &str,
+        current_tenant: &TenantContext,
+        runtime: McpRuntimeState,
+    ) {
+        let Some(server) = self.servers.read().await.get(server_id).cloned() else {
+            return;
+        };
+        let now = now_ms();
+        if current_tenant.is_local_implicit() {
+            {
+                let mut servers = self.servers.write().await;
+                if let Some(entry) = servers.get_mut(server_id) {
+                    entry.connected = runtime.connected;
+                    entry.pid = None;
+                    entry.last_error = runtime.last_error.clone();
+                    entry.last_auth_challenge = runtime.last_auth_challenge.clone();
+                    entry.mcp_session_id = runtime.mcp_session_id.clone();
+                    entry.tool_cache = runtime.tool_cache.clone();
+                    entry.tools_fetched_at_ms = runtime.tools_fetched_at_ms;
+                    entry.pending_auth_by_tool = runtime.pending_auth_by_tool.clone();
+                }
+            }
+            self.upsert_compatibility_connection_for_server(server_id, current_tenant)
+                .await;
+            return;
+        }
+
+        let owner = McpPrincipalRef::from_tenant_context(current_tenant);
+        let connection_id = mcp_connection_id(server_id, current_tenant, &owner);
+        let mut connections = self.connections.write().await;
+        let connection = connections.entry(connection_id).or_insert_with(|| {
+            McpConnection::tenant_connection_from_server(
+                server_id,
+                &server,
+                current_tenant.clone(),
+                owner,
+                now,
+            )
+        });
+        connection.enabled = server.enabled;
+        connection.connected = runtime.connected;
+        connection.last_error = runtime.last_error;
+        connection.last_auth_challenge = runtime.last_auth_challenge;
+        connection.mcp_session_id = runtime.mcp_session_id;
+        connection.tool_cache = runtime.tool_cache;
+        connection.tools_fetched_at_ms = runtime.tools_fetched_at_ms;
+        connection.pending_auth_by_tool = runtime.pending_auth_by_tool;
+        connection.updated_at_ms = now;
+    }
+
+    pub async fn auth_challenge_for_tenant(
+        &self,
+        server_id: &str,
+        current_tenant: &TenantContext,
+    ) -> Option<McpAuthChallenge> {
+        if current_tenant.is_local_implicit() {
+            return self
+                .servers
+                .read()
+                .await
+                .get(server_id)
+                .and_then(|server| server.last_auth_challenge.clone());
+        }
+        self.connection_for_tenant(server_id, current_tenant)
+            .await
+            .and_then(|connection| connection.last_auth_challenge)
+    }
+
+    pub async fn clear_auth_challenge_for_tenant(
+        &self,
+        server_id: &str,
+        current_tenant: &TenantContext,
+    ) -> bool {
+        if current_tenant.is_local_implicit() {
+            return self.clear_server_auth_challenge(server_id).await;
+        }
+        let Some(server) = self.servers.read().await.get(server_id).cloned() else {
+            return false;
+        };
+        let mut runtime = self
+            .runtime_state_for_current_tenant(server_id, &server, current_tenant)
+            .await;
+        runtime.last_auth_challenge = None;
+        runtime.pending_auth_by_tool.clear();
+        self.set_runtime_state_for_current_tenant(server_id, current_tenant, runtime)
+            .await;
+        self.persist_state().await;
+        true
+    }
+
+    pub async fn record_auth_challenge_for_tenant(
+        &self,
+        server_id: &str,
+        current_tenant: &TenantContext,
+        challenge: McpAuthChallenge,
+        last_error: Option<String>,
+    ) -> bool {
+        if current_tenant.is_local_implicit() {
+            return self
+                .record_server_auth_challenge(server_id, challenge, last_error)
+                .await;
+        }
+        let Some(server) = self.servers.read().await.get(server_id).cloned() else {
+            return false;
+        };
+        let tool_key = canonical_tool_key(&challenge.tool_name);
+        let mut runtime = self
+            .runtime_state_for_current_tenant(server_id, &server, current_tenant)
+            .await;
+        runtime.connected = false;
+        runtime.last_error = last_error.or_else(|| Some(challenge.message.clone()));
+        runtime.last_auth_challenge = Some(challenge.clone());
+        runtime.mcp_session_id = None;
+        runtime.pending_auth_by_tool.clear();
+        runtime
+            .pending_auth_by_tool
+            .insert(tool_key, pending_auth_from_challenge(&challenge));
+        self.set_runtime_state_for_current_tenant(server_id, current_tenant, runtime)
+            .await;
+        self.persist_state().await;
+        true
+    }
+
+    pub async fn runtime_connected_for_tenant(
+        &self,
+        server_id: &str,
+        server: &McpServer,
+        current_tenant: &TenantContext,
+    ) -> bool {
+        self.runtime_state_for_current_tenant(server_id, server, current_tenant)
+            .await
+            .connected
+    }
+
+    pub(crate) async fn runtime_last_error_for_tenant(
+        &self,
+        server_id: &str,
+        server: &McpServer,
+        current_tenant: &TenantContext,
+    ) -> Option<String> {
+        self.runtime_state_for_current_tenant(server_id, server, current_tenant)
+            .await
+            .last_error
+            .filter(|error| !error.trim().is_empty())
+    }
+
+    pub async fn server_tools_for_tenant(
+        &self,
+        server_id: &str,
+        current_tenant: &TenantContext,
+    ) -> Vec<McpRemoteTool> {
+        if current_tenant.is_local_implicit() {
+            return self.server_tools(server_id).await;
+        }
+        let Some(server) = self.servers.read().await.get(server_id).cloned() else {
+            return Vec::new();
+        };
+        let Some(connection) = self.connection_for_tenant(server_id, current_tenant).await else {
+            return Vec::new();
+        };
+        if !server.enabled || !connection.enabled || !connection.connected {
+            return Vec::new();
+        }
+        let mut rows = tool_cache_rows(&server, &connection.tool_cache);
+        rows.sort_by(|a, b| a.namespaced_name.cmp(&b.namespaced_name));
+        rows
+    }
+
+    pub async fn bridge_tools_for_server(&self, server_id: &str) -> Vec<McpRemoteTool> {
+        let Some(server) = self.servers.read().await.get(server_id).cloned() else {
+            return Vec::new();
+        };
+        if !server.enabled {
+            return Vec::new();
+        }
+        let mut by_name = HashMap::new();
+        if server.connected {
+            for row in server_tool_rows(&server) {
+                by_name.entry(row.namespaced_name.clone()).or_insert(row);
+            }
+        }
+        for connection in self.connections.read().await.values().filter(|connection| {
+            connection.server_id == server_id && connection.enabled && connection.connected
+        }) {
+            for row in tool_cache_rows(&server, &connection.tool_cache) {
+                by_name.entry(row.namespaced_name.clone()).or_insert(row);
+            }
+        }
+        let mut rows = by_name.into_values().collect::<Vec<_>>();
+        rows.sort_by(|a, b| a.namespaced_name.cmp(&b.namespaced_name));
+        rows
+    }
+
+    pub async fn list_tools_for_tenant(
+        &self,
+        current_tenant: &TenantContext,
+    ) -> Vec<McpRemoteTool> {
+        if current_tenant.is_local_implicit() {
+            return self.list_tools().await;
+        }
+        let servers = self.servers.read().await.clone();
+        let mut out = Vec::new();
+        for (server_id, server) in servers {
+            if !server.enabled {
+                continue;
+            }
+            let Some(connection) = self.connection_for_tenant(&server_id, current_tenant).await
+            else {
+                continue;
+            };
+            if !connection.enabled || !connection.connected {
+                continue;
+            }
+            out.extend(tool_cache_rows(&server, &connection.tool_cache));
+        }
+        out.sort_by(|a, b| a.namespaced_name.cmp(&b.namespaced_name));
+        out
     }
 }
