@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gates are now resolved from the authoritative run detail before the unified
   approvals endpoint filters them, and the control-panel inbox orders mixed
   approval sources newest-first.
+- Fixed sharded Automation V2 run-state hydration for approval gates so runs
+  split across state shards still surface pending gate metadata in the unified
+  approvals inbox.
 - Fixed Automation V2 run/library recovery for legacy context-run state. The
   server now scans `automation-v2-*` context run directories, reconstructs run
   records and automation snapshots from `run_state.json`, merges newer recovered
