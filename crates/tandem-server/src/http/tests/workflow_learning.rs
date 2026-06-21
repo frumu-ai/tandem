@@ -73,6 +73,7 @@ fn sample_automation(workspace_root: &str, automation_id: &str) -> crate::Automa
             mcp_policy: crate::AutomationAgentMcpPolicy {
                 allowed_servers: Vec::new(),
                 allowed_tools: None,
+                allowed_connections: Vec::new(),
             },
             approval_policy: None,
         }],

@@ -58,6 +58,7 @@ import {
   joinCsv,
   modelsForProvider,
   normalizeAgentDraft,
+  normalizeMcpServerNamespace,
   normalizeNodeDraft,
   normalizeNodeAwareToolAllowlist,
   normalizeNodesForSave,
@@ -824,6 +825,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                   .filter(Boolean),
                 allowed_tools:
                   agent.mcpAllowedTools === null ? null : mcpAllowedTools.filter(Boolean),
+                allowed_connections: agent.mcpAllowedConnections || [],
               },
             };
           })(),
@@ -936,6 +938,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                         .filter(Boolean),
                       allowed_tools:
                         node.mcpAllowedTools === null ? null : nodeMcpAllowedTools.filter(Boolean),
+                      allowed_connections: node.mcpAllowedConnections || [],
                     }
                   : undefined,
               depends_on: node.dependsOn.map((dep) => safeString(dep)).filter(Boolean),

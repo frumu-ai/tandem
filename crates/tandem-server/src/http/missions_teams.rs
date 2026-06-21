@@ -972,6 +972,7 @@ pub(super) async fn compose_standup(
             mcp_policy: crate::AutomationAgentMcpPolicy {
                 allowed_servers: Vec::new(),
                 allowed_tools: None,
+                allowed_connections: Vec::new(),
             },
             approval_policy: None,
         });
@@ -1025,6 +1026,7 @@ pub(super) async fn compose_standup(
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     });
@@ -1164,6 +1166,7 @@ pub(super) async fn compose_monitor(
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: input.triage_mcp_servers.clone(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -1215,6 +1218,7 @@ pub(super) async fn compose_monitor(
             // Worker can access all MCP servers the user has allowed.
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };

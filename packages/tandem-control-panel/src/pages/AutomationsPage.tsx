@@ -108,6 +108,7 @@ interface WorkflowNodeEditDraft {
   mcpAllowedServers: string[];
   mcpAllowedTools: string[] | null;
   mcpOtherAllowedTools: string[];
+  mcpAllowedConnections: Array<Record<string, any>>;
   approvalOverride: WorkflowApprovalOverride;
   approvalCondition: string;
 }
@@ -455,6 +456,7 @@ function workflowNodeToolAccessDraft(
   | "mcpAllowedServers"
   | "mcpAllowedTools"
   | "mcpOtherAllowedTools"
+  | "mcpAllowedConnections"
 > {
   const metadata = node?.metadata && typeof node.metadata === "object" ? node.metadata : {};
   const toolPolicy = node?.tool_policy || node?.toolPolicy || null;
@@ -501,6 +503,9 @@ function workflowNodeToolAccessDraft(
             ? []
             : null,
     mcpOtherAllowedTools: splitMcpTools.otherTools,
+    mcpAllowedConnections: normalizeMcpConnectionGrants(
+      mcpPolicy?.allowed_connections || mcpPolicy?.allowedConnections
+    ),
   };
 }
 
@@ -563,6 +568,29 @@ function sharedContextPackIdsFromAutomation(automation: any) {
 function cloneJsonValue<T>(value: T): T {
   if (value === undefined) return value;
   return JSON.parse(JSON.stringify(value));
+}
+
+function normalizeMcpConnectionGrants(raw: any): Array<Record<string, any>> {
+  const rows = Array.isArray(raw) ? raw : [];
+  const seen = new Set<string>();
+  const grants: Array<Record<string, any>> = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const server = String(row.server || row.server_name || row.serverName || "").trim();
+    if (!server) continue;
+    const connectionId = String(row.connection_id || row.connectionId || "").trim();
+    const runAs = row.run_as ?? row.runAs;
+    const grant: Record<string, any> = {
+      server,
+      ...(connectionId ? { connection_id: connectionId } : {}),
+      ...(runAs && typeof runAs === "object" ? { run_as: cloneJsonValue(runAs) } : {}),
+    };
+    const key = JSON.stringify(grant);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    grants.push(grant);
+  }
+  return grants;
 }
 
 function deriveConnectorBindingResolutionFromPlanPackage(

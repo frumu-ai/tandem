@@ -889,10 +889,7 @@ pub(super) fn normalize_automation_v2_agent(
             denylist: Vec::new(),
         };
     }
-    agent.mcp_policy.allowed_servers = normalize_sorted_strings(&agent.mcp_policy.allowed_servers);
-    if let Some(allowed_tools) = agent.mcp_policy.allowed_tools.as_mut() {
-        *allowed_tools = normalize_sorted_strings(allowed_tools);
-    }
+    agent.mcp_policy.normalize();
     agent
 }
 
@@ -919,6 +916,7 @@ mod normalize_automation_v2_agent_tests {
             mcp_policy: crate::AutomationAgentMcpPolicy {
                 allowed_servers: Vec::new(),
                 allowed_tools: Some(vec!["mcp.reddit_gmail.gmail_create_email_draft".to_string()]),
+                allowed_connections: Vec::new(),
             },
             approval_policy: None,
         };

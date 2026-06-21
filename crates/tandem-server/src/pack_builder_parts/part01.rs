@@ -315,6 +315,7 @@ fn build_pack_builder_automation(
             mcp_policy: crate::AutomationAgentMcpPolicy {
                 allowed_servers: registered_servers.to_vec(),
                 allowed_tools: None,
+                allowed_connections: Vec::new(),
             },
             approval_policy: None,
         }],

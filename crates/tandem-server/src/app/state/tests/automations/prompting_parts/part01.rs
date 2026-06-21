@@ -66,6 +66,7 @@ fn knowledge_context_is_injected_into_automation_prompt() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -170,6 +171,7 @@ fn connector_backed_automation_prompt_surfaces_mcp_discovery_guidance() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: vec!["github".to_string()],
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -273,6 +275,7 @@ fn review_decision_prompt_suppresses_mcp_discovery_guidance() {
                 "tandem-mcp".to_string(),
             ],
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -395,6 +398,7 @@ fn compare_results_prompt_prioritizes_mcp_discovery_and_artifact_delivery() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: vec!["blog-mcp".to_string()],
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -514,6 +518,7 @@ fn prompt_separates_read_only_source_of_truth_files_from_write_targets() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -616,6 +621,7 @@ fn automation_prompt_clarifies_file_paths_are_not_directories() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -716,6 +722,7 @@ fn bootstrap_prompt_allows_required_workspace_writes_beyond_run_artifact() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -826,6 +833,7 @@ fn bootstrap_prompt_keeps_source_of_truth_reads_visible_with_optional_workspace_
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -1108,6 +1116,7 @@ fn generated_prompt_variation_suite_preserves_contract_inference() {
             mcp_policy: crate::AutomationAgentMcpPolicy {
                 allowed_servers: case.allowed_servers.clone(),
                 allowed_tools: None,
+                allowed_connections: Vec::new(),
             },
             approval_policy: None,
         };
@@ -1248,6 +1257,7 @@ fn later_nodes_inherit_automation_wide_read_only_source_truth_guidance() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -1354,6 +1364,7 @@ fn prompt_resolves_reserved_runtime_placeholders_for_run() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -1468,6 +1479,7 @@ fn final_prompt_surfaces_automation_output_targets_as_required_workspace_writes(
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -1580,6 +1592,7 @@ fn structured_json_prompt_surfaces_explicit_output_files_for_analyze_findings() 
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };

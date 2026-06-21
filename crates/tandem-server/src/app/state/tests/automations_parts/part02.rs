@@ -349,6 +349,7 @@ async fn automation_run_requeue_increments_attempt_counter() {
             mcp_policy: AutomationAgentMcpPolicy {
                 allowed_servers: Vec::new(),
                 allowed_tools: None,
+                allowed_connections: Vec::new(),
             },
             approval_policy: None,
         }],
@@ -731,6 +732,7 @@ async fn automation_agent_model_falls_back_to_effective_config_default() {
         mcp_policy: AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -1176,6 +1178,7 @@ async fn guardrail_stopped_run_auto_resumes_after_quota_override_approval() {
             mcp_policy: AutomationAgentMcpPolicy {
                 allowed_servers: Vec::new(),
                 allowed_tools: None,
+                allowed_connections: Vec::new(),
             },
             approval_policy: None,
         }],

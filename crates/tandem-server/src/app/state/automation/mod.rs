@@ -16,6 +16,7 @@ pub(crate) use gates::{
 };
 pub(crate) mod legacy_defaults;
 pub(crate) mod lifecycle;
+pub(crate) mod mcp_preflight;
 pub(crate) mod node_output;
 pub(crate) mod node_runtime_impl;
 pub(crate) mod path_hygiene;
@@ -46,6 +47,7 @@ pub use lifecycle::{
     record_automation_lifecycle_event, record_automation_lifecycle_event_with_metadata,
     record_automation_workflow_state_events,
 };
+use mcp_preflight::*;
 pub(crate) use node_output::enrich_automation_node_output_for_contract;
 pub(crate) use node_output::research_required_next_tool_actions;
 use node_output::*;

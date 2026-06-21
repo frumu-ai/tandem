@@ -12,6 +12,8 @@ use tandem_runtime::{McpAuthChallenge, McpPrincipalRef};
 use tandem_types::{RequestPrincipal, StrictTenantContext, TenantContext, VerifiedTenantContext};
 use uuid::Uuid;
 
+pub(crate) use super::mcp_run_as::call_mcp_tool_for_tenant_with_audit;
+
 const BUILTIN_GITHUB_MCP_SERVER_NAME: &str = "github";
 const BUILTIN_GITHUB_MCP_TRANSPORT_URL: &str = "https://api.githubcopilot.com/mcp/";
 const BUILTIN_TANDEM_DOCS_MCP_SERVER_NAME: &str = "tandem-mcp";
@@ -405,68 +407,6 @@ impl Tool for McpBridgeTool {
         .await
         .map_err(anyhow::Error::msg)
     }
-}
-
-pub(crate) async fn call_mcp_tool_for_tenant_with_audit(
-    state: &AppState,
-    server_name: &str,
-    tool_name: &str,
-    args: Value,
-    tenant_context: &TenantContext,
-) -> Result<ToolResult, String> {
-    let result = state
-        .mcp
-        .call_tool_for_tenant(server_name, tool_name, args, tenant_context)
-        .await;
-    if result
-        .as_ref()
-        .err()
-        .is_some_and(|error| mcp_error_is_secret_tenant_mismatch(error))
-    {
-        append_mcp_secret_tenant_mismatch_audit_event(
-            state,
-            server_name,
-            tool_name,
-            tenant_context,
-        )
-        .await;
-    }
-    result
-}
-
-fn mcp_error_is_secret_tenant_mismatch(error: &str) -> bool {
-    error.contains("ToolDenied { reason: TenantScope }")
-        && error.contains("store-backed secret header")
-        && error.contains("different tenant context")
-}
-
-pub(crate) async fn append_mcp_secret_tenant_mismatch_audit_event(
-    state: &AppState,
-    server_name: &str,
-    tool_name: &str,
-    tenant_context: &TenantContext,
-) {
-    let Some(denial) = state
-        .mcp
-        .secret_tenant_mismatch_audit(server_name, tool_name, tenant_context)
-        .await
-    else {
-        return;
-    };
-    let _ = crate::audit::append_protected_audit_event(
-        state,
-        "mcp.secret_tenant_mismatch",
-        &denial.tenant_context,
-        denial.tenant_context.actor_id.clone(),
-        json!({
-            "reason": "store_secret_tenant_mismatch",
-            "server_name": denial.server_name,
-            "tool_name": denial.tool_name,
-            "header_names": denial.header_names,
-            "tenant_context": denial.tenant_context,
-        }),
-    )
-    .await;
 }
 
 pub(super) async fn list_mcp(State(state): State<AppState>) -> Json<Value> {

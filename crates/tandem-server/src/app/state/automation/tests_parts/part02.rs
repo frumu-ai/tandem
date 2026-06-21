@@ -1070,6 +1070,7 @@ fn node_first_class_mcp_policy_is_hard_tool_scope() {
     node.mcp_policy = Some(crate::AutomationAgentMcpPolicy {
         allowed_servers: vec!["reddit-gmail".to_string()],
         allowed_tools: Some(vec!["mcp.reddit_gmail.gmail_send_draft".to_string()]),
+        allowed_connections: Vec::new(),
     });
     let available_tool_names = std::collections::HashSet::from([
         "mcp.reddit_gmail.gmail_create_email_draft".to_string(),
@@ -1394,6 +1395,7 @@ fn optional_tandem_mcp_reference_does_not_prompt_for_required_connector_source()
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: vec!["tandem-mcp".to_string()],
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };

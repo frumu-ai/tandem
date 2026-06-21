@@ -1355,7 +1355,8 @@ where
     let mut future = Box::pin(future);
     let mut ticker = tokio::time::interval(Duration::from_secs(3));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let absolute_deadline = tokio::time::Instant::now() + Duration::from_millis(absolute_timeout_ms);
+    let absolute_deadline =
+        tokio::time::Instant::now() + Duration::from_millis(absolute_timeout_ms);
     let mut absolute_timeout = Box::pin(tokio::time::sleep_until(absolute_deadline));
     let mut idle_timeout = Box::pin(tokio::time::sleep(Duration::from_millis(idle_timeout_ms)));
     loop {
@@ -1730,11 +1731,15 @@ pub(crate) async fn execute_automation_v2_node(
     if let Some(mcp_tools) = agent.mcp_policy.allowed_tools.as_ref() {
         allowlist.extend(mcp_tools.clone());
     }
+    let tenant_context = automation.tenant_context();
+    let allowed_mcp_servers = agent.mcp_policy.effective_allowed_servers();
     let mcp_tool_diagnostics = sync_automation_allowed_mcp_servers(
         state,
         node,
-        &agent.mcp_policy.allowed_servers,
+        &allowed_mcp_servers,
+        &agent.mcp_policy.allowed_connections,
         &allowlist,
+        &tenant_context,
     )
     .await;
     let available_tool_schemas = state.tools.list().await;

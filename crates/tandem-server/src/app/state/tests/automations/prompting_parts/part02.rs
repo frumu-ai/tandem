@@ -83,6 +83,7 @@ fn first_attempt_research_prompt_requires_completed_status() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -197,6 +198,7 @@ fn code_patch_prompt_includes_code_agent_contract_instructions() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -537,6 +539,7 @@ fn structured_json_prompt_requires_json_only_without_follow_up_questions() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -643,6 +646,7 @@ fn handoff_only_structured_json_prompt_strips_internal_context_writes() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -759,6 +763,7 @@ fn assess_prompt_surfaces_concrete_source_coverage_for_named_workspace_files() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -867,6 +872,7 @@ fn json_output_artifact_prompt_requires_response_body_backup_copy() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -974,6 +980,7 @@ fn external_research_prompt_handles_missing_websearch_tool() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -1107,6 +1114,7 @@ fn render_prompt_normalizes_upstream_research_paths_from_sources_root() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };

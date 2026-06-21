@@ -672,6 +672,7 @@ fn first_attempt_structured_json_prompt_without_output_path_requires_handoff_eve
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };

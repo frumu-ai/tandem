@@ -84,7 +84,7 @@ pub(crate) fn automation_node_metadata_tool_allowlist(node: &AutomationFlowNode)
         if let Some(tools) = policy.allowed_tools.as_ref() {
             allowlist.extend(tools.clone());
         } else {
-            allowlist.extend(policy.allowed_servers.iter().map(|server| {
+            allowlist.extend(policy.effective_allowed_servers().iter().map(|server| {
                 format!("mcp.{}.*", crate::http::mcp::mcp_namespace_segment(server))
             }));
         }

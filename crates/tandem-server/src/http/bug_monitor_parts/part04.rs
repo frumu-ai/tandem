@@ -217,6 +217,7 @@ pub(crate) fn bug_monitor_triage_spec(
             mcp_policy: crate::AutomationAgentMcpPolicy {
                 allowed_servers: mcp_servers,
                 allowed_tools: None,
+                allowed_connections: Vec::new(),
             },
             approval_policy: None,
         }],

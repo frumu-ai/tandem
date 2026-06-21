@@ -30,6 +30,7 @@ async fn automation_v2_backlog_task_claim_and_requeue_routes_work() {
             mcp_policy: crate::AutomationAgentMcpPolicy {
                 allowed_servers: Vec::new(),
                 allowed_tools: None,
+                allowed_connections: Vec::new(),
             },
             approval_policy: None,
         }],

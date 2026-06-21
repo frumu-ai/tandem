@@ -924,6 +924,7 @@ async fn automation_v2_research_workflow_smoke_exposes_blocked_artifact_state() 
             mcp_policy: crate::AutomationAgentMcpPolicy {
                 allowed_servers: Vec::new(),
                 allowed_tools: None,
+                allowed_connections: Vec::new(),
             },
             approval_policy: None,
         }],
@@ -1316,6 +1317,7 @@ async fn automation_v2_research_workflow_smoke_exposes_citation_validation_state
             mcp_policy: crate::AutomationAgentMcpPolicy {
                 allowed_servers: Vec::new(),
                 allowed_tools: None,
+                allowed_connections: Vec::new(),
             },
             approval_policy: None,
         }],
@@ -1619,6 +1621,7 @@ async fn automation_v2_code_workflow_smoke_exposes_verify_failed_state() {
             mcp_policy: crate::AutomationAgentMcpPolicy {
                 allowed_servers: Vec::new(),
                 allowed_tools: None,
+                allowed_connections: Vec::new(),
             },
             approval_policy: None,
         }],
@@ -1806,6 +1809,7 @@ async fn automation_v2_editorial_workflow_smoke_exposes_quality_validation_state
             mcp_policy: crate::AutomationAgentMcpPolicy {
                 allowed_servers: Vec::new(),
                 allowed_tools: None,
+                allowed_connections: Vec::new(),
             },
             approval_policy: None,
         }],

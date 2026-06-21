@@ -415,6 +415,7 @@ fn default_agent() -> AutomationAgentProfile {
         mcp_policy: AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     }

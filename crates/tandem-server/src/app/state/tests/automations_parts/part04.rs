@@ -120,6 +120,7 @@ fn prompt_orders_required_workspace_writes_before_run_artifact() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -234,6 +235,7 @@ fn prompt_includes_email_delivery_metadata_for_notify_user() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: vec!["composio-1".to_string()],
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -356,6 +358,7 @@ fn prompt_compacts_upstream_outputs_for_downstream_nodes() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -448,6 +451,7 @@ async fn execute_collect_inputs_node_uses_deterministic_shortcut() {
             mcp_policy: AutomationAgentMcpPolicy {
                 allowed_servers: Vec::new(),
                 allowed_tools: None,
+                allowed_connections: Vec::new(),
             },
             approval_policy: None,
         }],
