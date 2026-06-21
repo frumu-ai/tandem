@@ -262,9 +262,24 @@ mod tests {
         registry
             .add("example".to_string(), "sse:https://example.com".to_string())
             .await;
+        {
+            let mut servers = registry.servers.write().await;
+            let server = servers.get_mut("example").expect("server");
+            server.tool_cache = vec![McpToolCacheEntry {
+                tool_name: "seeded_tool".to_string(),
+                description: "Seeded test tool".to_string(),
+                input_schema: json!({"type": "object"}),
+                fetched_at_ms: 7,
+                schema_hash: "seeded".to_string(),
+            }];
+            server.tools_fetched_at_ms = Some(7);
+        }
         assert!(registry.connect("example").await);
         let listed = registry.list().await;
         assert!(listed.get("example").map(|s| s.connected).unwrap_or(false));
+        let tools = registry.server_tools("example").await;
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].namespaced_name, "mcp.example.seeded_tool");
         assert!(registry.disconnect("example").await);
     }
 

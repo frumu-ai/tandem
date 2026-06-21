@@ -38,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed tenant/actor-scoped MCP OAuth completion so pending sign-in polls return
   the initiating session's authorization URL and callback token storage updates
   the scoped connection instead of the shared server row.
+- Fixed non-HTTP in-memory MCP reconnects so seeded runtime tool inventories are
+  preserved after startup resets, keeping test and local compatibility GitHub
+  MCP tools available.
 
 ## [0.6.1] - 2026-06-20
 

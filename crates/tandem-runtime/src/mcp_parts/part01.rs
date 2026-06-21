@@ -490,10 +490,22 @@ impl McpRegistry {
             return self.refresh_for_tenant(name, current_tenant).await.is_ok();
         }
 
+        let (tool_cache, tools_fetched_at_ms) = if current_tenant.is_local_implicit() {
+            (server.tool_cache.clone(), server.tools_fetched_at_ms)
+        } else {
+            self.connection_for_tenant(name, current_tenant)
+                .await
+                .map(|connection| (connection.tool_cache, connection.tools_fetched_at_ms))
+                .unwrap_or_default()
+        };
         self.set_runtime_state_for_current_tenant(
             name,
             current_tenant,
-            McpRuntimeState::connected(None, Vec::new(), now_ms()),
+            McpRuntimeState::connected(
+                None,
+                tool_cache,
+                tools_fetched_at_ms.unwrap_or_else(now_ms),
+            ),
         )
         .await;
         self.persist_state().await;

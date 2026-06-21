@@ -42,6 +42,9 @@ MCP connections.
   tool caches on the actor's connection, and tenant-aware tool lists read from
   that scoped cache while local single-user mode preserves the existing server
   row behavior.
+- Fixed opaque/in-memory MCP reconnects so startup runtime-state resets no
+  longer erase seeded tool inventories for local compatibility servers such as
+  the test GitHub MCP fixture.
 - Documented that hosted/enterprise MCP OAuth should follow the existing
   connector control-plane ownership precedent: long-lived secret material stays
   outside the runtime, while the runtime stores credential references and
