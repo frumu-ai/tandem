@@ -105,7 +105,7 @@ pub struct PendingMcpAuth {
     pub last_probe_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpOAuthConfig {
     pub provider_id: String,
     pub token_endpoint: String,
@@ -537,7 +537,9 @@ impl McpRegistry {
             };
             server.clone()
         };
-        let request_headers = effective_headers_for_tenant(&server, current_tenant);
+        let request_headers = self
+            .effective_headers_for_current_tenant(name, &server, current_tenant)
+            .await;
         let discovery = self
             .discover_remote_tools(name, &endpoint, &request_headers)
             .await;
@@ -579,7 +581,13 @@ impl McpRegistry {
                         .discover_remote_tools(
                             name,
                             &endpoint,
-                            &effective_headers_for_tenant(&refreshed_server, current_tenant),
+                            &self
+                                .effective_headers_for_current_tenant(
+                                    name,
+                                    &refreshed_server,
+                                    current_tenant,
+                                )
+                                .await,
                         )
                         .await
                     {
@@ -799,10 +807,6 @@ impl McpRegistry {
         if trimmed.is_empty() {
             return Err("oauth access token cannot be empty".to_string());
         }
-        let mut servers = self.servers.write().await;
-        let Some(server) = servers.get_mut(name) else {
-            return Ok(false);
-        };
         let header_name = "Authorization".to_string();
         let secret_id = mcp_header_secret_id_for_tenant(name, &header_name, current_tenant);
         tandem_core::set_provider_auth_for_tenant(
@@ -811,6 +815,27 @@ impl McpRegistry {
             &format!("Bearer {trimmed}"),
         )
         .map_err(|error| error.to_string())?;
+        if !current_tenant.is_local_implicit() {
+            if !self.servers.read().await.contains_key(name) {
+                return Ok(false);
+            }
+            self.upsert_connection_secret_header_for_tenant(
+                name,
+                current_tenant,
+                &header_name,
+                McpSecretRef::Store {
+                    secret_id,
+                    tenant_context: current_tenant.clone(),
+                },
+            )
+            .await;
+            self.persist_state().await;
+            return Ok(true);
+        }
+        let mut servers = self.servers.write().await;
+        let Some(server) = servers.get_mut(name) else {
+            return Ok(false);
+        };
         server.secret_headers.insert(
             header_name.clone(),
             McpSecretRef::Store {
@@ -885,7 +910,7 @@ impl McpRegistry {
             let _ = tandem_core::delete_provider_auth_for_tenant(current_tenant, &secret_id);
         }
 
-        server.oauth = Some(McpOAuthConfig {
+        let oauth = McpOAuthConfig {
             provider_id,
             token_endpoint,
             client_id,
@@ -893,7 +918,15 @@ impl McpRegistry {
             client_secret_value: client_secret
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
-        });
+        };
+        if !current_tenant.is_local_implicit() {
+            drop(servers);
+            self.upsert_connection_oauth_for_tenant(name, current_tenant, oauth)
+                .await;
+            self.persist_state().await;
+            return Ok(true);
+        }
+        server.oauth = Some(oauth);
         drop(servers);
         self.upsert_compatibility_connection_for_server(name, current_tenant)
             .await;
@@ -1023,7 +1056,9 @@ impl McpRegistry {
             });
         }
         let normalized_args = normalize_mcp_tool_args(&server, tool_name, args);
-        let request_headers = effective_headers_for_tenant(&server, current_tenant);
+        let request_headers = self
+            .effective_headers_for_current_tenant(server_name, &server, current_tenant)
+            .await;
 
         {
             let mut servers = self.servers.write().await;
@@ -1069,8 +1104,13 @@ impl McpRegistry {
                             .cloned()
                             .ok_or_else(|| format!("MCP server '{server_name}' not found"))?
                     };
-                    let refreshed_headers =
-                        effective_headers_for_tenant(&refreshed_server, current_tenant);
+                    let refreshed_headers = self
+                        .effective_headers_for_current_tenant(
+                            server_name,
+                            &refreshed_server,
+                            current_tenant,
+                        )
+                        .await;
                     post_json_rpc_with_session(
                         &endpoint,
                         &refreshed_headers,
@@ -1318,63 +1358,6 @@ impl McpRegistry {
         persist_state_blocking(self.state_file.as_path(), &snapshot, &connections);
     }
 
-    async fn upsert_compatibility_connection_for_server(
-        &self,
-        server_id: &str,
-        current_tenant: &TenantContext,
-    ) {
-        let Some(server) = self.servers.read().await.get(server_id).cloned() else {
-            return;
-        };
-        let owner = McpPrincipalRef::from_tenant_context(current_tenant);
-        let connection_id = mcp_connection_id(server_id, current_tenant, &owner);
-        let now = now_ms();
-        let credential_ref = compatibility_credential_ref(server_id, &server);
-        let mut connections = self.connections.write().await;
-        if let Some(existing) = connections.get_mut(&connection_id) {
-            existing.enabled = server.enabled;
-            existing.credential_ref = credential_ref;
-            existing.updated_at_ms = now;
-            return;
-        }
-        connections.insert(
-            connection_id.clone(),
-            McpConnection {
-                connection_id,
-                server_id: server_id.trim().to_string(),
-                tenant_context: current_tenant.clone(),
-                owner,
-                credential_ref,
-                upstream_account: None,
-                connection_class: McpConnectionClass::UserOwned,
-                enabled: server.enabled,
-                created_at_ms: now,
-                updated_at_ms: now,
-            },
-        );
-    }
-
-    async fn remove_connections_for_server(&self, server_id: &str) {
-        self.connections
-            .write()
-            .await
-            .retain(|_, connection| connection.server_id != server_id);
-    }
-
-    async fn update_connection_enabled_for_server(&self, server_id: &str, enabled: bool) {
-        let now = now_ms();
-        for connection in self
-            .connections
-            .write()
-            .await
-            .values_mut()
-            .filter(|connection| connection.server_id == server_id)
-        {
-            connection.enabled = enabled;
-            connection.updated_at_ms = now;
-        }
-    }
-
     async fn ensure_oauth_bearer_token_fresh(
         &self,
         name: &str,
@@ -1395,7 +1378,10 @@ impl McpRegistry {
             servers.get(name).cloned()
         }
         .ok_or_else(|| format!("MCP server '{name}' not found"))?;
-        let Some(oauth) = server.oauth.clone() else {
+        let Some(oauth) = self
+            .oauth_config_for_tenant(name, &server, current_tenant)
+            .await
+        else {
             return Ok(false);
         };
         let credential = if current_tenant.is_local_implicit() {

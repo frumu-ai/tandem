@@ -106,6 +106,10 @@ pub struct McpConnection {
     pub owner: McpPrincipalRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_ref: Option<McpCredentialRef>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub secret_headers: HashMap<String, McpSecretRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth: Option<McpOAuthConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_account: Option<McpUpstreamAccount>,
     pub connection_class: McpConnectionClass,
@@ -130,11 +134,232 @@ impl McpConnection {
             tenant_context,
             owner,
             credential_ref,
+            secret_headers: server.secret_headers.clone(),
+            oauth: server.oauth.clone(),
             upstream_account: None,
             connection_class: McpConnectionClass::UserOwned,
             enabled: server.enabled,
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
         }
+    }
+}
+
+impl McpRegistry {
+    async fn connection_for_tenant(
+        &self,
+        server_id: &str,
+        current_tenant: &TenantContext,
+    ) -> Option<McpConnection> {
+        let owner = McpPrincipalRef::from_tenant_context(current_tenant);
+        let connection_id = mcp_connection_id(server_id, current_tenant, &owner);
+        self.connections.read().await.get(&connection_id).cloned()
+    }
+
+    async fn upsert_compatibility_connection_for_server(
+        &self,
+        server_id: &str,
+        current_tenant: &TenantContext,
+    ) {
+        let Some(server) = self.servers.read().await.get(server_id).cloned() else {
+            return;
+        };
+        let owner = McpPrincipalRef::from_tenant_context(current_tenant);
+        let connection_id = mcp_connection_id(server_id, current_tenant, &owner);
+        let now = now_ms();
+        let credential_ref = compatibility_credential_ref(server_id, &server);
+        let mut connections = self.connections.write().await;
+        if let Some(existing) = connections.get_mut(&connection_id) {
+            existing.enabled = server.enabled;
+            if current_tenant.is_local_implicit() {
+                existing.credential_ref = credential_ref;
+                existing.secret_headers = server.secret_headers.clone();
+                existing.oauth = server.oauth.clone();
+            } else if existing.credential_ref.is_none() {
+                existing.credential_ref = credential_ref;
+            }
+            existing.updated_at_ms = now;
+            return;
+        }
+        connections.insert(
+            connection_id.clone(),
+            McpConnection {
+                connection_id,
+                server_id: server_id.trim().to_string(),
+                tenant_context: current_tenant.clone(),
+                owner,
+                credential_ref,
+                secret_headers: server.secret_headers.clone(),
+                oauth: server.oauth.clone(),
+                upstream_account: None,
+                connection_class: McpConnectionClass::UserOwned,
+                enabled: server.enabled,
+                created_at_ms: now,
+                updated_at_ms: now,
+            },
+        );
+    }
+
+    async fn remove_connections_for_server(&self, server_id: &str) {
+        self.connections
+            .write()
+            .await
+            .retain(|_, connection| connection.server_id != server_id);
+    }
+
+    async fn update_connection_enabled_for_server(&self, server_id: &str, enabled: bool) {
+        let now = now_ms();
+        for connection in self
+            .connections
+            .write()
+            .await
+            .values_mut()
+            .filter(|connection| connection.server_id == server_id)
+        {
+            connection.enabled = enabled;
+            connection.updated_at_ms = now;
+        }
+    }
+
+    async fn upsert_connection_secret_header_for_tenant(
+        &self,
+        server_id: &str,
+        current_tenant: &TenantContext,
+        header_name: &str,
+        secret_ref: McpSecretRef,
+    ) {
+        let Some(server) = self.servers.read().await.get(server_id).cloned() else {
+            return;
+        };
+        let owner = McpPrincipalRef::from_tenant_context(current_tenant);
+        let connection_id = mcp_connection_id(server_id, current_tenant, &owner);
+        let now = now_ms();
+        let header_name = header_name.to_string();
+        let header_credential_ref = McpCredentialRef {
+            provider: "mcp_header".to_string(),
+            secret_id: format!(
+                "{}::{}::{}",
+                server_id.trim(),
+                header_name.to_ascii_lowercase(),
+                secret_ref_stable_id(&secret_ref)
+            ),
+            credential_version: None,
+            expires_at_ms: None,
+        };
+        let mut connections = self.connections.write().await;
+        if let Some(existing) = connections.get_mut(&connection_id) {
+            existing.enabled = server.enabled;
+            existing
+                .secret_headers
+                .insert(header_name, secret_ref.clone());
+            if existing.credential_ref.is_none() {
+                existing.credential_ref = Some(header_credential_ref);
+            }
+            existing.updated_at_ms = now;
+            return;
+        }
+        let mut secret_headers = HashMap::new();
+        secret_headers.insert(header_name, secret_ref);
+        connections.insert(
+            connection_id.clone(),
+            McpConnection {
+                connection_id,
+                server_id: server_id.trim().to_string(),
+                tenant_context: current_tenant.clone(),
+                owner,
+                credential_ref: Some(header_credential_ref),
+                secret_headers,
+                oauth: None,
+                upstream_account: None,
+                connection_class: McpConnectionClass::UserOwned,
+                enabled: server.enabled,
+                created_at_ms: now,
+                updated_at_ms: now,
+            },
+        );
+    }
+
+    async fn upsert_connection_oauth_for_tenant(
+        &self,
+        server_id: &str,
+        current_tenant: &TenantContext,
+        oauth: McpOAuthConfig,
+    ) {
+        let Some(server) = self.servers.read().await.get(server_id).cloned() else {
+            return;
+        };
+        let owner = McpPrincipalRef::from_tenant_context(current_tenant);
+        let connection_id = mcp_connection_id(server_id, current_tenant, &owner);
+        let now = now_ms();
+        let credential_ref = McpCredentialRef {
+            provider: "mcp_oauth".to_string(),
+            secret_id: oauth.provider_id.clone(),
+            credential_version: None,
+            expires_at_ms: None,
+        };
+        let mut connections = self.connections.write().await;
+        if let Some(existing) = connections.get_mut(&connection_id) {
+            existing.enabled = server.enabled;
+            existing.credential_ref = Some(credential_ref);
+            existing.oauth = Some(oauth);
+            existing.updated_at_ms = now;
+            return;
+        }
+        connections.insert(
+            connection_id.clone(),
+            McpConnection {
+                connection_id,
+                server_id: server_id.trim().to_string(),
+                tenant_context: current_tenant.clone(),
+                owner,
+                credential_ref: Some(credential_ref),
+                secret_headers: HashMap::new(),
+                oauth: Some(oauth),
+                upstream_account: None,
+                connection_class: McpConnectionClass::UserOwned,
+                enabled: server.enabled,
+                created_at_ms: now,
+                updated_at_ms: now,
+            },
+        );
+    }
+
+    async fn oauth_config_for_tenant(
+        &self,
+        server_id: &str,
+        server: &McpServer,
+        current_tenant: &TenantContext,
+    ) -> Option<McpOAuthConfig> {
+        if current_tenant.is_local_implicit() {
+            return server.oauth.clone();
+        }
+        self.connection_for_tenant(server_id, current_tenant)
+            .await
+            .and_then(|connection| connection.oauth)
+    }
+
+    async fn effective_headers_for_current_tenant(
+        &self,
+        server_id: &str,
+        server: &McpServer,
+        current_tenant: &TenantContext,
+    ) -> HashMap<String, String> {
+        if current_tenant.is_local_implicit() {
+            return effective_headers(server);
+        }
+        let mut headers = combine_headers(
+            &server.headers,
+            &resolve_secret_header_values(&server.secret_headers, current_tenant),
+        );
+        if let Some(connection) = self.connection_for_tenant(server_id, current_tenant).await {
+            for (header_name, value) in
+                resolve_secret_header_values(&connection.secret_headers, current_tenant)
+            {
+                if !value.trim().is_empty() {
+                    headers.insert(header_name, value);
+                }
+            }
+        }
+        headers
     }
 }

@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   credential ids, and audit events so enterprise OAuth sign-ins bind tokens to
   the initiating MCP connection instead of a shared server-global account.
 
+### Fixed
+
+- Fixed tenant/actor-scoped MCP OAuth completion so pending sign-in polls return
+  the initiating session's authorization URL and callback token storage updates
+  the scoped connection instead of the shared server row.
+
 ## [0.6.1] - 2026-06-20
 
 ### Fixed

@@ -1863,14 +1863,15 @@ pub(super) async fn authenticate_mcp(
                 pending.server_name != name || pending.tenant_context != tenant_context
             });
         } else {
-            let last_auth_challenge = current_mcp_auth_challenge(&state, &name).await;
+            let last_auth_challenge = mcp_auth_challenge_from_session(&session);
+            let authorization_url = last_auth_challenge.authorization_url.clone();
             return Json(json!({
                 "ok": true,
                 "authenticated": false,
                 "connected": false,
                 "pendingAuth": true,
                 "lastAuthChallenge": last_auth_challenge,
-                "authorizationUrl": last_auth_challenge.as_ref().map(|challenge| challenge.authorization_url.clone()).unwrap_or(session.authorization_url),
+                "authorizationUrl": authorization_url,
             }));
         }
     }

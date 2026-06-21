@@ -33,6 +33,10 @@ MCP connections.
   and provider credential id, reject mismatched authenticated callbacks, and
   persist refreshed tokens under the scoped connection instead of a shared
   server-global provider account.
+- Tightened tenant/actor OAuth completion after review: pending sign-in polls
+  now keep returning the initiating session's authorization URL even when
+  another user starts OAuth for the same MCP server, and callback token storage
+  updates the scoped connection rather than the shared server row.
 - Documented that hosted/enterprise MCP OAuth should follow the existing
   connector control-plane ownership precedent: long-lived secret material stays
   outside the runtime, while the runtime stores credential references and

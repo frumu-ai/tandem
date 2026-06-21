@@ -1068,6 +1068,7 @@ async fn mcp_oauth_session_records_tenant_actor_connection_identity() {
     assert!(session.provider_id.ends_with(&session.connection_id));
 
     let bob_resp = app
+        .clone()
         .oneshot(tenant_request(
             "POST",
             "/mcp/notion/connect",
@@ -1091,6 +1092,75 @@ async fn mcp_oauth_session_records_tenant_actor_connection_identity() {
     assert_ne!(bob_session.connection_id, session.connection_id);
     assert_ne!(bob_session.provider_id, session.provider_id);
     assert_ne!(bob_session.authorization_url, session.authorization_url);
+
+    let alice_authenticate_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "POST",
+            "/mcp/notion/auth/authenticate",
+            "org-a",
+            "workspace-a",
+            "alice",
+        ))
+        .await
+        .expect("alice authenticate response");
+    assert_eq!(alice_authenticate_resp.status(), StatusCode::OK);
+    let alice_authenticate_body = to_bytes(alice_authenticate_resp.into_body(), usize::MAX)
+        .await
+        .expect("alice authenticate body");
+    let alice_authenticate_payload: Value =
+        serde_json::from_slice(&alice_authenticate_body).expect("alice authenticate json");
+    assert_eq!(
+        alice_authenticate_payload
+            .get("authorizationUrl")
+            .and_then(Value::as_str),
+        Some(session.authorization_url.as_str())
+    );
+    assert_ne!(
+        alice_authenticate_payload
+            .get("authorizationUrl")
+            .and_then(Value::as_str),
+        Some(bob_session.authorization_url.as_str())
+    );
+
+    let callback_resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/mcp/notion/auth/callback?code=test-code&state={}",
+                    urlencoding::encode(&session.state)
+                ))
+                .body(Body::empty())
+                .expect("callback request"),
+        )
+        .await
+        .expect("callback response");
+    assert_eq!(callback_resp.status(), StatusCode::OK);
+    let server_row = state
+        .mcp
+        .list()
+        .await
+        .get("notion")
+        .cloned()
+        .expect("notion row");
+    assert!(
+        !server_row.secret_headers.contains_key("Authorization"),
+        "explicit tenant OAuth must not write bearer refs into the shared server row"
+    );
+    let connections = state.mcp.list_connections().await;
+    let alice_connection = connections
+        .get(&session.connection_id)
+        .expect("alice scoped connection");
+    assert!(alice_connection
+        .secret_headers
+        .contains_key("Authorization"));
+    assert_eq!(
+        alice_connection
+            .oauth
+            .as_ref()
+            .map(|oauth| oauth.provider_id.as_str()),
+        Some(session.provider_id.as_str())
+    );
 
     drop(server);
 }
