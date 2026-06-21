@@ -56,6 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   policy, scheduler queue metadata, and shared-context metadata parsing, with
   server compatibility re-exports and ported unit coverage.
 
+### Changed
+
+- Began the AppState domain-manager decomposition by moving provider and MCP
+  OAuth callback session maps behind a dedicated OAuth state manager with an
+  explicit lock-order boundary.
+
 ### Fixed
 
 - Fixed durable runtime event logging so canonical run/session events use an

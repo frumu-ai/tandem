@@ -359,7 +359,7 @@ async fn finish_provider_oauth_callback(
     };
 
     let session_id = {
-        let sessions = state.provider_oauth_sessions.read().await;
+        let sessions = state.oauth.provider_sessions().read().await;
         sessions.iter().find_map(|(session_id, session)| {
             (session.provider_id == provider_id && session.state == state_token)
                 .then(|| session_id.clone())
@@ -383,7 +383,8 @@ async fn finish_provider_oauth_callback(
             .map(str::to_string)
             .unwrap_or_else(|| error.to_string());
         if let Some(session) = state
-            .provider_oauth_sessions
+            .oauth
+            .provider_sessions()
             .write()
             .await
             .get_mut(&session_id)
@@ -405,7 +406,8 @@ async fn finish_provider_oauth_callback(
 
     let session = {
         state
-            .provider_oauth_sessions
+            .oauth
+            .provider_sessions()
             .read()
             .await
             .get(&session_id)
@@ -424,7 +426,8 @@ async fn finish_provider_oauth_callback(
             Ok(value) => value,
             Err(error) => {
                 if let Some(entry) = state
-                    .provider_oauth_sessions
+                    .oauth
+                    .provider_sessions()
                     .write()
                     .await
                     .get_mut(&session_id)
@@ -504,7 +507,8 @@ async fn finish_provider_oauth_callback(
     }
 
     if let Some(entry) = state
-        .provider_oauth_sessions
+        .oauth
+        .provider_sessions()
         .write()
         .await
         .get_mut(&session_id)

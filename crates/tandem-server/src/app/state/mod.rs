@@ -80,11 +80,13 @@ use crate::{
 pub mod approval_message_map;
 pub mod channel_user_capabilities;
 pub mod enterprise_state;
+mod oauth_state;
 mod prompt_context_blocks;
 mod prompt_context_hook;
 mod prompt_memory_context;
 
 pub use enterprise_state::EnterpriseState;
+pub use oauth_state::OAuthState;
 use prompt_context_hook::*;
 
 #[derive(Clone)]
@@ -187,16 +189,7 @@ pub struct AppState {
     pub policy_decisions: Arc<RwLock<std::collections::HashMap<String, PolicyDecisionRecord>>>,
     pub goal_capability_learning_store: Arc<GoalCapabilityLearningDecisionStore>,
     pub bug_monitor_runtime_status: Arc<RwLock<BugMonitorRuntimeStatus>>,
-    pub(crate) provider_oauth_sessions: Arc<
-        RwLock<
-            std::collections::HashMap<
-                String,
-                crate::http::config_providers::ProviderOAuthSessionRecord,
-            >,
-        >,
-    >,
-    pub(crate) mcp_oauth_sessions:
-        Arc<RwLock<std::collections::HashMap<String, crate::http::mcp::McpOAuthSessionRecord>>>,
+    pub(crate) oauth: OAuthState,
     pub workflows: Arc<RwLock<WorkflowRegistry>>,
     pub workflow_runs: Arc<RwLock<std::collections::HashMap<String, WorkflowRunRecord>>>,
     pub workflow_hook_overrides: Arc<RwLock<std::collections::HashMap<String, bool>>>,

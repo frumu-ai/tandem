@@ -249,9 +249,9 @@ impl AppState {
             channel_user_capabilities: Arc::new(RwLock::new(std::collections::HashMap::new())),
             channel_enrollment_codes: Arc::new(RwLock::new(std::collections::HashMap::new())),
             channel_step_up_grants: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            memory_retrieval_budget_windows: Arc::new(RwLock::new(
-                std::collections::HashMap::new(),
-            )),
+            memory_retrieval_budget_windows: Arc::new(
+                RwLock::new(std::collections::HashMap::new()),
+            ),
             channel_rate_limiter: Arc::new(crate::app::rate_limit::ChannelRateLimiter::default()),
             automation_governance: Arc::new(RwLock::new(
                 crate::automation_v2::governance::GovernanceState::default(),
@@ -291,8 +291,7 @@ impl AppState {
                 crate::goal_capability_learning::GoalCapabilityLearningDecisionStore::new(),
             ),
             bug_monitor_runtime_status: Arc::new(RwLock::new(BugMonitorRuntimeStatus::default())),
-            provider_oauth_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            mcp_oauth_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            oauth: crate::app::state::OAuthState::new(),
             workflows: Arc::new(RwLock::new(WorkflowRegistry::default())),
             workflow_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             workflow_hook_overrides: Arc::new(RwLock::new(std::collections::HashMap::new())),
