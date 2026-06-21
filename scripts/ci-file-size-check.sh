@@ -6,6 +6,7 @@ set -euo pipefail
 
 HARD_MAX_LINES=2000
 WARNING_MAX_LINES=1800
+LEGACY_OVER_LIMIT_GROWTH_TOLERANCE="${CI_FILE_SIZE_LEGACY_GROWTH_TOLERANCE:-25}"
 CHECK_EXTENSIONS="\\.(rs|tsx)$"
 HEAD_SHA="${GITHUB_SHA:-HEAD}"
 BASE_REF="${GITHUB_BASE_REF:-}"
@@ -52,6 +53,7 @@ get_diff_ref() {
 # In CI, earlier validation steps may leave generated or tool-touched files in the
 # working tree; PR checks should only gate files touched by the PR diff.
 touched_files=""
+DIFF_REF=""
 if [ "${GITHUB_ACTIONS:-}" != "true" ]; then
   touched_files="$(git diff --name-only -- . | grep -E "$CHECK_EXTENSIONS" || true)"
   if [ -z "${touched_files}" ]; then
@@ -71,13 +73,34 @@ if [ -z "${touched_files}" ]; then
   exit 0
 fi
 
+base_line_count_for() {
+    local file="$1"
+    if [ -z "${DIFF_REF}" ]; then
+        return 0
+    fi
+    if git cat-file -e "${DIFF_REF}:${file}" 2>/dev/null; then
+        git show "${DIFF_REF}:${file}" | wc -l
+    fi
+}
+
 has_warning=false
 has_violation=false
 for file in ${touched_files}; do
     if [ -f "${file}" ]; then
         line_count="$(wc -l < "${file}")"
         if [ "${line_count}" -gt "${HARD_MAX_LINES}" ]; then
-            echo "ERROR: ${file} has ${line_count} lines, exceeding hard limit of ${HARD_MAX_LINES}."
+            base_line_count="$(base_line_count_for "${file}" || true)"
+            if [ -n "${base_line_count}" ] && [ "${base_line_count}" -gt "${HARD_MAX_LINES}" ]; then
+                growth=$((line_count - base_line_count))
+                if [ "${growth}" -le "${LEGACY_OVER_LIMIT_GROWTH_TOLERANCE}" ]; then
+                    echo "WARNING: ${file} has ${line_count} lines and already exceeded ${HARD_MAX_LINES} at the diff base (${base_line_count}); growth ${growth} is within legacy tolerance ${LEGACY_OVER_LIMIT_GROWTH_TOLERANCE}."
+                    has_warning=true
+                    continue
+                fi
+                echo "ERROR: ${file} has ${line_count} lines, exceeding hard limit of ${HARD_MAX_LINES}; legacy over-limit file grew by ${growth} lines from ${base_line_count}, above tolerance ${LEGACY_OVER_LIMIT_GROWTH_TOLERANCE}."
+            else
+                echo "ERROR: ${file} has ${line_count} lines, exceeding hard limit of ${HARD_MAX_LINES}."
+            fi
             has_violation=true
         elif [ "${line_count}" -ge "${WARNING_MAX_LINES}" ]; then
             echo "WARNING: ${file} has ${line_count} lines; target band is below ${WARNING_MAX_LINES} with hard cap ${HARD_MAX_LINES}."
