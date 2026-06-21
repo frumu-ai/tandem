@@ -136,24 +136,16 @@ fn compact_session_snapshots(snapshots: &mut Vec<Vec<Message>>) -> usize {
     removed
 }
 
-fn session_matches_scope(session: &Session, scope: &SessionListScope) -> bool {
-    match scope {
-        SessionListScope::Global => true,
-        SessionListScope::Workspace { workspace_root } => {
-            let Some(normalized_workspace) = normalize_workspace_path(workspace_root) else {
-                return false;
-            };
-            session
-                .workspace_root
-                .as_ref()
-                .and_then(|p| normalize_workspace_path(p))
-                .map(|p| p == normalized_workspace)
-                .unwrap_or(false)
-                || normalize_workspace_path(&session.directory)
-                    .map(|p| p == normalized_workspace)
-                    .unwrap_or(false)
-        }
-    }
+fn session_matches_normalized_workspace(session: &Session, normalized_workspace: &str) -> bool {
+    session
+        .workspace_root
+        .as_ref()
+        .and_then(|p| normalize_workspace_path(p))
+        .map(|p| p == normalized_workspace)
+        .unwrap_or(false)
+        || normalize_workspace_path(&session.directory)
+            .map(|p| p == normalized_workspace)
+            .unwrap_or(false)
 }
 
 fn session_summary_without_messages(session: &Session) -> Session {
@@ -365,14 +357,30 @@ impl Storage {
     }
 
     pub async fn list_session_summaries_scoped(&self, scope: SessionListScope) -> Vec<Session> {
-        let sessions = self.sessions.read().await;
-        let mut out = Vec::with_capacity(sessions.len());
-        for session in sessions.values() {
-            if session_matches_scope(session, &scope) {
-                out.push(session_summary_without_messages(session));
+        match scope {
+            SessionListScope::Global => {
+                let sessions = self.sessions.read().await;
+                sessions.values().map(session_summary_without_messages).collect()
+            }
+            SessionListScope::Workspace { workspace_root } => {
+                let Some(normalized_workspace) = normalize_workspace_path(&workspace_root) else {
+                    return Vec::new();
+                };
+                let summaries = {
+                    let sessions = self.sessions.read().await;
+                    sessions
+                        .values()
+                        .map(session_summary_without_messages)
+                        .collect::<Vec<_>>()
+                };
+                summaries
+                    .into_iter()
+                    .filter(|session| {
+                        session_matches_normalized_workspace(session, &normalized_workspace)
+                    })
+                    .collect()
             }
         }
-        out
     }
 
     pub async fn get_session(&self, id: &str) -> Option<Session> {
