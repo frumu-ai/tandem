@@ -247,6 +247,12 @@ fn effective_tenant_context_for_run_as(
             }
         }
         McpPrincipalRef::ServicePrincipal { .. } => {
+            if tenant_context.actor_id.is_some() {
+                return Err(
+                    "service-principal MCP run-as requires a server-side connection grant and cannot be selected from an actor-scoped request"
+                        .to_string(),
+                );
+            }
             let mut service_tenant = tenant_context.clone();
             service_tenant.actor_id = None;
             Ok(service_tenant)

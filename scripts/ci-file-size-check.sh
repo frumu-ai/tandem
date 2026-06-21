@@ -59,10 +59,15 @@ if [ "${GITHUB_ACTIONS:-}" != "true" ]; then
   if [ -z "${touched_files}" ]; then
     touched_files="$(git diff --name-only --cached -- . | grep -E "$CHECK_EXTENSIONS" || true)"
   fi
+  if [ -n "${touched_files}" ] && git rev-parse --verify "${HEAD_SHA}" >/dev/null 2>&1; then
+    DIFF_REF="${HEAD_SHA}"
+  fi
 fi
 
 if [ -z "${touched_files}" ]; then
-  DIFF_REF="$(get_diff_ref)"
+  if [ -z "${DIFF_REF}" ]; then
+    DIFF_REF="$(get_diff_ref)"
+  fi
   if [ -n "${DIFF_REF}" ]; then
     touched_files="$(git diff --name-only "${DIFF_REF}" "${HEAD_SHA}" -- . | grep -E "$CHECK_EXTENSIONS" || true)"
   fi

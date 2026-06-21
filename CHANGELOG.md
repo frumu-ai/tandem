@@ -33,10 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live on the acting MCP connection while local mode keeps legacy server-row
   compatibility.
 - Added Automation V2 MCP connection grants and MCP bridge run-as enforcement
-  so workflows can model user-owned or delegated service-principal MCP
-  connections, reject cross-actor connection selection before upstream dispatch,
-  and record the actual acting MCP principal/connection in protected audit
-  events.
+  so workflows can model user-owned and service-principal MCP connections,
+  reject cross-actor and actor-supplied service-principal selection before
+  upstream dispatch, and record the actual acting MCP principal/connection in
+  protected audit events.
 
 ### Fixed
 
@@ -47,8 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preserved after startup resets, keeping test and local compatibility GitHub
   MCP tools available.
 - Fixed Automation V2 MCP preflight discovery to use tenant-aware readiness,
-  tool sync, and remote tool inventory so scheduled and enterprise runs do not
-  fall back to local-implicit MCP state while preparing scoped connector tools.
+  connection-grant run-as context, tool sync, and remote tool inventory so
+  scheduled and enterprise runs do not fall back to local-implicit or workflow
+  creator MCP state while preparing scoped connector tools.
 
 ## [0.6.1] - 2026-06-20
 

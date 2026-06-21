@@ -210,7 +210,7 @@ async fn mcp_run_as_denies_unsupported_shared_connection_with_audit() {
 }
 
 #[tokio::test]
-async fn mcp_run_as_allows_delegated_service_principal_connection() {
+async fn mcp_run_as_denies_actor_selected_service_principal_without_trusted_grant() {
     let state = test_state().await;
     let (endpoint, server) = spawn_fake_notion_oauth_mcp_server().await;
     state
@@ -222,7 +222,7 @@ async fn mcp_run_as_allows_delegated_service_principal_connection() {
     let service = tandem_types::TenantContext::explicit("org-a", "workspace-a", None);
     state
         .mcp
-        .set_bearer_token_for_tenant("notion", "alice-union-token", &service)
+        .set_bearer_token_for_tenant("notion", "service-principal-token", &service)
         .await
         .expect("store service token");
     state
@@ -239,7 +239,7 @@ async fn mcp_run_as_allows_delegated_service_principal_connection() {
         .map(|connection| connection.owner.clone())
         .expect("service connection owner");
 
-    let result = crate::http::mcp::call_mcp_tool_for_tenant_with_audit(
+    let err = crate::http::mcp::call_mcp_tool_for_tenant_with_audit(
         &state,
         "notion",
         "alice_search",
@@ -253,22 +253,15 @@ async fn mcp_run_as_allows_delegated_service_principal_connection() {
         &alice,
     )
     .await
-    .expect("delegated service principal connection should be accepted");
+    .expect_err("actor-scoped calls must not self-select tenant service principal");
 
-    assert_eq!(
-        result
-            .metadata
-            .get("mcpRunAs")
-            .and_then(|value| value.get("connectionId"))
-            .and_then(Value::as_str),
-        Some(service_connection_id.as_str())
-    );
-    assert!(result.metadata.get("mcpAuth").is_some());
+    assert!(err.contains("ToolDenied { reason: McpRunAsPolicy }"));
+    assert!(err.contains("requires a server-side connection grant"));
     let audit = tokio::fs::read_to_string(&state.protected_audit_path)
         .await
         .expect("protected audit file");
-    assert!(audit.contains("\"event_type\":\"mcp.tool.execution\""));
+    assert!(audit.contains("\"event_type\":\"mcp.run_as_denied\""));
     assert!(audit.contains(&service_connection_id));
-    assert!(!audit.contains("alice-union-token"));
+    assert!(!audit.contains("service-principal-token"));
     drop(server);
 }

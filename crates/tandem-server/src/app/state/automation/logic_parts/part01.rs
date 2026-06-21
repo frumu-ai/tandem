@@ -1038,6 +1038,7 @@ async fn sync_automation_allowed_mcp_servers(
     state: &AppState,
     node: &AutomationFlowNode,
     allowed_servers: &[String],
+    allowed_connections: &[crate::AutomationMcpConnectionGrant],
     allowlist: &[String],
     tenant_context: &TenantContext,
 ) -> Value {
@@ -1080,7 +1081,13 @@ async fn sync_automation_allowed_mcp_servers(
         let server_record = mcp_servers.get(server_name);
         let exists = server_record.is_some();
         let enabled = server_record.is_some_and(|server| server.enabled);
-        let connected = if enabled {
+        let connection_grant =
+            automation_mcp_connection_grant_for_server(server_name, allowed_connections);
+        let preflight_tenant_context =
+            automation_mcp_preflight_tenant_context(tenant_context, connection_grant);
+        let connected = if let (true, Ok(preflight_tenant_context)) =
+            (enabled, preflight_tenant_context.as_ref())
+        {
             // Single readiness gate (Invariant 2 of `docs/SPINE.md`):
             // 3 attempts with 0/750/1500ms delays, matching the previous
             // automation_connect_mcp_server_with_retry helper.
@@ -1088,7 +1095,7 @@ async fn sync_automation_allowed_mcp_servers(
                 .mcp
                 .ensure_ready_for_tenant(
                     server_name,
-                    tenant_context,
+                    preflight_tenant_context,
                     tandem_runtime::mcp_ready::EnsureReadyPolicy::with_retries(3, 750),
                 )
                 .await
@@ -1096,20 +1103,36 @@ async fn sync_automation_allowed_mcp_servers(
         } else {
             false
         };
-        let sync_count = if connected {
+        let sync_count = if let (true, Ok(preflight_tenant_context)) =
+            (connected, preflight_tenant_context.as_ref())
+        {
             crate::http::mcp::sync_mcp_tools_for_server_for_tenant(
                 state,
                 server_name,
-                tenant_context,
+                preflight_tenant_context,
             )
             .await as u64
         } else {
             0
         };
+        let remote_names = if let (true, Ok(preflight_tenant_context)) =
+            (connected, preflight_tenant_context.as_ref())
+        {
+            automation_mcp_remote_tool_names_for_tenant(
+                state,
+                server_name,
+                preflight_tenant_context,
+            )
+            .await
+        } else {
+            Vec::new()
+        };
         let sync_error = if !exists {
             Some("server_not_found")
         } else if !enabled {
             Some("server_disabled")
+        } else if let Err(reason) = preflight_tenant_context.as_ref() {
+            Some(*reason)
         } else if !connected {
             Some("connect_failed")
         } else {
@@ -1121,7 +1144,10 @@ async fn sync_automation_allowed_mcp_servers(
             "enabled": enabled,
             "connected": connected,
             "sync_error": sync_error,
+            "connection_grant": connection_grant,
+            "preflight_tenant_context": preflight_tenant_context.as_ref().ok(),
             "registered_tool_count_after_sync": sync_count,
+            "remote_tools": remote_names,
         }));
     }
     let mut missing_selected_servers = server_rows
@@ -1137,7 +1163,6 @@ async fn sync_automation_allowed_mcp_servers(
         wildcard_selected_servers.dedup();
     }
 
-    let remote_tools = state.mcp.list_tools_for_tenant(tenant_context).await;
     let registered_tool_names = state
         .tools
         .list()
@@ -1155,23 +1180,14 @@ async fn sync_automation_allowed_mcp_servers(
         let Some(server_name) = row.get("name").and_then(Value::as_str) else {
             continue;
         };
-        let mut remote_names = remote_tools
-            .iter()
-            .filter(|tool| tool.server_name == server_name)
-            .map(|tool| {
-                if tool.namespaced_name.trim().is_empty() {
-                    format!(
-                        "mcp.{}.{}",
-                        crate::http::mcp::mcp_namespace_segment(server_name),
-                        tool.tool_name
-                    )
-                } else {
-                    tool.namespaced_name.clone()
-                }
-            })
+        let remote_names = row
+            .get("remote_tools")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
             .collect::<Vec<_>>();
-        remote_names.sort();
-        remote_names.dedup();
 
         let registered_names =
             automation_tool_names_for_mcp_server(&registered_tool_names, server_name);
