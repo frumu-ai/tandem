@@ -66,10 +66,14 @@ The server persists canonical runtime events that have a `run_id` or
 canonical data root. Each row is the flat `RuntimeEvent` shape above, including
 `seq`, `event_id`, `occurred_at_ms`, and optional `tenant_context`.
 
-The durable log persister consumes a dedicated single-consumer queue from the
-event bus rather than the live broadcast stream. Events published before the
-persister task starts are buffered for it, so persistence does not depend on a
-broadcast subscriber being attached at publish time.
+The durable log persister registers a dedicated bounded, single-consumer queue
+with the event bus before it waits for runtime readiness. Events published
+after registration are buffered for the persister, so persistence does not
+depend on a broadcast subscriber being attached at publish time. Plain
+`EventBus` instances without a registered persister do not retain a runtime
+event-log queue. If the bounded queue fills, publish stays non-blocking and the
+event is dropped; consumers can detect missing persisted events through `seq`
+gaps.
 
 Retention is controlled by `TANDEM_RUNTIME_EVENT_LOG_RETENTION_DAYS` and
 defaults to 30 days. Set it to `0` to disable startup cleanup.

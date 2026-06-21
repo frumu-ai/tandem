@@ -803,8 +803,8 @@ pub async fn run_session_context_run_journaler(state: AppState) {
 }
 
 pub async fn run_runtime_event_log_persister(state: AppState) {
-    let Some(mut rx) = state.event_bus.take_runtime_event_log_receiver() else {
-        tracing::warn!("runtime event log persister: skipped because receiver was already taken");
+    let Some(mut rx) = state.event_bus.register_runtime_event_log_receiver() else {
+        tracing::warn!("runtime event log persister: skipped because queue was already registered");
         return;
     };
 
@@ -884,13 +884,25 @@ mod runtime_event_log_persister_tests {
     }
 
     #[tokio::test]
-    async fn persister_flushes_events_published_before_it_starts() {
+    async fn persister_flushes_events_published_after_queue_registration() {
         let mut state = crate::test_support::test_state().await;
         state.runtime_events_path = std::env::temp_dir().join(format!(
             "runtime-events-prestart-{}.jsonl",
             uuid::Uuid::new_v4()
         ));
         let tenant = TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "user-a");
+
+        let persister = tokio::spawn(run_runtime_event_log_persister(state.clone()));
+        for _ in 0..50 {
+            if state.event_bus.runtime_event_log_queue_is_registered() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            state.event_bus.runtime_event_log_queue_is_registered(),
+            "persister should register its queue before consuming runtime events"
+        );
 
         state.event_bus.publish(EngineEvent::new(
             "session.run.started",
@@ -901,7 +913,6 @@ mod runtime_event_log_persister_tests {
             }),
         ));
 
-        let persister = tokio::spawn(run_runtime_event_log_persister(state.clone()));
         let rows = wait_for_persisted_event(&state.runtime_events_path, &tenant, "run-a").await;
 
         persister.abort();

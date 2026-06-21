@@ -54,9 +54,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Fixed durable runtime event logging so canonical run/session events are
-  queued directly for the persister and are not lost when they are published
-  before the background task attaches to the live broadcast stream.
+- Fixed durable runtime event logging so canonical run/session events use an
+  opt-in bounded persister queue instead of the live broadcast stream, avoiding
+  event loss after persister registration without retaining events in eval-only
+  buses that never start the persister.
 - Fixed tenant/actor-scoped MCP OAuth completion so pending sign-in polls return
   the initiating session's authorization URL and callback token storage updates
   the scoped connection instead of the shared server row.

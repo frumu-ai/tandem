@@ -11,10 +11,10 @@ MCP connections.
 
 ### Runtime Observability
 
-- Runtime event persistence now consumes a dedicated event-bus queue, so
-  canonical run/session events published before the background persister starts
-  are still written to `runtime/events.jsonl` for later replay through
-  `/runs/{run_id}/events`.
+- Runtime event persistence now consumes an opt-in bounded event-bus queue, so
+  canonical run/session events published after persister registration are
+  written to `runtime/events.jsonl` without depending on the live broadcast
+  stream or retaining events in eval-only buses.
 
 ### Enterprise MCP Identity
 

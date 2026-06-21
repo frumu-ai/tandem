@@ -3,17 +3,22 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{
+    broadcast,
+    mpsc::{self, error::TrySendError},
+};
 
 use tandem_types::{EngineEvent, RuntimeEvent, RuntimeEventEnvelope};
+
+pub const RUNTIME_EVENT_LOG_QUEUE_CAPACITY: usize = 8_192;
 
 #[derive(Clone)]
 pub struct EventBus {
     tx: broadcast::Sender<EngineEvent>,
     session_part_tx: mpsc::UnboundedSender<EngineEvent>,
     session_part_rx: std::sync::Arc<Mutex<Option<mpsc::UnboundedReceiver<EngineEvent>>>>,
-    runtime_event_log_tx: mpsc::UnboundedSender<EngineEvent>,
-    runtime_event_log_rx: std::sync::Arc<Mutex<Option<mpsc::UnboundedReceiver<EngineEvent>>>>,
+    runtime_event_log_tx: std::sync::Arc<Mutex<Option<mpsc::Sender<EngineEvent>>>>,
+    runtime_event_log_dropped: Arc<AtomicU64>,
     seq: Arc<AtomicU64>,
 }
 
@@ -21,13 +26,12 @@ impl EventBus {
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(2048);
         let (session_part_tx, session_part_rx) = mpsc::unbounded_channel();
-        let (runtime_event_log_tx, runtime_event_log_rx) = mpsc::unbounded_channel();
         Self {
             tx,
             session_part_tx,
             session_part_rx: std::sync::Arc::new(Mutex::new(Some(session_part_rx))),
-            runtime_event_log_tx,
-            runtime_event_log_rx: std::sync::Arc::new(Mutex::new(Some(runtime_event_log_rx))),
+            runtime_event_log_tx: std::sync::Arc::new(Mutex::new(None)),
+            runtime_event_log_dropped: Arc::new(AtomicU64::new(0)),
             seq: Arc::new(AtomicU64::new(1)),
         }
     }
@@ -47,8 +51,28 @@ impl EventBus {
         self.session_part_rx.lock().ok()?.take()
     }
 
-    pub fn take_runtime_event_log_receiver(&self) -> Option<mpsc::UnboundedReceiver<EngineEvent>> {
-        self.runtime_event_log_rx.lock().ok()?.take()
+    pub fn register_runtime_event_log_receiver(&self) -> Option<mpsc::Receiver<EngineEvent>> {
+        self.register_runtime_event_log_receiver_with_capacity(RUNTIME_EVENT_LOG_QUEUE_CAPACITY)
+    }
+
+    pub fn register_runtime_event_log_receiver_with_capacity(
+        &self,
+        capacity: usize,
+    ) -> Option<mpsc::Receiver<EngineEvent>> {
+        let mut guard = self.runtime_event_log_tx.lock().ok()?;
+        if guard.is_some() {
+            return None;
+        }
+        let (tx, rx) = mpsc::channel(capacity.max(1));
+        *guard = Some(tx);
+        Some(rx)
+    }
+
+    pub fn runtime_event_log_queue_is_registered(&self) -> bool {
+        self.runtime_event_log_tx
+            .lock()
+            .map(|guard| guard.is_some())
+            .unwrap_or(false)
     }
 
     /// Publish an event, stamping the canonical [`RuntimeEventEnvelope`]
@@ -61,7 +85,7 @@ impl EventBus {
         if should_enqueue_session_part_event(&event) {
             let _ = self.session_part_tx.send(event.clone());
         }
-        let _ = self.runtime_event_log_tx.send(event.clone());
+        self.enqueue_runtime_event_log(event.clone());
         let _ = self.tx.send(event);
     }
 
@@ -92,6 +116,39 @@ impl EventBus {
 
     fn next_seq(&self) -> u64 {
         self.seq.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn enqueue_runtime_event_log(&self, event: EngineEvent) {
+        let Some(tx) = self
+            .runtime_event_log_tx
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+        else {
+            return;
+        };
+
+        match tx.try_send(event) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                let dropped = self
+                    .runtime_event_log_dropped
+                    .fetch_add(1, Ordering::Relaxed)
+                    + 1;
+                if dropped == 1 || dropped.is_power_of_two() {
+                    tracing::warn!(
+                        dropped,
+                        "runtime event log queue is full; dropping runtime event"
+                    );
+                }
+            }
+            Err(TrySendError::Closed(_)) => {
+                if let Ok(mut guard) = self.runtime_event_log_tx.lock() {
+                    *guard = None;
+                }
+                tracing::warn!("runtime event log queue is closed; disabling enqueue");
+            }
+        }
     }
 }
 
@@ -232,7 +289,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_event_log_queue_buffers_events_before_consumer_is_taken() {
+    async fn runtime_event_log_queue_is_opt_in() {
         let bus = EventBus::new();
 
         bus.publish(EngineEvent::new(
@@ -241,16 +298,58 @@ mod tests {
         ));
 
         let mut rx = bus
-            .take_runtime_event_log_receiver()
+            .register_runtime_event_log_receiver()
             .expect("runtime event log receiver");
+        assert!(
+            rx.try_recv().is_err(),
+            "events published before registration are not retained"
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_event_log_queue_buffers_events_after_registration() {
+        let bus = EventBus::new();
+        let mut rx = bus
+            .register_runtime_event_log_receiver()
+            .expect("runtime event log receiver");
+
+        bus.publish(EngineEvent::new(
+            "session.run.started",
+            json!({"sessionID": "ses_1", "runID": "run_1"}),
+        ));
+
         let received = rx.recv().await.expect("queued event");
         assert_eq!(received.event_type, "session.run.started");
         let envelope = received.envelope.expect("envelope");
         assert_eq!(envelope.session_id.as_deref(), Some("ses_1"));
         assert_eq!(envelope.run_id.as_deref(), Some("run_1"));
         assert!(
-            bus.take_runtime_event_log_receiver().is_none(),
+            bus.register_runtime_event_log_receiver().is_none(),
             "runtime event log receiver is single-consumer"
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_event_log_queue_drops_when_bounded_queue_is_full() {
+        let bus = EventBus::new();
+        let mut rx = bus
+            .register_runtime_event_log_receiver_with_capacity(1)
+            .expect("runtime event log receiver");
+
+        bus.publish(EngineEvent::new(
+            "session.run.started",
+            json!({"sessionID": "ses_1", "runID": "run_1"}),
+        ));
+        bus.publish(EngineEvent::new(
+            "session.run.finished",
+            json!({"sessionID": "ses_1", "runID": "run_1"}),
+        ));
+
+        let received = rx.recv().await.expect("queued event");
+        assert_eq!(received.event_type, "session.run.started");
+        assert!(
+            rx.try_recv().is_err(),
+            "second event is dropped when the registered queue is full"
         );
     }
 
