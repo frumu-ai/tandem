@@ -31,6 +31,27 @@ pub(crate) struct ShellExecutionPlan {
     os_guardrail_applied: bool,
     guardrail_reason: Option<String>,
     sandbox_mode: String,
+    #[cfg(all(test, unix))]
+    command_program: String,
+    #[cfg(all(test, unix))]
+    command_args: Vec<String>,
+}
+
+impl ShellExecutionPlan {
+    #[cfg(all(test, unix))]
+    pub(crate) fn program_for_test(&self) -> String {
+        self.command_program.clone()
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn args_for_test(&self) -> Vec<String> {
+        self.command_args.clone()
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn sandbox_mode_for_test(&self) -> &str {
+        &self.sandbox_mode
+    }
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -106,61 +127,75 @@ fn build_unsandboxed_posix_shell_command(raw_cmd: &str) -> ShellExecutionPlan {
         os_guardrail_applied: false,
         guardrail_reason: Some("unsafe_unsandboxed_shell_opt_out".to_string()),
         sandbox_mode: "unsafe_unsandboxed".to_string(),
+        #[cfg(all(test, unix))]
+        command_program: "sh".to_string(),
+        #[cfg(all(test, unix))]
+        command_args: vec!["-lc".to_string(), raw_cmd.to_string()],
     }
 }
 
 #[cfg(all(unix, target_os = "linux"))]
-fn build_bwrap_shell_command(raw_cmd: &str, args: &Value) -> ShellCommandPlan {
-    if bool_env_enabled("TANDEM_UNSAFE_UNSANDBOXED_SHELL") {
-        return ShellCommandPlan::Execute(build_unsandboxed_posix_shell_command(raw_cmd));
-    }
-
+pub(crate) fn build_bwrap_shell_command_with_bwrap(
+    raw_cmd: &str,
+    args: &Value,
+    bwrap: PathBuf,
+) -> ShellCommandPlan {
     let (workspace_root, effective_cwd) = match prepare_shell_workspace(args) {
         Ok(paths) => paths,
         Err(blocked) => return blocked,
     };
-    let bwrap = match find_executable_on_path("bwrap") {
-        Some(path) => path,
-        None => return sandbox_blocked_result("bubblewrap_not_available"),
-    };
     let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".to_string());
+
+    #[cfg(all(test, unix))]
+    let command_program = bwrap.to_string_lossy().to_string();
+    let mut command_args = vec![
+        "--die-with-parent".to_string(),
+        "--unshare-all".to_string(),
+        "--new-session".to_string(),
+        "--dev".to_string(),
+        "/dev".to_string(),
+        "--tmpfs".to_string(),
+        "/tmp".to_string(),
+        "--ro-bind".to_string(),
+        "/bin".to_string(),
+        "/bin".to_string(),
+        "--ro-bind".to_string(),
+        "/usr".to_string(),
+        "/usr".to_string(),
+        "--ro-bind-try".to_string(),
+        "/lib".to_string(),
+        "/lib".to_string(),
+        "--ro-bind-try".to_string(),
+        "/lib64".to_string(),
+        "/lib64".to_string(),
+        "--ro-bind-try".to_string(),
+        "/etc/alternatives".to_string(),
+        "/etc/alternatives".to_string(),
+        "--bind".to_string(),
+    ];
+    command_args.push(workspace_root.to_string_lossy().to_string());
+    command_args.push(workspace_root.to_string_lossy().to_string());
+    command_args.push("--chdir".to_string());
+    command_args.push(effective_cwd.to_string_lossy().to_string());
+    command_args.extend([
+        "--setenv".to_string(),
+        "PATH".to_string(),
+        path,
+        "--setenv".to_string(),
+        "TMPDIR".to_string(),
+        "/tmp".to_string(),
+        "--setenv".to_string(),
+        "HOME".to_string(),
+        workspace_root.to_string_lossy().to_string(),
+        "--".to_string(),
+        "/bin/sh".to_string(),
+        "-lc".to_string(),
+        raw_cmd.to_string(),
+    ]);
 
     let mut command = Command::new(bwrap);
     command.env_clear();
-    command.args([
-        "--die-with-parent",
-        "--unshare-all",
-        "--new-session",
-        "--dev",
-        "/dev",
-        "--tmpfs",
-        "/tmp",
-        "--ro-bind",
-        "/bin",
-        "/bin",
-        "--ro-bind",
-        "/usr",
-        "/usr",
-        "--ro-bind-try",
-        "/lib",
-        "/lib",
-        "--ro-bind-try",
-        "/lib64",
-        "/lib64",
-        "--ro-bind-try",
-        "/etc/alternatives",
-        "/etc/alternatives",
-        "--bind",
-    ]);
-    command.arg(&workspace_root);
-    command.arg(&workspace_root);
-    command.arg("--chdir");
-    command.arg(&effective_cwd);
-    command.args(["--setenv", "PATH", &path, "--setenv", "TMPDIR", "/tmp"]);
-    command.arg("--setenv");
-    command.arg("HOME");
-    command.arg(&workspace_root);
-    command.args(["--", "/bin/sh", "-lc", raw_cmd]);
+    command.args(&command_args);
 
     ShellCommandPlan::Execute(ShellExecutionPlan {
         command,
@@ -168,15 +203,42 @@ fn build_bwrap_shell_command(raw_cmd: &str, args: &Value) -> ShellCommandPlan {
         os_guardrail_applied: false,
         guardrail_reason: None,
         sandbox_mode: "bubblewrap".to_string(),
+        #[cfg(all(test, unix))]
+        command_program,
+        #[cfg(all(test, unix))]
+        command_args,
     })
+}
+
+#[cfg(all(unix, target_os = "linux"))]
+fn build_bwrap_shell_command(raw_cmd: &str, args: &Value) -> ShellCommandPlan {
+    if bool_env_enabled("TANDEM_UNSAFE_UNSANDBOXED_SHELL") {
+        return ShellCommandPlan::Execute(build_unsandboxed_posix_shell_command(raw_cmd));
+    }
+    let bwrap = match find_executable_on_path("bwrap") {
+        Some(path) => path,
+        None => return sandbox_blocked_result("bubblewrap_not_available"),
+    };
+    build_bwrap_shell_command_with_bwrap(raw_cmd, args, bwrap)
+}
+
+#[cfg(any(all(unix, not(target_os = "linux")), all(test, unix)))]
+pub(crate) fn build_unavailable_posix_shell_command(
+    raw_cmd: &str,
+    unsafe_unsandboxed_shell: bool,
+) -> ShellCommandPlan {
+    if unsafe_unsandboxed_shell {
+        return ShellCommandPlan::Execute(build_unsandboxed_posix_shell_command(raw_cmd));
+    }
+    sandbox_blocked_result("os_shell_sandbox_unavailable")
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
 fn build_platform_shell_command(raw_cmd: &str, _args: &Value) -> ShellCommandPlan {
-    if bool_env_enabled("TANDEM_UNSAFE_UNSANDBOXED_SHELL") {
-        return ShellCommandPlan::Execute(build_unsandboxed_posix_shell_command(raw_cmd));
-    }
-    sandbox_blocked_result("os_shell_sandbox_unavailable")
+    build_unavailable_posix_shell_command(
+        raw_cmd,
+        bool_env_enabled("TANDEM_UNSAFE_UNSANDBOXED_SHELL"),
+    )
 }
 
 #[cfg(all(unix, target_os = "linux"))]
@@ -430,6 +492,7 @@ async fn run_bash_command(
         os_guardrail_applied,
         guardrail_reason,
         sandbox_mode,
+        ..
     } = shell;
     let effective_cwd = effective_cwd_from_args(args);
     command.current_dir(&effective_cwd);

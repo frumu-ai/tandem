@@ -48,6 +48,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connection ownership/status/scope, account-scoped connect/refresh copy, and
   explicit Workflow Studio acting-connection selectors for agent and task MCP
   policies.
+- Added shell sandbox security documentation and regression coverage for Linux
+  bubblewrap argv/write-boundary behavior, POSIX fail-closed guardrails, and
+  Windows shell command translation/rejection policy.
 
 ### Fixed
 

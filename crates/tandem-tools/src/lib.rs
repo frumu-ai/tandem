@@ -9,6 +9,9 @@ mod repo_intelligence_tools;
 #[cfg(test)]
 #[path = "repo_intelligence_tools_tests.rs"]
 mod repo_intelligence_tools_tests;
+#[cfg(test)]
+#[path = "shell_sandbox_tests.rs"]
+mod shell_sandbox_tests;
 #[path = "tool_metadata.rs"]
 mod tool_metadata;
 use builtin_tools::*;
