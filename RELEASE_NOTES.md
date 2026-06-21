@@ -37,6 +37,11 @@ MCP connections.
   now keep returning the initiating session's authorization URL even when
   another user starts OAuth for the same MCP server, and callback token storage
   updates the scoped connection rather than the shared server row.
+- Moved authenticated MCP readiness state onto the scoped connection for
+  explicit tenants. Refresh/discovery now records session ids, pending auth, and
+  tool caches on the actor's connection, and tenant-aware tool lists read from
+  that scoped cache while local single-user mode preserves the existing server
+  row behavior.
 - Documented that hosted/enterprise MCP OAuth should follow the existing
   connector control-plane ownership precedent: long-lived secret material stays
   outside the runtime, while the runtime stores credential references and

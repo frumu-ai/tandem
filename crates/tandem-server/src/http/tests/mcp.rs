@@ -1066,6 +1066,28 @@ async fn mcp_oauth_session_records_tenant_actor_connection_identity() {
     );
     assert_ne!(session.provider_id, "mcp-oauth::notion");
     assert!(session.provider_id.ends_with(&session.connection_id));
+    let server_row_after_start = state
+        .mcp
+        .list()
+        .await
+        .get("notion")
+        .cloned()
+        .expect("notion row after oauth start");
+    assert!(
+        server_row_after_start.last_auth_challenge.is_none(),
+        "explicit tenant OAuth challenges must not be written into the shared server row"
+    );
+    let connections_after_start = state.mcp.list_connections().await;
+    let alice_pending_connection = connections_after_start
+        .get(&session.connection_id)
+        .expect("alice pending scoped connection");
+    assert_eq!(
+        alice_pending_connection
+            .last_auth_challenge
+            .as_ref()
+            .map(|challenge| challenge.authorization_url.as_str()),
+        Some(session.authorization_url.as_str())
+    );
 
     let bob_resp = app
         .clone()
@@ -1147,10 +1169,19 @@ async fn mcp_oauth_session_records_tenant_actor_connection_identity() {
         !server_row.secret_headers.contains_key("Authorization"),
         "explicit tenant OAuth must not write bearer refs into the shared server row"
     );
+    assert!(
+        server_row.tool_cache.is_empty(),
+        "explicit tenant OAuth discovery must not write authenticated tools into the shared server row"
+    );
     let connections = state.mcp.list_connections().await;
     let alice_connection = connections
         .get(&session.connection_id)
         .expect("alice scoped connection");
+    assert!(alice_connection.connected);
+    assert!(alice_connection
+        .tool_cache
+        .iter()
+        .any(|tool| tool.tool_name == "notion_search"));
     assert!(alice_connection
         .secret_headers
         .contains_key("Authorization"));

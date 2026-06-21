@@ -242,10 +242,13 @@ fn parse_remote_endpoint(transport: &str) -> Option<String> {
 }
 
 fn server_tool_rows(server: &McpServer) -> Vec<McpRemoteTool> {
+    tool_cache_rows(server, &server.tool_cache)
+}
+
+fn tool_cache_rows(server: &McpServer, tool_cache: &[McpToolCacheEntry]) -> Vec<McpRemoteTool> {
     let server_slug = sanitize_namespace_segment(&server.name);
     let allowed_tools = server.allowed_tools.as_ref();
-    server
-        .tool_cache
+    tool_cache
         .iter()
         .filter(|tool| {
             let Some(allowed_tools) = allowed_tools else {
@@ -447,13 +450,13 @@ struct PendingAuthShortCircuit {
 }
 
 fn pending_auth_short_circuit(
-    server: &McpServer,
+    pending_auth_by_tool: &HashMap<String, PendingMcpAuth>,
     tool_key: &str,
     tool_name: &str,
     now_ms_value: u64,
     cooldown_ms: u64,
 ) -> Option<PendingAuthShortCircuit> {
-    let pending = server.pending_auth_by_tool.get(tool_key)?;
+    let pending = pending_auth_by_tool.get(tool_key)?;
     let elapsed = now_ms_value.saturating_sub(pending.last_probe_ms);
     if elapsed >= cooldown_ms {
         return None;
@@ -802,8 +805,16 @@ fn render_mcp_content(value: &Value) -> String {
 }
 
 fn normalize_mcp_tool_args(server: &McpServer, tool_name: &str, raw_args: Value) -> Value {
-    let Some(schema) = server
-        .tool_cache
+    normalize_mcp_tool_args_with_cache(server, &server.tool_cache, tool_name, raw_args)
+}
+
+fn normalize_mcp_tool_args_with_cache(
+    _server: &McpServer,
+    tool_cache: &[McpToolCacheEntry],
+    tool_name: &str,
+    raw_args: Value,
+) -> Value {
+    let Some(schema) = tool_cache
         .iter()
         .find(|row| row.tool_name.eq_ignore_ascii_case(tool_name))
         .map(|row| &row.input_schema)

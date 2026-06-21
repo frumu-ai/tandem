@@ -604,9 +604,14 @@ mod tests {
                 last_probe_ms: 2_000,
             },
         );
-        let blocked =
-            pending_auth_short_circuit(&server, "clickup_whoami", "Clickup_WhoAmI", 10_000, 15_000)
-                .expect("should block");
+        let blocked = pending_auth_short_circuit(
+            &server.pending_auth_by_tool,
+            "clickup_whoami",
+            "Clickup_WhoAmI",
+            10_000,
+            15_000,
+        )
+        .expect("should block");
         assert!(blocked.output.contains("Authorization pending"));
         assert!(blocked
             .mcp_auth
@@ -650,8 +655,14 @@ mod tests {
             },
         );
         assert!(
-            pending_auth_short_circuit(&server, "clickup_whoami", "Clickup_WhoAmI", 17_001, 15_000)
-                .is_none(),
+            pending_auth_short_circuit(
+                &server.pending_auth_by_tool,
+                "clickup_whoami",
+                "Clickup_WhoAmI",
+                17_001,
+                15_000
+            )
+            .is_none(),
             "cooldown elapsed should allow re-probe"
         );
     }
@@ -691,7 +702,7 @@ mod tests {
             },
         );
         assert!(pending_auth_short_circuit(
-            &server,
+            &server.pending_auth_by_tool,
             "gmail_sendemail",
             "Gmail_SendEmail",
             2_100,
@@ -699,7 +710,7 @@ mod tests {
         )
         .is_some());
         assert!(pending_auth_short_circuit(
-            &server,
+            &server.pending_auth_by_tool,
             "clickup_whoami",
             "Clickup_WhoAmI",
             2_100,
@@ -1188,24 +1199,37 @@ mod tests {
             .await
             .expect("tenant A readiness should reconnect with tenant A secret");
         assert!(result.output.contains("tenant-authenticated"));
-        let connected = registry
+        let server_row = registry
             .list()
             .await
             .get(server_name)
-            .map(|row| row.connected)
-            .unwrap_or(false);
+            .cloned()
+            .expect("server row");
         assert!(
-            connected,
-            "tenant-aware readiness should connect the server"
+            server_row.tool_cache.is_empty(),
+            "explicit tenant discovery must not cache authenticated tools on the shared server row"
         );
         let connections = registry.list_connections().await;
-        assert!(connections.values().any(|connection| {
-            connection.server_id == server_name
-                && connection.owner
-                    == (McpPrincipalRef::HumanActor {
-                        actor_id: "alice".to_string(),
-                    })
-        }));
+        let connection = connections
+            .values()
+            .find(|connection| {
+                connection.server_id == server_name
+                    && connection.owner
+                        == (McpPrincipalRef::HumanActor {
+                            actor_id: "alice".to_string(),
+                        })
+            })
+            .expect("alice scoped connection");
+        assert!(connection.connected);
+        assert_eq!(connection.mcp_session_id.as_deref(), Some("test-session"));
+        assert!(connection
+            .tool_cache
+            .iter()
+            .any(|tool| tool.tool_name == "get_me"));
+        let scoped_tools = registry
+            .server_tools_for_tenant(server_name, &tenant_a)
+            .await;
+        assert_eq!(scoped_tools.len(), 1);
 
         server.abort();
         let _ = tandem_core::delete_provider_auth_for_tenant(

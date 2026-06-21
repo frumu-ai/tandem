@@ -133,7 +133,10 @@ impl McpRegistry {
         if !server.enabled {
             return Err(McpReadyError::Disabled);
         }
-        if server.connected {
+        if self
+            .runtime_connected_for_tenant(server_name, &server, current_tenant)
+            .await
+        {
             return Ok(server);
         }
 
@@ -148,19 +151,22 @@ impl McpRegistry {
             }
             if self.connect_for_tenant(server_name, current_tenant).await {
                 if let Some(server) = self.list().await.get(server_name).cloned() {
-                    if server.connected {
+                    if self
+                        .runtime_connected_for_tenant(server_name, &server, current_tenant)
+                        .await
+                    {
                         return Ok(server);
                     }
                 }
             }
         }
 
-        let last_error = self
-            .list()
-            .await
-            .get(server_name)
-            .and_then(|s| s.last_error.clone())
-            .filter(|e| !e.trim().is_empty());
+        let last_error = if let Some(server) = self.list().await.get(server_name).cloned() {
+            self.runtime_last_error_for_tenant(server_name, &server, current_tenant)
+                .await
+        } else {
+            None
+        };
         Err(McpReadyError::PermanentlyFailed { last_error })
     }
 }

@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added tenant/actor-scoped MCP OAuth sessions, callback completion, provider
   credential ids, and audit events so enterprise OAuth sign-ins bind tokens to
   the initiating MCP connection instead of a shared server-global account.
+- Added connection-scoped MCP runtime readiness state so explicit tenant
+  refresh, discovery, pending auth, session ids, and authenticated tool caches
+  live on the acting MCP connection while local mode keeps legacy server-row
+  compatibility.
 
 ### Fixed
 
