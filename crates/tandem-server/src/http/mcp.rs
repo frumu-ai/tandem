@@ -1461,12 +1461,19 @@ pub(crate) async fn sync_mcp_tools_for_server_for_tenant(
     name: &str,
     tenant_context: &TenantContext,
 ) -> usize {
-    let prefix = format!("mcp.{}.", mcp_namespace_segment(name));
-    state.tools.unregister_by_prefix(&prefix).await;
-    let tools = state
+    let scoped_count = state
         .mcp
         .server_tools_for_tenant(name, tenant_context)
-        .await;
+        .await
+        .len();
+    let _ = resync_mcp_bridge_tools_for_server(state, name).await;
+    scoped_count
+}
+
+async fn resync_mcp_bridge_tools_for_server(state: &AppState, name: &str) -> (usize, usize) {
+    let prefix = format!("mcp.{}.", mcp_namespace_segment(name));
+    let removed = state.tools.unregister_by_prefix(&prefix).await;
+    let tools = state.mcp.bridge_tools_for_server(name).await;
     for tool in &tools {
         let schema = ToolSchema::new(
             tool.namespaced_name.clone(),
@@ -1491,7 +1498,7 @@ pub(crate) async fn sync_mcp_tools_for_server_for_tenant(
             )
             .await;
     }
-    tools.len()
+    (removed, tools.len())
 }
 
 pub(super) async fn connect_mcp(
@@ -1536,13 +1543,13 @@ pub(super) async fn connect_mcp(
             }),
         ));
     } else {
-        let prefix = format!("mcp.{}.", mcp_namespace_segment(&name));
-        let removed = state.tools.unregister_by_prefix(&prefix).await;
+        let (removed, remaining) = resync_mcp_bridge_tools_for_server(&state, &name).await;
         state.event_bus.publish(EngineEvent::new(
             "mcp.server.disconnected",
             json!({
                 "name": name,
                 "removedToolCount": removed,
+                "remainingToolCount": remaining,
                 "reason": "connect_failed"
             }),
         ));
@@ -1717,13 +1724,13 @@ pub(super) async fn refresh_mcp(
                     .ok();
                 }
             }
-            let prefix = format!("mcp.{}.", mcp_namespace_segment(&name));
-            let removed = state.tools.unregister_by_prefix(&prefix).await;
+            let (removed, remaining) = resync_mcp_bridge_tools_for_server(&state, &name).await;
             state.event_bus.publish(EngineEvent::new(
                 "mcp.server.disconnected",
                 json!({
                     "name": name,
                     "removedToolCount": removed,
+                    "remainingToolCount": remaining,
                     "reason": "refresh_failed"
                 }),
             ));

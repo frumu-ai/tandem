@@ -137,9 +137,23 @@ fn tenant_request(
 }
 
 async fn spawn_fake_notion_oauth_mcp_server() -> (String, tokio::task::JoinHandle<()>) {
-    async fn handle(axum::Json(payload): axum::Json<Value>) -> axum::Json<Value> {
+    async fn handle(
+        headers: axum::http::HeaderMap,
+        axum::Json(payload): axum::Json<Value>,
+    ) -> axum::Json<Value> {
         let id = payload.get("id").cloned().unwrap_or_else(|| json!(1));
         let method = payload.get("method").and_then(Value::as_str).unwrap_or("");
+        let auth = headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        let tool_name = if auth.contains("alice-union-token") {
+            "alice_search"
+        } else if auth.contains("bob-union-token") {
+            "bob_search"
+        } else {
+            "notion_search"
+        };
         let response = match method {
             "initialize" => json!({
                 "jsonrpc": "2.0",
@@ -159,7 +173,7 @@ async fn spawn_fake_notion_oauth_mcp_server() -> (String, tokio::task::JoinHandl
                 "result": {
                     "tools": [
                         {
-                            "name": "notion_search",
+                            "name": tool_name,
                             "description": "Search Notion",
                             "inputSchema": {
                                 "type": "object",
@@ -1193,6 +1207,58 @@ async fn mcp_oauth_session_records_tenant_actor_connection_identity() {
         Some(session.provider_id.as_str())
     );
 
+    drop(server);
+}
+
+#[tokio::test]
+async fn tenant_tool_sync_preserves_other_actor_bridge_tools() {
+    let state = test_state().await;
+    let (endpoint, server) = spawn_fake_notion_oauth_mcp_server().await;
+    state
+        .mcp
+        .add_or_update("notion".to_string(), endpoint, HashMap::new(), true)
+        .await;
+    let alice =
+        tandem_types::TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "alice");
+    let bob =
+        tandem_types::TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "bob");
+    state
+        .mcp
+        .set_bearer_token_for_tenant("notion", "alice-union-token", &alice)
+        .await
+        .expect("store alice token");
+    state
+        .mcp
+        .refresh_for_tenant("notion", &alice)
+        .await
+        .expect("refresh alice tools");
+    assert_eq!(
+        crate::http::mcp::sync_mcp_tools_for_server_for_tenant(&state, "notion", &alice).await,
+        1
+    );
+    state
+        .mcp
+        .set_bearer_token_for_tenant("notion", "bob-union-token", &bob)
+        .await
+        .expect("store bob token");
+    state
+        .mcp
+        .refresh_for_tenant("notion", &bob)
+        .await
+        .expect("refresh bob tools");
+    assert_eq!(
+        crate::http::mcp::sync_mcp_tools_for_server_for_tenant(&state, "notion", &bob).await,
+        1
+    );
+    let registered = state
+        .tools
+        .list()
+        .await
+        .into_iter()
+        .map(|schema| schema.name)
+        .collect::<Vec<_>>();
+    assert!(registered.contains(&"mcp.notion.alice_search".to_string()));
+    assert!(registered.contains(&"mcp.notion.bob_search".to_string()));
     drop(server);
 }
 

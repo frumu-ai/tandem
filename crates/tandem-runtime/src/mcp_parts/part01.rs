@@ -178,6 +178,13 @@ impl McpRegistry {
             .map(|parent| parent.join("security"))
             .unwrap_or_else(|| PathBuf::from("security"));
         let (loaded_state, loaded_connections, migrated) = load_state(&state_file);
+        let loaded_connections = loaded_connections
+            .into_iter()
+            .map(|(connection_id, mut connection)| {
+                connection.reset_transient_runtime_state();
+                (connection_id, connection)
+            })
+            .collect::<HashMap<_, _>>();
         let loaded = loaded_state
             .into_iter()
             .map(|(k, mut v)| {

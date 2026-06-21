@@ -386,6 +386,142 @@ mod tests {
         assert!(matches!(err, McpReadyError::PermanentlyFailed { .. }));
     }
 
+    #[tokio::test]
+    async fn persisted_scoped_connection_runtime_resets_on_startup() {
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let server = test_mcp_server("notion");
+        let tenant = TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "alice");
+        let owner = McpPrincipalRef::from_tenant_context(&tenant);
+        let now = now_ms();
+        let mut connection = McpConnection::tenant_connection_from_server(
+            "notion",
+            &server,
+            tenant.clone(),
+            owner,
+            now,
+        );
+        let challenge = McpAuthChallenge {
+            challenge_id: "challenge-1".to_string(),
+            tool_name: "search".to_string(),
+            authorization_url: "https://auth.example.test".to_string(),
+            message: "authorize".to_string(),
+            requested_at_ms: now,
+            status: "pending".to_string(),
+        };
+        connection.connected = true;
+        connection.last_error = Some("stale error".to_string());
+        connection.last_auth_challenge = Some(challenge.clone());
+        connection.mcp_session_id = Some("stale-session".to_string());
+        connection.tool_cache = vec![McpToolCacheEntry {
+            tool_name: "search".to_string(),
+            description: "Search".to_string(),
+            input_schema: json!({"type": "object"}),
+            fetched_at_ms: now,
+            schema_hash: "hash".to_string(),
+        }];
+        connection.tools_fetched_at_ms = Some(now);
+        connection.pending_auth_by_tool.insert(
+            "search".to_string(),
+            pending_auth_from_challenge(&challenge),
+        );
+        let connection_id = connection.connection_id.clone();
+        let persisted = McpRegistryPersistedState {
+            schema_version: MCP_REGISTRY_STATE_SCHEMA_VERSION,
+            servers: HashMap::from([("notion".to_string(), server)]),
+            connections: HashMap::from([(connection_id.clone(), connection)]),
+        };
+        std::fs::write(&file, serde_json::to_string_pretty(&persisted).unwrap())
+            .expect("write persisted mcp state");
+
+        let registry = McpRegistry::new_with_state_file(file.clone());
+        let connections = registry.list_connections().await;
+        let loaded = connections
+            .get(&connection_id)
+            .expect("scoped connection should remain persisted");
+        assert!(!loaded.connected);
+        assert!(loaded.last_error.is_none());
+        assert!(loaded.last_auth_challenge.is_none());
+        assert!(loaded.mcp_session_id.is_none());
+        assert!(loaded.tool_cache.is_empty());
+        assert!(loaded.tools_fetched_at_ms.is_none());
+        assert!(loaded.pending_auth_by_tool.is_empty());
+        assert!(registry
+            .server_tools_for_tenant("notion", &tenant)
+            .await
+            .is_empty());
+        assert!(registry.bridge_tools_for_server("notion").await.is_empty());
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[tokio::test]
+    async fn bridge_tools_for_server_unions_connected_scoped_caches() {
+        let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
+        let registry = McpRegistry::new_with_state_file(file.clone());
+        registry
+            .add_or_update(
+                "notion".to_string(),
+                "https://example.com/mcp".to_string(),
+                HashMap::new(),
+                true,
+            )
+            .await;
+        let tenant_a =
+            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "alice");
+        let tenant_b = TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "bob");
+        let now = now_ms();
+        registry
+            .set_runtime_state_for_current_tenant(
+                "notion",
+                &tenant_a,
+                McpRuntimeState::connected(
+                    Some("alice-session".to_string()),
+                    vec![McpToolCacheEntry {
+                        tool_name: "alice_search".to_string(),
+                        description: "Alice Search".to_string(),
+                        input_schema: json!({"type": "object"}),
+                        fetched_at_ms: now,
+                        schema_hash: "alice-hash".to_string(),
+                    }],
+                    now,
+                ),
+            )
+            .await;
+        registry
+            .set_runtime_state_for_current_tenant(
+                "notion",
+                &tenant_b,
+                McpRuntimeState::connected(
+                    Some("bob-session".to_string()),
+                    vec![McpToolCacheEntry {
+                        tool_name: "bob_search".to_string(),
+                        description: "Bob Search".to_string(),
+                        input_schema: json!({"type": "object"}),
+                        fetched_at_ms: now,
+                        schema_hash: "bob-hash".to_string(),
+                    }],
+                    now,
+                ),
+            )
+            .await;
+
+        let bridge_names = registry
+            .bridge_tools_for_server("notion")
+            .await
+            .into_iter()
+            .map(|tool| tool.namespaced_name)
+            .collect::<Vec<_>>();
+        assert!(bridge_names.contains(&"mcp.notion.alice_search".to_string()));
+        assert!(bridge_names.contains(&"mcp.notion.bob_search".to_string()));
+        let alice_names = registry
+            .server_tools_for_tenant("notion", &tenant_a)
+            .await
+            .into_iter()
+            .map(|tool| tool.namespaced_name)
+            .collect::<Vec<_>>();
+        assert_eq!(alice_names, vec!["mcp.notion.alice_search".to_string()]);
+        let _ = std::fs::remove_file(file);
+    }
+
     #[test]
     fn parse_remote_endpoint_supports_http_prefixes() {
         assert_eq!(

@@ -138,6 +138,16 @@ impl McpConnection {
         mcp_connection_identity_key(&self.server_id, &self.tenant_context, &self.owner)
     }
 
+    pub(crate) fn reset_transient_runtime_state(&mut self) {
+        self.connected = false;
+        self.last_error = None;
+        self.last_auth_challenge = None;
+        self.mcp_session_id = None;
+        self.tool_cache.clear();
+        self.tools_fetched_at_ms = None;
+        self.pending_auth_by_tool.clear();
+    }
+
     fn local_compatibility_from_server(server_id: &str, server: &McpServer, now_ms: u64) -> Self {
         let tenant_context = local_tenant_context();
         let owner = McpPrincipalRef::LocalImplicit;
@@ -694,6 +704,31 @@ impl McpRegistry {
             return Vec::new();
         }
         let mut rows = tool_cache_rows(&server, &connection.tool_cache);
+        rows.sort_by(|a, b| a.namespaced_name.cmp(&b.namespaced_name));
+        rows
+    }
+
+    pub async fn bridge_tools_for_server(&self, server_id: &str) -> Vec<McpRemoteTool> {
+        let Some(server) = self.servers.read().await.get(server_id).cloned() else {
+            return Vec::new();
+        };
+        if !server.enabled {
+            return Vec::new();
+        }
+        let mut by_name = HashMap::new();
+        if server.connected {
+            for row in server_tool_rows(&server) {
+                by_name.entry(row.namespaced_name.clone()).or_insert(row);
+            }
+        }
+        for connection in self.connections.read().await.values().filter(|connection| {
+            connection.server_id == server_id && connection.enabled && connection.connected
+        }) {
+            for row in tool_cache_rows(&server, &connection.tool_cache) {
+                by_name.entry(row.namespaced_name.clone()).or_insert(row);
+            }
+        }
+        let mut rows = by_name.into_values().collect::<Vec<_>>();
         rows.sort_by(|a, b| a.namespaced_name.cmp(&b.namespaced_name));
         rows
     }
