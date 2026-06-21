@@ -549,7 +549,7 @@ pub(super) async fn list_sessions(
         SessionScope::Global => {
             state
                 .storage
-                .list_sessions_scoped(tandem_core::SessionListScope::Global)
+                .list_session_summaries_scoped(tandem_core::SessionListScope::Global)
                 .await
         }
         SessionScope::Workspace => {
@@ -558,7 +558,7 @@ pub(super) async fn list_sessions(
                 Some(workspace_root) => {
                     state
                         .storage
-                        .list_sessions_scoped(tandem_core::SessionListScope::Workspace {
+                        .list_session_summaries_scoped(tandem_core::SessionListScope::Workspace {
                             workspace_root,
                         })
                         .await
@@ -1785,7 +1785,7 @@ pub(super) async fn session_status_handler(
 ) -> Json<Value> {
     let sessions = state
         .storage
-        .list_sessions_scoped(tandem_core::SessionListScope::Global)
+        .list_session_summaries_scoped(tandem_core::SessionListScope::Global)
         .await;
     let mut map = serde_json::Map::new();
     for s in sessions {

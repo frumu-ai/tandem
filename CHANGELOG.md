@@ -29,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   slow task/board refreshes. ACA probe timeout smoothing now keeps Coder
   available for a longer grace period after a known-good probe, and configured
   ACA probes can remain available when the Tandem engine itself is healthy.
+- Fixed engine session-list endpoints that could time out after large ACA runs.
+  Session list/status responses now use lightweight session summaries without
+  cloning every stored message transcript, while direct session detail APIs keep
+  returning the full conversation history.
 
 ### Changed
 

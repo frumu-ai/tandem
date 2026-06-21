@@ -196,6 +196,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_session_summaries_omit_message_history() {
+        let base = std::env::temp_dir().join(format!("tandem-core-summary-{}", Uuid::new_v4()));
+        let storage = Storage::new(&base).await.expect("storage");
+        let mut session = Session::new(Some("summary".to_string()), Some(".".to_string()));
+        session.messages.push(Message::new(
+            MessageRole::Assistant,
+            vec![MessagePart::Text {
+                text: "large transcript payload".repeat(1_000),
+            }],
+        ));
+        let id = session.id.clone();
+        storage.save_session(session).await.expect("save session");
+
+        let summaries = storage.list_session_summaries().await;
+        let summary = summaries.iter().find(|s| s.id == id).expect("summary");
+        assert_eq!(summary.title, "summary");
+        assert!(summary.messages.is_empty());
+
+        let full = storage.get_session(&id).await.expect("full session");
+        assert_eq!(full.messages.len(), 1);
+    }
+
+    #[tokio::test]
     async fn attach_session_persists_audit_metadata() {
         let base = std::env::temp_dir().join(format!("tandem-core-attach-{}", Uuid::new_v4()));
         let storage = Storage::new(&base).await.expect("storage");

@@ -50,6 +50,10 @@ workflow could advance.
 - When ACA is configured and the Tandem engine is healthy, ACA probe timeouts
   are smoothed as degraded-but-available instead of immediately hiding Coder
   actions.
+- Engine session list/status endpoints now return lightweight session summaries
+  instead of serializing every stored message transcript for every session.
+  This prevents large ACA coding runs from making `/session` probes time out
+  while preserving full transcript access through direct session detail APIs.
 
 ### MCP Provider Guidance
 

@@ -1256,6 +1256,61 @@ async fn api_session_alias_lists_sessions() {
 }
 
 #[tokio::test]
+async fn list_sessions_omits_message_history_but_get_session_keeps_it() {
+    let state = test_state().await;
+    let mut session = Session::new(Some("summary-only".to_string()), Some(".".to_string()));
+    session.messages.push(Message::new(
+        MessageRole::Assistant,
+        vec![MessagePart::Text {
+            text: "large transcript payload".repeat(1_000),
+        }],
+    ));
+    let session_id = session.id.clone();
+    state.storage.save_session(session).await.expect("save");
+    let app = app_router(state.clone());
+
+    let list_req = Request::builder()
+        .method("GET")
+        .uri("/session?scope=global")
+        .body(Body::empty())
+        .expect("list request");
+    let list_resp = app.clone().oneshot(list_req).await.expect("list response");
+    assert_eq!(list_resp.status(), StatusCode::OK);
+    let list_body = to_bytes(list_resp.into_body(), usize::MAX)
+        .await
+        .expect("list body");
+    let list_payload: Value = serde_json::from_slice(&list_body).expect("list json");
+    let listed = list_payload
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item.get("id").and_then(Value::as_str) == Some(session_id.as_str()))
+        })
+        .expect("listed session");
+    assert_eq!(listed.get("messages").and_then(Value::as_array).unwrap().len(), 0);
+
+    let get_req = Request::builder()
+        .method("GET")
+        .uri(format!("/session/{session_id}"))
+        .body(Body::empty())
+        .expect("get request");
+    let get_resp = app.oneshot(get_req).await.expect("get response");
+    assert_eq!(get_resp.status(), StatusCode::OK);
+    let get_body = to_bytes(get_resp.into_body(), usize::MAX)
+        .await
+        .expect("get body");
+    let get_payload: Value = serde_json::from_slice(&get_body).expect("get json");
+    assert_eq!(
+        get_payload
+            .get("messages")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(1)
+    );
+}
+
+#[tokio::test]
 async fn create_session_accepts_camel_case_model_spec() {
     let state = test_state().await;
     let app = app_router(state);
