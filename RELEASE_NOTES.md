@@ -42,6 +42,14 @@ MCP connections.
   tool caches on the actor's connection, and tenant-aware tool lists read from
   that scoped cache while local single-user mode preserves the existing server
   row behavior.
+- Added Automation V2 MCP connection grants plus bridge-level run-as
+  enforcement. MCP calls can now carry selected connection/principal metadata,
+  cross-actor connection ids fail closed before upstream dispatch, delegated
+  service-principal calls are resolved to the service connection, and protected
+  audit records include the actual acting MCP principal and connection.
+- Updated Automation V2 MCP preflight discovery to use tenant-scoped readiness,
+  tool sync, and remote tool inventory, and preserved connection grants through
+  the control-panel workflow editing surfaces.
 - Fixed opaque/in-memory MCP reconnects so startup runtime-state resets no
   longer erase seeded tool inventories for local compatibility servers such as
   the test GitHub MCP fixture.

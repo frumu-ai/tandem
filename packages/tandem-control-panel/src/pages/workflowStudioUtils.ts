@@ -10,6 +10,7 @@ import {
 } from "../features/studio/catalog";
 import type {
   StudioAgentDraft,
+  StudioMcpConnectionGrant,
   StudioNodeDraft,
   StudioPromptSections,
   StudioRole,
@@ -72,6 +73,41 @@ export function toArray(input: any, key: string) {
 
 export function safeString(value: unknown) {
   return String(value || "").trim();
+}
+
+export function normalizeMcpServerNamespace(raw: string) {
+  return (
+    safeString(raw)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "") || "mcp"
+  );
+}
+
+export function normalizeMcpConnectionGrants(raw: unknown): StudioMcpConnectionGrant[] {
+  const rows = Array.isArray(raw) ? raw : [];
+  const seen = new Set<string>();
+  const grants: StudioMcpConnectionGrant[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const record = row as Record<string, any>;
+    const server = safeString(record.server || record.server_name || record.serverName);
+    if (!server) continue;
+    const connectionId = safeString(record.connection_id || record.connectionId);
+    const runAs = record.run_as ?? record.runAs;
+    const grant: StudioMcpConnectionGrant = {
+      server,
+      ...(connectionId ? { connection_id: connectionId } : {}),
+      ...(runAs && typeof runAs === "object"
+        ? { run_as: JSON.parse(JSON.stringify(runAs)) }
+        : {}),
+    };
+    const key = JSON.stringify(grant);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    grants.push(grant);
+  }
+  return grants;
 }
 
 export function normalizeStudioRole(value: unknown): StudioRole {
@@ -690,6 +726,12 @@ export function normalizeAgentDraft(row: any): StudioAgentDraft {
         ? mcpAllowedTools
         : null,
     mcpOtherAllowedTools,
+    mcpAllowedConnections: normalizeMcpConnectionGrants(
+      row?.mcpAllowedConnections ||
+        row?.mcp_allowed_connections ||
+        row?.mcp_policy?.allowed_connections ||
+        row?.mcpPolicy?.allowedConnections
+    ),
   };
 }
 
@@ -828,6 +870,12 @@ export function normalizeNodeDraft(row: any): StudioNodeDraft {
             ? []
             : null,
     mcpOtherAllowedTools: splitNodeMcpTools.otherTools,
+    mcpAllowedConnections: normalizeMcpConnectionGrants(
+      row?.mcpAllowedConnections ||
+        row?.mcp_allowed_connections ||
+        row?.mcp_policy?.allowed_connections ||
+        row?.mcpPolicy?.allowedConnections
+    ),
   });
 }
 
@@ -972,6 +1020,9 @@ export function repairDraftTemplateLinks(
       mcpOtherAllowedTools: agent.mcpOtherAllowedTools.length
         ? agent.mcpOtherAllowedTools
         : fallback?.mcpOtherAllowedTools || [],
+      mcpAllowedConnections: agent.mcpAllowedConnections.length
+        ? agent.mcpAllowedConnections
+        : fallback?.mcpAllowedConnections || [],
       modelProvider: safeString(agent.modelProvider) || fallback?.modelProvider || "",
       modelId: safeString(agent.modelId) || fallback?.modelId || "",
       avatarUrl: safeString(agent.avatarUrl) || fallback?.avatarUrl || "",
@@ -1120,6 +1171,9 @@ export function draftFromAutomation(
             agent?.mcp_policy?.allowed_servers || agent?.mcpPolicy?.allowedServers || [],
           mcpAllowedTools: splitAllowedTools.mcpTools.length ? splitAllowedTools.mcpTools : null,
           mcpOtherAllowedTools: splitAllowedTools.otherTools,
+          mcpAllowedConnections: normalizeMcpConnectionGrants(
+            agent?.mcp_policy?.allowed_connections || agent?.mcpPolicy?.allowedConnections
+          ),
         });
       })
     : [];
@@ -1135,6 +1189,7 @@ export function draftFromAutomation(
             node?.nodeId,
           agentId: node?.agent_id || node?.agentId,
           objective: node?.objective,
+          mcp_policy: node?.mcp_policy || node?.mcpPolicy,
           dependsOn: node?.depends_on || node?.dependsOn || [],
           inputRefs: node?.input_refs || node?.inputRefs || [],
           outputKind: node?.output_contract?.kind || node?.outputContract?.kind || "artifact",

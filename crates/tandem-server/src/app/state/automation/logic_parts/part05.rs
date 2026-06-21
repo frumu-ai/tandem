@@ -1730,11 +1730,14 @@ pub(crate) async fn execute_automation_v2_node(
     if let Some(mcp_tools) = agent.mcp_policy.allowed_tools.as_ref() {
         allowlist.extend(mcp_tools.clone());
     }
+    let tenant_context = automation.tenant_context();
+    let allowed_mcp_servers = agent.mcp_policy.effective_allowed_servers();
     let mcp_tool_diagnostics = sync_automation_allowed_mcp_servers(
         state,
         node,
-        &agent.mcp_policy.allowed_servers,
+        &allowed_mcp_servers,
         &allowlist,
+        &tenant_context,
     )
     .await;
     let available_tool_schemas = state.tools.list().await;

@@ -1464,6 +1464,7 @@ fn marketing_template_automation_migrates_to_split_research_flow() {
                 mcp_policy: AutomationAgentMcpPolicy {
                     allowed_servers: Vec::new(),
                     allowed_tools: None,
+                    allowed_connections: Vec::new(),
                 },
                 approval_policy: None,
             },
@@ -1481,6 +1482,7 @@ fn marketing_template_automation_migrates_to_split_research_flow() {
                 mcp_policy: AutomationAgentMcpPolicy {
                     allowed_servers: Vec::new(),
                     allowed_tools: None,
+                    allowed_connections: Vec::new(),
                 },
                 approval_policy: None,
             },

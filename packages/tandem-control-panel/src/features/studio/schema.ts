@@ -15,6 +15,12 @@ export type StudioPromptSections = {
   guardrails: string;
 };
 
+export type StudioMcpConnectionGrant = {
+  server: string;
+  connection_id?: string;
+  run_as?: unknown;
+};
+
 export type StudioAgentDraft = {
   agentId: string;
   displayName: string;
@@ -31,6 +37,7 @@ export type StudioAgentDraft = {
   mcpAllowedServers: string[];
   mcpAllowedTools: string[] | null;
   mcpOtherAllowedTools: string[];
+  mcpAllowedConnections: StudioMcpConnectionGrant[];
 };
 
 export type StudioNodeDraft = {
@@ -61,6 +68,7 @@ export type StudioNodeDraft = {
   mcpAllowedServers?: string[];
   mcpAllowedTools?: string[] | null;
   mcpOtherAllowedTools?: string[];
+  mcpAllowedConnections?: StudioMcpConnectionGrant[];
 };
 
 export type StudioWorkflowDraft = {
@@ -130,6 +138,7 @@ export function createEmptyAgentDraft(
     mcpAllowedServers: [],
     mcpAllowedTools: null,
     mcpOtherAllowedTools: [],
+    mcpAllowedConnections: [],
     ...overrides,
   };
 }
@@ -169,6 +178,7 @@ export function createEmptyNodeDraft(
     mcpAllowedServers: [],
     mcpAllowedTools: null,
     mcpOtherAllowedTools: [],
+    mcpAllowedConnections: [],
     ...overrides,
   };
 }

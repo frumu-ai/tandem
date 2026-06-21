@@ -33,6 +33,7 @@ fn marketing_template_automation_migrates_to_split_research_flow() {
                 mcp_policy: AutomationAgentMcpPolicy {
                     allowed_servers: Vec::new(),
                     allowed_tools: None,
+                    allowed_connections: Vec::new(),
                 },
                 approval_policy: None,
             },
@@ -50,6 +51,7 @@ fn marketing_template_automation_migrates_to_split_research_flow() {
                 mcp_policy: AutomationAgentMcpPolicy {
                     allowed_servers: Vec::new(),
                     allowed_tools: None,
+                    allowed_connections: Vec::new(),
                 },
                 approval_policy: None,
             },
@@ -1986,6 +1988,7 @@ async fn connector_preflight_executes_declared_required_tool_calls_generically()
                 "mcp.fake.get_me".to_string(),
                 "mcp.fake.search_items".to_string(),
             ]),
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     }];

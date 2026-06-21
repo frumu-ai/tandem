@@ -1339,6 +1339,7 @@ fn first_attempt_required_tools_prompt_requires_completed_status() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -1458,6 +1459,7 @@ fn first_attempt_required_tools_prompt_without_output_path_requires_handoff() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -1565,6 +1567,7 @@ fn prompt_includes_inline_metadata_inputs_and_temp_file_warning() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };
@@ -1667,6 +1670,7 @@ fn collect_inputs_prompt_requires_reading_before_writing() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };

@@ -960,6 +960,7 @@ fn research_finalize_prompt_includes_upstream_coverage_summary() {
         mcp_policy: crate::AutomationAgentMcpPolicy {
             allowed_servers: Vec::new(),
             allowed_tools: None,
+            allowed_connections: Vec::new(),
         },
         approval_policy: None,
     };

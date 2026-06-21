@@ -600,6 +600,7 @@ export function MyAutomationsContainer({
                   mcp_policy:
                     draftNode.toolAccessMode === "custom"
                       ? {
+                          ...(node?.mcp_policy || {}),
                           allowed_servers: (draftNode.mcpAllowedServers || [])
                             .map((entry: string) => String(entry || "").trim())
                             .filter(Boolean),
@@ -609,6 +610,7 @@ export function MyAutomationsContainer({
                               : nodeMcpAllowedTools
                                   .map((entry: string) => String(entry || "").trim())
                                   .filter(Boolean),
+                          allowed_connections: draftNode.mcpAllowedConnections || [],
                         }
                       : undefined,
                   mcpPolicy: undefined,

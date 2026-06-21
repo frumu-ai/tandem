@@ -32,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refresh, discovery, pending auth, session ids, and authenticated tool caches
   live on the acting MCP connection while local mode keeps legacy server-row
   compatibility.
+- Added Automation V2 MCP connection grants and MCP bridge run-as enforcement
+  so workflows can model user-owned or delegated service-principal MCP
+  connections, reject cross-actor connection selection before upstream dispatch,
+  and record the actual acting MCP principal/connection in protected audit
+  events.
 
 ### Fixed
 
@@ -41,6 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed non-HTTP in-memory MCP reconnects so seeded runtime tool inventories are
   preserved after startup resets, keeping test and local compatibility GitHub
   MCP tools available.
+- Fixed Automation V2 MCP preflight discovery to use tenant-aware readiness,
+  tool sync, and remote tool inventory so scheduled and enterprise runs do not
+  fall back to local-implicit MCP state while preparing scoped connector tools.
 
 ## [0.6.1] - 2026-06-20
 

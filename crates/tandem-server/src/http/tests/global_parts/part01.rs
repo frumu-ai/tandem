@@ -849,6 +849,7 @@ pub(in crate::http::tests) async fn create_test_automation_v2(
             mcp_policy: crate::AutomationAgentMcpPolicy {
                 allowed_servers: Vec::new(),
                 allowed_tools: None,
+                allowed_connections: Vec::new(),
             },
             approval_policy: None,
         }],
@@ -1009,6 +1010,7 @@ async fn create_branched_test_automation_v2(
             mcp_policy: crate::AutomationAgentMcpPolicy {
                 allowed_servers: Vec::new(),
                 allowed_tools: None,
+                allowed_connections: Vec::new(),
             },
             approval_policy: None,
         }],
@@ -1877,6 +1879,7 @@ async fn automation_v2_run_projects_backlog_tasks_into_context_blackboard() {
             mcp_policy: crate::AutomationAgentMcpPolicy {
                 allowed_servers: Vec::new(),
                 allowed_tools: None,
+                allowed_connections: Vec::new(),
             },
             approval_policy: None,
         }],

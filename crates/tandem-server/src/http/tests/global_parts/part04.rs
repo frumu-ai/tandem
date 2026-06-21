@@ -30,6 +30,7 @@ async fn automation_v2_publish_block_smoke_skips_external_action_receipts() {
             mcp_policy: crate::AutomationAgentMcpPolicy {
                 allowed_servers: Vec::new(),
                 allowed_tools: None,
+                allowed_connections: Vec::new(),
             },
             approval_policy: None,
         }],

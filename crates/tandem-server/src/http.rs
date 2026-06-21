@@ -78,6 +78,7 @@ mod marketplace;
 pub(crate) mod mcp;
 pub(crate) mod mcp_discovery;
 pub(crate) mod mcp_inventory;
+pub(crate) mod mcp_run_as;
 mod middleware;
 mod mission_builder;
 mod mission_builder_host;

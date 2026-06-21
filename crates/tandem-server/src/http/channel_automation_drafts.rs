@@ -912,6 +912,7 @@ fn build_channel_automation(draft: &ChannelAutomationDraftRecord, now: u64) -> A
                 } else {
                     Some(draft.allowed_mcp_tools.clone())
                 },
+                allowed_connections: Vec::new(),
             },
             approval_policy: None,
         }],

@@ -776,6 +776,7 @@ fn action_firewall_eval_automation(
             mcp_policy: AutomationAgentMcpPolicy {
                 allowed_servers: Vec::new(),
                 allowed_tools: None,
+                allowed_connections: Vec::new(),
             },
             approval_policy: None,
         }],

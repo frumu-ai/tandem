@@ -13,6 +13,10 @@ use tandem_types::TenantContext;
 
 use crate::routines::types::RoutineMisfirePolicy;
 
+pub use super::mcp_policy::{
+    AutomationAgentMcpPolicy, AutomationMcpConnectionGrant, AutomationMcpRunAs,
+};
+
 pub const AUTOMATION_TENANT_CONTEXT_METADATA_KEY: &str = "tenant_context";
 
 pub type AutomationV2Schedule =
@@ -295,14 +299,6 @@ pub struct AutomationAgentToolPolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AutomationAgentMcpPolicy {
-    #[serde(default)]
-    pub allowed_servers: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub allowed_tools: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutomationAgentProfile {
     pub agent_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -336,6 +332,7 @@ impl From<tandem_plan_compiler::api::ProjectedAutomationAgentProfile> for Automa
             mcp_policy: AutomationAgentMcpPolicy {
                 allowed_servers: value.allowed_mcp_servers,
                 allowed_tools: None,
+                allowed_connections: Vec::new(),
             },
             approval_policy: None,
         }

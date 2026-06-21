@@ -734,17 +734,18 @@ pub(crate) fn render_automation_v2_prompt_with_options(
             automation_prompt_apply_runtime_placeholders(local_prompt, runtime_values)
         )
     };
+    let effective_mcp_allowed_servers = agent.mcp_policy.effective_allowed_servers();
     if validator_kind != crate::AutomationOutputValidatorKind::ReviewDecision
         && tandem_plan_compiler::api::workflow_plan_should_surface_mcp_discovery(
             &connector_discovery_text,
-            &agent.mcp_policy.allowed_servers,
+            &effective_mcp_allowed_servers,
         )
     {
         let optional_connector_reference =
             enforcement::automation_node_allows_optional_connector_references(node);
         let concrete_connector_tools = automation_prompt_concrete_connector_tools(
             requested_tools,
-            &agent.mcp_policy.allowed_servers,
+            &effective_mcp_allowed_servers,
         );
         let concrete_connector_line = if concrete_connector_tools.is_empty() {
             String::new()
@@ -767,10 +768,20 @@ pub(crate) fn render_automation_v2_prompt_with_options(
                     .join(", ")
             )
         };
+        let connection_grants_line = if agent.mcp_policy.allowed_connections.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n- Allowed MCP connection/run-as grants: {}.",
+                serde_json::to_string_pretty(&agent.mcp_policy.allowed_connections)
+                    .unwrap_or_else(|_| "[]".to_string())
+            )
+        };
         sections.push(format!(
-            "MCP Discovery:\n- MCP-backed work may be relevant for this node.\n- Allowed MCP servers: {}.\n- Call `mcp_list` before reading or comparing sources so you know which connector-backed tools are available. If you need the catalog overlay, follow up with `mcp_list_catalog`, and if you have identified a gap that needs human approval, use `mcp_request_capability`.\n- Prefer MCP-backed tools for source-specific systems when the connector exists.{}\n- If the objective depends on a connector-backed source and no relevant MCP tool is available, finish the artifact from the local evidence you already have and record that limitation instead of repeating discovery calls.",
-            serde_json::to_string_pretty(&agent.mcp_policy.allowed_servers)
+            "MCP Discovery:\n- MCP-backed work may be relevant for this node.\n- Allowed MCP servers: {}.{}\n- Call `mcp_list` before reading or comparing sources so you know which connector-backed tools are available. If you need the catalog overlay, follow up with `mcp_list_catalog`, and if you have identified a gap that needs human approval, use `mcp_request_capability`.\n- Prefer MCP-backed tools for source-specific systems when the connector exists.{}\n- If the objective depends on a connector-backed source and no relevant MCP tool is available, finish the artifact from the local evidence you already have and record that limitation instead of repeating discovery calls.",
+            serde_json::to_string_pretty(&effective_mcp_allowed_servers)
                 .unwrap_or_else(|_| "[]".to_string()),
+            connection_grants_line,
             concrete_connector_line
         ));
     }

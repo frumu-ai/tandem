@@ -1039,6 +1039,7 @@ async fn sync_automation_allowed_mcp_servers(
     node: &AutomationFlowNode,
     allowed_servers: &[String],
     allowlist: &[String],
+    tenant_context: &TenantContext,
 ) -> Value {
     let mcp_servers = state.mcp.list().await;
     let enabled_server_names = mcp_servers
@@ -1085,8 +1086,9 @@ async fn sync_automation_allowed_mcp_servers(
             // automation_connect_mcp_server_with_retry helper.
             state
                 .mcp
-                .ensure_ready(
+                .ensure_ready_for_tenant(
                     server_name,
+                    tenant_context,
                     tandem_runtime::mcp_ready::EnsureReadyPolicy::with_retries(3, 750),
                 )
                 .await
@@ -1095,7 +1097,12 @@ async fn sync_automation_allowed_mcp_servers(
             false
         };
         let sync_count = if connected {
-            crate::http::mcp::sync_mcp_tools_for_server(state, server_name).await as u64
+            crate::http::mcp::sync_mcp_tools_for_server_for_tenant(
+                state,
+                server_name,
+                tenant_context,
+            )
+            .await as u64
         } else {
             0
         };
@@ -1130,7 +1137,7 @@ async fn sync_automation_allowed_mcp_servers(
         wildcard_selected_servers.dedup();
     }
 
-    let remote_tools = state.mcp.list_tools().await;
+    let remote_tools = state.mcp.list_tools_for_tenant(tenant_context).await;
     let registered_tool_names = state
         .tools
         .list()
