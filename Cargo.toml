@@ -9,6 +9,7 @@ members = [
     "crates/tandem-document",
     "crates/tandem-providers",
     "crates/tandem-tools",
+    "crates/tandem-automation",
     "crates/tandem-server",
     "crates/tandem-runtime",
     "crates/tandem-tui",

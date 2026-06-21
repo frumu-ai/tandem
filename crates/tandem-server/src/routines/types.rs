@@ -1,19 +1,13 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub use tandem_automation::RoutineMisfirePolicy;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RoutineSchedule {
     IntervalSeconds { seconds: u64 },
     Cron { expression: String },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case", tag = "type")]
-pub enum RoutineMisfirePolicy {
-    Skip,
-    RunOnce,
-    CatchUp { max_runs: u32 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
