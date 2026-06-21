@@ -12,6 +12,8 @@ pub struct EventBus {
     tx: broadcast::Sender<EngineEvent>,
     session_part_tx: mpsc::UnboundedSender<EngineEvent>,
     session_part_rx: std::sync::Arc<Mutex<Option<mpsc::UnboundedReceiver<EngineEvent>>>>,
+    runtime_event_log_tx: mpsc::UnboundedSender<EngineEvent>,
+    runtime_event_log_rx: std::sync::Arc<Mutex<Option<mpsc::UnboundedReceiver<EngineEvent>>>>,
     seq: Arc<AtomicU64>,
 }
 
@@ -19,10 +21,13 @@ impl EventBus {
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(2048);
         let (session_part_tx, session_part_rx) = mpsc::unbounded_channel();
+        let (runtime_event_log_tx, runtime_event_log_rx) = mpsc::unbounded_channel();
         Self {
             tx,
             session_part_tx,
             session_part_rx: std::sync::Arc::new(Mutex::new(Some(session_part_rx))),
+            runtime_event_log_tx,
+            runtime_event_log_rx: std::sync::Arc::new(Mutex::new(Some(runtime_event_log_rx))),
             seq: Arc::new(AtomicU64::new(1)),
         }
     }
@@ -42,6 +47,10 @@ impl EventBus {
         self.session_part_rx.lock().ok()?.take()
     }
 
+    pub fn take_runtime_event_log_receiver(&self) -> Option<mpsc::UnboundedReceiver<EngineEvent>> {
+        self.runtime_event_log_rx.lock().ok()?.take()
+    }
+
     /// Publish an event, stamping the canonical [`RuntimeEventEnvelope`]
     /// (event id, monotonic seq, schema version, occurred-at, correlation
     /// ids) when the emitter did not provide one. Centralizing the stamp
@@ -52,6 +61,7 @@ impl EventBus {
         if should_enqueue_session_part_event(&event) {
             let _ = self.session_part_tx.send(event.clone());
         }
+        let _ = self.runtime_event_log_tx.send(event.clone());
         let _ = self.tx.send(event);
     }
 
@@ -219,6 +229,29 @@ mod tests {
         assert_eq!(first_envelope.session_id.as_deref(), Some("ses_1"));
         assert_eq!(second_envelope.session_id.as_deref(), Some("ses_1"));
         assert_eq!(second_envelope.run_id.as_deref(), Some("run_1"));
+    }
+
+    #[tokio::test]
+    async fn runtime_event_log_queue_buffers_events_before_consumer_is_taken() {
+        let bus = EventBus::new();
+
+        bus.publish(EngineEvent::new(
+            "session.run.started",
+            json!({"sessionID": "ses_1", "runID": "run_1"}),
+        ));
+
+        let mut rx = bus
+            .take_runtime_event_log_receiver()
+            .expect("runtime event log receiver");
+        let received = rx.recv().await.expect("queued event");
+        assert_eq!(received.event_type, "session.run.started");
+        let envelope = received.envelope.expect("envelope");
+        assert_eq!(envelope.session_id.as_deref(), Some("ses_1"));
+        assert_eq!(envelope.run_id.as_deref(), Some("run_1"));
+        assert!(
+            bus.take_runtime_event_log_receiver().is_none(),
+            "runtime event log receiver is single-consumer"
+        );
     }
 
     #[tokio::test]

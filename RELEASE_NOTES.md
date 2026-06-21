@@ -9,6 +9,13 @@ runtime deployments. The first change is a source-of-truth design for separating
 MCP server definitions from user-owned, service-principal, shared, and delegated
 MCP connections.
 
+### Runtime Observability
+
+- Runtime event persistence now consumes a dedicated event-bus queue, so
+  canonical run/session events published before the background persister starts
+  are still written to `runtime/events.jsonl` for later replay through
+  `/runs/{run_id}/events`.
+
 ### Enterprise MCP Identity
 
 - Added the enterprise MCP identity and delegation design for principal-scoped

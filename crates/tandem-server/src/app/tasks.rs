@@ -803,6 +803,11 @@ pub async fn run_session_context_run_journaler(state: AppState) {
 }
 
 pub async fn run_runtime_event_log_persister(state: AppState) {
+    let Some(mut rx) = state.event_bus.take_runtime_event_log_receiver() else {
+        tracing::warn!("runtime event log persister: skipped because receiver was already taken");
+        return;
+    };
+
     if !wait_for_runtime_ready_or_exit(&state, "runtime_event_log_persister").await {
         return;
     }
@@ -832,33 +837,80 @@ pub async fn run_runtime_event_log_persister(state: AppState) {
     }
 
     let mut context_cache = RuntimeEventLogContextCache::default();
-    let mut rx = state.event_bus.subscribe();
-    loop {
-        match rx.recv().await {
-            Ok(event) => {
-                let Some(row) = RuntimeEventLogRow::from_engine_event(&event) else {
-                    continue;
-                };
-                let row = enrich_runtime_event_log_row(&state, row, &mut context_cache).await;
-                if let Err(error) =
-                    append_runtime_event_log_row(&state.runtime_events_path, &row).await
-                {
-                    tracing::warn!(
-                        error = %error,
-                        event_id = row.event_id(),
-                        seq = row.seq(),
-                        "runtime event log persister failed to append event"
-                    );
-                }
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                tracing::warn!(
-                    dropped_events = count,
-                    "runtime event log persister lagged; sequence gaps may be visible in the log"
-                );
-            }
+    while let Some(event) = rx.recv().await {
+        let Some(row) = RuntimeEventLogRow::from_engine_event(&event) else {
+            continue;
+        };
+        let row = enrich_runtime_event_log_row(&state, row, &mut context_cache).await;
+        if let Err(error) = append_runtime_event_log_row(&state.runtime_events_path, &row).await {
+            tracing::warn!(
+                error = %error,
+                event_id = row.event_id(),
+                seq = row.seq(),
+                "runtime event log persister failed to append event"
+            );
         }
+    }
+}
+
+#[cfg(test)]
+mod runtime_event_log_persister_tests {
+    use serde_json::json;
+    use tandem_types::EngineEvent;
+
+    use super::*;
+
+    async fn wait_for_persisted_event(
+        path: &std::path::Path,
+        tenant: &TenantContext,
+        run_id: &str,
+    ) -> Vec<RuntimeEventLogRow> {
+        for _ in 0..50 {
+            let rows = crate::runtime_event_log::query_runtime_event_log(
+                path,
+                tenant,
+                crate::runtime_event_log::RuntimeEventLogQuery {
+                    run_id,
+                    after_seq: None,
+                    limit: None,
+                },
+            );
+            if !rows.is_empty() {
+                return rows;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Vec::new()
+    }
+
+    #[tokio::test]
+    async fn persister_flushes_events_published_before_it_starts() {
+        let mut state = crate::test_support::test_state().await;
+        state.runtime_events_path = std::env::temp_dir().join(format!(
+            "runtime-events-prestart-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
+        let tenant = TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "user-a");
+
+        state.event_bus.publish(EngineEvent::new(
+            "session.run.started",
+            json!({
+                "sessionID": "session-a",
+                "runID": "run-a",
+                "tenantContext": tenant.clone(),
+            }),
+        ));
+
+        let persister = tokio::spawn(run_runtime_event_log_persister(state.clone()));
+        let rows = wait_for_persisted_event(&state.runtime_events_path, &tenant, "run-a").await;
+
+        persister.abort();
+        let _ = tokio::fs::remove_file(&state.runtime_events_path).await;
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].run_id(), Some("run-a"));
+        assert_eq!(rows[0].session_id(), Some("session-a"));
+        assert_eq!(rows[0].event.event_type.as_str(), "session.run.started");
     }
 }
 
