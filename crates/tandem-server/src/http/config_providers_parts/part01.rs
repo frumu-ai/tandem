@@ -628,7 +628,7 @@ pub(super) async fn provider_oauth_authorize(
     let authorization_url =
         build_openai_codex_authorization_url(&redirect_uri, &code_challenge, &state_token);
 
-    state.provider_oauth_sessions.write().await.insert(
+    state.oauth.provider_sessions().write().await.insert(
         session_id.clone(),
         ProviderOAuthSessionRecord {
             session_id: session_id.clone(),
@@ -672,7 +672,7 @@ pub(super) async fn provider_oauth_status(
     let _ = refresh_openai_codex_oauth_if_needed(&state, &tenant_context).await;
 
     if let Some(session_id) = query.session_id.as_deref() {
-        if let Some(session) = state.provider_oauth_sessions.read().await.get(session_id) {
+        if let Some(session) = state.oauth.provider_sessions().read().await.get(session_id) {
             if session.tenant_context != tenant_context {
                 return Json(json!({
                     "ok": true,
@@ -1542,11 +1542,13 @@ async fn authorize_api_token_management(
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| json!({
-            "ok": false,
-            "error": "missing bootstrap token",
-            "code": "TOKEN_BOOTSTRAP_REQUIRED"
-        }))?;
+        .ok_or_else(|| {
+            json!({
+                "ok": false,
+                "error": "missing bootstrap token",
+                "code": "TOKEN_BOOTSTRAP_REQUIRED"
+            })
+        })?;
     if constant_time_token_eq(provided, &expected) {
         Ok(())
     } else {

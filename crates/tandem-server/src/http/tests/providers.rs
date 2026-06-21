@@ -587,7 +587,7 @@ async fn provider_oauth_authorize_uses_hosted_public_callback_for_codex() {
         "did not expect localhost callback in hosted authorization URL: {authorization_url}"
     );
 
-    let sessions = state.provider_oauth_sessions.read().await;
+    let sessions = state.oauth.provider_sessions().read().await;
     let session = sessions.get(&session_id).expect("stored oauth session");
     assert_eq!(session.provider_id, "openai-codex");
     assert_eq!(

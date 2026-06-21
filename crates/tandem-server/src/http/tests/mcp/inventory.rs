@@ -27,7 +27,8 @@ async fn mcp_inventory_redacts_and_filters_connections_by_actor() {
     let alice_tenant =
         tandem_types::TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "alice");
     let alice_session = state
-        .mcp_oauth_sessions
+        .oauth
+        .mcp_sessions()
         .read()
         .await
         .values()
@@ -51,7 +52,8 @@ async fn mcp_inventory_redacts_and_filters_connections_by_actor() {
     let bob_tenant =
         tandem_types::TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "bob");
     let bob_session = state
-        .mcp_oauth_sessions
+        .oauth
+        .mcp_sessions()
         .read()
         .await
         .values()

@@ -79,6 +79,10 @@ MCP connections.
   MCP run-as policy records, routine misfire policy, scheduler queue metadata,
   and shared-context metadata parsing now compile outside `tandem-server`, while
   the server keeps compatibility re-exports for existing call sites.
+- Began the AppState domain-manager cleanup by moving provider and MCP OAuth
+  callback session maps behind a dedicated OAuth state manager. This reduces
+  top-level runtime state sprawl and gives OAuth flows an explicit lock-order
+  boundary without changing sign-in behavior.
 - Fixed opaque/in-memory MCP reconnects so startup runtime-state resets no
   longer erase seeded tool inventories for local compatibility servers such as
   the test GitHub MCP fixture.

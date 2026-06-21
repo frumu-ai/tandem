@@ -893,9 +893,12 @@ async fn start_mcp_oauth_session(
             .mcp
             .clear_auth_challenge_for_tenant(name, tenant_context)
             .await;
-        state.mcp_oauth_sessions.write().await.retain(|_, session| {
-            session.server_name != name || session.tenant_context != *tenant_context
-        });
+        state
+            .oauth
+            .retain_mcp_sessions(|session| {
+                session.server_name != name || session.tenant_context != *tenant_context
+            })
+            .await;
     }
 
     let bootstrap =
@@ -979,10 +982,9 @@ async fn start_mcp_oauth_session(
         error: None,
     };
     state
-        .mcp_oauth_sessions
-        .write()
-        .await
-        .insert(session_id.clone(), session.clone());
+        .oauth
+        .insert_mcp_session(session_id.clone(), session.clone())
+        .await;
     publish_mcp_oauth_event(state, "mcp.connection.oauth_started", &session, None).await;
     let _ = state
         .mcp
@@ -997,24 +999,21 @@ async fn find_pending_mcp_oauth_session(
     tenant_context: &TenantContext,
 ) -> Option<McpOAuthSessionRecord> {
     state
-        .mcp_oauth_sessions
-        .read()
-        .await
-        .values()
-        .find(|session| {
+        .oauth
+        .find_mcp_session(|session| {
             session.server_name == server_name
                 && session.tenant_context == *tenant_context
                 && session.status.trim().eq_ignore_ascii_case("pending")
                 && session.expires_at_ms > crate::now_ms()
         })
-        .cloned()
+        .await
 }
 
 async fn remove_mcp_oauth_sessions_for_server(state: &AppState, server_name: &str) -> usize {
-    let mut sessions = state.mcp_oauth_sessions.write().await;
-    let before = sessions.len();
-    sessions.retain(|_, session| session.server_name != server_name);
-    before.saturating_sub(sessions.len())
+    state
+        .oauth
+        .retain_mcp_sessions(|session| session.server_name != server_name)
+        .await
 }
 
 async fn publish_mcp_oauth_event(
@@ -1127,21 +1126,16 @@ async fn finish_mcp_oauth_callback(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "missing oauth state".to_string())?;
-    let session_id = {
-        let sessions = state.mcp_oauth_sessions.read().await;
-        sessions.iter().find_map(|(session_id, session)| {
-            (session.server_name == name && session.state == state_token)
-                .then(|| session_id.clone())
-        })
-    }
-    .ok_or_else(|| "mcp oauth session not found or expired".to_string())?;
+    let session_id = state
+        .oauth
+        .find_mcp_session_id(|session| session.server_name == name && session.state == state_token)
+        .await
+        .ok_or_else(|| "mcp oauth session not found or expired".to_string())?;
 
     let session = state
-        .mcp_oauth_sessions
-        .read()
+        .oauth
+        .get_mcp_session(&session_id)
         .await
-        .get(&session_id)
-        .cloned()
         .ok_or_else(|| "mcp oauth session not found".to_string())?;
     if let Some(request_tenant) = request_tenant.as_ref() {
         if &session.tenant_context != request_tenant {
@@ -1189,10 +1183,13 @@ async fn finish_mcp_oauth_callback(
             .filter(|value| !value.is_empty())
             .map(str::to_string)
             .unwrap_or_else(|| error.to_string());
-        if let Some(session) = state.mcp_oauth_sessions.write().await.get_mut(&session_id) {
-            session.status = "error".to_string();
-            session.error = Some(detail.clone());
-        }
+        state
+            .oauth
+            .update_mcp_session(&session_id, |session| {
+                session.status = "error".to_string();
+                session.error = Some(detail.clone());
+            })
+            .await;
         publish_mcp_oauth_event(
             &state,
             "mcp.connection.oauth_denied",
@@ -1308,19 +1305,25 @@ async fn finish_mcp_oauth_callback(
             ));
         }
         Err(error) => {
-            if let Some(session_mut) = state.mcp_oauth_sessions.write().await.get_mut(&session_id) {
-                session_mut.status = "error".to_string();
-                session_mut.error = Some(error.clone());
-            }
+            state
+                .oauth
+                .update_mcp_session(&session_id, |session| {
+                    session.status = "error".to_string();
+                    session.error = Some(error.clone());
+                })
+                .await;
             return Err(error);
         }
     }
     publish_mcp_oauth_event(&state, "mcp.connection.oauth_completed", &session, None).await;
 
-    if let Some(session_mut) = state.mcp_oauth_sessions.write().await.get_mut(&session_id) {
-        session_mut.status = "connected".to_string();
-        session_mut.error = None;
-    }
+    state
+        .oauth
+        .update_mcp_session(&session_id, |session| {
+            session.status = "connected".to_string();
+            session.error = None;
+        })
+        .await;
     Ok(())
 }
 
@@ -1766,9 +1769,12 @@ pub(super) async fn auth_mcp(
             .mcp
             .clear_auth_challenge_for_tenant(&name, &tenant_context)
             .await;
-        state.mcp_oauth_sessions.write().await.retain(|_, pending| {
-            pending.server_name != name || pending.tenant_context != tenant_context
-        });
+        state
+            .oauth
+            .retain_mcp_sessions(|pending| {
+                pending.server_name != name || pending.tenant_context != tenant_context
+            })
+            .await;
     }
     let server = state.mcp.list().await.get(&name).cloned();
     if server.as_ref().is_some_and(mcp_uses_oauth) {
@@ -1849,9 +1855,12 @@ pub(super) async fn authenticate_mcp(
                 .mcp
                 .clear_auth_challenge_for_tenant(&name, &tenant_context)
                 .await;
-            state.mcp_oauth_sessions.write().await.retain(|_, pending| {
-                pending.server_name != name || pending.tenant_context != tenant_context
-            });
+            state
+                .oauth
+                .retain_mcp_sessions(|pending| {
+                    pending.server_name != name || pending.tenant_context != tenant_context
+                })
+                .await;
         } else {
             let last_auth_challenge = mcp_auth_challenge_from_session(&session);
             let authorization_url = last_auth_challenge.authorization_url.clone();

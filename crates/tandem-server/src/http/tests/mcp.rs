@@ -984,7 +984,8 @@ async fn mcp_connect_discovers_www_authenticate_oauth_and_callback_connects_serv
     assert_eq!(pending_challenge.authorization_url, authorization_url);
 
     let session = state
-        .mcp_oauth_sessions
+        .oauth
+        .mcp_sessions()
         .read()
         .await
         .values()
@@ -1061,7 +1062,8 @@ async fn mcp_oauth_session_records_tenant_actor_connection_identity() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     let session = state
-        .mcp_oauth_sessions
+        .oauth
+        .mcp_sessions()
         .read()
         .await
         .values()
@@ -1121,7 +1123,8 @@ async fn mcp_oauth_session_records_tenant_actor_connection_identity() {
     let bob_tenant =
         tandem_types::TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "bob");
     let bob_session = state
-        .mcp_oauth_sessions
+        .oauth
+        .mcp_sessions()
         .read()
         .await
         .values()
@@ -1289,7 +1292,8 @@ async fn mcp_oauth_callback_rejects_cross_actor_context() {
         .expect("connect response");
     assert_eq!(connect_resp.status(), StatusCode::OK);
     let session = state
-        .mcp_oauth_sessions
+        .oauth
+        .mcp_sessions()
         .read()
         .await
         .values()
@@ -1329,7 +1333,8 @@ async fn mcp_oauth_callback_rejects_cross_actor_context() {
         .expect("callback body");
     assert!(String::from_utf8_lossy(&callback_body).contains("tenant context did not match"));
     let session_after = state
-        .mcp_oauth_sessions
+        .oauth
+        .mcp_sessions()
         .read()
         .await
         .get(&session.session_id)
@@ -1412,7 +1417,7 @@ async fn mcp_delete_auth_clears_stale_oauth_material() {
     .expect("store registry oauth credential");
     tandem_core::set_provider_oauth_credential(&provider_id, stale_credential)
         .expect("store fallback oauth credential");
-    state.mcp_oauth_sessions.write().await.insert(
+    state.oauth.mcp_sessions().write().await.insert(
         "pending-session-1".to_string(),
         McpOAuthSessionRecord {
             session_id: "pending-session-1".to_string(),
@@ -1500,7 +1505,8 @@ async fn mcp_delete_auth_clears_stale_oauth_material() {
     assert!(notion.tool_cache.is_empty());
     assert!(notion.tools_fetched_at_ms.is_none());
     assert!(state
-        .mcp_oauth_sessions
+        .oauth
+        .mcp_sessions()
         .read()
         .await
         .values()
@@ -1538,7 +1544,8 @@ async fn mcp_refresh_silently_renews_expired_oauth_token() {
     assert_eq!(connect_resp.status(), StatusCode::OK);
 
     let session = state
-        .mcp_oauth_sessions
+        .oauth
+        .mcp_sessions()
         .read()
         .await
         .values()
@@ -1632,7 +1639,8 @@ async fn mcp_refresh_falls_back_to_global_oauth_credential() {
     assert_eq!(connect_resp.status(), StatusCode::OK);
 
     let session = state
-        .mcp_oauth_sessions
+        .oauth
+        .mcp_sessions()
         .read()
         .await
         .values()
