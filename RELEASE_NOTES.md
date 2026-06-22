@@ -16,6 +16,14 @@ MCP connections.
   written to `runtime/events.jsonl` without depending on the live broadcast
   stream or retaining events in eval-only buses.
 
+### Workflow Runtime Reliability
+
+- Workflow definitions now have an opt-in strict action validation path backed
+  by a typed action registry. Built-in workflow actions validate their `with`
+  payloads before execution, strict loads reject unknown actions with
+  source/step/field diagnostics, and MCP/tool actions can be checked against the
+  host tool catalog schema before a workflow is saved or run.
+
 ### Enterprise MCP Identity
 
 - Added the enterprise MCP identity and delegation design for principal-scoped
