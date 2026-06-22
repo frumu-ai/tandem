@@ -4,6 +4,7 @@ version = "0.6.1"
 description = "A local-first, zero-trust AI workspace application"
 authors = ["Tandem Contributors"]
 edition = "2021"
+license = "MIT OR Apache-2.0"
 
 [lib]
 name = "tandem_lib"

@@ -57,6 +57,8 @@ MCP connections.
 - Rust CI now has a security and coverage lane: cargo-audit, cargo-deny,
   documented exception handling, and nightly governance-critical llvm-cov
   artifacts for `tandem-tools`, `tandem-plan-compiler`, and `tandem-automation`.
+  The first cargo-deny baseline records scoped license exceptions with owners,
+  reasons, and expiry dates so follow-up hardening is auditable.
 
 ### Runtime Governance
 

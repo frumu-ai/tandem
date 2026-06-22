@@ -85,6 +85,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added Rust supply-chain and coverage CI: cargo-audit, cargo-deny, nightly
   governance-critical llvm-cov reports, and initial coverage baselines for
   `tandem-tools`, `tandem-plan-compiler`, and `tandem-automation`.
+- Documented the initial cargo-deny license exception baseline, including
+  owner, reason, and expiry metadata for scoped BUSL and third-party dependency
+  exceptions.
 
 ### Changed
 

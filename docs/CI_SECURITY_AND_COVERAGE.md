@@ -37,6 +37,17 @@ Advisory, license, source, and ban exceptions must be temporary and auditable.
 BUSL exceptions are allowed only for Tandem-owned source-available crates listed
 in `docs/LICENSING.md`.
 
+### Current License Exceptions
+
+| Crate                      | License               | Owner                | Reason                                                                                                                                                | Expires    |
+| -------------------------- | --------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| `tandem-plan-compiler`     | `BUSL-1.1`            | Runtime governance   | Tandem-owned source-available compiler crate documented in `docs/LICENSING.md`.                                                                       | 2027-06-30 |
+| `tandem-governance-engine` | `BUSL-1.1`            | Runtime governance   | Tandem-owned source-available governance crate documented in `docs/LICENSING.md`.                                                                     | 2027-06-30 |
+| `auto_generate_cdp`        | `GPL-3.0-or-later`    | Browser runtime      | Existing `headless_chrome` build dependency for CDP protocol generation; replace or re-validate before raising license gates further.                 | 2026-09-30 |
+| `html2md`                  | `GPL-3.0-or-later`    | Tools runtime        | Existing HTML-to-Markdown converter used by browser/tools extraction paths; replace with a permissive converter before hardening distribution policy. | 2026-09-30 |
+| `libfuzzer-sys`            | `NCSA`                | Runtime dependencies | OSI-approved permissive transitive dependency through `rav1e`/`image`; keep scoped by crate name.                                                     | 2027-06-30 |
+| `webpki-root-certs`        | `CDLA-Permissive-2.0` | Runtime dependencies | Permissive root certificate data dependency through `rustls-platform-verifier`/`reqwest`; keep scoped by crate name.                                  | 2027-06-30 |
+
 ## Coverage Baselines
 
 `.config/coverage-baseline.json` stores governance-critical baseline floors.

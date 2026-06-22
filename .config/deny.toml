@@ -26,6 +26,10 @@ allow = [
 exceptions = [
     { name = "tandem-plan-compiler", allow = ["BUSL-1.1"] },
     { name = "tandem-governance-engine", allow = ["BUSL-1.1"] },
+    { name = "auto_generate_cdp", allow = ["GPL-3.0-or-later"] },
+    { name = "html2md", allow = ["GPL-3.0-or-later"] },
+    { name = "libfuzzer-sys", allow = ["NCSA"] },
+    { name = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] },
 ]
 
 [licenses.private]
