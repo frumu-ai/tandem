@@ -1,6 +1,7 @@
 use super::*;
 use tandem_tools::{
-    ToolDispatchContext, ToolDispatchLedger, ToolDispatchLedgerEvent, ToolDispatchSource,
+    ToolDispatchContext, ToolDispatchLedger, ToolDispatchLedgerEvent, ToolDispatchPolicyOutcome,
+    ToolDispatchSource, ToolDispatchStatus,
 };
 
 #[derive(Clone)]
@@ -52,6 +53,7 @@ impl EngineLoop {
             .with_ledger(std::sync::Arc::new(EngineToolDispatchLedger {
                 event_bus: self.event_bus.clone(),
             }));
+        let timeout_dispatch_context = dispatch_context.clone();
         match tokio::time::timeout(
             Duration::from_millis(timeout_ms),
             self.tool_dispatcher.dispatch_with_cancel_and_progress(
@@ -65,7 +67,23 @@ impl EngineLoop {
         .await
         {
             Ok(result) => result,
-            Err(_) => anyhow::bail!("TOOL_EXEC_TIMEOUT_MS_EXCEEDED({timeout_ms})"),
+            Err(_) => {
+                timeout_dispatch_context
+                    .ledger
+                    .record(ToolDispatchLedgerEvent {
+                        tool: tool.to_string(),
+                        canonical_tool: None,
+                        tenant_context: timeout_dispatch_context.tenant_context.clone(),
+                        source: timeout_dispatch_context.source.clone(),
+                        scope_allowlist: timeout_dispatch_context.scope_allowlist.clone(),
+                        policy_outcome: ToolDispatchPolicyOutcome::Allowed,
+                        policy_decision_id: None,
+                        status: ToolDispatchStatus::Failed,
+                        error: Some(format!("TOOL_EXEC_TIMEOUT_MS_EXCEEDED({timeout_ms})")),
+                    })
+                    .await;
+                anyhow::bail!("TOOL_EXEC_TIMEOUT_MS_EXCEEDED({timeout_ms})");
+            }
         }
     }
 
