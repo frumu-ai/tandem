@@ -11,6 +11,7 @@ pub mod runtime;
 pub mod runtime_event;
 pub mod session;
 pub mod tool;
+pub mod tool_name;
 
 pub use tandem_enterprise_contract::{
     AccessDecision, AccessEffect, AccessPermission, AssertionMetadata, AuthorityChain,
@@ -44,3 +45,4 @@ pub use runtime::*;
 pub use runtime_event::*;
 pub use session::*;
 pub use tool::*;
+pub use tool_name::*;

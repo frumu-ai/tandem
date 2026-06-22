@@ -807,33 +807,11 @@ struct SearchResultEntry {
 }
 
 fn canonical_tool_name(name: &str) -> String {
-    match name.trim().to_ascii_lowercase().replace('-', "_").as_str() {
-        "todowrite" | "update_todo_list" | "update_todos" => "todo_write".to_string(),
-        "run_command" | "shell" | "powershell" | "cmd" => "bash".to_string(),
-        other => other.to_string(),
-    }
+    tandem_types::canonical_tool_name(name)
 }
 
-fn strip_known_tool_namespace(name: &str) -> Option<String> {
-    const PREFIXES: [&str; 8] = [
-        "default_api:",
-        "default_api.",
-        "functions.",
-        "function.",
-        "tools.",
-        "tool.",
-        "builtin:",
-        "builtin.",
-    ];
-    for prefix in PREFIXES {
-        if let Some(rest) = name.strip_prefix(prefix) {
-            let trimmed = rest.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
-        }
-    }
-    None
+fn strip_known_tool_namespace(name: &str) -> Option<&str> {
+    tandem_types::strip_known_tool_namespace(name)
 }
 
 fn resolve_registered_tool(
@@ -845,7 +823,7 @@ fn resolve_registered_tool(
         return Some(tool.clone());
     }
     if let Some(stripped) = strip_known_tool_namespace(&canonical) {
-        let stripped = canonical_tool_name(&stripped);
+        let stripped = canonical_tool_name(stripped);
         if let Some(tool) = tools.get(&stripped) {
             return Some(tool.clone());
         }
@@ -913,7 +891,7 @@ fn resolve_batch_call_tool_name(call: &Value) -> Option<String> {
             if is_batch_wrapper_tool_name(t) {
                 Some(n.to_string())
             } else if let Some(stripped) = strip_known_tool_namespace(t) {
-                Some(stripped)
+                Some(stripped.to_string())
             } else {
                 Some(t.to_string())
             }
@@ -922,7 +900,7 @@ fn resolve_batch_call_tool_name(call: &Value) -> Option<String> {
             if is_batch_wrapper_tool_name(t) {
                 None
             } else if let Some(stripped) = strip_known_tool_namespace(t) {
-                Some(stripped)
+                Some(stripped.to_string())
             } else {
                 Some(t.to_string())
             }

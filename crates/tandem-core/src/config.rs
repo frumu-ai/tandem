@@ -1000,6 +1000,14 @@ mod tests {
             .expect("env test lock")
     }
 
+    async fn provider_auth_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        static PROVIDER_AUTH_TEST_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        PROVIDER_AUTH_TEST_LOCK
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await
+    }
+
     #[test]
     fn strip_persisted_secrets_removes_channel_bot_tokens_without_runtime_env() {
         let mut value = json!({
@@ -1042,12 +1050,13 @@ mod tests {
 
     #[tokio::test]
     async fn scrub_persisted_secrets_moves_channel_tokens_off_disk_without_runtime_env() {
+        let _guard = provider_auth_test_lock().await;
         let path = unique_temp_file("scrub");
         let original = json!({
             "channels": {
-                "telegram": {
-                    "bot_token": "tg-secret",
-                    "allowed_users": ["@alice"]
+                "slack": {
+                    "bot_token": "sl-secret",
+                    "channel_id": "C123"
                 }
             },
             "providers": {}
@@ -1068,23 +1077,22 @@ mod tests {
                 .expect("parse persisted");
         assert!(persisted
             .get("channels")
-            .and_then(|v| v.get("telegram"))
+            .and_then(|v| v.get("slack"))
             .and_then(Value::as_object)
             .is_some_and(|obj| !obj.contains_key("bot_token")));
         let stored = crate::load_provider_auth();
         assert_eq!(
-            stored
-                .get("channel::telegram::bot_token")
-                .map(|v| v.as_str()),
-            Some("tg-secret")
+            stored.get("channel::slack::bot_token").map(|v| v.as_str()),
+            Some("sl-secret")
         );
-        let _ = crate::delete_provider_auth("channel::telegram::bot_token");
+        let _ = crate::delete_provider_auth("channel::slack::bot_token");
 
         let _ = fs::remove_file(&path).await;
     }
 
     #[tokio::test]
     async fn config_store_rehydrates_channel_token_from_secure_store() {
+        let _guard = provider_auth_test_lock().await;
         let path = unique_temp_file("rehydrate-channel");
         let original = json!({
             "channels": {

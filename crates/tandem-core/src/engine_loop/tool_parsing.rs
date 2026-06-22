@@ -51,44 +51,226 @@ pub(super) fn parse_tool_invocation_from_response(input: &str) -> Option<(String
 
 pub(super) fn parse_function_style_tool_calls(input: &str) -> Vec<(String, Value)> {
     let mut calls = Vec::new();
-    let lower = input.to_lowercase();
-    let names = [
-        "todo_write",
-        "todowrite",
-        "update_todo_list",
-        "update_todos",
-    ];
-    let mut cursor = 0usize;
+    let mut in_fenced_block = false;
 
-    while cursor < lower.len() {
-        let mut best: Option<(usize, &str)> = None;
-        for name in names {
-            let needle = format!("{name}(");
-            if let Some(rel_idx) = lower[cursor..].find(&needle) {
-                let idx = cursor + rel_idx;
-                if best.as_ref().is_none_or(|(best_idx, _)| idx < *best_idx) {
-                    best = Some((idx, name));
-                }
-            }
+    for raw_line in input.lines() {
+        let trimmed_start = raw_line.trim_start();
+        if trimmed_start.starts_with("```") {
+            in_fenced_block = !in_fenced_block;
+            continue;
+        }
+        if in_fenced_block {
+            continue;
         }
 
-        let Some((tool_start, tool_name)) = best else {
-            break;
-        };
+        let candidate = strip_function_style_line_marker(raw_line.trim());
+        if candidate.is_empty() {
+            continue;
+        }
 
-        let open_paren = tool_start + tool_name.len();
-        if let Some(close_paren) = find_matching_paren(input, open_paren) {
-            if let Some(args_text) = input.get(open_paren + 1..close_paren) {
-                let args = parse_function_style_args(args_text.trim());
-                calls.push((normalize_tool_name(tool_name), Value::Object(args)));
-            }
-            cursor = close_paren.saturating_add(1);
-        } else {
-            cursor = tool_start.saturating_add(tool_name.len());
+        if let Some(segment) = explicit_function_style_tool_call_segment(candidate) {
+            collect_function_style_tool_calls(segment, &mut calls);
+            continue;
+        }
+
+        if is_standalone_function_style_tool_call(candidate) {
+            collect_function_style_tool_calls(candidate, &mut calls);
         }
     }
 
     calls
+}
+
+fn collect_function_style_tool_calls(segment: &str, calls: &mut Vec<(String, Value)>) {
+    let mut cursor = 0usize;
+
+    while cursor < segment.len() {
+        let Some((tool_start, tool_end, tool_name, open_paren)) =
+            find_next_function_style_invocation(segment, cursor)
+        else {
+            break;
+        };
+
+        if let Some(close_paren) = find_matching_paren(segment, open_paren) {
+            if let Some(args_text) = segment.get(open_paren + 1..close_paren) {
+                let args = parse_structured_function_style_args(args_text.trim());
+                calls.push((normalize_tool_name(tool_name), Value::Object(args)));
+            }
+            cursor = close_paren.saturating_add(1);
+        } else {
+            cursor = tool_end.max(tool_start.saturating_add(1));
+        }
+    }
+}
+
+fn strip_function_style_line_marker(line: &str) -> &str {
+    let trimmed = line.trim_start();
+    let without_bullet = trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+        .unwrap_or(trimmed);
+    if without_bullet.len() != trimmed.len() {
+        return without_bullet.trim_start();
+    }
+
+    let bytes = trimmed.as_bytes();
+    let mut idx = 0usize;
+    while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+        idx += 1;
+    }
+    if idx > 0 && idx < bytes.len() && matches!(bytes[idx], b'.' | b')') {
+        return trimmed[idx + 1..].trim_start();
+    }
+
+    trimmed
+}
+
+fn explicit_function_style_tool_call_segment(line: &str) -> Option<&str> {
+    const LABELS: [&str; 8] = [
+        "function_call:",
+        "function call:",
+        "tool_call:",
+        "tool call:",
+        "invocation:",
+        "invoke:",
+        "call:",
+        "tool:",
+    ];
+    let lower = line.to_ascii_lowercase();
+    LABELS.iter().find_map(|label| {
+        lower
+            .strip_prefix(label)
+            .and_then(|_| line.get(label.len()..))
+            .map(str::trim_start)
+            .filter(|rest| !rest.is_empty())
+    })
+}
+
+fn is_standalone_function_style_tool_call(line: &str) -> bool {
+    let Some((tool_start, _, _, open_paren)) = find_next_function_style_invocation(line, 0) else {
+        return false;
+    };
+    if tool_start != 0 {
+        return false;
+    }
+    let Some(close_paren) = find_matching_paren(line, open_paren) else {
+        return false;
+    };
+    line.get(close_paren + 1..)
+        .map(str::trim)
+        .is_some_and(|tail| tail.is_empty() || matches!(tail, ";" | ","))
+}
+
+fn find_next_function_style_invocation(
+    input: &str,
+    cursor: usize,
+) -> Option<(usize, usize, &str, usize)> {
+    let slice = input.get(cursor..)?;
+    for (rel_idx, ch) in slice.char_indices() {
+        let start = cursor + rel_idx;
+        if !is_tool_identifier_start(ch) {
+            continue;
+        }
+        if input
+            .get(..start)
+            .and_then(|prefix| prefix.chars().next_back())
+            .is_some_and(is_tool_identifier_continue)
+        {
+            continue;
+        }
+
+        let mut end = start + ch.len_utf8();
+        while let Some(next) = input.get(end..).and_then(|tail| tail.chars().next()) {
+            if !is_tool_identifier_continue(next) {
+                break;
+            }
+            end += next.len_utf8();
+        }
+
+        let mut open_paren = end;
+        while let Some(next) = input.get(open_paren..).and_then(|tail| tail.chars().next()) {
+            if !next.is_ascii_whitespace() {
+                break;
+            }
+            open_paren += next.len_utf8();
+        }
+
+        if input.as_bytes().get(open_paren).copied() != Some(b'(') {
+            continue;
+        }
+
+        let raw_name = input.get(start..end)?;
+        if is_supported_function_style_tool_name(raw_name) {
+            return Some((start, end, raw_name, open_paren));
+        }
+    }
+    None
+}
+
+fn is_tool_identifier_start(ch: char) -> bool {
+    ch.is_ascii_alphabetic() || ch == '_'
+}
+
+fn is_tool_identifier_continue(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':')
+}
+
+fn is_supported_function_style_tool_name(raw_name: &str) -> bool {
+    let normalized = normalize_tool_name(raw_name);
+    if normalized.starts_with("mcp.") && normalized.split('.').count() >= 3 {
+        return true;
+    }
+    matches!(
+        normalized.as_str(),
+        "apply_patch"
+            | "bash"
+            | "codesearch"
+            | "edit"
+            | "glob"
+            | "grep"
+            | "list_directory"
+            | "list_files"
+            | "mcp_list"
+            | "mcp_list_catalog"
+            | "mcp_request_capability"
+            | "memory_delete"
+            | "memory_list"
+            | "memory_search"
+            | "memory_store"
+            | "pack_builder"
+            | "question"
+            | "read"
+            | "repo.context_bundle"
+            | "repo.impact"
+            | "repo.neighbors"
+            | "repo.search"
+            | "repo.symbol"
+            | "repo.test_targets"
+            | "repo.update_changed_files"
+            | "sendmessage"
+            | "skill"
+            | "spawn_agent"
+            | "task"
+            | "taskcreate"
+            | "tasklist"
+            | "taskupdate"
+            | "teamcreate"
+            | "todo_write"
+            | "webfetch"
+            | "webfetch_html"
+            | "websearch"
+            | "write"
+    )
+}
+
+fn parse_structured_function_style_args(input: &str) -> Map<String, Value> {
+    if input.is_empty() {
+        return Map::new();
+    }
+    if let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(input) {
+        return obj;
+    }
+    parse_function_style_args(input)
 }
 
 pub(super) fn find_matching_paren(input: &str, open_paren: usize) -> Option<usize> {
@@ -560,6 +742,7 @@ pub(super) fn extract_tool_call_from_value(value: &Value) -> Option<(String, Val
             "tool_call",
             "toolCall",
             "call",
+            "function",
             "function_call",
             "functionCall",
         ] {

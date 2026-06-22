@@ -19,6 +19,7 @@ async fn repo_tools_index_and_query_structured_metadata() {
     );
     assert!(index.metadata["structured"]["debug_export_path"]
         .as_str()
+        .map(|path| path.replace('\\', "/"))
         .is_some_and(|path| path.ends_with(".tandem/repo-graph.json")));
 
     let search = RepoSearchTool

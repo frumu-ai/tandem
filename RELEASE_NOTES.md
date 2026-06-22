@@ -86,6 +86,11 @@ MCP connections.
   and the engine CLI carry tenant context and scope allowlists through one
   dispatch path, which records a single policy/scope ledger event for each
   dispatch before returning the tool result or denial.
+- Tool-call parsing, registry resolution, and approval classification now share
+  the same canonical tool-name normalizer. Function-style invocation parsing is
+  backed by a structured scanner with a committed 30+ case corpus and generated
+  parser drift coverage, reducing approval/dispatch disagreement for wrapper
+  prefixes, aliases, and concrete MCP tool names.
 
 ### Enterprise MCP Identity
 

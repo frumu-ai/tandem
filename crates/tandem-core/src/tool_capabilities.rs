@@ -216,17 +216,7 @@ fn mcp_server_segment_from_tool_name(tool_name: &str) -> String {
 }
 
 pub fn canonical_tool_name(name: &str) -> String {
-    let lowered = name.trim().to_ascii_lowercase().replace('-', "_");
-    let canonical = if let Some(stripped) = strip_known_namespace(&lowered) {
-        stripped
-    } else {
-        lowered
-    };
-    match canonical.as_str() {
-        "shell" | "powershell" | "cmd" | "run_command" => "bash".to_string(),
-        "todowrite" | "update_todo_list" | "update_todos" => "todo_write".to_string(),
-        other => other.to_string(),
-    }
+    tandem_types::canonical_tool_name(name)
 }
 
 fn tool_security_descriptor_from_name_and_capabilities(
@@ -448,28 +438,6 @@ fn tool_schema_matches_profile_from_metadata(
         | ToolCapabilityProfile::EmailSend
         | ToolCapabilityProfile::EmailDraft => false,
     }
-}
-
-fn strip_known_namespace(name: &str) -> Option<String> {
-    const PREFIXES: [&str; 8] = [
-        "default_api:",
-        "default_api.",
-        "functions.",
-        "function.",
-        "tools.",
-        "tool.",
-        "builtin:",
-        "builtin.",
-    ];
-    for prefix in PREFIXES {
-        if let Some(rest) = name.strip_prefix(prefix) {
-            let trimmed = rest.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
-        }
-    }
-    None
 }
 
 fn tool_name_looks_like_email_delivery(tool_name: &str) -> bool {

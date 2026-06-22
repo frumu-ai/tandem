@@ -254,3 +254,4 @@ impl Provider for SamplingCaptureProvider {
 
 mod context_evals;
 mod suite_c;
+mod suite_d;
