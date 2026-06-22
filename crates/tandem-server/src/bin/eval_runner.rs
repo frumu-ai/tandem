@@ -202,7 +202,7 @@ impl CliArgs {
     }
 }
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() -> ExitCode {
     let args = match CliArgs::parse() {
         Ok(args) => args,

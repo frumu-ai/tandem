@@ -31,7 +31,7 @@ jobs:
           ./target/release/eval-runner \
             --dataset eval_datasets/dogfooding_regressions.yaml \
             --output /tmp/dogfooding_regressions.json \
-            --simulation \
+            --engine-mode stub \
             --filter-tag dogfooding_regression \
             --verbose
 

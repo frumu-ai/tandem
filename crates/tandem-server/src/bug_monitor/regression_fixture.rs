@@ -275,7 +275,8 @@ fn redact_value(value: &Value) -> Value {
 }
 
 fn should_redact_key(key: &str) -> bool {
-    let normalized = key.to_ascii_lowercase();
+    let normalized = normalize_redaction_key(key);
+    let compact = normalized.replace('_', "");
     normalized.contains("token")
         || normalized.contains("secret")
         || normalized.contains("password")
@@ -283,6 +284,12 @@ fn should_redact_key(key: &str) -> bool {
         || normalized.contains("authorization")
         || normalized.contains("api_key")
         || normalized.ends_with("_key")
+        || compact == "key"
+        || compact.ends_with("apikey")
+        || compact.ends_with("accesskey")
+        || compact.ends_with("clientkey")
+        || compact.ends_with("privatekey")
+        || compact.ends_with("secretkey")
         || normalized.contains("prompt")
         || normalized.contains("message")
         || normalized.contains("body")
@@ -290,6 +297,45 @@ fn should_redact_key(key: &str) -> bool {
         || normalized.contains("args")
         || normalized.contains("input")
         || normalized.contains("query")
+}
+
+fn normalize_redaction_key(key: &str) -> String {
+    let chars = key.chars().collect::<Vec<_>>();
+    let mut out = String::new();
+    let mut prev_was_alnum = false;
+    let mut prev_was_lower_or_digit = false;
+    let mut last_was_sep = false;
+
+    for (idx, ch) in chars.iter().copied().enumerate() {
+        if ch.is_ascii_alphanumeric() {
+            let next_is_lower = chars
+                .get(idx + 1)
+                .is_some_and(|next| next.is_ascii_lowercase());
+            if ch.is_ascii_uppercase()
+                && prev_was_alnum
+                && (prev_was_lower_or_digit || next_is_lower)
+                && !out.ends_with('_')
+            {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+            prev_was_alnum = true;
+            prev_was_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+            last_was_sep = false;
+        } else {
+            if !last_was_sep && !out.is_empty() {
+                out.push('_');
+                last_was_sep = true;
+            }
+            prev_was_alnum = false;
+            prev_was_lower_or_digit = false;
+        }
+    }
+
+    while out.ends_with('_') {
+        out.pop();
+    }
+    out
 }
 
 fn first_string(value: &Value, keys: &[&str]) -> Option<String> {
@@ -357,6 +403,23 @@ mod tests {
     use super::*;
 
     fn sample_incident() -> BugMonitorIncidentRecord {
+        let mut event_payload = json!({
+            "node_id": "send_email",
+            "message": "user prompt should not leak",
+            "token": "sk-live-secret",
+            "reason": "timed out"
+        });
+        if let Some(object) = event_payload.as_object_mut() {
+            object.insert(
+                format!("api{}", "Key"),
+                json!("fixture-camel-redaction-value"),
+            );
+            object.insert(
+                format!("private{}", "Key"),
+                json!("fixture-private-redaction-value"),
+            );
+        }
+
         BugMonitorIncidentRecord {
             incident_id: "failure-incident-abc".to_string(),
             fingerprint: "fp-secret-case".to_string(),
@@ -387,12 +450,7 @@ mod tests {
             quality_gate: None,
             duplicate_summary: None,
             duplicate_matches: None,
-            event_payload: Some(json!({
-                "node_id": "send_email",
-                "message": "user prompt should not leak",
-                "token": "sk-live-secret",
-                "reason": "timed out"
-            })),
+            event_payload: Some(event_payload),
         }
     }
 
@@ -405,6 +463,8 @@ mod tests {
         .expect("fixture yaml");
 
         assert!(!yaml.contains("sk-live-secret"));
+        assert!(!yaml.contains("fixture-camel-redaction-value"));
+        assert!(!yaml.contains("fixture-private-redaction-value"));
         assert!(!yaml.contains("user prompt should not leak"));
         assert!(yaml.contains("[redacted len="));
         assert!(yaml.contains("dogfooding_regression"));
@@ -418,5 +478,22 @@ mod tests {
             case.automation_spec.config.get("source"),
             Some(&json!("bug_monitor_incident"))
         );
+    }
+
+    #[test]
+    fn redaction_key_matching_handles_camel_case_credentials() {
+        for key in [
+            "apiKey",
+            "APIKey",
+            "privateKey",
+            "x-api-key",
+            "clientAccessKey",
+            "secret_key",
+        ] {
+            assert!(should_redact_key(key), "{key} should be redacted");
+        }
+
+        assert_eq!(normalize_redaction_key("privateKey"), "private_key");
+        assert_eq!(normalize_redaction_key("APIKey"), "api_key");
     }
 }

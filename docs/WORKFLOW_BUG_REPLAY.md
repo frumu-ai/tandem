@@ -86,13 +86,14 @@ Run the seeded suite locally with:
 ```bash
 cargo run -p tandem-server --bin eval-runner -- \
   --dataset eval_datasets/dogfooding_regressions.yaml \
-  --simulation \
+  --engine-mode stub \
   --filter-tag dogfooding_regression \
   --verbose
 ```
 
 The scheduled `Dogfooding Regression Fixtures` GitHub Actions workflow runs the
-same dataset nightly and can be triggered manually.
+same dataset nightly through the deterministic stub engine path and can be
+triggered manually.
 
 ## Bug Monitor Scaffold Command
 

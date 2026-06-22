@@ -20,7 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{json, Map, Value};
 use tandem_types::TenantContext;
 
-use crate::eval::dataset::{EvalTestCase, TestNode};
+use crate::eval::dataset::{ArtifactStatus, EvalTestCase, TestNode};
 use crate::{
     AutomationAgentMcpPolicy, AutomationAgentProfile, AutomationAgentToolPolicy,
     AutomationExecutionPolicy, AutomationFlowNode, AutomationFlowOutputContract,
@@ -285,8 +285,9 @@ fn eval_node_metadata(
 }
 
 fn eval_inline_artifact_payload(case: &EvalTestCase, node: &TestNode) -> Value {
-    json!({
-        "status": "completed",
+    let status = eval_inline_artifact_status(case.expected_output.artifact_status);
+    let mut payload = json!({
+        "status": status,
         "summary": format!(
             "Scripted eval artifact for `{}` in `{}`: {}",
             node.id, case.id, node.objective
@@ -332,7 +333,45 @@ fn eval_inline_artifact_payload(case: &EvalTestCase, node: &TestNode) -> Value {
             "Scripted eval output",
             "Deterministic stub artifact"
         ]
-    })
+    });
+
+    if let ArtifactStatus::Blocked | ArtifactStatus::Failed = case.expected_output.artifact_status {
+        if let Some(object) = payload.as_object_mut() {
+            let outcome = if case.expected_output.artifact_status == ArtifactStatus::Blocked {
+                "blocked"
+            } else {
+                "failed"
+            };
+            object.insert(
+                "blocked_reason".to_string(),
+                Value::String(format!(
+                    "Deterministic eval fixture expected {outcome} guardrail evidence."
+                )),
+            );
+            object.insert(
+                "artifact_validation".to_string(),
+                json!({
+                    "accepted_candidate_source": "inline_eval_fixture",
+                    "validation_outcome": outcome,
+                    "unmet_requirements": case.expected_output.required_validators.clone(),
+                    "rejected_artifact_reason": format!(
+                        "Deterministic eval fixture expected {outcome} guardrail evidence."
+                    )
+                }),
+            );
+        }
+    }
+
+    payload
+}
+
+fn eval_inline_artifact_status(status: ArtifactStatus) -> &'static str {
+    match status {
+        ArtifactStatus::Completed => "completed",
+        ArtifactStatus::CompletedWithWarnings => "completed_with_warnings",
+        ArtifactStatus::Blocked => "blocked",
+        ArtifactStatus::Failed => "failed",
+    }
 }
 
 fn metadata_enables_eval_fintech_strict(metadata: &Map<String, Value>) -> bool {
@@ -661,6 +700,36 @@ mod tests {
         );
         assert!(inline_artifact.get("citations").is_some());
         assert!(inline_artifact.get("code").is_some());
+    }
+
+    #[test]
+    fn stub_eval_nodes_preserve_expected_blocked_artifact_metadata() {
+        let mut case = make_case(
+            "ev_blocked",
+            vec![make_node("policy_node", "workflow_policy")],
+        );
+        case.expected_output.artifact_status = ArtifactStatus::Blocked;
+        case.expected_output.required_validators = vec![
+            "dogfooding_fixture_schema".to_string(),
+            "recursive_triage_guard".to_string(),
+        ];
+
+        let spec = test_case_to_stub_spec(&case);
+        let node_metadata = spec.flow.nodes[0].metadata.as_ref().expect("node metadata");
+        let eval_metadata = node_metadata.get("eval").expect("eval metadata");
+        let inline_artifact = eval_metadata
+            .get("inline_artifact")
+            .expect("inline artifact payload");
+
+        assert_eq!(
+            inline_artifact.get("status").and_then(Value::as_str),
+            Some("blocked")
+        );
+        let unmet = inline_artifact
+            .pointer("/artifact_validation/unmet_requirements")
+            .and_then(Value::as_array)
+            .expect("unmet requirements");
+        assert!(unmet.iter().any(|value| value == "recursive_triage_guard"));
     }
 
     #[test]

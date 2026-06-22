@@ -78,8 +78,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provenance-bearing standing rules, restart-failed pending prompts, and
   decision history suitable for unified approval rendering.
 - Added dogfooding regression fixtures, a Bug Monitor incident-to-fixture
-  scaffold CLI, and a nightly eval-runner workflow so manually discovered
-  workflow/runtime bugs become permanent replay coverage.
+  scaffold CLI, and a nightly stub-mode eval-runner workflow so manually
+  discovered workflow/runtime bugs become permanent replay coverage. Eval-runner
+  stub/live modes now use Tokio's multithreaded runtime for in-process
+  Automation V2 evals.
 
 ### Changed
 

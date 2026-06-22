@@ -1663,6 +1663,26 @@ pub(crate) async fn execute_automation_v2_node(
     if let (Some(output_path), Some(payload)) =
         (inline_output_path.as_deref(), inline_artifact_payload)
     {
+        let inline_status = payload
+            .get("status")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("completed")
+            .to_string();
+        let inline_blocked_reason = payload.get("blocked_reason").cloned();
+        let inline_artifact_validation = payload
+            .get("artifact_validation")
+            .cloned()
+            .unwrap_or_else(|| {
+                json!({
+                    "deterministic_artifact": true,
+                    "deterministic_source": "node_metadata_inputs",
+                    "accepted_candidate_source": "verified_output",
+                    "validation_outcome": "passed",
+                    "unmet_requirements": [],
+                })
+            });
         let verified_output =
             write_automation_inline_artifact(&workspace_root, run_id, output_path, &payload)?;
         let mut session = Session::new(
@@ -1701,17 +1721,14 @@ pub(crate) async fn execute_automation_v2_node(
             Some(run_id),
             "Prepared deterministic workflow artifact from inline node inputs.",
             Some(verified_output),
-            Some(json!({
-                "deterministic_artifact": true,
-                "deterministic_source": "node_metadata_inputs",
-                "accepted_candidate_source": "verified_output",
-                "validation_outcome": "passed",
-                "unmet_requirements": [],
-            })),
+            Some(inline_artifact_validation),
         );
         if let Some(object) = output.as_object_mut() {
-            object.insert("status".to_string(), json!("completed"));
-            object.insert("blocked_reason".to_string(), Value::Null);
+            object.insert("status".to_string(), json!(inline_status));
+            object.insert(
+                "blocked_reason".to_string(),
+                inline_blocked_reason.unwrap_or(Value::Null),
+            );
         }
         return Ok(output);
     }

@@ -4,7 +4,7 @@
 # Run locally:
 #   cargo run -p tandem-server --bin eval-runner -- \
 #     --dataset eval_datasets/dogfooding_regressions.yaml \
-#     --simulation --filter-tag dogfooding_regression --verbose
+#     --engine-mode stub --filter-tag dogfooding_regression --verbose
 
 name: "dogfooding_regressions"
 version: "1.0"
