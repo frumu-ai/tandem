@@ -111,7 +111,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Continued TAN-205 crate-boundary cleanup by moving Bug Monitor domain types,
   log parsing/evidence rendering, recurrence summaries, error provenance, and
   GitHub publish logic into a new `tandem-bug-monitor` crate. `tandem-server`
-  keeps compatibility re-exports plus the AppState/HTTP/MCP host shim.
+  keeps compatibility re-exports plus the AppState/HTTP/MCP host shim, including
+  uncapped duplicate/failure-suppression lookups for GitHub posting.
 - Replaced divergent tool-name normalization in parser, registry resolution,
   and approval classification with a shared `tandem-types` canonicalizer, plus
   a structured function-style invocation scanner and 30+ case parser corpus.

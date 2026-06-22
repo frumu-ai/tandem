@@ -52,6 +52,52 @@ impl BugMonitorGithubHost for AppState {
         AppState::list_bug_monitor_posts(self, limit).await
     }
 
+    async fn list_bug_monitor_posts_by_draft(&self, draft_id: &str) -> Vec<BugMonitorPostRecord> {
+        let mut rows = self
+            .bug_monitor_posts
+            .read()
+            .await
+            .values()
+            .filter(|post| post.draft_id == draft_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+        rows
+    }
+
+    async fn list_bug_monitor_posts_by_fingerprint(
+        &self,
+        repo: &str,
+        fingerprint: &str,
+    ) -> Vec<BugMonitorPostRecord> {
+        let mut rows = self
+            .bug_monitor_posts
+            .read()
+            .await
+            .values()
+            .filter(|post| post.repo == repo && post.fingerprint == fingerprint)
+            .cloned()
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+        rows
+    }
+
+    async fn list_bug_monitor_posts_by_idempotency_key(
+        &self,
+        idempotency_key: &str,
+    ) -> Vec<BugMonitorPostRecord> {
+        let mut rows = self
+            .bug_monitor_posts
+            .read()
+            .await
+            .values()
+            .filter(|post| post.idempotency_key == idempotency_key)
+            .cloned()
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+        rows
+    }
+
     async fn try_claim_bug_monitor_post_idempotency(
         &self,
         post: BugMonitorPostRecord,

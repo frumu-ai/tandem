@@ -89,6 +89,9 @@ MCP connections.
   rendering, recurrence comment summaries, deterministic error provenance, and
   the GitHub publish algorithm, while `tandem-server` provides a thin
   AppState/HTTP/MCP host shim and compatibility re-exports for current callers.
+  The host shim keeps duplicate post detection and ambiguous failed-create
+  suppression on scoped, uncapped storage lookups rather than the public capped
+  post-list API.
 - Tool execution now flows through a governed dispatcher outside the
   `tandem-tools` crate. Engine turns, workflow actions, Automation V2 connector
   preflight calls, direct HTTP tool execution, planner helpers, pack builder,
