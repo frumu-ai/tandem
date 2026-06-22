@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::{watch, RwLock};
+use tokio::sync::{watch, Mutex, RwLock};
 use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -170,6 +170,7 @@ pub struct PermissionManager {
     decisions: Arc<RwLock<Vec<PermissionDecisionRecord>>>,
     waiters: Arc<RwLock<HashMap<String, watch::Sender<Option<String>>>>>,
     state_path: Arc<RwLock<Option<PathBuf>>>,
+    state_write_lock: Arc<Mutex<()>>,
     event_bus: EventBus,
 }
 
@@ -181,6 +182,7 @@ impl PermissionManager {
             decisions: Arc::new(RwLock::new(Vec::new())),
             waiters: Arc::new(RwLock::new(HashMap::new())),
             state_path: Arc::new(RwLock::new(None)),
+            state_write_lock: Arc::new(Mutex::new(())),
             event_bus,
         }
     }
@@ -362,6 +364,7 @@ impl PermissionManager {
     }
 
     async fn persist_state(&self) -> anyhow::Result<()> {
+        let _write_guard = self.state_write_lock.lock().await;
         let Some(path) = self.state_path.read().await.clone() else {
             return Ok(());
         };
@@ -425,6 +428,9 @@ impl PermissionManager {
             let Some(req) = requests.get_mut(id) else {
                 return None;
             };
+            if req.status != "pending" {
+                return None;
+            }
             req.status = reply.to_string();
             req.decided_at_ms = Some(now);
             req.decided_by = decided_by.clone();
@@ -577,7 +583,11 @@ async fn write_permission_state_file(
     }
     let payload =
         serde_json::to_string_pretty(file).context("failed to serialize permission state file")?;
-    let tmp = path.with_extension("json.tmp");
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("permissions");
+    let tmp = path.with_file_name(format!(".{file_name}.{}.tmp", Uuid::new_v4()));
     tokio::fs::write(&tmp, payload)
         .await
         .context("failed to write temporary permission state file")?;
@@ -640,6 +650,7 @@ fn normalize_permission_alias(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -884,6 +895,22 @@ mod tests {
             .any(|decision| decision.request_id == req.id
                 && decision.decision == "runtime_restarted"));
 
+        let decision_count = restarted.list_decisions().await.len();
+        assert!(restarted
+            .reply_with_provenance(
+                &req.id,
+                "always",
+                Some("alice".to_string()),
+                Some("late approval from stale prompt".to_string()),
+            )
+            .await
+            .is_none());
+        assert_eq!(restarted.list_decisions().await.len(), decision_count);
+        assert!(matches!(
+            restarted.evaluate("read", "read").await,
+            PermissionAction::Ask
+        ));
+
         let reasked = restarted
             .ask_for_session(Some("ses_1"), "read", json!({"path":"README.md"}))
             .await;
@@ -954,6 +981,50 @@ mod tests {
                 |rule| rule.source_request_id.as_deref() == Some(read_req.id.as_str())
                     && rule.created_by.as_deref() == Some("alice")
             ));
+    }
+
+    #[tokio::test]
+    async fn concurrent_permission_state_writes_preserve_all_requests() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("permissions.json");
+        let manager = Arc::new(
+            PermissionManager::new_with_state_file(EventBus::new(), path.clone())
+                .await
+                .expect("manager"),
+        );
+        let task_count = 24usize;
+        let barrier = Arc::new(tokio::sync::Barrier::new(task_count));
+        let mut handles = Vec::with_capacity(task_count);
+        for index in 0..task_count {
+            let manager = manager.clone();
+            let barrier = barrier.clone();
+            handles.push(tokio::spawn(async move {
+                barrier.wait().await;
+                manager
+                    .ask_for_session(
+                        Some("ses_1"),
+                        "read",
+                        json!({"path": format!("file-{index}.md")}),
+                    )
+                    .await
+                    .id
+            }));
+        }
+
+        let mut ids = Vec::with_capacity(task_count);
+        for handle in handles {
+            ids.push(handle.await.expect("permission ask task"));
+        }
+        let raw = tokio::fs::read_to_string(path)
+            .await
+            .expect("permission state file");
+        let file: PermissionStateFile = serde_json::from_str(&raw).expect("permission state json");
+        for id in ids {
+            assert!(
+                file.requests.contains_key(&id),
+                "persisted state should retain request {id}"
+            );
+        }
     }
 
     #[test]

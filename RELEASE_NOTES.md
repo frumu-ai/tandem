@@ -45,7 +45,9 @@ MCP connections.
   decision history and provenance-bearing standing rules. Pending prompts left
   behind by a restart are marked `runtime_restarted` so the next tool attempt
   re-asks deterministically, and permission replies now write protected audit
-  evidence with actor, request, decision, and rule provenance.
+  evidence with actor, request, decision, and rule provenance. Stale persisted
+  request IDs are rejected after restart, and concurrent state-file writes are
+  serialized so simultaneous prompts and decisions remain durable.
 
 ### Runtime Governance
 

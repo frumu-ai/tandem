@@ -122,6 +122,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed session-level permission decisions so generic permission replies write
   protected audit evidence with actor, request, decision, and standing-rule
   provenance.
+- Fixed durable PermissionManager replies so stale persisted request IDs cannot
+  be replayed after restart, and serialized state-file writes to avoid losing
+  concurrent permission asks or decisions.
 
 ## [0.6.1] - 2026-06-20
 
