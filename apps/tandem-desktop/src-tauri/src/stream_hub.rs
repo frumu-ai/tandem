@@ -166,6 +166,8 @@ impl StreamHub {
                             ObservabilityEvent {
                                 event: "stream.subscribe.ok",
                                 component: "stream_hub",
+                                org_id: None,
+                                workspace_id: None,
                                 correlation_id: None,
                                 session_id: None,
                                 run_id: None,
@@ -203,6 +205,8 @@ impl StreamHub {
                                 ObservabilityEvent {
                                     event: "engine.restart.detected",
                                     component: "stream_hub",
+                                    org_id: None,
+                                    workspace_id: None,
                                     correlation_id: None,
                                     session_id: None,
                                     run_id: None,
@@ -220,6 +224,8 @@ impl StreamHub {
                                 ObservabilityEvent {
                                     event: "tool.reconcile.start",
                                     component: "stream_hub",
+                                    org_id: None,
+                                    workspace_id: None,
                                     correlation_id: None,
                                     session_id: None,
                                     run_id: None,
@@ -245,6 +251,8 @@ impl StreamHub {
                                             ObservabilityEvent {
                                                 event: "tool.reconcile.end",
                                                 component: "stream_hub",
+                                                org_id: None,
+                                                workspace_id: None,
                                                 correlation_id: None,
                                                 session_id: None,
                                                 run_id: None,
@@ -266,6 +274,8 @@ impl StreamHub {
                                     ObservabilityEvent {
                                         event: "tool.reconcile.end",
                                         component: "stream_hub",
+                                        org_id: None,
+                                        workspace_id: None,
                                         correlation_id: None,
                                         session_id: None,
                                         run_id: None,
@@ -326,6 +336,8 @@ impl StreamHub {
                                 ObservabilityEvent {
                                     event: "stream.subscribe.error",
                                     component: "stream_hub",
+                                    org_id: None,
+                                    workspace_id: None,
                                     correlation_id: None,
                                     session_id: None,
                                     run_id: None,
@@ -438,6 +450,8 @@ impl StreamHub {
                                     ObservabilityEvent {
                                         event: "tool.synthetic_terminal_emitted",
                                         component: "stream_hub",
+                                        org_id: None,
+                                        workspace_id: None,
                                         correlation_id: Some(&pending.correlation_id),
                                         session_id: Some(session_id),
                                         run_id: None,
@@ -489,6 +503,8 @@ impl StreamHub {
                                     ObservabilityEvent {
                                         event: "stream.watchdog.no_events",
                                         component: "stream_hub",
+                                        org_id: None,
+                                        workspace_id: None,
                                         correlation_id: None,
                                         session_id: None,
                                         run_id: None,
@@ -523,6 +539,8 @@ impl StreamHub {
                                     ObservabilityEvent {
                                         event: "stream.disconnected",
                                         component: "stream_hub",
+                                        org_id: None,
+                                        workspace_id: None,
                                         correlation_id: None,
                                         session_id: None,
                                         run_id: None,
@@ -651,6 +669,8 @@ impl StreamHub {
                                                 ObservabilityEvent {
                                                     event: "tool.synthetic_terminal_emitted",
                                                     component: "stream_hub",
+                                                    org_id: None,
+                                                    workspace_id: None,
                                                     correlation_id: None,
                                                     session_id: Some(session_id),
                                                     run_id: None,
@@ -873,6 +893,8 @@ impl StreamHub {
                                                 ObservabilityEvent {
                                                     event: "tool.reconcile.start",
                                                     component: "stream_hub",
+                                                    org_id: None,
+                                                    workspace_id: None,
                                                     correlation_id: None,
                                                     session_id: Some(session_id),
                                                     run_id: None,
@@ -953,6 +975,8 @@ impl StreamHub {
                                                                 ObservabilityEvent {
                                                                     event: "tool.reconcile.end",
                                                                     component: "stream_hub",
+                                                                    org_id: None,
+                                                                    workspace_id: None,
                                                                     correlation_id: None,
                                                                     session_id: Some(session_id),
                                                                     run_id: None,
@@ -974,6 +998,8 @@ impl StreamHub {
                                                         ObservabilityEvent {
                                                             event: "tool.reconcile.end",
                                                             component: "stream_hub",
+                                                            org_id: None,
+                                                            workspace_id: None,
                                                             correlation_id: None,
                                                             session_id: Some(session_id),
                                                             run_id: None,

@@ -85,6 +85,7 @@ mod mission_builder;
 mod mission_builder_host;
 mod mission_builder_runtime;
 mod missions_teams;
+mod observability_metrics;
 mod optimizations;
 mod pack_builder;
 mod packs;

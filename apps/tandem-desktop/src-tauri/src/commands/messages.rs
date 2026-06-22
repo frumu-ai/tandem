@@ -579,6 +579,8 @@ async fn send_message_and_start_run_internal(
         ObservabilityEvent {
             event: "chat.dispatch.start",
             component: "tauri.commands",
+            org_id: None,
+            workspace_id: None,
             correlation_id: Some(&correlation_id),
             session_id: Some(&session_id),
             run_id: None,
@@ -701,6 +703,8 @@ async fn send_message_and_start_run_internal(
                 ObservabilityEvent {
                     event: "chat.dispatch.sent",
                     component: "tauri.commands",
+                    org_id: None,
+                    workspace_id: None,
                     correlation_id: Some(&correlation_id),
                     session_id: Some(&session_id),
                     run_id: None,
@@ -721,6 +725,8 @@ async fn send_message_and_start_run_internal(
                 ObservabilityEvent {
                     event: "chat.dispatch.failed",
                     component: "tauri.commands",
+                    org_id: None,
+                    workspace_id: None,
                     correlation_id: Some(&correlation_id),
                     session_id: Some(&session_id),
                     run_id: None,

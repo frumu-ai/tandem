@@ -21,6 +21,8 @@ pub(crate) async fn invoke_planner_provider(
         ObservabilityEvent {
             event: "provider.call.start",
             component: "workflow.planner",
+            org_id: None,
+            workspace_id: None,
             correlation_id: None,
             session_id: Some(session_id),
             run_id: None,
@@ -111,6 +113,8 @@ pub(crate) async fn invoke_planner_provider(
                             ObservabilityEvent {
                                 event: "provider.call.first_byte",
                                 component: "workflow.planner",
+                                org_id: None,
+                                workspace_id: None,
                                 correlation_id: None,
                                 session_id: Some(session_id),
                                 run_id: None,
@@ -169,6 +173,8 @@ pub(crate) async fn invoke_planner_provider(
                 ObservabilityEvent {
                     event: "provider.call.finish",
                     component: "workflow.planner",
+                    org_id: None,
+                    workspace_id: None,
                     correlation_id: None,
                     session_id: Some(session_id),
                     run_id: None,
@@ -189,6 +195,8 @@ pub(crate) async fn invoke_planner_provider(
                 ObservabilityEvent {
                     event: "provider.call.error",
                     component: "workflow.planner",
+                    org_id: None,
+                    workspace_id: None,
                     correlation_id: None,
                     session_id: Some(session_id),
                     run_id: None,
@@ -210,6 +218,8 @@ pub(crate) async fn invoke_planner_provider(
                 ObservabilityEvent {
                     event: "provider.call.error",
                     component: "workflow.planner",
+                    org_id: None,
+                    workspace_id: None,
                     correlation_id: None,
                     session_id: Some(session_id),
                     run_id: None,

@@ -654,6 +654,8 @@ async fn main() -> anyhow::Result<()> {
                 ObservabilityEvent {
                     event: "logging.initialized",
                     component: "engine.main",
+                    org_id: None,
+                    workspace_id: None,
                     correlation_id: None,
                     session_id: None,
                     run_id: None,
@@ -730,6 +732,8 @@ async fn main() -> anyhow::Result<()> {
                         ObservabilityEvent {
                             event: "engine.startup.failed",
                             component: "engine.main",
+                            org_id: None,
+                            workspace_id: None,
                             correlation_id: None,
                             session_id: None,
                             run_id: None,
@@ -1380,6 +1384,8 @@ async fn initialize_runtime(
         ObservabilityEvent {
             event: "engine.startup.ready",
             component: "engine.main",
+            org_id: None,
+            workspace_id: None,
             correlation_id: None,
             session_id: None,
             run_id: None,
@@ -1688,6 +1694,8 @@ async fn emit_startup_phase_event(state: &AppState, phase: &str) {
         ObservabilityEvent {
             event: "engine.startup.phase",
             component: "engine.main",
+            org_id: None,
+            workspace_id: None,
             correlation_id: None,
             session_id: None,
             run_id: None,

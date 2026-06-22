@@ -50,6 +50,8 @@ impl EngineLoop {
             ObservabilityEvent {
                 event: "provider.call.start",
                 component: "engine.loop",
+                org_id: None,
+                workspace_id: None,
                 correlation_id: correlation_ref,
                 session_id: Some(&session_id),
                 run_id: None,
@@ -629,6 +631,8 @@ impl EngineLoop {
                         ObservabilityEvent {
                             event: "provider.call.error",
                             component: "engine.loop",
+                            org_id: None,
+                            workspace_id: None,
                             correlation_id: correlation_ref,
                             session_id: Some(&session_id),
                             run_id: None,
@@ -817,6 +821,8 @@ impl EngineLoop {
                                 ObservabilityEvent {
                                     event: "provider.call.error",
                                     component: "engine.loop",
+                                    org_id: None,
+                                    workspace_id: None,
                                     correlation_id: correlation_ref,
                                     session_id: Some(&session_id),
                                     run_id: None,
@@ -910,6 +916,8 @@ impl EngineLoop {
                                 ObservabilityEvent {
                                     event: "provider.call.error",
                                     component: "engine.loop",
+                                    org_id: None,
+                                    workspace_id: None,
                                     correlation_id: correlation_ref,
                                     session_id: Some(&session_id),
                                     run_id: None,
@@ -926,7 +934,10 @@ impl EngineLoop {
                                 json!({
                                     "sessionID": session_id,
                                     "messageID": user_message_id,
+                                    "providerID": provider_id,
+                                    "modelID": model_id_value,
                                     "iteration": iteration,
+                                    "errorCode": error_code,
                                     "error": detail,
                                 }),
                             ));
@@ -980,7 +991,10 @@ impl EngineLoop {
                                     json!({
                                         "sessionID": session_id,
                                         "messageID": user_message_id,
+                                        "providerID": provider_id,
+                                        "modelID": model_id_value,
                                         "iteration": iteration,
+                                        "errorCode": provider_error_code(&error_text),
                                         "error": truncate_text(&error_text, 500),
                                     }),
                                 ));
@@ -1029,6 +1043,8 @@ impl EngineLoop {
                                     ObservabilityEvent {
                                         event: "provider.call.error",
                                         component: "engine.loop",
+                                        org_id: None,
+                                        workspace_id: None,
                                         correlation_id: correlation_ref,
                                         session_id: Some(&session_id),
                                         run_id: None,
@@ -1045,7 +1061,10 @@ impl EngineLoop {
                                     json!({
                                         "sessionID": session_id,
                                         "messageID": user_message_id,
+                                        "providerID": provider_id,
+                                        "modelID": model_id_value,
                                         "iteration": iteration,
+                                        "errorCode": error_code,
                                         "error": detail,
                                     }),
                                 ));
@@ -1067,6 +1086,8 @@ impl EngineLoop {
                                         ObservabilityEvent {
                                             event: "provider.call.first_byte",
                                             component: "engine.loop",
+                                            org_id: None,
+                                            workspace_id: None,
                                             correlation_id: correlation_ref,
                                             session_id: Some(&session_id),
                                             run_id: None,
@@ -1283,6 +1304,8 @@ impl EngineLoop {
                     ObservabilityEvent {
                         event: "provider.call.iteration.budget_exhausted",
                         component: "engine.loop",
+                        org_id: None,
+                        workspace_id: None,
                         correlation_id: correlation_ref,
                         session_id: Some(&session_id),
                         run_id: None,
@@ -1445,6 +1468,8 @@ impl EngineLoop {
             ObservabilityEvent {
                 event: "provider.call.finish",
                 component: "engine.loop",
+                org_id: None,
+                workspace_id: None,
                 correlation_id: correlation_ref,
                 session_id: Some(&session_id),
                 run_id: None,

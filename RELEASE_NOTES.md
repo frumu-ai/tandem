@@ -15,6 +15,12 @@ MCP connections.
   canonical run/session events published after persister registration are
   written to `runtime/events.jsonl` without depending on the live broadcast
   stream or retaining events in eval-only buses.
+- Observability events and exports now carry tenant IDs (`org_id`,
+  `workspace_id`) as ID-only fields. A config-gated authenticated `/metrics`
+  endpoint exposes scheduler queue depth, scheduler tick latency, run duration,
+  gate wait, tool decision, and provider error metrics, while optional Sentry
+  export is feature-gated and rebuilt through a scrubber that drops prompts,
+  completions, tool arguments, and free-text details.
 
 ### Workflow Runtime Reliability
 

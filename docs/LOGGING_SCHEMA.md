@@ -30,6 +30,8 @@ Each JSONL line is one structured tracing event.
 
 - Never log API keys, auth headers, raw prompt text, or raw model completion text.
 - For sensitive free text, log hashes/lengths or explicit redacted placeholders.
+- Tenant fields are IDs only. External exports use the scrubbed payload in
+  `docs/OBSERVABILITY_EXPORTS.md`, which omits `detail` and any tool arguments.
 
 ## Example
 

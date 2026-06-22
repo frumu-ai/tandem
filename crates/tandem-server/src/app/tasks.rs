@@ -838,6 +838,7 @@ pub async fn run_runtime_event_log_persister(state: AppState) {
 
     let mut context_cache = RuntimeEventLogContextCache::default();
     while let Some(event) = rx.recv().await {
+        tandem_observability::record_engine_event_metrics(&event.event_type, &event.properties);
         let Some(row) = RuntimeEventLogRow::from_engine_event(&event) else {
             continue;
         };
@@ -1555,6 +1556,7 @@ pub async fn run_automation_v2_scheduler(state: AppState) {
         if !matches!(startup.status, crate::app::startup::StartupStatus::Ready) {
             continue;
         }
+        let tick_started = std::time::Instant::now();
         let now = now_ms();
 
         // --- Existing: timer-based misfires ---
@@ -1658,6 +1660,9 @@ pub async fn run_automation_v2_scheduler(state: AppState) {
                 }
             }
         }
+        tandem_observability::record_scheduler_tick_latency_ms(
+            tick_started.elapsed().as_millis() as u64
+        );
     }
 }
 

@@ -98,6 +98,8 @@ async fn main() -> anyhow::Result<()> {
         ObservabilityEvent {
             event: "logging.initialized",
             component: "tui.main",
+            org_id: None,
+            workspace_id: None,
             correlation_id: None,
             session_id: None,
             run_id: None,
@@ -189,6 +191,8 @@ async fn run_app(
                         ObservabilityEvent {
                             event: "tui.sync_render.disabled",
                             component: "tui.main",
+                            org_id: None,
+                            workspace_id: None,
                             correlation_id: None,
                             session_id: None,
                             run_id: None,
