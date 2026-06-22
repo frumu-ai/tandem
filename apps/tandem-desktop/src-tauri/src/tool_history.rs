@@ -194,6 +194,8 @@ fn open_conn(app: &AppHandle) -> Result<Connection> {
                 ObservabilityEvent {
                     event: "tool_history.recovery.start",
                     component: "tool_history",
+                    org_id: None,
+                    workspace_id: None,
                     correlation_id: None,
                     session_id: None,
                     run_id: None,
@@ -215,6 +217,8 @@ fn open_conn(app: &AppHandle) -> Result<Connection> {
                         ObservabilityEvent {
                             event: "tool_history.recovery.fail",
                             component: "tool_history",
+                            org_id: None,
+                            workspace_id: None,
                             correlation_id: None,
                             session_id: None,
                             run_id: None,
@@ -241,6 +245,8 @@ fn open_conn(app: &AppHandle) -> Result<Connection> {
                         ObservabilityEvent {
                             event: "tool_history.recovery.fail",
                             component: "tool_history",
+                            org_id: None,
+                            workspace_id: None,
                             correlation_id: None,
                             session_id: None,
                             run_id: None,
@@ -262,6 +268,8 @@ fn open_conn(app: &AppHandle) -> Result<Connection> {
                 ObservabilityEvent {
                     event: "tool_history.recovery.success",
                     component: "tool_history",
+                    org_id: None,
+                    workspace_id: None,
                     correlation_id: None,
                     session_id: None,
                     run_id: None,

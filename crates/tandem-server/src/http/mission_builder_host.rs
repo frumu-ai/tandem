@@ -184,6 +184,8 @@ async fn invoke_mission_builder_provider(
         ObservabilityEvent {
             event: "provider.call.start",
             component: "mission.builder",
+            org_id: None,
+            workspace_id: None,
             correlation_id: None,
             session_id: Some(session_id),
             run_id: None,
@@ -242,6 +244,8 @@ async fn invoke_mission_builder_provider(
                             ObservabilityEvent {
                                 event: "provider.call.first_byte",
                                 component: "mission.builder",
+                                org_id: None,
+                                workspace_id: None,
                                 correlation_id: None,
                                 session_id: Some(session_id),
                                 run_id: None,
@@ -276,6 +280,8 @@ async fn invoke_mission_builder_provider(
                         ObservabilityEvent {
                             event: "provider.call.finish",
                             component: "mission.builder",
+                            org_id: None,
+                            workspace_id: None,
                             correlation_id: None,
                             session_id: Some(session_id),
                             run_id: None,
@@ -315,6 +321,8 @@ async fn invoke_mission_builder_provider(
                 ObservabilityEvent {
                     event: "provider.call.error",
                     component: "mission.builder",
+                    org_id: None,
+                    workspace_id: None,
                     correlation_id: None,
                     session_id: Some(session_id),
                     run_id: None,

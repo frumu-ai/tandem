@@ -40,6 +40,17 @@ pub(crate) fn resolve_automation_quality_legacy_rollback_enabled() -> bool {
         .unwrap_or(false)
 }
 
+pub(crate) fn prometheus_metrics_enabled() -> bool {
+    std::env::var("TANDEM_OBSERVABILITY_PROMETHEUS_ENABLED")
+        .ok()
+        .and_then(|v| match v.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        })
+        .unwrap_or(false)
+}
+
 pub(crate) fn resolve_runtime_auth_mode() -> RuntimeAuthMode {
     std::env::var("TANDEM_RUNTIME_AUTH_MODE")
         .ok()

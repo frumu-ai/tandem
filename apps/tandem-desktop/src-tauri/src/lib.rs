@@ -96,6 +96,8 @@ fn init_tracing(app_data_dir: &std::path::Path) {
             ObservabilityEvent {
                 event: "logging.initialized",
                 component: "desktop.main",
+                org_id: None,
+                workspace_id: None,
                 correlation_id: None,
                 session_id: None,
                 run_id: None,

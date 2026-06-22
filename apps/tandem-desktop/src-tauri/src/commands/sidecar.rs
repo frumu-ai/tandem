@@ -138,6 +138,8 @@ async fn start_sidecar_inner(app: &AppHandle, state: &AppState) -> Result<u16> {
                 ObservabilityEvent {
                     event: "sidecar.binary.mismatch",
                     component: "tauri.commands",
+                    org_id: None,
+                    workspace_id: None,
                     correlation_id: None,
                     session_id: None,
                     run_id: None,

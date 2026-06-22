@@ -88,6 +88,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documented the initial cargo-deny license exception baseline, including
   owner, reason, and expiry metadata for scoped BUSL and third-party dependency
   exceptions.
+- Added tenant-tagged observability exports with an authenticated,
+  config-gated Prometheus endpoint, bounded runtime/scheduler/tool/provider
+  metrics, and optional feature-gated scrubbed Sentry error export.
 
 ### Changed
 

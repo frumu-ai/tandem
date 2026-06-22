@@ -122,6 +122,8 @@ pub async fn index_workspace_command(
         ObservabilityEvent {
             event: "index.workspace.start",
             component: "tauri.commands",
+            org_id: None,
+            workspace_id: None,
             correlation_id: Some(&correlation_id),
             session_id: None,
             run_id: None,
@@ -145,6 +147,8 @@ pub async fn index_workspace_command(
                     ObservabilityEvent {
                         event: "index.workspace.complete",
                         component: "tauri.commands",
+                        org_id: None,
+                        workspace_id: None,
                         correlation_id: Some(&correlation_id),
                         session_id: None,
                         run_id: None,
@@ -165,6 +169,8 @@ pub async fn index_workspace_command(
                     ObservabilityEvent {
                         event: "index.workspace.failed",
                         component: "tauri.commands",
+                        org_id: None,
+                        workspace_id: None,
                         correlation_id: Some(&correlation_id),
                         session_id: None,
                         run_id: None,

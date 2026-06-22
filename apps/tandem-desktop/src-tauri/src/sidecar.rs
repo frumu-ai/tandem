@@ -3186,6 +3186,8 @@ impl SidecarManager {
             ObservabilityEvent {
                 event: "sidecar.wait.start",
                 component: "sidecar",
+                org_id: None,
+                workspace_id: None,
                 correlation_id: None,
                 session_id: None,
                 run_id: None,
@@ -3242,6 +3244,8 @@ impl SidecarManager {
                         ObservabilityEvent {
                             event: "sidecar.wait.ready",
                             component: "sidecar",
+                            org_id: None,
+                            workspace_id: None,
                             correlation_id: None,
                             session_id: None,
                             run_id: None,
@@ -3281,6 +3285,8 @@ impl SidecarManager {
                             ObservabilityEvent {
                                 event: "sidecar.wait.progress",
                                 component: "sidecar",
+                                org_id: None,
+                                workspace_id: None,
                                 correlation_id: None,
                                 session_id: None,
                                 run_id: None,
@@ -3337,6 +3343,8 @@ impl SidecarManager {
             ObservabilityEvent {
                 event: "sidecar.wait.timeout",
                 component: "sidecar",
+                org_id: None,
+                workspace_id: None,
                 correlation_id: None,
                 session_id: None,
                 run_id: None,

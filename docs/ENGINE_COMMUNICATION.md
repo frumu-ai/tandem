@@ -64,11 +64,11 @@ Compatibility aliases under `/api/...` are maintained where noted in server rout
 `POST /session` and `POST /session/{id}/prompt_async` (and `prompt_sync`)
 accept optional sampling parameters that control the provider's decoding:
 
-| Field         | Type    | Range (generic)        | Notes |
-| ------------- | ------- | ---------------------- | ----- |
-| `temperature` | number  | `0.0`–`2.0`            | Clamped per provider (Anthropic caps at `1.0`). |
-| `top_p`       | number  | `0.0`–`1.0`            | Also accepted as `topP`. |
-| `max_tokens`  | integer | `>= 1`                 | Overrides the engine's default max-tokens budget. Also accepted as `maxTokens`. |
+| Field         | Type    | Range (generic) | Notes                                                                           |
+| ------------- | ------- | --------------- | ------------------------------------------------------------------------------- |
+| `temperature` | number  | `0.0`–`2.0`     | Clamped per provider (Anthropic caps at `1.0`).                                 |
+| `top_p`       | number  | `0.0`–`1.0`     | Also accepted as `topP`.                                                        |
+| `max_tokens`  | integer | `>= 1`          | Overrides the engine's default max-tokens budget. Also accepted as `maxTokens`. |
 
 All three are **optional**. Each field is sent only when present, so omitting
 them produces a byte-identical provider request to prior behavior.
@@ -178,7 +178,10 @@ Desktop/TUI map these into their request-center UI flows.
   - Engine: `tandem.engine.*.jsonl`
   - TUI: `tandem.tui.*.jsonl`
 - Correlation fields:
-  - `correlation_id`, `session_id`, `run_id`
+  - `correlation_id`, `session_id`, `run_id`, `org_id`, `workspace_id`
+- Prometheus export:
+  - `GET /metrics` when `TANDEM_OBSERVABILITY_PROMETHEUS_ENABLED=true`
+  - See `docs/OBSERVABILITY_EXPORTS.md` for exported fields and scrub rules.
 
 ## Security Notes
 
