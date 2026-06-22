@@ -62,6 +62,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path outside `tandem-tools`, carrying tenant context, scope allowlists,
   policy decisions, and one dispatch ledger event for engine, workflow, HTTP,
   automation preflight, planner, and CLI tool calls.
+- Added schema-versioned persistence envelopes for session history and
+  Automation V2 run stores/history shards, including explicit v0-to-v1 upgrade
+  paths, future-version refusal, compatibility fixtures, and a memory DB
+  `schema_migrations` ledger with idempotency coverage.
 
 ### Changed
 

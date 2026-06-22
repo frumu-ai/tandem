@@ -137,6 +137,7 @@ impl MemoryDatabase {
     /// Initialize database schema
     async fn init_schema(&self) -> MemoryResult<()> {
         let conn = self.conn.lock().await;
+        ensure_schema_migrations_table(&conn)?;
 
         // Extension is already registered globally in new()
 
@@ -1068,6 +1069,10 @@ impl MemoryDatabase {
             [],
         )?;
 
+        for (version, name) in MEMORY_SCHEMA_MIGRATIONS {
+            record_schema_migration(&conn, *version, name)?;
+        }
+
         Ok(())
     }
 
@@ -1468,7 +1473,12 @@ impl MemoryDatabase {
                                 embedding_json,
                                 limit
                             ],
-                            |row| Ok((row_to_chunk(row, tier, &self.crypto)?, row.get::<_, f64>("distance")?)),
+                            |row| {
+                                Ok((
+                                    row_to_chunk(row, tier, &self.crypto)?,
+                                    row.get::<_, f64>("distance")?,
+                                ))
+                            },
                         )?
                         .collect::<Result<Vec<_>, _>>()?;
                     results
@@ -1497,7 +1507,12 @@ impl MemoryDatabase {
                                 embedding_json,
                                 limit
                             ],
-                            |row| Ok((row_to_chunk(row, tier, &self.crypto)?, row.get::<_, f64>("distance")?)),
+                            |row| {
+                                Ok((
+                                    row_to_chunk(row, tier, &self.crypto)?,
+                                    row.get::<_, f64>("distance")?,
+                                ))
+                            },
                         )?
                         .collect::<Result<Vec<_>, _>>()?;
                     results
@@ -1525,7 +1540,12 @@ impl MemoryDatabase {
                                 embedding_json,
                                 limit
                             ],
-                            |row| Ok((row_to_chunk(row, tier, &self.crypto)?, row.get::<_, f64>("distance")?)),
+                            |row| {
+                                Ok((
+                                    row_to_chunk(row, tier, &self.crypto)?,
+                                    row.get::<_, f64>("distance")?,
+                                ))
+                            },
                         )?
                         .collect::<Result<Vec<_>, _>>()?;
                     results
@@ -1557,7 +1577,12 @@ impl MemoryDatabase {
                                 embedding_json,
                                 limit
                             ],
-                            |row| Ok((row_to_chunk(row, tier, &self.crypto)?, row.get::<_, f64>("distance")?)),
+                            |row| {
+                                Ok((
+                                    row_to_chunk(row, tier, &self.crypto)?,
+                                    row.get::<_, f64>("distance")?,
+                                ))
+                            },
                         )?
                         .collect::<Result<Vec<_>, _>>()?;
                     results
@@ -1585,7 +1610,12 @@ impl MemoryDatabase {
                                 embedding_json,
                                 limit
                             ],
-                            |row| Ok((row_to_chunk(row, tier, &self.crypto)?, row.get::<_, f64>("distance")?)),
+                            |row| {
+                                Ok((
+                                    row_to_chunk(row, tier, &self.crypto)?,
+                                    row.get::<_, f64>("distance")?,
+                                ))
+                            },
                         )?
                         .collect::<Result<Vec<_>, _>>()?;
                     results
@@ -1615,7 +1645,12 @@ impl MemoryDatabase {
                             embedding_json,
                             limit
                         ],
-                        |row| Ok((row_to_chunk(row, tier, &self.crypto)?, row.get::<_, f64>("distance")?)),
+                        |row| {
+                            Ok((
+                                row_to_chunk(row, tier, &self.crypto)?,
+                                row.get::<_, f64>("distance")?,
+                            ))
+                        },
                     )?
                     .collect::<Result<Vec<_>, _>>()?;
                 results
@@ -1624,5 +1659,4 @@ impl MemoryDatabase {
 
         Ok(results)
     }
-
 }

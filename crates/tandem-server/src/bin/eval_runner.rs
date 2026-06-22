@@ -289,11 +289,7 @@ async fn main() -> ExitCode {
     // Apply tag filter if specified
     let filtered_dataset = if let Some(tag) = &args.filter_tag {
         let mut filtered = dataset.clone();
-        filtered.test_cases = filtered
-            .test_cases
-            .into_iter()
-            .filter(|tc| tc.tags.contains(tag))
-            .collect();
+        filtered.test_cases.retain(|tc| tc.tags.contains(tag));
         println!(
             "Filtered to {} test cases with tag '{}'",
             filtered.test_cases.len(),

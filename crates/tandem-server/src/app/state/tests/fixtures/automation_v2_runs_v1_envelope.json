@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "runs": {
+    "run-fixture-versioned": {
+      "run_id": "run-fixture-versioned",
+      "automation_id": "automation-fixture",
+      "trigger_type": "manual",
+      "status": "queued",
+      "created_at_ms": 1,
+      "updated_at_ms": 1,
+      "checkpoint": {
+        "pending_nodes": ["compose_email"]
+      }
+    }
+  }
+}

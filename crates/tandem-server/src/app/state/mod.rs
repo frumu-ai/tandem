@@ -5,6 +5,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
+use anyhow::Context;
 use chrono::{Datelike, TimeZone, Utc};
 use chrono_tz::Tz;
 use cron::Schedule;
@@ -774,11 +775,133 @@ async fn read_state_file_with_legacy(
     Ok(Some(fs::read_to_string(legacy_path).await?))
 }
 
+const AUTOMATION_V2_RUNS_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AutomationV2RunsFile {
+    schema_version: u32,
+    runs: std::collections::HashMap<String, AutomationV2RunRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AutomationV2RunShardFile {
+    schema_version: u32,
+    run: AutomationV2RunRecord,
+}
+
 fn parse_automation_v2_runs_file(
     raw: &str,
-) -> std::collections::HashMap<String, AutomationV2RunRecord> {
-    serde_json::from_str::<std::collections::HashMap<String, AutomationV2RunRecord>>(raw)
-        .unwrap_or_default()
+) -> anyhow::Result<(
+    std::collections::HashMap<String, AutomationV2RunRecord>,
+    bool,
+)> {
+    if raw.trim().is_empty() || raw.trim() == "{}" {
+        return Ok((std::collections::HashMap::new(), raw.trim() == "{}"));
+    }
+    let value: Value =
+        serde_json::from_str(raw).context("failed to parse automation_v2_runs.json")?;
+    let Some(version_value) = value.get("schema_version") else {
+        let runs =
+            serde_json::from_value::<std::collections::HashMap<String, AutomationV2RunRecord>>(
+                value,
+            )
+            .context("failed to parse legacy automation_v2_runs.json v0 map")?;
+        return Ok((upgrade_automation_v2_runs_file(0, runs)?, true));
+    };
+    let schema_version = version_value
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .context("automation_v2_runs.json schema_version must be an unsigned integer")?;
+    if schema_version > AUTOMATION_V2_RUNS_SCHEMA_VERSION {
+        anyhow::bail!(
+            "automation_v2_runs.json schema_version {} is newer than supported version {}",
+            schema_version,
+            AUTOMATION_V2_RUNS_SCHEMA_VERSION
+        );
+    }
+    let file = serde_json::from_value::<AutomationV2RunsFile>(value)
+        .context("failed to parse versioned automation_v2_runs.json")?;
+    let upgraded = file.schema_version < AUTOMATION_V2_RUNS_SCHEMA_VERSION;
+    Ok((
+        upgrade_automation_v2_runs_file(file.schema_version, file.runs)?,
+        upgraded,
+    ))
+}
+
+fn serialize_automation_v2_runs_file(
+    runs: std::collections::HashMap<String, AutomationV2RunRecord>,
+) -> anyhow::Result<String> {
+    serde_json::to_string_pretty(&AutomationV2RunsFile {
+        schema_version: AUTOMATION_V2_RUNS_SCHEMA_VERSION,
+        runs,
+    })
+    .context("failed to serialize automation_v2_runs.json")
+}
+
+fn parse_automation_v2_run_shard_file(raw: &str) -> anyhow::Result<AutomationV2RunRecord> {
+    let value = serde_json::from_str::<Value>(raw)
+        .context("failed to parse automation v2 run history shard")?;
+    let Some(version_value) = value.get("schema_version") else {
+        let run = serde_json::from_value::<AutomationV2RunRecord>(value)
+            .context("failed to parse legacy automation v2 run history shard")?;
+        return upgrade_automation_v2_run_shard(0, run);
+    };
+    let schema_version = version_value
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .context("automation v2 run history shard schema_version must be an unsigned integer")?;
+    if schema_version > AUTOMATION_V2_RUNS_SCHEMA_VERSION {
+        anyhow::bail!(
+            "automation v2 run history shard schema_version {} is newer than supported version {}",
+            schema_version,
+            AUTOMATION_V2_RUNS_SCHEMA_VERSION
+        );
+    }
+    let file = serde_json::from_value::<AutomationV2RunShardFile>(value)
+        .context("failed to parse versioned automation v2 run history shard")?;
+    upgrade_automation_v2_run_shard(file.schema_version, file.run)
+}
+
+fn serialize_automation_v2_run_shard(run: &AutomationV2RunRecord) -> anyhow::Result<String> {
+    serde_json::to_string_pretty(&AutomationV2RunShardFile {
+        schema_version: AUTOMATION_V2_RUNS_SCHEMA_VERSION,
+        run: run.clone(),
+    })
+    .context("failed to serialize automation v2 run history shard")
+}
+
+fn upgrade_automation_v2_runs_file(
+    from_version: u32,
+    runs: std::collections::HashMap<String, AutomationV2RunRecord>,
+) -> anyhow::Result<std::collections::HashMap<String, AutomationV2RunRecord>> {
+    let mut current = from_version;
+    while current < AUTOMATION_V2_RUNS_SCHEMA_VERSION {
+        match current {
+            0 => {
+                current = 1;
+            }
+            other => anyhow::bail!("unsupported automation_v2_runs.json schema version {other}"),
+        }
+    }
+    Ok(runs)
+}
+
+fn upgrade_automation_v2_run_shard(
+    from_version: u32,
+    run: AutomationV2RunRecord,
+) -> anyhow::Result<AutomationV2RunRecord> {
+    let mut current = from_version;
+    while current < AUTOMATION_V2_RUNS_SCHEMA_VERSION {
+        match current {
+            0 => {
+                current = 1;
+            }
+            other => {
+                anyhow::bail!("unsupported automation v2 run history shard schema version {other}")
+            }
+        }
+    }
+    Ok(run)
 }
 
 fn automation_run_is_terminal(status: &AutomationRunStatus) -> bool {
@@ -880,7 +1003,7 @@ async fn write_automation_v2_run_history_shard(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
     }
-    let payload = serde_json::to_string_pretty(run)?;
+    let payload = serialize_automation_v2_run_shard(run)?;
     write_string_atomic(&path, &payload).await?;
     Ok(path)
 }
@@ -906,7 +1029,7 @@ async fn load_automation_v2_run_history_shard(
                 continue;
             }
             let raw = fs::read_to_string(&path).await.ok()?;
-            return serde_json::from_str::<AutomationV2RunRecord>(&raw)
+            return parse_automation_v2_run_shard_file(&raw)
                 .ok()
                 .filter(|run| !automation_v2_run_is_nonterminal_recovered_context_run(run));
         }
@@ -946,7 +1069,7 @@ async fn load_automation_v2_run_history_shards(active_path: &Path) -> Vec<Automa
                 let Ok(raw) = fs::read_to_string(&path).await else {
                     continue;
                 };
-                if let Ok(run) = serde_json::from_str::<AutomationV2RunRecord>(&raw) {
+                if let Ok(run) = parse_automation_v2_run_shard_file(&raw) {
                     if automation_v2_run_is_nonterminal_recovered_context_run(&run) {
                         continue;
                     }

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "sessions": {
+    "ses_fixture_v1": {
+      "id": "ses_fixture_v1",
+      "slug": null,
+      "version": "v1",
+      "project_id": null,
+      "title": "Versioned fixture session",
+      "directory": ".",
+      "time": {
+        "created": "2026-01-01T00:00:00Z",
+        "updated": "2026-01-01T00:00:00Z"
+      },
+      "model": null,
+      "provider": null,
+      "messages": []
+    }
+  }
+}

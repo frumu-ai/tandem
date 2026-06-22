@@ -37,6 +37,28 @@ pub struct MemoryDatabase {
 }
 
 static SCHEMA_INIT_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+const MEMORY_SCHEMA_MIGRATIONS: &[(i64, &str)] = &[(1, "bootstrap_memory_schema")];
+
+fn ensure_schema_migrations_table(conn: &Connection) -> MemoryResult<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at_ms INTEGER NOT NULL
+        )",
+        [],
+    )?;
+    Ok(())
+}
+
+fn record_schema_migration(conn: &Connection, version: i64, name: &str) -> MemoryResult<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migrations (version, name, applied_at_ms)
+         VALUES (?1, ?2, ?3)",
+        params![version, name, Utc::now().timestamp_millis()],
+    )?;
+    Ok(())
+}
 
 /// Process-wide default for strict tenant enforcement, set once at startup by
 /// the host (engine `serve` in hosted/enterprise auth modes) before databases

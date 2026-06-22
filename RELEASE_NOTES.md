@@ -23,6 +23,12 @@ MCP connections.
   payloads before execution, strict loads reject unknown actions with
   source/step/field diagnostics, and MCP/tool actions can be checked against the
   host tool catalog schema before a workflow is saved or run.
+- Session history, Automation V2 run stores, and per-run history shards now use
+  schema-versioned persistence envelopes. Legacy bare-map/bare-record files load
+  through explicit v0-to-v1 migrations and rewrite safely, future schema
+  versions fail closed without overwriting state, compatibility fixtures protect
+  paused awaiting-approval run state, and the memory DB records its bootstrap
+  schema in an idempotent `schema_migrations` ledger.
 
 ### Runtime Governance
 

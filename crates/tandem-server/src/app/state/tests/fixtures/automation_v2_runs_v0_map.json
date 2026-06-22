@@ -1,0 +1,32 @@
+{
+  "run-fixture-awaiting": {
+    "run_id": "run-fixture-awaiting",
+    "automation_id": "automation-fixture",
+    "trigger_type": "manual",
+    "status": "awaiting_approval",
+    "created_at_ms": 1,
+    "updated_at_ms": 2,
+    "checkpoint": {
+      "completed_nodes": ["compose_email"],
+      "pending_nodes": ["approval_gate", "send_email"],
+      "node_outputs": {
+        "compose_email": {
+          "draft": "Hello from the fixture"
+        }
+      },
+      "node_attempts": {
+        "compose_email": 1
+      },
+      "blocked_nodes": [],
+      "awaiting_gate": {
+        "node_id": "approval_gate",
+        "title": "Review the drafted email",
+        "instructions": "Approve before the email is sent.",
+        "decisions": ["approve", "rework", "cancel"],
+        "rework_targets": ["compose_email"],
+        "requested_at_ms": 2,
+        "upstream_node_ids": ["compose_email"]
+      }
+    }
+  }
+}
