@@ -80,6 +80,10 @@ MCP connections.
 
 ### Runtime Governance
 
+- Provider auth credential storage now lives in `tandem-providers` instead of
+  `tandem-core`, with compatibility re-exports left in core for existing
+  callers. This starts the TAN-205 crate-boundary cleanup without changing
+  persisted credential file names or tenant-scoped credential behavior.
 - Tool execution now flows through a governed dispatcher outside the
   `tandem-tools` crate. Engine turns, workflow actions, Automation V2 connector
   preflight calls, direct HTTP tool execution, planner helpers, pack builder,
