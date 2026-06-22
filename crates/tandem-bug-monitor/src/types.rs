@@ -224,6 +224,8 @@ pub struct BugMonitorLogSourceState {
     pub last_line_hash: Option<String>,
     #[serde(default)]
     pub recent_fingerprints: std::collections::BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub positioned_at_ms: Option<u64>,
     #[serde(default)]
     pub updated_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
