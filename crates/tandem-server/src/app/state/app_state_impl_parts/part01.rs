@@ -1638,15 +1638,17 @@ impl AppState {
         let mut merged = std::collections::HashMap::<String, AutomationV2RunRecord>::new();
         let mut loaded_from_alternate = false;
         let mut canonical_loaded = false;
+        let mut runs_store_upgraded = false;
         let mut path_counts = Vec::new();
         if self.automation_v2_runs_path.exists() {
             let raw = fs::read_to_string(&self.automation_v2_runs_path).await?;
-            if raw.trim().is_empty() || raw.trim() == "{}" {
+            if raw.trim().is_empty() {
                 path_counts.push((self.automation_v2_runs_path.clone(), 0usize));
             } else {
-                let parsed = parse_automation_v2_runs_file(&raw);
+                let (parsed, upgraded) = parse_automation_v2_runs_file(&raw)?;
                 path_counts.push((self.automation_v2_runs_path.clone(), parsed.len()));
                 canonical_loaded = !parsed.is_empty();
+                runs_store_upgraded = upgraded;
                 merged = parsed;
             }
         } else {
@@ -1662,14 +1664,17 @@ impl AppState {
                     continue;
                 }
                 let raw = fs::read_to_string(&path).await?;
-                if raw.trim().is_empty() || raw.trim() == "{}" {
+                if raw.trim().is_empty() {
                     path_counts.push((path, 0usize));
                     continue;
                 }
-                let parsed = parse_automation_v2_runs_file(&raw);
+                let (parsed, upgraded) = parse_automation_v2_runs_file(&raw)?;
                 path_counts.push((path.clone(), parsed.len()));
                 if !parsed.is_empty() {
                     loaded_from_alternate = true;
+                }
+                if upgraded && !parsed.is_empty() {
+                    runs_store_upgraded = true;
                 }
                 for (run_id, run) in parsed {
                     match merged.get(&run_id) {
@@ -1729,6 +1734,7 @@ impl AppState {
             || recovered > 0
             || recovered_context_runs > 0
             || dropped_nonterminal_recovered_context_runs > 0
+            || runs_store_upgraded
         {
             let _ = self.persist_automation_v2_runs().await;
         } else if canonical_loaded {
@@ -1754,7 +1760,7 @@ impl AppState {
             &automations_snapshot,
             automation_v2_hot_cutoff_ms(),
         );
-        let payload = serde_json::to_string_pretty(&compacted)?;
+        let payload = serialize_automation_v2_runs_file(compacted)?;
         if let Some(parent) = self.automation_v2_runs_path.parent() {
             fs::create_dir_all(parent).await?;
         }

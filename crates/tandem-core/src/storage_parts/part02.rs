@@ -1,4 +1,3 @@
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,6 +114,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn loads_legacy_session_store_fixture_and_rewrites_versioned_envelope() {
+        let base = std::env::temp_dir().join(format!(
+            "tandem-core-session-store-migration-{}",
+            Uuid::new_v4()
+        ));
+        stdfs::create_dir_all(&base).expect("base");
+        stdfs::write(
+            base.join("sessions.json"),
+            include_str!("fixtures/sessions_v0_map.json"),
+        )
+        .expect("sessions fixture");
+
+        let storage = Storage::new(&base).await.expect("storage");
+        let loaded = storage
+            .get_session("ses_fixture")
+            .await
+            .expect("fixture session");
+        assert_eq!(loaded.title, "Fixture session");
+
+        let raw = stdfs::read_to_string(base.join("sessions.json")).expect("read sessions");
+        let persisted: Value = serde_json::from_str(&raw).expect("versioned sessions");
+        assert_eq!(
+            persisted.get("schema_version").and_then(Value::as_u64),
+            Some(SESSIONS_SCHEMA_VERSION as u64)
+        );
+        assert!(persisted
+            .get("sessions")
+            .and_then(|sessions| sessions.get("ses_fixture"))
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn loads_current_session_store_fixture_without_rewrite() {
+        let (sessions, upgraded) =
+            load_sessions_file(include_str!("fixtures/sessions_v1_envelope.json"))
+                .expect("current fixture");
+        assert!(!upgraded);
+        assert!(sessions.contains_key("ses_fixture_v1"));
+    }
+
+    #[tokio::test]
+    async fn rejects_future_session_store_version_without_overwrite() {
+        let base = std::env::temp_dir().join(format!(
+            "tandem-core-session-store-future-{}",
+            Uuid::new_v4()
+        ));
+        stdfs::create_dir_all(&base).expect("base");
+        let future = r#"{"schema_version":999,"sessions":{}}"#;
+        stdfs::write(base.join("sessions.json"), future).expect("sessions future");
+
+        let error = match Storage::new(&base).await {
+            Ok(_) => panic!("future sessions should fail to load"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("newer than supported"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            stdfs::read_to_string(base.join("sessions.json")).expect("read future"),
+            future
+        );
+    }
+
+    #[tokio::test]
     async fn skips_legacy_merge_when_sessions_json_exists() {
         let base =
             std::env::temp_dir().join(format!("tandem-core-legacy-merge-{}", Uuid::new_v4()));
@@ -220,10 +284,8 @@ mod tests {
 
     #[tokio::test]
     async fn list_session_summaries_scoped_filters_without_messages() {
-        let base = std::env::temp_dir().join(format!(
-            "tandem-core-summary-scope-{}",
-            Uuid::new_v4()
-        ));
+        let base =
+            std::env::temp_dir().join(format!("tandem-core-summary-scope-{}", Uuid::new_v4()));
         let storage = Storage::new(&base).await.expect("storage");
         let ws_a = base.join("ws-a");
         let ws_b = base.join("ws-b");

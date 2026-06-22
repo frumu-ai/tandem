@@ -1,0 +1,17 @@
+{
+  "ses_fixture": {
+    "id": "ses_fixture",
+    "slug": null,
+    "version": "v1",
+    "project_id": null,
+    "title": "Fixture session",
+    "directory": ".",
+    "time": {
+      "created": "2026-01-01T00:00:00Z",
+      "updated": "2026-01-01T00:00:00Z"
+    },
+    "model": null,
+    "provider": null,
+    "messages": []
+  }
+}

@@ -58,6 +58,58 @@ pub struct SessionRepairStats {
 const LEGACY_IMPORT_MARKER_FILE: &str = "legacy_import_marker.json";
 const LEGACY_IMPORT_MARKER_VERSION: u32 = 1;
 const MAX_SESSION_SNAPSHOTS: usize = 5;
+const SESSIONS_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SessionsFile {
+    schema_version: u32,
+    sessions: HashMap<String, Session>,
+}
+
+fn load_sessions_file(raw: &str) -> anyhow::Result<(HashMap<String, Session>, bool)> {
+    let value: Value = serde_json::from_str(raw).context("failed to parse sessions.json")?;
+    let Some(version_value) = value.get("schema_version") else {
+        let sessions = serde_json::from_value::<HashMap<String, Session>>(value)
+            .context("failed to parse legacy sessions.json v0 map")?;
+        return Ok((upgrade_sessions_file(0, sessions)?, true));
+    };
+
+    let schema_version = version_value
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .context("sessions.json schema_version must be an unsigned integer")?;
+    if schema_version > SESSIONS_SCHEMA_VERSION {
+        anyhow::bail!(
+            "sessions.json schema_version {} is newer than supported version {}",
+            schema_version,
+            SESSIONS_SCHEMA_VERSION
+        );
+    }
+
+    let file = serde_json::from_value::<SessionsFile>(value)
+        .context("failed to parse versioned sessions.json")?;
+    let upgraded = file.schema_version < SESSIONS_SCHEMA_VERSION;
+    Ok((
+        upgrade_sessions_file(file.schema_version, file.sessions)?,
+        upgraded,
+    ))
+}
+
+fn upgrade_sessions_file(
+    from_version: u32,
+    sessions: HashMap<String, Session>,
+) -> anyhow::Result<HashMap<String, Session>> {
+    let mut current = from_version;
+    while current < SESSIONS_SCHEMA_VERSION {
+        match current {
+            0 => {
+                current = 1;
+            }
+            other => anyhow::bail!("unsupported sessions.json schema version {}", other),
+        }
+    }
+    Ok(sessions)
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LegacyTreeCounts {
@@ -241,9 +293,12 @@ impl Storage {
         let marker_path = base.join(LEGACY_IMPORT_MARKER_FILE);
         let sessions_file_exists = sessions_file.exists();
         let mut imported_legacy_sessions = false;
+        let mut sessions_store_upgraded = false;
         let mut sessions = if sessions_file_exists {
             let raw = fs::read_to_string(&sessions_file).await?;
-            serde_json::from_str::<HashMap<String, Session>>(&raw).unwrap_or_default()
+            let (sessions, upgraded) = load_sessions_file(&raw)?;
+            sessions_store_upgraded = upgraded;
+            sessions
         } else {
             HashMap::new()
         };
@@ -303,7 +358,7 @@ impl Storage {
             flush_lock: Mutex::new(()),
         };
 
-        if imported_legacy_sessions || metadata_compacted {
+        if imported_legacy_sessions || metadata_compacted || sessions_store_upgraded {
             storage.flush().await?;
         }
         if let Some(marker) = marker_to_write {
@@ -360,7 +415,10 @@ impl Storage {
         match scope {
             SessionListScope::Global => {
                 let sessions = self.sessions.read().await;
-                sessions.values().map(session_summary_without_messages).collect()
+                sessions
+                    .values()
+                    .map(session_summary_without_messages)
+                    .collect()
             }
             SessionListScope::Workspace { workspace_root } => {
                 let Some(normalized_workspace) = normalize_workspace_path(&workspace_root) else {
@@ -840,7 +898,11 @@ impl Storage {
         let _flush_guard = self.flush_lock.lock().await;
         {
             let snapshot = self.sessions.read().await.clone();
-            self.flush_file("sessions.json", &snapshot).await?;
+            let sessions_file = SessionsFile {
+                schema_version: SESSIONS_SCHEMA_VERSION,
+                sessions: snapshot,
+            };
+            self.flush_file("sessions.json", &sessions_file).await?;
         }
         {
             let metadata_snapshot = self.metadata.read().await.clone();

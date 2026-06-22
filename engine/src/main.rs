@@ -1861,6 +1861,107 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    #[tokio::test]
+    async fn storage_cleanup_preserves_versioned_automation_run_hot_index() {
+        let root = std::env::temp_dir().join(format!("tandem-storage-runs-v1-{}", Uuid::new_v4()));
+        let data_dir = root.join("data");
+        fs::create_dir_all(&data_dir).expect("create data dir");
+        let active_path = data_dir.join("automation_v2_runs.json");
+        let run = cleanup_test_automation_run(
+            "run-cleanup-hot",
+            tandem_server::AutomationRunStatus::Queued,
+        );
+        let runs = std::collections::HashMap::from([(run.run_id.clone(), run.clone())]);
+        let payload = json!({
+            "schema_version": 1,
+            "runs": runs,
+        });
+        fs::write(
+            &active_path,
+            serde_json::to_string_pretty(&payload).expect("versioned run json"),
+        )
+        .expect("write active run index");
+
+        let _report = storage_cleanup(&root, false, false, true, false, false, 7)
+            .await
+            .expect("storage cleanup");
+
+        let rewritten: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&active_path).expect("read active runs"))
+                .expect("rewritten active runs");
+        assert_eq!(
+            rewritten
+                .get("schema_version")
+                .and_then(|value| value.as_u64()),
+            Some(1)
+        );
+        assert!(rewritten
+            .get("runs")
+            .and_then(|runs| runs.get("run-cleanup-hot"))
+            .is_some());
+
+        let shard_path = storage_run_shard_path(&active_path, &run);
+        let shard: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(shard_path).expect("read run shard"))
+                .expect("run shard json");
+        assert_eq!(
+            shard.get("schema_version").and_then(|value| value.as_u64()),
+            Some(1)
+        );
+        assert_eq!(shard["run"]["run_id"], "run-cleanup-hot");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn cleanup_test_automation_run(
+        run_id: &str,
+        status: tandem_server::AutomationRunStatus,
+    ) -> tandem_server::AutomationV2RunRecord {
+        tandem_server::AutomationV2RunRecord {
+            run_id: run_id.to_string(),
+            automation_id: "cleanup-auto".to_string(),
+            tenant_context: tandem_types::TenantContext::local_implicit(),
+            trigger_type: "manual".to_string(),
+            status,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            started_at_ms: None,
+            finished_at_ms: None,
+            active_session_ids: Vec::new(),
+            latest_session_id: None,
+            active_instance_ids: Vec::new(),
+            checkpoint: tandem_server::AutomationRunCheckpoint {
+                completed_nodes: Vec::new(),
+                pending_nodes: vec!["draft".to_string()],
+                node_outputs: std::collections::HashMap::new(),
+                node_attempts: std::collections::HashMap::new(),
+                node_attempt_verdicts: std::collections::HashMap::new(),
+                blocked_nodes: Vec::new(),
+                awaiting_gate: None,
+                gate_history: Vec::new(),
+                lifecycle_history: Vec::new(),
+                last_failure: None,
+            },
+            runtime_context: None,
+            automation_snapshot: None,
+            pause_reason: None,
+            resume_reason: None,
+            detail: None,
+            stop_kind: None,
+            stop_reason: None,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            estimated_cost_usd: 0.0,
+            scheduler: None,
+            trigger_reason: None,
+            consumed_handoff_id: None,
+            learning_summary: None,
+            effective_execution_profile: tandem_server::ExecutionProfile::Strict,
+            requested_execution_profile: None,
+        }
+    }
+
     #[test]
     fn parse_memory_import_format_accepts_openclaw() {
         assert_eq!(

@@ -291,6 +291,95 @@ async fn automation_v2_legacy_aggregate_is_migrated_to_shards() {
 }
 
 #[tokio::test]
+async fn automation_v2_run_store_legacy_fixture_loads_and_rewrites_versioned_envelope() {
+    let root = std::env::temp_dir().join(format!(
+        "tandem-automation-v2-run-schema-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&root).expect("state root");
+    let active_path = root.join("automation_v2_runs.json");
+    std::fs::write(
+        &active_path,
+        include_str!("../fixtures/automation_v2_runs_v0_map.json"),
+    )
+    .expect("legacy runs fixture");
+
+    let mut state = test_state_with_path(root.join("shared.json"));
+    state.automation_v2_runs_path = active_path.clone();
+    state
+        .load_automation_v2_runs()
+        .await
+        .expect("load legacy run fixture");
+
+    let runs = state.automation_v2_runs.read().await;
+    let run = runs
+        .get("run-fixture-awaiting")
+        .expect("awaiting approval run");
+    assert_eq!(run.status, AutomationRunStatus::AwaitingApproval);
+    assert_eq!(
+        run.checkpoint
+            .awaiting_gate
+            .as_ref()
+            .map(|gate| gate.node_id.as_str()),
+        Some("approval_gate")
+    );
+    assert!(run
+        .checkpoint
+        .pending_nodes
+        .iter()
+        .any(|node_id| node_id == "send_email"));
+    drop(runs);
+
+    let raw = std::fs::read_to_string(&active_path).expect("versioned run store");
+    let persisted: Value = serde_json::from_str(&raw).expect("versioned runs json");
+    assert_eq!(
+        persisted.get("schema_version").and_then(Value::as_u64),
+        Some(AUTOMATION_V2_RUNS_SCHEMA_VERSION as u64)
+    );
+    assert!(persisted
+        .get("runs")
+        .and_then(|runs| runs.get("run-fixture-awaiting"))
+        .is_some());
+}
+
+#[test]
+fn automation_v2_run_store_current_fixture_loads_without_upgrade() {
+    let (runs, upgraded) = parse_automation_v2_runs_file(include_str!(
+        "../fixtures/automation_v2_runs_v1_envelope.json"
+    ))
+    .expect("versioned run fixture");
+    assert!(!upgraded);
+    assert!(runs.contains_key("run-fixture-versioned"));
+}
+
+#[tokio::test]
+async fn automation_v2_run_store_rejects_future_schema_without_overwrite() {
+    let root = std::env::temp_dir().join(format!(
+        "tandem-automation-v2-run-schema-future-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&root).expect("state root");
+    let active_path = root.join("automation_v2_runs.json");
+    let future = r#"{"schema_version":999,"runs":{}}"#;
+    std::fs::write(&active_path, future).expect("future runs");
+
+    let mut state = test_state_with_path(root.join("shared.json"));
+    state.automation_v2_runs_path = active_path.clone();
+    let error = state
+        .load_automation_v2_runs()
+        .await
+        .expect_err("future run store should fail to load");
+    assert!(
+        error.to_string().contains("newer than supported"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(active_path).expect("read future runs"),
+        future
+    );
+}
+
+#[tokio::test]
 async fn automation_attempt_receipt_append_uses_jsonl_path_and_skips_malformed_lines() {
     let state_dir =
         std::env::temp_dir().join(format!("tandem-receipt-ledger-{}", uuid::Uuid::new_v4()));

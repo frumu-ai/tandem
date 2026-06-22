@@ -23,6 +23,12 @@ MCP connections.
   payloads before execution, strict loads reject unknown actions with
   source/step/field diagnostics, and MCP/tool actions can be checked against the
   host tool catalog schema before a workflow is saved or run.
+- Session history, Automation V2 run stores, and per-run history shards now use
+  schema-versioned persistence envelopes. Legacy bare-map/bare-record files load
+  through explicit v0-to-v1 migrations and rewrite safely, future schema
+  versions fail closed without overwriting state, compatibility fixtures protect
+  paused awaiting-approval run state, and the memory DB records its bootstrap
+  schema in an idempotent `schema_migrations` ledger.
 
 ### Runtime Governance
 
@@ -108,6 +114,12 @@ MCP connections.
   removed the related regression from the nextest CI quarantine list.
 - Fixed Automation V2 task retry/requeue so manual node requeues preserve the
   prior attempt count and the next executor pass advances to the next attempt.
+- `tandem-engine storage cleanup` now reads and writes schema-versioned
+  Automation V2 run indexes/shards, so cleanup cannot collapse a v1 hot run
+  index to an empty legacy map.
+- Automation V2 run-shard envelope writes now borrow the run record instead of
+  cloning it, and stack-heavy coder issue-fix regressions run under a high-stack
+  test harness for reliable nextest coverage.
 - Documented that hosted/enterprise MCP OAuth should follow the existing
   connector control-plane ownership precedent: long-lived secret material stays
   outside the runtime, while the runtime stores credential references and
