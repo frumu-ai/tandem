@@ -54,6 +54,9 @@ MCP connections.
   the dogfooding regression dataset through `eval-runner --engine-mode stub`.
   Stub/live eval-runner modes now use Tokio's multithreaded runtime so local
   in-process Automation V2 evals do not overflow the single-thread runtime stack.
+- Rust CI now has a security and coverage lane: cargo-audit, cargo-deny,
+  documented exception handling, and nightly governance-critical llvm-cov
+  artifacts for `tandem-tools`, `tandem-plan-compiler`, and `tandem-automation`.
 
 ### Runtime Governance
 

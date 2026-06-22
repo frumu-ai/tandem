@@ -82,6 +82,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discovered workflow/runtime bugs become permanent replay coverage. Eval-runner
   stub/live modes now use Tokio's multithreaded runtime for in-process
   Automation V2 evals.
+- Added Rust supply-chain and coverage CI: cargo-audit, cargo-deny, nightly
+  governance-critical llvm-cov reports, and initial coverage baselines for
+  `tandem-tools`, `tandem-plan-compiler`, and `tandem-automation`.
 
 ### Changed
 

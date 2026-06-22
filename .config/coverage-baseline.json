@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "generated_at": "2026-06-22",
+  "description": "Initial governance-critical Rust coverage baselines. The nightly workflow reports deltas against these floors; raise them only after linking a passing coverage artifact.",
+  "crates": {
+    "tandem-tools": {
+      "line_coverage_percent": 0.0,
+      "minimum_delta_percent": -5.0,
+      "source": "initial floor pending first nightly governance-coverage artifact"
+    },
+    "tandem-plan-compiler": {
+      "line_coverage_percent": 0.0,
+      "minimum_delta_percent": -5.0,
+      "source": "initial floor pending first nightly governance-coverage artifact"
+    },
+    "tandem-automation": {
+      "line_coverage_percent": 0.0,
+      "minimum_delta_percent": -5.0,
+      "source": "initial floor pending first nightly governance-coverage artifact"
+    }
+  }
+}

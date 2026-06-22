@@ -1,0 +1,141 @@
+name: Rust Security and Coverage
+
+on:
+  pull_request:
+    branches: [main, feat/engine]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - "engine/**"
+      - ".config/audit.toml"
+      - ".config/coverage-baseline.json"
+      - ".config/deny.toml"
+      - ".github/workflows/rust-security-and-coverage.yml"
+      - "docs/CI_SECURITY_AND_COVERAGE.md"
+      - "docs/LICENSING.md"
+      - "scripts/summarize-rust-coverage.mjs"
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cargo-audit:
+    name: Cargo Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+
+      - name: Run cargo audit
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
+        run: cargo audit --config .config/audit.toml
+
+      - name: PR audit policy
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "cargo-audit is warning-only on pull requests." >> "$GITHUB_STEP_SUMMARY"
+          echo "The same advisory scan fails scheduled and manual runs." >> "$GITHUB_STEP_SUMMARY"
+
+  cargo-deny:
+    name: Cargo Deny
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+
+      - name: Check licenses and bans
+        run: cargo deny --config .config/deny.toml check licenses bans
+
+      - name: Check advisories
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
+        run: cargo deny --config .config/deny.toml check advisories
+
+  coverage:
+    name: Governance Coverage
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h /
+
+      - name: Install Rust with llvm-tools
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Run governance coverage
+        run: |
+          mkdir -p target/coverage
+          cargo llvm-cov clean --workspace
+          cargo llvm-cov nextest \
+            -p tandem-tools \
+            -p tandem-plan-compiler \
+            -p tandem-automation \
+            --profile ci \
+            --lcov \
+            --output-path target/coverage/lcov.info
+
+      - name: Summarize coverage
+        run: |
+          node scripts/summarize-rust-coverage.mjs \
+            --lcov target/coverage/lcov.info \
+            --baseline .config/coverage-baseline.json \
+            --out-md target/coverage/rust-coverage-summary.md \
+            --out-json target/coverage/rust-coverage-summary.json
+          cat target/coverage/rust-coverage-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: governance-coverage
+          path: |
+            target/coverage/lcov.info
+            target/coverage/rust-coverage-summary.md
+            target/coverage/rust-coverage-summary.json
+          retention-days: 30

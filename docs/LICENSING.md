@@ -105,6 +105,12 @@ The source-available governance layer authorizes recursive and Self-Operator beh
 - Apache 2.0 text: `LICENSE-APACHE`
 - Business Source License 1.1 terms: package-local `LICENSE` files in each `BUSL-1.1` component
 
+## CI Enforcement
+
+Rust dependency license policy is enforced by `cargo deny` using
+`.config/deny.toml`. License and advisory exceptions follow the process in
+[`CI_SECURITY_AND_COVERAGE.md`](CI_SECURITY_AND_COVERAGE.md).
+
 ## NOTICE Guidance (Apache-2.0 users)
 
 Apache-2.0 does not require a `NOTICE` file unless one is distributed with the work. If downstream redistributors add Apache attribution notices, they should preserve any applicable notices consistent with Apache-2.0 Section 4.
