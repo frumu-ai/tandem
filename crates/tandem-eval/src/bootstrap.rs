@@ -27,9 +27,9 @@ use tandem_types::{
     TenantContext, ToolResult, ToolRiskTier, ToolSchema,
 };
 
-use crate::eval::{ScriptedEvalProvider, SCRIPTED_PROVIDER_ID};
-use crate::runtime::state::RuntimeState;
-use crate::{
+use crate::{ScriptedEvalProvider, SCRIPTED_PROVIDER_ID};
+use tandem_server::runtime::state::RuntimeState;
+use tandem_server::{
     app::state::AppState, AutomationAgentMcpPolicy, AutomationAgentProfile,
     AutomationAgentToolPolicy, AutomationExecutionPolicy, AutomationFlowNode,
     AutomationFlowOutputContract, AutomationFlowSpec, AutomationOutputValidatorKind,
@@ -79,7 +79,7 @@ pub async fn bootstrap_eval_app_state(options: EvalBootstrapOptions) -> anyhow::
 
     #[cfg(feature = "browser")]
     let browser = {
-        let browser = crate::BrowserSubsystem::new(app_config.browser.clone());
+        let browser = tandem_server::BrowserSubsystem::new(app_config.browser.clone());
         let _ = browser.refresh_status().await;
         browser
     };
@@ -111,7 +111,7 @@ pub async fn bootstrap_eval_app_state(options: EvalBootstrapOptions) -> anyhow::
     let logs = Arc::new(tokio::sync::RwLock::new(Vec::new()));
     let workspace_index = WorkspaceIndex::new(&workspace_root_str).await;
     let cancellations = CancellationRegistry::new();
-    let host_runtime_context = crate::detect_host_runtime_context();
+    let host_runtime_context = tandem_server::detect_host_runtime_context();
     let engine_loop = EngineLoop::new(
         storage.clone(),
         event_bus.clone(),
@@ -195,17 +195,15 @@ pub async fn bootstrap_eval_app_state(options: EvalBootstrapOptions) -> anyhow::
     state
         .tools
         .register_tool(
-            crate::eval::cross_tenant_probe::EvalCrossTenantGrantProbeTool::NAME.to_string(),
-            Arc::new(
-                crate::eval::cross_tenant_probe::EvalCrossTenantGrantProbeTool::new(state.clone()),
-            ),
+            crate::cross_tenant_probe::EvalCrossTenantGrantProbeTool::NAME.to_string(),
+            Arc::new(crate::cross_tenant_probe::EvalCrossTenantGrantProbeTool::new(state.clone())),
         )
         .await;
 
     if options.spawn_executor {
         let executor_state = state.clone();
         tokio::spawn(async move {
-            crate::run_automation_v2_executor(executor_state).await;
+            tandem_server::eval_support::run_automation_v2_executor(executor_state).await;
         });
     }
 
@@ -290,7 +288,7 @@ impl Tool for EvalActionFirewallProbeTool {
         let now_ms = args
             .get("now_ms")
             .and_then(Value::as_u64)
-            .unwrap_or_else(crate::now_ms);
+            .unwrap_or_else(tandem_server::now_ms);
         let request = action_firewall_gate_request(scenario)?;
 
         let (outcome, decision_id) = self
@@ -426,7 +424,7 @@ impl EvalActionFirewallProbeTool {
                         "cancel".to_string(),
                     ],
                     rework_targets: vec!["draft".to_string()],
-                    requested_at_ms: crate::now_ms(),
+                    requested_at_ms: tandem_server::now_ms(),
                     upstream_node_ids: vec!["analysis".to_string(), "draft".to_string()],
                     metadata: Some(json!({
                         "gate": {
@@ -445,16 +443,16 @@ impl EvalActionFirewallProbeTool {
                 anyhow::anyhow!("failed to prepare self-approval eval run `{}`", run.run_id)
             })?;
 
-        let result = crate::http::routines_automations::automations_v2_run_gate_decide_inner(
+        let result = tandem_server::eval_support::automations_v2_run_gate_decide_inner(
             self.state.clone(),
             gate_tenant_context,
             None,
             run.run_id.clone(),
-            crate::http::routines_automations::AutomationV2GateDecisionInput {
+            tandem_server::eval_support::EvalAutomationV2GateDecisionInput {
                 decision: "approve".to_string(),
                 reason: None,
             },
-            crate::automation_v2::governance::GovernanceActorRef::human(
+            tandem_server::automation_v2::governance::GovernanceActorRef::human(
                 Some(reviewer_actor_id.to_string()),
                 "eval".to_string(),
             ),
@@ -543,7 +541,7 @@ impl EvalActionFirewallProbeTool {
             },
             expires_at: u64::MAX,
         };
-        let put_response = crate::http::memory_put_impl(
+        let put_response = tandem_server::eval_support::memory_put_impl(
             &self.state,
             tenant_context,
             MemoryPutRequest {
@@ -586,7 +584,7 @@ impl EvalActionFirewallProbeTool {
             source_outcome: None,
         };
 
-        let response = crate::http::memory_promote_impl(
+        let response = tandem_server::eval_support::memory_promote_impl(
             &self.state,
             tenant_context,
             request,
@@ -754,7 +752,7 @@ fn action_firewall_eval_automation(
     creator_id: &str,
     tenant_context: &TenantContext,
 ) -> AutomationV2Spec {
-    let now = crate::now_ms();
+    let now = tandem_server::now_ms();
     let mut automation = AutomationV2Spec {
         automation_id: automation_id.to_string(),
         name: name.to_string(),

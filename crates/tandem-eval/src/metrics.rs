@@ -5,8 +5,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::eval::dataset::ArtifactStatus;
-use crate::failures::AIFailureMode;
+use crate::dataset::ArtifactStatus;
+use tandem_server::failures::AIFailureMode;
 
 /// Aggregated metrics from a complete evaluation run
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -68,7 +68,7 @@ pub mod bug_monitor;
 pub mod bug_monitor_github;
 pub mod capability_resolver;
 pub mod config;
-pub mod eval;
+pub mod eval_support;
 pub mod failures;
 pub mod goal_capability_learning;
 pub mod http;
@@ -112,9 +112,6 @@ pub use browser::*;
 pub use bug_monitor::types::*;
 pub use config::channels::*;
 pub use config::engine::{config_reference_markdown, EngineConfigOptions, EngineConfigReport};
-pub use eval::dataset::{
-    ArtifactStatus, EvalDataset, EvalExpectedOutput, EvalTestCase, MetricTolerance,
-};
 pub use failures::{
     categorize_failure, classify_error_text, should_retry, AIFailureMode, FailureCategoryKind,
     FailureContext,

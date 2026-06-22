@@ -9,11 +9,11 @@ Agent search terms: `eval-runner`, `eval_runner`, `EvalRunner`, `Tandem Eval Run
 
 Code paths:
 
-- CLI binary: `crates/tandem-server/src/bin/eval_runner.rs`
-- Runner implementation: `crates/tandem-server/src/eval/runner.rs`
-- Dataset parser/types: `crates/tandem-server/src/eval/dataset.rs`
-- Metrics/results: `crates/tandem-server/src/eval/metrics.rs`
-- Regression detection: `crates/tandem-server/src/eval/regression_detection.rs`
+- CLI binary: `crates/tandem-eval/src/bin/eval_runner.rs`
+- Runner implementation: `crates/tandem-eval/src/runner.rs`
+- Dataset parser/types: `crates/tandem-eval/src/dataset.rs`
+- Metrics/results: `crates/tandem-eval/src/metrics.rs`
+- Regression detection: `crates/tandem-eval/src/regression_detection.rs`
 - Datasets: `eval_datasets/*.yaml`
 - Internal developer guide: `docs/dev/EVAL_FRAMEWORK.md`
 
@@ -22,7 +22,7 @@ Code paths:
 Run the critical path dataset in deterministic simulation mode:
 
 ```bash
-cargo run -p tandem-server --bin eval-runner -- \
+cargo run -p tandem-eval --bin eval-runner -- \
   --dataset eval_datasets/critical_path.yaml \
   --engine-mode simulation \
   --output /tmp/tandem-eval-results.json
@@ -39,7 +39,7 @@ jq . /tmp/tandem-eval-results.json
 ## Command Reference
 
 ```bash
-cargo run -p tandem-server --bin eval-runner -- --help
+cargo run -p tandem-eval --bin eval-runner -- --help
 ```
 
 Supported options:
@@ -70,39 +70,31 @@ Exit codes:
 
 The eval runner accepts three engine modes:
 
-| Mode         | Engine path                                                 | Provider               | API key | Best use                                                                                      |
-| ------------ | ----------------------------------------------------------- | ---------------------- | ------- | --------------------------------------------------------------------------------------------- |
-| `simulation` | No live engine path. Uses deterministic simulated outcomes. | None                   | No      | Fast local checks, per-PR quality gates, docs examples.                                       |
-| `stub`       | Real Tandem engine path with scripted responses.            | `ScriptedEvalProvider` | No      | Engine-path validation after AppState wiring is available.                                    |
-| `live`       | Real Tandem engine path with configured provider.           | Real provider          | Yes     | Human-run baseline captures and release confidence checks after AppState wiring is available. |
+| Mode         | Engine path                                                 | Provider               | API key | Best use                                                   |
+| ------------ | ----------------------------------------------------------- | ---------------------- | ------- | ---------------------------------------------------------- |
+| `simulation` | No live engine path. Uses deterministic simulated outcomes. | None                   | No      | Fast local checks, per-PR quality gates, docs examples.    |
+| `stub`       | Real Tandem engine path with scripted responses.            | `ScriptedEvalProvider` | No      | Engine-path validation and zero-cost baseline captures.    |
+| `live`       | Real Tandem engine path with configured provider.           | Real provider          | Yes     | Human-run baseline captures and release confidence checks. |
 
 Mode names are parsed case-insensitively. Synonyms include `sim` for `simulation`, `scripted` for `stub`, and `real` for `live`.
 
-## Current Standalone CLI Caveat
+## Local Engine Bootstrap
 
-As currently wired, the standalone `eval-runner` binary constructs `EvalRunner::new(config)` without an `AppState`.
-
-That means:
-
-- `--engine-mode simulation` is the working standalone mode and should be used in guide examples.
-- `--engine-mode stub` and `--engine-mode live` are accepted by the parser, but the direct CLI does not yet bootstrap the engine state required by `EvalRunner::with_app_state(state)`.
-- Until that wiring lands, stub/live coverage belongs in tests or workflows that provide an `AppState`.
-
-Do not tell agents or users that the standalone CLI can fully execute stub/live evals unless `crates/tandem-server/src/bin/eval_runner.rs` has been updated to construct and pass an `AppState`.
+When `--engine-mode stub` or `--engine-mode live` is used without `--engine-token`, the CLI bootstraps an isolated in-process `AppState`. Stub mode swaps in `ScriptedEvalProvider`; live mode uses configured providers. Passing `--engine-token` uses the remote engine path instead.
 
 ## Common Commands
 
 Run every enabled test in the critical path dataset:
 
 ```bash
-cargo run -p tandem-server --bin eval-runner -- \
+cargo run -p tandem-eval --bin eval-runner -- \
   --dataset eval_datasets/critical_path.yaml
 ```
 
 Write results to a stable file:
 
 ```bash
-cargo run -p tandem-server --bin eval-runner -- \
+cargo run -p tandem-eval --bin eval-runner -- \
   --dataset eval_datasets/critical_path.yaml \
   --output eval_results.json
 ```
@@ -110,7 +102,7 @@ cargo run -p tandem-server --bin eval-runner -- \
 Run only tests tagged `regression`:
 
 ```bash
-cargo run -p tandem-server --bin eval-runner -- \
+cargo run -p tandem-eval --bin eval-runner -- \
   --dataset eval_datasets/critical_path.yaml \
   --filter-tag regression \
   --engine-mode simulation
@@ -119,7 +111,7 @@ cargo run -p tandem-server --bin eval-runner -- \
 Run with verbose output:
 
 ```bash
-cargo run -p tandem-server --bin eval-runner -- \
+cargo run -p tandem-eval --bin eval-runner -- \
   --dataset eval_datasets/critical_path.yaml \
   --engine-mode simulation \
   --verbose

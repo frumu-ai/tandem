@@ -9,6 +9,7 @@
 /// - **runner.rs**: Eval execution engine (CLI binary in bin/eval_runner.rs)
 /// - **regression_detection.rs**: Baseline comparison and alerting (Phase 4)
 pub mod bootstrap;
+pub mod bug_monitor_regression_fixture;
 pub(crate) mod cross_tenant_probe;
 pub mod dataset;
 pub mod engine_executor;

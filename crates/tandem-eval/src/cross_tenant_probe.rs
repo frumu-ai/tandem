@@ -11,7 +11,7 @@ use tandem_types::{
     VerifiedTenantContext,
 };
 
-use crate::app::state::AppState;
+use tandem_server::app::state::AppState;
 
 pub(crate) struct EvalCrossTenantGrantProbeTool {
     state: AppState,
@@ -107,7 +107,7 @@ impl Tool for EvalCrossTenantGrantProbeTool {
             ResourceKind::DocumentCollection,
             "legal-drive",
         );
-        let now_ms = crate::now_ms();
+        let now_ms = tandem_server::now_ms();
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&[19u8; 32]);
         let _keyring_guard = PublicKeyringEnvGuard::install(
             Self::KEY_ID,
@@ -166,7 +166,7 @@ impl Tool for EvalCrossTenantGrantProbeTool {
             now_ms,
             vec![DataClass::FinancialRecord],
         );
-        crate::http::cross_tenant_grants::enrich_verified_context_with_inbound_cross_tenant_grants(
+        tandem_server::eval_support::enrich_verified_context_with_inbound_cross_tenant_grants(
             &self.state,
             &mut verified,
         )
@@ -216,7 +216,7 @@ impl Tool for EvalCrossTenantGrantProbeTool {
             anyhow::bail!("out-of-scope resource was allowed by the cross-tenant grant");
         }
 
-        crate::audit::append_protected_audit_event(
+        tandem_server::audit::append_protected_audit_event(
             &self.state,
             "eval.cross_tenant_grant.access_evaluated",
             &audience,
@@ -341,7 +341,7 @@ async fn append_grant_audit(
     tenant_context: &TenantContext,
     record: &CrossTenantGrantRecord,
 ) -> anyhow::Result<()> {
-    crate::audit::append_protected_audit_event(
+    tandem_server::audit::append_protected_audit_event(
         state,
         event_type,
         tenant_context,

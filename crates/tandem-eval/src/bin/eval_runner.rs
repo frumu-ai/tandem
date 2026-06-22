@@ -3,16 +3,14 @@
 /// Command-line tool for executing AI evaluation datasets.
 ///
 /// Usage:
-///   cargo run --bin eval-runner -- --dataset eval_datasets/critical_path.yaml --output /tmp/results.json
-///   cargo run --bin eval-runner -- --dataset eval_datasets/critical_path.yaml --simulation
-///   cargo run --bin eval-runner -- --help
+///   cargo run -p tandem-eval --bin eval-runner -- --dataset eval_datasets/critical_path.yaml --output /tmp/results.json
+///   cargo run -p tandem-eval --bin eval-runner -- --dataset eval_datasets/critical_path.yaml --simulation
+///   cargo run -p tandem-eval --bin eval-runner -- --help
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use tandem_server::eval::runner::EngineMode;
-use tandem_server::eval::{
-    bootstrap_eval_app_state, EvalBootstrapOptions, EvalRunner, EvalRunnerConfig,
-};
+use tandem_eval::runner::EngineMode;
+use tandem_eval::{bootstrap_eval_app_state, EvalBootstrapOptions, EvalRunner, EvalRunnerConfig};
 
 const USAGE: &str = r#"
 Tandem Eval Runner - AI Quality Evaluation Tool

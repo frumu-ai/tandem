@@ -1,7 +1,7 @@
 # Critical Path Evaluation Dataset
 # Tests core happy-path scenarios that must always work
 #
-# Usage: cargo run --bin eval_runner -- --dataset eval_datasets/critical_path.yaml
+# Usage: cargo run -p tandem-eval --bin eval-runner -- --dataset eval_datasets/critical_path.yaml
 #
 name: "critical_path"
 version: "1.0"

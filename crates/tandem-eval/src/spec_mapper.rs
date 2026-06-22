@@ -20,8 +20,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{json, Map, Value};
 use tandem_types::TenantContext;
 
-use crate::eval::dataset::{ArtifactStatus, EvalTestCase, TestNode};
-use crate::{
+use crate::dataset::{ArtifactStatus, EvalTestCase, TestNode};
+use tandem_server::{
     AutomationAgentMcpPolicy, AutomationAgentProfile, AutomationAgentToolPolicy,
     AutomationExecutionPolicy, AutomationFlowNode, AutomationFlowOutputContract,
     AutomationFlowSpec, AutomationOutputValidatorKind, AutomationV2Schedule,
@@ -121,8 +121,7 @@ fn stub_case_should_use_inline_artifact(case: &EvalTestCase) -> bool {
     if case
         .automation_spec
         .config
-        .get("required_tool_calls")
-        .is_some()
+        .contains_key("required_tool_calls")
     {
         return false;
     }
@@ -528,7 +527,7 @@ fn current_time_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval::dataset::{
+    use crate::dataset::{
         ArtifactStatus, AutomationSpecTest, EvalExpectedOutput, EvalTestCase, MetricTolerance,
         TestNode,
     };

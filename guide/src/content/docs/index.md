@@ -64,7 +64,7 @@ _You want to build custom clients, connect external tools via MCP, or programmat
 - **[Building Automated Agents](./mcp-automated-agents/)** — Trigger agent pipelines automatically.
 - **[Enterprise Client Onboarding Runbook](./enterprise-client-onboarding-runbook/)** — Agent-facing pilot and hardening checklist for getting clients online fast.
 - **[Enterprise Data Governance](./enterprise-data-governance/)** — Teach agents how hosted admins scope company data, connector credentials, source bindings, quarantine review, and enterprise MCP governance.
-- **[Eval Runner CLI](./eval-runner/)** — Run versioned AI quality evaluation datasets with `cargo run -p tandem-server --bin eval-runner`.
+- **[Eval Runner CLI](./eval-runner/)** — Run versioned AI quality evaluation datasets with `cargo run -p tandem-eval --bin eval-runner`.
 - **[Self-Operator Playbook](./self-operator-playbook/)** — Operate governed recursive automations safely. Premium governance feature set required for mutation flows.
 - **[MCP Capability Discovery And Request Flow](./mcp-capability-discovery-and-request-flow/)** — Distinguish connected, cataloged, and uncataloged MCPs before requesting new capabilities.
 - **[Prompting Workflows And Missions](./prompting-workflows-and-missions/)** — Turn human intent into strong staged workflows and missions.

@@ -84,7 +84,7 @@ case tagged `dogfooding_regression` and should include:
 Run the seeded suite locally with:
 
 ```bash
-cargo run -p tandem-server --bin eval-runner -- \
+cargo run -p tandem-eval --bin eval-runner -- \
   --dataset eval_datasets/dogfooding_regressions.yaml \
   --engine-mode stub \
   --filter-tag dogfooding_regression \
@@ -101,7 +101,7 @@ When Bug Monitor produces an incident JSON export, scaffold a replay dataset
 with:
 
 ```bash
-cargo run -p tandem-server --bin bug-monitor-fixture -- \
+cargo run -p tandem-eval --bin bug-monitor-fixture -- \
   --incident /tmp/incident.json \
   --output eval_datasets/regressions/dogfood_006.yaml \
   --id dogfood_006_short_name \
