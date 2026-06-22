@@ -27,6 +27,9 @@ use tandem_enterprise_contract::{
 };
 use tandem_memory::types::{MemorySourceAccessTarget, MemoryTier};
 use tandem_orchestrator::MissionState;
+use tandem_tools::{
+    ToolDispatchContext, ToolDispatchLedger, ToolDispatchLedgerEvent, ToolDispatchSource,
+};
 use tandem_types::{
     ApprovalGateMatrix, EngineEvent, GateOutcome, GateRequest, HostRuntimeContext, MessagePart,
     ModelSpec, PolicyDecisionEffect, PolicyDecisionRecord, TenantContext,
@@ -243,6 +246,21 @@ pub struct ChannelStatus {
     pub last_error: Option<String>,
     pub active_sessions: u64,
     pub meta: Value,
+}
+
+#[derive(Clone)]
+struct AppStateToolDispatchLedger {
+    event_bus: tandem_core::EventBus,
+}
+
+#[async_trait::async_trait]
+impl ToolDispatchLedger for AppStateToolDispatchLedger {
+    async fn record(&self, event: ToolDispatchLedgerEvent) {
+        self.event_bus.publish(EngineEvent::new(
+            "tool.dispatch.recorded",
+            serde_json::to_value(event).unwrap_or(Value::Null),
+        ));
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct EffectiveAppConfig {

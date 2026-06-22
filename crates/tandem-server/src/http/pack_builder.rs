@@ -52,9 +52,14 @@ pub(super) async fn run_pack_builder_tool(
     state: &AppState,
     args: Value,
 ) -> Result<Value, StatusCode> {
+    let dispatch_context = state.tool_dispatch_context(
+        tandem_tools::ToolDispatchSource::new("pack_builder"),
+        TenantContext::local_implicit(),
+        Vec::new(),
+    );
     let result = state
-        .tools
-        .execute("pack_builder", args)
+        .tool_dispatcher
+        .dispatch("pack_builder", args, dispatch_context)
         .await
         .map_err(|e| {
             tracing::warn!("pack_builder tool execution failed: {}", e);

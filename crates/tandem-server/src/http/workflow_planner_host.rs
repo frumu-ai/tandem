@@ -674,7 +674,16 @@ async fn build_planner_capability_summary(
 }
 
 async fn planner_mcp_inventory_snapshot(state: &AppState) -> (Value, &'static str) {
-    match state.tools.execute("mcp_list", json!({})).await {
+    let dispatch_context = state.tool_dispatch_context(
+        tandem_tools::ToolDispatchSource::new("workflow_planner"),
+        TenantContext::local_implicit(),
+        Vec::new(),
+    );
+    match state
+        .tool_dispatcher
+        .dispatch("mcp_list", json!({}), dispatch_context)
+        .await
+    {
         Ok(result) => {
             if let Some(metadata) = result.metadata.as_object().cloned().map(Value::Object) {
                 return (metadata, "mcp_list");

@@ -1333,9 +1333,16 @@ async fn execute_action(
         }
         ParsedWorkflowAction::Tool { tool_name } => {
             let payload = action_payload(action_spec, action_row);
+            let dispatch_context = state.tool_dispatch_context(
+                tandem_tools::ToolDispatchSource::new("workflow")
+                    .run(run_id)
+                    .node(action_row.action_id.clone()),
+                tenant_context.clone(),
+                Vec::new(),
+            );
             let result = state
-                .tools
-                .execute_for_tenant(&tool_name, payload.clone(), tenant_context.clone())
+                .tool_dispatcher
+                .dispatch(&tool_name, payload.clone(), dispatch_context)
                 .await?;
             let mut response = json!({
                 "tool": tool_name,
@@ -1371,9 +1378,16 @@ async fn execute_action(
                 .map(|binding| binding.tool_name.clone())
                 .unwrap_or_else(|| capability_id.clone());
             let payload = action_payload(action_spec, action_row);
+            let dispatch_context = state.tool_dispatch_context(
+                tandem_tools::ToolDispatchSource::new("workflow")
+                    .run(run_id)
+                    .node(action_row.action_id.clone()),
+                tenant_context.clone(),
+                Vec::new(),
+            );
             let result = state
-                .tools
-                .execute_for_tenant(&tool_name, payload.clone(), tenant_context.clone())
+                .tool_dispatcher
+                .dispatch(&tool_name, payload.clone(), dispatch_context)
                 .await?;
             let mut response = json!({
                 "capability": capability_id,

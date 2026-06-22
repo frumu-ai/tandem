@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tandem_observability::{emit_event_with_tenant, ObservabilityEvent, ProcessKind};
 use tandem_providers::{ChatMessage, ProviderRegistry, StreamChunk, TokenUsage};
-use tandem_tools::{validate_tool_schemas, ToolRegistry};
+use tandem_tools::{validate_tool_schemas, GovernedToolDispatcher, ToolRegistry};
 use tandem_types::{
     ContextMode, EngineEvent, HostRuntimeContext, Message, MessagePart, MessagePartInput,
     MessageRole, ModelSpec, SamplingParams, SendMessageRequest, SharedToolProgressSink,
@@ -131,6 +131,7 @@ pub struct EngineLoop {
     agents: AgentRegistry,
     permissions: PermissionManager,
     tools: ToolRegistry,
+    tool_dispatcher: GovernedToolDispatcher,
     cancellations: CancellationRegistry,
     host_runtime_context: HostRuntimeContext,
     workspace_overrides: std::sync::Arc<RwLock<HashMap<String, u64>>>,
@@ -164,6 +165,7 @@ impl EngineLoop {
             plugins,
             agents,
             permissions,
+            tool_dispatcher: GovernedToolDispatcher::new(tools.clone()),
             tools,
             cancellations,
             host_runtime_context,
@@ -1337,7 +1339,14 @@ impl EngineLoop {
             }
         }
         let result = match self
-            .execute_tool_with_timeout(session_id, &tool, args, cancel.clone(), Some(progress_sink))
+            .execute_tool_with_timeout(
+                session_id,
+                message_id,
+                &tool,
+                args,
+                cancel.clone(),
+                Some(progress_sink),
+            )
             .await
         {
             Ok(result) => result,

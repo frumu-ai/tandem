@@ -22,7 +22,7 @@ use tandem_core::{
 };
 use tandem_providers::ProviderRegistry;
 use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
-use tandem_tools::ToolRegistry;
+use tandem_tools::{GovernedToolDispatcher, ToolRegistry};
 use tandem_types::EngineEvent;
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -176,6 +176,7 @@ pub async fn test_state() -> AppState {
             providers,
             plugins,
             agents,
+            tool_dispatcher: GovernedToolDispatcher::new(tools.clone()),
             tools,
             permissions,
             mcp,

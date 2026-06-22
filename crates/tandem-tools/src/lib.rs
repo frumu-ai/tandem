@@ -12,10 +12,13 @@ mod repo_intelligence_tools_tests;
 #[cfg(test)]
 #[path = "shell_sandbox_tests.rs"]
 mod shell_sandbox_tests;
+#[path = "tool_dispatcher.rs"]
+mod tool_dispatcher;
 #[path = "tool_metadata.rs"]
 mod tool_metadata;
 use builtin_tools::*;
 use repo_intelligence_tools::*;
+pub use tool_dispatcher::*;
 use tool_metadata::*;
 
 include!("lib_parts/part01.rs");
