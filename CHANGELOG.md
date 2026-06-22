@@ -98,6 +98,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed `tandem-engine storage cleanup` to preserve schema-versioned Automation
   V2 run indexes and shards instead of treating the new envelope format as an
   empty legacy map.
+- Fixed schema-versioned Automation V2 run-shard serialization to avoid an
+  extra full-run clone, and moved stack-heavy coder issue-fix regression tests
+  onto a high-stack harness so nextest can exercise the new persistence path.
 
 ## [0.6.1] - 2026-06-20
 

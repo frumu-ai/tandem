@@ -27,10 +27,16 @@ struct StorageAutomationRunsFile {
     runs: std::collections::HashMap<String, AutomationV2RunRecord>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct StorageAutomationRunShardFile {
+#[derive(Debug, Serialize)]
+struct StorageAutomationRunsFileRef<'a> {
     schema_version: u32,
-    run: AutomationV2RunRecord,
+    runs: &'a std::collections::HashMap<String, AutomationV2RunRecord>,
+}
+
+#[derive(Debug, Serialize)]
+struct StorageAutomationRunShardFileRef<'a> {
+    schema_version: u32,
+    run: &'a AutomationV2RunRecord,
 }
 
 #[derive(Debug, Serialize)]
@@ -793,10 +799,12 @@ fn parse_storage_automation_runs(
 fn serialize_storage_automation_runs(
     runs: &std::collections::HashMap<String, AutomationV2RunRecord>,
 ) -> anyhow::Result<String> {
-    Ok(serde_json::to_string_pretty(&StorageAutomationRunsFile {
-        schema_version: AUTOMATION_V2_RUNS_SCHEMA_VERSION,
-        runs: runs.clone(),
-    })?)
+    Ok(serde_json::to_string_pretty(
+        &StorageAutomationRunsFileRef {
+            schema_version: AUTOMATION_V2_RUNS_SCHEMA_VERSION,
+            runs,
+        },
+    )?)
 }
 
 pub(crate) fn compact_storage_hot_run(
@@ -842,9 +850,9 @@ pub(crate) fn write_storage_run_shard(
 
 fn serialize_storage_automation_run_shard(run: &AutomationV2RunRecord) -> anyhow::Result<String> {
     Ok(serde_json::to_string_pretty(
-        &StorageAutomationRunShardFile {
+        &StorageAutomationRunShardFileRef {
             schema_version: AUTOMATION_V2_RUNS_SCHEMA_VERSION,
-            run: run.clone(),
+            run,
         },
     )?)
 }

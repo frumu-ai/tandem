@@ -194,6 +194,27 @@ async fn spawn_fake_github_mcp_server() -> (String, tokio::task::JoinHandle<()>)
     (format!("http://{addr}"), server)
 }
 
+fn run_coder_http_test_with_stack<F, Fut>(test: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .name("coder-http-test".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build coder HTTP test runtime");
+            runtime.block_on(test());
+        })
+        .expect("spawn coder HTTP test thread");
+    if let Err(payload) = handle.join() {
+        std::panic::resume_unwind(payload);
+    }
+}
+
 fn init_coder_git_repo() -> std::path::PathBuf {
     let repo_root =
         std::env::temp_dir().join(format!("tandem-coder-worktree-test-{}", Uuid::new_v4()));
@@ -1076,9 +1097,10 @@ async fn coder_issue_fix_failed_validation_writes_regression_signal() {
     );
 }
 
-#[tokio::test]
+#[test]
 #[serial_test::serial]
-async fn coder_issue_fix_worker_failure_writes_run_outcome() {
+fn coder_issue_fix_worker_failure_writes_run_outcome() {
+    run_coder_http_test_with_stack(|| async {
     let state = test_state().await;
     state
         .capability_resolver
@@ -1171,6 +1193,7 @@ async fn coder_issue_fix_worker_failure_writes_run_outcome() {
             .and_then(Value::as_str),
         Some("blocked")
     );
+    });
 }
 
 #[tokio::test]
@@ -1266,9 +1289,10 @@ async fn coder_pr_review_worker_failure_writes_run_outcome() {
     );
 }
 
-#[tokio::test]
+#[test]
 #[serial_test::serial]
-async fn coder_issue_fix_execute_next_drives_task_runtime_to_completion() {
+fn coder_issue_fix_execute_next_drives_task_runtime_to_completion() {
+    run_coder_http_test_with_stack(|| async {
     let state = test_state().await;
     state
         .capability_resolver
@@ -1401,11 +1425,13 @@ async fn coder_issue_fix_execute_next_drives_task_runtime_to_completion() {
         .artifacts
         .iter()
         .any(|artifact| { artifact.artifact_type == "coder_issue_fix_plan" }));
+    });
 }
 
-#[tokio::test]
+#[test]
 #[serial_test::serial]
-async fn coder_issue_fix_worker_uses_managed_worktree_for_git_repo() {
+fn coder_issue_fix_worker_uses_managed_worktree_for_git_repo() {
+    run_coder_http_test_with_stack(|| async {
     let state = test_state().await;
     state
         .capability_resolver
@@ -1490,7 +1516,11 @@ async fn coder_issue_fix_worker_uses_managed_worktree_for_git_repo() {
                 .and_then(Value::as_str)
                 .expect("worker workspace root")
                 .to_string();
-            assert!(worker_workspace_root.contains("/.tandem/worktrees/"));
+            let normalized_worker_workspace_root = worker_workspace_root.replace('\\', "/");
+            assert!(
+                normalized_worker_workspace_root.contains("/.tandem/worktrees"),
+                "worker workspace root should use managed worktree: {worker_workspace_root}"
+            );
             assert_eq!(
                 worker_session
                     .get("worker_workspace_repo_root")
@@ -1517,11 +1547,13 @@ async fn coder_issue_fix_worker_uses_managed_worktree_for_git_repo() {
     assert!(saw_prepare_fix, "expected prepare_fix task to run");
 
     let _ = std::fs::remove_dir_all(repo_root);
+    });
 }
 
-#[tokio::test]
+#[test]
 #[serial_test::serial]
-async fn coder_issue_fix_execute_all_runs_to_completion() {
+fn coder_issue_fix_execute_all_runs_to_completion() {
+    run_coder_http_test_with_stack(|| async {
     let state = test_state().await;
     state
         .capability_resolver
@@ -1600,6 +1632,7 @@ async fn coder_issue_fix_execute_all_runs_to_completion() {
         .get("executed_steps")
         .and_then(Value::as_u64)
         .is_some_and(|count| count >= 4));
+    });
 }
 
 #[tokio::test]

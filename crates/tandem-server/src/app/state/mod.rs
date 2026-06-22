@@ -789,6 +789,12 @@ struct AutomationV2RunShardFile {
     run: AutomationV2RunRecord,
 }
 
+#[derive(Debug, Serialize)]
+struct AutomationV2RunShardFileRef<'a> {
+    schema_version: u32,
+    run: &'a AutomationV2RunRecord,
+}
+
 fn parse_automation_v2_runs_file(
     raw: &str,
 ) -> anyhow::Result<(
@@ -863,9 +869,9 @@ fn parse_automation_v2_run_shard_file(raw: &str) -> anyhow::Result<AutomationV2R
 }
 
 fn serialize_automation_v2_run_shard(run: &AutomationV2RunRecord) -> anyhow::Result<String> {
-    serde_json::to_string_pretty(&AutomationV2RunShardFile {
+    serde_json::to_string_pretty(&AutomationV2RunShardFileRef {
         schema_version: AUTOMATION_V2_RUNS_SCHEMA_VERSION,
-        run: run.clone(),
+        run,
     })
     .context("failed to serialize automation v2 run history shard")
 }
