@@ -34,6 +34,13 @@ MCP connections.
   uninterrupted and restarted outcomes, duplicate approval clicks remain
   idempotent, and in-flight consequential work is failed on server restart
   without replaying node attempts or fabricating outputs.
+- Approval-gated Automation V2 runs now have failure-injection coverage for
+  concurrent approvals, provider failure immediately after approval, stale gate
+  decisions, half-applied gate decisions after restart, and corrupted checkpoint
+  entries. Restart recovery settles already-recorded approve/cancel decisions,
+  preserves rework re-arming, clears stale gate-local failure markers on
+  approval, and quarantines malformed individual run checkpoints as blocked
+  diagnostics instead of crashing scheduler startup.
 
 ### Runtime Governance
 

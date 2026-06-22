@@ -31,6 +31,10 @@ pub(crate) fn apply_automation_gate_decision(
     reason: Option<String>,
     decided_by: Option<crate::automation_v2::governance::GovernanceActorRef>,
 ) -> AutomationGateDecisionOutcome {
+    if let Some(winner) = settled_gate_decision(run, &gate.node_id) {
+        return AutomationGateDecisionOutcome::AlreadyDecided(Some(winner.clone()));
+    }
+
     let gate_still_pending = run.status == AutomationRunStatus::AwaitingApproval
         && run
             .checkpoint
@@ -79,6 +83,75 @@ pub(crate) fn apply_automation_gate_decision(
     AutomationGateDecisionOutcome::Applied
 }
 
+pub(crate) fn recover_settled_automation_gate_decision(
+    run: &mut AutomationV2RunRecord,
+    automation: &AutomationV2Spec,
+) -> bool {
+    if run.status != AutomationRunStatus::AwaitingApproval {
+        return false;
+    }
+    let Some(gate) = run.checkpoint.awaiting_gate.clone() else {
+        return false;
+    };
+    let Some(record) = settled_gate_decision(run, &gate.node_id).cloned() else {
+        return false;
+    };
+
+    run.checkpoint.awaiting_gate = None;
+    match record.decision.as_str() {
+        "approve" => {
+            apply_gate_approval(run, &gate, record.reason.clone());
+            run.resume_reason = Some(format!(
+                "recovered settled gate `{}` approval after restart",
+                gate.node_id
+            ));
+            clear_automation_run_execution_handles(run);
+            crate::record_automation_lifecycle_event(
+                run,
+                "approval_gate_decision_recovered",
+                Some(format!(
+                    "recovered approved gate `{}` after restart",
+                    gate.node_id
+                )),
+                None,
+            );
+            crate::refresh_automation_runtime_state(automation, run);
+            true
+        }
+        "cancel" => {
+            apply_gate_cancel(run, &gate, record.reason.clone());
+            crate::record_automation_lifecycle_event(
+                run,
+                "approval_gate_decision_recovered",
+                Some(format!(
+                    "recovered cancelled gate `{}` after restart",
+                    gate.node_id
+                )),
+                Some(AutomationStopKind::Cancelled),
+            );
+            true
+        }
+        _ => false,
+    }
+}
+
+fn settled_gate_decision<'a>(
+    run: &'a AutomationV2RunRecord,
+    gate_node_id: &str,
+) -> Option<&'a AutomationGateDecisionRecord> {
+    let latest = run
+        .checkpoint
+        .gate_history
+        .iter()
+        .rev()
+        .find(|record| record.node_id == gate_node_id)?;
+    if latest.decision == "rework" {
+        None
+    } else {
+        Some(latest)
+    }
+}
+
 fn apply_gate_approval(
     run: &mut AutomationV2RunRecord,
     gate: &AutomationPendingGate,
@@ -88,6 +161,17 @@ fn apply_gate_approval(
     run.detail = Some(format!("gate `{}` approved", gate.node_id));
     run.stop_kind = None;
     run.stop_reason = None;
+    run.checkpoint
+        .blocked_nodes
+        .retain(|node_id| node_id != &gate.node_id);
+    if run
+        .checkpoint
+        .last_failure
+        .as_ref()
+        .is_some_and(|failure| failure.node_id == gate.node_id)
+    {
+        run.checkpoint.last_failure = None;
+    }
     run.checkpoint
         .pending_nodes
         .retain(|node_id| node_id != &gate.node_id);

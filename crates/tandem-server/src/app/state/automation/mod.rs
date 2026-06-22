@@ -12,7 +12,8 @@ pub(crate) use extraction::{
     extract_recoverable_json_artifact_prefer_standup, extract_session_text_output,
 };
 pub(crate) use gates::{
-    apply_automation_gate_decision, pause_automation_run_for_gate, AutomationGateDecisionOutcome,
+    apply_automation_gate_decision, pause_automation_run_for_gate,
+    recover_settled_automation_gate_decision, AutomationGateDecisionOutcome,
 };
 pub(crate) mod legacy_defaults;
 pub(crate) mod lifecycle;

@@ -70,6 +70,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   awaiting-approval, blocked, and running runs, including duplicate approval
   decision protection and consequential-node no-replay assertions after server
   restart recovery.
+- Added Automation V2 approval failure-injection coverage for concurrent
+  approve requests, provider failure after approval, half-applied gate decisions
+  across restart, stale gate decisions, and corrupted run-checkpoint
+  quarantine.
 
 ### Changed
 
@@ -105,6 +109,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed schema-versioned Automation V2 run-shard serialization to avoid an
   extra full-run clone, and moved stack-heavy coder issue-fix regression tests
   onto a high-stack harness so nextest can exercise the new persistence path.
+- Fixed Automation V2 approval gates so an approve/cancel decision already
+  recorded in gate history wins over stale pending-gate state after restart,
+  while rework decisions can still re-arm the gate for another review cycle.
+- Fixed Automation V2 approval recovery so approving a gate clears stale
+  gate-local failure/block markers, and malformed individual run checkpoints in
+  an otherwise readable run store now load as blocked diagnostic records instead
+  of crashing scheduler startup.
 
 ## [0.6.1] - 2026-06-20
 

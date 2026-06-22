@@ -9,7 +9,12 @@ struct PromptRecord {
 #[derive(Clone)]
 struct ScriptedProvider {
     records: Arc<Mutex<Vec<PromptRecord>>>,
-    scripts: Arc<Mutex<VecDeque<Vec<StreamChunk>>>>,
+    scripts: Arc<Mutex<VecDeque<ScriptedProviderStep>>>,
+}
+
+enum ScriptedProviderStep {
+    Chunks(Vec<StreamChunk>),
+    Error(String),
 }
 
 impl ScriptedProvider {
@@ -21,7 +26,17 @@ impl ScriptedProvider {
     }
 
     async fn push_script(&self, script: Vec<StreamChunk>) {
-        self.scripts.lock().await.push_back(script);
+        self.scripts
+            .lock()
+            .await
+            .push_back(ScriptedProviderStep::Chunks(script));
+    }
+
+    async fn push_error(&self, message: impl Into<String>) {
+        self.scripts
+            .lock()
+            .await
+            .push_back(ScriptedProviderStep::Error(message.into()));
     }
 
     async fn records(&self) -> Vec<PromptRecord> {
@@ -80,14 +95,19 @@ impl Provider for ScriptedProvider {
             model_override: model_override.map(str::to_string),
         });
 
-        let script = self
+        let step = self
             .scripts
             .lock()
             .await
             .pop_front()
             .expect("scripted provider exhausted");
 
-        Ok(Box::pin(stream::iter(script.into_iter().map(Ok))))
+        match step {
+            ScriptedProviderStep::Chunks(script) => {
+                Ok(Box::pin(stream::iter(script.into_iter().map(Ok))))
+            }
+            ScriptedProviderStep::Error(message) => anyhow::bail!(message),
+        }
     }
 }
 

@@ -302,6 +302,52 @@ impl AppState {
                     }
                 }
                 AutomationRunStatus::Paused | AutomationRunStatus::AwaitingApproval => {
+                    if run.status == AutomationRunStatus::AwaitingApproval {
+                        let has_settled_gate_decision = run
+                            .checkpoint
+                            .awaiting_gate
+                            .as_ref()
+                            .and_then(|gate| {
+                                run.checkpoint
+                                    .gate_history
+                                    .iter()
+                                    .rev()
+                                    .find(|record| record.node_id == gate.node_id)
+                            })
+                            .is_some_and(|record| record.decision != "rework");
+                        if has_settled_gate_decision {
+                            let automation = self
+                                .get_automation_v2(&run.automation_id)
+                                .await
+                                .or_else(|| run.automation_snapshot.clone());
+                            if let Some(automation) = automation {
+                                if let Some(updated_run) = self
+                                    .update_automation_v2_run(&run.run_id, |row| {
+                                        crate::app::state::recover_settled_automation_gate_decision(
+                                            row,
+                                            &automation,
+                                        );
+                                    })
+                                    .await
+                                    .filter(|updated| {
+                                        updated.status != AutomationRunStatus::AwaitingApproval
+                                    })
+                                {
+                                    self.append_internal_sweep_protected_audit_event(
+                                        "automation_v2.internal_sweep.approval_gate_decision_recovered",
+                                        &updated_run,
+                                        "recover_in_flight_runs",
+                                        "recovered_settled_gate_decision",
+                                        updated_run.detail.clone(),
+                                        json!({ "previous_status": "awaiting_approval" }),
+                                    )
+                                    .await;
+                                    recovered += 1;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
                     let workspace_root = if automation_status_holds_workspace_lock(&run.status) {
                         self.automation_v2_run_workspace_root(&run).await
                     } else {
