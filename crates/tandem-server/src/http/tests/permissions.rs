@@ -95,4 +95,11 @@ async fn permission_reply_route_applies_and_persists_allow_rule() {
         payload.get("persistedRule").and_then(|v| v.as_bool()),
         Some(true)
     );
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .expect("protected audit file");
+    assert!(audit.contains("\"event_type\":\"permission.decision\""));
+    assert!(audit.contains("\"permission\":\"glob\""));
+    assert!(audit.contains("\"standingRulePersisted\":true"));
+    assert!(audit.contains("\"sourceRequestID\""));
 }

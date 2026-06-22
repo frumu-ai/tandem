@@ -1466,7 +1466,11 @@ async fn build_runtime(
     if startup_state.is_none() {
         browser.register_tools(&tools, None).await?;
     }
-    let permissions = PermissionManager::new(event_bus.clone());
+    let permissions = PermissionManager::new_with_state_file(
+        event_bus.clone(),
+        state_dir.join("permissions.json"),
+    )
+    .await?;
     apply_default_permission_rules(&permissions).await;
     let mcp = McpRegistry::new();
     let pty = PtyManager::new();

@@ -19,12 +19,15 @@ pub(super) struct QuestionAnswerInput {
 pub(super) async fn list_permissions(State(state): State<AppState>) -> Json<Value> {
     Json(json!({
         "requests": state.permissions.list().await,
-        "rules": state.permissions.list_rules().await
+        "rules": state.permissions.list_rules().await,
+        "decisions": state.permissions.list_decisions().await
     }))
 }
 
 pub(super) async fn reply_permission(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
     Path(id): Path<String>,
     Json(input): Json<PermissionReplyInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<ErrorEnvelope>)> {
@@ -41,8 +44,16 @@ pub(super) async fn reply_permission(
             )),
         ));
     }
-    let ok = state.permissions.reply(&id, &input.reply).await;
-    if !ok {
+    let outcome = state
+        .permissions
+        .reply_with_provenance(
+            &id,
+            &input.reply,
+            permission_actor(&request_principal),
+            Some("http_permission_reply".to_string()),
+        )
+        .await;
+    let Some(outcome) = outcome else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(ErrorEnvelope::new(
@@ -50,22 +61,34 @@ pub(super) async fn reply_permission(
                 ErrorCode::ApprovalRequestNotFound,
             )),
         ));
-    }
+    };
+    append_permission_decision_audit(&state, &tenant_context, &request_principal, &outcome).await;
     Ok(Json(json!({
         "ok": true,
         "requestID": id,
         "reply": input.reply,
         "status": "applied",
-        "persistedRule": matches!(input.reply.as_str(), "always" | "allow")
+        "persistedRule": outcome.decision.standing_rule_persisted,
+        "standingRuleID": outcome.decision.standing_rule_id
     })))
 }
 
 pub(super) async fn approve_tool_by_call(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
     Path((session_id, tool_call_id)): Path<(String, String)>,
 ) -> Result<Json<Value>, (StatusCode, Json<ErrorEnvelope>)> {
-    let ok = state.permissions.reply(&tool_call_id, "allow").await;
-    if !ok {
+    let outcome = state
+        .permissions
+        .reply_with_provenance(
+            &tool_call_id,
+            "allow",
+            permission_actor(&request_principal),
+            Some("tool_call_approved".to_string()),
+        )
+        .await;
+    let Some(outcome) = outcome else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(ErrorEnvelope::new(
@@ -73,12 +96,13 @@ pub(super) async fn approve_tool_by_call(
                 ErrorCode::ApprovalRequestNotFound,
             )),
         ));
-    }
+    };
+    append_permission_decision_audit(&state, &tenant_context, &request_principal, &outcome).await;
     let _ = crate::audit::append_protected_audit_event(
         &state,
         "approval.granted",
         &tandem_types::TenantContext::local_implicit(),
-        None,
+        permission_actor(&request_principal),
         json!({
             "sessionID": session_id,
             "toolCallID": tool_call_id,
@@ -91,10 +115,20 @@ pub(super) async fn approve_tool_by_call(
 
 pub(super) async fn deny_tool_by_call(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
     Path((session_id, tool_call_id)): Path<(String, String)>,
 ) -> Result<Json<Value>, (StatusCode, Json<ErrorEnvelope>)> {
-    let ok = state.permissions.reply(&tool_call_id, "deny").await;
-    if !ok {
+    let outcome = state
+        .permissions
+        .reply_with_provenance(
+            &tool_call_id,
+            "deny",
+            permission_actor(&request_principal),
+            Some("tool_call_denied".to_string()),
+        )
+        .await;
+    let Some(outcome) = outcome else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(ErrorEnvelope::new(
@@ -102,12 +136,13 @@ pub(super) async fn deny_tool_by_call(
                 ErrorCode::ApprovalRequestNotFound,
             )),
         ));
-    }
+    };
+    append_permission_decision_audit(&state, &tenant_context, &request_principal, &outcome).await;
     let _ = crate::audit::append_protected_audit_event(
         &state,
         "approval.denied",
         &tandem_types::TenantContext::local_implicit(),
-        None,
+        permission_actor(&request_principal),
         json!({
             "sessionID": session_id,
             "toolCallID": tool_call_id,
@@ -116,6 +151,55 @@ pub(super) async fn deny_tool_by_call(
     )
     .await;
     Ok(Json(json!({"ok": true})))
+}
+
+fn permission_actor(request_principal: &RequestPrincipal) -> Option<String> {
+    request_principal
+        .actor_id
+        .clone()
+        .or_else(|| Some(request_principal.source.clone()))
+}
+
+async fn append_permission_decision_audit(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    request_principal: &RequestPrincipal,
+    outcome: &tandem_core::PermissionReplyOutcome,
+) {
+    let _ = crate::audit::append_protected_audit_event(
+        state,
+        "permission.decision",
+        tenant_context,
+        permission_actor(request_principal),
+        json!({
+            "requestID": &outcome.request.id,
+            "sessionID": &outcome.request.session_id,
+            "permission": &outcome.request.permission,
+            "pattern": &outcome.request.pattern,
+            "tool": &outcome.request.tool,
+            "decision": &outcome.decision.decision,
+            "decidedAtMs": outcome.decision.decided_at_ms,
+            "decidedBy": &outcome.decision.decided_by,
+            "reason": &outcome.decision.reason,
+            "standingRuleID": &outcome.decision.standing_rule_id,
+            "standingRulePersisted": outcome.decision.standing_rule_persisted,
+            "principal": {
+                "actorID": &request_principal.actor_id,
+                "source": &request_principal.source,
+            },
+            "rule": outcome.rule.as_ref().map(|rule| json!({
+                "id": &rule.id,
+                "permission": &rule.permission,
+                "pattern": &rule.pattern,
+                "action": &rule.action,
+                "createdAtMs": &rule.created_at_ms,
+                "createdBy": &rule.created_by,
+                "sourceRequestID": &rule.source_request_id,
+                "provenance": &rule.provenance,
+            })),
+        }),
+    )
+    .await;
 }
 
 pub(super) async fn list_questions(State(state): State<AppState>) -> Json<Value> {

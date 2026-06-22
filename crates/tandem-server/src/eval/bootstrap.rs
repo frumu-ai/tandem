@@ -99,7 +99,11 @@ pub async fn bootstrap_eval_app_state(options: EvalBootstrapOptions) -> anyhow::
     let plugins = PluginRegistry::new(&workspace_root_str).await?;
     let agents = AgentRegistry::new(&workspace_root_str).await?;
     let tools = ToolRegistry::new();
-    let permissions = PermissionManager::new(event_bus.clone());
+    let permissions = PermissionManager::new_with_state_file(
+        event_bus.clone(),
+        data_dir.join("permissions.json"),
+    )
+    .await?;
     let mcp = McpRegistry::new_with_state_file(mcp_state);
     let pty = PtyManager::new();
     let lsp = LspManager::new(&workspace_root_str);
