@@ -27,14 +27,14 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
-            crates/tandem-server
+            crates/tandem-eval
 
       # The gate must fail when the eval-runner cannot be built. A broken build
       # previously fell back to hardcoded stub results, which let governance
       # regressions pass CI with a plausible-looking green check (TAN-219).
       - name: Build eval-runner binary
         run: |
-          if ! cargo build --release --bin eval-runner -p tandem-server; then
+          if ! cargo build --release --bin eval-runner -p tandem-eval; then
             echo "::error::eval-runner failed to build — the evaluation gate cannot run. Fix the build; there is no stub fallback."
             exit 1
           fi

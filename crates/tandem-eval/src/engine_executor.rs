@@ -17,12 +17,12 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use crate::app::state::AppState;
-use crate::automation_v2::types::{AutomationRunStatus, AutomationV2RunRecord};
-use crate::eval::dataset::{ArtifactStatus, EvalTestCase};
-use crate::eval::metrics::EvalRunResult;
-use crate::eval::spec_mapper::{test_case_to_spec, test_case_to_stub_spec, EVAL_TRIGGER_TYPE};
-use crate::failures::{classify_error_text, AIFailureMode};
+use crate::dataset::{ArtifactStatus, EvalTestCase};
+use crate::metrics::EvalRunResult;
+use crate::spec_mapper::{test_case_to_spec, test_case_to_stub_spec, EVAL_TRIGGER_TYPE};
+use tandem_server::app::state::AppState;
+use tandem_server::automation_v2::types::{AutomationRunStatus, AutomationV2RunRecord};
+use tandem_server::failures::{classify_error_text, AIFailureMode};
 
 /// How often to poll `get_automation_v2_run` for status updates.
 pub const DEFAULT_POLL_INTERVAL_MS: u64 = 250;
@@ -338,7 +338,7 @@ impl RemoteEngineExecutor {
 
     async fn submit_spec(
         &self,
-        spec: &crate::automation_v2::types::AutomationV2Spec,
+        spec: &tandem_server::automation_v2::types::AutomationV2Spec,
     ) -> Result<AutomationV2RunRecord, String> {
         let url = format!("{}/api/automations/v2/runs/submit", self.engine_url);
 
@@ -529,13 +529,13 @@ fn submission_error(case: &EvalTestCase, started: Instant, error: String) -> Eva
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::automation_v2::types::AutomationRunCheckpoint;
-    use crate::eval::dataset::{
+    use crate::dataset::{
         ArtifactStatus, AutomationSpecTest, EvalExpectedOutput, EvalTestCase, MetricTolerance,
         TestNode,
     };
     use serde_json::json;
     use std::collections::HashMap;
+    use tandem_server::automation_v2::types::AutomationRunCheckpoint;
 
     fn make_case_with_validators(validators: Vec<&str>) -> EvalTestCase {
         EvalTestCase {
@@ -614,7 +614,7 @@ mod tests {
             consumed_handoff_id: None,
             learning_summary: None,
             effective_execution_profile:
-                crate::automation_v2::execution_profile::ExecutionProfile::default(),
+                tandem_server::automation_v2::execution_profile::ExecutionProfile::default(),
             requested_execution_profile: None,
         }
     }
@@ -870,7 +870,7 @@ mod tests {
 
     #[test]
     fn extract_eval_result_uses_last_failure_when_detail_missing() {
-        use crate::automation_v2::types::AutomationFailureRecord;
+        use tandem_server::automation_v2::types::AutomationFailureRecord;
 
         let case = make_case_with_validators(vec!["contract"]);
         let mut run = make_record(AutomationRunStatus::Failed, HashMap::new(), HashMap::new());

@@ -19,11 +19,11 @@
 use std::path::Path;
 use std::time::Duration;
 
-use crate::app::state::AppState;
-use crate::eval::dataset::{ArtifactStatus, EvalDataset, EvalTestCase};
-use crate::eval::engine_executor::{EngineExecutor, RemoteEngineExecutor};
-use crate::eval::metrics::{EvalMetrics, EvalRunResult};
-use crate::failures::AIFailureMode;
+use crate::dataset::{ArtifactStatus, EvalDataset, EvalTestCase};
+use crate::engine_executor::{EngineExecutor, RemoteEngineExecutor};
+use crate::metrics::{EvalMetrics, EvalRunResult};
+use tandem_server::app::state::AppState;
+use tandem_server::failures::AIFailureMode;
 
 /// Which execution path a test case takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,14 +217,10 @@ impl EvalRunner {
         let is_disabled_path = test_case.tags.contains(&"degradation".to_string());
 
         // Simulated pass/fail logic
-        let passed = if is_critical_path {
-            true // Happy path always passes in simulation
-        } else if is_transient_test {
-            true // Transient failures recover in simulation
-        } else if is_disabled_path {
+        let passed = if is_disabled_path && !is_critical_path && !is_transient_test {
             test_case.expected_output.unmet_requirements_acceptable
         } else {
-            true // Default to pass
+            true
         };
 
         // Simulated metrics based on test config
@@ -331,35 +327,10 @@ fn engine_mode_unavailable(
     }
 }
 
-fn engine_mode_unavailable_with_message(
-    test_case: &EvalTestCase,
-    mode: EngineMode,
-    start_time: std::time::Instant,
-    message: String,
-) -> EvalRunResult {
-    EvalRunResult {
-        test_id: test_case.id.clone(),
-        description: test_case.description.clone(),
-        passed: false,
-        artifact_status: ArtifactStatus::Failed,
-        repair_iterations: 0,
-        tokens_used: 0,
-        cost_usd: 0.0,
-        duration_ms: start_time.elapsed().as_millis() as u64,
-        validators_passed: Vec::new(),
-        validators_failed: test_case.expected_output.required_validators.clone(),
-        failure_mode: Some(AIFailureMode::FeatureDisabled {
-            feature: format!("eval_runner_mode_{}", mode.as_str()),
-        }),
-        error_message: Some(message),
-        tags: test_case.tags.clone(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval::dataset::EvalDataset;
+    use crate::dataset::EvalDataset;
 
     #[test]
     fn test_runner_creation() {
@@ -483,7 +454,7 @@ mod tests {
         assert!(result
             .error_message
             .as_ref()
-            .map_or(false, |m| m.contains("AppState")));
+            .is_some_and(|m| m.contains("AppState")));
     }
 
     #[tokio::test]
@@ -502,7 +473,7 @@ mod tests {
         assert!(result
             .error_message
             .as_ref()
-            .map_or(false, |m| m.contains("live")));
+            .is_some_and(|m| m.contains("live")));
     }
 
     #[tokio::test]

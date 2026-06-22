@@ -2,7 +2,7 @@
 # Captures real bug classes found while dogfooding Tandem so they stay replayable.
 #
 # Run locally:
-#   cargo run -p tandem-server --bin eval-runner -- \
+#   cargo run -p tandem-eval --bin eval-runner -- \
 #     --dataset eval_datasets/dogfooding_regressions.yaml \
 #     --engine-mode stub --filter-tag dogfooding_regression --verbose
 

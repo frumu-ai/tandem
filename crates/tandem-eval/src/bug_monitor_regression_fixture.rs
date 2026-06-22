@@ -5,11 +5,11 @@ use anyhow::{Context, Result};
 use serde_json::{json, Map, Value};
 use tandem_observability::redact_text;
 
-use crate::bug_monitor::types::BugMonitorIncidentRecord;
-use crate::eval::dataset::{
+use crate::dataset::{
     ArtifactStatus, AutomationSpecTest, EvalDataset, EvalExpectedOutput, EvalTestCase,
     MetricTolerance, TestNode,
 };
+use tandem_bug_monitor::types::BugMonitorIncidentRecord;
 
 const DEFAULT_DATASET_NAME: &str = "dogfooding_regression_fixture";
 const DEFAULT_DATASET_VERSION: &str = "1.0";

@@ -10,11 +10,11 @@ Tandem's `eval-runner` CLI evaluates AI quality by running standardized test dat
 
 The eval-runner has three execution modes:
 
-| Mode | Engine | Provider | Cost | Use Case |
-|---|---|---|---|---|
-| **Simulation** | None | None | $0 | Fast CI gate (no real AI) |
-| **Stub** | Real engine | Mock provider | $0 | Test engine execution path deterministically |
-| **Live** | Real engine | Real AI provider | Real $ | Capture realistic baselines with actual AI |
+| Mode           | Engine      | Provider         | Cost   | Use Case                                     |
+| -------------- | ----------- | ---------------- | ------ | -------------------------------------------- |
+| **Simulation** | None        | None             | $0     | Fast CI gate (no real AI)                    |
+| **Stub**       | Real engine | Mock provider    | $0     | Test engine execution path deterministically |
+| **Live**       | Real engine | Real AI provider | Real $ | Capture realistic baselines with actual AI   |
 
 ## Prerequisites
 
@@ -70,7 +70,7 @@ curl -s "http://127.0.0.1:39731/config/providers" \
 For quick validation without using your AI provider:
 
 ```bash
-cargo run --bin eval-runner -- \
+cargo run -p tandem-eval --bin eval-runner -- \
   --dataset eval_datasets/critical_path.yaml \
   --engine-mode simulation \
   --output /tmp/results.json
@@ -85,7 +85,7 @@ To evaluate against your running engine with real AI provider calls:
 ```bash
 export TANDEM_API_TOKEN="$(sed -n 's/^TANDEM_API_TOKEN=//p' /etc/tandem/engine.env | head -1)"
 
-cargo run --bin eval-runner -- \
+cargo run -p tandem-eval --bin eval-runner -- \
   --dataset eval_datasets/critical_path.yaml \
   --engine-mode live \
   --engine-url http://127.0.0.1:39731 \
@@ -94,12 +94,14 @@ cargo run --bin eval-runner -- \
 ```
 
 **Options:**
+
 - `--num-workers <N>` — Parallel execution (default: 1)
 - `--filter-tag <TAG>` — Run only tests with this tag
 - `--max-duration <SECS>` — Timeout per test (default: 300)
 - `--verbose` — Print detailed progress
 
 **Output:**
+
 ```
 Tandem Eval Runner v0.1.0
 Dataset: eval_datasets/critical_path.yaml
@@ -129,7 +131,7 @@ For testing the engine execution path with scripted (deterministic) AI responses
 ```bash
 export TANDEM_API_TOKEN="$(sed -n 's/^TANDEM_API_TOKEN=//p' /etc/tandem/engine.env | head -1)"
 
-cargo run --bin eval-runner -- \
+cargo run -p tandem-eval --bin eval-runner -- \
   --dataset eval_datasets/critical_path.yaml \
   --engine-mode stub \
   --engine-url http://127.0.0.1:39731 \
@@ -147,24 +149,26 @@ Create a Tandem automation that runs evals on a schedule and gates baseline upda
 In the **Workflow Studio**, create a new workflow with these nodes:
 
 **Node 1: Run Evaluation**
+
 ```
 Type: Research
 Objective: |
   Run eval-runner against our engine in live mode
   Command:
   export TANDEM_API_TOKEN="$(sed -n 's/^TANDEM_API_TOKEN=//p' /etc/tandem/engine.env | head -1)"
-  cargo run --bin eval-runner -- \
+  cargo run -p tandem-eval --bin eval-runner -- \
     --dataset eval_datasets/critical_path.yaml \
     --engine-mode live \
     --engine-url http://127.0.0.1:39731 \
     --engine-token $TANDEM_API_TOKEN \
     --output /tmp/nightly_eval.json \
     --verbose
-  
+
   Return: evaluation results JSON
 ```
 
 **Node 2: Compare to Baseline**
+
 ```
 Type: Code
 Objective: |
@@ -174,11 +178,12 @@ Objective: |
   - Pass rate drop > 5 percentage points
   - Cost increase > 20%
   - Repair iterations increase > 30%
-  
+
   Return: regression report with severity (PASS | WARNING | CRITICAL)
 ```
 
 **Node 3: File Issues (if regressions)**
+
 ```
 Type: Code
 Objective: |
@@ -186,11 +191,12 @@ Objective: |
   - Create GitHub issue using mcp.github.create_issue
   - Tag with "regression" label
   - Include test failure details and metrics diff
-  
+
   If no regressions: skip
 ```
 
 **Node 4: Human Review**
+
 ```
 Type: Approval (conditional)
 Objective: |
@@ -198,11 +204,12 @@ Objective: |
   - Show regression summary
   - Request approval to accept baseline change
   - Options: Approve | Investigate | Revert
-  
+
   If passing: auto-complete
 ```
 
 **Node 5: Update Baseline (on approval)**
+
 ```
 Type: Code
 Objective: |
@@ -214,6 +221,7 @@ Objective: |
 ```
 
 **Node 6: Notify Discord**
+
 ```
 Type: Summarization
 Objective: |
@@ -226,6 +234,7 @@ Objective: |
 ### Step 2: Set Schedule
 
 In the automation card:
+
 - Schedule: **Every day** at **2:00 AM**
 - Timezone: Your local timezone
 
@@ -291,6 +300,7 @@ Error: HTTP request failed: connection refused
 ```
 
 **Solution:**
+
 1. Verify engine is running: `curl -s http://127.0.0.1:39731/config/providers`
 2. Check port: `ss -tlnp | grep 39731` (on Linux)
 3. Verify firewall if remote engine
@@ -302,6 +312,7 @@ Error: HTTP 401: {"error": "unauthorized"}
 ```
 
 **Solution:**
+
 1. Verify token is set: `echo $TANDEM_API_TOKEN`
 2. Test token directly: `curl -H "X-Tandem-Token: $TANDEM_API_TOKEN" http://127.0.0.1:39731/config/providers`
 3. Check token file: `cat ~/.local/share/tandem/security/engine_api_token`
@@ -311,7 +322,8 @@ Error: HTTP 401: {"error": "unauthorized"}
 Some tests may take longer than 300 seconds. Increase with `--max-duration`:
 
 ```bash
-eval-runner --dataset eval_datasets/critical_path.yaml \
+cargo run -p tandem-eval --bin eval-runner -- \
+  --dataset eval_datasets/critical_path.yaml \
   --engine-mode live \
   --max-duration 600
 ```
@@ -322,14 +334,14 @@ If running within a Tandem automation, ensure `cargo` is in the PATH:
 
 ```bash
 export PATH="/usr/local/cargo/bin:$PATH"
-cargo run --bin eval-runner -- ...
+cargo run -p tandem-eval --bin eval-runner -- ...
 ```
 
 ## Advanced: Custom Scripted Responses (Stub Mode)
 
 To customize stub provider responses for a specific test:
 
-In `crates/tandem-server/src/eval/scripted_provider.rs`, add patterns:
+In `crates/tandem-eval/src/scripted_provider.rs`, add patterns:
 
 ```rust
 provider

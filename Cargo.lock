@@ -7926,6 +7926,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "tandem-eval"
+version = "0.6.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "ed25519-dalek",
+ "futures",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tandem-bug-monitor",
+ "tandem-core",
+ "tandem-memory",
+ "tandem-observability",
+ "tandem-orchestrator",
+ "tandem-providers",
+ "tandem-runtime",
+ "tandem-server",
+ "tandem-tools",
+ "tandem-types",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
 name = "tandem-governance-engine"
 version = "0.6.1"
 dependencies = [

@@ -45,10 +45,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
-            crates/tandem-server
+            crates/tandem-eval
 
       - name: Build eval-runner binary
-        run: cargo build --release --bin eval-runner -p tandem-server
+        run: cargo build --release --bin eval-runner -p tandem-eval
 
       - name: Resolve dataset path
         id: dataset

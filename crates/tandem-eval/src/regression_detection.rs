@@ -11,7 +11,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::eval::metrics::EvalMetrics;
+use crate::metrics::EvalMetrics;
 
 /// Persisted baseline metrics for a dataset
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -242,12 +242,12 @@ pub fn detect_regressions(
     baseline: &EvalBaseline,
     thresholds: &RegressionThresholds,
 ) -> RegressionReport {
-    let mut checks = Vec::new();
-
-    checks.push(check_pass_rate(current, baseline, thresholds));
-    checks.push(check_cost(current, baseline, thresholds));
-    checks.push(check_repair_iterations(current, baseline, thresholds));
-    checks.push(check_provider_failure_rate(current, baseline, thresholds));
+    let checks = vec![
+        check_pass_rate(current, baseline, thresholds),
+        check_cost(current, baseline, thresholds),
+        check_repair_iterations(current, baseline, thresholds),
+        check_provider_failure_rate(current, baseline, thresholds),
+    ];
 
     let has_regressions = checks
         .iter()

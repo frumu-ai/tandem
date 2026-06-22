@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use tandem_server::bug_monitor::regression_fixture::{
+use tandem_eval::bug_monitor_regression_fixture::{
     write_incident_regression_fixture, BugMonitorRegressionFixtureOptions,
 };
 
@@ -20,7 +20,7 @@ OPTIONS:
     --help               Print this help message
 
 EXAMPLE:
-    cargo run -p tandem-server --bin bug-monitor-fixture -- \
+    cargo run -p tandem-eval --bin bug-monitor-fixture -- \
       --incident /tmp/incident.json \
       --output eval_datasets/regressions/dogfood_001.yaml \
       --id dogfood_001_provider_timeout

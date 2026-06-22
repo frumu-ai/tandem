@@ -1,0 +1,48 @@
+[package]
+name = "tandem-eval"
+version = "0.6.1"
+description = "Evaluation harness and regression tooling for Tandem"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/frumu-ai/tandem"
+edition = "2021"
+
+[features]
+default = []
+browser = ["tandem-server/browser"]
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+axum = { version = "0.8", features = ["ws"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+ed25519-dalek = "2"
+futures = "0.3"
+reqwest = { version = "0.12", default-features = true, features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+uuid = { version = "1", features = ["v4"] }
+tandem-bug-monitor = { path = "../tandem-bug-monitor", version = "0.6.1" }
+tandem-core = { path = "../tandem-core", version = "0.6.1" }
+tandem-memory = { path = "../tandem-memory", version = "0.6.1" }
+tandem-observability = { path = "../tandem-observability", version = "0.6.1" }
+tandem-orchestrator = { path = "../tandem-orchestrator", version = "0.6.1" }
+tandem-providers = { path = "../tandem-providers", version = "0.6.1" }
+tandem-runtime = { path = "../tandem-runtime", version = "0.6.1" }
+tandem-server = { path = "../tandem-server", version = "0.6.1", default-features = false }
+tandem-tools = { path = "../tandem-tools", version = "0.6.1" }
+tandem-types = { path = "../tandem-types", version = "0.6.1" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "eval-runner"
+path = "src/bin/eval_runner.rs"
+
+[[bin]]
+name = "bug-monitor-fixture"
+path = "src/bin/bug_monitor_fixture.rs"

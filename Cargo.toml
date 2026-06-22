@@ -8,6 +8,7 @@ members = [
     "crates/tandem-core",
     "crates/tandem-document",
     "crates/tandem-bug-monitor",
+    "crates/tandem-eval",
     "crates/tandem-providers",
     "crates/tandem-tools",
     "crates/tandem-automation",

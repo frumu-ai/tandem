@@ -96,6 +96,12 @@ MCP connections.
   separate from successful first positioning. If a watched log appears later
   with bootstrap/history content, Tandem seeks to the end before ingesting new
   lines instead of replaying the preexisting file.
+- The eval framework now lives in a dedicated `tandem-eval` crate. The
+  eval-runner CLI, datasets/metrics/regression helpers, scripted provider,
+  isolated AppState bootstrap, and Bug Monitor fixture scaffold moved out of
+  `tandem-server`; eval CI now builds `cargo build --bin eval-runner -p
+tandem-eval` while the server exposes only narrow public eval-support
+  wrappers for the harness.
 - Tool execution now flows through a governed dispatcher outside the
   `tandem-tools` crate. Engine turns, workflow actions, Automation V2 connector
   preflight calls, direct HTTP tool execution, planner helpers, pack builder,
@@ -1369,7 +1375,7 @@ This release ships the complete AI Evaluation Framework (Phases 1-5): a producti
 
 - **Evaluation Dataset Format** (YAML/JSON): Structured `EvalDataset` schema with `EvalTestCase` definitions, `AutomationSpecTest` node specifications, and configurable `EvalExpectedOutput` validation criteria. Four example datasets ship in `eval_datasets/`: **critical_path.yaml** (happy-path scenarios for core features), **provider_failures.yaml** (resilience tests for timeouts and rate limits), **repair_exhaustion.yaml** (budget depletion edge cases), and **citation_validation.yaml** (web research validation). Dataset format is version-controlled and extensible for adding new test scenarios.
 
-- **Eval Runner CLI** (`cargo run --bin eval-runner`): Standalone command-line tool for bulk test execution with the following capabilities:
+- **Eval Runner CLI** (`cargo run -p tandem-eval --bin eval-runner`): Standalone command-line tool for bulk test execution with the following capabilities:
   - **Metrics aggregation**: Computes pass_rate, avg_repair_iterations, total_cost_usd, avg_cost_per_test, provider_failure_rate, and per-validator-class pass rates from test results
   - **Simulation mode** (`--simulation`): Deterministic test execution without making AI provider calls, making evals safe to run in CI and cost-free during development
   - **Parallel workers** (`--num-workers`): Configurable parallelism for faster test suite runs
