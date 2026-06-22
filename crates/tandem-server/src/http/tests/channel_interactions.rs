@@ -41,6 +41,7 @@ async fn tenant_b_awaiting_run(state: &AppState) -> crate::AutomationV2RunRecord
                 requested_at_ms: crate::now_ms(),
                 upstream_node_ids: Vec::new(),
                 metadata: None,
+                expiry_policy: None,
             });
         })
         .await

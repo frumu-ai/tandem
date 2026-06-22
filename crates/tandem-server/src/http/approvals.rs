@@ -238,6 +238,37 @@ pub(crate) fn automation_v2_run_to_approval_request(
     });
 
     let decisions = approval_decisions_for_gate(gate);
+    let expires_at_ms = crate::app::state::automation_gate_expires_at_ms(gate);
+    let mut surface_payload = serde_json::json!({
+        "automation_v2_run_id": run.run_id,
+        "automation_id": run.automation_id,
+        "node_id": gate.node_id,
+        "decide_endpoint": format!(
+            "/automations/v2/runs/{}/gate",
+            run.run_id
+        ),
+    });
+    if let Some(expires_at_ms) = expires_at_ms {
+        surface_payload["expires_at_ms"] = serde_json::json!(expires_at_ms);
+    }
+    if let Some(policy) = gate.expiry_policy.as_ref() {
+        surface_payload["expiry_policy"] = serde_json::json!(policy);
+    }
+    if let Some(policy_state) = gate
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("gate_policy_state"))
+    {
+        surface_payload["gate_policy_state"] = policy_state.clone();
+        if let Some(notification_key) = policy_state
+            .get("notification_key")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            surface_payload["notification_key"] = serde_json::json!(notification_key);
+        }
+    }
 
     ApprovalRequest {
         request_id: format!("automation_v2:{}:{}", run.run_id, gate.node_id),
@@ -252,17 +283,9 @@ pub(crate) fn automation_v2_run_to_approval_request(
         workflow_name,
         action_kind,
         action_preview_markdown,
-        surface_payload: Some(serde_json::json!({
-            "automation_v2_run_id": run.run_id,
-            "automation_id": run.automation_id,
-            "node_id": gate.node_id,
-            "decide_endpoint": format!(
-                "/automations/v2/runs/{}/gate",
-                run.run_id
-            ),
-        })),
+        surface_payload: Some(surface_payload),
         requested_at_ms: gate.requested_at_ms,
-        expires_at_ms: None,
+        expires_at_ms,
         decisions,
         rework_targets: gate.rework_targets.clone(),
         instructions: gate.instructions.clone(),

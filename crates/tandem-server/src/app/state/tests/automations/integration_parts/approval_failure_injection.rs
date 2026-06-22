@@ -29,6 +29,7 @@ fn approval_send_restart_automation(
         ],
         rework_targets: Vec::new(),
         instructions: Some("Approve the customer update before sending.".to_string()),
+        expiry_policy: None,
     });
 
     let mut send = AutomationNodeBuilder::new("send_approved_update")

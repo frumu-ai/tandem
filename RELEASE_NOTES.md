@@ -47,6 +47,12 @@ MCP connections.
   preserves rework re-arming, clears stale gate-local failure markers on
   approval, and quarantines malformed individual run checkpoints as blocked
   diagnostics instead of crashing scheduler startup.
+- Approval gates now support expiry policy metadata for default and per-gate
+  deadlines. The executor can auto-cancel expired gates, record reminder or
+  escalation lifecycle/audit events, redispatch approval notifications with
+  changing notification keys, reject late human decisions after auto-cancel
+  expiry, and expose gate deadlines in the unified approvals API and
+  control-panel inbox.
 - Session-level PermissionManager asks now persist to durable state with
   decision history and provenance-bearing standing rules. Pending prompts left
   behind by a restart are marked `runtime_restarted` so the next tool attempt

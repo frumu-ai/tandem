@@ -96,7 +96,8 @@ pub struct ApprovalRequest {
     /// When the approval request was first created.
     pub requested_at_ms: u64,
 
-    /// When it expires (best-effort; auto-cancel logic is out of scope for v1).
+    /// When it expires. Subsystem schedulers may auto-cancel, escalate, or
+    /// remind according to their native gate policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at_ms: Option<u64>,
 

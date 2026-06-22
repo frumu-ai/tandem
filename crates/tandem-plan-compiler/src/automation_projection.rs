@@ -41,6 +41,28 @@ pub struct ProjectedAutomationApprovalGate {
     pub rework_targets: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expiry_policy: Option<ProjectedAutomationGateExpiryPolicy>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectedAutomationGateExpiryAction {
+    Cancel,
+    Escalate,
+    Remind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectedAutomationGateExpiryPolicy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_after_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_expiry: Option<ProjectedAutomationGateExpiryAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escalate_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remind_every_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,12 +210,19 @@ mod tests {
         assert!(gate.decisions.is_empty());
         assert!(gate.rework_targets.is_empty());
         assert!(gate.instructions.is_none());
+        assert!(gate.expiry_policy.is_none());
 
         let full = ProjectedAutomationApprovalGate {
             required: true,
             decisions: vec!["approve".to_string(), "rework".to_string()],
             rework_targets: vec!["compose".to_string()],
             instructions: Some("Review before sending".to_string()),
+            expiry_policy: Some(ProjectedAutomationGateExpiryPolicy {
+                expires_after_ms: Some(60_000),
+                on_expiry: Some(ProjectedAutomationGateExpiryAction::Escalate),
+                escalate_to: Some("ops-lead".to_string()),
+                remind_every_ms: Some(15_000),
+            }),
         };
         let round_tripped: ProjectedAutomationApprovalGate =
             serde_json::from_value(serde_json::to_value(&full).expect("serialize"))
@@ -201,6 +230,7 @@ mod tests {
         assert_eq!(round_tripped.decisions, full.decisions);
         assert_eq!(round_tripped.rework_targets, full.rework_targets);
         assert_eq!(round_tripped.instructions, full.instructions);
+        assert_eq!(round_tripped.expiry_policy, full.expiry_policy);
     }
 
     #[test]

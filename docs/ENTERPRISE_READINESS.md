@@ -8,7 +8,7 @@ This document separates what Tandem can credibly show today from what is still i
 - **Plan preview and apply flow:** Intent can be compiled through plan preview/apply paths into runtime-owned workflow bundles.
 - **Tenant context foundations:** The OSS enterprise contract includes tenant context, local implicit tenant defaults, principals, authority chains, and secret references.
 - **Public enterprise status:** `/enterprise/status` exposes a public-safe summary of enterprise mode, bridge state, capabilities, contract version, and tenant context.
-- **Approval gates and inbox:** Automation runs can pause on human gates, and the control panel includes an Approvals Inbox backed by the pending approvals aggregator.
+- **Approval gates and inbox:** Automation runs can pause on human gates, publish deadlines, reject late decisions after auto-cancel expiry, and process reminder or escalation policies while keeping the gate decidable. The control panel includes an Approvals Inbox backed by the pending approvals aggregator.
 - **Approval channel fan-out:** Slack, Discord, and Telegram approval delivery exists, including authorization checks, callback deduplication, user capability tiers, rate limits, and lifecycle updates.
 - **Durable protected audit records:** Protected events such as approvals, denials, pauses, provider secret changes, MCP activity, governance events, and coder transitions can be written to durable JSONL audit envelopes.
 - **Tenant-scoped protected audit:** `/audit/stream` provides an admin-gated newline-delimited JSON feed for approval decisions, tool ledger events, and channel capability changes. Explicit tenant reads fail closed across tenant boundaries, and protected action/tool-effect events carry tenant context.

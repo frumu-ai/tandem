@@ -172,14 +172,19 @@ pub async fn run_one_sweep(
     dedup: &mut DedupRing,
 ) -> SweepResult {
     let pending = source.list_pending(filter).await;
-    let current_ids: HashSet<&str> = pending.iter().map(|r| r.request_id.as_str()).collect();
+    let current_keys = pending
+        .iter()
+        .map(approval_delivery_key)
+        .collect::<Vec<String>>();
+    let current_ids: HashSet<&str> = current_keys.iter().map(String::as_str).collect();
 
     let mut new_count = 0usize;
     let mut notify_attempts = 0usize;
     let mut notify_failures = 0usize;
 
     for request in &pending {
-        if !dedup.record_new(&request.request_id) {
+        let delivery_key = approval_delivery_key(request);
+        if !dedup.record_new(&delivery_key) {
             continue;
         }
         new_count += 1;
@@ -210,6 +215,18 @@ pub async fn run_one_sweep(
         notify_failures,
         dedup_size: dedup.len(),
     }
+}
+
+fn approval_delivery_key(request: &ApprovalRequest) -> String {
+    request
+        .surface_payload
+        .as_ref()
+        .and_then(|payload| payload.get("notification_key"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|key| format!("{}#{key}", request.request_id))
+        .unwrap_or_else(|| request.request_id.clone())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -481,6 +498,46 @@ mod tests {
 
         assert_eq!(second.new_count, 1);
         assert_eq!(n1.seen_ids(), vec!["a", "b"]);
+    }
+
+    #[tokio::test]
+    async fn changed_notification_key_redispatches_existing_request() {
+        let mut first = fake_request("a");
+        first.surface_payload = Some(serde_json::json!({ "notification_key": "a:initial" }));
+        let source = VecSource::new(vec![first]);
+        let n1 = CountingNotifier::ok("slack");
+        let notifiers: Vec<Arc<dyn ApprovalNotifier>> = vec![n1.clone()];
+        let mut dedup = DedupRing::with_cap(16);
+
+        run_one_sweep(
+            source.as_ref(),
+            &notifiers,
+            &ApprovalListFilter::default(),
+            &mut dedup,
+        )
+        .await;
+
+        let mut reminder = fake_request("a");
+        reminder.surface_payload = Some(serde_json::json!({ "notification_key": "a:reminder-1" }));
+        source.set(vec![reminder.clone()]);
+        let second = run_one_sweep(
+            source.as_ref(),
+            &notifiers,
+            &ApprovalListFilter::default(),
+            &mut dedup,
+        )
+        .await;
+        let third = run_one_sweep(
+            source.as_ref(),
+            &notifiers,
+            &ApprovalListFilter::default(),
+            &mut dedup,
+        )
+        .await;
+
+        assert_eq!(second.new_count, 1);
+        assert_eq!(third.new_count, 0);
+        assert_eq!(n1.seen_ids(), vec!["a", "a"]);
     }
 
     #[tokio::test]

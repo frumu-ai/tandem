@@ -370,6 +370,8 @@ pub struct AutomationApprovalGate {
     pub rework_targets: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expiry_policy: Option<AutomationGateExpiryPolicy>,
 }
 
 impl From<tandem_plan_compiler::api::ProjectedAutomationApprovalGate> for AutomationApprovalGate {
@@ -379,6 +381,54 @@ impl From<tandem_plan_compiler::api::ProjectedAutomationApprovalGate> for Automa
             decisions: value.decisions,
             rework_targets: value.rework_targets,
             instructions: value.instructions,
+            expiry_policy: value.expiry_policy.map(Into::into),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationGateExpiryAction {
+    Cancel,
+    Escalate,
+    Remind,
+}
+
+impl From<tandem_plan_compiler::api::ProjectedAutomationGateExpiryAction>
+    for AutomationGateExpiryAction
+{
+    fn from(value: tandem_plan_compiler::api::ProjectedAutomationGateExpiryAction) -> Self {
+        match value {
+            tandem_plan_compiler::api::ProjectedAutomationGateExpiryAction::Cancel => Self::Cancel,
+            tandem_plan_compiler::api::ProjectedAutomationGateExpiryAction::Escalate => {
+                Self::Escalate
+            }
+            tandem_plan_compiler::api::ProjectedAutomationGateExpiryAction::Remind => Self::Remind,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutomationGateExpiryPolicy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_after_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_expiry: Option<AutomationGateExpiryAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escalate_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remind_every_ms: Option<u64>,
+}
+
+impl From<tandem_plan_compiler::api::ProjectedAutomationGateExpiryPolicy>
+    for AutomationGateExpiryPolicy
+{
+    fn from(value: tandem_plan_compiler::api::ProjectedAutomationGateExpiryPolicy) -> Self {
+        Self {
+            expires_after_ms: value.expires_after_ms,
+            on_expiry: value.on_expiry.map(Into::into),
+            escalate_to: value.escalate_to,
+            remind_every_ms: value.remind_every_ms,
         }
     }
 }
@@ -1058,6 +1108,8 @@ pub struct AutomationPendingGate {
     pub upstream_node_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expiry_policy: Option<AutomationGateExpiryPolicy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

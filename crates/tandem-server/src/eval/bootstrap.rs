@@ -436,6 +436,7 @@ impl EvalActionFirewallProbeTool {
                             "resource": resource,
                         }
                     })),
+                    expiry_policy: None,
                 });
                 row.checkpoint.blocked_nodes = vec!["publish".to_string()];
             })

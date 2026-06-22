@@ -598,7 +598,30 @@ pub(crate) fn build_automation_pending_gate(
             .and_then(|metadata| metadata.get("approval"))
             .and_then(|approval| approval.get("metadata"))
             .cloned(),
+        expiry_policy: gate
+            .expiry_policy
+            .clone()
+            .or_else(|| automation_gate_expiry_policy_from_node_metadata(node)),
     })
+}
+
+fn automation_gate_expiry_policy_from_node_metadata(
+    node: &AutomationFlowNode,
+) -> Option<crate::automation_v2::types::AutomationGateExpiryPolicy> {
+    let approval = node
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("approval"))?;
+    [
+        "/expiry_policy",
+        "/gate_expiry_policy",
+        "/policy/expiry",
+        "/policy/gate_expiry",
+    ]
+    .iter()
+    .find_map(|pointer| approval.pointer(pointer))
+    .cloned()
+    .and_then(|value| serde_json::from_value(value).ok())
 }
 
 fn automation_node_builder_metadata(node: &AutomationFlowNode, key: &str) -> Option<String> {

@@ -1335,6 +1335,7 @@ mod tests {
             requested_at_ms: 30,
             upstream_node_ids: vec!["draft_compliance_brief".to_string()],
             metadata: Some(json!({"secret": "pending gate metadata"})),
+            expiry_policy: None,
         });
         run.checkpoint
             .gate_history
@@ -1543,6 +1544,7 @@ mod tests {
                             decisions: vec!["approve".to_string(), "rework".to_string()],
                             rework_targets: Vec::new(),
                             instructions: None,
+                            expiry_policy: None,
                         }),
                         metadata: None,
                         knowledge: tandem_orchestrator::KnowledgeBinding::default(),

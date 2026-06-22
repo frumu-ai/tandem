@@ -9,6 +9,70 @@ fn approval_gate_stale_after_ms() -> u64 {
         .unwrap_or(24 * 60 * 60 * 1000)
 }
 
+fn gate_policy_state_u64(gate: &crate::AutomationPendingGate, key: &str) -> Option<u64> {
+    gate.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("gate_policy_state"))
+        .and_then(|state| state.get(key))
+        .and_then(Value::as_u64)
+}
+
+fn gate_policy_reminder_due(
+    gate: &crate::AutomationPendingGate,
+    policy: &crate::AutomationGateExpiryPolicy,
+    now: u64,
+    expires_at_ms: u64,
+) -> bool {
+    let action = policy
+        .on_expiry
+        .unwrap_or(crate::AutomationGateExpiryAction::Cancel);
+    if now >= expires_at_ms && action != crate::AutomationGateExpiryAction::Remind {
+        return false;
+    }
+
+    let Some(remind_every_ms) = policy.remind_every_ms.filter(|value| *value > 0) else {
+        return now >= expires_at_ms
+            && action == crate::AutomationGateExpiryAction::Remind
+            && gate_policy_state_u64(gate, "last_reminded_at_ms").is_none();
+    };
+
+    let last_reminded_at_ms =
+        gate_policy_state_u64(gate, "last_reminded_at_ms").unwrap_or(gate.requested_at_ms);
+    now.saturating_sub(last_reminded_at_ms) >= remind_every_ms
+}
+
+fn gate_policy_state_has(gate: &crate::AutomationPendingGate, key: &str) -> bool {
+    gate.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("gate_policy_state"))
+        .and_then(|state| state.get(key))
+        .is_some()
+}
+
+fn update_gate_policy_state(
+    gate: &mut crate::AutomationPendingGate,
+    updates: impl IntoIterator<Item = (&'static str, Value)>,
+) {
+    let mut metadata = match gate.metadata.take() {
+        Some(Value::Object(map)) => map,
+        Some(other) => {
+            let mut map = serde_json::Map::new();
+            map.insert("legacy_metadata".to_string(), other);
+            map
+        }
+        None => serde_json::Map::new(),
+    };
+    let mut state = match metadata.remove("gate_policy_state") {
+        Some(Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    };
+    for (key, value) in updates {
+        state.insert(key.to_string(), value);
+    }
+    metadata.insert("gate_policy_state".to_string(), Value::Object(state));
+    gate.metadata = Some(Value::Object(metadata));
+}
+
 fn stale_auto_resume_window_ms() -> u64 {
     std::env::var("TANDEM_STALE_AUTO_RESUME_WINDOW_MS")
         .ok()
@@ -466,6 +530,360 @@ impl AppState {
             }
         }
         marked
+    }
+
+    pub async fn process_awaiting_approval_gate_policies(&self) -> usize {
+        let now = now_ms();
+        let candidate_runs = self
+            .automation_v2_runs
+            .read()
+            .await
+            .values()
+            .filter(|run| run.status == AutomationRunStatus::AwaitingApproval)
+            .filter(|run| run.checkpoint.awaiting_gate.is_some())
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let mut actions = 0usize;
+        for run in candidate_runs {
+            let Some(gate) = run.checkpoint.awaiting_gate.as_ref().cloned() else {
+                continue;
+            };
+            let Some(policy) =
+                automation::effective_automation_gate_expiry_policy(&gate)
+            else {
+                continue;
+            };
+            let Some(expires_at_ms) = automation::automation_gate_expires_at_ms(&gate) else {
+                continue;
+            };
+
+            let action = policy
+                .on_expiry
+                .unwrap_or(crate::AutomationGateExpiryAction::Cancel);
+            if now >= expires_at_ms {
+                match action {
+                    crate::AutomationGateExpiryAction::Cancel => {
+                        if self
+                            .expire_awaiting_approval_gate(&run, &gate, &policy, expires_at_ms)
+                            .await
+                        {
+                            actions += 1;
+                        }
+                    }
+                    crate::AutomationGateExpiryAction::Escalate => {
+                        if !gate_policy_state_has(&gate, "escalated_at_ms")
+                            && self
+                                .escalate_awaiting_approval_gate(
+                                    &run,
+                                    &gate,
+                                    &policy,
+                                    expires_at_ms,
+                                )
+                                .await
+                        {
+                            actions += 1;
+                        }
+                    }
+                    crate::AutomationGateExpiryAction::Remind => {
+                        if gate_policy_reminder_due(&gate, &policy, now, expires_at_ms)
+                            && self
+                                .record_awaiting_approval_gate_reminder(
+                                    &run,
+                                    &gate,
+                                    &policy,
+                                    expires_at_ms,
+                                    true,
+                                )
+                                .await
+                        {
+                            actions += 1;
+                        }
+                    }
+                }
+            } else if gate_policy_reminder_due(&gate, &policy, now, expires_at_ms)
+                && self
+                    .record_awaiting_approval_gate_reminder(
+                        &run,
+                        &gate,
+                        &policy,
+                        expires_at_ms,
+                        false,
+                    )
+                    .await
+            {
+                actions += 1;
+            }
+        }
+        actions
+    }
+
+    async fn expire_awaiting_approval_gate(
+        &self,
+        run: &AutomationV2RunRecord,
+        gate: &crate::AutomationPendingGate,
+        policy: &crate::AutomationGateExpiryPolicy,
+        expires_at_ms: u64,
+    ) -> bool {
+        let reason = format!(
+            "approval gate `{}` expired before a decision was recorded",
+            gate.node_id
+        );
+        let mut applied = false;
+        let updated = self
+            .update_automation_v2_run(&run.run_id, |row| {
+                match automation::apply_automation_gate_expiry(
+                    row,
+                    gate,
+                    Some(reason.clone()),
+                    expires_at_ms,
+                    policy,
+                ) {
+                    automation::AutomationGateDecisionOutcome::Applied => {
+                        applied = true;
+                    }
+                    automation::AutomationGateDecisionOutcome::AlreadyDecided(_) => {}
+                }
+            })
+            .await;
+        if !applied {
+            return false;
+        }
+        if let Some(updated_run) = updated {
+            self.append_internal_sweep_protected_audit_event(
+                "automation_v2.internal_sweep.approval_gate_expired",
+                &updated_run,
+                "process_awaiting_approval_gate_policies",
+                "expired_cancelled",
+                Some(reason.clone()),
+                json!({
+                    "node_id": gate.node_id,
+                    "expires_at_ms": expires_at_ms,
+                    "expiry_policy": policy,
+                }),
+            )
+            .await;
+            self.event_bus.publish(tandem_types::EngineEvent::new(
+                "approval.gate.expired",
+                json!({
+                    "run_id": updated_run.run_id,
+                    "automation_id": updated_run.automation_id,
+                    "node_id": gate.node_id,
+                    "decision": "expired",
+                    "expires_at_ms": expires_at_ms,
+                    "tenantContext": updated_run.tenant_context,
+                }),
+            ));
+        }
+        true
+    }
+
+    async fn escalate_awaiting_approval_gate(
+        &self,
+        run: &AutomationV2RunRecord,
+        gate: &crate::AutomationPendingGate,
+        policy: &crate::AutomationGateExpiryPolicy,
+        expires_at_ms: u64,
+    ) -> bool {
+        let now = now_ms();
+        let escalate_to = policy
+            .escalate_to
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("unassigned_escalation_principal")
+            .to_string();
+        let detail = format!(
+            "approval gate `{}` expired and was escalated to {}",
+            gate.node_id, escalate_to
+        );
+        let mut applied = false;
+        let updated = self
+            .update_automation_v2_run(&run.run_id, |row| {
+                if row.status != AutomationRunStatus::AwaitingApproval {
+                    return;
+                }
+                let row_id = row.run_id.clone();
+                let Some(row_gate) = row.checkpoint.awaiting_gate.as_mut() else {
+                    return;
+                };
+                if row_gate.node_id != gate.node_id
+                    || gate_policy_state_has(row_gate, "escalated_at_ms")
+                {
+                    return;
+                }
+                let reminder_count =
+                    gate_policy_state_u64(row_gate, "reminder_count").unwrap_or(0) + 1;
+                update_gate_policy_state(
+                    row_gate,
+                    [
+                        ("escalated_at_ms", json!(now)),
+                        ("escalated_to", json!(escalate_to.clone())),
+                        ("expires_at_ms", json!(expires_at_ms)),
+                        ("reminder_count", json!(reminder_count)),
+                        (
+                            "notification_key",
+                            json!(format!(
+                                "automation_v2:{}:{}:escalated:{}",
+                                row_id, gate.node_id, reminder_count
+                            )),
+                        ),
+                    ],
+                );
+                row.detail = Some(detail.clone());
+                automation::record_automation_lifecycle_event_with_metadata(
+                    row,
+                    "approval_gate_escalated",
+                    Some(detail.clone()),
+                    None,
+                    Some(json!({
+                        "node_id": gate.node_id,
+                        "expires_at_ms": expires_at_ms,
+                        "escalated_to": escalate_to.clone(),
+                        "expiry_policy": policy,
+                    })),
+                );
+                applied = true;
+            })
+            .await;
+        if !applied {
+            return false;
+        }
+        if let Some(updated_run) = updated {
+            self.append_internal_sweep_protected_audit_event(
+                "automation_v2.internal_sweep.approval_gate_escalated",
+                &updated_run,
+                "process_awaiting_approval_gate_policies",
+                "expired_escalated",
+                Some(detail.clone()),
+                json!({
+                    "node_id": gate.node_id,
+                    "expires_at_ms": expires_at_ms,
+                    "escalated_to": escalate_to,
+                    "expiry_policy": policy,
+                }),
+            )
+            .await;
+            self.event_bus.publish(tandem_types::EngineEvent::new(
+                "approval.gate.escalated",
+                json!({
+                    "run_id": updated_run.run_id,
+                    "automation_id": updated_run.automation_id,
+                    "node_id": gate.node_id,
+                    "expires_at_ms": expires_at_ms,
+                    "escalated_to": escalate_to,
+                    "tenantContext": updated_run.tenant_context,
+                }),
+            ));
+        }
+        true
+    }
+
+    async fn record_awaiting_approval_gate_reminder(
+        &self,
+        run: &AutomationV2RunRecord,
+        gate: &crate::AutomationPendingGate,
+        policy: &crate::AutomationGateExpiryPolicy,
+        expires_at_ms: u64,
+        expired: bool,
+    ) -> bool {
+        let now = now_ms();
+        let detail = if expired {
+            format!(
+                "approval gate `{}` is expired and still awaiting a decision",
+                gate.node_id
+            )
+        } else {
+            format!(
+                "approval gate `{}` is still awaiting a decision",
+                gate.node_id
+            )
+        };
+        let mut applied = false;
+        let mut reminder_count = 0u64;
+        let updated = self
+            .update_automation_v2_run(&run.run_id, |row| {
+                if row.status != AutomationRunStatus::AwaitingApproval {
+                    return;
+                }
+                let row_id = row.run_id.clone();
+                let Some(row_gate) = row.checkpoint.awaiting_gate.as_mut() else {
+                    return;
+                };
+                if row_gate.node_id != gate.node_id {
+                    return;
+                }
+                reminder_count = gate_policy_state_u64(row_gate, "reminder_count").unwrap_or(0) + 1;
+                update_gate_policy_state(
+                    row_gate,
+                    [
+                        ("last_reminded_at_ms", json!(now)),
+                        ("reminder_count", json!(reminder_count)),
+                        ("expires_at_ms", json!(expires_at_ms)),
+                        ("expired_reminder", json!(expired)),
+                        (
+                            "notification_key",
+                            json!(format!(
+                                "automation_v2:{}:{}:reminder:{}",
+                                row_id, gate.node_id, reminder_count
+                            )),
+                        ),
+                    ],
+                );
+                row.detail = Some(detail.clone());
+                automation::record_automation_lifecycle_event_with_metadata(
+                    row,
+                    "approval_gate_reminder_due",
+                    Some(detail.clone()),
+                    None,
+                    Some(json!({
+                        "node_id": gate.node_id,
+                        "expires_at_ms": expires_at_ms,
+                        "expired": expired,
+                        "reminder_count": reminder_count,
+                        "expiry_policy": policy,
+                    })),
+                );
+                applied = true;
+            })
+            .await;
+        if !applied {
+            return false;
+        }
+        if let Some(updated_run) = updated {
+            self.append_internal_sweep_protected_audit_event(
+                "automation_v2.internal_sweep.approval_gate_reminder_due",
+                &updated_run,
+                "process_awaiting_approval_gate_policies",
+                if expired {
+                    "expired_reminder_due"
+                } else {
+                    "reminder_due"
+                },
+                Some(detail.clone()),
+                json!({
+                    "node_id": gate.node_id,
+                    "expires_at_ms": expires_at_ms,
+                    "expired": expired,
+                    "reminder_count": reminder_count,
+                    "expiry_policy": policy,
+                }),
+            )
+            .await;
+            self.event_bus.publish(tandem_types::EngineEvent::new(
+                "approval.gate.reminder_due",
+                json!({
+                    "run_id": updated_run.run_id,
+                    "automation_id": updated_run.automation_id,
+                    "node_id": gate.node_id,
+                    "expires_at_ms": expires_at_ms,
+                    "expired": expired,
+                    "reminder_count": reminder_count,
+                    "tenantContext": updated_run.tenant_context,
+                }),
+            ));
+        }
+        true
     }
 
     pub async fn auto_resume_stale_reaped_runs(&self) -> usize {

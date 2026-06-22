@@ -1167,6 +1167,7 @@ async fn awaiting_approval_runs_are_marked_stale_with_visible_manual_policy() {
         requested_at_ms: now_ms().saturating_sub(2 * 24 * 60 * 60 * 1000),
         upstream_node_ids: Vec::new(),
         metadata: None,
+        expiry_policy: None,
     });
     {
         let mut runs = state.automation_v2_runs.write().await;
@@ -1506,6 +1507,7 @@ fn email_pending_gate() -> AutomationPendingGate {
         requested_at_ms: now_ms(),
         upstream_node_ids: vec!["compose_email".to_string()],
         metadata: None,
+        expiry_policy: None,
     }
 }
 

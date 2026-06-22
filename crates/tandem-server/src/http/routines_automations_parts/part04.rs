@@ -728,6 +728,30 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
         .reason
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    let now_ms = crate::now_ms();
+    if crate::app::state::automation_gate_rejects_late_human_decision(&gate, now_ms) {
+        let detail = "Approval gate expired before this decision was submitted";
+        audit_gate_decision_denial(
+            &state,
+            &current,
+            Some(&gate),
+            &decider,
+            "AUTOMATION_V2_GATE_EXPIRED",
+            detail,
+        )
+        .await;
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": detail,
+                "code": "AUTOMATION_V2_GATE_EXPIRED",
+                "runID": current.run_id,
+                "automationID": current.automation_id,
+                "nodeID": gate.node_id,
+                "decidedBy": decider,
+            })),
+        ));
+    }
     if let Err((code, detail)) = authorize_gate_decider(
         &current,
         &automation,
@@ -735,7 +759,7 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
         &decision,
         &decider,
         verified_tenant_context.as_ref(),
-        crate::now_ms(),
+        now_ms,
     ) {
         audit_gate_decision_denial(&state, &current, Some(&gate), &decider, code, detail).await;
         return Err((
