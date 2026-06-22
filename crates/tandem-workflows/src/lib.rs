@@ -8,9 +8,14 @@ use std::path::{Path, PathBuf};
 use tandem_orchestrator::KnowledgeBinding;
 use tandem_types::TenantContext;
 
+mod action_schema;
 mod mission_builder;
 pub mod plan_package;
 
+pub use action_schema::{
+    WorkflowActionDefinition, WorkflowActionKind, WorkflowActionRegistry,
+    WorkflowActionValidationIssue, WorkflowActionValidationMode, WorkflowResolvedAction,
+};
 pub use mission_builder::{
     validate_mission_blueprint, ApprovalDecision, HumanApprovalGate, InputRefBlueprint,
     MissionBlueprint, MissionMilestoneBlueprint, MissionPhaseBlueprint, MissionPhaseExecutionMode,
@@ -226,6 +231,99 @@ pub enum WorkflowValidationSeverity {
 pub struct WorkflowValidationMessage {
     pub severity: WorkflowValidationSeverity,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+}
+
+impl WorkflowValidationMessage {
+    fn new(severity: WorkflowValidationSeverity, message: impl Into<String>) -> Self {
+        Self {
+            severity,
+            message: message.into(),
+            source_path: None,
+            workflow_id: None,
+            step_id: None,
+            field: None,
+        }
+    }
+
+    fn with_workflow(mut self, workflow: &WorkflowSpec, field: impl Into<String>) -> Self {
+        self.source_path = workflow
+            .source
+            .as_ref()
+            .and_then(|source| source.path.clone());
+        self.workflow_id = Some(workflow.workflow_id.clone());
+        self.field = Some(field.into());
+        self
+    }
+
+    fn with_step(
+        mut self,
+        workflow: &WorkflowSpec,
+        step: &WorkflowStepSpec,
+        field: impl Into<String>,
+    ) -> Self {
+        self.source_path = workflow
+            .source
+            .as_ref()
+            .and_then(|source| source.path.clone());
+        self.workflow_id = Some(workflow.workflow_id.clone());
+        self.step_id = Some(step.step_id.clone());
+        self.field = Some(field.into());
+        self
+    }
+
+    fn with_hook(mut self, hook: &WorkflowHookBinding, field: impl Into<String>) -> Self {
+        self.source_path = hook.source.as_ref().and_then(|source| source.path.clone());
+        self.workflow_id = Some(hook.workflow_id.clone());
+        self.field = Some(field.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkflowRegistryValidationOptions {
+    pub action_validation_mode: WorkflowActionValidationMode,
+    pub action_registry: WorkflowActionRegistry,
+}
+
+impl Default for WorkflowRegistryValidationOptions {
+    fn default() -> Self {
+        Self {
+            action_validation_mode: WorkflowActionValidationMode::Local,
+            action_registry: WorkflowActionRegistry::default(),
+        }
+    }
+}
+
+impl WorkflowRegistryValidationOptions {
+    pub fn strict(action_registry: WorkflowActionRegistry) -> Self {
+        Self {
+            action_validation_mode: WorkflowActionValidationMode::Strict,
+            action_registry,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct WorkflowRegistryLoadOptions {
+    pub validation: WorkflowRegistryValidationOptions,
+    pub reject_on_error: bool,
+}
+
+impl WorkflowRegistryLoadOptions {
+    pub fn strict(action_registry: WorkflowActionRegistry) -> Self {
+        Self {
+            validation: WorkflowRegistryValidationOptions::strict(action_registry),
+            reject_on_error: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -318,7 +416,35 @@ pub fn load_registry(sources: &[WorkflowLoadSource]) -> anyhow::Result<WorkflowR
     Ok(registry)
 }
 
+pub fn load_registry_with_options(
+    sources: &[WorkflowLoadSource],
+    options: &WorkflowRegistryLoadOptions,
+) -> anyhow::Result<WorkflowRegistry> {
+    let registry = load_registry(sources)?;
+    if options.reject_on_error {
+        let messages = validate_registry_with_options(&registry, &options.validation);
+        let errors = messages
+            .iter()
+            .filter(|message| message.severity == WorkflowValidationSeverity::Error)
+            .collect::<Vec<_>>();
+        if !errors.is_empty() {
+            anyhow::bail!(
+                "workflow registry validation failed: {}",
+                format_validation_messages(&errors)
+            );
+        }
+    }
+    Ok(registry)
+}
+
 pub fn validate_registry(registry: &WorkflowRegistry) -> Vec<WorkflowValidationMessage> {
+    validate_registry_with_options(registry, &WorkflowRegistryValidationOptions::default())
+}
+
+pub fn validate_registry_with_options(
+    registry: &WorkflowRegistry,
+    options: &WorkflowRegistryValidationOptions,
+) -> Vec<WorkflowValidationMessage> {
     let mut messages = Vec::new();
     for workflow in registry.workflows.values() {
         if workflow.steps.is_empty()
@@ -327,53 +453,137 @@ pub fn validate_registry(registry: &WorkflowRegistry) -> Vec<WorkflowValidationM
                 .iter()
                 .all(|hook| hook.workflow_id != workflow.workflow_id)
         {
-            messages.push(WorkflowValidationMessage {
-                severity: WorkflowValidationSeverity::Warning,
-                message: format!(
-                    "workflow `{}` has no steps and no hook bindings",
-                    workflow.workflow_id
-                ),
-            });
+            messages.push(
+                WorkflowValidationMessage::new(
+                    WorkflowValidationSeverity::Warning,
+                    format!(
+                        "workflow `{}` has no steps and no hook bindings",
+                        workflow.workflow_id
+                    ),
+                )
+                .with_workflow(workflow, "steps"),
+            );
         }
         for step in &workflow.steps {
             if step.step_id.trim().is_empty() {
-                messages.push(WorkflowValidationMessage {
-                    severity: WorkflowValidationSeverity::Error,
-                    message: format!(
-                        "workflow `{}` has step with empty step_id",
-                        workflow.workflow_id
-                    ),
-                });
+                messages.push(
+                    WorkflowValidationMessage::new(
+                        WorkflowValidationSeverity::Error,
+                        format!(
+                            "workflow `{}` has step with empty step_id",
+                            workflow.workflow_id
+                        ),
+                    )
+                    .with_step(workflow, step, "step_id"),
+                );
             }
             if step.action.trim().is_empty() {
-                messages.push(WorkflowValidationMessage {
-                    severity: WorkflowValidationSeverity::Error,
-                    message: format!(
-                        "workflow `{}` has step `{}` with empty action",
-                        workflow.workflow_id, step.step_id
-                    ),
-                });
+                messages.push(
+                    WorkflowValidationMessage::new(
+                        WorkflowValidationSeverity::Error,
+                        format!(
+                            "workflow `{}` has step `{}` with empty action",
+                            workflow.workflow_id, step.step_id
+                        ),
+                    )
+                    .with_step(workflow, step, "action"),
+                );
             }
+            messages.extend(
+                options
+                    .action_registry
+                    .validate_action(
+                        &step.action,
+                        step.with.as_ref(),
+                        options.action_validation_mode,
+                    )
+                    .into_iter()
+                    .map(|issue| {
+                        WorkflowValidationMessage::new(
+                            issue.severity,
+                            format!(
+                                "workflow action `{}` validation failed: {}",
+                                step.action, issue.message
+                            ),
+                        )
+                        .with_step(workflow, step, issue.field)
+                    }),
+            );
         }
     }
     for hook in &registry.hooks {
         if !registry.workflows.contains_key(&hook.workflow_id) {
-            messages.push(WorkflowValidationMessage {
-                severity: WorkflowValidationSeverity::Error,
-                message: format!(
-                    "hook `{}` references unknown workflow `{}`",
-                    hook.binding_id, hook.workflow_id
-                ),
-            });
+            messages.push(
+                WorkflowValidationMessage::new(
+                    WorkflowValidationSeverity::Error,
+                    format!(
+                        "hook `{}` references unknown workflow `{}`",
+                        hook.binding_id, hook.workflow_id
+                    ),
+                )
+                .with_hook(hook, "workflow_id"),
+            );
         }
         if hook.actions.is_empty() {
-            messages.push(WorkflowValidationMessage {
-                severity: WorkflowValidationSeverity::Warning,
-                message: format!("hook `{}` has no actions", hook.binding_id),
-            });
+            messages.push(
+                WorkflowValidationMessage::new(
+                    WorkflowValidationSeverity::Warning,
+                    format!("hook `{}` has no actions", hook.binding_id),
+                )
+                .with_hook(hook, "actions"),
+            );
+        }
+        for (idx, action) in hook.actions.iter().enumerate() {
+            messages.extend(
+                options
+                    .action_registry
+                    .validate_action(
+                        &action.action,
+                        action.with.as_ref(),
+                        options.action_validation_mode,
+                    )
+                    .into_iter()
+                    .map(|issue| {
+                        WorkflowValidationMessage::new(
+                            issue.severity,
+                            format!(
+                                "workflow hook action `{}` validation failed: {}",
+                                action.action, issue.message
+                            ),
+                        )
+                        .with_hook(hook, format!("actions[{idx}].{}", issue.field))
+                    }),
+            );
         }
     }
     messages
+}
+
+fn format_validation_messages(messages: &[&WorkflowValidationMessage]) -> String {
+    messages
+        .iter()
+        .map(|message| {
+            let mut parts = Vec::new();
+            if let Some(path) = message.source_path.as_deref() {
+                parts.push(path.to_string());
+            }
+            if let Some(workflow_id) = message.workflow_id.as_deref() {
+                parts.push(format!("workflow={workflow_id}"));
+            }
+            if let Some(step_id) = message.step_id.as_deref() {
+                parts.push(format!("step_id={step_id}"));
+            }
+            if let Some(field) = message.field.as_deref() {
+                parts.push(format!("field={field}"));
+            }
+            if parts.is_empty() {
+                message.message.clone()
+            } else {
+                format!("{} ({})", message.message, parts.join(", "))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn load_source_into(
@@ -831,6 +1041,177 @@ workflow:
             message.severity == WorkflowValidationSeverity::Warning
                 && message.message.contains("has no actions")
         }));
+    }
+
+    #[test]
+    fn strict_load_accepts_valid_registered_tool_action() {
+        let dir = tempdir().expect("dir");
+        let workflow_path = dir.path().join("workflows/registered-tool.yaml");
+        write_file(
+            &workflow_path,
+            r#"
+workflow:
+  id: registered_tool
+  name: Registered Tool
+  steps:
+    - id: notify
+      action: tool:workflow_test.notify
+      with:
+        channel: engineering
+"#,
+        );
+
+        let action_registry = WorkflowActionRegistry::new().with_tool_schema(
+            "workflow_test.notify",
+            serde_json::json!({
+                "type": "object",
+                "required": ["channel"],
+                "properties": {
+                    "channel": { "type": "string" }
+                },
+                "additionalProperties": false
+            }),
+        );
+        let registry = load_registry_with_options(
+            &[workspace_source(dir.path())],
+            &WorkflowRegistryLoadOptions::strict(action_registry),
+        )
+        .expect("strict registry");
+
+        assert!(registry.workflows.contains_key("registered_tool"));
+    }
+
+    #[test]
+    fn strict_load_rejects_unknown_action_with_span_context() {
+        let dir = tempdir().expect("dir");
+        let workflow_path = dir.path().join("workflows/unknown.yaml");
+        write_file(
+            &workflow_path,
+            r#"
+workflow:
+  id: unknown_action
+  name: Unknown Action
+  steps:
+    - id: mystery
+      action: totally.unknown
+"#,
+        );
+
+        let error = load_registry_with_options(
+            &[workspace_source(dir.path())],
+            &WorkflowRegistryLoadOptions::strict(WorkflowActionRegistry::new()),
+        )
+        .expect_err("unknown action should fail in strict mode");
+        let message = error.to_string();
+        assert!(
+            message.contains("capability `totally.unknown`"),
+            "{message}"
+        );
+        let normalized_message = message.replace('\\', "/");
+        assert!(
+            normalized_message.contains("workflows/unknown.yaml"),
+            "{message}"
+        );
+        assert!(message.contains("workflow=unknown_action"), "{message}");
+        assert!(message.contains("step_id=mystery"), "{message}");
+        assert!(message.contains("field=action"), "{message}");
+    }
+
+    #[test]
+    fn strict_load_rejects_wrong_builtin_action_param_type() {
+        let dir = tempdir().expect("dir");
+        write_file(
+            &dir.path().join("workflows/bad-approval.yaml"),
+            r#"
+workflow:
+  id: bad_approval
+  name: Bad Approval
+  steps:
+    - id: review_gate
+      action: approval:gate
+      with:
+        title: 42
+"#,
+        );
+
+        let error = load_registry_with_options(
+            &[workspace_source(dir.path())],
+            &WorkflowRegistryLoadOptions::strict(WorkflowActionRegistry::default()),
+        )
+        .expect_err("wrong param type should fail in strict mode");
+        let message = error.to_string();
+        assert!(message.contains("with.title"), "{message}");
+        assert!(message.contains("must be string"), "{message}");
+        assert!(message.contains("step_id=review_gate"), "{message}");
+    }
+
+    #[test]
+    fn strict_load_validates_mcp_tool_against_catalog_schema() {
+        let dir = tempdir().expect("dir");
+        write_file(
+            &dir.path().join("workflows/mcp.yaml"),
+            r#"
+workflow:
+  id: mcp_issue
+  name: MCP Issue
+  steps:
+    - id: create_issue
+      action: tool:mcp.github.create_issue
+      with:
+        title: File bug
+"#,
+        );
+
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["title"],
+            "properties": {
+                "title": { "type": "string" }
+            },
+            "additionalProperties": false
+        });
+        load_registry_with_options(
+            &[workspace_source(dir.path())],
+            &WorkflowRegistryLoadOptions::strict(
+                WorkflowActionRegistry::new().with_tool_schema("mcp.github.create_issue", schema),
+            ),
+        )
+        .expect("catalog-backed MCP action should load");
+
+        write_file(
+            &dir.path().join("workflows/mcp.yaml"),
+            r#"
+workflow:
+  id: mcp_issue
+  name: MCP Issue
+  steps:
+    - id: create_issue
+      action: tool:mcp.github.create_issue
+      with:
+        title: 7
+"#,
+        );
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["title"],
+            "properties": {
+                "title": { "type": "string" }
+            },
+            "additionalProperties": false
+        });
+        let error = load_registry_with_options(
+            &[workspace_source(dir.path())],
+            &WorkflowRegistryLoadOptions::strict(
+                WorkflowActionRegistry::new().with_tool_schema("mcp.github.create_issue", schema),
+            ),
+        )
+        .expect_err("MCP tool schema should reject bad payload");
+        let message = error.to_string();
+        assert!(
+            message.contains("tool:mcp.github.create_issue"),
+            "{message}"
+        );
+        assert!(message.contains("with.title"), "{message}");
     }
 
     #[test]

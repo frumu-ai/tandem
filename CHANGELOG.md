@@ -55,6 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   execution-profile policy helpers, MCP run-as policy records, routine misfire
   policy, scheduler queue metadata, and shared-context metadata parsing, with
   server compatibility re-exports and ported unit coverage.
+- Added a strict workflow action validation path with a host-extensible action
+  registry, built-in action parameter schemas, structured source/step/field
+  diagnostics, and MCP/tool catalog-backed schema checks for workflow steps.
 
 ### Changed
 
