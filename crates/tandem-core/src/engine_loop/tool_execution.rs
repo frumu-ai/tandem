@@ -1,9 +1,29 @@
 use super::*;
+use tandem_tools::{
+    ToolDispatchContext, ToolDispatchLedger, ToolDispatchLedgerEvent, ToolDispatchPolicyOutcome,
+    ToolDispatchSource, ToolDispatchStatus,
+};
+
+#[derive(Clone)]
+struct EngineToolDispatchLedger {
+    event_bus: EventBus,
+}
+
+#[async_trait::async_trait]
+impl ToolDispatchLedger for EngineToolDispatchLedger {
+    async fn record(&self, event: ToolDispatchLedgerEvent) {
+        self.event_bus.publish(EngineEvent::new(
+            "tool.dispatch.recorded",
+            serde_json::to_value(event).unwrap_or(Value::Null),
+        ));
+    }
+}
 
 impl EngineLoop {
     pub(super) async fn execute_tool_with_timeout(
         &self,
         session_id: &str,
+        message_id: &str,
         tool: &str,
         args: Value,
         cancel: CancellationToken,
@@ -16,12 +36,30 @@ impl EngineLoop {
             .await
             .map(|session| session.tenant_context)
             .unwrap_or_else(TenantContext::local_implicit);
+        let scope_allowlist = self
+            .session_allowed_tools
+            .read()
+            .await
+            .get(session_id)
+            .cloned()
+            .unwrap_or_default();
+        let dispatch_context = ToolDispatchContext::for_tenant("engine_loop", tenant_context)
+            .with_source(
+                ToolDispatchSource::new("engine_loop")
+                    .session(session_id)
+                    .message(message_id),
+            )
+            .with_scope_allowlist(scope_allowlist)
+            .with_ledger(std::sync::Arc::new(EngineToolDispatchLedger {
+                event_bus: self.event_bus.clone(),
+            }));
+        let timeout_dispatch_context = dispatch_context.clone();
         match tokio::time::timeout(
             Duration::from_millis(timeout_ms),
-            self.tools.execute_with_cancel_and_progress_for_tenant(
+            self.tool_dispatcher.dispatch_with_cancel_and_progress(
                 tool,
                 args,
-                tenant_context,
+                dispatch_context,
                 cancel,
                 progress,
             ),
@@ -29,7 +67,23 @@ impl EngineLoop {
         .await
         {
             Ok(result) => result,
-            Err(_) => anyhow::bail!("TOOL_EXEC_TIMEOUT_MS_EXCEEDED({timeout_ms})"),
+            Err(_) => {
+                timeout_dispatch_context
+                    .ledger
+                    .record(ToolDispatchLedgerEvent {
+                        tool: tool.to_string(),
+                        canonical_tool: None,
+                        tenant_context: timeout_dispatch_context.tenant_context.clone(),
+                        source: timeout_dispatch_context.source.clone(),
+                        scope_allowlist: timeout_dispatch_context.scope_allowlist.clone(),
+                        policy_outcome: ToolDispatchPolicyOutcome::Allowed,
+                        policy_decision_id: None,
+                        status: ToolDispatchStatus::Failed,
+                        error: Some(format!("TOOL_EXEC_TIMEOUT_MS_EXCEEDED({timeout_ms})")),
+                    })
+                    .await;
+                anyhow::bail!("TOOL_EXEC_TIMEOUT_MS_EXCEEDED({timeout_ms})");
+            }
         }
     }
 
@@ -525,10 +579,8 @@ mod session_write_policy_tests {
         session.workspace_root = Some("/workspaces/other".to_string());
         session.pinned_workspace_id = Some("/workspaces/acme".to_string());
 
-        assert_eq!(
-            session_effective_workspace_root(&session).as_deref(),
-            Some("/workspaces/acme")
-        );
+        let expected = crate::normalize_workspace_path("/workspaces/acme");
+        assert_eq!(session_effective_workspace_root(&session), expected);
     }
 
     #[test]

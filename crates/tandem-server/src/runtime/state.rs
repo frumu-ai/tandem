@@ -9,7 +9,7 @@ use tandem_core::{
 };
 use tandem_providers::ProviderRegistry;
 use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
-use tandem_tools::ToolRegistry;
+use tandem_tools::{GovernedToolDispatcher, ToolRegistry};
 use tandem_types::HostRuntimeContext;
 
 #[cfg(feature = "browser")]
@@ -24,6 +24,7 @@ pub struct RuntimeState {
     pub plugins: PluginRegistry,
     pub agents: AgentRegistry,
     pub tools: ToolRegistry,
+    pub tool_dispatcher: GovernedToolDispatcher,
     pub permissions: PermissionManager,
     pub mcp: McpRegistry,
     pub pty: PtyManager,

@@ -58,6 +58,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a strict workflow action validation path with a host-extensible action
   registry, built-in action parameter schemas, structured source/step/field
   diagnostics, and MCP/tool catalog-backed schema checks for workflow steps.
+- Added a governed tool dispatcher that is now the compile-enforced execution
+  path outside `tandem-tools`, carrying tenant context, scope allowlists,
+  policy decisions, and one dispatch ledger event for engine, workflow, HTTP,
+  automation preflight, planner, and CLI tool calls.
 
 ### Changed
 

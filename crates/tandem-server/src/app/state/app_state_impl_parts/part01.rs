@@ -438,6 +438,20 @@ impl AppState {
         startup.phase = phase.into();
     }
 
+    pub fn tool_dispatch_context(
+        &self,
+        source: ToolDispatchSource,
+        tenant_context: TenantContext,
+        scope_allowlist: Vec<String>,
+    ) -> ToolDispatchContext {
+        ToolDispatchContext::for_tenant(source.kind.clone(), tenant_context)
+            .with_source(source)
+            .with_scope_allowlist(scope_allowlist)
+            .with_ledger(Arc::new(AppStateToolDispatchLedger {
+                event_bus: self.event_bus.clone(),
+            }))
+    }
+
     pub async fn mark_ready(&self, runtime: RuntimeState) -> anyhow::Result<()> {
         self.runtime
             .set(runtime)

@@ -440,7 +440,8 @@ pub(super) async fn execute_tool(
     Json(input): Json<ToolExecutionInput>,
 ) -> Result<Json<Value>, StatusCode> {
     let mut args = input.args.unwrap_or_else(|| json!({}));
-    if let Some(Extension(verified_tenant_context)) = verified_tenant_context {
+    let verified_tenant_context = verified_tenant_context.map(|Extension(context)| context);
+    if let Some(verified_tenant_context) = verified_tenant_context.as_ref() {
         if let Some(obj) = args.as_object_mut() {
             obj.insert(
                 "__verified_tenant_context".to_string(),
@@ -448,9 +449,17 @@ pub(super) async fn execute_tool(
             );
         }
     }
+    let mut dispatch_context = state.tool_dispatch_context(
+        tandem_tools::ToolDispatchSource::new("http_global_tool"),
+        tenant_context,
+        Vec::new(),
+    );
+    if let Some(verified_tenant_context) = verified_tenant_context {
+        dispatch_context = dispatch_context.with_verified_tenant_context(verified_tenant_context);
+    }
     let result = state
-        .tools
-        .execute_for_tenant(&input.tool, args, tenant_context)
+        .tool_dispatcher
+        .dispatch(&input.tool, args, dispatch_context)
         .await
         .map_err(|e| {
             tracing::error!("Tool execution failed: {}", e);

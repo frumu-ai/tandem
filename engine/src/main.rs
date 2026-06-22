@@ -37,7 +37,7 @@ use tandem_server::serve_with_route_extensions;
 use tandem_server::{detect_host_runtime_context, AppState, RuntimeState};
 #[cfg(feature = "browser")]
 use tandem_server::{install_browser_sidecar, BrowserSidecarInstallResult, BrowserSubsystem};
-use tandem_tools::ToolRegistry;
+use tandem_tools::{GovernedToolDispatcher, ToolRegistry};
 use tokio::sync::RwLock;
 use tracing::info;
 use uuid::Uuid;
@@ -865,7 +865,14 @@ async fn main() -> anyhow::Result<()> {
             if tool.is_empty() {
                 anyhow::bail!("tool is required in input json");
             }
-            let result = state.tools.execute(&tool, args).await?;
+            let result = state
+                .tool_dispatcher
+                .dispatch(
+                    &tool,
+                    args,
+                    tandem_tools::ToolDispatchContext::local("engine_cli"),
+                )
+                .await?;
             let output = serde_json::json!({
                 "output": result.output,
                 "metadata": result.metadata
@@ -1505,6 +1512,7 @@ async fn build_runtime(
         providers,
         plugins,
         agents,
+        tool_dispatcher: GovernedToolDispatcher::new(tools.clone()),
         tools,
         permissions,
         mcp,

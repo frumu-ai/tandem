@@ -378,12 +378,19 @@ impl ToolRegistry {
         sorted
     }
 
-    pub async fn execute(&self, name: &str, args: Value) -> anyhow::Result<ToolResult> {
+    pub(crate) async fn resolve_schema(&self, name: &str) -> Option<ToolSchema> {
+        let tools = self.tools.read().await;
+        resolve_registered_tool(&tools, name).map(|tool| tool.schema())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn execute(&self, name: &str, args: Value) -> anyhow::Result<ToolResult> {
         self.execute_for_tenant(name, args, TenantContext::local_implicit())
             .await
     }
 
-    pub async fn execute_for_tenant(
+    #[allow(dead_code)]
+    pub(crate) async fn execute_for_tenant(
         &self,
         name: &str,
         args: Value,
@@ -403,7 +410,8 @@ impl ToolRegistry {
         tool.execute_for_tenant(args, tenant_context).await
     }
 
-    pub async fn execute_with_cancel(
+    #[allow(dead_code)]
+    pub(crate) async fn execute_with_cancel(
         &self,
         name: &str,
         args: Value,
@@ -413,7 +421,7 @@ impl ToolRegistry {
             .await
     }
 
-    pub async fn execute_with_cancel_and_progress(
+    pub(crate) async fn execute_with_cancel_and_progress(
         &self,
         name: &str,
         args: Value,
@@ -430,7 +438,7 @@ impl ToolRegistry {
         .await
     }
 
-    pub async fn execute_with_cancel_and_progress_for_tenant(
+    pub(crate) async fn execute_with_cancel_and_progress_for_tenant(
         &self,
         name: &str,
         args: Value,

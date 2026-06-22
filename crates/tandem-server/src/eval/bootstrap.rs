@@ -21,7 +21,7 @@ use tandem_memory::{
 use tandem_orchestrator::{KnowledgeScope, KnowledgeTrustLevel};
 use tandem_providers::{Provider, ProviderRegistry};
 use tandem_runtime::{LspManager, McpRegistry, PtyManager, WorkspaceIndex};
-use tandem_tools::{Tool, ToolRegistry};
+use tandem_tools::{GovernedToolDispatcher, Tool, ToolRegistry};
 use tandem_types::{
     approval_authorizes_execution, DataClass, GateOutcome, GateRequest, ResourceKind, ResourceRef,
     TenantContext, ToolResult, ToolRiskTier, ToolSchema,
@@ -142,6 +142,7 @@ pub async fn bootstrap_eval_app_state(options: EvalBootstrapOptions) -> anyhow::
             providers,
             plugins,
             agents,
+            tool_dispatcher: GovernedToolDispatcher::new(tools.clone()),
             tools,
             permissions,
             mcp,

@@ -344,11 +344,26 @@ pub(crate) async fn try_execute_connector_preflight_node(
     let mut call_rows = Vec::new();
     let mut failed_required = Vec::new();
     let tenant_context = automation.tenant_context();
+    let dispatch_scope = if requested_tools.is_empty() {
+        required_calls
+            .iter()
+            .map(|call| call.tool.clone())
+            .collect::<Vec<_>>()
+    } else {
+        requested_tools.to_vec()
+    };
     for (index, call) in required_calls.iter().enumerate() {
         let args = call.args.clone().unwrap_or_else(|| json!({}));
+        let dispatch_context = state.tool_dispatch_context(
+            tandem_tools::ToolDispatchSource::new("automation_preflight")
+                .run(run_id)
+                .node(node.node_id.clone()),
+            tenant_context.clone(),
+            dispatch_scope.clone(),
+        );
         let result = state
-            .tools
-            .execute_for_tenant(&call.tool, args.clone(), tenant_context.clone())
+            .tool_dispatcher
+            .dispatch(&call.tool, args.clone(), dispatch_context)
             .await;
         match result {
             Ok(result) => {

@@ -160,7 +160,16 @@ async fn workflow_planner_request_capability_approval(
         "context": context,
         "expires_at_ms": crate::now_ms() + 7 * 24 * 60 * 60 * 1000,
     });
-    match state.tools.execute("mcp_request_capability", args).await {
+    let dispatch_context = state.tool_dispatch_context(
+        tandem_tools::ToolDispatchSource::new("workflow_planner"),
+        TenantContext::local_implicit(),
+        Vec::new(),
+    );
+    match state
+        .tool_dispatcher
+        .dispatch("mcp_request_capability", args, dispatch_context)
+        .await
+    {
         Ok(_) => "requested".to_string(),
         Err(_) => "blocked".to_string(),
     }

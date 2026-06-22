@@ -24,6 +24,15 @@ MCP connections.
   source/step/field diagnostics, and MCP/tool actions can be checked against the
   host tool catalog schema before a workflow is saved or run.
 
+### Runtime Governance
+
+- Tool execution now flows through a governed dispatcher outside the
+  `tandem-tools` crate. Engine turns, workflow actions, Automation V2 connector
+  preflight calls, direct HTTP tool execution, planner helpers, pack builder,
+  and the engine CLI carry tenant context and scope allowlists through one
+  dispatch path, which records a single policy/scope ledger event for each
+  dispatch before returning the tool result or denial.
+
 ### Enterprise MCP Identity
 
 - Added the enterprise MCP identity and delegation design for principal-scoped

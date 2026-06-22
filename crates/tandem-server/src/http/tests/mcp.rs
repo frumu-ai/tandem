@@ -419,8 +419,8 @@ async fn mcp_catalog_stays_available_but_capability_requests_fail_closed_without
         .is_some_and(|rows| !rows.is_empty()));
 
     let catalog_output = state
-        .tools
-        .execute("mcp_list_catalog", json!({}))
+        .tool_dispatcher
+        .dispatch_local("mcp_list_catalog", json!({}))
         .await
         .expect("execute mcp_list_catalog");
     let tool_payload: Value =
@@ -640,8 +640,8 @@ async fn mcp_list_returns_connected_inventory() {
     assert!(tool_names.iter().any(|name| name == "mcp_list"));
 
     let output = state
-        .tools
-        .execute("mcp_list", json!({}))
+        .tool_dispatcher
+        .dispatch_local("mcp_list", json!({}))
         .await
         .expect("execute mcp_list");
     let payload: Value = serde_json::from_str(&output.output).expect("inventory json");
@@ -697,8 +697,8 @@ async fn mcp_list_filters_to_session_scoped_servers() {
         .await;
 
     let unscoped = state
-        .tools
-        .execute("mcp_list", json!({}))
+        .tool_dispatcher
+        .dispatch_local("mcp_list", json!({}))
         .await
         .expect("execute unscoped mcp_list");
     let unscoped_payload: Value =
@@ -712,8 +712,8 @@ async fn mcp_list_filters_to_session_scoped_servers() {
         .any(|row| row.get("name").and_then(Value::as_str) == Some("scoped-only")));
 
     let scoped = state
-        .tools
-        .execute(
+        .tool_dispatcher
+        .dispatch_local(
             "mcp_list",
             json!({
                 "__session_id": "automation-session-1"
@@ -769,8 +769,8 @@ async fn mcp_list_redacts_execute_tools_without_strict_grant() {
     );
 
     let output = state
-        .tools
-        .execute(
+        .tool_dispatcher
+        .dispatch_local(
             "mcp_list",
             json!({
                 "__strict_tenant_context": strict_context
@@ -845,8 +845,8 @@ async fn mcp_inventory_preserves_oauth_auth_challenges() {
         .contains_key("notion_search"));
 
     let output = state
-        .tools
-        .execute("mcp_list", json!({}))
+        .tool_dispatcher
+        .dispatch_local("mcp_list", json!({}))
         .await
         .expect("execute mcp_list");
     let payload: Value = serde_json::from_str(&output.output).expect("inventory json");
@@ -1813,8 +1813,8 @@ async fn mcp_catalog_overlay_surfaces_connected_and_uncataloged_states() {
     );
 
     let catalog_output = state
-        .tools
-        .execute("mcp_list_catalog", json!({}))
+        .tool_dispatcher
+        .dispatch_local("mcp_list_catalog", json!({}))
         .await
         .expect("execute mcp_list_catalog");
     let tool_payload: Value =
@@ -1919,8 +1919,8 @@ async fn mcp_request_capability_tool_creates_approval_request() {
     let state = test_state().await;
 
     let output = state
-        .tools
-        .execute(
+        .tool_dispatcher
+        .dispatch_local(
             "mcp_request_capability",
             json!({
                 "__session_id": "self-operator-session",
