@@ -114,6 +114,9 @@ MCP connections.
   removed the related regression from the nextest CI quarantine list.
 - Fixed Automation V2 task retry/requeue so manual node requeues preserve the
   prior attempt count and the next executor pass advances to the next attempt.
+- `tandem-engine storage cleanup` now reads and writes schema-versioned
+  Automation V2 run indexes/shards, so cleanup cannot collapse a v1 hot run
+  index to an empty legacy map.
 - Documented that hosted/enterprise MCP OAuth should follow the existing
   connector control-plane ownership precedent: long-lived secret material stays
   outside the runtime, while the runtime stores credential references and

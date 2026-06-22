@@ -95,6 +95,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed Automation V2 task retry/requeue so resetting a node subtree preserves
   existing attempt counters and the next executor pass records the next attempt;
   moved the regression to route-level coverage and removed the stale quarantine.
+- Fixed `tandem-engine storage cleanup` to preserve schema-versioned Automation
+  V2 run indexes and shards instead of treating the new envelope format as an
+  empty legacy map.
 
 ## [0.6.1] - 2026-06-20
 

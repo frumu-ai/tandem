@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use chrono::{Datelike, TimeZone, Utc};
 use flate2::{write::GzEncoder, Compression};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tandem_memory::db::MemoryDatabase;
 use tandem_server::{AutomationRunStatus, AutomationV2RunRecord, AutomationV2Spec};
@@ -19,6 +19,19 @@ use tandem_server::{AutomationRunStatus, AutomationV2RunRecord, AutomationV2Spec
 use crate::resolve_memory_db_path;
 
 pub(crate) const DEFAULT_KNOWLEDGE_SOURCE_PREFIX: &str = "guide_docs:";
+const AUTOMATION_V2_RUNS_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct StorageAutomationRunsFile {
+    schema_version: u32,
+    runs: std::collections::HashMap<String, AutomationV2RunRecord>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct StorageAutomationRunShardFile {
+    schema_version: u32,
+    run: AutomationV2RunRecord,
+}
 
 #[derive(Debug, Serialize)]
 pub(crate) struct StorageDoctorReport {
@@ -223,7 +236,7 @@ pub(crate) async fn storage_cleanup(
         if let Some(parent) = active_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        write_string_atomic_sync(&active_path, &serde_json::to_string_pretty(&hot)?)?;
+        write_string_atomic_sync(&active_path, &serialize_storage_automation_runs(&hot)?)?;
     }
 
     let mut quarantine_candidates = Vec::new();
@@ -739,8 +752,8 @@ pub(crate) fn merge_automation_runs(
     if raw.trim().is_empty() {
         return Ok(());
     }
-    let parsed: std::collections::HashMap<String, AutomationV2RunRecord> =
-        serde_json::from_str(&raw).unwrap_or_default();
+    let parsed = parse_storage_automation_runs(&raw)
+        .with_context(|| format!("parse automation runs {}", path.display()))?;
     for (run_id, run) in parsed {
         match merged.get(&run_id) {
             Some(existing) if existing.updated_at_ms > run.updated_at_ms => {}
@@ -750,6 +763,40 @@ pub(crate) fn merge_automation_runs(
         }
     }
     Ok(())
+}
+
+fn parse_storage_automation_runs(
+    raw: &str,
+) -> anyhow::Result<std::collections::HashMap<String, AutomationV2RunRecord>> {
+    if raw.trim() == "{}" {
+        return Ok(std::collections::HashMap::new());
+    }
+    let value: Value = serde_json::from_str(raw)?;
+    let Some(version_value) = value.get("schema_version") else {
+        return Ok(serde_json::from_value(value)?);
+    };
+    let schema_version = version_value
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .context("automation_v2_runs.json schema_version must be an unsigned integer")?;
+    if schema_version > AUTOMATION_V2_RUNS_SCHEMA_VERSION {
+        anyhow::bail!(
+            "automation_v2_runs.json schema_version {} is newer than supported version {}",
+            schema_version,
+            AUTOMATION_V2_RUNS_SCHEMA_VERSION
+        );
+    }
+    let file = serde_json::from_value::<StorageAutomationRunsFile>(value)?;
+    Ok(file.runs)
+}
+
+fn serialize_storage_automation_runs(
+    runs: &std::collections::HashMap<String, AutomationV2RunRecord>,
+) -> anyhow::Result<String> {
+    Ok(serde_json::to_string_pretty(&StorageAutomationRunsFile {
+        schema_version: AUTOMATION_V2_RUNS_SCHEMA_VERSION,
+        runs: runs.clone(),
+    })?)
 }
 
 pub(crate) fn compact_storage_hot_run(
@@ -789,8 +836,17 @@ pub(crate) fn write_storage_run_shard(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    write_string_atomic_sync(&path, &serde_json::to_string_pretty(run)?)?;
+    write_string_atomic_sync(&path, &serialize_storage_automation_run_shard(run)?)?;
     Ok(())
+}
+
+fn serialize_storage_automation_run_shard(run: &AutomationV2RunRecord) -> anyhow::Result<String> {
+    Ok(serde_json::to_string_pretty(
+        &StorageAutomationRunShardFile {
+            schema_version: AUTOMATION_V2_RUNS_SCHEMA_VERSION,
+            run: run.clone(),
+        },
+    )?)
 }
 
 pub(crate) fn storage_run_shard_path(active_path: &Path, run: &AutomationV2RunRecord) -> PathBuf {
