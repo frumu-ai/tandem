@@ -77,6 +77,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added durable PermissionManager state for interactive ask requests,
   provenance-bearing standing rules, restart-failed pending prompts, and
   decision history suitable for unified approval rendering.
+- Added dogfooding regression fixtures, a Bug Monitor incident-to-fixture
+  scaffold CLI, and a nightly eval-runner workflow so manually discovered
+  workflow/runtime bugs become permanent replay coverage.
 
 ### Changed
 

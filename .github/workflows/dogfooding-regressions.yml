@@ -1,0 +1,44 @@
+name: Dogfooding Regression Fixtures
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * *"
+
+jobs:
+  dogfooding-regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            crates/tandem-server
+
+      - name: Build eval-runner
+        run: cargo build --release --bin eval-runner -p tandem-server
+
+      - name: Run dogfooding regression fixtures
+        run: |
+          ./target/release/eval-runner \
+            --dataset eval_datasets/dogfooding_regressions.yaml \
+            --output /tmp/dogfooding_regressions.json \
+            --simulation \
+            --filter-tag dogfooding_regression \
+            --verbose
+
+      - name: Upload dogfooding regression results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dogfooding-regression-results
+          path: /tmp/dogfooding_regressions.json
+          retention-days: 30

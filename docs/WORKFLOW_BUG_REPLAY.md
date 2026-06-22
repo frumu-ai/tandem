@@ -69,6 +69,48 @@ Expected replay assertions:
 - required unmet requirements that must remain visible:
 ```
 
+## Dogfooding Regression Fixtures
+
+Long-lived dogfooding regressions live in
+`eval_datasets/dogfooding_regressions.yaml`. Each case is an eval-runner test
+case tagged `dogfooding_regression` and should include:
+
+- `automation_spec.config.source_issue` or `source: bug_monitor`
+- `automation_spec.config.historical_failure_signature`
+- `automation_spec.config.expected_guardrail`
+- validators that name the protected bug class, not just the surface symptom
+- quality indicators for the evidence the replay must preserve
+
+Run the seeded suite locally with:
+
+```bash
+cargo run -p tandem-server --bin eval-runner -- \
+  --dataset eval_datasets/dogfooding_regressions.yaml \
+  --simulation \
+  --filter-tag dogfooding_regression \
+  --verbose
+```
+
+The scheduled `Dogfooding Regression Fixtures` GitHub Actions workflow runs the
+same dataset nightly and can be triggered manually.
+
+## Bug Monitor Scaffold Command
+
+When Bug Monitor produces an incident JSON export, scaffold a replay dataset
+with:
+
+```bash
+cargo run -p tandem-server --bin bug-monitor-fixture -- \
+  --incident /tmp/incident.json \
+  --output eval_datasets/regressions/dogfood_006.yaml \
+  --id dogfood_006_short_name \
+  --tag dogfooding_regression
+```
+
+The scaffold command writes an eval-runner-compatible YAML dataset and redacts
+prompt-like fields, arguments, message bodies, credentials, and authorization
+values before they land in the fixture.
+
 ## What The Replay Must Prove
 
 At minimum, assert the bug class we care about:
@@ -118,7 +160,9 @@ When a workflow bug is reported:
 3. Land the runtime fix.
 4. Run the exact replay test locally.
 5. If the bug class is release-relevant, add the replay to the deep gate or targeted release subset.
-6. Do not mark the fix complete until the replay exists in the repo.
+6. Add or update the dogfooding regression fixture, or explicitly explain why
+   the bug cannot be replayed deterministically yet.
+7. Do not mark the fix complete until the replay exists in the repo.
 
 ## Release Rule
 

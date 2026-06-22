@@ -1,0 +1,194 @@
+# Dogfooding Regression Dataset
+# Captures real bug classes found while dogfooding Tandem so they stay replayable.
+#
+# Run locally:
+#   cargo run -p tandem-server --bin eval-runner -- \
+#     --dataset eval_datasets/dogfooding_regressions.yaml \
+#     --simulation --filter-tag dogfooding_regression --verbose
+
+name: "dogfooding_regressions"
+version: "1.0"
+description: "Permanent regression fixtures converted from recent Tandem dogfooding bugs"
+tags:
+  - "dogfooding"
+  - "regression"
+  - "daily"
+created_at: "2026-06-22T00:00:00Z"
+
+test_cases:
+  - id: "dogfood_001_eval_runner_fail_closed"
+    description: "Eval gate must fail closed when eval-runner cannot build instead of emitting stub JSON"
+    priority: 1
+    enabled: true
+    tags:
+      - "dogfooding_regression"
+      - "ci"
+      - "eval_runner"
+    automation_spec:
+      name: "dogfood_eval_runner_fail_closed"
+      nodes:
+        - id: "build_eval_runner"
+          node_type: "ci_gate"
+          objective: "Build eval-runner before any evaluation results are accepted"
+          output_contract: "JSON with build_status, no_stub_fallback, and explicit_failure_on_build_error"
+      validators:
+        - "dogfooding_fixture_schema"
+        - "fail_closed_eval_gate"
+      config:
+        source_issue: "TAN-219"
+        historical_failure_signature: "eval-regression gate returned plausible stub pass rates when eval-runner did not build"
+        expected_guardrail: "missing or broken eval-runner fails CI before result comments are generated"
+    expected_output:
+      artifact_status: "completed"
+      required_validators:
+        - "dogfooding_fixture_schema"
+        - "fail_closed_eval_gate"
+      optional_validators:
+        - "regression_assertions"
+      max_repair_iterations: 1
+      output_format: "json"
+      quality_indicators:
+        - "build_required"
+        - "stub_fallback_absent"
+
+  - id: "dogfood_002_bug_monitor_triage_self_recursion"
+    description: "Bug Monitor triage failures must not recursively spawn triage-of-triage workflows"
+    priority: 1
+    enabled: true
+    tags:
+      - "dogfooding_regression"
+      - "bug_monitor"
+      - "workflow_policy"
+    automation_spec:
+      name: "dogfood_bug_monitor_triage_self_recursion"
+      nodes:
+        - id: "triage_recursion_guard"
+          node_type: "workflow_policy"
+          objective: "Classify failures from automation-v2-bug-monitor-triage-* as terminal triage recovery, not as new incidents"
+          output_contract: "JSON with skipped_recursive_triage, incident_status, and fallback_publish_path"
+      validators:
+        - "dogfooding_fixture_schema"
+        - "recursive_triage_guard"
+      config:
+        source: "bug_monitor"
+        historical_failure_signature: "bug monitor triage failure could trigger another bug monitor triage run"
+        expected_guardrail: "triage automation prefix and bug_monitor_triage_agent role are recognized as self-originating"
+    expected_output:
+      artifact_status: "blocked"
+      required_validators:
+        - "dogfooding_fixture_schema"
+        - "recursive_triage_guard"
+      optional_validators:
+        - "fallback_publish_path"
+      unmet_requirements_acceptable: true
+      max_repair_iterations: 2
+      output_format: "json"
+      quality_indicators:
+        - "self_originating_failure_detected"
+        - "no_new_triage_spawned"
+
+  - id: "dogfood_003_stale_approval_gate_restart"
+    description: "Approval-gated Automation V2 runs must settle recorded decisions after restart without replaying stale gates"
+    priority: 1
+    enabled: true
+    tags:
+      - "dogfooding_regression"
+      - "approval_gate"
+      - "restart"
+    automation_spec:
+      name: "dogfood_stale_approval_gate_restart"
+      nodes:
+        - id: "approval_restart_recovery"
+          node_type: "workflow_policy"
+          objective: "Reload a run with gate history and stale pending-gate state, then apply the recorded approval or cancellation exactly once"
+          output_contract: "JSON with gate_history_wins, no_duplicate_decision, and no_attempt_replay"
+      validators:
+        - "dogfooding_fixture_schema"
+        - "approval_gate_restart"
+      config:
+        source_issue: "TAN-215"
+        historical_failure_signature: "stale pending approval state could survive restart even after a gate decision was recorded"
+        expected_guardrail: "gate_history is the source of truth for already-decided approvals"
+    expected_output:
+      artifact_status: "completed"
+      required_validators:
+        - "dogfooding_fixture_schema"
+        - "approval_gate_restart"
+      optional_validators:
+        - "duplicate_decision_protection"
+      max_repair_iterations: 1
+      output_format: "json"
+      quality_indicators:
+        - "gate_history_preserved"
+        - "stale_pending_gate_ignored"
+
+  - id: "dogfood_004_permission_prompt_restart"
+    description: "Pending PermissionManager asks left by restart must be marked runtime_restarted and re-asked"
+    priority: 1
+    enabled: true
+    tags:
+      - "dogfooding_regression"
+      - "permissions"
+      - "restart"
+    automation_spec:
+      name: "dogfood_permission_prompt_restart"
+      nodes:
+        - id: "permission_restart_reask"
+          node_type: "runtime_governance"
+          objective: "Persist pending ask requests, mark stale prompts runtime_restarted on load, and reject replies to non-pending ids"
+          output_contract: "JSON with stale_request_rejected, decision_audit_recorded, and reask_required"
+      validators:
+        - "dogfooding_fixture_schema"
+        - "permission_restart_reask"
+      config:
+        source_issue: "TAN-212"
+        historical_failure_signature: "interactive permission ask state disappeared on restart and stale request ids could be replayed"
+        expected_guardrail: "restarted prompts fail deterministically, write audit evidence, and force a fresh ask"
+    expected_output:
+      artifact_status: "blocked"
+      required_validators:
+        - "dogfooding_fixture_schema"
+        - "permission_restart_reask"
+      optional_validators:
+        - "protected_audit_evidence"
+      unmet_requirements_acceptable: true
+      max_repair_iterations: 2
+      output_format: "json"
+      quality_indicators:
+        - "runtime_restarted_decision"
+        - "stale_reply_rejected"
+
+  - id: "dogfood_005_schema_versioned_run_state_cleanup"
+    description: "Storage cleanup must preserve schema-versioned Automation V2 run indexes and shards"
+    priority: 1
+    enabled: true
+    tags:
+      - "dogfooding_regression"
+      - "storage"
+      - "automation_v2"
+    automation_spec:
+      name: "dogfood_schema_versioned_run_state_cleanup"
+      nodes:
+        - id: "cleanup_schema_envelope"
+          node_type: "storage_replay"
+          objective: "Run storage cleanup against v1 Automation V2 run index and shard envelopes without treating them as empty legacy maps"
+          output_contract: "JSON with index_preserved, shard_preserved, and cleanup_diagnostics"
+      validators:
+        - "dogfooding_fixture_schema"
+        - "schema_versioned_storage_cleanup"
+      config:
+        source_issue: "TAN-209"
+        historical_failure_signature: "storage cleanup interpreted schema-versioned run-state envelopes as empty legacy maps"
+        expected_guardrail: "cleanup preserves v1 index and shard envelopes while still removing eligible legacy state"
+    expected_output:
+      artifact_status: "completed"
+      required_validators:
+        - "dogfooding_fixture_schema"
+        - "schema_versioned_storage_cleanup"
+      optional_validators:
+        - "cleanup_diagnostics"
+      max_repair_iterations: 1
+      output_format: "json"
+      quality_indicators:
+        - "schema_version_checked"
+        - "run_state_preserved"
