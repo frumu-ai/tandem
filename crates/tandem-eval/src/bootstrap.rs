@@ -28,7 +28,7 @@ use tandem_types::{
 };
 
 use crate::{ScriptedEvalProvider, SCRIPTED_PROVIDER_ID};
-use tandem_server::runtime::state::RuntimeState;
+use tandem_server::eval_support::EvalRuntimeStateParts;
 use tandem_server::{
     app::state::AppState, AutomationAgentMcpPolicy, AutomationAgentProfile,
     AutomationAgentToolPolicy, AutomationExecutionPolicy, AutomationFlowNode,
@@ -75,16 +75,7 @@ pub async fn bootstrap_eval_app_state(options: EvalBootstrapOptions) -> anyhow::
     let storage = Arc::new(Storage::new(state_root.join("storage")).await?);
     let config = ConfigStore::new(state_root.join("config.json"), None).await?;
     let event_bus = EventBus::new();
-    let app_config = config.get().await;
-
-    #[cfg(feature = "browser")]
-    let browser = {
-        let browser = tandem_server::BrowserSubsystem::new(app_config.browser.clone());
-        let _ = browser.refresh_status().await;
-        browser
-    };
-
-    let providers = ProviderRegistry::new(app_config.into());
+    let providers = ProviderRegistry::new(config.get().await.into());
     if options.scripted_provider {
         providers
             .replace_for_test(
@@ -138,8 +129,9 @@ pub async fn bootstrap_eval_app_state(options: EvalBootstrapOptions) -> anyhow::
     state.memory_audit_path = data_dir.join("memory_audit.jsonl");
     state.protected_audit_path = data_dir.join("protected_audit.jsonl");
 
-    state
-        .mark_ready(RuntimeState {
+    tandem_server::eval_support::mark_eval_state_ready(
+        &mut state,
+        EvalRuntimeStateParts {
             storage,
             config,
             event_bus,
@@ -158,10 +150,9 @@ pub async fn bootstrap_eval_app_state(options: EvalBootstrapOptions) -> anyhow::
             cancellations,
             engine_loop,
             host_runtime_context,
-            #[cfg(feature = "browser")]
-            browser,
-        })
-        .await?;
+        },
+    )
+    .await?;
 
     seed_eval_tenant_resources(&state).await?;
     state
