@@ -95,6 +95,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added tenant-tagged observability exports with an authenticated,
   config-gated Prometheus endpoint, bounded runtime/scheduler/tool/provider
   metrics, and optional feature-gated scrubbed Sentry error export.
+- Added a seeded approval-gated email demo under `examples/email-approval-demo`
+  with a local HTTP MCP stub, `just demo` entry point, approval/rework evidence
+  artifacts, and a nightly non-interactive CI lane that exercises draft, gate,
+  ledger, and outbox behavior without real credentials.
 
 ### Changed
 
@@ -143,6 +147,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed durable PermissionManager replies so stale persisted request IDs cannot
   be replayed after restart, and serialized state-file writes to avoid losing
   concurrent permission asks or decisions.
+- Fixed the runtime event log persister startup order so it waits for runtime
+  readiness before dereferencing runtime-backed state, avoiding a background
+  task panic during fresh engine startup.
 
 ## [0.6.1] - 2026-06-20
 

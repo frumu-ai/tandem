@@ -1,0 +1,50 @@
+name: Email Approval Demo
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "examples/email-approval-demo/**"
+      - "Justfile"
+      - ".github/workflows/email-approval-demo.yml"
+      - "engine/**"
+      - "crates/**"
+      - "Cargo.toml"
+
+jobs:
+  email-approval-demo:
+    name: Approval-gated email demo
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: email-approval-demo
+
+      - name: Build tandem-engine
+        run: cargo build -p tandem-ai --bin tandem-engine
+
+      - name: Run non-interactive email approval demo
+        run: node examples/email-approval-demo/demo.mjs --non-interactive --skip-build
+
+      - name: Upload demo artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: email-approval-demo-artifacts
+          path: .tmp/email-approval-demo/artifacts
+          retention-days: 14

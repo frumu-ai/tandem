@@ -32,6 +32,35 @@ async fn wait_for_runtime_ready_or_exit(state: &AppState, component: &str) -> bo
     false
 }
 
+async fn wait_for_runtime_installed_or_exit(state: &AppState, component: &str) -> bool {
+    for _ in 0..120 {
+        if state.is_ready() {
+            return true;
+        }
+        let startup = state.startup_snapshot().await;
+        if matches!(startup.status, crate::app::startup::StartupStatus::Failed) {
+            tracing::warn!(
+                component,
+                startup_status = ?startup.status,
+                startup_phase = %startup.phase,
+                attempt_id = %startup.attempt_id,
+                "background task exiting before runtime access because startup failed before runtime installed"
+            );
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let startup = state.startup_snapshot().await;
+    tracing::warn!(
+        component,
+        startup_status = ?startup.status,
+        startup_phase = %startup.phase,
+        attempt_id = %startup.attempt_id,
+        "background task exiting before runtime access because runtime was not installed"
+    );
+    false
+}
+
 fn extract_event_session_id(properties: &Value) -> Option<String> {
     properties
         .get("sessionID")
@@ -803,14 +832,16 @@ pub async fn run_session_context_run_journaler(state: AppState) {
 }
 
 pub async fn run_runtime_event_log_persister(state: AppState) {
+    // Register the queue as soon as RuntimeState exists so ready-gated
+    // publishers cannot race ahead and drop early runtime events.
+    if !wait_for_runtime_installed_or_exit(&state, "runtime_event_log_persister").await {
+        return;
+    }
+
     let Some(mut rx) = state.event_bus.register_runtime_event_log_receiver() else {
         tracing::warn!("runtime event log persister: skipped because queue was already registered");
         return;
     };
-
-    if !wait_for_runtime_ready_or_exit(&state, "runtime_event_log_persister").await {
-        return;
-    }
 
     let retention_days = std::env::var("TANDEM_RUNTIME_EVENT_LOG_RETENTION_DAYS")
         .ok()
@@ -891,6 +922,11 @@ mod runtime_event_log_persister_tests {
             "runtime-events-prestart-{}.jsonl",
             uuid::Uuid::new_v4()
         ));
+        {
+            let mut startup = state.startup.write().await;
+            startup.status = crate::app::startup::StartupStatus::Starting;
+            startup.phase = "loading-fixtures".to_string();
+        }
         let tenant = TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "user-a");
 
         let persister = tokio::spawn(run_runtime_event_log_persister(state.clone()));
@@ -913,6 +949,11 @@ mod runtime_event_log_persister_tests {
                 "tenantContext": tenant.clone(),
             }),
         ));
+        {
+            let mut startup = state.startup.write().await;
+            startup.status = crate::app::startup::StartupStatus::Ready;
+            startup.phase = "ready".to_string();
+        }
 
         let rows = wait_for_persisted_event(&state.runtime_events_path, &tenant, "run-a").await;
 

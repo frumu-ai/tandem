@@ -1,0 +1,7 @@
+{
+  "to": "customer@example.com",
+  "subject": "Your Tandem workflow update",
+  "body": "Hello from Tandem. The workflow prepared this email and is waiting for human approval before sending.",
+  "rework_body": "Hello from Tandem. The workflow prepared this revised email after reviewer feedback and is waiting for approval before sending.",
+  "approval_reason": "Seeded demo approval"
+}
