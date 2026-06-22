@@ -206,7 +206,7 @@ async fn bug_monitor_issue_draft_renders_repo_template() {
         .get("triage_summary_artifact")
         .and_then(|row| row.get("path"))
         .and_then(Value::as_str)
-        .is_some_and(|path| path.ends_with("/artifacts/bug_monitor.triage_summary.json")));
+        .is_some_and(|path| path_has_suffix(path, "/artifacts/bug_monitor.triage_summary.json")));
     assert_eq!(
         issue_draft_payload
             .get("issue_draft_artifact")
@@ -218,7 +218,7 @@ async fn bug_monitor_issue_draft_renders_repo_template() {
         .get("issue_draft_artifact")
         .and_then(|row| row.get("path"))
         .and_then(Value::as_str)
-        .is_some_and(|path| path.ends_with("/artifacts/bug_monitor.issue_draft.json")));
+        .is_some_and(|path| path_has_suffix(path, "/artifacts/bug_monitor.issue_draft.json")));
     assert!(rendered_body.contains("## What happened?"));
     assert!(rendered_body.contains("## What did you expect to happen?"));
     assert!(rendered_body.contains("## Steps to reproduce"));
@@ -618,7 +618,6 @@ async fn bug_monitor_publish_and_recheck_succeed_with_triage_context() {
 
     server.abort();
 }
-
 #[tokio::test]
 #[serial_test::serial(bug_monitor_http)]
 async fn bug_monitor_publish_comments_on_matched_open_issue_and_lists_post() {

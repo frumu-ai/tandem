@@ -286,7 +286,7 @@ async fn bug_monitor_triage_run_writes_duplicate_match_artifact() {
         .get("duplicate_matches_artifact")
         .and_then(|row| row.get("path"))
         .and_then(Value::as_str)
-        .is_some_and(|path| path.ends_with("/artifacts/failure_duplicate_matches.json")));
+        .is_some_and(|path| path_has_suffix(path, "/artifacts/failure_duplicate_matches.json")));
     write_ready_bug_monitor_triage_summary(app.clone(), &draft_id).await;
 
     let issue_draft_req = Request::builder()
@@ -331,7 +331,7 @@ async fn bug_monitor_triage_run_writes_duplicate_match_artifact() {
         .get("duplicate_matches_artifact")
         .and_then(|row| row.get("path"))
         .and_then(Value::as_str)
-        .is_some_and(|path| path.ends_with("/artifacts/failure_duplicate_matches.json")));
+        .is_some_and(|path| path_has_suffix(path, "/artifacts/failure_duplicate_matches.json")));
 
     let publish_req = Request::builder()
         .method("POST")
@@ -375,7 +375,7 @@ async fn bug_monitor_triage_run_writes_duplicate_match_artifact() {
         .get("duplicate_matches_artifact")
         .and_then(|row| row.get("path"))
         .and_then(Value::as_str)
-        .is_some_and(|path| path.ends_with("/artifacts/failure_duplicate_matches.json")));
+        .is_some_and(|path| path_has_suffix(path, "/artifacts/failure_duplicate_matches.json")));
 
     let recheck_req = Request::builder()
         .method("POST")
@@ -424,7 +424,7 @@ async fn bug_monitor_triage_run_writes_duplicate_match_artifact() {
         .get("duplicate_matches_artifact")
         .and_then(|row| row.get("path"))
         .and_then(Value::as_str)
-        .is_some_and(|path| path.ends_with("/artifacts/failure_duplicate_matches.json")));
+        .is_some_and(|path| path_has_suffix(path, "/artifacts/failure_duplicate_matches.json")));
 
     let get_blackboard_req = Request::builder()
         .method("GET")

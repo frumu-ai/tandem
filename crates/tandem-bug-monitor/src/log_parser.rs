@@ -5,7 +5,7 @@ use regex::Regex;
 
 use serde_json::Value;
 
-use crate::{
+use crate::types::{
     BugMonitorLogCandidate, BugMonitorLogFormat, BugMonitorLogMinimumLevel, BugMonitorLogSource,
     BugMonitorMonitoredProject,
 };
@@ -48,7 +48,7 @@ pub fn parse_log_candidates(
         let complete_with_newline = format!("{complete}\n");
         let partial_offset = offset_start
             .saturating_add(bytes.len() as u64)
-            .saturating_sub(partial.as_bytes().len() as u64);
+            .saturating_sub(partial.len() as u64);
         next_partial_line = Some(partial.to_string());
         next_partial_line_offset_start = Some(partial_offset);
         complete_with_newline
@@ -66,7 +66,7 @@ pub fn parse_log_candidates(
         .map(|line| {
             let clean = line.trim_end_matches(['\r', '\n']).to_string();
             let start = cursor;
-            cursor = cursor.saturating_add(line.as_bytes().len() as u64);
+            cursor = cursor.saturating_add(line.len() as u64);
             ParsedLine {
                 text: clean,
                 offset_start: start,
@@ -293,9 +293,10 @@ fn first_json_string(value: &Value, keys: &[&str]) -> Option<String> {
 
 fn detect_level(text: &str) -> Option<String> {
     let lower = text.to_ascii_lowercase();
-    if lower.contains("fatal") || lower.contains("panic") || lower.contains("critical") {
-        Some("error".to_string())
-    } else if lower.contains("error")
+    if lower.contains("fatal")
+        || lower.contains("panic")
+        || lower.contains("critical")
+        || lower.contains("error")
         || lower.contains("exception")
         || lower.contains("traceback")
         || lower.contains("typeerror")

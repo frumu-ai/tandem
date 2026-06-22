@@ -763,7 +763,7 @@ async fn bug_monitor_issue_draft_prefers_structured_triage_summary() {
         .get("triage_summary_artifact")
         .and_then(|row| row.get("path"))
         .and_then(Value::as_str)
-        .is_some_and(|path| path.ends_with("/artifacts/bug_monitor.triage_summary.json")));
+        .is_some_and(|path| path_has_suffix(path, "/artifacts/bug_monitor.triage_summary.json")));
     assert_eq!(
         summary_payload
             .get("issue_draft_artifact")
@@ -775,7 +775,7 @@ async fn bug_monitor_issue_draft_prefers_structured_triage_summary() {
         .get("issue_draft_artifact")
         .and_then(|row| row.get("path"))
         .and_then(Value::as_str)
-        .is_some_and(|path| path.ends_with("/artifacts/bug_monitor.issue_draft.json")));
+        .is_some_and(|path| path_has_suffix(path, "/artifacts/bug_monitor.issue_draft.json")));
     let rendered_body = issue_draft
         .get("rendered_body")
         .and_then(Value::as_str)
@@ -878,9 +878,10 @@ async fn bug_monitor_issue_draft_prefers_structured_triage_summary() {
         .into_iter()
         .find(|artifact| artifact.artifact_type == "bug_monitor_regression_signal_memory")
         .expect("regression signal artifact");
-    assert!(regression_signal_artifact
-        .path
-        .ends_with("/artifacts/bug_monitor.regression_signal_memory.json"));
+    assert!(path_has_suffix(
+        &regression_signal_artifact.path,
+        "/artifacts/bug_monitor.regression_signal_memory.json"
+    ));
 
     let duplicate_report_req = Request::builder()
         .method("POST")
@@ -917,7 +918,6 @@ async fn bug_monitor_issue_draft_prefers_structured_triage_summary() {
         Some(true)
     );
 }
-
 #[tokio::test]
 #[serial_test::serial]
 #[serial_test::serial(bug_monitor_http)]

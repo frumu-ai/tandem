@@ -3,6 +3,10 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 
+fn path_has_suffix(path: &str, suffix: &str) -> bool {
+    path.replace('\\', "/").ends_with(suffix)
+}
+
 include!("bug_monitor_parts/part01.rs");
 include!("bug_monitor_parts/part03.rs");
 include!("bug_monitor_parts/part02.rs");

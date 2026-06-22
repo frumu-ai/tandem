@@ -7803,6 +7803,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tandem-bug-monitor"
+version = "0.6.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tandem-core",
+ "tandem-types",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "tandem-channels"
 version = "0.6.1"
 dependencies = [
@@ -8083,6 +8102,7 @@ dependencies = [
  "sha2",
  "tandem-automation",
  "tandem-browser",
+ "tandem-bug-monitor",
  "tandem-channels",
  "tandem-core",
  "tandem-enterprise-contract",

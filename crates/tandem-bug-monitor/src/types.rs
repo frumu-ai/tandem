@@ -30,31 +30,21 @@ fn default_bug_monitor_fingerprint_cooldown_ms() -> u64 {
     3_600_000
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BugMonitorProviderPreference {
+    #[default]
     Auto,
     OfficialGithub,
     Composio,
     Arcade,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BugMonitorLabelMode {
+    #[default]
     ReporterOnly,
-}
-
-impl Default for BugMonitorLabelMode {
-    fn default() -> Self {
-        Self::ReporterOnly
-    }
-}
-
-impl Default for BugMonitorProviderPreference {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

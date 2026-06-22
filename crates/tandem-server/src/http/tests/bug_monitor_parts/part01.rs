@@ -1209,7 +1209,6 @@ async fn bug_monitor_report_requires_repo() {
         Some("BUG_MONITOR_REPORT_INVALID")
     );
 }
-
 #[tokio::test]
 #[serial_test::serial(bug_monitor_http)]
 async fn bug_monitor_draft_can_be_approved_and_denied() {
@@ -1306,7 +1305,7 @@ async fn bug_monitor_draft_can_be_approved_and_denied() {
         .and_then(|rows| rows.first())
         .and_then(Value::as_str)
         .is_some_and(|path| {
-            path.ends_with("/artifacts/bug_monitor.approval_failure_pattern.json")
+            path_has_suffix(path, "/artifacts/bug_monitor.approval_failure_pattern.json")
         }));
     assert!(approve_payload
         .get("issue_draft")

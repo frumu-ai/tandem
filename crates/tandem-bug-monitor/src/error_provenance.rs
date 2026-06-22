@@ -11,6 +11,7 @@
 //! codebase, even when the LLM-driven triage hasn't run or has
 //! produced unrelated file references.
 
+use std::cmp::Reverse;
 use std::path::Path;
 use std::time::Duration;
 
@@ -43,7 +44,7 @@ pub struct ProvenanceHit {
 pub fn distinctive_substrings(error: &str) -> Vec<String> {
     let cleaned = strip_dynamic_tokens(error);
     let mut runs = collect_runs(&cleaned);
-    runs.sort_by(|a, b| b.len().cmp(&a.len()));
+    runs.sort_by_key(|b| Reverse(b.len()));
     runs.dedup();
     runs.truncate(MAX_SUBSTRINGS);
     runs
@@ -120,7 +121,7 @@ fn collect_runs(cleaned: &str) -> Vec<String> {
     }
     // Also add the longest contiguous chunk between any commas/colons
     // so a long error like "X: Y, Z" yields three independent greps.
-    for chunk in cleaned.split(|c: char| c == ':' || c == ',' || c == ';' || c == '\n') {
+    for chunk in cleaned.split([':', ',', ';', '\n']) {
         let chunk = chunk
             .split_whitespace()
             .filter(|w| !looks_like_dynamic_token(w))

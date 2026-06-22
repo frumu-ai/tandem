@@ -9,10 +9,10 @@
 //! https://github.com/frumu-ai/tandem/issues/46 comment chain for
 //! the symptom.
 
-use crate::app::state::truncate_text;
-use crate::{BugMonitorDraftRecord, BugMonitorIncidentRecord};
+use crate::truncate_text;
+use crate::types::{BugMonitorDraftRecord, BugMonitorIncidentRecord};
 
-pub(crate) fn build_comment_recurrence_summary(
+pub fn build_comment_recurrence_summary(
     draft: &BugMonitorDraftRecord,
     incident: Option<&BugMonitorIncidentRecord>,
 ) -> String {

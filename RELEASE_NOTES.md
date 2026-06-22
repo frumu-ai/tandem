@@ -84,6 +84,11 @@ MCP connections.
   `tandem-core`, with compatibility re-exports left in core for existing
   callers. This starts the TAN-205 crate-boundary cleanup without changing
   persisted credential file names or tenant-scoped credential behavior.
+- Bug Monitor domain logic now lives in a dedicated `tandem-bug-monitor` crate.
+  The moved layer owns Bug Monitor records, log parsing and evidence artifact
+  rendering, recurrence comment summaries, deterministic error provenance, and
+  the GitHub publish algorithm, while `tandem-server` provides a thin
+  AppState/HTTP/MCP host shim and compatibility re-exports for current callers.
 - Tool execution now flows through a governed dispatcher outside the
   `tandem-tools` crate. Engine turns, workflow actions, Automation V2 connector
   preflight calls, direct HTTP tool execution, planner helpers, pack builder,

@@ -126,7 +126,7 @@ pub async fn poll_log_source_once(
             project_id: project.project_id.clone(),
             source_id: source.source_id.clone(),
             path: absolute_path.display().to_string(),
-            updated_at_ms: now_ms,
+            updated_at_ms: 0,
             ..BugMonitorLogSourceState::default()
         });
     source_state.path = absolute_path.display().to_string();
@@ -155,6 +155,7 @@ pub async fn poll_log_source_once(
     let inode = inode_for_metadata(&metadata);
     if source_state.offset == 0
         && source_state.inode.is_none()
+        && source_state.updated_at_ms == 0
         && matches!(source.start_position, BugMonitorLogStartPosition::End)
     {
         source_state.offset = file_size;
@@ -818,6 +819,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(reset.offset, 0);
+        #[cfg(unix)]
         assert!(reset.inode.is_some());
 
         let second = poll_log_source_once(&state, &project, &source(), 3_000)
