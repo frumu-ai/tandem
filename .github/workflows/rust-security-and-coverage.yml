@@ -69,11 +69,11 @@ jobs:
         uses: taiki-e/install-action@cargo-deny
 
       - name: Check licenses and bans
-        run: cargo deny --config .config/deny.toml check licenses bans
+        run: cargo deny check --config .config/deny.toml licenses bans
 
       - name: Check advisories
         continue-on-error: ${{ github.event_name == 'pull_request' }}
-        run: cargo deny --config .config/deny.toml check advisories
+        run: cargo deny check --config .config/deny.toml advisories
 
   coverage:
     name: Governance Coverage

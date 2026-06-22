@@ -18,7 +18,7 @@ The `Rust Security and Coverage` workflow runs nightly and by
 
 - `cargo audit --config .config/audit.toml` fails on advisories unless an
   accepted advisory is listed in `.config/audit.toml`.
-- `cargo deny --config .config/deny.toml check licenses bans advisories` fails
+- `cargo deny check --config .config/deny.toml licenses bans advisories` fails
   on scheduled/manual policy violations.
 - `cargo llvm-cov nextest` runs coverage for `tandem-tools`,
   `tandem-plan-compiler`, and `tandem-automation`, uploads `lcov.info`, and
