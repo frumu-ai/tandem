@@ -593,6 +593,518 @@ async fn repair_retry_after_needs_repair_completes_on_second_attempt() {
     let _ = std::fs::remove_dir_all(&workspace_root);
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct RestartResumeGolden {
+    status: AutomationRunStatus,
+    detail: Option<String>,
+    stop_kind: Option<AutomationStopKind>,
+    completed_nodes: Vec<String>,
+    pending_nodes: Vec<String>,
+    blocked_nodes: Vec<String>,
+    awaiting_gate_node: Option<String>,
+    node_outputs: std::collections::BTreeMap<String, String>,
+    node_attempts: std::collections::BTreeMap<String, u32>,
+    gate_decisions: Vec<(String, String)>,
+    last_failure: Option<(String, String)>,
+}
+
+fn sorted_node_ids(mut node_ids: Vec<String>) -> Vec<String> {
+    node_ids.sort();
+    node_ids
+}
+
+fn restart_resume_golden(run: &AutomationV2RunRecord) -> RestartResumeGolden {
+    let node_outputs = run
+        .checkpoint
+        .node_outputs
+        .iter()
+        .map(|(node_id, output)| {
+            let status = output
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("<missing>");
+            let contract = output
+                .get("contract_kind")
+                .and_then(Value::as_str)
+                .unwrap_or("<missing>");
+            let decision = output
+                .pointer("/content/decision")
+                .and_then(Value::as_str)
+                .unwrap_or("<none>");
+            (
+                node_id.clone(),
+                format!("status={status};contract={contract};decision={decision}"),
+            )
+        })
+        .collect();
+    let node_attempts = run
+        .checkpoint
+        .node_attempts
+        .iter()
+        .map(|(node_id, attempt)| (node_id.clone(), *attempt))
+        .collect();
+    RestartResumeGolden {
+        status: run.status.clone(),
+        detail: run.detail.clone(),
+        stop_kind: run.stop_kind.clone(),
+        completed_nodes: sorted_node_ids(run.checkpoint.completed_nodes.clone()),
+        pending_nodes: sorted_node_ids(run.checkpoint.pending_nodes.clone()),
+        blocked_nodes: sorted_node_ids(run.checkpoint.blocked_nodes.clone()),
+        awaiting_gate_node: run
+            .checkpoint
+            .awaiting_gate
+            .as_ref()
+            .map(|gate| gate.node_id.clone()),
+        node_outputs,
+        node_attempts,
+        gate_decisions: run
+            .checkpoint
+            .gate_history
+            .iter()
+            .map(|record| (record.node_id.clone(), record.decision.clone()))
+            .collect(),
+        last_failure: run
+            .checkpoint
+            .last_failure
+            .as_ref()
+            .map(|failure| (failure.node_id.clone(), failure.reason.clone())),
+    }
+}
+
+async fn reload_automation_state_after_restart(source: &AppState) -> (AppState, usize) {
+    let mut reloaded = ready_test_state().await;
+    reloaded.automations_v2_path = source.automations_v2_path.clone();
+    reloaded.automation_v2_runs_path = source.automation_v2_runs_path.clone();
+    reloaded.memory_db_path = source.memory_db_path.clone();
+    reloaded
+        .load_automations_v2()
+        .await
+        .expect("load persisted automations");
+    reloaded
+        .load_automation_v2_runs()
+        .await
+        .expect("load persisted automation runs");
+    let recovered = reloaded.recover_in_flight_runs().await;
+    (reloaded, recovered)
+}
+
+async fn claim_and_drain_restart_run(state: &AppState, run_id: &str) -> AutomationV2RunRecord {
+    let claimed = state
+        .claim_specific_automation_v2_run(run_id)
+        .await
+        .expect("claim queued restart run");
+    crate::automation_v2::executor::run_automation_v2_run(state.clone(), claimed).await;
+    state
+        .get_automation_v2_run(run_id)
+        .await
+        .expect("persisted restart run")
+}
+
+fn restart_test_workspace(prefix: &str) -> std::path::PathBuf {
+    let workspace_root = std::env::temp_dir().join(format!("{prefix}-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&workspace_root).expect("create restart test workspace");
+    workspace_root
+}
+
+fn empty_restart_automation(
+    automation_id: &str,
+    workspace_root: &std::path::Path,
+) -> AutomationV2Spec {
+    AutomationSpecBuilder::new(automation_id)
+        .name(format!("{automation_id} restart test"))
+        .workspace_root(workspace_root.to_string_lossy().to_string())
+        .build()
+}
+
+fn approval_restart_automation(
+    automation_id: &str,
+    workspace_root: &std::path::Path,
+) -> AutomationV2Spec {
+    let mut approval = AutomationNodeBuilder::new("approve_consequential_delivery")
+        .objective("Review the prepared work before continuation")
+        .stage_kind(AutomationNodeStageKind::Approval)
+        .metadata(json!({
+            "builder": {
+                "title": "Consequential work approval",
+                "role": "approver"
+            }
+        }))
+        .build();
+    approval.gate = Some(AutomationApprovalGate {
+        required: true,
+        decisions: vec![
+            "approve".to_string(),
+            "rework".to_string(),
+            "cancel".to_string(),
+        ],
+        rework_targets: Vec::new(),
+        instructions: Some("Approve the consequential work before it can proceed.".to_string()),
+    });
+    let mut collect_inputs = AutomationNodeBuilder::new("collect_inputs")
+        .objective("Materialize the approved handoff inputs")
+        .depends_on(vec!["approve_consequential_delivery"])
+        .stage_kind(AutomationNodeStageKind::Workstream)
+        .metadata(json!({
+            "inputs": {
+                "target_contact": "customer@example.test",
+                "approval_required": true,
+                "approved_action": "customer_update"
+            }
+        }))
+        .build();
+    collect_inputs.output_contract = Some(AutomationFlowOutputContract {
+        kind: "brief".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    AutomationSpecBuilder::new(automation_id)
+        .name(format!("{automation_id} restart approval test"))
+        .nodes(vec![approval, collect_inputs])
+        .workspace_root(workspace_root.to_string_lossy().to_string())
+        .build()
+}
+
+fn consequential_restart_automation(
+    automation_id: &str,
+    workspace_root: &std::path::Path,
+) -> AutomationV2Spec {
+    let send_node = AutomationNodeBuilder::new("send_customer_update")
+        .objective("Send the customer update")
+        .stage_kind(AutomationNodeStageKind::Workstream)
+        .metadata(json!({
+            "builder": {
+                "task_kind": "consequential_delivery",
+                "write_scope": "external:customer_update"
+            },
+            "delivery": {
+                "method": "email",
+                "to": "customer@example.test"
+            }
+        }))
+        .build();
+    AutomationSpecBuilder::new(automation_id)
+        .name(format!("{automation_id} consequential restart test"))
+        .nodes(vec![send_node])
+        .workspace_root(workspace_root.to_string_lossy().to_string())
+        .build()
+}
+
+async fn create_persisted_restart_run(
+    state: &AppState,
+    automation: &AutomationV2Spec,
+) -> AutomationV2RunRecord {
+    state
+        .put_automation_v2(automation.clone())
+        .await
+        .expect("persist restart automation");
+    state
+        .create_automation_v2_run(automation, "manual")
+        .await
+        .expect("create restart run")
+}
+
+async fn queued_restart_terminal_golden(restart: bool) -> RestartResumeGolden {
+    let workspace_root = restart_test_workspace("tandem-restart-queued");
+    let state = ready_test_state().await;
+    let automation = empty_restart_automation("automation-restart-queued", &workspace_root);
+    let run = create_persisted_restart_run(&state, &automation).await;
+    let active_state = if restart {
+        let (reloaded, recovered) = reload_automation_state_after_restart(&state).await;
+        assert_eq!(recovered, 0);
+        reloaded
+    } else {
+        state.clone()
+    };
+
+    let terminal = claim_and_drain_restart_run(&active_state, &run.run_id).await;
+    assert_eq!(terminal.status, AutomationRunStatus::Completed);
+    let golden = restart_resume_golden(&terminal);
+    let _ = std::fs::remove_dir_all(&workspace_root);
+    golden
+}
+
+async fn approve_restart_gate_once(
+    state: &AppState,
+    automation: &AutomationV2Spec,
+    run_id: &str,
+    assert_duplicate_is_guarded: bool,
+) -> AutomationV2RunRecord {
+    let current = state
+        .get_automation_v2_run(run_id)
+        .await
+        .expect("awaiting approval run");
+    let gate = current
+        .checkpoint
+        .awaiting_gate
+        .clone()
+        .expect("pending approval gate");
+
+    let mut applied = false;
+    let approved = state
+        .update_automation_v2_run(run_id, |row| {
+            match crate::app::state::apply_automation_gate_decision(
+                row,
+                automation,
+                &gate,
+                "approve",
+                Some("approved after restart".to_string()),
+                None,
+            ) {
+                crate::app::state::AutomationGateDecisionOutcome::Applied => {
+                    applied = true;
+                }
+                crate::app::state::AutomationGateDecisionOutcome::AlreadyDecided(_) => {
+                    panic!("first gate decision was treated as already decided");
+                }
+            }
+        })
+        .await
+        .expect("approve restart gate");
+    assert!(applied);
+
+    if assert_duplicate_is_guarded {
+        let pending_after_first_decision = approved.checkpoint.pending_nodes.clone();
+        let completed_after_first_decision = approved.checkpoint.completed_nodes.clone();
+        let mut duplicate_guarded = false;
+        let after_duplicate = state
+            .update_automation_v2_run(run_id, |row| {
+                match crate::app::state::apply_automation_gate_decision(
+                    row,
+                    automation,
+                    &gate,
+                    "approve",
+                    Some("duplicate approval click".to_string()),
+                    None,
+                ) {
+                    crate::app::state::AutomationGateDecisionOutcome::Applied => {
+                        panic!("duplicate gate decision was applied");
+                    }
+                    crate::app::state::AutomationGateDecisionOutcome::AlreadyDecided(winner) => {
+                        assert_eq!(
+                            winner.as_ref().map(|record| record.decision.as_str()),
+                            Some("approve")
+                        );
+                        duplicate_guarded = true;
+                    }
+                }
+            })
+            .await
+            .expect("duplicate gate decision readback");
+        assert!(duplicate_guarded);
+        assert_eq!(after_duplicate.checkpoint.gate_history.len(), 1);
+        assert_eq!(
+            after_duplicate.checkpoint.pending_nodes,
+            pending_after_first_decision
+        );
+        assert_eq!(
+            after_duplicate.checkpoint.completed_nodes,
+            completed_after_first_decision
+        );
+    }
+
+    approved
+}
+
+async fn approval_restart_requeued_golden(
+    restart: bool,
+    assert_duplicate_is_guarded: bool,
+) -> RestartResumeGolden {
+    let workspace_root = restart_test_workspace("tandem-restart-approval");
+    let state = ready_test_state().await;
+    let automation = approval_restart_automation("automation-restart-approval", &workspace_root);
+    let run = create_persisted_restart_run(&state, &automation).await;
+
+    let awaiting = claim_and_drain_restart_run(&state, &run.run_id).await;
+    assert_eq!(awaiting.status, AutomationRunStatus::AwaitingApproval);
+    assert_eq!(
+        awaiting
+            .checkpoint
+            .awaiting_gate
+            .as_ref()
+            .map(|gate| gate.node_id.as_str()),
+        Some("approve_consequential_delivery")
+    );
+
+    let active_state = if restart {
+        let (reloaded, recovered) = reload_automation_state_after_restart(&state).await;
+        assert_eq!(recovered, 0);
+        let reloaded_run = reloaded
+            .get_automation_v2_run(&run.run_id)
+            .await
+            .expect("reloaded approval run");
+        assert_eq!(reloaded_run.status, AutomationRunStatus::AwaitingApproval);
+        assert_eq!(
+            reloaded_run
+                .checkpoint
+                .awaiting_gate
+                .as_ref()
+                .map(|gate| gate.node_id.as_str()),
+            Some("approve_consequential_delivery")
+        );
+        reloaded
+    } else {
+        state.clone()
+    };
+
+    let approved = approve_restart_gate_once(
+        &active_state,
+        &automation,
+        &run.run_id,
+        assert_duplicate_is_guarded,
+    )
+    .await;
+    assert_eq!(approved.status, AutomationRunStatus::Queued);
+    let golden = restart_resume_golden(&approved);
+    let _ = std::fs::remove_dir_all(&workspace_root);
+    golden
+}
+
+fn run_restart_resume_test_with_large_stack<F, Fut>(future_factory: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .name("automation-restart-resume-test".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("restart resume test runtime");
+            runtime.block_on(future_factory());
+        })
+        .expect("spawn restart resume test thread");
+    if let Err(payload) = handle.join() {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[tokio::test]
+async fn restart_resume_golden_completes_queued_run_after_reload() {
+    let uninterrupted = queued_restart_terminal_golden(false).await;
+    let restarted = queued_restart_terminal_golden(true).await;
+
+    assert_eq!(restarted, uninterrupted);
+}
+
+#[test]
+fn restart_resume_golden_approval_gate_resumes_once_after_reload() {
+    run_restart_resume_test_with_large_stack(|| async {
+        let uninterrupted = approval_restart_requeued_golden(false, false).await;
+        let restarted = approval_restart_requeued_golden(true, true).await;
+
+        assert_eq!(restarted, uninterrupted);
+        assert_eq!(restarted.status, AutomationRunStatus::Queued);
+        assert_eq!(restarted.pending_nodes, vec!["collect_inputs".to_string()]);
+        assert_eq!(
+            restarted.gate_decisions,
+            vec![(
+                "approve_consequential_delivery".to_string(),
+                "approve".to_string()
+            )]
+        );
+        assert_eq!(
+            restarted.node_outputs.get("approve_consequential_delivery"),
+            Some(&"status=completed;contract=approval_gate;decision=approve".to_string())
+        );
+    });
+}
+
+#[tokio::test]
+async fn restart_recovery_preserves_blocked_run_golden_after_reload() {
+    let workspace_root = restart_test_workspace("tandem-restart-blocked");
+    let state = ready_test_state().await;
+    let automation = empty_restart_automation("automation-restart-blocked", &workspace_root);
+    let run = create_persisted_restart_run(&state, &automation).await;
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = AutomationRunStatus::Blocked;
+            row.detail = Some("blocked by missing enterprise connector approval".to_string());
+            row.checkpoint.blocked_nodes = vec!["enterprise_connector_approval".to_string()];
+            row.checkpoint.last_failure = Some(AutomationFailureRecord {
+                node_id: "enterprise_connector_approval".to_string(),
+                reason: "missing enterprise connector approval".to_string(),
+                failed_at_ms: crate::now_ms(),
+            });
+        })
+        .await
+        .expect("mark blocked restart run");
+    let expected = restart_resume_golden(
+        &state
+            .get_automation_v2_run(&run.run_id)
+            .await
+            .expect("blocked run before reload"),
+    );
+
+    let (reloaded, recovered) = reload_automation_state_after_restart(&state).await;
+    assert_eq!(recovered, 0);
+    assert!(reloaded
+        .claim_specific_automation_v2_run(&run.run_id)
+        .await
+        .is_none());
+    let actual = restart_resume_golden(
+        &reloaded
+            .get_automation_v2_run(&run.run_id)
+            .await
+            .expect("blocked run after reload"),
+    );
+
+    assert_eq!(actual, expected);
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[tokio::test]
+async fn restart_recovery_fails_running_consequential_run_without_replay() {
+    let workspace_root = restart_test_workspace("tandem-restart-running-consequential");
+    let state = ready_test_state().await;
+    let automation =
+        consequential_restart_automation("automation-restart-running", &workspace_root);
+    let run = create_persisted_restart_run(&state, &automation).await;
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = AutomationRunStatus::Running;
+            row.started_at_ms = Some(crate::now_ms());
+            row.active_session_ids = vec!["session-in-flight-before-restart".to_string()];
+            row.latest_session_id = Some("session-in-flight-before-restart".to_string());
+        })
+        .await
+        .expect("mark running restart run");
+
+    let (reloaded, recovered) = reload_automation_state_after_restart(&state).await;
+    assert_eq!(recovered, 1);
+    assert!(reloaded
+        .claim_specific_automation_v2_run(&run.run_id)
+        .await
+        .is_none());
+    let recovered_run = reloaded
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("recovered running run");
+    let golden = restart_resume_golden(&recovered_run);
+
+    assert_eq!(golden.status, AutomationRunStatus::Failed);
+    assert_eq!(golden.stop_kind, Some(AutomationStopKind::ServerRestart));
+    assert_eq!(
+        golden.detail.as_deref(),
+        Some("automation run interrupted by server restart")
+    );
+    assert!(golden.node_attempts.is_empty());
+    assert!(golden.node_outputs.is_empty());
+    assert_eq!(
+        golden.pending_nodes,
+        vec!["send_customer_update".to_string()]
+    );
+    assert_eq!(
+        golden.last_failure,
+        None,
+        "restart recovery must fail in-flight consequential work without fabricating a node outcome"
+    );
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
 #[tokio::test]
 async fn restart_recovery_preserves_queued_and_paused_runs() {
     let paused_workspace =

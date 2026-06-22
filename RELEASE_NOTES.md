@@ -29,6 +29,11 @@ MCP connections.
   versions fail closed without overwriting state, compatibility fixtures protect
   paused awaiting-approval run state, and the memory DB records its bootstrap
   schema in an idempotent `schema_migrations` ledger.
+- Automation V2 restart coverage now exercises persisted reload behavior for
+  queued, awaiting-approval, blocked, and running runs. Golden assertions compare
+  uninterrupted and restarted outcomes, duplicate approval clicks remain
+  idempotent, and in-flight consequential work is failed on server restart
+  without replaying node attempts or fabricating outputs.
 
 ### Runtime Governance
 
