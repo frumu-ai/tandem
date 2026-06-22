@@ -930,6 +930,7 @@ pub(in crate::http::tests) async fn create_test_automation_v2(
                         ],
                         rework_targets: vec!["draft".to_string()],
                         instructions: Some("Check the review output".to_string()),
+                        expiry_policy: None,
                     }),
                     metadata: Some(json!({
                         "builder": {

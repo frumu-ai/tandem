@@ -74,6 +74,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   approve requests, provider failure after approval, half-applied gate decisions
   across restart, stale gate decisions, and corrupted run-checkpoint
   quarantine.
+- Added Automation V2 approval gate expiry policies with default and per-gate
+  deadlines, auto-cancel, reminder, escalation, protected audit events,
+  notification redispatch keys, auto-cancel late-decision rejection, and
+  approvals inbox deadline display.
 - Added durable PermissionManager state for interactive ask requests,
   provenance-bearing standing rules, restart-failed pending prompts, and
   decision history suitable for unified approval rendering.

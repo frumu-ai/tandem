@@ -29,6 +29,7 @@ async fn automations_v2_gate_rework_on_failed_branch_preserves_completed_sibling
                 requested_at_ms: crate::now_ms(),
                 upstream_node_ids: vec!["analysis".to_string(), "draft".to_string()],
                 metadata: None,
+                expiry_policy: None,
             });
             row.checkpoint
                 .node_outputs

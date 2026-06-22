@@ -339,6 +339,7 @@ fn projected_gate(gate: &tandem_workflows::HumanApprovalGate) -> ProjectedAutoma
             .collect(),
         rework_targets: gate.rework_targets.clone(),
         instructions: gate.instructions.clone(),
+        expiry_policy: None,
     }
 }
 
@@ -425,6 +426,7 @@ fn default_injected_gate(instructions: &str) -> ProjectedAutomationApprovalGate 
         ],
         rework_targets: Vec::new(),
         instructions: Some(instructions.to_string()),
+        expiry_policy: None,
     }
 }
 
@@ -845,6 +847,7 @@ mod tests {
             decisions: vec!["approve".to_string()],
             rework_targets: vec!["draft".to_string()],
             instructions: Some("custom per-blueprint instructions".to_string()),
+            expiry_policy: None,
         });
         inject_default_approval_gates(&mut projection.nodes, &projection.agents);
         let gate = projection.nodes[0].gate.as_ref().expect("gate retained");

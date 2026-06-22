@@ -1046,6 +1046,7 @@ async fn automations_v2_gate_rework_clears_downstream_outputs_and_requeues_subtr
                 requested_at_ms: now,
                 upstream_node_ids: vec!["review".to_string()],
                 metadata: None,
+                expiry_policy: None,
             });
             row.checkpoint
                 .node_outputs
@@ -1140,6 +1141,7 @@ async fn automations_v2_run_recover_from_pause_preserves_completed_state_and_rec
                 requested_at_ms: crate::now_ms(),
                 upstream_node_ids: vec!["review".to_string()],
                 metadata: None,
+                expiry_policy: None,
             });
             row.checkpoint.blocked_nodes = vec!["approval".to_string()];
         })

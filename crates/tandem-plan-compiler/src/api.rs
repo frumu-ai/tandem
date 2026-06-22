@@ -10,7 +10,8 @@
 
 pub use crate::automation_projection::{
     ProjectedAutomationAgentProfile, ProjectedAutomationApprovalGate, ProjectedAutomationDraft,
-    ProjectedAutomationExecutionPolicy, ProjectedAutomationNode, ProjectedAutomationStageKind,
+    ProjectedAutomationExecutionPolicy, ProjectedAutomationGateExpiryAction,
+    ProjectedAutomationGateExpiryPolicy, ProjectedAutomationNode, ProjectedAutomationStageKind,
 };
 pub use crate::contracts::{
     approval_gate_output_contract_seed, build_workflow_plan_with_planner_json,

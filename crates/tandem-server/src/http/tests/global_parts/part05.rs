@@ -33,6 +33,7 @@ async fn arrange_awaiting_publish_gate(
                 requested_at_ms: crate::now_ms(),
                 upstream_node_ids: vec!["analysis".to_string(), "draft".to_string()],
                 metadata: None,
+                expiry_policy: None,
             });
             row.checkpoint.blocked_nodes = vec!["publish".to_string()];
         })
@@ -80,6 +81,7 @@ async fn arrange_governed_awaiting_publish_gate(
                 requested_at_ms: crate::now_ms(),
                 upstream_node_ids: vec!["analysis".to_string(), "draft".to_string()],
                 metadata: Some(metadata.clone()),
+                expiry_policy: None,
             });
             row.checkpoint.blocked_nodes = vec!["publish".to_string()];
         })

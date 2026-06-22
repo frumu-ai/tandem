@@ -739,6 +739,7 @@ fn approval_restart_automation(
         ],
         rework_targets: Vec::new(),
         instructions: Some("Approve the consequential work before it can proceed.".to_string()),
+        expiry_policy: None,
     });
     let mut collect_inputs = AutomationNodeBuilder::new("collect_inputs")
         .objective("Materialize the approved handoff inputs")

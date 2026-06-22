@@ -55,6 +55,7 @@ async fn approvals_pending_endpoint_surfaces_automation_v2_awaiting_gate() {
                 requested_at_ms: crate::now_ms(),
                 upstream_node_ids: vec!["draft".to_string()],
                 metadata: None,
+                expiry_policy: None,
             });
         })
         .await
@@ -227,6 +228,7 @@ async fn approvals_pending_endpoint_surfaces_zero_contact_company_status_work() 
                     "enrich-and-verify-contacts".to_string(),
                 ],
                 metadata: None,
+                expiry_policy: None,
             });
         })
         .await
@@ -371,6 +373,7 @@ async fn approvals_pending_endpoint_uses_full_run_when_hot_row_is_stale() {
                 requested_at_ms: crate::now_ms(),
                 upstream_node_ids: vec!["review".to_string()],
                 metadata: None,
+                expiry_policy: None,
             });
         })
         .await
@@ -687,6 +690,7 @@ async fn gate_decide_concurrent_race_yields_exactly_one_winner() {
                 requested_at_ms: crate::now_ms(),
                 upstream_node_ids: vec![],
                 metadata: None,
+                expiry_policy: None,
             });
         })
         .await
@@ -818,6 +822,7 @@ async fn approvals_pending_endpoint_filters_by_source_unknown_returns_empty() {
                 requested_at_ms: crate::now_ms(),
                 upstream_node_ids: vec![],
                 metadata: None,
+                expiry_policy: None,
             });
         })
         .await

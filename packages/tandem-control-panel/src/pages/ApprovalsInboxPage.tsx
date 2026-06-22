@@ -38,7 +38,7 @@ type ApprovalRequest = {
   action_preview_markdown?: string;
   surface_payload?: Record<string, any> | null;
   requested_at_ms: number;
-  expires_at_ms?: number;
+  expires_at_ms?: number | null;
   decisions?: Array<DecisionKind | string>;
   rework_targets?: string[];
   instructions?: string;
@@ -99,6 +99,19 @@ function formatRelativeTime(ms: number): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.round(hours / 24);
   return `${days}d ago`;
+}
+
+function formatDeadline(ms?: number | null): string | null {
+  if (!ms) return null;
+  const deltaSeconds = Math.round((ms - Date.now()) / 1000);
+  if (deltaSeconds <= 0) return "expired";
+  if (deltaSeconds < 60) return `expires in ${deltaSeconds}s`;
+  const minutes = Math.round(deltaSeconds / 60);
+  if (minutes < 60) return `expires in ${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `expires in ${hours}h`;
+  const days = Math.round(hours / 24);
+  return `expires in ${days}d`;
 }
 
 function decideEndpointFor(request: ApprovalRequest): string | null {
@@ -348,6 +361,7 @@ function ApprovalRequestCard({
 }) {
   const previewMarkdown = dedupeMarkdown(request.action_preview_markdown, request.instructions);
   const decisions = approvalDecisionsForRequest(request);
+  const deadline = formatDeadline(request.expires_at_ms);
 
   return (
     <PanelCard
@@ -359,7 +373,9 @@ function ApprovalRequestCard({
       }
       actions={
         <span className="text-xs text-tcp-text-tertiary">
-          {formatRelativeTime(request.requested_at_ms)}
+          {deadline
+            ? `${formatRelativeTime(request.requested_at_ms)} - ${deadline}`
+            : formatRelativeTime(request.requested_at_ms)}
         </span>
       }
     >
