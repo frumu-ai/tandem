@@ -47,6 +47,7 @@ in `docs/LICENSING.md`.
 | `html2md`                  | `GPL-3.0-or-later`    | Tools runtime        | Existing HTML-to-Markdown converter used by browser/tools extraction paths; replace with a permissive converter before hardening distribution policy. | 2026-09-30 |
 | `libfuzzer-sys`            | `NCSA`                | Runtime dependencies | OSI-approved permissive transitive dependency through `rav1e`/`image`; keep scoped by crate name.                                                     | 2027-06-30 |
 | `webpki-root-certs`        | `CDLA-Permissive-2.0` | Runtime dependencies | Permissive root certificate data dependency through `rustls-platform-verifier`/`reqwest`; keep scoped by crate name.                                  | 2027-06-30 |
+| `webpki-roots`             | `CDLA-Permissive-2.0` | Runtime dependencies | Permissive Mozilla root certificate data dependency through TLS clients; keep scoped by crate name.                                                   | 2027-06-30 |
 
 ## Coverage Baselines
 

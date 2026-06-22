@@ -30,6 +30,7 @@ exceptions = [
     { name = "html2md", allow = ["GPL-3.0-or-later"] },
     { name = "libfuzzer-sys", allow = ["NCSA"] },
     { name = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] },
+    { name = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
 ]
 
 [licenses.private]
