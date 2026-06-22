@@ -139,9 +139,7 @@ impl WorkflowActionRegistry {
         if trimmed.is_empty() {
             return Err("action is empty".to_string());
         }
-        if trimmed.eq_ignore_ascii_case("approval:gate")
-            || trimmed.eq_ignore_ascii_case("approval.gate")
-        {
+        if trimmed == "approval:gate" || trimmed == "approval.gate" {
             return Ok(WorkflowResolvedAction {
                 kind: WorkflowActionKind::ApprovalGate,
                 action: "approval:gate".to_string(),
@@ -153,7 +151,7 @@ impl WorkflowActionRegistry {
                 }),
             });
         }
-        if let Some(target) = strip_prefix_ignore_ascii_case(trimmed, "event:") {
+        if let Some(target) = trimmed.strip_prefix("event:") {
             return self.resolve_prefixed(
                 WorkflowActionKind::EventEmit,
                 trimmed,
@@ -162,7 +160,7 @@ impl WorkflowActionRegistry {
                 "event type",
             );
         }
-        if let Some(target) = strip_prefix_ignore_ascii_case(trimmed, "resource:put:") {
+        if let Some(target) = trimmed.strip_prefix("resource:put:") {
             return self.resolve_prefixed(
                 WorkflowActionKind::ResourcePut,
                 trimmed,
@@ -171,7 +169,7 @@ impl WorkflowActionRegistry {
                 "resource key",
             );
         }
-        if let Some(target) = strip_prefix_ignore_ascii_case(trimmed, "resource:patch:") {
+        if let Some(target) = trimmed.strip_prefix("resource:patch:") {
             return self.resolve_prefixed(
                 WorkflowActionKind::ResourcePatch,
                 trimmed,
@@ -180,7 +178,7 @@ impl WorkflowActionRegistry {
                 "resource key",
             );
         }
-        if let Some(target) = strip_prefix_ignore_ascii_case(trimmed, "resource:delete:") {
+        if let Some(target) = trimmed.strip_prefix("resource:delete:") {
             return self.resolve_prefixed(
                 WorkflowActionKind::ResourceDelete,
                 trimmed,
@@ -189,7 +187,7 @@ impl WorkflowActionRegistry {
                 "resource key",
             );
         }
-        if let Some(target) = strip_prefix_ignore_ascii_case(trimmed, "agent:") {
+        if let Some(target) = trimmed.strip_prefix("agent:") {
             return self.resolve_prefixed(
                 WorkflowActionKind::Agent,
                 trimmed,
@@ -198,7 +196,7 @@ impl WorkflowActionRegistry {
                 "agent id",
             );
         }
-        if let Some(target) = strip_prefix_ignore_ascii_case(trimmed, "workflow:") {
+        if let Some(target) = trimmed.strip_prefix("workflow:") {
             return self.resolve_prefixed(
                 WorkflowActionKind::Workflow,
                 trimmed,
@@ -207,7 +205,7 @@ impl WorkflowActionRegistry {
                 "workflow id",
             );
         }
-        if let Some(target) = strip_prefix_ignore_ascii_case(trimmed, "tool:") {
+        if let Some(target) = trimmed.strip_prefix("tool:") {
             return self.resolve_catalog_action(
                 WorkflowActionKind::Tool,
                 trimmed,
@@ -216,7 +214,7 @@ impl WorkflowActionRegistry {
                 "tool",
             );
         }
-        if let Some(target) = strip_prefix_ignore_ascii_case(trimmed, "capability:") {
+        if let Some(target) = trimmed.strip_prefix("capability:") {
             return self.resolve_catalog_action(
                 WorkflowActionKind::Capability,
                 trimmed,
@@ -420,15 +418,13 @@ fn validate_json_schema(
             .and_then(Value::as_bool)
             .is_some_and(|allowed| !allowed)
         {
-            if let Some(properties) = properties {
-                for key in object.keys() {
-                    if !properties.contains_key(key) {
-                        issues.push(WorkflowActionValidationIssue {
-                            severity: WorkflowValidationSeverity::Error,
-                            field: format!("{path}.{key}"),
-                            message: format!("`{path}.{key}` is not allowed by this action schema"),
-                        });
-                    }
+            for key in object.keys() {
+                if !properties.is_some_and(|properties| properties.contains_key(key)) {
+                    issues.push(WorkflowActionValidationIssue {
+                        severity: WorkflowValidationSeverity::Error,
+                        field: format!("{path}.{key}"),
+                        message: format!("`{path}.{key}` is not allowed by this action schema"),
+                    });
                 }
             }
         }
@@ -514,11 +510,4 @@ fn optional_object_schema() -> Value {
 
 fn canonical_action_key(name: &str) -> String {
     name.trim().to_ascii_lowercase()
-}
-
-fn strip_prefix_ignore_ascii_case<'a>(input: &'a str, prefix: &str) -> Option<&'a str> {
-    input
-        .get(..prefix.len())
-        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
-        .then(|| &input[prefix.len()..])
 }

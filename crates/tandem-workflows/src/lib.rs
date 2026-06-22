@@ -1118,6 +1118,46 @@ workflow:
     }
 
     #[test]
+    fn strict_load_rejects_case_variant_prefix_runtime_would_not_execute() {
+        let dir = tempdir().expect("dir");
+        write_file(
+            &dir.path().join("workflows/case-variant.yaml"),
+            r#"
+workflow:
+  id: case_variant
+  name: Case Variant
+  steps:
+    - id: notify
+      action: Tool:workflow_test.notify
+      with:
+        channel: engineering
+"#,
+        );
+
+        let action_registry = WorkflowActionRegistry::new().with_tool_schema(
+            "workflow_test.notify",
+            serde_json::json!({
+                "type": "object",
+                "required": ["channel"],
+                "properties": {
+                    "channel": { "type": "string" }
+                }
+            }),
+        );
+        let error = load_registry_with_options(
+            &[workspace_source(dir.path())],
+            &WorkflowRegistryLoadOptions::strict(action_registry),
+        )
+        .expect_err("case-varied prefix should not validate stricter than runtime");
+        let message = error.to_string();
+        assert!(
+            message.contains("capability `Tool:workflow_test.notify`"),
+            "{message}"
+        );
+        assert!(message.contains("field=action"), "{message}");
+    }
+
+    #[test]
     fn strict_load_rejects_wrong_builtin_action_param_type() {
         let dir = tempdir().expect("dir");
         write_file(
@@ -1143,6 +1183,40 @@ workflow:
         assert!(message.contains("with.title"), "{message}");
         assert!(message.contains("must be string"), "{message}");
         assert!(message.contains("step_id=review_gate"), "{message}");
+    }
+
+    #[test]
+    fn strict_load_rejects_closed_schema_without_properties() {
+        let dir = tempdir().expect("dir");
+        write_file(
+            &dir.path().join("workflows/closed-schema.yaml"),
+            r#"
+workflow:
+  id: closed_schema
+  name: Closed Schema
+  steps:
+    - id: noop
+      action: tool:workflow_test.noop
+      with:
+        unexpected: 1
+"#,
+        );
+
+        let action_registry = WorkflowActionRegistry::new().with_tool_schema(
+            "workflow_test.noop",
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false
+            }),
+        );
+        let error = load_registry_with_options(
+            &[workspace_source(dir.path())],
+            &WorkflowRegistryLoadOptions::strict(action_registry),
+        )
+        .expect_err("closed schema should reject every undeclared key");
+        let message = error.to_string();
+        assert!(message.contains("with.unexpected"), "{message}");
+        assert!(message.contains("not allowed"), "{message}");
     }
 
     #[test]
