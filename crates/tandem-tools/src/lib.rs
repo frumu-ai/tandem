@@ -165,6 +165,13 @@ mod sandbox_and_resolution_tests {
             ("shell", "bash"),
             ("powershell", "bash"),
             ("cmd", "bash"),
+            ("code_search", "codesearch"),
+            ("web_search", "websearch"),
+            ("task_create", "TaskCreate"),
+            ("task_list", "TaskList"),
+            ("task_update", "TaskUpdate"),
+            ("team_create", "TeamCreate"),
+            ("send_message", "SendMessage"),
             ("todowrite", "todo_write"),
             ("update_todo_list", "todo_write"),
             ("update_todos", "todo_write"),
@@ -184,6 +191,11 @@ mod sandbox_and_resolution_tests {
                 resolved.as_deref(),
                 Some(expected),
                 "`{requested}` should resolve to `{expected}`"
+            );
+            assert_eq!(
+                approval_classifier::classify(requested),
+                approval_classifier::classify(expected),
+                "`{requested}` should classify like resolved tool `{expected}`"
             );
         }
     }

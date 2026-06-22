@@ -46,6 +46,10 @@ mod tests {
         }
     }
 
+    fn slash_paths(value: &str) -> String {
+        value.replace('\\', "/")
+    }
+
     fn search_env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
@@ -952,7 +956,10 @@ mod tests {
             .expect("memory_search should return ToolResult");
         assert_eq!(result.metadata["ok"], json!(false));
         assert_eq!(
-            result.metadata.get("reason").and_then(|value| value.as_str()),
+            result
+                .metadata
+                .get("reason")
+                .and_then(|value| value.as_str()),
             Some("channel_global_scope_blocked")
         );
     }
@@ -975,7 +982,10 @@ mod tests {
             .expect("memory_search should return ToolResult");
         assert_eq!(result.metadata["ok"], json!(false));
         assert_eq!(
-            result.metadata.get("reason").and_then(|value| value.as_str()),
+            result
+                .metadata
+                .get("reason")
+                .and_then(|value| value.as_str()),
             Some("channel_query_pattern_blocked")
         );
     }
@@ -997,7 +1007,10 @@ mod tests {
             .await
             .expect("memory_search should return ToolResult");
         assert_ne!(
-            result.metadata.get("reason").and_then(|value| value.as_str()),
+            result
+                .metadata
+                .get("reason")
+                .and_then(|value| value.as_str()),
             Some("channel_query_pattern_blocked")
         );
     }
@@ -1177,7 +1190,10 @@ mod tests {
         let err = prepare_shell_workspace(&json!({})).expect_err("workspace context required");
         match err {
             ShellCommandPlan::Blocked(result) => {
-                assert_eq!(result.metadata["guardrail_reason"], json!("missing_workspace_root"));
+                assert_eq!(
+                    result.metadata["guardrail_reason"],
+                    json!("missing_workspace_root")
+                );
             }
             ShellCommandPlan::Execute(_) => panic!("expected blocked shell plan"),
         }
@@ -1235,8 +1251,9 @@ mod tests {
             .await
             .expect("glob result");
 
+        let output = slash_paths(&result.output);
         assert!(
-            result.output.contains(".tandem/artifacts/report.json"),
+            output.contains(".tandem/artifacts/report.json"),
             "expected artifact path in glob output, got: {}",
             result.output
         );
@@ -1305,14 +1322,19 @@ mod tests {
             .await
             .expect("glob result");
 
+        let output = slash_paths(&result.output);
         assert!(
-            result.output.contains("docs/guides/intro.md"),
+            output.contains("docs/guides/intro.md"),
             "expected recovered glob output, got: {}",
             result.output
         );
+        let effective_pattern = result.metadata["effective_pattern"]
+            .as_str()
+            .map(slash_paths)
+            .expect("effective pattern");
         assert_eq!(
-            result.metadata["effective_pattern"],
-            json!(format!("{}/docs/**/*.md", root.to_string_lossy()))
+            effective_pattern,
+            format!("{}/docs/**/*.md", slash_paths(&root.to_string_lossy()))
         );
     }
 

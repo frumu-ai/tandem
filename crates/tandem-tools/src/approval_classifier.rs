@@ -62,7 +62,7 @@ pub enum ApprovalClassification {
 /// then by suffix heuristics for common verbs (`*.send`, `*.create`,
 /// `*.publish`, `*.delete`).
 pub fn classify(tool_id: &str) -> ApprovalClassification {
-    let id = tool_id.trim().to_ascii_lowercase();
+    let id = tandem_types::canonical_tool_name(tool_id);
     if id.is_empty() {
         return ApprovalClassification::UserConfigurable;
     }
@@ -356,6 +356,30 @@ mod tests {
             classify("Send_Email"),
             ApprovalClassification::RequiresApproval
         );
+    }
+
+    #[test]
+    fn shared_normalization_handles_wrappers_and_aliases_before_classifying() {
+        let cases = [
+            ("default_api:read", ApprovalClassification::NoApproval),
+            ("builtin:websearch", ApprovalClassification::NoApproval),
+            ("functions.shell", ApprovalClassification::RequiresApproval),
+            (
+                "default_api:run_command",
+                ApprovalClassification::RequiresApproval,
+            ),
+            (
+                "functions.mcp.linear.list_issues",
+                ApprovalClassification::NoApproval,
+            ),
+            (
+                "tools.mcp.linear.create_issue",
+                ApprovalClassification::RequiresApproval,
+            ),
+        ];
+        for (tool, expected) in cases {
+            assert_eq!(classify(tool), expected, "{tool}");
+        }
     }
 
     #[test]

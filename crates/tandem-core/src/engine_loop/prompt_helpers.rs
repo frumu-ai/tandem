@@ -124,30 +124,7 @@ pub(super) fn is_transient_provider_stream_error(error_text: &str) -> bool {
 }
 
 pub(super) fn normalize_tool_name(name: &str) -> String {
-    let mut normalized = name.trim().to_ascii_lowercase().replace('-', "_");
-    for prefix in [
-        "default_api:",
-        "default_api.",
-        "functions.",
-        "function.",
-        "tools.",
-        "tool.",
-        "builtin:",
-        "builtin.",
-    ] {
-        if let Some(rest) = normalized.strip_prefix(prefix) {
-            let trimmed = rest.trim();
-            if !trimmed.is_empty() {
-                normalized = trimmed.to_string();
-                break;
-            }
-        }
-    }
-    match normalized.as_str() {
-        "todowrite" | "update_todo_list" | "update_todos" => "todo_write".to_string(),
-        "run_command" | "shell" | "powershell" | "cmd" => "bash".to_string(),
-        other => other.to_string(),
-    }
+    tandem_types::canonical_tool_name(name)
 }
 
 pub(super) fn mcp_server_from_tool_name(tool_name: &str) -> Option<&str> {

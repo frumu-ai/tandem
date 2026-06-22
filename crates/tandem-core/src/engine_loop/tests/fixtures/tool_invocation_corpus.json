@@ -1,0 +1,138 @@
+[
+  {
+    "input": "/tool read {\"path\":\"README.md\"}",
+    "expected_tool": "read"
+  },
+  {
+    "input": "/tool default_api:read {\"path\":\"README.md\"}",
+    "expected_tool": "read"
+  },
+  {
+    "input": "{\"tool\":\"read\",\"args\":{\"path\":\"README.md\"}}",
+    "expected_tool": "read"
+  },
+  {
+    "input": "{\"name\":\"functions.shell\",\"arguments\":{\"command\":\"echo hi\"}}",
+    "expected_tool": "bash"
+  },
+  {
+    "input": "{\"tool_call\":{\"name\":\"todo_write\",\"arguments\":{\"todos\":[{\"content\":\"a\"}]}}}",
+    "expected_tool": "todo_write"
+  },
+  {
+    "input": "{\"function_call\":{\"name\":\"default_api:read\",\"arguments\":\"{\\\"path\\\":\\\"Cargo.toml\\\"}\"}}",
+    "expected_tool": "read"
+  },
+  {
+    "input": "{\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"mcp.linear.list_issues\",\"arguments\":\"{\\\"query\\\":\\\"mcp\\\"}\"}}]}",
+    "expected_tool": "mcp.linear.list_issues"
+  },
+  {
+    "input": "Here is the call:\\n```json\\n{\"tool_call\":{\"name\":\"tool.write\",\"arguments\":{\"path\":\"notes.txt\",\"content\":\"hello\"}}}\\n```",
+    "expected_tool": "write"
+  },
+  {
+    "input": "Call: todowrite(task_id=2, status=\"completed\")",
+    "expected_tool": "todo_write"
+  },
+  {
+    "input": "todo_write(todos=[{\"content\":\"Audit\"}])",
+    "expected_tool": "todo_write"
+  },
+  {
+    "input": "update_todos(task_id=3,status=\"pending\")",
+    "expected_tool": "todo_write"
+  },
+  {
+    "input": "functions.shell(command=\"echo hi\")",
+    "expected_tool": "bash"
+  },
+  {
+    "input": "default_api:read(path=\"src/lib.rs\")",
+    "expected_tool": "read"
+  },
+  {
+    "input": "tools.write(path=\"notes.txt\", content=\"hello\")",
+    "expected_tool": "write"
+  },
+  {
+    "input": "builtin:websearch(query=\"rust release\")",
+    "expected_tool": "websearch"
+  },
+  {
+    "input": "mcp.linear.list_issues(query=\"enterprise mcp\")",
+    "expected_tool": "mcp.linear.list_issues"
+  },
+  {
+    "input": "functions.mcp.linear.create_issue(title=\"Bug\", description=\"Fix it\")",
+    "expected_tool": "mcp.linear.create_issue"
+  },
+  {
+    "input": "mcp.github.list_issues(state=\"open\")",
+    "expected_tool": "mcp.github.list_issues"
+  },
+  {
+    "input": "tools.mcp.github.create_issue(title=\"Bug\")",
+    "expected_tool": "mcp.github.create_issue"
+  },
+  {
+    "input": "read({\"path\":\"Cargo.toml\"})",
+    "expected_tool": "read"
+  },
+  {
+    "input": "bash({\"command\":\"pwd\"})",
+    "expected_tool": "bash"
+  },
+  {
+    "input": "websearch(query=\"MCP enterprise\")",
+    "expected_tool": "websearch"
+  },
+  {
+    "input": "Tool call: web_search(query=\"MCP enterprise\")",
+    "expected_tool": "websearch"
+  },
+  {
+    "input": "Tool call: code_search(query=\"ToolRegistry\")",
+    "expected_tool": "codesearch"
+  },
+  {
+    "input": "grep(pattern=\"ToolRegistry\", path=\"crates\")",
+    "expected_tool": "grep"
+  },
+  {
+    "input": "glob(pattern=\"*.rs\")",
+    "expected_tool": "glob"
+  },
+  {
+    "input": "list_files(path=\".\")",
+    "expected_tool": "list_files"
+  },
+  {
+    "input": "memory_search(query=\"tenant\")",
+    "expected_tool": "memory_search"
+  },
+  {
+    "input": "memory_store(key=\"mcp\", value=\"owned by actor\")",
+    "expected_tool": "memory_store"
+  },
+  {
+    "input": "repo.search(query=\"ToolRegistry\")",
+    "expected_tool": "repo.search"
+  },
+  {
+    "input": "task_create(title=\"Investigate MCP\")",
+    "expected_tool": "task_create"
+  },
+  {
+    "input": "question(prompt=\"Continue?\")",
+    "expected_tool": "question"
+  },
+  {
+    "input": "{\"name\":\"tool.edit\",\"args\":{\"path\":\"a.txt\",\"old\":\"x\",\"new\":\"y\"}}",
+    "expected_tool": "edit"
+  },
+  {
+    "input": "{\"call\":{\"tool\":\"builtin:webfetch\",\"args\":{\"url\":\"https://example.com\"}}}",
+    "expected_tool": "webfetch"
+  }
+]
