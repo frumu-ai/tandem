@@ -34,8 +34,8 @@ use uuid::Uuid;
 use tandem_tools::Tool;
 use tandem_types::{
     ApprovalListFilter, ApprovalRequest, CreateSessionRequest, EngineEvent, Message, MessagePart,
-    MessagePartInput, MessageRole, SendMessageRequest, Session, TenantContext, TodoItem,
-    ToolResult, ToolSchema,
+    MessagePartInput, MessageRole, RequestPrincipal, SendMessageRequest, Session, TenantContext,
+    TodoItem, ToolResult, ToolSchema,
 };
 pub(crate) use tandem_wire::{ErrorCode, ErrorEnvelope};
 use tandem_wire::{WireSession, WireSessionMessage};

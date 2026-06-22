@@ -74,6 +74,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   approve requests, provider failure after approval, half-applied gate decisions
   across restart, stale gate decisions, and corrupted run-checkpoint
   quarantine.
+- Added durable PermissionManager state for interactive ask requests,
+  provenance-bearing standing rules, restart-failed pending prompts, and
+  decision history suitable for unified approval rendering.
 
 ### Changed
 
@@ -116,6 +119,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gate-local failure/block markers, and malformed individual run checkpoints in
   an otherwise readable run store now load as blocked diagnostic records instead
   of crashing scheduler startup.
+- Fixed session-level permission decisions so generic permission replies write
+  protected audit evidence with actor, request, decision, and standing-rule
+  provenance.
+- Fixed durable PermissionManager replies so stale persisted request IDs cannot
+  be replayed after restart, and serialized state-file writes to avoid losing
+  concurrent permission asks or decisions.
 
 ## [0.6.1] - 2026-06-20
 

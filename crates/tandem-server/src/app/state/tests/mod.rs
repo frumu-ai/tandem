@@ -336,7 +336,10 @@ pub(crate) async fn ready_test_state() -> AppState {
     let plugins = PluginRegistry::new(".").await.expect("plugins");
     let agents = AgentRegistry::new(".").await.expect("agents");
     let tools = ToolRegistry::new();
-    let permissions = PermissionManager::new(event_bus.clone());
+    let permissions =
+        PermissionManager::new_with_state_file(event_bus.clone(), root.join("permissions.json"))
+            .await
+            .expect("permissions");
     let mcp = McpRegistry::new_with_state_file(mcp_state);
     let pty = PtyManager::new();
     let lsp = LspManager::new(".");
