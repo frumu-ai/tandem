@@ -71,7 +71,7 @@ jobs:
       - name: Check licenses and bans
         run: |
           echo "Using cargo-deny policy from .config/deny.toml"
-          cargo deny check --config .config/deny.toml licenses bans
+          cargo deny check --config .config/deny.toml licenses bans sources
 
       - name: Check advisories
         continue-on-error: ${{ github.event_name == 'pull_request' }}
