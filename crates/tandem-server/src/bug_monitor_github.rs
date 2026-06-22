@@ -61,7 +61,7 @@ impl BugMonitorGithubHost for AppState {
             .filter(|post| post.draft_id == draft_id)
             .cloned()
             .collect::<Vec<_>>();
-        rows.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+        rows.sort_by_key(|post| std::cmp::Reverse(post.updated_at_ms));
         rows
     }
 
@@ -78,7 +78,7 @@ impl BugMonitorGithubHost for AppState {
             .filter(|post| post.repo == repo && post.fingerprint == fingerprint)
             .cloned()
             .collect::<Vec<_>>();
-        rows.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+        rows.sort_by_key(|post| std::cmp::Reverse(post.updated_at_ms));
         rows
     }
 
@@ -94,7 +94,7 @@ impl BugMonitorGithubHost for AppState {
             .filter(|post| post.idempotency_key == idempotency_key)
             .cloned()
             .collect::<Vec<_>>();
-        rows.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+        rows.sort_by_key(|post| std::cmp::Reverse(post.updated_at_ms));
         rows
     }
 

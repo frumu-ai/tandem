@@ -657,7 +657,7 @@ async fn find_matching_issue(
         }
     }
     let marker = fingerprint_marker(&draft.fingerprint);
-    issues.sort_by(|a, b| b.number.cmp(&a.number));
+    issues.sort_by_key(|issue| std::cmp::Reverse(issue.number));
     let exact_marker = issues
         .iter()
         .find(|issue| issue.body.contains(&marker))
@@ -686,7 +686,7 @@ async fn successful_post_by_idempotency(
         .into_iter()
         .filter(|row| row.status == "posted")
         .collect::<Vec<_>>();
-    rows.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+    rows.sort_by_key(|post| std::cmp::Reverse(post.updated_at_ms));
     rows.into_iter().next()
 }
 
@@ -696,7 +696,7 @@ async fn successful_post_for_draft(
     evidence_digest: Option<&str>,
 ) -> Option<BugMonitorPostRecord> {
     let mut rows = state.list_bug_monitor_posts_by_draft(draft_id).await;
-    rows.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+    rows.sort_by_key(|post| std::cmp::Reverse(post.updated_at_ms));
     rows.into_iter().find(|row| {
         row.status == "posted"
             && match evidence_digest {
@@ -741,7 +741,7 @@ async fn latest_failed_create_post_for_draft(
         .into_iter()
         .filter(|post| failed_post_suppresses_create(draft, post))
         .collect::<Vec<_>>();
-    rows.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+    rows.sort_by_key(|post| std::cmp::Reverse(post.updated_at_ms));
     rows.into_iter().next()
 }
 
