@@ -71,6 +71,12 @@ MCP connections.
   artifacts for `tandem-tools`, `tandem-plan-compiler`, and `tandem-automation`.
   The first cargo-deny baseline records scoped license exceptions with owners,
   reasons, and expiry dates so follow-up hardening is auditable.
+- A seeded approval-gated email demo now exercises the enterprise MCP approval
+  pattern without real credentials. `just demo` starts an isolated engine plus a
+  local HTTP MCP email stub, drafts mail, pauses at an Automation V2 approval
+  gate, supports approve/cancel/rework paths, sends only after approval, and
+  writes audit evidence for gate decisions, tool ledger events, drafts, and the
+  outbox. A nightly non-interactive workflow runs the same path in CI.
 
 ### Runtime Governance
 

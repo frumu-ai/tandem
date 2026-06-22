@@ -1,0 +1,32 @@
+id: email-approval-demo
+name: Approval-gated email demo
+trigger: manual
+workspace: .tmp/email-approval-demo/workspace
+connector:
+  server: email_demo
+  transport: http
+  tools:
+    - email.draft
+    - email.send
+flow:
+  - id: draft_email
+    kind: mcp_tool
+    tool: mcp.email_demo.email_draft
+    output: draft_record
+  - id: review_draft_before_send
+    kind: approval_gate
+    decisions:
+      - approve
+      - rework
+      - cancel
+    releases:
+      - send_email
+  - id: send_email
+    kind: mcp_tool
+    tool: mcp.email_demo.email_send
+    requires:
+      - review_draft_before_send.approve
+evidence:
+  gate_history: .tmp/email-approval-demo/artifacts/evidence.json
+  tool_dispatch_ledger: .tmp/email-approval-demo/artifacts/events.jsonl
+  outbox: .tmp/email-approval-demo/artifacts/outbox.jsonl
