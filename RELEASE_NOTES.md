@@ -92,6 +92,10 @@ MCP connections.
   The host shim keeps duplicate post detection and ambiguous failed-create
   suppression on scoped, uncapped storage lookups rather than the public capped
   post-list API.
+- Bug Monitor log sources that start at EOF now keep missing-file health updates
+  separate from successful first positioning. If a watched log appears later
+  with bootstrap/history content, Tandem seeks to the end before ingesting new
+  lines instead of replaying the preexisting file.
 - Tool execution now flows through a governed dispatcher outside the
   `tandem-tools` crate. Engine turns, workflow actions, Automation V2 connector
   preflight calls, direct HTTP tool execution, planner helpers, pack builder,

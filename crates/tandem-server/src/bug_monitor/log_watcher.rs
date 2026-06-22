@@ -155,11 +155,12 @@ pub async fn poll_log_source_once(
     let inode = inode_for_metadata(&metadata);
     if source_state.offset == 0
         && source_state.inode.is_none()
-        && source_state.updated_at_ms == 0
+        && !source_was_successfully_positioned(&source_state)
         && matches!(source.start_position, BugMonitorLogStartPosition::End)
     {
         source_state.offset = file_size;
         source_state.inode = inode.clone();
+        source_state.positioned_at_ms = Some(now_ms);
         source_state.updated_at_ms = now_ms;
         source_state.last_error = None;
         source_state.consecutive_errors = 0;
@@ -192,6 +193,7 @@ pub async fn poll_log_source_once(
         .saturating_sub(source_state.offset)
         .min(source.max_bytes_per_poll);
     if read_len == 0 {
+        source_state.positioned_at_ms.get_or_insert(now_ms);
         source_state.updated_at_ms = now_ms;
         source_state.last_error = None;
         source_state.consecutive_errors = 0;
@@ -226,6 +228,7 @@ pub async fn poll_log_source_once(
     source_state.offset = source_state.offset.saturating_add(read_len);
     source_state.partial_line = parse_result.next_partial_line;
     source_state.partial_line_offset_start = parse_result.next_partial_line_offset_start;
+    source_state.positioned_at_ms.get_or_insert(now_ms);
     source_state.total_bytes_read = source_state.total_bytes_read.saturating_add(read_len);
     source_state.total_candidates = source_state
         .total_candidates
@@ -427,6 +430,7 @@ pub async fn reset_log_source_offset(
     source_state.partial_line_offset_start = None;
     source_state.last_line_hash = None;
     source_state.recent_fingerprints.clear();
+    source_state.positioned_at_ms = Some(now_ms);
     source_state.updated_at_ms = now_ms;
     source_state.last_error = None;
     source_state.consecutive_errors = 0;
@@ -611,6 +615,16 @@ fn status_from_state(
     }
 }
 
+fn source_was_successfully_positioned(state: &BugMonitorLogSourceState) -> bool {
+    state.positioned_at_ms.is_some()
+        || state.offset > 0
+        || state.inode.is_some()
+        || state.total_bytes_read > 0
+        || state.total_candidates > 0
+        || state.total_submitted > 0
+        || (state.updated_at_ms > 0 && state.last_error.is_none())
+}
+
 fn fingerprint_recent(
     state: &mut BugMonitorLogSourceState,
     fingerprint: &str,
@@ -779,6 +793,54 @@ mod tests {
             incidents[0].workspace_root,
             dir.path().display().to_string()
         );
+    }
+
+    #[tokio::test]
+    async fn missing_end_source_seeks_to_end_when_file_first_appears() {
+        let dir = tempdir().unwrap();
+        let state_dir = tempdir().unwrap();
+        let logs = dir.path().join("logs");
+        fs::create_dir_all(&logs).await.unwrap();
+        let log_path = logs.join("app.log");
+
+        let state = test_state(state_dir.path());
+        let project = project(dir.path());
+        state
+            .put_bug_monitor_config(BugMonitorConfig {
+                enabled: true,
+                monitored_projects: vec![project.clone()],
+                ..BugMonitorConfig::default()
+            })
+            .await
+            .unwrap();
+
+        let missing = poll_log_source_once(&state, &project, &source(), 1_000)
+            .await
+            .unwrap();
+        assert!(!missing.healthy);
+        assert_eq!(missing.offset, 0);
+        assert_eq!(missing.total_submitted, 0);
+
+        let history = "ERROR boot failed\n    at boot src/main.ts:1:1\n";
+        fs::write(&log_path, history).await.unwrap();
+        let created = poll_log_source_once(&state, &project, &source(), 2_000)
+            .await
+            .unwrap();
+        assert!(created.healthy);
+        assert_eq!(created.offset, history.len() as u64);
+        assert_eq!(created.total_submitted, 0);
+        assert_eq!(state.list_bug_monitor_incidents(10).await.len(), 0);
+
+        let appended = "ERROR upload failed\n    at normalize src/uploads.ts:42:1\n";
+        fs::write(&log_path, format!("{}{}", history, appended))
+            .await
+            .unwrap();
+        let fresh = poll_log_source_once(&state, &project, &source(), 3_000)
+            .await
+            .unwrap();
+        assert_eq!(fresh.total_submitted, 1);
+        assert_eq!(state.list_bug_monitor_drafts(10).await.len(), 1);
+        assert_eq!(state.list_bug_monitor_incidents(10).await.len(), 1);
     }
 
     #[tokio::test]

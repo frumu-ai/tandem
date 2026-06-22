@@ -123,6 +123,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   opt-in bounded persister queue instead of the live broadcast stream, avoiding
   event loss after persister registration without retaining events in eval-only
   buses that never start the persister.
+- Fixed Bug Monitor log watchers with `start_position = end` so a missing-file
+  poll no longer disables the first successful seek-to-EOF when the log appears
+  later with bootstrap or historical lines.
 - Fixed tenant/actor-scoped MCP OAuth completion so pending sign-in polls return
   the initiating session's authorization URL and callback token storage updates
   the scoped connection instead of the shared server row.
