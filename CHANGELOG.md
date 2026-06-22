@@ -105,6 +105,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Began the AppState domain-manager decomposition by moving provider and MCP
   OAuth callback session maps behind a dedicated OAuth state manager with an
   explicit lock-order boundary.
+- Began TAN-205 crate-boundary cleanup by relocating the provider auth
+  credential store implementation into `tandem-providers` while keeping
+  `tandem-core` compatibility re-exports for existing callers.
 - Replaced divergent tool-name normalization in parser, registry resolution,
   and approval classification with a shared `tandem-types` canonicalizer, plus
   a structured function-style invocation scanner and 30+ case parser corpus.
