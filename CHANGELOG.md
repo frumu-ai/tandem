@@ -66,6 +66,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Automation V2 run stores/history shards, including explicit v0-to-v1 upgrade
   paths, future-version refusal, compatibility fixtures, and a memory DB
   `schema_migrations` ledger with idempotency coverage.
+- Added Automation V2 restart/reload golden coverage for queued,
+  awaiting-approval, blocked, and running runs, including duplicate approval
+  decision protection and consequential-node no-replay assertions after server
+  restart recovery.
 
 ### Changed
 
