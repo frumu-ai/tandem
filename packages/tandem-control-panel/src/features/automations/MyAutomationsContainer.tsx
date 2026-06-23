@@ -484,12 +484,26 @@ export function MyAutomationsContainer({
         nextScopeSnapshot.connector_binding_resolution =
           deriveConnectorBindingResolutionFromPlanPackage(nextScopeSnapshot, connectorBindings);
       }
-      const existing = automationsV2.find(
+      let existing = automationsV2.find(
         (row: any) =>
           String(row?.automation_id || row?.automationId || row?.id || "").trim() ===
           draft.automationId
       );
-      const agents = Array.isArray(existing?.agents)
+      const summaryMissingRunnableShape =
+        !Array.isArray(existing?.agents) ||
+        existing.agents.length === 0 ||
+        !Array.isArray(existing?.flow?.nodes);
+      if (summaryMissingRunnableShape && client?.automationsV2?.get) {
+        try {
+          const response = await client.automationsV2.get(draft.automationId);
+          if (response?.automation && typeof response.automation === "object") {
+            existing = response.automation;
+          }
+        } catch {
+          // Keep the summary row and avoid clearing omitted fields below.
+        }
+      }
+      const agents = Array.isArray(existing?.agents) && existing.agents.length > 0
         ? existing.agents.map((agent: any) => {
             const agentId = String(agent?.agent_id || agent?.agentId || "").trim();
             const nextModelPolicy = stepModelPolicies.has(agentId)
@@ -518,7 +532,7 @@ export function MyAutomationsContainer({
               },
             };
           })
-        : [];
+        : null;
       const flowNodes = Array.isArray(existing?.flow?.nodes)
         ? existing.flow.nodes.map((node: any, index: number) => {
             const nodeId = String(
@@ -674,7 +688,7 @@ export function MyAutomationsContainer({
               nodes: flowNodes,
             }
           : existing?.flow,
-        agents,
+        ...(agents ? { agents } : {}),
         ...(draft.handoffConfig != null ? { handoff_config: draft.handoffConfig } : {}),
         ...(Array.isArray(draft.watchConditions) && draft.watchConditions.length > 0
           ? { watch_conditions: draft.watchConditions }
@@ -703,6 +717,24 @@ export function MyAutomationsContainer({
     },
     onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
   });
+  const openWorkflowAutomationEdit = async (automation: any) => {
+    const automationId = String(
+      automation?.automation_id || automation?.automationId || automation?.id || ""
+    ).trim();
+    let fullAutomation = automation;
+    if (automationId && client?.automationsV2?.get) {
+      try {
+        const response = await client.automationsV2.get(automationId);
+        if (response?.automation && typeof response.automation === "object") {
+          fullAutomation = response.automation;
+        }
+      } catch {
+        toast("err", "Could not load full workflow definition; showing cached summary.");
+      }
+    }
+    setWorkflowEditDraft(workflowAutomationToEditDraft(fullAutomation));
+  };
+
   const automationActionMutation = useMutation({
     mutationFn: async ({
       action,
@@ -1895,6 +1927,7 @@ export function MyAutomationsContainer({
         updateCalendarAutomationFromEvent,
         onOpenAdvancedEdit,
         setWorkflowEditDraft,
+        openWorkflowAutomationEdit,
         runNowV2Mutation,
         automationActionMutation,
         beginEdit,

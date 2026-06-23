@@ -66,6 +66,18 @@
                                 continue;
                             }
                         }
+                        if should_block_connector_action_before_concrete_read(
+                            &text,
+                            &tool_key,
+                            productive_concrete_read_total,
+                        ) {
+                            rejected_tool_call_in_cycle = true;
+                            outputs.push(format!(
+                                "Tool `{}` call skipped: read the concrete source file listed in this node before connector action tools.",
+                                tool_key
+                            ));
+                            continue;
+                        }
                         if tool_key == "question" {
                             question_tool_used = true;
                         }
@@ -774,6 +786,30 @@
                                 ));
                                 break;
                             }
+                            if should_complete_after_productive_artifact_write(
+                                requested_write_required,
+                                productive_write_tool_calls_total,
+                                prewrite_satisfied,
+                            ) {
+                                completion = synthesize_artifact_write_completion_from_tool_state(
+                                    &text,
+                                    prewrite_satisfied,
+                                    prewrite_gate_waived,
+                                );
+                                self.event_bus.publish(EngineEvent::new(
+                                    "provider.call.iteration.finish",
+                                    json!({
+                                        "sessionID": session_id,
+                                        "messageID": user_message_id,
+                                        "iteration": iteration,
+                                        "finishReason": "artifact_write_completed",
+                                        "acceptedToolCalls": accepted_tool_calls_in_cycle,
+                                        "rejectedToolCalls": 0,
+                                    }),
+                                ));
+                                break;
+                            }
+
                             followup_context = Some(format!(
                                 "{}\nContinue with a concise final response and avoid repeating identical tool calls.",
                                 summarize_tool_outputs(&outputs)

@@ -1435,6 +1435,117 @@ fn optional_tandem_mcp_reference_does_not_prompt_for_required_connector_source()
 }
 
 #[test]
+fn explicit_input_files_ignore_mcp_tool_identifiers() {
+    let mut node = bare_node();
+    node.metadata = Some(json!({
+        "builder": {
+            "input_files": [
+                "mcp.notion.notion_create_pages",
+                "data/filtered-leads.json"
+            ]
+        }
+    }));
+    let automation = automation_with_output_targets(vec![node.clone()], Vec::new());
+
+    let input_files = automation_node_effective_input_files_for_automation(
+        &automation,
+        &node,
+        None,
+    );
+
+    assert_eq!(input_files, vec!["data/filtered-leads.json".to_string()]);
+}
+
+#[test]
+fn prompt_does_not_treat_mcp_tool_ids_as_concrete_source_files() {
+    let mut node = bare_node();
+    node.node_id = "notion_local_llm_privacy".to_string();
+    node.objective = "Read the single filtered leads artifact before doing anything else. If leads is empty or missing, do not call mcp.notion.notion_search and do not call mcp.notion.notion_create_pages; write exactly one JSON artifact and stop. If leads is non-empty, insert those leads into the Notion data source.".to_string();
+    node.metadata = Some(json!({
+        "required_tools": [
+            "mcp.notion.notion_search",
+            "mcp.notion.notion_create_pages"
+        ]
+    }));
+    let automation = automation_with_output_targets(vec![node.clone()], Vec::new());
+    let upstream_inputs = vec![json!({
+        "alias": "filtered_leads",
+        "from_step_id": "filter_agent_tool_security",
+        "output": {
+            "content": {
+                "path": ".tandem/runs/run-notion/artifacts/filter-agent-tool-security.json"
+            },
+            "artifact_validation": {
+                "accepted_artifact_path": ".tandem/runs/run-notion/artifacts/filter-agent-tool-security.json"
+            }
+        }
+    })];
+    let agent = crate::AutomationAgentProfile {
+        agent_id: "a1".to_string(),
+        template_id: None,
+        display_name: "Notion Writer".to_string(),
+        avatar_url: None,
+        model_policy: None,
+        skills: Vec::new(),
+        tool_policy: crate::AutomationAgentToolPolicy {
+            allowlist: Vec::new(),
+            denylist: Vec::new(),
+        },
+        mcp_policy: crate::AutomationAgentMcpPolicy {
+            allowed_servers: vec!["notion".to_string()],
+            allowed_tools: None,
+            allowed_connections: Vec::new(),
+        },
+        approval_policy: None,
+    };
+
+    let prompt = render_automation_v2_prompt(
+        &automation,
+        "/tmp/workspace",
+        "run-notion",
+        &node,
+        1,
+        &agent,
+        &upstream_inputs,
+        &[
+            "mcp_list".to_string(),
+            "mcp.notion.notion_search".to_string(),
+            "mcp.notion.notion_create_pages".to_string(),
+            "read".to_string(),
+            "write".to_string(),
+        ],
+        None,
+        None,
+        None,
+    );
+
+    assert!(
+        prompt.contains("Concrete files for this node:\n- `.tandem/runs/run-notion/artifacts/filter-agent-tool-security.json`"),
+        "{prompt}"
+    );
+    assert!(
+        !prompt.contains("Concrete files for this node:\n- `mcp.notion.notion_create_pages`"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("These are action tools, not source evidence"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("Do not call connector action tools with empty payloads"),
+        "{prompt}"
+    );
+    assert!(
+        !prompt.contains("Call at least one concrete source tool before writing"),
+        "{prompt}"
+    );
+    assert!(
+        !prompt.contains("Read-only files for this node:\n- `mcp.notion.notion_create_pages`"),
+        "{prompt}"
+    );
+}
+
+#[test]
 fn capability_ids_optional_web_context_offers_web_without_requiring_research_gate() {
     let mut node = bare_node();
     node.node_id = "gather_supporting_context".to_string();
