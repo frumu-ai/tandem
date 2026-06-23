@@ -201,21 +201,20 @@ impl AppState {
             return Ok(existing);
         }
 
-        let source_approval_required = match submission
+        let high_risk = crate::bug_monitor::router::is_high_risk(submission.risk_level.as_deref());
+        let approval_required = match submission
             .source_approval_policy
             .as_ref()
             .unwrap_or(&BugMonitorApprovalPolicy::Inherit)
         {
             BugMonitorApprovalPolicy::Always => true,
-            BugMonitorApprovalPolicy::HighRisk => {
-                crate::bug_monitor::router::is_high_risk(submission.risk_level.as_deref())
+            BugMonitorApprovalPolicy::HighRisk => high_risk,
+            BugMonitorApprovalPolicy::Never => false,
+            BugMonitorApprovalPolicy::Inherit => {
+                config.require_approval_for_new_issues
+                    || (config.safety_defaults.require_approval_for_high_risk && high_risk)
             }
-            BugMonitorApprovalPolicy::Inherit | BugMonitorApprovalPolicy::Never => false,
         };
-        let approval_required = config.require_approval_for_new_issues
-            || (config.safety_defaults.require_approval_for_high_risk
-                && crate::bug_monitor::router::is_high_risk(submission.risk_level.as_deref()))
-            || source_approval_required;
         let draft = BugMonitorDraftRecord {
             draft_id: format!("failure-draft-{}", uuid::Uuid::new_v4().simple()),
             fingerprint,

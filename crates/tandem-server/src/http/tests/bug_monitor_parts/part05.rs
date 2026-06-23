@@ -619,3 +619,100 @@ async fn bug_monitor_scoped_intake_inherits_configured_source_binding() {
         Some("tenant-a")
     );
 }
+
+#[tokio::test]
+#[serial_test::serial(bug_monitor_http)]
+async fn bug_monitor_scoped_intake_source_never_overrides_global_approval_default() {
+    let state = test_state().await;
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    std::fs::create_dir_all(workspace.path().join("logs")).expect("logs dir");
+    state
+        .put_bug_monitor_config(crate::BugMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            workspace_root: Some(workspace.path().display().to_string()),
+            require_approval_for_new_issues: true,
+            monitored_projects: vec![crate::BugMonitorMonitoredProject {
+                project_id: "payments".to_string(),
+                name: "Payments".to_string(),
+                repo: "acme/payments".to_string(),
+                workspace_root: workspace.path().display().to_string(),
+                log_sources: vec![crate::BugMonitorLogSource {
+                    source_id: "ci".to_string(),
+                    path: "logs/ci.jsonl".to_string(),
+                    approval_policy: crate::BugMonitorApprovalPolicy::Never,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            default_destination_ids: vec![crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID
+                .to_string()],
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+    let raw_key = "tbm_intake_source_never_test";
+    state
+        .put_bug_monitor_intake_key(crate::BugMonitorProjectIntakeKey {
+            key_id: "intake-key-source-never".to_string(),
+            project_id: "payments".to_string(),
+            name: "Payments CI".to_string(),
+            key_hash: crate::sha256_hex(&[raw_key]),
+            enabled: true,
+            scopes: vec!["bug_monitor:report".to_string()],
+            created_at_ms: Some(crate::now_ms()),
+            last_used_at_ms: None,
+        })
+        .await
+        .expect("intake key");
+
+    let app = app_router(state.clone());
+    let intake_req = Request::builder()
+        .method("POST")
+        .uri("/bug-monitor/intake/report")
+        .header("content-type", "application/json")
+        .header("x-tandem-bug-monitor-intake-key", raw_key)
+        .body(Body::from(
+            json!({
+                "project_id": "payments",
+                "source_id": "ci",
+                "report": {
+                    "title": "CI deploy failed",
+                    "detail": "The CI deploy job failed after a policy check.",
+                    "risk_level": "medium",
+                    "excerpt": ["ERROR deploy failed"]
+                }
+            })
+            .to_string(),
+        ))
+        .expect("intake request");
+    let intake_resp = app.oneshot(intake_req).await.expect("intake response");
+    assert_eq!(intake_resp.status(), StatusCode::OK);
+    let intake_payload: Value = serde_json::from_slice(
+        &to_bytes(intake_resp.into_body(), usize::MAX)
+            .await
+            .expect("intake body"),
+    )
+    .expect("intake json");
+    let draft_id = intake_payload
+        .get("draft")
+        .and_then(|draft| draft.get("draft_id"))
+        .and_then(Value::as_str)
+        .expect("draft id");
+    assert_eq!(
+        intake_payload
+            .get("draft")
+            .and_then(|draft| draft.get("status"))
+            .and_then(Value::as_str),
+        Some("draft_ready")
+    );
+    let stored = state
+        .get_bug_monitor_draft(draft_id)
+        .await
+        .expect("stored draft");
+    assert_eq!(stored.status, "draft_ready");
+    assert_eq!(
+        stored.source_approval_policy,
+        Some(crate::BugMonitorApprovalPolicy::Never)
+    );
+}
