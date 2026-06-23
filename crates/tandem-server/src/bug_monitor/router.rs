@@ -433,7 +433,9 @@ fn route_publish_match_approval_required(
         Some(BugMonitorApprovalPolicy::Always) => true,
         Some(BugMonitorApprovalPolicy::Never) => false,
         Some(BugMonitorApprovalPolicy::HighRisk) => destination_requires_approval || high_risk,
-        Some(BugMonitorApprovalPolicy::Inherit) | None => destination_requires_approval,
+        Some(BugMonitorApprovalPolicy::Inherit) | None => {
+            preview_inherited_approval_required(config, context, destination_requires_approval)
+        }
     }
 }
 
@@ -558,9 +560,11 @@ fn enrich_route_context_from_sources(
         .source_approval_policy
         .as_ref()
         .is_some_and(|policy| policy == &binding.approval_policy);
-    if binding.approval_policy == BugMonitorApprovalPolicy::Never
-        && !existing_policy_matches_binding
-    {
+    // Source IDs can fail closed with Always, but downgrading policies must come
+    // from a trusted intake/log-watcher path that persisted the exact binding.
+    let trusted_source_policy = existing_policy_matches_binding
+        || binding.approval_policy == BugMonitorApprovalPolicy::Always;
+    if !trusted_source_policy {
         out.source_approval_policy = None;
         out.source_approval_policy_trusted = false;
     } else {

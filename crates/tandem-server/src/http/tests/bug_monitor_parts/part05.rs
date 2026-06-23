@@ -551,6 +551,100 @@ async fn bug_monitor_raw_report_cannot_inherit_configured_never_source_policy() 
 }
 
 #[tokio::test]
+#[serial_test::serial(bug_monitor_http)]
+async fn bug_monitor_raw_report_cannot_downgrade_global_approval_with_configured_high_risk_policy()
+{
+    let state = test_state().await;
+    state
+        .put_bug_monitor_config(crate::BugMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            workspace_root: Some("/tmp/acme".to_string()),
+            require_approval_for_new_issues: true,
+            monitored_projects: vec![crate::BugMonitorMonitoredProject {
+                project_id: "payments".to_string(),
+                name: "Payments".to_string(),
+                repo: "acme/platform".to_string(),
+                workspace_root: "/tmp/acme".to_string(),
+                log_sources: vec![crate::BugMonitorLogSource {
+                    source_id: "ci".to_string(),
+                    path: "logs/ci.jsonl".to_string(),
+                    approval_policy: crate::BugMonitorApprovalPolicy::HighRisk,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            default_destination_ids: vec![crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID
+                .to_string()],
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+
+    let app = app_router(state.clone());
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/bug-monitor/report")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "report": {
+                    "project_id": "payments",
+                    "log_source_id": "ci",
+                    "source": "raw_http",
+                    "title": "Raw medium CI report",
+                    "detail": "A raw report must not downgrade global approval.",
+                    "risk_level": "medium",
+                    "confidence": "medium",
+                    "excerpt": ["ERROR raw medium CI report failed"]
+                }
+            })
+            .to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app.clone().oneshot(create_req).await.expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let create_payload: Value = serde_json::from_slice(
+        &to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .expect("create body"),
+    )
+    .expect("create json");
+    let draft_id = create_payload
+        .get("draft")
+        .and_then(|row| row.get("draft_id"))
+        .and_then(Value::as_str)
+        .expect("draft id")
+        .to_string();
+    let stored = state
+        .get_bug_monitor_draft(&draft_id)
+        .await
+        .expect("stored draft");
+    assert_eq!(stored.status, "approval_required");
+    assert!(stored.source_approval_policy.is_none());
+
+    let publish_req = Request::builder()
+        .method("POST")
+        .uri(format!("/bug-monitor/drafts/{draft_id}/publish"))
+        .body(Body::empty())
+        .expect("publish request");
+    let publish_resp = app.oneshot(publish_req).await.expect("publish response");
+    assert_eq!(publish_resp.status(), StatusCode::OK);
+    let publish_payload: Value = serde_json::from_slice(
+        &to_bytes(publish_resp.into_body(), usize::MAX)
+            .await
+            .expect("publish body"),
+    )
+    .expect("publish json");
+
+    assert_eq!(
+        publish_payload.get("action").and_then(Value::as_str),
+        Some("approval_required")
+    );
+    assert!(state.list_bug_monitor_posts(10).await.is_empty());
+}
+
+#[tokio::test]
 async fn bug_monitor_dedupe_keeps_distinct_source_bound_drafts() {
     let state = test_state().await;
     state

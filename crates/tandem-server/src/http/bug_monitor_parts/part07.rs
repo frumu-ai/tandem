@@ -37,11 +37,7 @@ fn apply_bug_monitor_report_source_approval_binding(
         report.source_approval_policy = None;
         return;
     }
-    let approval_policy = project.source_binding(configured_source).approval_policy;
-    report.source_approval_policy = match approval_policy {
-        BugMonitorApprovalPolicy::Never => None,
-        policy => Some(policy),
-    };
+    report.source_approval_policy = None;
 }
 
 fn bug_monitor_intake_key_from_headers(headers: &HeaderMap) -> Option<String> {
