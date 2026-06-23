@@ -554,8 +554,19 @@ fn enrich_route_context_from_sources(
     if out.default_destination_ids.is_empty() {
         out.default_destination_ids = binding.default_destination_ids.clone();
     }
-    out.source_approval_policy = Some(binding.approval_policy);
-    out.source_approval_policy_trusted = true;
+    let existing_policy_matches_binding = out
+        .source_approval_policy
+        .as_ref()
+        .is_some_and(|policy| policy == &binding.approval_policy);
+    if binding.approval_policy == BugMonitorApprovalPolicy::Never
+        && !existing_policy_matches_binding
+    {
+        out.source_approval_policy = None;
+        out.source_approval_policy_trusted = false;
+    } else {
+        out.source_approval_policy = Some(binding.approval_policy);
+        out.source_approval_policy_trusted = true;
+    }
     out
 }
 

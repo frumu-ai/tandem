@@ -479,6 +479,124 @@ async fn bug_monitor_raw_report_cannot_supply_untrusted_never_source_policy() {
 
 #[tokio::test]
 #[serial_test::serial(bug_monitor_http)]
+async fn bug_monitor_raw_report_cannot_inherit_configured_never_source_policy() {
+    let state = test_state().await;
+    state
+        .put_bug_monitor_config(crate::BugMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            workspace_root: Some("/tmp/acme".to_string()),
+            require_approval_for_new_issues: true,
+            monitored_projects: vec![crate::BugMonitorMonitoredProject {
+                project_id: "payments".to_string(),
+                name: "Payments".to_string(),
+                repo: "acme/platform".to_string(),
+                workspace_root: "/tmp/acme".to_string(),
+                log_sources: vec![crate::BugMonitorLogSource {
+                    source_id: "ci".to_string(),
+                    path: "logs/ci.jsonl".to_string(),
+                    approval_policy: crate::BugMonitorApprovalPolicy::Never,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            default_destination_ids: vec![crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID
+                .to_string()],
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+
+    let app = app_router(state.clone());
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/bug-monitor/report")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "report": {
+                    "project_id": "payments",
+                    "log_source_id": "ci",
+                    "source": "raw_http",
+                    "title": "Raw CI report",
+                    "detail": "A raw report must not inherit a source approval exemption.",
+                    "risk_level": "medium",
+                    "confidence": "medium",
+                    "excerpt": ["ERROR raw CI report failed"]
+                }
+            })
+            .to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app.oneshot(create_req).await.expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let create_payload: Value = serde_json::from_slice(
+        &to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .expect("create body"),
+    )
+    .expect("create json");
+    let draft_id = create_payload
+        .get("draft")
+        .and_then(|row| row.get("draft_id"))
+        .and_then(Value::as_str)
+        .expect("draft id");
+    let stored = state
+        .get_bug_monitor_draft(draft_id)
+        .await
+        .expect("stored draft");
+
+    assert_eq!(stored.status, "approval_required");
+    assert!(stored.source_approval_policy.is_none());
+}
+
+#[tokio::test]
+async fn bug_monitor_dedupe_keeps_distinct_source_bound_drafts() {
+    let state = test_state().await;
+    state
+        .put_bug_monitor_config(crate::BugMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            workspace_root: Some("/tmp/acme".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+
+    let first = state
+        .submit_bug_monitor_draft(crate::BugMonitorSubmission {
+            repo: Some("acme/platform".to_string()),
+            project_id: Some("payments".to_string()),
+            log_source_id: Some("api".to_string()),
+            fingerprint: Some("shared-source-fingerprint".to_string()),
+            source: Some("payments-api".to_string()),
+            title: Some("Shared failure fingerprint".to_string()),
+            detail: Some("The payments API reported this failure.".to_string()),
+            excerpt: vec!["ERROR payments api failed".to_string()],
+            ..Default::default()
+        })
+        .await
+        .expect("first draft");
+    let second = state
+        .submit_bug_monitor_draft(crate::BugMonitorSubmission {
+            repo: Some("acme/platform".to_string()),
+            project_id: Some("checkout".to_string()),
+            log_source_id: Some("worker".to_string()),
+            fingerprint: Some("shared-source-fingerprint".to_string()),
+            source: Some("checkout-worker".to_string()),
+            title: Some("Shared failure fingerprint".to_string()),
+            detail: Some("The checkout worker reported this failure.".to_string()),
+            excerpt: vec!["ERROR checkout worker failed".to_string()],
+            ..Default::default()
+        })
+        .await
+        .expect("second draft");
+
+    assert_ne!(first.draft_id, second.draft_id);
+}
+
+#[tokio::test]
+#[serial_test::serial(bug_monitor_http)]
 async fn bug_monitor_scoped_intake_inherits_configured_source_binding() {
     let state = test_state().await;
     let workspace = tempfile::tempdir().expect("workspace tempdir");

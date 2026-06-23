@@ -1,3 +1,18 @@
+fn bug_monitor_source_identity_matches_draft(
+    draft: &BugMonitorDraftRecord,
+    submission: &BugMonitorSubmission,
+) -> bool {
+    let draft_project = draft.project_id.as_deref();
+    let draft_source = draft.log_source_id.as_deref();
+    let submission_project = submission.project_id.as_deref();
+    let submission_source = submission.log_source_id.as_deref();
+    let source_bound = draft_project.is_some()
+        || draft_source.is_some()
+        || submission_project.is_some()
+        || submission_source.is_some();
+    !source_bound || (draft_project == submission_project && draft_source == submission_source)
+}
+
 impl AppState {
     pub async fn submit_bug_monitor_draft(
         &self,
@@ -109,7 +124,11 @@ impl AppState {
         let mut drafts = self.bug_monitor_drafts.write().await;
         if let Some(existing_id) = drafts
             .values()
-            .find(|row| row.repo == repo && row.fingerprint == fingerprint)
+            .find(|row| {
+                row.repo == repo
+                    && row.fingerprint == fingerprint
+                    && bug_monitor_source_identity_matches_draft(row, &submission)
+            })
             .map(|row| row.draft_id.clone())
         {
             let Some(existing) = drafts.get_mut(&existing_id) else {
