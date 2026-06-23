@@ -385,7 +385,7 @@ fn validate_publish_plan(
 }
 
 fn draft_satisfies_route_approval(draft: &BugMonitorDraftRecord) -> bool {
-    draft.status.eq_ignore_ascii_case("draft_ready") && draft.approval_granted_at_ms.is_some()
+    draft.approval_granted_at_ms.is_some()
 }
 
 fn route_publish_approval_required(
