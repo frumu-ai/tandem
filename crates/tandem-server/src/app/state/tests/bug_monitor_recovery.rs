@@ -1,12 +1,23 @@
 use crate::{
-    bug_monitor::service::recover_overdue_bug_monitor_triage_runs, BugMonitorConfig,
-    BugMonitorDraftRecord, BugMonitorIncidentRecord,
+    bug_monitor::service::recover_overdue_bug_monitor_triage_runs, BugMonitorApprovalPolicy,
+    BugMonitorConfig, BugMonitorDraftRecord, BugMonitorIncidentRecord, BugMonitorLogSource,
+    BugMonitorMonitoredProject,
 };
 
 use super::{test_state_with_path, tmp_resource_file};
 
 fn bug_monitor_recovery_state(name: &str) -> crate::app::state::AppState {
     let mut state = test_state_with_path(tmp_resource_file(name));
+    state.bug_monitor_config_path = tmp_resource_file(&format!("{name}-config"));
+    state.bug_monitor_drafts_path = tmp_resource_file(&format!("{name}-drafts"));
+    state.bug_monitor_incidents_path = tmp_resource_file(&format!("{name}-incidents"));
+    state.bug_monitor_posts_path = tmp_resource_file(&format!("{name}-posts"));
+    state.automation_v2_runs_path = tmp_resource_file(&format!("{name}-runs"));
+    state
+}
+
+async fn ready_bug_monitor_recovery_state(name: &str) -> crate::app::state::AppState {
+    let mut state = super::ready_test_state().await;
     state.bug_monitor_config_path = tmp_resource_file(&format!("{name}-config"));
     state.bug_monitor_drafts_path = tmp_resource_file(&format!("{name}-drafts"));
     state.bug_monitor_incidents_path = tmp_resource_file(&format!("{name}-incidents"));
@@ -119,4 +130,69 @@ async fn overdue_recovery_skips_timed_out_triage_drafts_with_github_issue() {
         .expect("recover overdue triage");
 
     assert!(recovered.is_empty());
+}
+
+#[tokio::test]
+async fn recovery_publish_honors_source_approval_policy() {
+    let state =
+        ready_bug_monitor_recovery_state("bug-monitor-recovery-router-source-approval").await;
+    state
+        .put_bug_monitor_config(BugMonitorConfig {
+            enabled: true,
+            paused: false,
+            repo: Some("frumu-ai/tandem".to_string()),
+            triage_timeout_ms: Some(0),
+            monitored_projects: vec![BugMonitorMonitoredProject {
+                project_id: "payments".to_string(),
+                name: "Payments".to_string(),
+                repo: "frumu-ai/tandem".to_string(),
+                workspace_root: "/tmp/tandem".to_string(),
+                log_sources: vec![BugMonitorLogSource {
+                    source_id: "ci".to_string(),
+                    path: "logs/ci.jsonl".to_string(),
+                    approval_policy: BugMonitorApprovalPolicy::Always,
+                    ..BugMonitorLogSource::default()
+                }],
+                ..BugMonitorMonitoredProject::default()
+            }],
+            ..Default::default()
+        })
+        .await
+        .expect("put bug monitor config");
+
+    let draft_id = "failure-draft-source-approval";
+    let triage_run_id = "automation-v2-run-source-approval";
+    let incident_id = "failure-incident-source-approval";
+    let mut draft = timed_out_draft(draft_id, triage_run_id);
+    draft.project_id = Some("payments".to_string());
+    draft.log_source_id = Some("ci".to_string());
+    state
+        .put_bug_monitor_draft(draft)
+        .await
+        .expect("put timed out draft");
+
+    let mut incident = incident_for_draft(incident_id, draft_id, triage_run_id);
+    incident.project_id = Some("payments".to_string());
+    incident.log_source_id = Some("ci".to_string());
+    state
+        .put_bug_monitor_incident(incident)
+        .await
+        .expect("put incident");
+
+    let outcome = crate::app::tasks::publish_bug_monitor_recovery_draft(
+        &state,
+        draft_id.to_string(),
+        Some(incident_id.to_string()),
+    )
+    .await
+    .expect("publish recovery draft through router");
+
+    assert_eq!(outcome.action, "approval_required");
+    assert!(outcome.post.is_none());
+    let stored = state
+        .get_bug_monitor_draft(draft_id)
+        .await
+        .expect("stored draft");
+    assert_eq!(stored.status, "approval_required");
+    assert_eq!(stored.github_status.as_deref(), Some("approval_required"));
 }

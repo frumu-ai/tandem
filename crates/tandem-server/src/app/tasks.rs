@@ -1137,6 +1137,23 @@ pub async fn run_bug_monitor(state: AppState) {
     }
 }
 
+pub(crate) async fn publish_bug_monitor_recovery_draft(
+    state: &AppState,
+    draft_id: String,
+    incident_id: Option<String>,
+) -> anyhow::Result<crate::bug_monitor_github::PublishOutcome> {
+    crate::bug_monitor::router::publish_draft(
+        state,
+        crate::bug_monitor::router::BugMonitorPublishRequest {
+            draft_id,
+            incident_id,
+            mode: crate::bug_monitor_github::PublishMode::Recovery,
+            destination_ids: Vec::new(),
+        },
+    )
+    .await
+}
+
 /// Periodic deadline sweep for Bug Monitor triage runs. Without this
 /// loop, `recover_overdue_bug_monitor_triage_runs` only fires when
 /// something polls `bug_monitor_status` (the status panel, the
@@ -1176,13 +1193,8 @@ pub async fn run_bug_monitor_recovery_sweep(state: AppState) {
             }
         };
         for (draft_id, incident_id) in recovered {
-            if let Err(error) = crate::bug_monitor_github::publish_draft(
-                &state,
-                &draft_id,
-                incident_id.as_deref(),
-                crate::bug_monitor_github::PublishMode::Recovery,
-            )
-            .await
+            if let Err(error) =
+                publish_bug_monitor_recovery_draft(&state, draft_id.clone(), incident_id).await
             {
                 tracing::warn!(
                     draft_id = %draft_id,
