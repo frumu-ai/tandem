@@ -987,9 +987,7 @@ fn connector_action_guard_requires_concrete_read_before_mcp_action() {
         1,
     ));
     assert!(!should_block_connector_action_before_concrete_read(
-        prompt,
-        "mcp_list",
-        0,
+        prompt, "mcp_list", 0,
     ));
     assert!(!should_block_connector_action_before_concrete_read(
         "no concrete source section",

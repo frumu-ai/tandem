@@ -39,6 +39,7 @@ import {
   workflowTotalNodeCount,
 } from "../orchestration/workflowStability";
 import { MyAutomationsContent } from "./MyAutomationsContent";
+import { updateWorkflowAutomationDraft } from "./workflowAutomationSave";
 import { useBufferedAppender } from "./useBufferedAppender";
 import { useSelectedRunLifecycle } from "./useSelectedRunLifecycle";
 import { useAutomationRunMutations } from "./useAutomationRunMutations";
@@ -69,16 +70,8 @@ export function MyAutomationsContainer({
     validateModelInput,
     validatePlannerModelInput,
     validateWorkspaceRootInput,
-    workflowEditToOperatorPreferences,
-    compileWorkflowModelPolicy,
-    cloneJsonValue,
-    compileWorkflowToolAllowlist,
-    parseConnectorBindingsJson,
-    workflowNodeModelPolicyWithOverride,
-    deriveConnectorBindingResolutionFromPlanPackage,
     workflowAutomationToEditDraft,
     isMissionBlueprintAutomation,
-    workflowEditToSchedule,
     buildCalendarOccurrences,
     normalizeTimestamp,
     workflowQueueReason,
@@ -379,33 +372,13 @@ export function MyAutomationsContainer({
     onOpenRunningView,
   });
   const updateAutomationMutation = useMutation({
-    mutationFn: async (draft: any) => {
-      const name = String(draft.name || "").trim();
-      const objective = String(draft.objective || "").trim();
-      const cronExpression = String(draft.cronExpression || "").trim();
-      const intervalSeconds = Number(draft.intervalSeconds);
-      if (!name) throw new Error("Automation name is required.");
-      if (!objective) throw new Error("Objective is required.");
-      if (draft.scheduleKind === "cron" && !cronExpression) {
-        throw new Error("Cron expression is required.");
-      }
-      if (
-        draft.scheduleKind === "interval" &&
-        (!Number.isFinite(intervalSeconds) || intervalSeconds <= 0)
-      ) {
-        throw new Error("Interval seconds must be greater than zero.");
-      }
-      return client.automations.update(draft.automationId, {
-        name,
-        mode: draft.mode,
-        mission: { objective },
-        policy: { approval: { requires_approval: !!draft.requiresApproval } },
-        schedule:
-          draft.scheduleKind === "cron"
-            ? { cron: { expression: cronExpression } }
-            : { interval_seconds: { seconds: Math.round(intervalSeconds) } },
-      });
-    },
+    mutationFn: (draft: any) =>
+      updateWorkflowAutomationDraft({
+        draft,
+        client,
+        automationsV2,
+        helperFns,
+      }),
     onSuccess: async () => {
       toast("ok", "Automation updated.");
       setEditDraft(null);
