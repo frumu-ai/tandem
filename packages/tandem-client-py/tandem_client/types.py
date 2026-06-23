@@ -682,6 +682,96 @@ class WorkflowHookListResponse(BaseModel):
 
 # ─── Bug Monitor ──────────────────────────────────────────────────────────────
 
+BugMonitorDestinationKind = Literal[
+    "github_issue",
+    "linear_issue",
+    "webhook",
+    "telemetry",
+    "mcp_tool",
+    "internal_memory",
+]
+BugMonitorApprovalPolicy = Literal["inherit", "always", "high_risk", "never"]
+
+
+class BugMonitorDestinationConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    destination_id: str
+    name: str
+    kind: Optional[str] = None
+    enabled: Optional[bool] = None
+    require_approval: Optional[bool] = None
+    repo: Optional[str] = None
+    mcp_server: Optional[str] = None
+    linear_team: Optional[str] = None
+    linear_project: Optional[str] = None
+    webhook_url: Optional[str] = None
+    webhook_secret_ref: Optional[str] = None
+    telemetry_path: Optional[str] = None
+    mcp_tool: Optional[str] = None
+    memory_category: Optional[str] = None
+    route_tags: list[str] = []
+    config: Optional[dict[str, Any]] = None
+
+
+class BugMonitorRouteConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    route_id: str
+    name: str
+    enabled: Optional[bool] = None
+    priority: Optional[int] = None
+    destination_ids: list[str] = []
+    approval_policy: Optional[str] = None
+    match_event_types: list[str] = []
+    match_sources: list[str] = []
+    match_components: list[str] = []
+    match_risk_levels: list[str] = []
+    match_confidence: list[str] = []
+    match_expected_destinations: list[str] = []
+    match_project_ids: list[str] = []
+    match_log_source_ids: list[str] = []
+    match_route_tags: list[str] = []
+
+
+class BugMonitorSafetyDefaults(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    require_approval_for_high_risk: bool = True
+    redact_secrets: bool = True
+    block_unready_destinations: bool = False
+    retention_days: Optional[int] = None
+
+
+class BugMonitorDestinationReadiness(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    destination_id: str
+    kind: Optional[str] = None
+    enabled: Optional[bool] = None
+    ready: Optional[bool] = None
+    publish_ready: Optional[bool] = None
+    requires_approval: Optional[bool] = None
+    missing: list[str] = []
+    detail: Optional[str] = None
+
+
+class BugMonitorRoutePreviewMatch(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    route_id: Optional[str] = None
+    route_name: Optional[str] = None
+    destination_ids: list[str] = []
+    approval_required: Optional[bool] = None
+    reason: Optional[str] = None
+
+
+class BugMonitorRoutePreviewResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    matches: list[BugMonitorRoutePreviewMatch] = []
+    destinations: list[BugMonitorDestinationConfig] = []
+    readiness: list[BugMonitorDestinationReadiness] = []
+    default_destination_ids: list[str] = []
+    effective_destination_ids: list[str] = []
+    approval_required: Optional[bool] = None
+    blocked: Optional[bool] = None
+    blocked_reasons: list[str] = []
+
 
 class BugMonitorConfigRow(BaseModel):
     model_config = ConfigDict(extra="allow")
@@ -696,6 +786,10 @@ class BugMonitorConfigRow(BaseModel):
     require_approval_for_new_issues: Optional[bool] = None
     auto_comment_on_matched_open_issues: Optional[bool] = None
     label_mode: Optional[str] = None
+    destinations: list[BugMonitorDestinationConfig] = []
+    routes: list[BugMonitorRouteConfig] = []
+    default_destination_ids: list[str] = []
+    safety_defaults: Optional[BugMonitorSafetyDefaults] = None
 
 
 class BugMonitorConfigResponse(BaseModel):
@@ -713,6 +807,8 @@ class BugMonitorStatusRow(BaseModel):
     resolved_capabilities: list[dict[str, Any]] = []
     discovered_mcp_tools: list[str] = []
     selected_server_binding_candidates: list[dict[str, Any]] = []
+    destinations: list[BugMonitorDestinationConfig] = []
+    destination_readiness: list[BugMonitorDestinationReadiness] = []
     binding_source_version: Optional[str] = None
     bindings_last_merged_at_ms: Optional[int] = None
     selected_model: Optional[dict[str, Any]] = None
@@ -786,10 +882,31 @@ class BugMonitorPostRecord(BaseModel):
     repo: Optional[str] = None
     operation: Optional[str] = None
     status: Optional[str] = None
+    incident_id: Optional[str] = None
+    fingerprint: Optional[str] = None
     issue_number: Optional[int] = None
     issue_url: Optional[str] = None
+    comment_id: Optional[str] = None
     comment_url: Optional[str] = None
+    destination_id: Optional[str] = None
+    destination_kind: Optional[str] = None
+    route_id: Optional[str] = None
+    route_match_reason: Optional[str] = None
+    external_id: Optional[str] = None
+    external_url: Optional[str] = None
+    external_title: Optional[str] = None
+    target_ref: Optional[str] = None
+    receipt: Optional[Any] = None
+    evidence_digest: Optional[str] = None
+    confidence: Optional[str] = None
+    risk_level: Optional[str] = None
+    expected_destination: Optional[str] = None
+    evidence_refs: list[str] = []
+    quality_gate: Optional[dict[str, Any]] = None
+    idempotency_key: Optional[str] = None
+    response_excerpt: Optional[str] = None
     error: Optional[str] = None
+    created_at_ms: Optional[int] = None
     updated_at_ms: Optional[int] = None
 
 

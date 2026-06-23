@@ -34,6 +34,15 @@ async fn bug_monitor_post_idempotency_claim_allows_one_pending_create() {
         issue_url: None,
         comment_id: None,
         comment_url: None,
+        destination_id: Some("legacy-github".to_string()),
+        destination_kind: Some(crate::BugMonitorDestinationKind::GithubIssue),
+        route_id: None,
+        route_match_reason: Some("legacy_github".to_string()),
+        external_id: None,
+        external_url: None,
+        external_title: None,
+        target_ref: Some("acme/platform".to_string()),
+        receipt: None,
         evidence_digest: Some("digest-claim".to_string()),
         confidence: None,
         risk_level: None,
@@ -62,6 +71,186 @@ async fn bug_monitor_post_idempotency_claim_allows_one_pending_create() {
     assert!(!claimed_second);
     assert_eq!(existing.post_id, "failure-post-claim-1");
     assert_eq!(state.list_bug_monitor_posts(10).await.len(), 1);
+    assert_eq!(
+        state
+            .list_bug_monitor_posts_by_destination(
+                10,
+                crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID
+            )
+            .await
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(bug_monitor_http)]
+async fn bug_monitor_route_preview_uses_legacy_default_without_posting() {
+    let state = test_state().await;
+    state
+        .put_bug_monitor_config(crate::BugMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            workspace_root: Some("/tmp/acme".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+
+    let app = app_router(state.clone());
+    let preview_req = Request::builder()
+        .method("POST")
+        .uri("/bug-monitor/route-preview")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "report": {
+                    "source": "manual",
+                    "event": "manual.report",
+                    "risk_level": "high",
+                    "title": "Manual high risk report"
+                }
+            })
+            .to_string(),
+        ))
+        .expect("preview request");
+    let preview_resp = app
+        .clone()
+        .oneshot(preview_req)
+        .await
+        .expect("preview response");
+    assert_eq!(preview_resp.status(), StatusCode::OK);
+    let preview_payload: Value = serde_json::from_slice(
+        &to_bytes(preview_resp.into_body(), usize::MAX)
+            .await
+            .expect("preview body"),
+    )
+    .expect("preview json");
+
+    assert_eq!(
+        preview_payload
+            .get("effective_destination_ids")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(Value::as_str),
+        Some(crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID)
+    );
+    assert_eq!(
+        preview_payload
+            .get("matches")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("reason"))
+            .and_then(Value::as_str),
+        Some("default_destination")
+    );
+    assert_eq!(
+        preview_payload
+            .get("approval_required")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        preview_payload.get("blocked").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(state.list_bug_monitor_posts(10).await.is_empty());
+}
+
+#[tokio::test]
+#[serial_test::serial(bug_monitor_http)]
+async fn bug_monitor_route_preview_matches_ordered_route_and_blocks_unready_destination() {
+    let state = test_state().await;
+    state
+        .put_bug_monitor_config(crate::BugMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            workspace_root: Some("/tmp/acme".to_string()),
+            destinations: vec![crate::BugMonitorDestinationConfig {
+                destination_id: "linear-prod".to_string(),
+                name: "Linear production".to_string(),
+                kind: crate::BugMonitorDestinationKind::LinearIssue,
+                enabled: true,
+                ..Default::default()
+            }],
+            routes: vec![crate::BugMonitorRouteConfig {
+                route_id: "manual-linear".to_string(),
+                name: "Manual reports to Linear".to_string(),
+                priority: 10,
+                destination_ids: vec!["linear-prod".to_string()],
+                approval_policy: crate::BugMonitorApprovalPolicy::Always,
+                match_sources: vec!["desktop_logs".to_string()],
+                ..Default::default()
+            }],
+            default_destination_ids: vec![crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID
+                .to_string()],
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+
+    let app = app_router(state.clone());
+    let preview_req = Request::builder()
+        .method("POST")
+        .uri("/bug-monitor/route-preview")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "source": "desktop_logs",
+                "event_type": "external_service_crash",
+                "risk_level": "medium"
+            })
+            .to_string(),
+        ))
+        .expect("preview request");
+    let preview_resp = app.oneshot(preview_req).await.expect("preview response");
+    assert_eq!(preview_resp.status(), StatusCode::OK);
+    let preview_payload: Value = serde_json::from_slice(
+        &to_bytes(preview_resp.into_body(), usize::MAX)
+            .await
+            .expect("preview body"),
+    )
+    .expect("preview json");
+
+    assert_eq!(
+        preview_payload
+            .get("matches")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("route_id"))
+            .and_then(Value::as_str),
+        Some("manual-linear")
+    );
+    assert_eq!(
+        preview_payload
+            .get("effective_destination_ids")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(Value::as_str),
+        Some("linear-prod")
+    );
+    assert_eq!(
+        preview_payload
+            .get("approval_required")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        preview_payload.get("blocked").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(
+        preview_payload
+            .get("blocked_reasons")
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter().any(|row| {
+                    row.as_str()
+                        .is_some_and(|reason| reason.contains("not ready"))
+                })
+            })
+            .unwrap_or(false)
+    );
 }
 
 #[tokio::test]

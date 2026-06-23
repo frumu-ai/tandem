@@ -8,6 +8,8 @@ import type {
   BugMonitorIntakeKeyListResponse,
   BugMonitorLogSourceReplayResponse,
   BugMonitorLogSourceResetResponse,
+  BugMonitorPostRecord,
+  BugMonitorRoutePreviewResponse,
   BugMonitorStatusResponse,
 } from "../src/public/index.js";
 
@@ -17,6 +19,33 @@ describe("Bug Monitor external project public types", () => {
       bug_monitor: {
         enabled: true,
         repo: "frumu-ai/tandem",
+        destinations: [
+          {
+            destination_id: "legacy-github",
+            name: "GitHub (legacy Bug Monitor)",
+            kind: "github_issue",
+            enabled: true,
+            repo: "frumu-ai/tandem",
+            mcp_server: "github",
+            route_tags: ["legacy_github"],
+          },
+        ],
+        routes: [
+          {
+            route_id: "default",
+            name: "Default route",
+            enabled: true,
+            destination_ids: ["legacy-github"],
+            approval_policy: "inherit",
+            match_sources: ["manual"],
+          },
+        ],
+        default_destination_ids: ["legacy-github"],
+        safety_defaults: {
+          require_approval_for_high_risk: true,
+          redact_secrets: true,
+          block_unready_destinations: false,
+        },
         monitored_projects: [
           {
             project_id: "aca",
@@ -42,6 +71,17 @@ describe("Bug Monitor external project public types", () => {
     const status: BugMonitorStatusResponse = {
       status: {
         config: config.bug_monitor,
+        destinations: config.bug_monitor.destinations,
+        destination_readiness: [
+          {
+            destination_id: "legacy-github",
+            kind: "github_issue",
+            enabled: true,
+            ready: true,
+            publish_ready: true,
+            requires_approval: false,
+          },
+        ],
         log_watcher: {
           running: true,
           enabled_projects: 1,
@@ -61,11 +101,45 @@ describe("Bug Monitor external project public types", () => {
         },
       },
     };
+    const preview: BugMonitorRoutePreviewResponse = {
+      matches: [
+        {
+          route_id: "default",
+          destination_ids: ["legacy-github"],
+          approval_required: false,
+          reason: "default_destination",
+        },
+      ],
+      destinations: config.bug_monitor.destinations,
+      readiness: status.status.destination_readiness,
+      default_destination_ids: ["legacy-github"],
+      effective_destination_ids: ["legacy-github"],
+      approval_required: false,
+      blocked: false,
+      blocked_reasons: [],
+    };
+    const post: BugMonitorPostRecord = {
+      post_id: "post-1",
+      draft_id: "draft-1",
+      repo: "frumu-ai/tandem",
+      operation: "create_issue",
+      status: "posted",
+      destination_id: "legacy-github",
+      destination_kind: "github_issue",
+      route_match_reason: "legacy_github",
+      external_id: "42",
+      external_url: "https://github.com/frumu-ai/tandem/issues/42",
+      external_title: "GitHub issue #42",
+      target_ref: "frumu-ai/tandem",
+      receipt: { provider: "github", issue_number: 42 },
+    };
 
     expect(config.bug_monitor.monitored_projects?.[0]?.log_sources?.[0]?.source_id).toBe(
       "coder-worker"
     );
     expect(status.status.log_watcher?.sources?.[0]?.healthy).toBe(true);
+    expect(preview.effective_destination_ids?.[0]).toBe("legacy-github");
+    expect(post.receipt && typeof post.receipt === "object").toBe(true);
   });
 
   it("accepts scoped intake key management payloads", () => {
@@ -141,6 +215,14 @@ describe("Bug Monitor external project public types", () => {
       await client.bugMonitor.disableIntakeKey("intake/key 1");
       await client.bugMonitor.resetLogSourceOffset("aca/project", "worker/source");
       await client.bugMonitor.replayLatestLogSourceCandidate("aca/project", "worker/source");
+      await client.bugMonitor.previewRoute({
+        source: "desktop_logs",
+        risk_level: "high",
+      });
+      await client.bugMonitor.listPosts({
+        limit: 25,
+        destinationId: "legacy-github",
+      });
 
       expect(calls[0]).toMatchObject({
         url: "http://localhost:39731/bug-monitor/intake/keys",
@@ -168,6 +250,20 @@ describe("Bug Monitor external project public types", () => {
       expect(calls[4]).toMatchObject({
         url: "http://localhost:39731/bug-monitor/log-sources/aca%2Fproject/worker%2Fsource/replay-latest",
         method: "POST",
+      });
+      expect(calls[5]).toMatchObject({
+        url: "http://localhost:39731/bug-monitor/route-preview",
+        method: "POST",
+      });
+      expect(calls[5]?.body).toBe(
+        JSON.stringify({
+          source: "desktop_logs",
+          risk_level: "high",
+        })
+      );
+      expect(calls[6]).toMatchObject({
+        url: "http://localhost:39731/bug-monitor/posts?limit=25&destination_id=legacy-github",
+        method: "GET",
       });
     } finally {
       globalThis.fetch = originalFetch;

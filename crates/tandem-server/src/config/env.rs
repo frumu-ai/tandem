@@ -208,6 +208,10 @@ pub(crate) fn resolve_bug_monitor_env_config() -> BugMonitorConfig {
         .map(Some)
         .unwrap_or(Some(1_800_000)),
         monitored_projects: Vec::new(),
+        destinations: Vec::new(),
+        routes: Vec::new(),
+        default_destination_ids: Vec::new(),
+        safety_defaults: Default::default(),
         updated_at_ms: 0,
     }
 }

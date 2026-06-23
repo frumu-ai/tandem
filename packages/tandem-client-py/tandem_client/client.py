@@ -32,6 +32,7 @@ from .types import (
     BugMonitorIncidentListResponse,
     BugMonitorIncidentRecord,
     BugMonitorPostListResponse,
+    BugMonitorRoutePreviewResponse,
     CoderGithubProjectInboxResponse,
     CoderGithubProjectIntakeResponse,
     BugMonitorStatusResponse,
@@ -443,6 +444,13 @@ class _BugMonitor:
         res.raise_for_status()
         return res.json()  # type: ignore[no-any-return]
 
+    async def preview_route(
+        self, payload: Optional[dict[str, Any]] = None
+    ) -> BugMonitorRoutePreviewResponse:
+        res = await self._http.post("/bug-monitor/route-preview", json=payload or {})
+        res.raise_for_status()
+        return BugMonitorRoutePreviewResponse.model_validate(res.json())
+
     async def debug(self) -> dict[str, Any]:
         res = await self._http.get("/bug-monitor/debug")
         res.raise_for_status()
@@ -470,8 +478,12 @@ class _BugMonitor:
         res.raise_for_status()
         return BugMonitorDraftListResponse.model_validate(res.json())
 
-    async def list_posts(self, limit: Optional[int] = None) -> BugMonitorPostListResponse:
+    async def list_posts(
+        self, limit: Optional[int] = None, destination_id: Optional[str] = None
+    ) -> BugMonitorPostListResponse:
         params = {"limit": limit} if limit is not None else {}
+        if destination_id:
+            params["destination_id"] = destination_id
         res = await self._http.get("/bug-monitor/posts", params=params)
         res.raise_for_status()
         return BugMonitorPostListResponse.model_validate(res.json())

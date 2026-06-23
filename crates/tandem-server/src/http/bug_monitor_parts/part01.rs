@@ -38,6 +38,7 @@ pub(super) struct BugMonitorIncidentsQuery {
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct BugMonitorPostsQuery {
     pub limit: Option<usize>,
+    pub destination_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -52,6 +53,36 @@ pub(super) struct BugMonitorBulkDeleteInput {
 pub(super) struct BugMonitorSubmissionInput {
     #[serde(default)]
     pub report: Option<BugMonitorSubmission>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct BugMonitorRoutePreviewInput {
+    #[serde(default)]
+    pub draft_id: Option<String>,
+    #[serde(default)]
+    pub incident_id: Option<String>,
+    #[serde(default)]
+    pub report: Option<BugMonitorSubmission>,
+    #[serde(default)]
+    pub event_type: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub component: Option<String>,
+    #[serde(default)]
+    pub risk_level: Option<String>,
+    #[serde(default)]
+    pub confidence: Option<String>,
+    #[serde(default)]
+    pub expected_destination: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub log_source_id: Option<String>,
+    #[serde(default)]
+    pub route_tags: Vec<String>,
+    #[serde(default)]
+    pub destination_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]

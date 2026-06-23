@@ -81,6 +81,7 @@ import type {
   BugMonitorDraftRecord,
   BugMonitorDraftListResponse,
   BugMonitorPostListResponse,
+  BugMonitorRoutePreviewResponse,
   BugMonitorIntakeKeyCreateInput,
   BugMonitorIntakeKeyCreateResponse,
   BugMonitorIntakeKeyDisableResponse,
@@ -729,6 +730,13 @@ class BugMonitor {
     return this.req<JsonObject>("/bug-monitor/debug");
   }
 
+  async previewRoute(input?: JsonObject): Promise<BugMonitorRoutePreviewResponse> {
+    return this.req<BugMonitorRoutePreviewResponse>("/bug-monitor/route-preview", {
+      method: "POST",
+      body: JSON.stringify(input ?? {}),
+    });
+  }
+
   async listIncidents(options?: { limit?: number }): Promise<BugMonitorIncidentListResponse> {
     const qs = options?.limit !== undefined ? `?limit=${options.limit}` : "";
     return this.req<BugMonitorIncidentListResponse>(`/bug-monitor/incidents${qs}`);
@@ -804,8 +812,16 @@ class BugMonitor {
     return this.req<BugMonitorDraftListResponse>(`/bug-monitor/drafts${qs}`);
   }
 
-  async listPosts(options?: { limit?: number }): Promise<BugMonitorPostListResponse> {
-    const qs = options?.limit !== undefined ? `?limit=${options.limit}` : "";
+  async listPosts(options?: {
+    limit?: number;
+    destinationId?: string;
+    destination_id?: string;
+  }): Promise<BugMonitorPostListResponse> {
+    const params = new URLSearchParams();
+    if (options?.limit !== undefined) params.set("limit", String(options.limit));
+    const destinationId = options?.destination_id ?? options?.destinationId;
+    if (destinationId) params.set("destination_id", destinationId);
+    const qs = params.toString() ? `?${params.toString()}` : "";
     return this.req<BugMonitorPostListResponse>(`/bug-monitor/posts${qs}`);
   }
 

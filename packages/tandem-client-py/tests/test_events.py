@@ -6,7 +6,12 @@ import pytest
 import respx
 from pydantic import TypeAdapter
 from tandem_client import TandemClient
-from tandem_client.types import EngineEvent
+from tandem_client.types import (
+    BugMonitorConfigResponse,
+    BugMonitorPostRecord,
+    BugMonitorRoutePreviewResponse,
+    EngineEvent,
+)
 
 CONTRACT_PATH = Path(__file__).parent.parent.parent.parent / "contracts" / "events.json"
 
@@ -49,6 +54,65 @@ def test_events_contract():
             assert event.run_id == "r_456"
 
         print(f"Passed: {event_type}")
+
+
+def test_bug_monitor_destination_router_types_accept_payloads() -> None:
+    config = BugMonitorConfigResponse.model_validate(
+        {
+            "bug_monitor": {
+                "enabled": True,
+                "repo": "frumu-ai/tandem",
+                "destinations": [
+                    {
+                        "destination_id": "legacy-github",
+                        "name": "GitHub (legacy Bug Monitor)",
+                        "kind": "github_issue",
+                        "repo": "frumu-ai/tandem",
+                        "mcp_server": "github",
+                        "route_tags": ["legacy_github"],
+                    }
+                ],
+                "routes": [
+                    {
+                        "route_id": "default",
+                        "name": "Default route",
+                        "destination_ids": ["legacy-github"],
+                        "approval_policy": "inherit",
+                    }
+                ],
+                "default_destination_ids": ["legacy-github"],
+                "safety_defaults": {
+                    "require_approval_for_high_risk": True,
+                    "redact_secrets": True,
+                },
+            }
+        }
+    )
+    preview = BugMonitorRoutePreviewResponse.model_validate(
+        {
+            "matches": [{"destination_ids": ["legacy-github"], "approval_required": False}],
+            "destinations": config.bug_monitor.destinations,
+            "default_destination_ids": ["legacy-github"],
+            "effective_destination_ids": ["legacy-github"],
+        }
+    )
+    post = BugMonitorPostRecord.model_validate(
+        {
+            "post_id": "post-1",
+            "draft_id": "draft-1",
+            "repo": "frumu-ai/tandem",
+            "operation": "create_issue",
+            "status": "posted",
+            "destination_id": "legacy-github",
+            "destination_kind": "github_issue",
+            "external_url": "https://github.com/frumu-ai/tandem/issues/42",
+            "receipt": {"provider": "github", "issue_number": 42},
+        }
+    )
+
+    assert config.bug_monitor.destinations[0].destination_id == "legacy-github"
+    assert preview.effective_destination_ids == ["legacy-github"]
+    assert post.receipt["issue_number"] == 42
 
 
 @pytest.mark.asyncio
@@ -96,6 +160,18 @@ async def test_high_value_sdk_parity_routes() -> None:
     respx.get("http://localhost:39731/bug-monitor/drafts").mock(
         return_value=httpx.Response(200, json={"drafts": [], "count": 0})
     )
+    route_preview_route = respx.post("http://localhost:39731/bug-monitor/route-preview").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "matches": [{"destination_ids": ["legacy-github"]}],
+                "effective_destination_ids": ["legacy-github"],
+            },
+        )
+    )
+    posts_route = respx.get(
+        "http://localhost:39731/bug-monitor/posts?limit=25&destination_id=legacy-github"
+    ).mock(return_value=httpx.Response(200, json={"posts": [], "count": 0}))
     approve_draft_route = respx.post("http://localhost:39731/bug-monitor/drafts/d-1/approve").mock(
         return_value=httpx.Response(200, json={"ok": True})
     )
@@ -119,6 +195,8 @@ async def test_high_value_sdk_parity_routes() -> None:
         workflow_runs = await client.workflows.list_runs(limit=5)
         await client.workflows.run("wf-1")
         drafts = await client.bug_monitor.list_drafts(limit=5)
+        preview = await client.bug_monitor.preview_route({"source": "desktop_logs"})
+        posts = await client.bug_monitor.list_posts(limit=25, destination_id="legacy-github")
         await client.bug_monitor.approve_draft("d-1", "ship it")
         toml = await client.mcp.catalog_toml("demo")
         resource = await client.resources.get("a/b")
@@ -131,6 +209,10 @@ async def test_high_value_sdk_parity_routes() -> None:
     assert workflow_runs.count == 0
     assert workflow_run_route.called
     assert drafts.count == 0
+    assert preview.effective_destination_ids == ["legacy-github"]
+    assert route_preview_route.called
+    assert posts.count == 0
+    assert posts_route.called
     assert approve_draft_route.called
     assert "ship it" in approve_draft_route.calls[0].request.content.decode("utf-8")
     assert "name = 'demo'" in toml

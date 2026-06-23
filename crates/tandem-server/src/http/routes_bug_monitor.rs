@@ -29,6 +29,14 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
         .route("/failure-reporter/resume", post(resume_bug_monitor))
         .route("/bug-monitor/debug", get(get_bug_monitor_debug))
         .route("/failure-reporter/debug", get(get_bug_monitor_debug))
+        .route(
+            "/bug-monitor/route-preview",
+            post(preview_bug_monitor_route),
+        )
+        .route(
+            "/failure-reporter/route-preview",
+            post(preview_bug_monitor_route),
+        )
         .route("/bug-monitor/incidents", get(list_bug_monitor_incidents))
         .route(
             "/failure-reporter/incidents",

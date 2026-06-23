@@ -879,6 +879,96 @@ export interface WorkflowHookListResponse {
 
 // ─── Bug Monitor ─────────────────────────────────────────────────────────────
 
+export type BugMonitorDestinationKind =
+  | "github_issue"
+  | "linear_issue"
+  | "webhook"
+  | "telemetry"
+  | "mcp_tool"
+  | "internal_memory";
+
+export type BugMonitorApprovalPolicy = "inherit" | "always" | "high_risk" | "never";
+
+export interface BugMonitorDestinationConfig {
+  destination_id: string;
+  name: string;
+  kind?: BugMonitorDestinationKind | string;
+  enabled?: boolean;
+  require_approval?: boolean;
+  repo?: string | null;
+  mcp_server?: string | null;
+  linear_team?: string | null;
+  linear_project?: string | null;
+  webhook_url?: string | null;
+  webhook_secret_ref?: string | null;
+  telemetry_path?: string | null;
+  mcp_tool?: string | null;
+  memory_category?: string | null;
+  route_tags?: string[];
+  config?: JsonObject | null;
+  [key: string]: unknown;
+}
+
+export interface BugMonitorRouteConfig {
+  route_id: string;
+  name: string;
+  enabled?: boolean;
+  priority?: number;
+  destination_ids?: string[];
+  approval_policy?: BugMonitorApprovalPolicy | string;
+  match_event_types?: string[];
+  match_sources?: string[];
+  match_components?: string[];
+  match_risk_levels?: string[];
+  match_confidence?: string[];
+  match_expected_destinations?: string[];
+  match_project_ids?: string[];
+  match_log_source_ids?: string[];
+  match_route_tags?: string[];
+  [key: string]: unknown;
+}
+
+export interface BugMonitorSafetyDefaults {
+  require_approval_for_high_risk?: boolean;
+  redact_secrets?: boolean;
+  block_unready_destinations?: boolean;
+  retention_days?: number | null;
+  [key: string]: unknown;
+}
+
+export interface BugMonitorDestinationReadiness {
+  destination_id: string;
+  kind?: BugMonitorDestinationKind | string;
+  enabled?: boolean;
+  ready?: boolean;
+  publish_ready?: boolean;
+  requires_approval?: boolean;
+  missing?: string[];
+  detail?: string | null;
+  [key: string]: unknown;
+}
+
+export interface BugMonitorRoutePreviewMatch {
+  route_id?: string | null;
+  route_name?: string | null;
+  destination_ids?: string[];
+  approval_required?: boolean;
+  reason?: string | null;
+  [key: string]: unknown;
+}
+
+export interface BugMonitorRoutePreviewResponse {
+  matches?: BugMonitorRoutePreviewMatch[];
+  destinations?: BugMonitorDestinationConfig[];
+  readiness?: BugMonitorDestinationReadiness[];
+  default_destination_ids?: string[];
+  effective_destination_ids?: string[];
+  approval_required?: boolean;
+  blocked?: boolean;
+  blocked_reasons?: string[];
+  [key: string]: unknown;
+}
+
 export interface BugMonitorConfigRow {
   enabled?: boolean;
   paused?: boolean;
@@ -892,6 +982,10 @@ export interface BugMonitorConfigRow {
   auto_comment_on_matched_open_issues?: boolean;
   label_mode?: string | null;
   monitored_projects?: BugMonitorMonitoredProject[];
+  destinations?: BugMonitorDestinationConfig[];
+  routes?: BugMonitorRouteConfig[];
+  default_destination_ids?: string[];
+  safety_defaults?: BugMonitorSafetyDefaults | null;
   [key: string]: unknown;
 }
 
@@ -965,6 +1059,8 @@ export interface BugMonitorStatusRow {
   resolved_capabilities?: JsonObject[];
   discovered_mcp_tools?: string[];
   selected_server_binding_candidates?: JsonObject[];
+  destinations?: BugMonitorDestinationConfig[];
+  destination_readiness?: BugMonitorDestinationReadiness[];
   binding_source_version?: string | null;
   bindings_last_merged_at_ms?: number | null;
   selected_model?: JsonObject | null;
@@ -1061,6 +1157,15 @@ export interface BugMonitorPostRecord {
   issue_url?: string | null;
   comment_id?: string | null;
   comment_url?: string | null;
+  destination_id?: string | null;
+  destination_kind?: BugMonitorDestinationKind | string | null;
+  route_id?: string | null;
+  route_match_reason?: string | null;
+  external_id?: string | null;
+  external_url?: string | null;
+  external_title?: string | null;
+  target_ref?: string | null;
+  receipt?: JsonValue | null;
   evidence_digest?: string | null;
   confidence?: string | null;
   risk_level?: string | null;

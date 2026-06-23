@@ -578,7 +578,109 @@ impl AppState {
                 && status.required_capabilities.github_create_issue
                 && status.required_capabilities.github_comment_on_issue
                 && selected_model_ready,
+            destination_ready: config.enabled
+                && !config.paused
+                && repo_valid
+                && selected_server
+                    .as_ref()
+                    .map(|row| row.connected)
+                    .unwrap_or(false)
+                && status.required_capabilities.github_list_issues
+                && status.required_capabilities.github_get_issue
+                && status.required_capabilities.github_create_issue
+                && status.required_capabilities.github_comment_on_issue,
+            route_preview_ready: true,
         };
+        status.destinations = config.effective_destinations();
+        status.destination_readiness = status
+            .destinations
+            .iter()
+            .map(|destination| {
+                let mut missing = Vec::new();
+                let mut detail = None;
+                let requires_approval =
+                    config.require_approval_for_new_issues || destination.require_approval;
+
+                if !config.enabled {
+                    missing.push("Bug Monitor is disabled".to_string());
+                }
+                if config.paused {
+                    missing.push("Bug Monitor is paused".to_string());
+                }
+                if !destination.enabled {
+                    missing.push("Destination is disabled".to_string());
+                }
+
+                let publish_ready = match destination.kind {
+                    BugMonitorDestinationKind::GithubIssue => {
+                        let destination_repo = destination.repo.as_deref().or(config.repo.as_deref());
+                        let destination_repo_valid = destination_repo
+                            .map(is_valid_owner_repo_slug)
+                            .unwrap_or(false);
+                        if destination_repo.is_none() {
+                            missing.push("GitHub repo is missing".to_string());
+                        } else if !destination_repo_valid {
+                            missing.push("GitHub repo must be in owner/repo format".to_string());
+                        }
+
+                        let destination_server_name = destination
+                            .mcp_server
+                            .as_deref()
+                            .or(config.mcp_server.as_deref());
+                        let destination_server = destination_server_name.and_then(|name| servers.get(name));
+                        if destination_server_name.is_none() {
+                            missing.push("MCP server is missing".to_string());
+                        } else if destination_server.is_none() {
+                            missing.push("MCP server is not configured".to_string());
+                        } else if !destination_server
+                            .as_ref()
+                            .map(|row| row.connected)
+                            .unwrap_or(false)
+                        {
+                            missing.push("MCP server is disconnected".to_string());
+                        }
+
+                        if !status.readiness.github_read_ready || !status.readiness.github_write_ready {
+                            missing.push("GitHub capabilities are missing".to_string());
+                        }
+
+                        config.enabled
+                            && !config.paused
+                            && destination.enabled
+                            && destination_repo_valid
+                            && destination_server
+                                .as_ref()
+                                .map(|row| row.connected)
+                                .unwrap_or(false)
+                            && status.readiness.github_read_ready
+                            && status.readiness.github_write_ready
+                    }
+                    _ => {
+                        detail = Some(
+                            "Destination kind is configured but is not available in this phase"
+                                .to_string(),
+                        );
+                        missing.push("Destination implementation is not available".to_string());
+                        false
+                    }
+                };
+
+                BugMonitorDestinationReadiness {
+                    destination_id: destination.destination_id.clone(),
+                    kind: destination.kind.clone(),
+                    enabled: destination.enabled,
+                    ready: publish_ready,
+                    publish_ready,
+                    requires_approval,
+                    missing,
+                    detail,
+                }
+            })
+            .collect();
+        status.readiness.destination_ready = status
+            .destination_readiness
+            .iter()
+            .any(|destination| destination.publish_ready);
         if config.enabled {
             if config.paused {
                 status.last_error = Some("Bug monitor monitoring is paused.".to_string());

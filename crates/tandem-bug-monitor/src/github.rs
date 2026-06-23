@@ -8,8 +8,8 @@ use tandem_types::{EngineEvent, ToolResult};
 use crate::comment_summary::build_comment_recurrence_summary;
 use crate::error_provenance::{locate_error_provenance, render_provenance_section};
 use crate::types::{
-    BugMonitorConfig, BugMonitorDraftRecord, BugMonitorIncidentRecord, BugMonitorPostRecord,
-    BugMonitorStatus,
+    BugMonitorConfig, BugMonitorDestinationKind, BugMonitorDraftRecord, BugMonitorIncidentRecord,
+    BugMonitorPostRecord, BugMonitorStatus, BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID,
 };
 use crate::{now_ms, sha256_hex, truncate_text};
 use std::fs;
@@ -125,6 +125,24 @@ pub async fn record_post_failure(
         issue_url: draft.github_issue_url.clone(),
         comment_id: None,
         comment_url: draft.github_comment_url.clone(),
+        destination_id: Some(BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()),
+        destination_kind: Some(BugMonitorDestinationKind::GithubIssue),
+        route_id: None,
+        route_match_reason: Some("legacy_github".to_string()),
+        external_id: draft.issue_number.map(|number| number.to_string()),
+        external_url: draft
+            .github_comment_url
+            .clone()
+            .or_else(|| draft.github_issue_url.clone()),
+        external_title: draft
+            .issue_number
+            .map(|number| format!("GitHub issue #{number}")),
+        target_ref: Some(draft.repo.clone()),
+        receipt: Some(json!({
+            "provider": "github",
+            "operation": operation,
+            "status": "failed",
+        })),
         evidence_digest: evidence_digest.map(|value| value.to_string()),
         confidence: draft.confidence.clone(),
         risk_level: draft.risk_level.clone(),
@@ -350,6 +368,20 @@ pub async fn publish_draft(
                 issue_url: issue.html_url.clone(),
                 comment_id: result.id.clone(),
                 comment_url: result.html_url.clone(),
+                destination_id: Some(BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()),
+                destination_kind: Some(BugMonitorDestinationKind::GithubIssue),
+                route_id: None,
+                route_match_reason: Some("legacy_github".to_string()),
+                external_id: result.id.clone(),
+                external_url: result.html_url.clone().or_else(|| issue.html_url.clone()),
+                external_title: Some(format!("GitHub issue #{} comment", issue.number)),
+                target_ref: Some(draft.repo.clone()),
+                receipt: Some(json!({
+                    "provider": "github",
+                    "operation": "comment_issue",
+                    "issue_number": issue.number,
+                    "comment_id": result.id,
+                })),
                 evidence_digest: Some(evidence_digest.clone()),
                 confidence: draft.confidence.clone(),
                 risk_level: draft.risk_level.clone(),
@@ -526,6 +558,19 @@ async fn create_issue_from_draft(
         issue_url: None,
         comment_id: None,
         comment_url: None,
+        destination_id: Some(BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()),
+        destination_kind: Some(BugMonitorDestinationKind::GithubIssue),
+        route_id: None,
+        route_match_reason: Some("legacy_github".to_string()),
+        external_id: None,
+        external_url: None,
+        external_title: None,
+        target_ref: Some(draft.repo.clone()),
+        receipt: Some(json!({
+            "provider": "github",
+            "operation": "create_issue",
+            "status": "pending",
+        })),
         evidence_digest: Some(evidence_digest.to_string()),
         confidence: draft.confidence.clone(),
         risk_level: draft.risk_level.clone(),
@@ -605,6 +650,15 @@ async fn create_issue_from_draft(
         status: "posted".to_string(),
         issue_number: Some(created.number),
         issue_url: created.html_url.clone(),
+        external_id: Some(created.number.to_string()),
+        external_url: created.html_url.clone(),
+        external_title: Some(format!("GitHub issue #{}", created.number)),
+        receipt: Some(json!({
+            "provider": "github",
+            "operation": "create_issue",
+            "issue_number": created.number,
+            "issue_url": created.html_url.clone(),
+        })),
         response_excerpt: Some(truncate_text(&body, 400)),
         error: None,
         updated_at_ms: now_ms(),
@@ -764,7 +818,14 @@ fn compute_evidence_digest(
 }
 
 fn build_idempotency_key(repo: &str, fingerprint: &str, operation: &str, digest: &str) -> String {
-    sha256_hex(&[repo, fingerprint, operation, digest])
+    sha256_hex(&[
+        BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID,
+        "github_issue",
+        repo,
+        fingerprint,
+        operation,
+        digest,
+    ])
 }
 
 fn build_issue_body(

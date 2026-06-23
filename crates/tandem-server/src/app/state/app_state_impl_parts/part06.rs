@@ -529,6 +529,29 @@ impl AppState {
         rows
     }
 
+    pub async fn list_bug_monitor_posts_by_destination(
+        &self,
+        limit: usize,
+        destination_id: &str,
+    ) -> Vec<BugMonitorPostRecord> {
+        let mut rows = self
+            .bug_monitor_posts
+            .read()
+            .await
+            .values()
+            .filter(|row| {
+                row.destination_id
+                    .as_deref()
+                    .unwrap_or(BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID)
+                    == destination_id
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+        rows.truncate(limit.clamp(1, 200));
+        rows
+    }
+
     pub async fn get_bug_monitor_post(&self, post_id: &str) -> Option<BugMonitorPostRecord> {
         self.bug_monitor_posts.read().await.get(post_id).cloned()
     }

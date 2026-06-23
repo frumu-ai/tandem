@@ -864,9 +864,19 @@ pub(super) async fn list_bug_monitor_posts(
     State(state): State<AppState>,
     Query(query): Query<BugMonitorPostsQuery>,
 ) -> Json<serde_json::Value> {
-    let posts = state
-        .list_bug_monitor_posts(query.limit.unwrap_or(50))
-        .await;
+    let limit = query.limit.unwrap_or(50);
+    let posts = if let Some(destination_id) = query
+        .destination_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        state
+            .list_bug_monitor_posts_by_destination(limit, destination_id)
+            .await
+    } else {
+        state.list_bug_monitor_posts(limit).await
+    };
     Json(json!({
         "posts": posts,
         "count": posts.len(),
