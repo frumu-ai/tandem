@@ -285,6 +285,7 @@ pub async fn submit_log_candidate(
     source: &BugMonitorLogSource,
     mut candidate: BugMonitorLogCandidate,
 ) -> anyhow::Result<Option<BugMonitorDraftRecord>> {
+    let binding = project.source_binding(Some(source));
     let evidence_ref =
         crate::bug_monitor::log_artifacts::write_log_evidence_artifact(state, &candidate).await?;
     if !candidate
@@ -298,6 +299,7 @@ pub async fn submit_log_candidate(
     let event_payload = json!({
         "project_id": project.project_id,
         "source_id": source.source_id,
+        "source_kind": binding.source_kind.as_str(),
         "log_path": candidate.path,
         "offset_start": candidate.offset_start,
         "offset_end": candidate.offset_end,
@@ -306,6 +308,15 @@ pub async fn submit_log_candidate(
         "detected_at_ms": now,
         "mcp_server": project.mcp_server,
         "model_policy": project.model_policy,
+        "allowed_destination_ids": binding.allowed_destination_ids.clone(),
+        "default_destination_ids": binding.default_destination_ids.clone(),
+        "default_route_tags": binding.default_route_tags.clone(),
+        "tenant_id": binding.tenant_id.clone(),
+        "workspace_id": binding.workspace_id.clone(),
+        "event_schema_version": binding.event_schema_version.clone(),
+        "approval_policy": binding.approval_policy.clone(),
+        "redaction_profile": binding.redaction_profile.clone(),
+        "retention_profile": binding.retention_profile.clone(),
     });
     let mut incident = latest_bug_monitor_incident_by_repo_fingerprint(
         state,
@@ -321,6 +332,9 @@ pub async fn submit_log_candidate(
         repo: project.repo.clone(),
         workspace_root: project.workspace_root.clone(),
         title: candidate.title.clone(),
+        project_id: Some(project.project_id.clone()),
+        log_source_id: Some(source.source_id.clone()),
+        source_kind: Some(binding.source_kind.clone()),
         detail: Some(candidate.detail.clone()),
         excerpt: candidate.excerpt.clone(),
         source: Some(candidate.source.clone()),
@@ -333,6 +347,15 @@ pub async fn submit_log_candidate(
         confidence: Some(candidate.confidence.clone()),
         risk_level: Some(candidate.risk_level.clone()),
         expected_destination: Some(candidate.expected_destination.clone()),
+        route_tags: candidate.route_tags.clone(),
+        allowed_destination_ids: binding.allowed_destination_ids.clone(),
+        default_destination_ids: binding.default_destination_ids.clone(),
+        tenant_id: binding.tenant_id.clone(),
+        workspace_id: binding.workspace_id.clone(),
+        event_schema_version: binding.event_schema_version.clone(),
+        source_approval_policy: Some(binding.approval_policy.clone()),
+        redaction_profile: binding.redaction_profile.clone(),
+        retention_profile: binding.retention_profile.clone(),
         evidence_refs: candidate.evidence_refs.clone(),
         event_payload: Some(event_payload.clone()),
         ..BugMonitorIncidentRecord::default()
@@ -343,6 +366,45 @@ pub async fn submit_log_candidate(
     if incident.workspace_root.trim().is_empty() {
         incident.workspace_root = project.workspace_root.clone();
     }
+    incident
+        .project_id
+        .get_or_insert_with(|| project.project_id.clone());
+    incident
+        .log_source_id
+        .get_or_insert_with(|| source.source_id.clone());
+    incident
+        .source_kind
+        .get_or_insert_with(|| binding.source_kind.clone());
+    merge_string_values(&mut incident.route_tags, &candidate.route_tags);
+    if incident.allowed_destination_ids.is_empty() {
+        incident.allowed_destination_ids = binding.allowed_destination_ids.clone();
+    }
+    if incident.default_destination_ids.is_empty() {
+        incident.default_destination_ids = binding.default_destination_ids.clone();
+    }
+    incident.tenant_id = incident
+        .tenant_id
+        .clone()
+        .or_else(|| binding.tenant_id.clone());
+    incident.workspace_id = incident
+        .workspace_id
+        .clone()
+        .or_else(|| binding.workspace_id.clone());
+    incident.event_schema_version = incident
+        .event_schema_version
+        .clone()
+        .or_else(|| binding.event_schema_version.clone());
+    incident
+        .source_approval_policy
+        .get_or_insert_with(|| binding.approval_policy.clone());
+    incident.redaction_profile = incident
+        .redaction_profile
+        .clone()
+        .or_else(|| binding.redaction_profile.clone());
+    incident.retention_profile = incident
+        .retention_profile
+        .clone()
+        .or_else(|| binding.retention_profile.clone());
     merge_evidence_refs(&mut incident.evidence_refs, &candidate.evidence_refs);
     incident.event_payload = Some(merge_payload(incident.event_payload.clone(), event_payload));
 
@@ -358,6 +420,7 @@ pub async fn submit_log_candidate(
         project_id: Some(project.project_id.clone()),
         workspace_root: Some(project.workspace_root.clone()),
         log_source_id: Some(source.source_id.clone()),
+        source_kind: Some(binding.source_kind.clone()),
         repo: Some(project.repo.clone()),
         title: Some(candidate.title.clone()),
         detail: Some(candidate.detail.clone()),
@@ -372,6 +435,15 @@ pub async fn submit_log_candidate(
         confidence: Some(candidate.confidence.clone()),
         risk_level: Some(candidate.risk_level.clone()),
         expected_destination: Some(candidate.expected_destination.clone()),
+        route_tags: candidate.route_tags.clone(),
+        allowed_destination_ids: binding.allowed_destination_ids.clone(),
+        default_destination_ids: binding.default_destination_ids.clone(),
+        tenant_id: binding.tenant_id.clone(),
+        workspace_id: binding.workspace_id.clone(),
+        event_schema_version: binding.event_schema_version.clone(),
+        source_approval_policy: Some(binding.approval_policy.clone()),
+        redaction_profile: binding.redaction_profile.clone(),
+        retention_profile: binding.retention_profile.clone(),
         evidence_refs: candidate.evidence_refs.clone(),
         ..BugMonitorSubmission::default()
     };
@@ -654,14 +726,18 @@ fn prune_recent_fingerprints(state: &mut BugMonitorLogSourceState, now_ms: u64) 
 }
 
 fn merge_evidence_refs(existing: &mut Vec<String>, incoming: &[String]) {
-    for evidence_ref in incoming {
-        if !existing.iter().any(|row| row == evidence_ref) {
-            existing.push(evidence_ref.clone());
-        }
-    }
+    merge_string_values(existing, incoming);
     if existing.len() > 50 {
         let keep_from = existing.len() - 50;
         existing.drain(0..keep_from);
+    }
+}
+
+fn merge_string_values(existing: &mut Vec<String>, incoming: &[String]) {
+    for value in incoming {
+        if !existing.iter().any(|row| row == value) {
+            existing.push(value.clone());
+        }
     }
 }
 
@@ -712,6 +788,12 @@ mod tests {
             enabled: true,
             repo: "owner/customer-api".to_string(),
             workspace_root: root.display().to_string(),
+            source_kind: crate::BugMonitorSourceKind::ExternalApp,
+            allowed_destination_ids: vec![
+                crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()
+            ],
+            default_route_tags: vec!["customer-api".to_string()],
+            tenant_id: Some("tenant-a".to_string()),
             auto_create_new_issues: false,
             log_sources: vec![source()],
             ..BugMonitorMonitoredProject::default()
@@ -722,6 +804,12 @@ mod tests {
         BugMonitorLogSource {
             source_id: "api-log".to_string(),
             path: "logs/app.log".to_string(),
+            source_kind: Some(crate::BugMonitorSourceKind::Ci),
+            default_destination_ids: vec![
+                crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()
+            ],
+            default_route_tags: vec!["api-log".to_string()],
+            workspace_id: Some("workspace-a".to_string()),
             start_position: BugMonitorLogStartPosition::End,
             ..BugMonitorLogSource::default()
         }
@@ -792,6 +880,25 @@ mod tests {
         assert_eq!(
             incidents[0].workspace_root,
             dir.path().display().to_string()
+        );
+        assert_eq!(drafts[0].source_kind, Some(crate::BugMonitorSourceKind::Ci));
+        assert_eq!(
+            drafts[0].allowed_destination_ids,
+            vec![crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()]
+        );
+        assert_eq!(
+            drafts[0].default_destination_ids,
+            vec![crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()]
+        );
+        assert_eq!(
+            drafts[0].route_tags,
+            vec!["customer-api".to_string(), "api-log".to_string()]
+        );
+        assert_eq!(drafts[0].tenant_id.as_deref(), Some("tenant-a"));
+        assert_eq!(drafts[0].workspace_id.as_deref(), Some("workspace-a"));
+        assert_eq!(
+            incidents[0].source_kind,
+            Some(crate::BugMonitorSourceKind::Ci)
         );
     }
 

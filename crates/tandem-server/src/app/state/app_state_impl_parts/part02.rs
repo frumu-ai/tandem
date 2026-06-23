@@ -3,41 +3,42 @@ impl AppState {
         &self,
         mut submission: BugMonitorSubmission,
     ) -> anyhow::Result<BugMonitorDraftRecord> {
-        fn normalize_optional(value: Option<String>) -> Option<String> {
-            value
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-        }
-
-        fn compute_fingerprint(parts: &[&str]) -> String {
-            use std::hash::{Hash, Hasher};
-
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            for part in parts {
-                part.hash(&mut hasher);
-            }
-            format!("{:016x}", hasher.finish())
-        }
-
-        submission.repo = normalize_optional(submission.repo);
-        submission.project_id = normalize_optional(submission.project_id);
-        submission.workspace_root = normalize_optional(submission.workspace_root);
-        submission.log_source_id = normalize_optional(submission.log_source_id);
-        submission.title = normalize_optional(submission.title);
-        submission.detail = normalize_optional(submission.detail);
-        submission.source = normalize_optional(submission.source);
-        submission.run_id = normalize_optional(submission.run_id);
-        submission.session_id = normalize_optional(submission.session_id);
-        submission.correlation_id = normalize_optional(submission.correlation_id);
-        submission.file_name = normalize_optional(submission.file_name);
-        submission.process = normalize_optional(submission.process);
-        submission.component = normalize_optional(submission.component);
-        submission.event = normalize_optional(submission.event);
-        submission.level = normalize_optional(submission.level);
-        submission.fingerprint = normalize_optional(submission.fingerprint);
-        submission.confidence = normalize_optional(submission.confidence);
-        submission.risk_level = normalize_optional(submission.risk_level);
-        submission.expected_destination = normalize_optional(submission.expected_destination);
+        submission.repo = normalize_bug_monitor_submission_optional(submission.repo);
+        submission.project_id = normalize_bug_monitor_submission_optional(submission.project_id);
+        submission.workspace_root =
+            normalize_bug_monitor_submission_optional(submission.workspace_root);
+        submission.log_source_id =
+            normalize_bug_monitor_submission_optional(submission.log_source_id);
+        submission.tenant_id = normalize_bug_monitor_submission_optional(submission.tenant_id);
+        submission.workspace_id = normalize_bug_monitor_submission_optional(submission.workspace_id);
+        submission.event_schema_version =
+            normalize_bug_monitor_submission_optional(submission.event_schema_version);
+        submission.redaction_profile =
+            normalize_bug_monitor_submission_optional(submission.redaction_profile);
+        submission.retention_profile =
+            normalize_bug_monitor_submission_optional(submission.retention_profile);
+        submission.title = normalize_bug_monitor_submission_optional(submission.title);
+        submission.detail = normalize_bug_monitor_submission_optional(submission.detail);
+        submission.source = normalize_bug_monitor_submission_optional(submission.source);
+        submission.run_id = normalize_bug_monitor_submission_optional(submission.run_id);
+        submission.session_id = normalize_bug_monitor_submission_optional(submission.session_id);
+        submission.correlation_id =
+            normalize_bug_monitor_submission_optional(submission.correlation_id);
+        submission.file_name = normalize_bug_monitor_submission_optional(submission.file_name);
+        submission.process = normalize_bug_monitor_submission_optional(submission.process);
+        submission.component = normalize_bug_monitor_submission_optional(submission.component);
+        submission.event = normalize_bug_monitor_submission_optional(submission.event);
+        submission.level = normalize_bug_monitor_submission_optional(submission.level);
+        submission.fingerprint = normalize_bug_monitor_submission_optional(submission.fingerprint);
+        submission.confidence = normalize_bug_monitor_submission_optional(submission.confidence);
+        submission.risk_level = normalize_bug_monitor_submission_optional(submission.risk_level);
+        submission.expected_destination =
+            normalize_bug_monitor_submission_optional(submission.expected_destination);
+        submission.route_tags = normalize_bug_monitor_submission_vec(submission.route_tags, 50);
+        submission.allowed_destination_ids =
+            normalize_bug_monitor_submission_vec(submission.allowed_destination_ids, 50);
+        submission.default_destination_ids =
+            normalize_bug_monitor_submission_vec(submission.default_destination_ids, 50);
         submission.excerpt = submission
             .excerpt
             .into_iter()
@@ -78,88 +79,11 @@ impl AppState {
             anyhow::bail!("Bug Monitor repo must be in owner/repo format");
         }
 
-        let title = submission.title.clone().unwrap_or_else(|| {
-            if let Some(event) = submission.event.as_ref() {
-                format!("Failure detected in {event}")
-            } else if let Some(component) = submission.component.as_ref() {
-                format!("Failure detected in {component}")
-            } else if let Some(process) = submission.process.as_ref() {
-                format!("Failure detected in {process}")
-            } else if let Some(source) = submission.source.as_ref() {
-                format!("Failure report from {source}")
-            } else {
-                "Failure report".to_string()
-            }
-        });
-
-        let mut detail_lines = Vec::new();
-        if let Some(source) = submission.source.as_ref() {
-            detail_lines.push(format!("source: {source}"));
-        }
-        if let Some(file_name) = submission.file_name.as_ref() {
-            detail_lines.push(format!("file: {file_name}"));
-        }
-        if let Some(level) = submission.level.as_ref() {
-            detail_lines.push(format!("level: {level}"));
-        }
-        if let Some(process) = submission.process.as_ref() {
-            detail_lines.push(format!("process: {process}"));
-        }
-        if let Some(component) = submission.component.as_ref() {
-            detail_lines.push(format!("component: {component}"));
-        }
-        if let Some(event) = submission.event.as_ref() {
-            detail_lines.push(format!("event: {event}"));
-        }
-        if let Some(confidence) = submission.confidence.as_ref() {
-            detail_lines.push(format!("confidence: {confidence}"));
-        }
-        if let Some(risk_level) = submission.risk_level.as_ref() {
-            detail_lines.push(format!("risk_level: {risk_level}"));
-        }
-        if let Some(expected_destination) = submission.expected_destination.as_ref() {
-            detail_lines.push(format!("expected_destination: {expected_destination}"));
-        }
-        if let Some(run_id) = submission.run_id.as_ref() {
-            detail_lines.push(format!("run_id: {run_id}"));
-        }
-        if let Some(session_id) = submission.session_id.as_ref() {
-            detail_lines.push(format!("session_id: {session_id}"));
-        }
-        if let Some(correlation_id) = submission.correlation_id.as_ref() {
-            detail_lines.push(format!("correlation_id: {correlation_id}"));
-        }
-        if let Some(detail) = submission.detail.as_ref() {
-            detail_lines.push(String::new());
-            detail_lines.push(detail.clone());
-        }
-        if !submission.excerpt.is_empty() {
-            if !detail_lines.is_empty() {
-                detail_lines.push(String::new());
-            }
-            detail_lines.push("excerpt:".to_string());
-            detail_lines.extend(submission.excerpt.iter().map(|line| format!("  {line}")));
-        }
-        if !submission.evidence_refs.is_empty() {
-            if !detail_lines.is_empty() {
-                detail_lines.push(String::new());
-            }
-            detail_lines.push("evidence_refs:".to_string());
-            detail_lines.extend(
-                submission
-                    .evidence_refs
-                    .iter()
-                    .map(|line| format!("  {line}")),
-            );
-        }
-        let detail = if detail_lines.is_empty() {
-            None
-        } else {
-            Some(detail_lines.join("\n"))
-        };
+        let title = bug_monitor_submission_title(&submission);
+        let detail = bug_monitor_submission_detail(&submission);
 
         let fingerprint = submission.fingerprint.clone().unwrap_or_else(|| {
-            compute_fingerprint(&[
+            bug_monitor_submission_fingerprint(&[
                 repo.as_str(),
                 title.as_str(),
                 detail.as_deref().unwrap_or(""),
@@ -213,6 +137,54 @@ impl AppState {
                 existing.log_source_id = submission.log_source_id.clone();
                 changed = true;
             }
+            if existing.source_kind.is_none() && submission.source_kind.is_some() {
+                existing.source_kind = submission.source_kind.clone();
+                changed = true;
+            }
+            if existing.tenant_id.is_none() && submission.tenant_id.is_some() {
+                existing.tenant_id = submission.tenant_id.clone();
+                changed = true;
+            }
+            if existing.workspace_id.is_none() && submission.workspace_id.is_some() {
+                existing.workspace_id = submission.workspace_id.clone();
+                changed = true;
+            }
+            if existing.event_schema_version.is_none()
+                && submission.event_schema_version.is_some()
+            {
+                existing.event_schema_version = submission.event_schema_version.clone();
+                changed = true;
+            }
+            if existing.source_approval_policy.is_none()
+                && submission.source_approval_policy.is_some()
+            {
+                existing.source_approval_policy = submission.source_approval_policy.clone();
+                changed = true;
+            }
+            if existing.redaction_profile.is_none() && submission.redaction_profile.is_some() {
+                existing.redaction_profile = submission.redaction_profile.clone();
+                changed = true;
+            }
+            if existing.retention_profile.is_none() && submission.retention_profile.is_some() {
+                existing.retention_profile = submission.retention_profile.clone();
+                changed = true;
+            }
+            changed |= merge_bug_monitor_missing_submission_values(
+                &mut existing.route_tags,
+                &submission.route_tags,
+            );
+            if existing.allowed_destination_ids.is_empty()
+                && !submission.allowed_destination_ids.is_empty()
+            {
+                existing.allowed_destination_ids = submission.allowed_destination_ids.clone();
+                changed = true;
+            }
+            if existing.default_destination_ids.is_empty()
+                && !submission.default_destination_ids.is_empty()
+            {
+                existing.default_destination_ids = submission.default_destination_ids.clone();
+                changed = true;
+            }
             existing.quality_gate = Some(quality_gate.clone());
             changed = true;
             for evidence_ref in &submission.evidence_refs {
@@ -229,15 +201,28 @@ impl AppState {
             return Ok(existing);
         }
 
+        let source_approval_required = match submission
+            .source_approval_policy
+            .as_ref()
+            .unwrap_or(&BugMonitorApprovalPolicy::Inherit)
+        {
+            BugMonitorApprovalPolicy::Always => true,
+            BugMonitorApprovalPolicy::HighRisk => {
+                crate::bug_monitor::router::is_high_risk(submission.risk_level.as_deref())
+            }
+            BugMonitorApprovalPolicy::Inherit | BugMonitorApprovalPolicy::Never => false,
+        };
         let approval_required = config.require_approval_for_new_issues
             || (config.safety_defaults.require_approval_for_high_risk
-                && crate::bug_monitor::router::is_high_risk(submission.risk_level.as_deref()));
+                && crate::bug_monitor::router::is_high_risk(submission.risk_level.as_deref()))
+            || source_approval_required;
         let draft = BugMonitorDraftRecord {
             draft_id: format!("failure-draft-{}", uuid::Uuid::new_v4().simple()),
             fingerprint,
             repo,
             project_id: submission.project_id.clone(),
             log_source_id: submission.log_source_id.clone(),
+            source_kind: submission.source_kind.clone(),
             status: if approval_required {
                 "approval_required".to_string()
             } else {
@@ -259,6 +244,15 @@ impl AppState {
             confidence: submission.confidence.clone(),
             risk_level: submission.risk_level.clone(),
             expected_destination: submission.expected_destination.clone(),
+            route_tags: submission.route_tags.clone(),
+            allowed_destination_ids: submission.allowed_destination_ids.clone(),
+            default_destination_ids: submission.default_destination_ids.clone(),
+            tenant_id: submission.tenant_id.clone(),
+            workspace_id: submission.workspace_id.clone(),
+            event_schema_version: submission.event_schema_version.clone(),
+            source_approval_policy: submission.source_approval_policy.clone(),
+            redaction_profile: submission.redaction_profile.clone(),
+            retention_profile: submission.retention_profile.clone(),
             evidence_refs: submission.evidence_refs.clone(),
             quality_gate: Some(quality_gate),
             last_post_error: None,

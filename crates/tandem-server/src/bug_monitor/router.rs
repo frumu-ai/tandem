@@ -21,6 +21,15 @@ pub struct BugMonitorRouteContext {
     pub project_id: Option<String>,
     pub log_source_id: Option<String>,
     pub route_tags: Vec<String>,
+    pub source_kind: Option<String>,
+    pub tenant_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub event_schema_version: Option<String>,
+    pub allowed_destination_ids: Vec<String>,
+    pub destination_allowlist_enforced: bool,
+    pub default_destination_ids: Vec<String>,
+    pub source_approval_policy: Option<BugMonitorApprovalPolicy>,
+    pub source_approval_policy_trusted: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +54,28 @@ pub fn build_route_context(
     draft: Option<&BugMonitorDraftRecord>,
     incident: Option<&BugMonitorIncidentRecord>,
 ) -> BugMonitorRouteContext {
+    let mut normalized_route_tags = normalize_route_values(route_tags);
+    if let Some(report) = report {
+        push_normalized_values(&mut normalized_route_tags, &report.route_tags);
+    }
+    if let Some(draft) = draft {
+        push_normalized_values(&mut normalized_route_tags, &draft.route_tags);
+    }
+    if let Some(incident) = incident {
+        push_normalized_values(&mut normalized_route_tags, &incident.route_tags);
+    }
+    let source_approval_policy = first_approval_policy(&[
+        report.and_then(|row| row.source_approval_policy.as_ref()),
+        draft.and_then(|row| row.source_approval_policy.as_ref()),
+        incident.and_then(|row| row.source_approval_policy.as_ref()),
+    ]);
+
+    let allowed_destination_ids = first_non_empty_destination_ids(&[
+        report.map(|row| row.allowed_destination_ids.as_slice()),
+        draft.map(|row| row.allowed_destination_ids.as_slice()),
+        incident.map(|row| row.allowed_destination_ids.as_slice()),
+    ]);
+
     BugMonitorRouteContext {
         event_type: first_route_value(&[
             event_type,
@@ -83,13 +114,44 @@ pub fn build_route_context(
             project_id,
             report.and_then(|row| row.project_id.as_deref()),
             draft.and_then(|row| row.project_id.as_deref()),
+            incident.and_then(|row| row.project_id.as_deref()),
         ]),
         log_source_id: first_route_value(&[
             log_source_id,
             report.and_then(|row| row.log_source_id.as_deref()),
             draft.and_then(|row| row.log_source_id.as_deref()),
+            incident.and_then(|row| row.log_source_id.as_deref()),
         ]),
-        route_tags: normalize_route_values(route_tags),
+        route_tags: normalized_route_tags,
+        source_kind: first_route_value(&[
+            report.and_then(|row| row.source_kind.as_ref().map(|kind| kind.as_str())),
+            draft.and_then(|row| row.source_kind.as_ref().map(|kind| kind.as_str())),
+            incident.and_then(|row| row.source_kind.as_ref().map(|kind| kind.as_str())),
+        ]),
+        tenant_id: first_route_value(&[
+            report.and_then(|row| row.tenant_id.as_deref()),
+            draft.and_then(|row| row.tenant_id.as_deref()),
+            incident.and_then(|row| row.tenant_id.as_deref()),
+        ]),
+        workspace_id: first_route_value(&[
+            report.and_then(|row| row.workspace_id.as_deref()),
+            draft.and_then(|row| row.workspace_id.as_deref()),
+            incident.and_then(|row| row.workspace_id.as_deref()),
+        ]),
+        event_schema_version: first_route_value(&[
+            report.and_then(|row| row.event_schema_version.as_deref()),
+            draft.and_then(|row| row.event_schema_version.as_deref()),
+            incident.and_then(|row| row.event_schema_version.as_deref()),
+        ]),
+        destination_allowlist_enforced: !allowed_destination_ids.is_empty(),
+        allowed_destination_ids,
+        default_destination_ids: first_non_empty_destination_ids(&[
+            report.map(|row| row.default_destination_ids.as_slice()),
+            draft.map(|row| row.default_destination_ids.as_slice()),
+            incident.map(|row| row.default_destination_ids.as_slice()),
+        ]),
+        source_approval_policy,
+        source_approval_policy_trusted: false,
     }
 }
 
@@ -100,9 +162,14 @@ pub fn build_route_preview(
     context: &BugMonitorRouteContext,
     requested_destination_ids: &[String],
 ) -> BugMonitorRoutePreviewResponse {
-    let default_destination_ids = config.effective_default_destination_ids();
+    let context = enrich_route_context_from_sources(config, context);
+    let default_destination_ids = if context.default_destination_ids.is_empty() {
+        config.effective_default_destination_ids()
+    } else {
+        trim_route_values(&context.default_destination_ids)
+    };
     let matches = if requested_destination_ids.is_empty() {
-        route_preview_matches(config, context, &default_destination_ids, destinations)
+        route_preview_matches(config, &context, &default_destination_ids, destinations)
     } else {
         vec![BugMonitorRoutePreviewMatch {
             route_id: None,
@@ -110,7 +177,7 @@ pub fn build_route_preview(
             destination_ids: trim_route_values(requested_destination_ids),
             approval_required: route_preview_approval_required(
                 None,
-                context,
+                &context,
                 config,
                 destinations,
                 requested_destination_ids,
@@ -131,6 +198,16 @@ pub fn build_route_preview(
         blocked_reasons.push("No destination matched route preview".to_string());
     }
     for destination_id in &effective_destination_ids {
+        if !destination_allowed_by_source(
+            context.destination_allowlist_enforced,
+            &context.allowed_destination_ids,
+            destination_id,
+        ) {
+            blocked_reasons.push(format!(
+                "Destination `{destination_id}` is not allowed by source binding"
+            ));
+            continue;
+        }
         if !destinations
             .iter()
             .any(|destination| destination.destination_id == *destination_id)
@@ -199,6 +276,7 @@ pub async fn publish_draft(
         Some(&draft),
         incident.as_ref(),
     );
+    let context = enrich_route_context_from_sources(&status.config, &context);
     let requested_destination_ids = trim_route_values(&request.destination_ids);
     let preview = build_route_preview(
         &status.config,
@@ -271,7 +349,7 @@ fn validate_publish_plan(
         anyhow::bail!("Bug Monitor destination router found no destination");
     }
     for blocked in &preview.blocked_reasons {
-        if blocked.contains("not configured") {
+        if blocked.contains("not configured") || blocked.contains("not allowed by source binding") {
             anyhow::bail!("{blocked}");
         }
     }
@@ -351,10 +429,49 @@ fn route_publish_match_approval_required(
             .unwrap_or(false)
     });
     let high_risk = is_high_risk(context.risk_level.as_deref());
-    match route
+    match explicit_approval_policy(route, context) {
+        Some(BugMonitorApprovalPolicy::Always) => true,
+        Some(BugMonitorApprovalPolicy::Never) => false,
+        Some(BugMonitorApprovalPolicy::HighRisk) => destination_requires_approval || high_risk,
+        Some(BugMonitorApprovalPolicy::Inherit) | None => destination_requires_approval,
+    }
+}
+
+fn explicit_approval_policy<'a>(
+    route: Option<&'a BugMonitorRouteConfig>,
+    context: &'a BugMonitorRouteContext,
+) -> Option<&'a BugMonitorApprovalPolicy> {
+    if let Some(policy) = route
         .map(|row| &row.approval_policy)
-        .unwrap_or(&BugMonitorApprovalPolicy::Inherit)
+        .filter(|policy| **policy != BugMonitorApprovalPolicy::Inherit)
     {
+        return Some(policy);
+    }
+    context
+        .source_approval_policy
+        .as_ref()
+        .filter(|_| context.source_approval_policy_trusted)
+        .filter(|policy| **policy != BugMonitorApprovalPolicy::Inherit)
+}
+
+fn preview_inherited_approval_required(
+    config: &BugMonitorConfig,
+    context: &BugMonitorRouteContext,
+    destination_requires_approval: bool,
+) -> bool {
+    let high_risk = is_high_risk(context.risk_level.as_deref());
+    config.require_approval_for_new_issues
+        || destination_requires_approval
+        || (config.safety_defaults.require_approval_for_high_risk && high_risk)
+}
+
+fn approval_policy_requires(
+    policy: &BugMonitorApprovalPolicy,
+    context: &BugMonitorRouteContext,
+    destination_requires_approval: bool,
+) -> bool {
+    let high_risk = is_high_risk(context.risk_level.as_deref());
+    match policy {
         BugMonitorApprovalPolicy::Always => true,
         BugMonitorApprovalPolicy::Never => false,
         BugMonitorApprovalPolicy::HighRisk => destination_requires_approval || high_risk,
@@ -369,6 +486,95 @@ fn is_synthesized_legacy_github_destination(
     config.destinations.is_empty()
         && destination.destination_id == BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID
         && destination.kind == BugMonitorDestinationKind::GithubIssue
+}
+
+fn enrich_route_context_from_sources(
+    config: &BugMonitorConfig,
+    context: &BugMonitorRouteContext,
+) -> BugMonitorRouteContext {
+    let mut out = context.clone();
+    let Some(project_id) = out.project_id.as_deref() else {
+        return out;
+    };
+    let Some(project) = config
+        .monitored_projects
+        .iter()
+        .find(|project| normalized_equals(&project.project_id, project_id))
+    else {
+        return out;
+    };
+    let source = out.log_source_id.as_deref().and_then(|source_id| {
+        project
+            .log_sources
+            .iter()
+            .find(|source| normalized_equals(&source.source_id, source_id))
+    });
+    let binding = project.source_binding(source);
+
+    if out.source_kind.is_none() {
+        out.source_kind = Some(binding.source_kind.as_str().to_string());
+    }
+    if out.tenant_id.is_none() {
+        out.tenant_id = binding
+            .tenant_id
+            .as_deref()
+            .and_then(|value| normalize_route_value(Some(value)));
+    }
+    if out.workspace_id.is_none() {
+        out.workspace_id = binding
+            .workspace_id
+            .as_deref()
+            .and_then(|value| normalize_route_value(Some(value)));
+    }
+    if out.event_schema_version.is_none() {
+        out.event_schema_version = binding
+            .event_schema_version
+            .as_deref()
+            .and_then(|value| normalize_route_value(Some(value)));
+    }
+    push_normalized_values(&mut out.route_tags, &binding.default_route_tags);
+
+    let existing_allowed_destination_ids = std::mem::take(&mut out.allowed_destination_ids);
+    let existing_allowlist_enforced = out.destination_allowlist_enforced;
+    let binding_allowlist_enforced = !binding.allowed_destination_ids.is_empty();
+    out.allowed_destination_ids = match (existing_allowlist_enforced, binding_allowlist_enforced) {
+        (false, false) => Vec::new(),
+        (false, true) => binding.allowed_destination_ids.clone(),
+        (true, false) => existing_allowed_destination_ids,
+        (true, true) => intersect_destination_ids(
+            &existing_allowed_destination_ids,
+            &binding.allowed_destination_ids,
+        ),
+    };
+    out.destination_allowlist_enforced = existing_allowlist_enforced || binding_allowlist_enforced;
+    if out.default_destination_ids.is_empty() {
+        out.default_destination_ids = binding.default_destination_ids.clone();
+    }
+    out.source_approval_policy = Some(binding.approval_policy);
+    out.source_approval_policy_trusted = true;
+    out
+}
+
+fn normalized_equals(left: &str, right: &str) -> bool {
+    normalize_route_value(Some(left)) == normalize_route_value(Some(right))
+}
+
+fn intersect_destination_ids(left: &[String], right: &[String]) -> Vec<String> {
+    left.iter()
+        .filter(|destination_id| right.iter().any(|allowed| allowed == *destination_id))
+        .cloned()
+        .collect()
+}
+
+fn destination_allowed_by_source(
+    allowlist_enforced: bool,
+    allowed_destination_ids: &[String],
+    destination_id: &str,
+) -> bool {
+    !allowlist_enforced
+        || allowed_destination_ids
+            .iter()
+            .any(|allowed| allowed == destination_id)
 }
 
 fn route_preview_matches(
@@ -444,6 +650,13 @@ fn route_matches(route: &BugMonitorRouteConfig, context: &BugMonitorRouteContext
             &route.match_log_source_ids,
             context.log_source_id.as_deref(),
         )
+        && route_value_matches(&route.match_source_kinds, context.source_kind.as_deref())
+        && route_value_matches(&route.match_tenant_ids, context.tenant_id.as_deref())
+        && route_value_matches(&route.match_workspace_ids, context.workspace_id.as_deref())
+        && route_value_matches(
+            &route.match_event_schema_versions,
+            context.event_schema_version.as_deref(),
+        )
         && route_tags_match(&route.match_route_tags, &context.route_tags)
 }
 
@@ -461,20 +674,10 @@ fn route_preview_approval_required(
             .map(|destination| destination.require_approval)
             .unwrap_or(false)
     });
-    let high_risk = is_high_risk(context.risk_level.as_deref());
-    match route
-        .map(|row| &row.approval_policy)
-        .unwrap_or(&BugMonitorApprovalPolicy::Inherit)
-    {
-        BugMonitorApprovalPolicy::Always => true,
-        BugMonitorApprovalPolicy::Never => false,
-        BugMonitorApprovalPolicy::HighRisk => destination_requires_approval || high_risk,
-        BugMonitorApprovalPolicy::Inherit => {
-            config.require_approval_for_new_issues
-                || destination_requires_approval
-                || (config.safety_defaults.require_approval_for_high_risk && high_risk)
-        }
+    if let Some(policy) = explicit_approval_policy(route, context) {
+        return approval_policy_requires(policy, context, destination_requires_approval);
     }
+    preview_inherited_approval_required(config, context, destination_requires_approval)
 }
 
 fn route_match_reason(route: &BugMonitorRouteConfig) -> String {
@@ -502,6 +705,18 @@ fn route_match_reason(route: &BugMonitorRouteConfig) -> String {
     }
     if !route.match_log_source_ids.is_empty() {
         parts.push("log_source_id");
+    }
+    if !route.match_source_kinds.is_empty() {
+        parts.push("source_kind");
+    }
+    if !route.match_tenant_ids.is_empty() {
+        parts.push("tenant_id");
+    }
+    if !route.match_workspace_ids.is_empty() {
+        parts.push("workspace_id");
+    }
+    if !route.match_event_schema_versions.is_empty() {
+        parts.push("event_schema_version");
     }
     if !route.match_route_tags.is_empty() {
         parts.push("route_tags");
@@ -572,12 +787,16 @@ fn selected_readiness(
 
 fn normalize_route_values(values: &[String]) -> Vec<String> {
     let mut out = Vec::new();
+    push_normalized_values(&mut out, values);
+    out
+}
+
+fn push_normalized_values(out: &mut Vec<String>, values: &[String]) {
     for value in values {
         if let Some(value) = normalize_route_value(Some(value)) {
-            push_unique(&mut out, &value);
+            push_unique(out, &value);
         }
     }
-    out
 }
 
 fn trim_route_values(values: &[String]) -> Vec<String> {
@@ -602,6 +821,27 @@ fn first_route_value(values: &[Option<&str>]) -> Option<String> {
     values
         .iter()
         .find_map(|value| normalize_route_value(*value))
+}
+
+fn first_non_empty_destination_ids(values: &[Option<&[String]>]) -> Vec<String> {
+    values
+        .iter()
+        .find_map(|value| {
+            let value = (*value)?;
+            let trimmed = trim_route_values(value);
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        })
+        .unwrap_or_default()
+}
+
+fn first_approval_policy(
+    values: &[Option<&BugMonitorApprovalPolicy>],
+) -> Option<BugMonitorApprovalPolicy> {
+    values.iter().find_map(|value| value.map(Clone::clone))
 }
 
 fn push_unique(values: &mut Vec<String>, value: &str) {

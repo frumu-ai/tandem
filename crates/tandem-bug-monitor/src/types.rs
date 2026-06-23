@@ -71,6 +71,31 @@ pub enum BugMonitorApprovalPolicy {
     Never,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BugMonitorSourceKind {
+    TandemRuntime,
+    ExternalApp,
+    Ci,
+    AgentRuntime,
+    McpGateway,
+    #[default]
+    CustomerSystem,
+}
+
+impl BugMonitorSourceKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::TandemRuntime => "tandem_runtime",
+            Self::ExternalApp => "external_app",
+            Self::Ci => "ci",
+            Self::AgentRuntime => "agent_runtime",
+            Self::McpGateway => "mcp_gateway",
+            Self::CustomerSystem => "customer_system",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BugMonitorDestinationConfig {
     pub destination_id: String,
@@ -158,6 +183,14 @@ pub struct BugMonitorRouteConfig {
     pub match_log_source_ids: Vec<String>,
     #[serde(default)]
     pub match_route_tags: Vec<String>,
+    #[serde(default)]
+    pub match_source_kinds: Vec<String>,
+    #[serde(default)]
+    pub match_tenant_ids: Vec<String>,
+    #[serde(default)]
+    pub match_workspace_ids: Vec<String>,
+    #[serde(default)]
+    pub match_event_schema_versions: Vec<String>,
 }
 
 impl Default for BugMonitorRouteConfig {
@@ -178,6 +211,10 @@ impl Default for BugMonitorRouteConfig {
             match_project_ids: Vec::new(),
             match_log_source_ids: Vec::new(),
             match_route_tags: Vec::new(),
+            match_source_kinds: Vec::new(),
+            match_tenant_ids: Vec::new(),
+            match_workspace_ids: Vec::new(),
+            match_event_schema_versions: Vec::new(),
         }
     }
 }
@@ -390,10 +427,30 @@ pub struct BugMonitorMonitoredProject {
     pub paused: bool,
     pub repo: String,
     pub workspace_root: String,
+    #[serde(default)]
+    pub source_kind: BugMonitorSourceKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_server: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_policy: Option<Value>,
+    #[serde(default)]
+    pub allowed_destination_ids: Vec<String>,
+    #[serde(default)]
+    pub default_destination_ids: Vec<String>,
+    #[serde(default)]
+    pub default_route_tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_schema_version: Option<String>,
+    #[serde(default)]
+    pub approval_policy: BugMonitorApprovalPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redaction_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_profile: Option<String>,
     #[serde(default = "default_true")]
     pub auto_create_new_issues: bool,
     #[serde(default)]
@@ -430,6 +487,8 @@ pub enum BugMonitorLogStartPosition {
 pub struct BugMonitorLogSource {
     pub source_id: String,
     pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<BugMonitorSourceKind>,
     #[serde(default = "default_bug_monitor_log_format")]
     pub format: BugMonitorLogFormat,
     #[serde(default = "default_bug_monitor_minimum_level")]
@@ -448,6 +507,24 @@ pub struct BugMonitorLogSource {
     pub max_candidates_per_poll: usize,
     #[serde(default = "default_bug_monitor_fingerprint_cooldown_ms")]
     pub fingerprint_cooldown_ms: u64,
+    #[serde(default)]
+    pub allowed_destination_ids: Vec<String>,
+    #[serde(default)]
+    pub default_destination_ids: Vec<String>,
+    #[serde(default)]
+    pub default_route_tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_schema_version: Option<String>,
+    #[serde(default)]
+    pub approval_policy: BugMonitorApprovalPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redaction_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_profile: Option<String>,
 }
 
 impl Default for BugMonitorLogSource {
@@ -455,6 +532,7 @@ impl Default for BugMonitorLogSource {
         Self {
             source_id: String::new(),
             path: String::new(),
+            source_kind: None,
             format: default_bug_monitor_log_format(),
             minimum_level: default_bug_monitor_minimum_level(),
             watch_interval_seconds: default_bug_monitor_watch_interval_seconds(),
@@ -464,7 +542,127 @@ impl Default for BugMonitorLogSource {
             max_bytes_per_poll: default_bug_monitor_max_bytes_per_poll(),
             max_candidates_per_poll: default_bug_monitor_max_candidates_per_poll(),
             fingerprint_cooldown_ms: default_bug_monitor_fingerprint_cooldown_ms(),
+            allowed_destination_ids: Vec::new(),
+            default_destination_ids: Vec::new(),
+            default_route_tags: Vec::new(),
+            tenant_id: None,
+            workspace_id: None,
+            event_schema_version: None,
+            approval_policy: BugMonitorApprovalPolicy::Inherit,
+            redaction_profile: None,
+            retention_profile: None,
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BugMonitorSourceBinding {
+    pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    pub repo: String,
+    pub workspace_root: String,
+    pub source_kind: BugMonitorSourceKind,
+    #[serde(default)]
+    pub allowed_destination_ids: Vec<String>,
+    #[serde(default)]
+    pub default_destination_ids: Vec<String>,
+    #[serde(default)]
+    pub default_route_tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_schema_version: Option<String>,
+    #[serde(default)]
+    pub approval_policy: BugMonitorApprovalPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redaction_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_profile: Option<String>,
+}
+
+impl BugMonitorMonitoredProject {
+    pub fn source_binding(&self, source: Option<&BugMonitorLogSource>) -> BugMonitorSourceBinding {
+        let source_allowed = source
+            .map(|row| normalize_source_values(&row.allowed_destination_ids))
+            .unwrap_or_default();
+        let project_allowed = normalize_source_values(&self.allowed_destination_ids);
+        let allowed_destination_ids = if source_allowed.is_empty() {
+            project_allowed
+        } else if project_allowed.is_empty() {
+            source_allowed
+        } else {
+            source_allowed
+                .into_iter()
+                .filter(|value| project_allowed.iter().any(|allowed| allowed == value))
+                .collect()
+        };
+
+        let source_default_destination_ids = source
+            .map(|row| normalize_source_values(&row.default_destination_ids))
+            .unwrap_or_default();
+        let default_destination_ids = if source_default_destination_ids.is_empty() {
+            normalize_source_values(&self.default_destination_ids)
+        } else {
+            source_default_destination_ids
+        };
+
+        let mut default_route_tags = normalize_source_values(&self.default_route_tags);
+        if let Some(source) = source {
+            push_normalized_source_values(&mut default_route_tags, &source.default_route_tags);
+        }
+
+        let approval_policy = source
+            .map(|row| row.approval_policy.clone())
+            .filter(|value| *value != BugMonitorApprovalPolicy::Inherit)
+            .unwrap_or_else(|| self.approval_policy.clone());
+
+        BugMonitorSourceBinding {
+            project_id: self.project_id.clone(),
+            source_id: source.map(|row| row.source_id.clone()),
+            repo: self.repo.clone(),
+            workspace_root: self.workspace_root.clone(),
+            source_kind: source
+                .and_then(|row| row.source_kind.clone())
+                .unwrap_or_else(|| self.source_kind.clone()),
+            allowed_destination_ids,
+            default_destination_ids,
+            default_route_tags,
+            tenant_id: source
+                .and_then(|row| row.tenant_id.clone())
+                .or_else(|| self.tenant_id.clone()),
+            workspace_id: source
+                .and_then(|row| row.workspace_id.clone())
+                .or_else(|| self.workspace_id.clone()),
+            event_schema_version: source
+                .and_then(|row| row.event_schema_version.clone())
+                .or_else(|| self.event_schema_version.clone()),
+            approval_policy,
+            redaction_profile: source
+                .and_then(|row| row.redaction_profile.clone())
+                .or_else(|| self.redaction_profile.clone()),
+            retention_profile: source
+                .and_then(|row| row.retention_profile.clone())
+                .or_else(|| self.retention_profile.clone()),
+        }
+    }
+}
+
+fn normalize_source_values(values: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    push_normalized_source_values(&mut out, values);
+    out
+}
+
+fn push_normalized_source_values(out: &mut Vec<String>, values: &[String]) {
+    for value in values {
+        let value = value.trim();
+        if value.is_empty() || out.iter().any(|existing| existing == value) {
+            continue;
+        }
+        out.push(value.to_string());
     }
 }
 
@@ -505,6 +703,8 @@ pub struct BugMonitorLogSourceState {
 pub struct BugMonitorLogCandidate {
     pub project_id: String,
     pub source_id: String,
+    #[serde(default)]
+    pub source_kind: BugMonitorSourceKind,
     pub repo: String,
     pub workspace_root: String,
     pub path: String,
@@ -530,6 +730,24 @@ pub struct BugMonitorLogCandidate {
     pub evidence_refs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timestamp_ms: Option<u64>,
+    #[serde(default)]
+    pub route_tags: Vec<String>,
+    #[serde(default)]
+    pub allowed_destination_ids: Vec<String>,
+    #[serde(default)]
+    pub default_destination_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_schema_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_approval_policy: Option<BugMonitorApprovalPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redaction_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -603,6 +821,8 @@ pub struct BugMonitorDraftRecord {
     pub project_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_source_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<BugMonitorSourceKind>,
     pub status: String,
     pub created_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -635,6 +855,24 @@ pub struct BugMonitorDraftRecord {
     pub risk_level: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_destination: Option<String>,
+    #[serde(default)]
+    pub route_tags: Vec<String>,
+    #[serde(default)]
+    pub allowed_destination_ids: Vec<String>,
+    #[serde(default)]
+    pub default_destination_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_schema_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_approval_policy: Option<BugMonitorApprovalPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redaction_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_profile: Option<String>,
     #[serde(default)]
     pub evidence_refs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -710,6 +948,12 @@ pub struct BugMonitorIncidentRecord {
     pub workspace_root: String,
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_source_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<BugMonitorSourceKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     #[serde(default)]
     pub excerpt: Vec<String>,
@@ -743,6 +987,24 @@ pub struct BugMonitorIncidentRecord {
     pub risk_level: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_destination: Option<String>,
+    #[serde(default)]
+    pub route_tags: Vec<String>,
+    #[serde(default)]
+    pub allowed_destination_ids: Vec<String>,
+    #[serde(default)]
+    pub default_destination_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_schema_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_approval_policy: Option<BugMonitorApprovalPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redaction_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_profile: Option<String>,
     #[serde(default)]
     pub evidence_refs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -810,6 +1072,8 @@ pub struct BugMonitorSubmission {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_source_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<BugMonitorSourceKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -843,6 +1107,24 @@ pub struct BugMonitorSubmission {
     pub risk_level: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_destination: Option<String>,
+    #[serde(default)]
+    pub route_tags: Vec<String>,
+    #[serde(default)]
+    pub allowed_destination_ids: Vec<String>,
+    #[serde(default)]
+    pub default_destination_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_schema_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_approval_policy: Option<BugMonitorApprovalPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redaction_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_profile: Option<String>,
     #[serde(default)]
     pub evidence_refs: Vec<String>,
 }
@@ -994,6 +1276,80 @@ mod tests {
 
         assert_eq!(config.effective_destinations().len(), 1);
         assert!(config.effective_default_destination_ids().is_empty());
+    }
+
+    #[test]
+    fn legacy_monitored_project_config_deserializes_with_default_source_binding() {
+        let config: BugMonitorConfig = serde_json::from_value(json!({
+            "monitored_projects": [{
+                "project_id": "customer-api",
+                "name": "Customer API",
+                "repo": "acme/customer-api",
+                "workspace_root": "/tmp/customer-api",
+                "log_sources": [{
+                    "source_id": "app-log",
+                    "path": "logs/app.log"
+                }]
+            }]
+        }))
+        .expect("legacy monitored project config should deserialize");
+
+        let project = &config.monitored_projects[0];
+        let source = &project.log_sources[0];
+        let binding = project.source_binding(Some(source));
+
+        assert_eq!(binding.source_kind, BugMonitorSourceKind::CustomerSystem);
+        assert!(binding.allowed_destination_ids.is_empty());
+        assert!(binding.default_destination_ids.is_empty());
+        assert!(binding.default_route_tags.is_empty());
+        assert_eq!(binding.approval_policy, BugMonitorApprovalPolicy::Inherit);
+    }
+
+    #[test]
+    fn source_binding_applies_source_overrides_and_intersects_allowlists() {
+        let project = BugMonitorMonitoredProject {
+            project_id: "payments".to_string(),
+            name: "Payments".to_string(),
+            repo: "acme/payments".to_string(),
+            workspace_root: "/tmp/payments".to_string(),
+            source_kind: BugMonitorSourceKind::ExternalApp,
+            allowed_destination_ids: vec!["legacy-github".to_string(), "linear-prod".to_string()],
+            default_destination_ids: vec!["legacy-github".to_string()],
+            default_route_tags: vec!["payments".to_string()],
+            tenant_id: Some("tenant-a".to_string()),
+            approval_policy: BugMonitorApprovalPolicy::HighRisk,
+            log_sources: vec![BugMonitorLogSource {
+                source_id: "ci".to_string(),
+                path: "logs/ci.jsonl".to_string(),
+                source_kind: Some(BugMonitorSourceKind::Ci),
+                allowed_destination_ids: vec!["linear-prod".to_string()],
+                default_destination_ids: vec!["linear-prod".to_string()],
+                default_route_tags: vec!["ci".to_string(), "payments".to_string()],
+                workspace_id: Some("workspace-a".to_string()),
+                approval_policy: BugMonitorApprovalPolicy::Always,
+                ..BugMonitorLogSource::default()
+            }],
+            ..BugMonitorMonitoredProject::default()
+        };
+
+        let binding = project.source_binding(project.log_sources.first());
+
+        assert_eq!(binding.source_kind, BugMonitorSourceKind::Ci);
+        assert_eq!(
+            binding.allowed_destination_ids,
+            vec!["linear-prod".to_string()]
+        );
+        assert_eq!(
+            binding.default_destination_ids,
+            vec!["linear-prod".to_string()]
+        );
+        assert_eq!(
+            binding.default_route_tags,
+            vec!["payments".to_string(), "ci".to_string()]
+        );
+        assert_eq!(binding.tenant_id.as_deref(), Some("tenant-a"));
+        assert_eq!(binding.workspace_id.as_deref(), Some("workspace-a"));
+        assert_eq!(binding.approval_policy, BugMonitorApprovalPolicy::Always);
     }
 
     #[test]

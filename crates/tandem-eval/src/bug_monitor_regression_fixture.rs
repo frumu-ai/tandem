@@ -451,6 +451,7 @@ mod tests {
             duplicate_summary: None,
             duplicate_matches: None,
             event_payload: Some(event_payload),
+            ..Default::default()
         }
     }
 

@@ -131,6 +131,7 @@ pub async fn process_bug_monitor_event(
             duplicate_summary: None,
             duplicate_matches: None,
             event_payload: Some(event.properties.clone()),
+            ..BugMonitorIncidentRecord::default()
         }
     };
     state.put_bug_monitor_incident(incident.clone()).await?;

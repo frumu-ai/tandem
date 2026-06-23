@@ -766,6 +766,13 @@ export type BugMonitorDestinationKind =
   | "internal_memory";
 
 export type BugMonitorApprovalPolicy = "inherit" | "always" | "high_risk" | "never";
+export type BugMonitorSourceKind =
+  | "tandem_runtime"
+  | "external_app"
+  | "ci"
+  | "agent_runtime"
+  | "mcp_gateway"
+  | "customer_system";
 
 export interface BugMonitorDestinationConfig {
   destination_id: string;
@@ -803,6 +810,10 @@ export interface BugMonitorRouteConfig {
   match_project_ids?: string[];
   match_log_source_ids?: string[];
   match_route_tags?: string[];
+  match_source_kinds?: string[];
+  match_tenant_ids?: string[];
+  match_workspace_ids?: string[];
+  match_event_schema_versions?: string[];
   [key: string]: unknown;
 }
 
@@ -859,10 +870,62 @@ export interface BugMonitorConfigRow {
   require_approval_for_new_issues?: boolean;
   auto_comment_on_matched_open_issues?: boolean;
   label_mode?: string | null;
+  monitored_projects?: BugMonitorMonitoredProject[];
   destinations?: BugMonitorDestinationConfig[];
   routes?: BugMonitorRouteConfig[];
   default_destination_ids?: string[];
   safety_defaults?: BugMonitorSafetyDefaults | null;
+  [key: string]: unknown;
+}
+
+export interface BugMonitorLogSource {
+  source_id?: string;
+  path?: string;
+  source_kind?: BugMonitorSourceKind | string | null;
+  format?: "auto" | "json" | "plaintext" | string;
+  minimum_level?: "error" | "warn" | string;
+  watch_interval_seconds?: number;
+  enabled?: boolean;
+  paused?: boolean;
+  start_position?: "end" | "beginning" | string;
+  max_bytes_per_poll?: number;
+  max_candidates_per_poll?: number;
+  fingerprint_cooldown_ms?: number;
+  allowed_destination_ids?: string[];
+  default_destination_ids?: string[];
+  default_route_tags?: string[];
+  tenant_id?: string | null;
+  workspace_id?: string | null;
+  event_schema_version?: string | null;
+  approval_policy?: BugMonitorApprovalPolicy | string;
+  redaction_profile?: string | null;
+  retention_profile?: string | null;
+  [key: string]: unknown;
+}
+
+export interface BugMonitorMonitoredProject {
+  project_id?: string;
+  name?: string;
+  enabled?: boolean;
+  paused?: boolean;
+  repo?: string;
+  workspace_root?: string;
+  source_kind?: BugMonitorSourceKind | string;
+  mcp_server?: string | null;
+  model_policy?: JsonObject | null;
+  allowed_destination_ids?: string[];
+  default_destination_ids?: string[];
+  default_route_tags?: string[];
+  tenant_id?: string | null;
+  workspace_id?: string | null;
+  event_schema_version?: string | null;
+  approval_policy?: BugMonitorApprovalPolicy | string;
+  redaction_profile?: string | null;
+  retention_profile?: string | null;
+  auto_create_new_issues?: boolean;
+  require_approval_for_new_issues?: boolean;
+  auto_comment_on_matched_open_issues?: boolean;
+  log_sources?: BugMonitorLogSource[];
   [key: string]: unknown;
 }
 
@@ -903,6 +966,9 @@ export interface BugMonitorIncidentRecord {
   repo?: string;
   workspace_root?: string;
   title?: string;
+  project_id?: string | null;
+  log_source_id?: string | null;
+  source_kind?: BugMonitorSourceKind | string | null;
   detail?: string | null;
   excerpt?: string[];
   source?: string | null;
@@ -924,6 +990,15 @@ export interface BugMonitorIncidentRecord {
   confidence?: string | null;
   risk_level?: string | null;
   expected_destination?: string | null;
+  route_tags?: string[];
+  allowed_destination_ids?: string[];
+  default_destination_ids?: string[];
+  tenant_id?: string | null;
+  workspace_id?: string | null;
+  event_schema_version?: string | null;
+  source_approval_policy?: BugMonitorApprovalPolicy | string | null;
+  redaction_profile?: string | null;
+  retention_profile?: string | null;
   evidence_refs?: string[];
   quality_gate?: JsonObject | null;
   [key: string]: unknown;
@@ -940,6 +1015,7 @@ export interface BugMonitorDraftRecord {
   repo?: string;
   project_id?: string | null;
   log_source_id?: string | null;
+  source_kind?: BugMonitorSourceKind | string | null;
   status?: string;
   created_at_ms?: number;
   approval_granted_at_ms?: number | null;
@@ -957,6 +1033,15 @@ export interface BugMonitorDraftRecord {
   confidence?: string | null;
   risk_level?: string | null;
   expected_destination?: string | null;
+  route_tags?: string[];
+  allowed_destination_ids?: string[];
+  default_destination_ids?: string[];
+  tenant_id?: string | null;
+  workspace_id?: string | null;
+  event_schema_version?: string | null;
+  source_approval_policy?: BugMonitorApprovalPolicy | string | null;
+  redaction_profile?: string | null;
+  retention_profile?: string | null;
   evidence_refs?: string[];
   quality_gate?: JsonObject | null;
   last_post_error?: string | null;

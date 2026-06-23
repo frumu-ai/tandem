@@ -1238,6 +1238,7 @@ async fn persist_blocked_bug_monitor_report_observation(
         duplicate_summary: None,
         duplicate_matches: None,
         event_payload: None,
+        ..crate::BugMonitorIncidentRecord::default()
     };
     state.put_bug_monitor_incident(incident).await.ok()
 }

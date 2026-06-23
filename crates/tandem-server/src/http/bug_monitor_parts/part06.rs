@@ -1195,7 +1195,7 @@ pub(super) async fn report_bug_monitor_issue(
     State(state): State<AppState>,
     Json(input): Json<BugMonitorSubmissionInput>,
 ) -> Response {
-    let Some(report) = input.report else {
+    let Some(mut report) = input.report else {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({
@@ -1211,10 +1211,12 @@ pub(super) async fn report_bug_monitor_issue(
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .or(config.repo.as_deref())
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .to_string();
+    apply_bug_monitor_report_source_approval_binding(&config, &mut report);
     let duplicate_matches = bug_monitor_failure_pattern_matches(
         &state,
-        effective_repo,
+        &effective_repo,
         report.fingerprint.as_deref().unwrap_or_default(),
         report.title.as_deref(),
         report.detail.as_deref(),
@@ -1258,7 +1260,7 @@ pub(super) async fn report_bug_monitor_issue(
                 persist_blocked_bug_monitor_report_observation(
                     &state,
                     &report,
-                    effective_repo,
+                    &effective_repo,
                     &detail,
                 )
                 .await
@@ -1360,10 +1362,35 @@ pub(super) async fn report_bug_monitor_intake(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("external");
+    let configured_source = project
+        .log_sources
+        .iter()
+        .find(|source| source.source_id == source_id);
+    if !project.log_sources.is_empty() && configured_source.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "log source is not configured for monitored project",
+                "code": "BUG_MONITOR_INTAKE_SOURCE_UNKNOWN",
+            })),
+        )
+            .into_response();
+    }
+    let binding = project.source_binding(configured_source);
     report.project_id = Some(project.project_id.clone());
     report.workspace_root = Some(project.workspace_root.clone());
     report.log_source_id = Some(source_id.to_string());
+    report.source_kind = Some(binding.source_kind.clone());
     report.repo = Some(project.repo.clone());
+    report.route_tags = binding.default_route_tags.clone();
+    report.allowed_destination_ids = binding.allowed_destination_ids.clone();
+    report.default_destination_ids = binding.default_destination_ids.clone();
+    report.tenant_id = binding.tenant_id.clone();
+    report.workspace_id = binding.workspace_id.clone();
+    report.event_schema_version = binding.event_schema_version.clone();
+    report.source_approval_policy = Some(binding.approval_policy.clone());
+    report.redaction_profile = binding.redaction_profile.clone();
+    report.retention_profile = binding.retention_profile.clone();
     if report.source.is_none() {
         report.source = Some(format!("bug_monitor.intake.{source_id}"));
     }
@@ -1385,6 +1412,9 @@ pub(super) async fn report_bug_monitor_intake(
                     .title
                     .clone()
                     .unwrap_or_else(|| "External failure report".to_string()),
+                project_id: Some(project.project_id.clone()),
+                log_source_id: Some(source_id.to_string()),
+                source_kind: Some(binding.source_kind.clone()),
                 detail: draft.detail.clone(),
                 excerpt: report.excerpt.clone(),
                 source: report.source.clone(),
@@ -1398,14 +1428,33 @@ pub(super) async fn report_bug_monitor_intake(
                 confidence: draft.confidence.clone(),
                 risk_level: draft.risk_level.clone(),
                 expected_destination: draft.expected_destination.clone(),
+                route_tags: draft.route_tags.clone(),
+                allowed_destination_ids: draft.allowed_destination_ids.clone(),
+                default_destination_ids: draft.default_destination_ids.clone(),
+                tenant_id: draft.tenant_id.clone(),
+                workspace_id: draft.workspace_id.clone(),
+                event_schema_version: draft.event_schema_version.clone(),
+                source_approval_policy: draft.source_approval_policy.clone(),
+                redaction_profile: draft.redaction_profile.clone(),
+                retention_profile: draft.retention_profile.clone(),
                 evidence_refs: draft.evidence_refs.clone(),
                 quality_gate: draft.quality_gate.clone(),
                 event_payload: Some(json!({
                     "project_id": project.project_id,
                     "source_id": source_id,
+                    "source_kind": binding.source_kind.as_str(),
                     "workspace_root": project.workspace_root,
                     "mcp_server": project.mcp_server,
                     "model_policy": project.model_policy,
+                    "allowed_destination_ids": binding.allowed_destination_ids,
+                    "default_destination_ids": binding.default_destination_ids,
+                    "default_route_tags": binding.default_route_tags,
+                    "tenant_id": binding.tenant_id,
+                    "workspace_id": binding.workspace_id,
+                    "event_schema_version": binding.event_schema_version,
+                    "approval_policy": binding.approval_policy,
+                    "redaction_profile": binding.redaction_profile,
+                    "retention_profile": binding.retention_profile,
                     "intake": true,
                 })),
                 ..BugMonitorIncidentRecord::default()
@@ -1441,30 +1490,6 @@ pub(super) async fn report_bug_monitor_intake(
             )
                 .into_response()
         }
-    }
-}
-
-fn bug_monitor_intake_key_from_headers(headers: &HeaderMap) -> Option<String> {
-    if let Some(value) = headers
-        .get("x-tandem-bug-monitor-intake-key")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        return Some(value.to_string());
-    }
-    let auth = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())?
-        .trim();
-    let token = auth
-        .strip_prefix("Bearer ")
-        .or_else(|| auth.strip_prefix("bearer "))?
-        .trim();
-    if token.is_empty() {
-        None
-    } else {
-        Some(token.to_string())
     }
 }
 

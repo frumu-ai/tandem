@@ -691,6 +691,14 @@ BugMonitorDestinationKind = Literal[
     "internal_memory",
 ]
 BugMonitorApprovalPolicy = Literal["inherit", "always", "high_risk", "never"]
+BugMonitorSourceKind = Literal[
+    "tandem_runtime",
+    "external_app",
+    "ci",
+    "agent_runtime",
+    "mcp_gateway",
+    "customer_system",
+]
 
 
 class BugMonitorDestinationConfig(BaseModel):
@@ -730,6 +738,10 @@ class BugMonitorRouteConfig(BaseModel):
     match_project_ids: list[str] = []
     match_log_source_ids: list[str] = []
     match_route_tags: list[str] = []
+    match_source_kinds: list[str] = []
+    match_tenant_ids: list[str] = []
+    match_workspace_ids: list[str] = []
+    match_event_schema_versions: list[str] = []
 
 
 class BugMonitorSafetyDefaults(BaseModel):
@@ -773,6 +785,57 @@ class BugMonitorRoutePreviewResponse(BaseModel):
     blocked_reasons: list[str] = []
 
 
+class BugMonitorLogSource(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    source_id: Optional[str] = None
+    path: Optional[str] = None
+    source_kind: Optional[str] = None
+    format: Optional[str] = None
+    minimum_level: Optional[str] = None
+    watch_interval_seconds: Optional[int] = None
+    enabled: Optional[bool] = None
+    paused: Optional[bool] = None
+    start_position: Optional[str] = None
+    max_bytes_per_poll: Optional[int] = None
+    max_candidates_per_poll: Optional[int] = None
+    fingerprint_cooldown_ms: Optional[int] = None
+    allowed_destination_ids: list[str] = []
+    default_destination_ids: list[str] = []
+    default_route_tags: list[str] = []
+    tenant_id: Optional[str] = None
+    workspace_id: Optional[str] = None
+    event_schema_version: Optional[str] = None
+    approval_policy: Optional[str] = None
+    redaction_profile: Optional[str] = None
+    retention_profile: Optional[str] = None
+
+
+class BugMonitorMonitoredProject(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    project_id: Optional[str] = None
+    name: Optional[str] = None
+    enabled: Optional[bool] = None
+    paused: Optional[bool] = None
+    repo: Optional[str] = None
+    workspace_root: Optional[str] = None
+    source_kind: Optional[str] = None
+    mcp_server: Optional[str] = None
+    model_policy: Optional[dict[str, Any]] = None
+    allowed_destination_ids: list[str] = []
+    default_destination_ids: list[str] = []
+    default_route_tags: list[str] = []
+    tenant_id: Optional[str] = None
+    workspace_id: Optional[str] = None
+    event_schema_version: Optional[str] = None
+    approval_policy: Optional[str] = None
+    redaction_profile: Optional[str] = None
+    retention_profile: Optional[str] = None
+    auto_create_new_issues: Optional[bool] = None
+    require_approval_for_new_issues: Optional[bool] = None
+    auto_comment_on_matched_open_issues: Optional[bool] = None
+    log_sources: list[BugMonitorLogSource] = []
+
+
 class BugMonitorConfigRow(BaseModel):
     model_config = ConfigDict(extra="allow")
     enabled: Optional[bool] = None
@@ -786,6 +849,7 @@ class BugMonitorConfigRow(BaseModel):
     require_approval_for_new_issues: Optional[bool] = None
     auto_comment_on_matched_open_issues: Optional[bool] = None
     label_mode: Optional[str] = None
+    monitored_projects: list[BugMonitorMonitoredProject] = []
     destinations: list[BugMonitorDestinationConfig] = []
     routes: list[BugMonitorRouteConfig] = []
     default_destination_ids: list[str] = []
@@ -832,14 +896,38 @@ class BugMonitorIncidentRecord(BaseModel):
     repo: Optional[str] = None
     workspace_root: Optional[str] = None
     title: Optional[str] = None
+    project_id: Optional[str] = None
+    log_source_id: Optional[str] = None
+    source_kind: Optional[str] = None
     detail: Optional[str] = None
     excerpt: Optional[list[str]] = None
+    source: Optional[str] = None
+    run_id: Optional[str] = None
+    session_id: Optional[str] = None
+    correlation_id: Optional[str] = None
+    component: Optional[str] = None
+    level: Optional[str] = None
     occurrence_count: Optional[int] = None
     created_at_ms: Optional[int] = None
     updated_at_ms: Optional[int] = None
+    last_seen_at_ms: Optional[int] = None
     draft_id: Optional[str] = None
     triage_run_id: Optional[str] = None
     last_error: Optional[str] = None
+    confidence: Optional[str] = None
+    risk_level: Optional[str] = None
+    expected_destination: Optional[str] = None
+    route_tags: list[str] = []
+    allowed_destination_ids: list[str] = []
+    default_destination_ids: list[str] = []
+    tenant_id: Optional[str] = None
+    workspace_id: Optional[str] = None
+    event_schema_version: Optional[str] = None
+    source_approval_policy: Optional[str] = None
+    redaction_profile: Optional[str] = None
+    retention_profile: Optional[str] = None
+    evidence_refs: list[str] = []
+    quality_gate: Optional[dict[str, Any]] = None
 
 
 class BugMonitorIncidentListResponse(BaseModel):
@@ -855,6 +943,7 @@ class BugMonitorDraftRecord(BaseModel):
     repo: Optional[str] = None
     project_id: Optional[str] = None
     log_source_id: Optional[str] = None
+    source_kind: Optional[str] = None
     status: Optional[str] = None
     created_at_ms: Optional[int] = None
     approval_granted_at_ms: Optional[int] = None
@@ -869,6 +958,20 @@ class BugMonitorDraftRecord(BaseModel):
     matched_issue_number: Optional[int] = None
     matched_issue_state: Optional[str] = None
     evidence_digest: Optional[str] = None
+    confidence: Optional[str] = None
+    risk_level: Optional[str] = None
+    expected_destination: Optional[str] = None
+    route_tags: list[str] = []
+    allowed_destination_ids: list[str] = []
+    default_destination_ids: list[str] = []
+    tenant_id: Optional[str] = None
+    workspace_id: Optional[str] = None
+    event_schema_version: Optional[str] = None
+    source_approval_policy: Optional[str] = None
+    redaction_profile: Optional[str] = None
+    retention_profile: Optional[str] = None
+    evidence_refs: list[str] = []
+    quality_gate: Optional[dict[str, Any]] = None
     last_post_error: Optional[str] = None
 
 

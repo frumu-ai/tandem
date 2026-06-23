@@ -111,6 +111,11 @@ async fn validate_bug_monitor_monitored_projects(
     } else {
         None
     };
+    let configured_destination_ids = config
+        .effective_destinations()
+        .into_iter()
+        .map(|destination| destination.destination_id)
+        .collect::<std::collections::BTreeSet<_>>();
     let mut project_ids = std::collections::HashSet::new();
     for project in &mut config.monitored_projects {
         project.project_id = project.project_id.trim().to_string();
@@ -122,6 +127,7 @@ async fn validate_bug_monitor_monitored_projects(
             .as_ref()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
+        normalize_bug_monitor_source_binding_values(project);
 
         if !is_slug_like(&project.project_id) {
             anyhow::bail!("monitored project id must be ASCII slug-like");
@@ -165,6 +171,7 @@ async fn validate_bug_monitor_monitored_projects(
             crate::http::routines_automations::validate_model_policy(model_policy)
                 .map_err(anyhow::Error::msg)?;
         }
+        validate_bug_monitor_source_binding_destinations(project, &configured_destination_ids)?;
 
         let mut source_ids = std::collections::HashSet::new();
         for source in &mut project.log_sources {

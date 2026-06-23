@@ -1111,6 +1111,7 @@ async fn bug_monitor_issue_draft_prefers_structured_triage_summary() {
             duplicate_summary: None,
             duplicate_matches: None,
             event_payload: None,
+            ..crate::BugMonitorIncidentRecord::default()
         })
         .await
         .expect("seed incident");
@@ -1918,6 +1919,7 @@ async fn bug_monitor_triage_run_created_from_approved_draft() {
             duplicate_summary: None,
             duplicate_matches: None,
             event_payload: None,
+            ..crate::BugMonitorIncidentRecord::default()
         })
         .await
         .expect("seed replay incident");

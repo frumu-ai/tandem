@@ -229,6 +229,7 @@ fn candidate_from_block(
     process: Option<String>,
     excerpt: Vec<String>,
 ) -> BugMonitorLogCandidate {
+    let binding = project.source_binding(Some(source));
     let raw_excerpt_redacted = excerpt
         .iter()
         .take(200)
@@ -244,6 +245,7 @@ fn candidate_from_block(
     BugMonitorLogCandidate {
         project_id: project.project_id.clone(),
         source_id: source.source_id.clone(),
+        source_kind: binding.source_kind.clone(),
         repo: project.repo.clone(),
         workspace_root: project.workspace_root.clone(),
         path: absolute_path.display().to_string(),
@@ -274,6 +276,15 @@ fn candidate_from_block(
             project.project_id, source.source_id, offset_start, offset_end
         )],
         timestamp_ms: Some(crate::now_ms()),
+        route_tags: binding.default_route_tags,
+        allowed_destination_ids: binding.allowed_destination_ids,
+        default_destination_ids: binding.default_destination_ids,
+        tenant_id: binding.tenant_id,
+        workspace_id: binding.workspace_id,
+        event_schema_version: binding.event_schema_version,
+        source_approval_policy: Some(binding.approval_policy),
+        redaction_profile: binding.redaction_profile,
+        retention_profile: binding.retention_profile,
     }
 }
 

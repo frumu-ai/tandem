@@ -923,6 +923,7 @@ pub async fn process_event(
             duplicate_summary: None,
             duplicate_matches: None,
             event_payload: Some(event.properties.clone()),
+            ..BugMonitorIncidentRecord::default()
         }
     };
     state.put_bug_monitor_incident(incident.clone()).await?;
@@ -1609,6 +1610,7 @@ pub async fn build_bug_monitor_submission_from_event(
         risk_level,
         expected_destination,
         evidence_refs,
+        ..BugMonitorSubmission::default()
     })
 }
 

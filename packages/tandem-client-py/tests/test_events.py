@@ -78,6 +78,8 @@ def test_bug_monitor_destination_router_types_accept_payloads() -> None:
                         "name": "Default route",
                         "destination_ids": ["legacy-github"],
                         "approval_policy": "inherit",
+                        "match_source_kinds": ["ci"],
+                        "match_route_tags": ["payments"],
                     }
                 ],
                 "default_destination_ids": ["legacy-github"],
@@ -85,6 +87,28 @@ def test_bug_monitor_destination_router_types_accept_payloads() -> None:
                     "require_approval_for_high_risk": True,
                     "redact_secrets": True,
                 },
+                "monitored_projects": [
+                    {
+                        "project_id": "payments",
+                        "name": "Payments",
+                        "repo": "acme/payments",
+                        "workspace_root": "/tmp/payments",
+                        "source_kind": "external_app",
+                        "allowed_destination_ids": ["legacy-github"],
+                        "default_route_tags": ["payments"],
+                        "tenant_id": "tenant-a",
+                        "log_sources": [
+                            {
+                                "source_id": "ci",
+                                "path": "logs/ci.jsonl",
+                                "source_kind": "ci",
+                                "default_destination_ids": ["legacy-github"],
+                                "default_route_tags": ["ci"],
+                                "workspace_id": "workspace-a",
+                            }
+                        ],
+                    }
+                ],
             }
         }
     )
@@ -111,6 +135,8 @@ def test_bug_monitor_destination_router_types_accept_payloads() -> None:
     )
 
     assert config.bug_monitor.destinations[0].destination_id == "legacy-github"
+    assert config.bug_monitor.monitored_projects[0].source_kind == "external_app"
+    assert config.bug_monitor.monitored_projects[0].log_sources[0].source_kind == "ci"
     assert preview.effective_destination_ids == ["legacy-github"]
     assert post.receipt["issue_number"] == 42
 

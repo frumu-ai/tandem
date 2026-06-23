@@ -38,6 +38,8 @@ describe("Bug Monitor external project public types", () => {
             destination_ids: ["legacy-github"],
             approval_policy: "inherit",
             match_sources: ["manual"],
+            match_source_kinds: ["ci"],
+            match_route_tags: ["payments"],
           },
         ],
         default_destination_ids: ["legacy-github"],
@@ -53,15 +55,24 @@ describe("Bug Monitor external project public types", () => {
             enabled: true,
             repo: "frumu-ai/aca",
             workspace_root: "/home/evan/aca",
+            source_kind: "external_app",
             mcp_server: "github",
+            allowed_destination_ids: ["legacy-github"],
+            default_destination_ids: ["legacy-github"],
+            default_route_tags: ["aca"],
+            tenant_id: "tenant-a",
+            approval_policy: "high_risk",
             log_sources: [
               {
                 source_id: "coder-worker",
                 path: "logs/coder-worker.jsonl",
+                source_kind: "ci",
                 format: "json",
                 minimum_level: "error",
                 start_position: "end",
                 watch_interval_seconds: 5,
+                default_route_tags: ["worker"],
+                workspace_id: "workspace-a",
               },
             ],
           },
@@ -137,6 +148,8 @@ describe("Bug Monitor external project public types", () => {
     expect(config.bug_monitor.monitored_projects?.[0]?.log_sources?.[0]?.source_id).toBe(
       "coder-worker"
     );
+    expect(config.bug_monitor.monitored_projects?.[0]?.source_kind).toBe("external_app");
+    expect(config.bug_monitor.monitored_projects?.[0]?.log_sources?.[0]?.source_kind).toBe("ci");
     expect(status.status.log_watcher?.sources?.[0]?.healthy).toBe(true);
     expect(preview.effective_destination_ids?.[0]).toBe("legacy-github");
     expect(post.receipt && typeof post.receipt === "object").toBe(true);

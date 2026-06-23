@@ -24,14 +24,25 @@ Use a workspace-local copy of this repository when testing path validation.
         "enabled": true,
         "repo": "frumu-ai/tandem",
         "workspace_root": "/workspace/tandem",
+        "source_kind": "external_app",
+        "allowed_destination_ids": ["legacy-github"],
+        "default_destination_ids": ["legacy-github"],
+        "default_route_tags": ["external-demo"],
+        "tenant_id": "local",
+        "workspace_id": "demo",
+        "approval_policy": "inherit",
         "log_sources": [
           {
             "source_id": "service-jsonl",
             "path": "docs/fixtures/bug-monitor-external-log-intake/service.log.jsonl",
+            "source_kind": "ci",
             "format": "json",
             "minimum_level": "error",
             "start_position": "beginning",
-            "watch_interval_seconds": 5
+            "watch_interval_seconds": 5,
+            "default_route_tags": ["service-jsonl"],
+            "default_destination_ids": ["legacy-github"],
+            "approval_policy": "inherit"
           }
         ]
       }
@@ -40,10 +51,24 @@ Use a workspace-local copy of this repository when testing path validation.
 }
 ```
 
+## Source Binding
+
+`monitored_projects` is the configured source boundary for systems outside Tandem. Tandem treats the saved project/source config as authoritative for:
+
+- source identity: `project_id`, `source_id`, and `source_kind`
+- inspection boundary: `workspace_root` plus log paths that must stay inside it
+- routing context: `default_route_tags`, `default_destination_ids`, and `allowed_destination_ids`
+- tenancy context: `tenant_id`, `workspace_id`, and `event_schema_version`
+- safety defaults: `approval_policy`, `redaction_profile`, and `retention_profile`
+
+Log watcher submissions and scoped intake reports inherit these configured values. Scoped intake keys can submit events for their project, but they cannot override source identity, allowed destinations, route tags, tenant/workspace context, or approval policy.
+
+Route preview can use `project_id` and `log_source_id` to show the route that would match a sample event. If a route selects a destination outside the source `allowed_destination_ids`, preview marks it blocked and publishing fails closed.
+
 ## Smoke Path
 
-1. Save the config through Settings -> Bug Monitor.
-2. Confirm the external project panel shows one enabled project and one enabled source.
+1. Save the config through Settings -> Incident Monitor.
+2. Confirm the external project panel shows one enabled project, one enabled source, route tags, and allowed/default destinations.
 3. Wait for the watcher to poll.
 4. Confirm the source health reports a candidate/submission count.
 5. Confirm Bug Monitor incidents include the fixture failure with a `tandem://bug-monitor/...` evidence ref.

@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 export type BugMonitorLogSourceDraft = {
   source_id?: string;
   path?: string;
+  source_kind?: string | null;
   format?: string;
   minimum_level?: string;
   watch_interval_seconds?: number;
@@ -14,6 +15,15 @@ export type BugMonitorLogSourceDraft = {
   max_bytes_per_poll?: number;
   max_candidates_per_poll?: number;
   fingerprint_cooldown_ms?: number;
+  allowed_destination_ids?: string[];
+  default_destination_ids?: string[];
+  default_route_tags?: string[];
+  tenant_id?: string | null;
+  workspace_id?: string | null;
+  event_schema_version?: string | null;
+  approval_policy?: string;
+  redaction_profile?: string | null;
+  retention_profile?: string | null;
 };
 
 export type BugMonitorMonitoredProjectDraft = {
@@ -23,8 +33,18 @@ export type BugMonitorMonitoredProjectDraft = {
   paused?: boolean;
   repo?: string;
   workspace_root?: string;
+  source_kind?: string;
   mcp_server?: string | null;
   model_policy?: Record<string, unknown> | null;
+  allowed_destination_ids?: string[];
+  default_destination_ids?: string[];
+  default_route_tags?: string[];
+  tenant_id?: string | null;
+  workspace_id?: string | null;
+  event_schema_version?: string | null;
+  approval_policy?: string;
+  redaction_profile?: string | null;
+  retention_profile?: string | null;
   auto_create_new_issues?: boolean;
   require_approval_for_new_issues?: boolean;
   auto_comment_on_matched_open_issues?: boolean;
@@ -81,6 +101,12 @@ function formatOptionalBytes(value: unknown): string {
   if (numeric < 1024) return `${numeric} B`;
   if (numeric < 1024 * 1024) return `${(numeric / 1024).toFixed(1)} KB`;
   return `${(numeric / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatList(values: unknown, fallback = "none"): string {
+  if (!Array.isArray(values)) return fallback;
+  const cleaned = values.map((value) => String(value || "").trim()).filter(Boolean);
+  return cleaned.length ? cleaned.join(", ") : fallback;
 }
 
 function sourceKey(projectId: string, sourceId: string): string {
@@ -184,7 +210,10 @@ export function BugMonitorExternalProjectsPanel({
           unhealthyCount,
           candidateCount,
           submittedCount,
-          lastPollAtMs: runtimeRows.reduce((max, row) => Math.max(max, Number(row.last_poll_at_ms || 0)), 0),
+          lastPollAtMs: runtimeRows.reduce(
+            (max, row) => Math.max(max, Number(row.last_poll_at_ms || 0)),
+            0
+          ),
         };
       }),
     [projects, statusBySource]
@@ -330,14 +359,24 @@ export function BugMonitorExternalProjectsPanel({
                       enabled: true,
                       repo: starterRepo.trim() || "owner/repo",
                       workspace_root: starterWorkspaceRoot.trim() || "/path/to/repo",
+                      source_kind: "external_app",
+                      allowed_destination_ids: ["legacy-github"],
+                      default_destination_ids: ["legacy-github"],
+                      default_route_tags: [projectId],
+                      tenant_id: "tenant-a",
+                      approval_policy: "inherit",
                       log_sources: [
                         {
                           source_id: sourceId,
                           path: starterLogPath.trim() || "logs/app.log",
+                          source_kind: "ci",
                           format: "auto",
                           minimum_level: "error",
                           start_position: "end",
                           watch_interval_seconds: 5,
+                          default_route_tags: [sourceId],
+                          workspace_id: "workspace-a",
+                          approval_policy: "inherit",
                         },
                       ],
                     },
@@ -365,7 +404,7 @@ export function BugMonitorExternalProjectsPanel({
           value={projectsJson}
           onChange={(event) => onProjectsJsonChange(event.currentTarget.value)}
           spellCheck={false}
-          placeholder='[{"project_id":"aca","repo":"owner/repo","workspace_root":"/path/to/repo","log_sources":[{"source_id":"ci","path":"logs/ci.jsonl"}]}]'
+          placeholder='[{"project_id":"aca","repo":"owner/repo","workspace_root":"/path/to/repo","source_kind":"external_app","default_route_tags":["aca"],"allowed_destination_ids":["legacy-github"],"log_sources":[{"source_id":"ci","source_kind":"ci","path":"logs/ci.jsonl","default_route_tags":["ci"]}]}]'
         />
         <div className={projectsJsonError ? "text-xs text-amber-200" : "tcp-subtle text-xs"}>
           {projectsJsonError ||
@@ -395,6 +434,7 @@ export function BugMonitorExternalProjectsPanel({
                           ? "Paused"
                           : "Enabled"}
                     </Badge>
+                    <Badge tone="info">{project.source_kind || "customer_system"}</Badge>
                     <Badge tone="info">{logSources.length} log sources</Badge>
                   </div>
                 </div>
@@ -405,6 +445,19 @@ export function BugMonitorExternalProjectsPanel({
                     : project.auto_create_new_issues === false
                       ? "draft only"
                       : "auto-create enabled"}
+                </div>
+                <div className="tcp-subtle mt-2 grid gap-1 text-xs md:grid-cols-2">
+                  <div>Route tags: {formatList(project.default_route_tags)}</div>
+                  <div>
+                    Allowed destinations: {formatList(project.allowed_destination_ids, "any")}
+                  </div>
+                  <div>
+                    Default destinations: {formatList(project.default_destination_ids, "global")}
+                  </div>
+                  <div>
+                    Scope: {project.tenant_id || "local"} /{" "}
+                    {project.workspace_id || "any workspace"}
+                  </div>
                 </div>
                 {logSources.length ? (
                   <div className="mt-3 grid gap-2">
@@ -448,6 +501,24 @@ export function BugMonitorExternalProjectsPanel({
                               </Badge>
                               <Badge tone="info">{source.format || "auto"}</Badge>
                               <Badge tone="info">{source.minimum_level || "error"}+</Badge>
+                              <Badge tone="info">
+                                {source.source_kind || project.source_kind || "source"}
+                              </Badge>
+                            </div>
+                          </div>
+                          <div className="tcp-subtle mt-2 grid gap-1 text-xs md:grid-cols-2">
+                            <div>Route tags: {formatList(source.default_route_tags)}</div>
+                            <div>
+                              Allowed destinations:{" "}
+                              {formatList(source.allowed_destination_ids, "project")}
+                            </div>
+                            <div>
+                              Default destinations:{" "}
+                              {formatList(source.default_destination_ids, "project")}
+                            </div>
+                            <div>
+                              Scope: {source.tenant_id || project.tenant_id || "local"} /{" "}
+                              {source.workspace_id || project.workspace_id || "any workspace"}
                             </div>
                           </div>
                           <div className="tcp-subtle mt-2 grid gap-1 text-xs md:grid-cols-2">
