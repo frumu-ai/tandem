@@ -645,6 +645,139 @@ async fn bug_monitor_raw_report_cannot_downgrade_global_approval_with_configured
 }
 
 #[tokio::test]
+#[serial_test::serial(bug_monitor_http)]
+async fn bug_monitor_raw_report_clears_untrusted_source_routing_fields() {
+    let state = test_state().await;
+    state
+        .put_bug_monitor_config(crate::BugMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            workspace_root: Some("/tmp/acme".to_string()),
+            require_approval_for_new_issues: true,
+            routes: vec![crate::BugMonitorRouteConfig {
+                route_id: "forged-relaxed-route".to_string(),
+                name: "Forged relaxed route".to_string(),
+                priority: 10,
+                destination_ids: vec![crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID
+                    .to_string()],
+                match_source_kinds: vec!["ci".to_string()],
+                match_route_tags: vec!["forged".to_string()],
+                match_tenant_ids: vec!["forged-tenant".to_string()],
+                approval_policy: crate::BugMonitorApprovalPolicy::Never,
+                ..Default::default()
+            }],
+            monitored_projects: vec![crate::BugMonitorMonitoredProject {
+                project_id: "payments".to_string(),
+                name: "Payments".to_string(),
+                repo: "acme/platform".to_string(),
+                workspace_root: "/tmp/acme".to_string(),
+                source_kind: crate::BugMonitorSourceKind::ExternalApp,
+                default_route_tags: vec!["trusted-payments".to_string()],
+                tenant_id: Some("trusted-tenant".to_string()),
+                log_sources: vec![crate::BugMonitorLogSource {
+                    source_id: "ci".to_string(),
+                    path: "logs/ci.jsonl".to_string(),
+                    source_kind: Some(crate::BugMonitorSourceKind::Ci),
+                    default_route_tags: vec!["trusted-ci".to_string()],
+                    tenant_id: Some("trusted-tenant".to_string()),
+                    workspace_id: Some("trusted-workspace".to_string()),
+                    default_destination_ids: vec![
+                        crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string(),
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            default_destination_ids: vec![crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID
+                .to_string()],
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+
+    let app = app_router(state.clone());
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/bug-monitor/report")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "report": {
+                    "project_id": "payments",
+                    "log_source_id": "ci",
+                    "source": "raw_http",
+                    "title": "Raw forged source route report",
+                    "detail": "A raw report must not persist source routing fields.",
+                    "risk_level": "medium",
+                    "confidence": "medium",
+                    "source_kind": "ci",
+                    "route_tags": ["forged"],
+                    "allowed_destination_ids": ["linear-prod"],
+                    "default_destination_ids": ["linear-prod"],
+                    "tenant_id": "forged-tenant",
+                    "workspace_id": "forged-workspace",
+                    "event_schema_version": "forged-v1",
+                    "source_approval_policy": "never",
+                    "redaction_profile": "forged-redaction",
+                    "retention_profile": "forged-retention",
+                    "excerpt": ["ERROR raw forged CI report failed"]
+                }
+            })
+            .to_string(),
+        ))
+        .expect("create request");
+    let create_resp = app.clone().oneshot(create_req).await.expect("create response");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let create_payload: Value = serde_json::from_slice(
+        &to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .expect("create body"),
+    )
+    .expect("create json");
+    let draft_id = create_payload
+        .get("draft")
+        .and_then(|row| row.get("draft_id"))
+        .and_then(Value::as_str)
+        .expect("draft id")
+        .to_string();
+    let stored = state
+        .get_bug_monitor_draft(&draft_id)
+        .await
+        .expect("stored draft");
+    assert_eq!(stored.status, "approval_required");
+    assert!(stored.source_kind.is_none());
+    assert!(stored.route_tags.is_empty());
+    assert!(stored.allowed_destination_ids.is_empty());
+    assert!(stored.default_destination_ids.is_empty());
+    assert!(stored.tenant_id.is_none());
+    assert!(stored.workspace_id.is_none());
+    assert!(stored.event_schema_version.is_none());
+    assert!(stored.source_approval_policy.is_none());
+    assert!(stored.redaction_profile.is_none());
+    assert!(stored.retention_profile.is_none());
+
+    let publish_req = Request::builder()
+        .method("POST")
+        .uri(format!("/bug-monitor/drafts/{draft_id}/publish"))
+        .body(Body::empty())
+        .expect("publish request");
+    let publish_resp = app.oneshot(publish_req).await.expect("publish response");
+    assert_eq!(publish_resp.status(), StatusCode::OK);
+    let publish_payload: Value = serde_json::from_slice(
+        &to_bytes(publish_resp.into_body(), usize::MAX)
+            .await
+            .expect("publish body"),
+    )
+    .expect("publish json");
+
+    assert_eq!(
+        publish_payload.get("action").and_then(Value::as_str),
+        Some("approval_required")
+    );
+    assert!(state.list_bug_monitor_posts(10).await.is_empty());
+}
+
+#[tokio::test]
 async fn bug_monitor_dedupe_keeps_distinct_source_bound_drafts() {
     let state = test_state().await;
     state

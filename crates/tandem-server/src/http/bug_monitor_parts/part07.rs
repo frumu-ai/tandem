@@ -9,11 +9,13 @@ fn apply_bug_monitor_report_source_approval_binding(
         .project_id
         .as_deref()
         .map(str::trim)
-        .filter(|value| !value.is_empty());
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
     let Some(project_id) = project_id else {
         report.source_approval_policy = None;
         return;
     };
+    clear_bug_monitor_raw_source_routing_fields(report);
     let Some(project) = config
         .monitored_projects
         .iter()
@@ -38,6 +40,19 @@ fn apply_bug_monitor_report_source_approval_binding(
         return;
     }
     report.source_approval_policy = None;
+}
+
+fn clear_bug_monitor_raw_source_routing_fields(report: &mut BugMonitorSubmission) {
+    report.source_kind = None;
+    report.route_tags.clear();
+    report.allowed_destination_ids.clear();
+    report.default_destination_ids.clear();
+    report.tenant_id = None;
+    report.workspace_id = None;
+    report.event_schema_version = None;
+    report.source_approval_policy = None;
+    report.redaction_profile = None;
+    report.retention_profile = None;
 }
 
 fn bug_monitor_intake_key_from_headers(headers: &HeaderMap) -> Option<String> {
