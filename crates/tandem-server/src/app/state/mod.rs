@@ -301,6 +301,7 @@ pub struct StatusIndexUpdate {
 
 include!("app_state_impl_parts/part01.rs");
 include!("app_state_impl_parts/part02.rs");
+include!("app_state_impl_parts/part10.rs");
 include!("app_state_impl_parts/part03.rs");
 include!("app_state_impl_parts/part05.rs");
 include!("app_state_impl_parts/part04.rs");
