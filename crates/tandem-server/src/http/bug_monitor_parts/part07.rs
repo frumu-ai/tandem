@@ -2,41 +2,10 @@
 // (same module via include!).
 
 fn apply_bug_monitor_report_source_approval_binding(
-    config: &BugMonitorConfig,
+    _config: &BugMonitorConfig,
     report: &mut BugMonitorSubmission,
 ) {
     clear_bug_monitor_raw_source_routing_fields(report);
-
-    let project_id = report
-        .project_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string);
-    let Some(project_id) = project_id else {
-        return;
-    };
-    let Some(project) = config
-        .monitored_projects
-        .iter()
-        .find(|project| project.project_id == project_id)
-    else {
-        return;
-    };
-    let source_id = report
-        .log_source_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let configured_source = source_id.and_then(|source_id| {
-        project
-            .log_sources
-            .iter()
-            .find(|source| source.source_id == source_id)
-    });
-    if source_id.is_some() && configured_source.is_none() {
-        return;
-    }
 }
 
 fn clear_bug_monitor_raw_source_routing_fields(report: &mut BugMonitorSubmission) {
