@@ -8,7 +8,7 @@ on:
       - "Cargo.lock"
       - "crates/**"
       - "engine/**"
-      - ".config/audit.toml"
+      - ".cargo/audit.toml"
       - ".config/coverage-baseline.json"
       - ".config/deny.toml"
       - ".github/workflows/rust-security-and-coverage.yml"
@@ -44,7 +44,7 @@ jobs:
 
       - name: Run cargo audit
         continue-on-error: ${{ github.event_name == 'pull_request' }}
-        run: cargo audit --config .config/audit.toml
+        run: cargo audit
 
       - name: PR audit policy
         if: github.event_name == 'pull_request'

@@ -16,8 +16,8 @@ coverage reporting.
 The `Rust Security and Coverage` workflow runs nightly and by
 `workflow_dispatch`.
 
-- `cargo audit --config .config/audit.toml` fails on advisories unless an
-  accepted advisory is listed in `.config/audit.toml`.
+- `cargo audit` fails on advisories unless an accepted advisory is listed in
+  `.cargo/audit.toml`.
 - `cargo deny check --config .config/deny.toml licenses bans sources` and
   `cargo deny check --config .config/deny.toml advisories` fail on
   scheduled/manual policy violations.
@@ -29,7 +29,7 @@ The `Rust Security and Coverage` workflow runs nightly and by
 
 Advisory, license, source, and ban exceptions must be temporary and auditable.
 
-1. Add the smallest exception to `.config/audit.toml` or `.config/deny.toml`.
+1. Add the smallest exception to `.cargo/audit.toml` or `.config/deny.toml`.
 2. Include a comment next to the exception or in the PR body with the owner,
    reason, mitigation, and expiry date.
 3. Link the upstream advisory, crate issue, or license evidence.
@@ -37,6 +37,18 @@ Advisory, license, source, and ban exceptions must be temporary and auditable.
 
 BUSL exceptions are allowed only for Tandem-owned source-available crates listed
 in `docs/LICENSING.md`.
+
+### Current Advisory Exceptions
+
+| Advisory                                                                                                | Crate family                                  | Owner                    | Reason / mitigation                                                                                                                                 | Expires    |
+| ------------------------------------------------------------------------------------------------------- | --------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| `RUSTSEC-2024-0411` - `RUSTSEC-2024-0420`                                                               | GTK3/Tauri Linux stack                        | Desktop runtime          | Tauri's current Linux stack still pulls archived gtk-rs GTK3 crates. Keep desktop builds patched through Tauri updates; revisit on Tauri/GTK4 path. | 2026-09-30 |
+| `RUSTSEC-2024-0320`, `RUSTSEC-2025-0141`                                                                | `yaml-rust`, `bincode` via `syntect`/`ppt-rs` | Desktop document preview | No direct safe upgrade in the current `ppt-rs`/`syntect` chain. Replace or isolate PowerPoint preview parsing before expiry.                        | 2026-09-30 |
+| `RUSTSEC-2024-0370`, `RUSTSEC-2024-0388`                                                                | `proc-macro-error`, `derivative`              | Desktop runtime          | Transitive macro/helper crates through GTK/D-Bus dependencies. Remove with upstream desktop dependency refresh or replacement.                      | 2026-09-30 |
+| `RUSTSEC-2024-0384`, `RUSTSEC-2025-0057`, `RUSTSEC-2025-0119`, `RUSTSEC-2024-0436`                      | Utility transitive crates                     | Runtime dependencies     | Unmaintained transitive helpers with no direct security exploit in Tandem paths. Prefer upstream dependency updates before adding direct forks.     | 2026-09-30 |
+| `RUSTSEC-2025-0075`, `RUSTSEC-2025-0080`, `RUSTSEC-2025-0081`, `RUSTSEC-2025-0098`, `RUSTSEC-2025-0100` | `rust-unic` via Tauri `urlpattern`            | Desktop runtime          | Tauri URL pattern parsing currently depends on unmaintained `rust-unic` crates. Remove through upstream Tauri/urlpattern update.                    | 2026-09-30 |
+| `RUSTSEC-2025-0134`                                                                                     | `rustls-pemfile` 1.x                          | Runtime dependencies     | Transitive through legacy `reqwest` 0.11 chain. Keep TLS-sensitive paths on newer reqwest/rustls where possible; replace legacy dependency.         | 2026-09-30 |
+| `RUSTSEC-2026-0105`                                                                                     | `core2` via `image`/`rav1e`                   | Runtime dependencies     | Yanked/unmaintained transitive crate through image encoding dependencies. Track upstream image/rav1e replacement or version cleanup.                | 2026-09-30 |
 
 ### Current License Exceptions
 

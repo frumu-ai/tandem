@@ -1,5 +1,0 @@
-[advisories]
-# PR cargo-audit is warning-only, but scheduled/manual runs fail unless an
-# advisory is intentionally accepted here. Accepted advisories must include a
-# comment in docs/CI_SECURITY_AND_COVERAGE.md with an owner, reason, and expiry.
-ignore = []
