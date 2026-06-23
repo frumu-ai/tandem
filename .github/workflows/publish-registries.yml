@@ -228,6 +228,7 @@ jobs:
               "crates/tandem-tools",
               "crates/tandem-channels",
               "crates/tandem-core",
+              "crates/tandem-bug-monitor",
               "crates/tandem-runtime",
               "crates/tandem-workflows",
               "crates/tandem-browser",
@@ -236,6 +237,7 @@ jobs:
               "crates/tandem-governance-engine",
               "crates/tandem-tui",
               "crates/tandem-server",
+              "crates/tandem-eval",
               "crates/tandem-enterprise-server",
               "engine",
           ]
