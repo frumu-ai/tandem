@@ -110,6 +110,14 @@ pub(super) struct BugMonitorDecisionInput {
 }
 
 #[derive(Debug, Deserialize, Default)]
+pub(super) struct BugMonitorPublishInput {
+    #[serde(default)]
+    pub destination_id: Option<String>,
+    #[serde(default)]
+    pub destination_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
 pub(super) struct BugMonitorTriageSummaryInput {
     #[serde(default)]
     pub suggested_title: Option<String>,

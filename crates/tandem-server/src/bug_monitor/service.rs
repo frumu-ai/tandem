@@ -509,11 +509,14 @@ async fn recover_stale_bug_monitor_triage_event(
         ));
     }
 
-    match crate::bug_monitor_github::publish_draft(
+    match crate::bug_monitor::router::publish_draft(
         state,
-        &current_draft.draft_id,
-        Some(&incident.incident_id),
-        crate::bug_monitor_github::PublishMode::Recovery,
+        crate::bug_monitor::router::BugMonitorPublishRequest {
+            draft_id: current_draft.draft_id.clone(),
+            incident_id: Some(incident.incident_id.clone()),
+            mode: crate::bug_monitor_github::PublishMode::Recovery,
+            destination_ids: Vec::new(),
+        },
     )
     .await
     {
@@ -765,11 +768,14 @@ async fn recover_terminal_bug_monitor_triage_event(
         event_payload,
     ));
 
-    match crate::bug_monitor_github::publish_draft(
+    match crate::bug_monitor::router::publish_draft(
         state,
-        &draft.draft_id,
-        Some(&incident.incident_id),
-        crate::bug_monitor_github::PublishMode::Recovery,
+        crate::bug_monitor::router::BugMonitorPublishRequest {
+            draft_id: draft.draft_id.clone(),
+            incident_id: Some(incident.incident_id.clone()),
+            mode: crate::bug_monitor_github::PublishMode::Recovery,
+            destination_ids: Vec::new(),
+        },
     )
     .await
     {
@@ -788,7 +794,7 @@ async fn recover_terminal_bug_monitor_triage_event(
             updated.updated_at_ms = now_ms();
             state.put_bug_monitor_incident(updated.clone()).await?;
             let evidence_digest = draft.evidence_digest.clone();
-            let _ = crate::bug_monitor_github::record_post_failure(
+            let _ = crate::bug_monitor::router::record_publish_failure(
                 state,
                 &draft,
                 Some(&updated.incident_id),
@@ -994,11 +1000,14 @@ pub async fn process_event(
             .get_bug_monitor_draft(&draft_id)
             .await
             .unwrap_or(draft.clone());
-        match crate::bug_monitor_github::publish_draft(
+        match crate::bug_monitor::router::publish_draft(
             state,
-            &draft_id,
-            Some(&incident.incident_id),
-            crate::bug_monitor_github::PublishMode::Auto,
+            crate::bug_monitor::router::BugMonitorPublishRequest {
+                draft_id: draft_id.clone(),
+                incident_id: Some(incident.incident_id.clone()),
+                mode: crate::bug_monitor_github::PublishMode::Auto,
+                destination_ids: Vec::new(),
+            },
         )
         .await
         {
@@ -1022,7 +1031,7 @@ pub async fn process_event(
                         "failed to persist bug monitor draft after auto-post failure",
                     );
                 }
-                if let Err(record_err) = crate::bug_monitor_github::record_post_failure(
+                if let Err(record_err) = crate::bug_monitor::router::record_publish_failure(
                     state,
                     &failed_draft,
                     Some(&incident.incident_id),
@@ -1706,11 +1715,14 @@ fn spawn_triage_deadline_task(
                 ));
             }
         }
-        if let Err(error) = crate::bug_monitor_github::publish_draft(
+        if let Err(error) = crate::bug_monitor::router::publish_draft(
             &state,
-            &draft_id,
-            Some(&incident_id),
-            crate::bug_monitor_github::PublishMode::Recovery,
+            crate::bug_monitor::router::BugMonitorPublishRequest {
+                draft_id: draft_id.clone(),
+                incident_id: Some(incident_id.clone()),
+                mode: crate::bug_monitor_github::PublishMode::Recovery,
+                destination_ids: Vec::new(),
+            },
         )
         .await
         {

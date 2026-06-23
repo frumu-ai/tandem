@@ -599,8 +599,14 @@ pub struct BugMonitorDraftRecord {
     pub draft_id: String,
     pub fingerprint: String,
     pub repo: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_source_id: Option<String>,
     pub status: String,
     pub created_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_granted_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub triage_run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

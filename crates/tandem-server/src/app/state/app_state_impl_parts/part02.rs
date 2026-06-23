@@ -205,6 +205,14 @@ impl AppState {
                 existing.expected_destination = submission.expected_destination.clone();
                 changed = true;
             }
+            if existing.project_id.is_none() && submission.project_id.is_some() {
+                existing.project_id = submission.project_id.clone();
+                changed = true;
+            }
+            if existing.log_source_id.is_none() && submission.log_source_id.is_some() {
+                existing.log_source_id = submission.log_source_id.clone();
+                changed = true;
+            }
             existing.quality_gate = Some(quality_gate.clone());
             changed = true;
             for evidence_ref in &submission.evidence_refs {
@@ -221,16 +229,22 @@ impl AppState {
             return Ok(existing);
         }
 
+        let approval_required = config.require_approval_for_new_issues
+            || (config.safety_defaults.require_approval_for_high_risk
+                && crate::bug_monitor::router::is_high_risk(submission.risk_level.as_deref()));
         let draft = BugMonitorDraftRecord {
             draft_id: format!("failure-draft-{}", uuid::Uuid::new_v4().simple()),
             fingerprint,
             repo,
-            status: if config.require_approval_for_new_issues {
+            project_id: submission.project_id.clone(),
+            log_source_id: submission.log_source_id.clone(),
+            status: if approval_required {
                 "approval_required".to_string()
             } else {
                 "draft_ready".to_string()
             },
             created_at_ms: now_ms(),
+            approval_granted_at_ms: None,
             triage_run_id: None,
             issue_number: None,
             title: Some(title),
@@ -274,6 +288,9 @@ impl AppState {
             anyhow::bail!("Bug Monitor draft is not waiting for approval");
         }
         draft.status = normalized_status.clone();
+        if normalized_status == "draft_ready" {
+            draft.approval_granted_at_ms = Some(now_ms());
+        }
         if let Some(reason) = reason
             .map(|value| value.trim())
             .filter(|value| !value.is_empty())
@@ -632,11 +649,14 @@ impl AppState {
             crate::bug_monitor::service::recover_overdue_bug_monitor_triage_runs(self).await
         {
             for (draft_id, incident_id) in recovered {
-                let _ = crate::bug_monitor_github::publish_draft(
+                let _ = crate::bug_monitor::router::publish_draft(
                     self,
-                    &draft_id,
-                    incident_id.as_deref(),
-                    crate::bug_monitor_github::PublishMode::Recovery,
+                    crate::bug_monitor::router::BugMonitorPublishRequest {
+                        draft_id,
+                        incident_id,
+                        mode: crate::bug_monitor_github::PublishMode::Recovery,
+                        destination_ids: Vec::new(),
+                    },
                 )
                 .await;
             }

@@ -938,8 +938,11 @@ export interface BugMonitorDraftRecord {
   draft_id: string;
   fingerprint?: string;
   repo?: string;
+  project_id?: string | null;
+  log_source_id?: string | null;
   status?: string;
   created_at_ms?: number;
+  approval_granted_at_ms?: number | null;
   triage_run_id?: string | null;
   issue_number?: number | null;
   title?: string | null;
