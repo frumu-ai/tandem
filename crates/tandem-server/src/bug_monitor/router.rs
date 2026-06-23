@@ -207,10 +207,12 @@ pub async fn publish_draft(
         &context,
         &requested_destination_ids,
     );
+    let router_approval_required =
+        route_publish_approval_required(&status.config, &preview, &context, &status.destinations);
 
     validate_publish_plan(&status.config, &preview, request.mode)?;
     if request.mode != bug_monitor_github::PublishMode::RecheckOnly
-        && preview.approval_required
+        && router_approval_required
         && !draft.status.eq_ignore_ascii_case("denied")
         && !draft_satisfies_route_approval(&draft)
     {
@@ -306,6 +308,67 @@ fn validate_publish_plan(
 
 fn draft_satisfies_route_approval(draft: &BugMonitorDraftRecord) -> bool {
     draft.status.eq_ignore_ascii_case("draft_ready") && draft.approval_granted_at_ms.is_some()
+}
+
+fn route_publish_approval_required(
+    config: &BugMonitorConfig,
+    preview: &BugMonitorRoutePreviewResponse,
+    context: &BugMonitorRouteContext,
+    destinations: &[BugMonitorDestinationConfig],
+) -> bool {
+    preview.matches.iter().any(|preview_match| {
+        let route = preview_match.route_id.as_deref().and_then(|route_id| {
+            config
+                .routes
+                .iter()
+                .find(|route| route.route_id == route_id)
+        });
+        route_publish_match_approval_required(
+            config,
+            route,
+            context,
+            destinations,
+            &preview_match.destination_ids,
+        )
+    })
+}
+
+fn route_publish_match_approval_required(
+    config: &BugMonitorConfig,
+    route: Option<&BugMonitorRouteConfig>,
+    context: &BugMonitorRouteContext,
+    destinations: &[BugMonitorDestinationConfig],
+    destination_ids: &[String],
+) -> bool {
+    let destination_requires_approval = destination_ids.iter().any(|destination_id| {
+        destinations
+            .iter()
+            .find(|destination| destination.destination_id == *destination_id)
+            .map(|destination| {
+                destination.require_approval
+                    && !is_synthesized_legacy_github_destination(config, destination)
+            })
+            .unwrap_or(false)
+    });
+    let high_risk = is_high_risk(context.risk_level.as_deref());
+    match route
+        .map(|row| &row.approval_policy)
+        .unwrap_or(&BugMonitorApprovalPolicy::Inherit)
+    {
+        BugMonitorApprovalPolicy::Always => true,
+        BugMonitorApprovalPolicy::Never => false,
+        BugMonitorApprovalPolicy::HighRisk => destination_requires_approval || high_risk,
+        BugMonitorApprovalPolicy::Inherit => destination_requires_approval,
+    }
+}
+
+fn is_synthesized_legacy_github_destination(
+    config: &BugMonitorConfig,
+    destination: &BugMonitorDestinationConfig,
+) -> bool {
+    config.destinations.is_empty()
+        && destination.destination_id == BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID
+        && destination.kind == BugMonitorDestinationKind::GithubIssue
 }
 
 fn route_preview_matches(
