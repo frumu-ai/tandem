@@ -853,8 +853,11 @@ class BugMonitorDraftRecord(BaseModel):
     draft_id: str
     fingerprint: Optional[str] = None
     repo: Optional[str] = None
+    project_id: Optional[str] = None
+    log_source_id: Optional[str] = None
     status: Optional[str] = None
     created_at_ms: Optional[int] = None
+    approval_granted_at_ms: Optional[int] = None
     triage_run_id: Optional[str] = None
     issue_number: Optional[int] = None
     title: Optional[str] = None

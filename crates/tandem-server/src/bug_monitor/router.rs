@@ -82,10 +82,12 @@ pub fn build_route_context(
         project_id: first_route_value(&[
             project_id,
             report.and_then(|row| row.project_id.as_deref()),
+            draft.and_then(|row| row.project_id.as_deref()),
         ]),
         log_source_id: first_route_value(&[
             log_source_id,
             report.and_then(|row| row.log_source_id.as_deref()),
+            draft.and_then(|row| row.log_source_id.as_deref()),
         ]),
         route_tags: normalize_route_values(route_tags),
     }
@@ -209,8 +211,10 @@ pub async fn publish_draft(
     validate_publish_plan(&status.config, &preview, request.mode)?;
     if request.mode != bug_monitor_github::PublishMode::RecheckOnly
         && preview.approval_required
-        && draft.status.eq_ignore_ascii_case("approval_required")
+        && !draft.status.eq_ignore_ascii_case("denied")
+        && !draft_satisfies_route_approval(&draft)
     {
+        draft.status = "approval_required".to_string();
         draft.github_status = Some("approval_required".to_string());
         let draft = state.put_bug_monitor_draft(draft).await?;
         return Ok(bug_monitor_github::PublishOutcome {
@@ -298,6 +302,10 @@ fn validate_publish_plan(
         anyhow::bail!("{}", preview.blocked_reasons.join("; "));
     }
     Ok(())
+}
+
+fn draft_satisfies_route_approval(draft: &BugMonitorDraftRecord) -> bool {
+    draft.status.eq_ignore_ascii_case("draft_ready") && draft.approval_granted_at_ms.is_some()
 }
 
 fn route_preview_matches(

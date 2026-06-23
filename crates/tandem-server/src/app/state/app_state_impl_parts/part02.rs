@@ -205,6 +205,14 @@ impl AppState {
                 existing.expected_destination = submission.expected_destination.clone();
                 changed = true;
             }
+            if existing.project_id.is_none() && submission.project_id.is_some() {
+                existing.project_id = submission.project_id.clone();
+                changed = true;
+            }
+            if existing.log_source_id.is_none() && submission.log_source_id.is_some() {
+                existing.log_source_id = submission.log_source_id.clone();
+                changed = true;
+            }
             existing.quality_gate = Some(quality_gate.clone());
             changed = true;
             for evidence_ref in &submission.evidence_refs {
@@ -228,12 +236,15 @@ impl AppState {
             draft_id: format!("failure-draft-{}", uuid::Uuid::new_v4().simple()),
             fingerprint,
             repo,
+            project_id: submission.project_id.clone(),
+            log_source_id: submission.log_source_id.clone(),
             status: if approval_required {
                 "approval_required".to_string()
             } else {
                 "draft_ready".to_string()
             },
             created_at_ms: now_ms(),
+            approval_granted_at_ms: None,
             triage_run_id: None,
             issue_number: None,
             title: Some(title),
@@ -277,6 +288,9 @@ impl AppState {
             anyhow::bail!("Bug Monitor draft is not waiting for approval");
         }
         draft.status = normalized_status.clone();
+        if normalized_status == "draft_ready" {
+            draft.approval_granted_at_ms = Some(now_ms());
+        }
         if let Some(reason) = reason
             .map(|value| value.trim())
             .filter(|value| !value.is_empty())
