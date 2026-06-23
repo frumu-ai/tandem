@@ -5,6 +5,8 @@ fn apply_bug_monitor_report_source_approval_binding(
     config: &BugMonitorConfig,
     report: &mut BugMonitorSubmission,
 ) {
+    clear_bug_monitor_raw_source_routing_fields(report);
+
     let project_id = report
         .project_id
         .as_deref()
@@ -12,16 +14,13 @@ fn apply_bug_monitor_report_source_approval_binding(
         .filter(|value| !value.is_empty())
         .map(ToString::to_string);
     let Some(project_id) = project_id else {
-        report.source_approval_policy = None;
         return;
     };
-    clear_bug_monitor_raw_source_routing_fields(report);
     let Some(project) = config
         .monitored_projects
         .iter()
         .find(|project| project.project_id == project_id)
     else {
-        report.source_approval_policy = None;
         return;
     };
     let source_id = report
@@ -36,10 +35,8 @@ fn apply_bug_monitor_report_source_approval_binding(
             .find(|source| source.source_id == source_id)
     });
     if source_id.is_some() && configured_source.is_none() {
-        report.source_approval_policy = None;
         return;
     }
-    report.source_approval_policy = None;
 }
 
 fn clear_bug_monitor_raw_source_routing_fields(report: &mut BugMonitorSubmission) {

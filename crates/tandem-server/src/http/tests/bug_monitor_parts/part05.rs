@@ -474,6 +474,94 @@ async fn bug_monitor_raw_report_cannot_supply_untrusted_never_source_policy() {
         publish_payload.get("action").and_then(Value::as_str),
         Some("approval_required")
     );
+
+    let app = app_router(state.clone());
+    let anonymous_req = Request::builder()
+        .method("POST")
+        .uri("/bug-monitor/report")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "report": {
+                    "source": "raw_http",
+                    "title": "Anonymous raw forged source route report",
+                    "detail": "An anonymous raw report must not persist source routing fields.",
+                    "risk_level": "medium",
+                    "confidence": "medium",
+                    "source_kind": "ci",
+                    "route_tags": ["forged"],
+                    "allowed_destination_ids": ["linear-prod"],
+                    "default_destination_ids": ["linear-prod"],
+                    "tenant_id": "forged-tenant",
+                    "workspace_id": "forged-workspace",
+                    "event_schema_version": "forged-v1",
+                    "source_approval_policy": "never",
+                    "redaction_profile": "forged-redaction",
+                    "retention_profile": "forged-retention",
+                    "excerpt": ["ERROR anonymous raw forged CI report failed"]
+                }
+            })
+            .to_string(),
+        ))
+        .expect("anonymous create request");
+    let anonymous_resp = app
+        .clone()
+        .oneshot(anonymous_req)
+        .await
+        .expect("anonymous create response");
+    assert_eq!(anonymous_resp.status(), StatusCode::OK);
+    let anonymous_payload: Value = serde_json::from_slice(
+        &to_bytes(anonymous_resp.into_body(), usize::MAX)
+            .await
+            .expect("anonymous create body"),
+    )
+    .expect("anonymous create json");
+    let anonymous_draft_id = anonymous_payload
+        .get("draft")
+        .and_then(|row| row.get("draft_id"))
+        .and_then(Value::as_str)
+        .expect("anonymous draft id")
+        .to_string();
+    let anonymous_stored = state
+        .get_bug_monitor_draft(&anonymous_draft_id)
+        .await
+        .expect("anonymous stored draft");
+    assert!(anonymous_stored.project_id.is_none());
+    assert!(anonymous_stored.log_source_id.is_none());
+    assert!(anonymous_stored.source_kind.is_none());
+    assert!(anonymous_stored.route_tags.is_empty());
+    assert!(anonymous_stored.allowed_destination_ids.is_empty());
+    assert!(anonymous_stored.default_destination_ids.is_empty());
+    assert!(anonymous_stored.tenant_id.is_none());
+    assert!(anonymous_stored.workspace_id.is_none());
+    assert!(anonymous_stored.event_schema_version.is_none());
+    assert!(anonymous_stored.source_approval_policy.is_none());
+    assert!(anonymous_stored.redaction_profile.is_none());
+    assert!(anonymous_stored.retention_profile.is_none());
+
+    let anonymous_publish_req = Request::builder()
+        .method("POST")
+        .uri(format!("/bug-monitor/drafts/{anonymous_draft_id}/publish"))
+        .body(Body::empty())
+        .expect("anonymous publish request");
+    let anonymous_publish_resp = app
+        .oneshot(anonymous_publish_req)
+        .await
+        .expect("anonymous publish response");
+    assert_eq!(anonymous_publish_resp.status(), StatusCode::OK);
+    let anonymous_publish_payload: Value = serde_json::from_slice(
+        &to_bytes(anonymous_publish_resp.into_body(), usize::MAX)
+            .await
+            .expect("anonymous publish body"),
+    )
+    .expect("anonymous publish json");
+
+    assert_eq!(
+        anonymous_publish_payload
+            .get("action")
+            .and_then(Value::as_str),
+        Some("approval_required")
+    );
     assert!(state.list_bug_monitor_posts(10).await.is_empty());
 }
 
