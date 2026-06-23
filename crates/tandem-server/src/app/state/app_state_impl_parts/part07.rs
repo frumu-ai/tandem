@@ -213,11 +213,14 @@ pub async fn process_bug_monitor_event(
             .get_bug_monitor_draft(&draft_id)
             .await
             .unwrap_or(draft.clone());
-        match crate::bug_monitor_github::publish_draft(
+        match crate::bug_monitor::router::publish_draft(
             state,
-            &draft_id,
-            Some(&incident.incident_id),
-            crate::bug_monitor_github::PublishMode::Auto,
+            crate::bug_monitor::router::BugMonitorPublishRequest {
+                draft_id: draft_id.clone(),
+                incident_id: Some(incident.incident_id.clone()),
+                mode: crate::bug_monitor_github::PublishMode::Auto,
+                destination_ids: Vec::new(),
+            },
         )
         .await
         {
@@ -234,7 +237,7 @@ pub async fn process_bug_monitor_event(
                 failed_draft.last_post_error = Some(detail.clone());
                 let evidence_digest = failed_draft.evidence_digest.clone();
                 let _ = state.put_bug_monitor_draft(failed_draft.clone()).await;
-                let _ = crate::bug_monitor_github::record_post_failure(
+                let _ = crate::bug_monitor::router::record_publish_failure(
                     state,
                     &failed_draft,
                     Some(&incident.incident_id),

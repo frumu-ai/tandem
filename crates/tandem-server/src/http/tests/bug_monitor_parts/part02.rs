@@ -254,6 +254,96 @@ async fn bug_monitor_route_preview_matches_ordered_route_and_blocks_unready_dest
 }
 
 #[tokio::test]
+#[serial_test::serial(bug_monitor_http)]
+async fn bug_monitor_router_blocks_manual_publish_to_unsupported_destination_override() {
+    let state = test_state().await;
+    state
+        .put_bug_monitor_config(crate::BugMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            workspace_root: Some("/tmp/acme".to_string()),
+            destinations: vec![crate::BugMonitorDestinationConfig {
+                destination_id: "linear-prod".to_string(),
+                name: "Linear production".to_string(),
+                kind: crate::BugMonitorDestinationKind::LinearIssue,
+                enabled: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+    let draft = state
+        .submit_bug_monitor_draft(crate::BugMonitorSubmission {
+            source: Some("manual".to_string()),
+            title: Some("Unsupported destination publish".to_string()),
+            detail: Some("A report that should not leave through Linear yet".to_string()),
+            risk_level: Some("medium".to_string()),
+            confidence: Some("medium".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("draft");
+
+    let app = app_router(state.clone());
+    let publish_req = Request::builder()
+        .method("POST")
+        .uri(format!("/bug-monitor/drafts/{}/publish", draft.draft_id))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({ "destination_ids": ["linear-prod"] }).to_string(),
+        ))
+        .expect("publish request");
+    let publish_resp = app.oneshot(publish_req).await.expect("publish response");
+    assert_eq!(publish_resp.status(), StatusCode::BAD_REQUEST);
+    let publish_payload: Value = serde_json::from_slice(
+        &to_bytes(publish_resp.into_body(), usize::MAX)
+            .await
+            .expect("publish body"),
+    )
+    .expect("publish json");
+    assert!(
+        publish_payload
+            .get("detail")
+            .and_then(Value::as_str)
+            .is_some_and(|detail| detail.contains("not available in this phase")),
+        "publish should explain unsupported destination: {publish_payload:?}"
+    );
+    assert!(state.list_bug_monitor_posts(10).await.is_empty());
+}
+
+#[tokio::test]
+#[serial_test::serial(bug_monitor_http)]
+async fn bug_monitor_high_risk_draft_requires_approval_by_default() {
+    let state = test_state().await;
+    state
+        .put_bug_monitor_config(crate::BugMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            workspace_root: Some("/tmp/acme".to_string()),
+            require_approval_for_new_issues: false,
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+
+    let draft = state
+        .submit_bug_monitor_draft(crate::BugMonitorSubmission {
+            source: Some("manual".to_string()),
+            title: Some("High-risk route should pause".to_string()),
+            detail: Some("A high-risk incident should require approval by default".to_string()),
+            risk_level: Some("high".to_string()),
+            confidence: Some("medium".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("draft");
+
+    assert_eq!(draft.status, "approval_required");
+    assert_eq!(draft.risk_level.as_deref(), Some("high"));
+}
+
+#[tokio::test]
 #[serial_test::serial]
 #[serial_test::serial(bug_monitor_http)]
 async fn bug_monitor_publish_reuses_existing_post_on_duplicate_submit() {

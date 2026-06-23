@@ -221,11 +221,14 @@ impl AppState {
             return Ok(existing);
         }
 
+        let approval_required = config.require_approval_for_new_issues
+            || (config.safety_defaults.require_approval_for_high_risk
+                && crate::bug_monitor::router::is_high_risk(submission.risk_level.as_deref()));
         let draft = BugMonitorDraftRecord {
             draft_id: format!("failure-draft-{}", uuid::Uuid::new_v4().simple()),
             fingerprint,
             repo,
-            status: if config.require_approval_for_new_issues {
+            status: if approval_required {
                 "approval_required".to_string()
             } else {
                 "draft_ready".to_string()
@@ -632,11 +635,14 @@ impl AppState {
             crate::bug_monitor::service::recover_overdue_bug_monitor_triage_runs(self).await
         {
             for (draft_id, incident_id) in recovered {
-                let _ = crate::bug_monitor_github::publish_draft(
+                let _ = crate::bug_monitor::router::publish_draft(
                     self,
-                    &draft_id,
-                    incident_id.as_deref(),
-                    crate::bug_monitor_github::PublishMode::Recovery,
+                    crate::bug_monitor::router::BugMonitorPublishRequest {
+                        draft_id,
+                        incident_id,
+                        mode: crate::bug_monitor_github::PublishMode::Recovery,
+                        destination_ids: Vec::new(),
+                    },
                 )
                 .await;
             }

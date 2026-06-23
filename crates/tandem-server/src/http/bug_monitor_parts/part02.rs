@@ -1,13 +1,18 @@
 pub(super) async fn publish_bug_monitor_draft(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    payload: Option<Json<BugMonitorPublishInput>>,
 ) -> Response {
     let existing_draft = state.get_bug_monitor_draft(&id).await;
-    match bug_monitor_github::publish_draft(
+    let destination_ids = bug_monitor_publish_destination_ids(payload.map(|Json(input)| input));
+    match crate::bug_monitor::router::publish_draft(
         &state,
-        &id,
-        None,
-        bug_monitor_github::PublishMode::ManualPublish,
+        crate::bug_monitor::router::BugMonitorPublishRequest {
+            draft_id: id.clone(),
+            incident_id: None,
+            mode: bug_monitor_github::PublishMode::ManualPublish,
+            destination_ids,
+        },
     )
     .await
     {
@@ -133,16 +138,44 @@ pub(super) async fn publish_bug_monitor_draft(
     }
 }
 
+fn bug_monitor_publish_destination_ids(input: Option<BugMonitorPublishInput>) -> Vec<String> {
+    let Some(input) = input else {
+        return Vec::new();
+    };
+    let mut destination_ids = input
+        .destination_ids
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if let Some(destination_id) = input
+        .destination_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        if !destination_ids
+            .iter()
+            .any(|existing| existing == &destination_id)
+        {
+            destination_ids.insert(0, destination_id);
+        }
+    }
+    destination_ids
+}
+
 pub(super) async fn recheck_bug_monitor_draft_match(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Response {
     let existing_draft = state.get_bug_monitor_draft(&id).await;
-    match bug_monitor_github::publish_draft(
+    match crate::bug_monitor::router::publish_draft(
         &state,
-        &id,
-        None,
-        bug_monitor_github::PublishMode::RecheckOnly,
+        crate::bug_monitor::router::BugMonitorPublishRequest {
+            draft_id: id.clone(),
+            incident_id: None,
+            mode: bug_monitor_github::PublishMode::RecheckOnly,
+            destination_ids: Vec::new(),
+        },
     )
     .await
     {

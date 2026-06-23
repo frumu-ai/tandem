@@ -424,11 +424,14 @@ pub(crate) async fn finalize_completed_bug_monitor_triage(
         ensure_bug_monitor_issue_draft(state.clone(), draft_id, true).await?;
     }
 
-    match bug_monitor_github::publish_draft(
+    match crate::bug_monitor::router::publish_draft(
         state,
-        draft_id,
-        incident_id.as_deref(),
-        bug_monitor_github::PublishMode::Auto,
+        crate::bug_monitor::router::BugMonitorPublishRequest {
+            draft_id: draft_id.to_string(),
+            incident_id: incident_id.clone(),
+            mode: bug_monitor_github::PublishMode::Auto,
+            destination_ids: Vec::new(),
+        },
     )
     .await
     {
@@ -450,7 +453,7 @@ pub(crate) async fn finalize_completed_bug_monitor_triage(
                 draft.github_status = Some("github_post_failed".to_string());
                 draft.last_post_error = Some(detail.clone());
                 let _ = state.put_bug_monitor_draft(draft.clone()).await;
-                if let Err(record_err) = bug_monitor_github::record_post_failure(
+                if let Err(record_err) = crate::bug_monitor::router::record_publish_failure(
                     state,
                     &draft,
                     incident_id.as_deref(),

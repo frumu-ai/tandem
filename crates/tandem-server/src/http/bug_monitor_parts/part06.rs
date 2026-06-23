@@ -1737,11 +1737,14 @@ pub(super) async fn approve_bug_monitor_draft(
             .await;
             let (triage_summary_artifact, issue_draft_artifact, duplicate_matches_artifact) =
                 bug_monitor_triage_artifacts(&state, approved_draft.triage_run_id.as_deref());
-            match bug_monitor_github::publish_draft(
+            match crate::bug_monitor::router::publish_draft(
                 &state,
-                &approved_draft.draft_id,
-                None,
-                bug_monitor_github::PublishMode::Auto,
+                crate::bug_monitor::router::BugMonitorPublishRequest {
+                    draft_id: approved_draft.draft_id.clone(),
+                    incident_id: None,
+                    mode: bug_monitor_github::PublishMode::Auto,
+                    destination_ids: Vec::new(),
+                },
             )
             .await
             {
