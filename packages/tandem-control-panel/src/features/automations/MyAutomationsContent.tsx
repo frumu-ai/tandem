@@ -140,6 +140,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
     openCalendarAutomationEdit,
     onOpenAdvancedEdit,
     setWorkflowEditDraft,
+    openWorkflowAutomationEdit,
     runNowV2Mutation,
     automationActionMutation,
     beginEdit,
@@ -299,7 +300,11 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
                   onOpenAdvancedEdit(automation);
                   return;
                 }
-                setWorkflowEditDraft(workflowAutomationToEditDraft(automation));
+                if (typeof openWorkflowAutomationEdit === "function") {
+                  openWorkflowAutomationEdit(automation);
+                } else {
+                  setWorkflowEditDraft(workflowAutomationToEditDraft(automation));
+                }
               }}
               disabled={!id}
               title="Edit workflow automation"

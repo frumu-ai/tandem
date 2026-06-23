@@ -79,6 +79,14 @@ pub(crate) fn automation_node_concrete_mcp_tool_allowlist(
     tools
 }
 
+fn automation_prompt_token_looks_like_tool_identifier(token: &str) -> bool {
+    let lowered = token.trim().trim_matches('`').to_ascii_lowercase();
+    lowered == "mcp_list"
+        || lowered == "mcp_list_catalog"
+        || lowered == "mcp_request_capability"
+        || lowered.starts_with("mcp.")
+}
+
 fn automation_prompt_extract_workspace_paths(
     text: &str,
     allow_bare_filenames: bool,
@@ -94,6 +102,9 @@ fn automation_prompt_extract_workspace_paths(
             })
             .trim();
         if token.is_empty() || token.contains("://") {
+            continue;
+        }
+        if automation_prompt_token_looks_like_tool_identifier(token) {
             continue;
         }
         let path = std::path::Path::new(token);
@@ -198,6 +209,36 @@ fn automation_prompt_infer_read_only_workspace_paths(text: &str) -> Vec<String> 
         for path in automation_prompt_extract_workspace_paths(clause, true) {
             if automation_prompt_file_is_read_only(clause, &path) {
                 paths.push(path);
+            }
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn automation_prompt_upstream_artifact_paths(upstream_inputs: &[Value]) -> Vec<String> {
+    let mut paths = Vec::new();
+    for input in upstream_inputs {
+        if let Some(path) = input.get("path").and_then(Value::as_str) {
+            let trimmed = path.trim().trim_matches('`');
+            if !trimmed.is_empty() && !automation_prompt_token_looks_like_tool_identifier(trimmed) {
+                paths.push(trimmed.to_string());
+            }
+        }
+        if let Some(output) = input.get("output") {
+            for pointer in [
+                "/content/path",
+                "/artifact_validation/accepted_artifact_path",
+            ] {
+                if let Some(path) = output.pointer(pointer).and_then(Value::as_str) {
+                    let trimmed = path.trim().trim_matches('`');
+                    if !trimmed.is_empty()
+                        && !automation_prompt_token_looks_like_tool_identifier(trimmed)
+                    {
+                        paths.push(trimmed.to_string());
+                    }
+                }
             }
         }
     }
@@ -412,6 +453,7 @@ fn automation_prompt_render_concrete_source_coverage(
     automation: &AutomationV2Spec,
     node: &AutomationFlowNode,
     runtime_values: Option<&AutomationPromptRuntimeValues>,
+    upstream_inputs: &[Value],
 ) -> Option<String> {
     let mut paths = automation_prompt_infer_concrete_workspace_paths(
         &automation_prompt_apply_runtime_placeholders(&node.objective, runtime_values),
@@ -439,11 +481,13 @@ fn automation_prompt_render_concrete_source_coverage(
         node,
         runtime_values,
     );
+    let upstream_artifact_paths = automation_prompt_upstream_artifact_paths(upstream_inputs);
     let automation_read_only_paths =
         enforcement::automation_read_only_source_of_truth_files_for_automation(automation);
     let mut source_paths = Vec::new();
     source_paths.extend(read_only_paths.iter().cloned());
     source_paths.extend(explicit_input_files.iter().cloned());
+    source_paths.extend(upstream_artifact_paths.iter().cloned());
     source_paths.sort();
     source_paths.dedup();
     if !source_paths.is_empty() {
@@ -465,7 +509,7 @@ fn automation_prompt_render_concrete_source_coverage(
     let mut sections = Vec::new();
     if !paths.is_empty() {
         sections.push(format!(
-            "Concrete Source Coverage:\n- Read the concrete workspace file paths named in the objective before concluding this node.\n- Required first action: if the workflow names an exact source file, call `read` on that exact path before any `glob`, `grep`, or `codesearch` call.\n- Do not start with discovery-only tools when an exact named source file is required.\n- `glob`, `grep`, and `codesearch` can help discover files, but they do not satisfy the concrete file-read requirement.\n- Similar backup or copy filenames do not satisfy the requirement when the workflow names an exact source file.\n- After reading a concrete source, carry its exact text forward in `structured_handoff.source_material` as `{{path, content}}` entries so downstream nodes can reuse the source without rereading it.\n- Concrete files for this node:\n{}",
+            "Concrete Source Coverage:\n- Read the concrete workspace file paths named in the objective before concluding this node.\n- Required first action: if the workflow names an exact source file, call `read` on that exact path before any `glob`, `grep`, or `codesearch` call.\n- Do not start with discovery-only tools when an exact named source file is required.\n- `glob`, `grep`, and `codesearch` can help discover files, but they do not satisfy the concrete file-read requirement.\n- Similar backup or copy filenames do not satisfy the requirement when the workflow names an exact source file.\n- After reading a concrete source, carry its exact text forward in `structured_handoff.source_material` as `{{path, content}}` entries so downstream nodes can reuse the source without rereading it.\n- If this node also has connector action tools, read these files before any connector action call.\n- Concrete files for this node:\n{}",
             automation_prompt_render_path_bullets(&paths)
         ));
     }
@@ -747,11 +791,21 @@ pub(crate) fn render_automation_v2_prompt_with_options(
             requested_tools,
             &effective_mcp_allowed_servers,
         );
+        let outbound_action_node = automation_node_is_outbound_action(node);
         let concrete_connector_line = if concrete_connector_tools.is_empty() {
             String::new()
         } else if optional_connector_reference {
             format!(
                 "\n- Concrete connector source tools available for this node include: {}.\n- These connector tools are optional for this objective. Use a concrete `mcp.*` source tool only when the objective or upstream evidence makes connector-backed context useful.\n- If no connector context is needed, write the artifact with an empty citations/evidence list and a concise rationale instead of forcing a connector call.",
+                concrete_connector_tools
+                    .iter()
+                    .map(|tool| format!("`{tool}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        } else if outbound_action_node {
+            format!(
+                "\n- Concrete connector action tools available for this node include: {}.\n- These are action tools, not source evidence. Read required local or upstream source files first, then call action tools only with populated arguments derived from those sources.\n- Do not call connector action tools with empty payloads merely to satisfy discovery or source-evidence requirements.",
                 concrete_connector_tools
                     .iter()
                     .map(|tool| format!("`{tool}`"))
@@ -804,9 +858,12 @@ pub(crate) fn render_automation_v2_prompt_with_options(
                 .join("\n")
         ));
     }
-    if let Some(concrete_source_coverage) =
-        automation_prompt_render_concrete_source_coverage(automation, node, runtime_values)
-    {
+    if let Some(concrete_source_coverage) = automation_prompt_render_concrete_source_coverage(
+        automation,
+        node,
+        runtime_values,
+        &normalized_upstream_inputs,
+    ) {
         sections.push(concrete_source_coverage);
     }
     let repo_context_available = requested_tools.iter().any(|tool| {
@@ -891,11 +948,21 @@ pub(crate) fn render_automation_v2_prompt_with_options(
         let optional_connector_reference =
             enforcement::automation_node_allows_optional_connector_references(node);
         let concrete_mcp_tools = automation_node_concrete_mcp_tool_allowlist(node);
+        let outbound_action_node = automation_node_is_outbound_action(node);
         let concrete_mcp_line = if concrete_mcp_tools.is_empty() {
             String::new()
         } else if optional_connector_reference {
             format!(
                 "\n- For optional connector-backed context, call a concrete source tool only if useful for this node: {}. If not useful, do not force a connector call; record an empty citations/evidence list with rationale.",
+                concrete_mcp_tools
+                    .iter()
+                    .map(|tool| format!("`{}`", tool))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        } else if outbound_action_node {
+            format!(
+                "\n- For connector-backed action work, `mcp_list` is discovery only; it does not satisfy source evidence. Read required local or upstream source files before calling action tools: {}. Do not call action tools with empty payloads to satisfy discovery.",
                 concrete_mcp_tools
                     .iter()
                     .map(|tool| format!("`{}`", tool))

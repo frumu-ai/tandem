@@ -687,8 +687,17 @@ pub(crate) fn automation_node_allows_preexisting_output_reuse(node: &AutomationF
         .unwrap_or(false)
 }
 
+fn automation_input_file_value_looks_like_tool_identifier(value: &str) -> bool {
+    let lowered = value.trim().trim_matches('`').to_ascii_lowercase();
+    lowered == "mcp_list"
+        || lowered == "mcp_list_catalog"
+        || lowered == "mcp_request_capability"
+        || lowered.starts_with("mcp.")
+}
+
 pub(crate) fn automation_node_explicit_input_files(node: &AutomationFlowNode) -> Vec<String> {
     let mut files = automation_node_builder_string_array(node, "input_files");
+    files.retain(|path| !automation_input_file_value_looks_like_tool_identifier(path));
     files.sort();
     files.dedup();
     files

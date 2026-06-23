@@ -56,7 +56,17 @@ pub(crate) fn automation_node_is_outbound_action(node: &AutomationFlowNode) -> b
     }
     let objective = node.objective.to_ascii_lowercase();
     [
-        "publish", "post ", "send ", "notify", "deliver", "submit", "share",
+        "publish",
+        "post ",
+        "send ",
+        "notify",
+        "deliver",
+        "submit",
+        "share",
+        "insert ",
+        "create page",
+        "create database row",
+        "update page",
     ]
     .iter()
     .any(|needle| objective.contains(needle))

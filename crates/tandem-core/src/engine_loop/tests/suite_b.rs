@@ -973,6 +973,48 @@ fn empty_completion_retry_context_mentions_missing_prewrite_work() {
 }
 
 #[test]
+fn connector_action_guard_requires_concrete_read_before_mcp_action() {
+    let prompt = "Concrete Source Coverage:\n- If this node also has connector action tools, read these files before any connector action call.\n- Concrete files for this node:\n- `.tandem/runs/run/artifacts/input.json`";
+
+    assert!(should_block_connector_action_before_concrete_read(
+        prompt,
+        "mcp.notion.notion_create_pages",
+        0,
+    ));
+    assert!(!should_block_connector_action_before_concrete_read(
+        prompt,
+        "mcp.notion.notion_create_pages",
+        1,
+    ));
+    assert!(!should_block_connector_action_before_concrete_read(
+        prompt,
+        "mcp_list",
+        0,
+    ));
+    assert!(!should_block_connector_action_before_concrete_read(
+        "no concrete source section",
+        "mcp.notion.notion_create_pages",
+        0,
+    ));
+}
+
+#[test]
+fn productive_artifact_write_completion_requires_satisfied_prewrite_gate() {
+    assert!(should_complete_after_productive_artifact_write(
+        true, 1, true
+    ));
+    assert!(!should_complete_after_productive_artifact_write(
+        false, 1, true
+    ));
+    assert!(!should_complete_after_productive_artifact_write(
+        true, 0, true
+    ));
+    assert!(!should_complete_after_productive_artifact_write(
+        true, 1, false
+    ));
+}
+
+#[test]
 fn synthesize_artifact_write_completion_from_tool_state_marks_completed() {
     let completion = synthesize_artifact_write_completion_from_tool_state(
         "Create or update `marketing-brief.md` relative to the workspace root.",
