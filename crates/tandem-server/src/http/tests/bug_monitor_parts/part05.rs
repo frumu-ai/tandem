@@ -231,6 +231,90 @@ async fn bug_monitor_route_preview_blocks_disjoint_source_allowlist_intersection
 
 #[tokio::test]
 #[serial_test::serial(bug_monitor_http)]
+async fn bug_monitor_route_preview_blocks_disjoint_project_and_log_source_allowlists() {
+    let state = test_state().await;
+    state
+        .put_bug_monitor_config(crate::BugMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            workspace_root: Some("/tmp/acme".to_string()),
+            destinations: vec![
+                crate::BugMonitorDestinationConfig {
+                    destination_id: crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string(),
+                    name: "Legacy GitHub".to_string(),
+                    kind: crate::BugMonitorDestinationKind::GithubIssue,
+                    enabled: true,
+                    repo: Some("acme/platform".to_string()),
+                    ..Default::default()
+                },
+                crate::BugMonitorDestinationConfig {
+                    destination_id: "linear-prod".to_string(),
+                    name: "Linear production".to_string(),
+                    kind: crate::BugMonitorDestinationKind::LinearIssue,
+                    enabled: true,
+                    ..Default::default()
+                },
+            ],
+            monitored_projects: vec![crate::BugMonitorMonitoredProject {
+                project_id: "payments".to_string(),
+                name: "Payments".to_string(),
+                repo: "acme/platform".to_string(),
+                workspace_root: "/tmp/acme".to_string(),
+                allowed_destination_ids: vec!["linear-prod".to_string()],
+                log_sources: vec![crate::BugMonitorLogSource {
+                    source_id: "ci".to_string(),
+                    path: "logs/ci.jsonl".to_string(),
+                    allowed_destination_ids: vec![
+                        crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string(),
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            default_destination_ids: vec![crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID
+                .to_string()],
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+
+    let app = app_router(state.clone());
+    let preview_req = Request::builder()
+        .method("POST")
+        .uri("/bug-monitor/route-preview")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "project_id": "payments",
+                "log_source_id": "ci",
+                "risk_level": "medium"
+            })
+            .to_string(),
+        ))
+        .expect("preview request");
+    let preview_resp = app.oneshot(preview_req).await.expect("preview response");
+    assert_eq!(preview_resp.status(), StatusCode::OK);
+    let preview_payload: Value = serde_json::from_slice(
+        &to_bytes(preview_resp.into_body(), usize::MAX)
+            .await
+            .expect("preview body"),
+    )
+    .expect("preview json");
+
+    assert!(
+        preview_payload
+            .get("blocked_reasons")
+            .and_then(Value::as_array)
+            .is_some_and(|rows| rows.iter().any(|row| {
+                row.as_str()
+                    .is_some_and(|reason| reason.contains("not allowed by source binding"))
+            })),
+        "preview should block disjoint project/source allowlists: {preview_payload:?}"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(bug_monitor_http)]
 async fn bug_monitor_publish_uses_configured_source_binding_for_approval() {
     let state = test_state().await;
     state

@@ -536,7 +536,11 @@ fn enrich_route_context_from_sources(
 
     let existing_allowed_destination_ids = std::mem::take(&mut out.allowed_destination_ids);
     let existing_allowlist_enforced = out.destination_allowlist_enforced;
-    let binding_allowlist_enforced = !binding.allowed_destination_ids.is_empty();
+    let binding_allowlist_enforced = !normalize_route_values(&project.allowed_destination_ids)
+        .is_empty()
+        || source.is_some_and(|source| {
+            !normalize_route_values(&source.allowed_destination_ids).is_empty()
+        });
     out.allowed_destination_ids = match (existing_allowlist_enforced, binding_allowlist_enforced) {
         (false, false) => Vec::new(),
         (false, true) => binding.allowed_destination_ids.clone(),
