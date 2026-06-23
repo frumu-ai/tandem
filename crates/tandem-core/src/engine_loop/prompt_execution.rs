@@ -205,6 +205,7 @@ impl EngineLoop {
             let mut auto_workspace_probe_attempted = false;
             let mut productive_tool_calls_total = 0usize;
             let mut productive_write_tool_calls_total = 0usize;
+            let mut productive_artifact_write_tool_calls_total = 0usize;
             let mut productive_workspace_inspection_total = 0usize;
             let mut productive_web_research_total = 0usize;
             let mut productive_concrete_read_total = 0usize;
@@ -223,6 +224,7 @@ impl EngineLoop {
             let email_delivery_requested = requires_email_delivery_prompt(&text);
             let web_research_requested = requires_web_research_prompt(&text);
             let code_workflow_requested = infer_code_workflow_from_text(&text);
+            let required_artifact_target_path = infer_required_output_target_path_from_text(&text);
             let structured_handoff_final_response_requested =
                 requires_structured_handoff_final_response_prompt(&text);
             let mut email_action_executed = false;
@@ -1348,7 +1350,7 @@ impl EngineLoop {
             if completion.trim().is_empty()
                 && !last_tool_outputs.is_empty()
                 && requested_write_required
-                && productive_write_tool_calls_total > 0
+                && productive_artifact_write_tool_calls_total > 0
             {
                 let final_prewrite_satisfied = evaluate_prewrite_gate(
                     requested_write_required,

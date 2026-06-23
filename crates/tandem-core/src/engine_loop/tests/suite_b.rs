@@ -998,6 +998,23 @@ fn connector_action_guard_requires_concrete_read_before_mcp_action() {
 
 #[test]
 fn productive_artifact_write_completion_requires_satisfied_prewrite_gate() {
+    assert!(productive_write_targets_satisfy_required_artifact_target(
+        Some("artifacts/final.json"),
+        &["artifacts/final.json".to_string()],
+    ));
+    assert!(productive_write_targets_satisfy_required_artifact_target(
+        Some("artifacts/final.json"),
+        &["/workspace/artifacts/final.json".to_string()],
+    ));
+    assert!(!productive_write_targets_satisfy_required_artifact_target(
+        Some("artifacts/final.json"),
+        &["workspace-notes.md".to_string()],
+    ));
+    assert!(!productive_write_targets_satisfy_required_artifact_target(
+        None,
+        &["artifacts/final.json".to_string()],
+    ));
+
     assert!(should_complete_after_productive_artifact_write(
         true, 1, true
     ));

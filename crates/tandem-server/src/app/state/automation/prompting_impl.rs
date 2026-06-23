@@ -229,6 +229,8 @@ fn automation_prompt_upstream_artifact_paths(upstream_inputs: &[Value]) -> Vec<S
         if let Some(output) = input.get("output") {
             for pointer in [
                 "/content/path",
+                "/content/data/path",
+                "/path",
                 "/artifact_validation/accepted_artifact_path",
             ] {
                 if let Some(path) = output.pointer(pointer).and_then(Value::as_str) {

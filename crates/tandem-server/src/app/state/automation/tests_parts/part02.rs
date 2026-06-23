@@ -1468,18 +1468,38 @@ fn prompt_does_not_treat_mcp_tool_ids_as_concrete_source_files() {
         ]
     }));
     let automation = automation_with_output_targets(vec![node.clone()], Vec::new());
-    let upstream_inputs = vec![json!({
-        "alias": "filtered_leads",
-        "from_step_id": "filter_agent_tool_security",
-        "output": {
-            "content": {
-                "path": ".tandem/runs/run-notion/artifacts/filter-agent-tool-security.json"
-            },
-            "artifact_validation": {
-                "accepted_artifact_path": ".tandem/runs/run-notion/artifacts/filter-agent-tool-security.json"
+    let upstream_inputs = vec![
+        json!({
+            "alias": "filtered_leads",
+            "from_step_id": "filter_agent_tool_security",
+            "output": {
+                "content": {
+                    "path": ".tandem/runs/run-notion/artifacts/filter-agent-tool-security.json"
+                },
+                "artifact_validation": {
+                    "accepted_artifact_path": ".tandem/runs/run-notion/artifacts/filter-agent-tool-security.json"
+                }
             }
-        }
-    })];
+        }),
+        json!({
+            "alias": "filtered_leads_data_path",
+            "from_step_id": "filter_agent_tool_security_data_path",
+            "output": {
+                "content": {
+                    "data": {
+                        "path": ".tandem/runs/run-notion/artifacts/filter-agent-tool-security-data.json"
+                    }
+                }
+            }
+        }),
+        json!({
+            "alias": "filtered_leads_root_path",
+            "from_step_id": "filter_agent_tool_security_root_path",
+            "output": {
+                "path": ".tandem/runs/run-notion/artifacts/filter-agent-tool-security-root.json"
+            }
+        }),
+    ];
     let agent = crate::AutomationAgentProfile {
         agent_id: "a1".to_string(),
         template_id: None,
@@ -1520,7 +1540,15 @@ fn prompt_does_not_treat_mcp_tool_ids_as_concrete_source_files() {
     );
 
     assert!(
-        prompt.contains("Concrete files for this node:\n- `.tandem/runs/run-notion/artifacts/filter-agent-tool-security.json`"),
+        prompt.contains("- `.tandem/runs/run-notion/artifacts/filter-agent-tool-security.json`"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("- `.tandem/runs/run-notion/artifacts/filter-agent-tool-security-data.json`"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("- `.tandem/runs/run-notion/artifacts/filter-agent-tool-security-root.json`"),
         "{prompt}"
     );
     assert!(

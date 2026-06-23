@@ -229,6 +229,11 @@
                         *entry += 1;
                         accepted_tool_calls_in_cycle =
                             accepted_tool_calls_in_cycle.saturating_add(1);
+                        let write_target_paths = if is_workspace_write_tool(&tool_key) {
+                            crate::engine_loop::write_targets::paths(&tool_key, &effective_args)
+                        } else {
+                            Vec::new()
+                        };
                         let tool_output_result = self
                             .execute_tool_with_permission(
                                 &session_id,
@@ -274,6 +279,14 @@
                                 if is_workspace_write_tool(&tool_key) {
                                     productive_write_tool_calls_total =
                                         productive_write_tool_calls_total.saturating_add(1);
+                                    if productive_write_targets_satisfy_required_artifact_target(
+                                        required_artifact_target_path.as_deref(),
+                                        &write_target_paths,
+                                    ) {
+                                        productive_artifact_write_tool_calls_total =
+                                            productive_artifact_write_tool_calls_total
+                                                .saturating_add(1);
+                                    }
                                 }
                                 if is_workspace_inspection_tool(&tool_key) {
                                     productive_workspace_inspection_total =
@@ -788,7 +801,7 @@
                             }
                             if should_complete_after_productive_artifact_write(
                                 requested_write_required,
-                                productive_write_tool_calls_total,
+                                productive_artifact_write_tool_calls_total,
                                 prewrite_satisfied,
                             ) {
                                 completion = synthesize_artifact_write_completion_from_tool_state(
