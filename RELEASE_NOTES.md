@@ -2,7 +2,7 @@
 
 This is the canonical release-notes file used by release tooling.
 
-## v0.6.2 (Unreleased)
+## v0.6.2 (2026-06-23)
 
 Tandem 0.6.2 starts the enterprise MCP identity workstream for multi-employee
 runtime deployments. The first change is a source-of-truth design for separating
