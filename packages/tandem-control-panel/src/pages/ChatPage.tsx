@@ -1168,7 +1168,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
 
   useEffect(() => {
     const unsubscribe = subscribeSse(
-      "/api/global/event",
+      "/api/engine/global/event",
       (event: MessageEvent) => {
         let payload: any = null;
         try {

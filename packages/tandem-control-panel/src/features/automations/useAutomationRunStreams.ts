@@ -204,7 +204,7 @@ export function useAutomationRunStreams({
     { enabled: runInspectorActive && !!selectedSessionId }
   );
   useEngineStream(
-    selectedRunId ? "/api/global/event" : "",
+    selectedRunId ? "/api/engine/global/event" : "",
     (msg) => {
       try {
         const payload = JSON.parse(String(msg?.data || "{}"));
