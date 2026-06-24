@@ -1044,6 +1044,10 @@ fn productive_artifact_write_completion_requires_satisfied_prewrite_gate() {
         &["workspace-notes.md".to_string()],
     ));
     assert!(!productive_write_targets_satisfy_required_artifact_target(
+        Some(".tandem/runs/run-1/artifacts/final.json"),
+        &["reports/customer-summary.md".to_string()],
+    ));
+    assert!(!productive_write_targets_satisfy_required_artifact_target(
         None,
         &["artifacts/final.json".to_string()],
     ));
