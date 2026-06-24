@@ -367,7 +367,10 @@ pub(crate) fn normalize_automation_requested_tools(
     } else {
         config::channels::normalize_allowed_tools(raw)
     };
-    if explicit_node_tool_allowlist && normalized.iter().any(|tool| tool.starts_with("mcp.")) {
+    if explicit_node_tool_allowlist
+        && normalized.iter().any(|tool| tool.starts_with("mcp."))
+        && automation_mcp_list_needed_for_tools(&normalized)
+    {
         normalized.push("mcp_list".to_string());
     }
     let had_wildcard = normalized.iter().any(|tool| tool == "*");
@@ -375,6 +378,9 @@ pub(crate) fn normalize_automation_requested_tools(
         normalized.retain(|tool| tool != "*");
     }
     normalized.extend(automation_node_required_tools(node));
+    if !automation_mcp_list_needed_for_tools(&normalized) {
+        normalized.retain(|tool| tool != "mcp_list");
+    }
     if explicit_node_tool_allowlist {
         if automation_node_requires_artifact_write_tool(node) {
             normalized.push("write".to_string());
@@ -802,13 +808,18 @@ pub(crate) fn resolve_automation_node_tool_envelope(
     if !automation_node_is_code_workflow(node) && automation_node_has_explicit_tool_policy(node) {
         let mut explicit_allowed =
             config::channels::normalize_allowed_tools(explicit_node_tool_allowlist.clone());
-        if explicit_allowed.iter().any(|tool| tool.starts_with("mcp.")) {
+        if explicit_allowed.iter().any(|tool| tool.starts_with("mcp."))
+            && automation_mcp_list_needed_for_tools(&explicit_allowed)
+        {
             explicit_allowed.push("mcp_list".to_string());
         }
         if !node.input_refs.is_empty() {
             explicit_allowed.push("read".to_string());
         }
         explicit_allowed.extend(automation_node_required_tools(node));
+        if !automation_mcp_list_needed_for_tools(&explicit_allowed) {
+            explicit_allowed.retain(|tool| tool != "mcp_list");
+        }
         if automation_node_requires_artifact_write_tool(node) {
             explicit_allowed.push("write".to_string());
         }

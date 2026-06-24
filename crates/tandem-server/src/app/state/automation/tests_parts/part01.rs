@@ -959,6 +959,20 @@ fn mcp_list_is_only_added_when_servers_are_selected() {
 
     let requested = automation_add_mcp_list_when_scoped(vec!["read".to_string()], true);
     assert!(requested.iter().any(|tool| tool == "mcp_list"));
+
+    let requested = automation_add_mcp_list_when_scoped(
+        vec![
+            "mcp.notion.notion_fetch".to_string(),
+            "mcp.notion.notion_create_pages".to_string(),
+            "write".to_string(),
+        ],
+        true,
+    );
+    assert!(!requested.iter().any(|tool| tool == "mcp_list"));
+
+    let requested =
+        automation_add_mcp_list_when_scoped(vec!["mcp.notion.*".to_string(), "write".to_string()], true);
+    assert!(requested.iter().any(|tool| tool == "mcp_list"));
 }
 
 #[test]
@@ -1208,7 +1222,7 @@ fn connector_source_nodes_do_not_offer_source_mutation_tools() {
         ],
     );
 
-    assert!(requested.contains(&"mcp_list".to_string()));
+    assert!(!requested.contains(&"mcp_list".to_string()));
     assert!(requested.contains(&"mcp.reddit_gmail.reddit_search_across_subreddits".to_string()));
     assert!(requested.contains(&"write".to_string()));
     assert!(!requested.contains(&"codesearch".to_string()));
@@ -1250,7 +1264,7 @@ fn connector_source_metadata_tool_allowlist_is_hard_scoped() {
         ],
     );
 
-    assert!(requested.contains(&"mcp_list".to_string()));
+    assert!(!requested.contains(&"mcp_list".to_string()));
     assert!(requested.contains(&"mcp.reddit_gmail.reddit_search_across_subreddits".to_string()));
     assert!(requested.contains(&"mcp.reddit_gmail.reddit_get_r_top".to_string()));
     assert!(requested.contains(&"mcp.reddit_gmail.reddit_get_subreddits_search".to_string()));
@@ -1291,7 +1305,7 @@ fn connector_source_effective_tools_exclude_artifact_patch_tools() {
         &available,
     );
 
-    assert!(requested.contains(&"mcp_list".to_string()));
+    assert!(!requested.contains(&"mcp_list".to_string()));
     assert!(requested.contains(&"mcp.reddit_gmail.reddit_search_across_subreddits".to_string()));
     assert!(requested.contains(&"mcp.reddit_gmail.reddit_get_r_top".to_string()));
     assert!(requested.contains(&"write".to_string()));
@@ -1332,7 +1346,7 @@ fn connector_source_with_input_refs_keeps_read_tool() {
         &available,
     );
 
-    assert!(requested.contains(&"mcp_list".to_string()));
+    assert!(!requested.contains(&"mcp_list".to_string()));
     assert!(requested.contains(&"mcp.hunter.email_verifier".to_string()));
     assert!(requested.contains(&"mcp.hunter.person_enrichment".to_string()));
     assert!(requested.contains(&"read".to_string()));
@@ -1395,7 +1409,7 @@ fn connector_delivery_tool_allowlist_keeps_destination_and_artifact_write() {
         ],
     );
 
-    assert!(requested.contains(&"mcp_list".to_string()));
+    assert!(!requested.contains(&"mcp_list".to_string()));
     assert!(requested.contains(&"mcp.notion.notion_fetch".to_string()));
     assert!(requested.contains(&"mcp.notion.notion_create_pages".to_string()));
     assert!(requested.contains(&"write".to_string()));

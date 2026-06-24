@@ -201,7 +201,10 @@ pub(crate) fn normalize_automation_requested_tools(
     } else {
         config::channels::normalize_allowed_tools(raw)
     };
-    if explicit_connector_tool_allowlist && normalized.iter().any(|tool| tool.starts_with("mcp.")) {
+    if explicit_connector_tool_allowlist
+        && normalized.iter().any(|tool| tool.starts_with("mcp."))
+        && automation_mcp_list_needed_for_tools(&normalized)
+    {
         normalized.push("mcp_list".to_string());
     }
     let had_wildcard = normalized.iter().any(|tool| tool == "*");
@@ -209,6 +212,9 @@ pub(crate) fn normalize_automation_requested_tools(
         normalized.retain(|tool| tool != "*");
     }
     normalized.extend(automation_node_required_tools(node));
+    if !automation_mcp_list_needed_for_tools(&normalized) {
+        normalized.retain(|tool| tool != "mcp_list");
+    }
     if explicit_connector_tool_allowlist {
         if node_runtime_impl::automation_node_requires_artifact_write_tool(node) {
             normalized.push("write".to_string());

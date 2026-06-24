@@ -791,10 +791,30 @@ pub(crate) fn automation_add_mcp_list_when_scoped(
     mut requested_tools: Vec<String>,
     has_selected_mcp_servers: bool,
 ) -> Vec<String> {
-    if has_selected_mcp_servers && !requested_tools.iter().any(|tool| tool == "mcp_list") {
+    if !automation_mcp_list_needed_for_tools(&requested_tools) {
+        requested_tools.retain(|tool| tool != "mcp_list");
+        return requested_tools;
+    }
+    if has_selected_mcp_servers
+        && !requested_tools.iter().any(|tool| tool == "mcp_list")
+    {
         requested_tools.push("mcp_list".to_string());
     }
     requested_tools
+}
+
+pub(crate) fn automation_mcp_list_needed_for_tools(requested_tools: &[String]) -> bool {
+    !requested_tools
+        .iter()
+        .any(|tool| automation_tool_is_exact_concrete_mcp(tool))
+}
+
+pub(crate) fn automation_tool_is_exact_concrete_mcp(tool: &str) -> bool {
+    let normalized = tandem_types::canonical_tool_name(tool);
+    normalized.starts_with("mcp.")
+        && normalized != "mcp_list"
+        && !normalized.contains('*')
+        && normalized.split('.').count() >= 3
 }
 
 pub(crate) fn automation_connector_hint_text(node: &AutomationFlowNode) -> String {
