@@ -10,6 +10,147 @@ use tandem_types::{
 
 use crate::AppState;
 
+fn mcp_string_array_field(value: &Value, key: &str) -> Vec<Value> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .filter(|item| !item.trim().is_empty())
+                .map(|item| Value::String(item.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn mcp_u64_or_len(value: &Value, count_key: &str, list_key: &str) -> u64 {
+    value
+        .get(count_key)
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| mcp_string_array_field(value, list_key).len() as u64)
+}
+
+fn compact_mcp_tool_security_entry(tool_name: &str, entry: &Value) -> Value {
+    let governance = entry.get("governance");
+    let security = entry.get("security");
+    json!({
+        "tool_name": entry
+            .get("tool_name")
+            .and_then(Value::as_str)
+            .unwrap_or(tool_name),
+        "namespaced_name": entry.get("namespaced_name").cloned().unwrap_or(Value::Null),
+        "default_policy": governance
+            .and_then(|value| value.get("default_policy"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "default_access": governance
+            .and_then(|value| value.get("default_access"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "risk_tier": governance
+            .and_then(|value| value.get("risk_tier"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "approval_required_by_default": governance
+            .and_then(|value| value.get("approval_required_by_default"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "external_side_effect": security
+            .and_then(|value| value.get("external_side_effect"))
+            .or_else(|| governance.and_then(|value| value.get("external_side_effect")))
+            .cloned()
+            .unwrap_or(Value::Null),
+    })
+}
+
+fn compact_mcp_server_for_tool_output(server: &Value) -> Value {
+    let governed_tools = server
+        .get("tool_security")
+        .and_then(Value::as_object)
+        .map(|tools| {
+            let mut rows = tools
+                .iter()
+                .map(|(name, entry)| compact_mcp_tool_security_entry(name, entry))
+                .collect::<Vec<_>>();
+            rows.sort_by(|a, b| {
+                a.get("namespaced_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .cmp(
+                        b.get("namespaced_name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default(),
+                    )
+            });
+            rows
+        })
+        .unwrap_or_default();
+    json!({
+        "name": server.get("name").cloned().unwrap_or(Value::Null),
+        "enabled": server.get("enabled").cloned().unwrap_or(Value::Null),
+        "connected": server.get("connected").cloned().unwrap_or(Value::Null),
+        "last_error": server.get("last_error").cloned().unwrap_or(Value::Null),
+        "last_auth_challenge": server
+            .get("last_auth_challenge")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "pending_auth_tools": mcp_string_array_field(server, "pending_auth_tools"),
+        "registered_tool_count": mcp_u64_or_len(server, "registered_tool_count", "registered_tools"),
+        "remote_tool_count": mcp_u64_or_len(server, "remote_tool_count", "remote_tools"),
+        "allowed_tool_count": server
+            .get("allowed_tool_count")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "discovered_tool_count": server
+            .get("discovered_tool_count")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "registered_tools": mcp_string_array_field(server, "registered_tools"),
+        "remote_tools": mcp_string_array_field(server, "remote_tools"),
+        "governed_tools": governed_tools,
+    })
+}
+
+pub(crate) fn compact_mcp_inventory_for_tool_output(snapshot: &Value) -> Value {
+    let mut servers = snapshot
+        .get("servers")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .map(compact_mcp_server_for_tool_output)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    servers.sort_by(|a, b| {
+        a.get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .cmp(b.get("name").and_then(Value::as_str).unwrap_or_default())
+    });
+
+    json!({
+        "inventory_version": snapshot
+            .get("inventory_version")
+            .cloned()
+            .unwrap_or_else(|| json!(1)),
+        "summary": "mcp_list inventory compacted for agent tool use; full inventory is retained in tool metadata.",
+        "connected_server_names": mcp_string_array_field(snapshot, "connected_server_names"),
+        "enabled_server_names": mcp_string_array_field(snapshot, "enabled_server_names"),
+        "registered_tool_count": mcp_u64_or_len(snapshot, "registered_tool_count", "registered_tools"),
+        "remote_tool_count": mcp_u64_or_len(snapshot, "remote_tool_count", "remote_tools"),
+        "registered_tools": mcp_string_array_field(snapshot, "registered_tools"),
+        "remote_tools": mcp_string_array_field(snapshot, "remote_tools"),
+        "servers": servers,
+        "omitted_fields": [
+            "credential_binding",
+            "secret_refs",
+            "full_tool_security",
+            "full_governed_tool_registry"
+        ],
+    })
+}
+
 pub(crate) async fn mcp_inventory_snapshot(state: &AppState) -> Value {
     let mut server_rows = state.mcp.list().await.into_values().collect::<Vec<_>>();
     server_rows.sort_by(|a, b| a.name.cmp(&b.name));
@@ -442,9 +583,12 @@ pub(super) fn filter_mcp_inventory_snapshot_to_servers(
     if let Some(root) = snapshot.as_object_mut() {
         retain_servers(root, keep_server);
         retain_tool_rows(root, |row| {
-            row.get("server_name")
-                .and_then(Value::as_str)
-                .is_some_and(keep_server)
+            tool_name_from_inventory_value(row).is_some_and(|tool_name| {
+                tool_name == "mcp_list"
+                    || allowed_tool_prefixes
+                        .iter()
+                        .any(|prefix| tool_name.starts_with(prefix))
+            })
         });
         retain_registered_tools(root, |tool_name| {
             tool_name == "mcp_list"
@@ -457,6 +601,16 @@ pub(super) fn filter_mcp_inventory_snapshot_to_servers(
                 .and_then(Value::as_str)
                 .is_some_and(keep_server)
         });
+        if let Some(Value::Array(rows)) = root.get_mut("servers") {
+            for row in rows {
+                retain_server_tool_rows(row, |tool_name| {
+                    tool_name == "mcp_list"
+                        || allowed_tool_prefixes
+                            .iter()
+                            .any(|prefix| tool_name.starts_with(prefix))
+                });
+            }
+        }
     }
 
     snapshot
@@ -473,13 +627,18 @@ pub(super) fn filter_mcp_snapshot_by_tool_scope(
 
     if let Some(root) = snapshot.as_object_mut() {
         if let Some(Value::Array(rows)) = root.get_mut("servers") {
-            rows.retain(|row| {
+            rows.retain_mut(|row| {
                 let server_name = row.get("name").and_then(Value::as_str).unwrap_or("");
                 let server_segment = mcp_namespace_segment(server_name);
                 if filter.wildcard_server_segments.contains(&server_segment) {
                     return true;
                 }
-                row_tools(row).any(|tool_name| filter.exact_tool_names.contains(&tool_name))
+                let (_, registered_tool_count) = retain_server_tool_rows(row, |tool_name| {
+                    tool_scope_allows_tool_name(filter, tool_name)
+                });
+                registered_tool_count > 0
+                    || row_tools(row)
+                        .any(|tool_name| tool_scope_allows_tool_name(filter, &tool_name))
             });
         }
         retain_server_names(root, |server| {
@@ -491,24 +650,12 @@ pub(super) fn filter_mcp_snapshot_by_tool_scope(
                     .any(|tool| tool.starts_with(&format!("mcp.{segment}.")))
         });
         retain_tool_rows(root, |row| {
-            row.get("server_name")
-                .and_then(Value::as_str)
-                .is_some_and(|server| {
-                    let segment = mcp_namespace_segment(server);
-                    filter.wildcard_server_segments.contains(&segment)
-                        || row
-                            .get("namespaced_name")
-                            .and_then(Value::as_str)
-                            .is_some_and(|tool_name| filter.exact_tool_names.contains(tool_name))
-                })
+            tool_name_from_inventory_value(row)
+                .as_deref()
+                .is_some_and(|tool_name| tool_scope_allows_tool_name(filter, tool_name))
         });
         retain_registered_tools(root, |tool_name| {
-            tool_name == "mcp_list"
-                || filter.exact_tool_names.contains(tool_name)
-                || filter
-                    .wildcard_server_segments
-                    .iter()
-                    .any(|segment| tool_name.starts_with(&format!("mcp.{segment}.")))
+            tool_scope_allows_tool_name(filter, tool_name)
         });
         retain_governed_tools(root, |row| {
             row.get("server_segment")
@@ -825,6 +972,68 @@ fn row_tools(row: &Value) -> impl Iterator<Item = String> + '_ {
         .flat_map(|tools| tools.iter().filter_map(tool_name_from_inventory_value))
 }
 
+fn retain_server_tool_rows(
+    server: &mut Value,
+    keep_tool: impl Fn(&str) -> bool + Copy,
+) -> (usize, usize) {
+    let mut remote_tool_count = 0;
+    if let Some(Value::Array(rows)) = server.get_mut("remote_tools") {
+        rows.retain(|row| {
+            let keep = tool_name_from_inventory_value(row)
+                .as_deref()
+                .is_some_and(keep_tool);
+            if keep {
+                remote_tool_count += 1;
+            }
+            keep
+        });
+    }
+
+    let mut registered_tool_count = 0;
+    if let Some(Value::Array(rows)) = server.get_mut("registered_tools") {
+        rows.retain(|row| {
+            let keep = tool_name_from_inventory_value(row)
+                .as_deref()
+                .is_some_and(keep_tool);
+            if keep {
+                registered_tool_count += 1;
+            }
+            keep
+        });
+    }
+
+    if let Some(obj) = server.as_object_mut() {
+        obj.insert(
+            "remote_tool_count".to_string(),
+            Value::Number(serde_json::Number::from(remote_tool_count)),
+        );
+        obj.insert(
+            "registered_tool_count".to_string(),
+            Value::Number(serde_json::Number::from(registered_tool_count)),
+        );
+        if let Some(Value::Object(tool_security)) = obj.get_mut("tool_security") {
+            tool_security.retain(|_, value| {
+                value
+                    .get("namespaced_name")
+                    .and_then(Value::as_str)
+                    .is_some_and(keep_tool)
+            });
+        }
+    }
+
+    (remote_tool_count, registered_tool_count)
+}
+
+fn tool_scope_allows_tool_name(filter: &McpToolScopeFilter, tool_name: &str) -> bool {
+    if tool_name == "mcp_list" || filter.exact_tool_names.contains(tool_name) {
+        return true;
+    }
+    filter
+        .wildcard_server_segments
+        .iter()
+        .any(|segment| tool_name.starts_with(&format!("mcp.{segment}.")))
+}
+
 fn mcp_namespace_segment(raw: &str) -> String {
     let mut out = String::new();
     let mut previous_underscore = false;
@@ -1096,5 +1305,99 @@ mod tests {
         assert_eq!(parse_mcp_invocation("mcp."), None);
         assert_eq!(parse_mcp_invocation("mcp.github."), None);
         assert_eq!(parse_mcp_invocation("mcp..tool"), None);
+    }
+
+    #[test]
+    fn tool_scope_filter_prunes_top_level_and_server_tool_lists() {
+        let snapshot = json!({
+            "inventory_version": 1,
+            "connected_server_names": ["notion", "github"],
+            "enabled_server_names": ["notion", "github"],
+            "remote_tools": [
+                "mcp.notion.notion_fetch",
+                "mcp.notion.notion_update_page",
+                "mcp.github.search_issues"
+            ],
+            "registered_tools": [
+                "mcp.notion.notion_fetch",
+                "mcp.notion.notion_update_page",
+                "mcp.github.search_issues"
+            ],
+            "governed_tool_registry": [
+                {
+                    "server_segment": "notion",
+                    "namespaced_name": "mcp.notion.notion_fetch"
+                },
+                {
+                    "server_segment": "notion",
+                    "namespaced_name": "mcp.notion.notion_update_page"
+                },
+                {
+                    "server_segment": "github",
+                    "namespaced_name": "mcp.github.search_issues"
+                }
+            ],
+            "servers": [
+                {
+                    "name": "notion",
+                    "remote_tool_count": 2,
+                    "registered_tool_count": 2,
+                    "remote_tools": [
+                        "mcp.notion.notion_fetch",
+                        "mcp.notion.notion_update_page"
+                    ],
+                    "registered_tools": [
+                        "mcp.notion.notion_fetch",
+                        "mcp.notion.notion_update_page"
+                    ],
+                    "tool_security": {
+                        "notion_fetch": {
+                            "namespaced_name": "mcp.notion.notion_fetch"
+                        },
+                        "notion_update_page": {
+                            "namespaced_name": "mcp.notion.notion_update_page"
+                        }
+                    }
+                },
+                {
+                    "name": "github",
+                    "remote_tool_count": 1,
+                    "registered_tool_count": 1,
+                    "remote_tools": ["mcp.github.search_issues"],
+                    "registered_tools": ["mcp.github.search_issues"],
+                    "tool_security": {
+                        "search_issues": {
+                            "namespaced_name": "mcp.github.search_issues"
+                        }
+                    }
+                }
+            ]
+        });
+        let filter = session_mcp_tool_filter(&["mcp.notion.notion_fetch".to_string()]);
+        let filtered = filter_mcp_snapshot_by_tool_scope(snapshot, &filter);
+
+        assert_eq!(filtered["connected_server_names"], json!(["notion"]));
+        assert_eq!(filtered["remote_tools"], json!(["mcp.notion.notion_fetch"]));
+        assert_eq!(
+            filtered["registered_tools"],
+            json!(["mcp.notion.notion_fetch"])
+        );
+        let servers = filtered["servers"].as_array().expect("servers");
+        assert_eq!(servers.len(), 1);
+        let notion = &servers[0];
+        assert_eq!(notion["remote_tool_count"], json!(1));
+        assert_eq!(notion["registered_tool_count"], json!(1));
+        assert_eq!(notion["remote_tools"], json!(["mcp.notion.notion_fetch"]));
+        assert_eq!(
+            notion["registered_tools"],
+            json!(["mcp.notion.notion_fetch"])
+        );
+        let tool_security = notion["tool_security"].as_object().expect("tool security");
+        assert!(tool_security.contains_key("notion_fetch"));
+        assert!(!tool_security.contains_key("notion_update_page"));
+        assert_eq!(
+            filtered["governed_tool_registry"].as_array().unwrap().len(),
+            1
+        );
     }
 }

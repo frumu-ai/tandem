@@ -1,7 +1,7 @@
 use super::mcp_inventory::{
-    filter_mcp_inventory_snapshot_to_servers, filter_mcp_snapshot_by_discovery_authorization,
-    filter_mcp_snapshot_by_tool_scope, mcp_inventory_snapshot, session_mcp_tool_filter,
-    McpToolScopeFilter,
+    compact_mcp_inventory_for_tool_output, filter_mcp_inventory_snapshot_to_servers,
+    filter_mcp_snapshot_by_discovery_authorization, filter_mcp_snapshot_by_tool_scope,
+    mcp_inventory_snapshot, session_mcp_tool_filter, McpToolScopeFilter,
 };
 use super::*;
 use base64::Engine;
@@ -1393,8 +1393,9 @@ impl Tool for McpListTool {
             strict_context.as_ref(),
             crate::now_ms(),
         );
-        let output =
-            serde_json::to_string_pretty(&snapshot).unwrap_or_else(|_| snapshot.to_string());
+        let compact_snapshot = compact_mcp_inventory_for_tool_output(&snapshot);
+        let output = serde_json::to_string_pretty(&compact_snapshot)
+            .unwrap_or_else(|_| compact_snapshot.to_string());
         Ok(ToolResult {
             output,
             metadata: snapshot,
