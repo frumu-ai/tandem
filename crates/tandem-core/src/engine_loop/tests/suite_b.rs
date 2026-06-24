@@ -87,6 +87,25 @@ fn productive_tool_output_detector_accepts_real_tool_results() {
 }
 
 #[test]
+fn mcp_discovery_and_empty_notion_actions_are_not_productive() {
+    assert!(!is_productive_tool_output(
+        "mcp_list",
+        r#"Tool `mcp_list` result:
+{"enabled_server_names":["notion"]}"#
+    ));
+    assert!(!is_productive_tool_output(
+        "mcp.notion.notion_create_pages",
+        r#"Tool `mcp.notion.notion_create_pages` result:
+{"pages":[]}"#
+    ));
+    assert!(!is_productive_tool_output(
+        "mcp.notion.notion_update_page",
+        r#"Tool `mcp.notion.notion_update_page` result:
+{"name":"APIResponseError","code":"validation_error","status":400}"#
+    ));
+}
+
+#[test]
 fn glob_empty_result_is_productive() {
     assert!(is_productive_tool_output("glob", "Tool `glob` result:\n"));
     assert!(is_productive_tool_output("glob", ""));
@@ -368,6 +387,20 @@ fn concrete_mcp_preflight_blocks_workspace_write_until_attempted() {
     counts.insert("mcp.notion.notion_create_pages".to_string(), 1);
     assert!(!has_unattempted_required_mcp_tool(&required, &counts));
     assert!(unattempted_required_mcp_tools(&required, &counts).is_empty());
+}
+
+#[test]
+fn required_mcp_gate_stays_pending_until_productive_call_is_counted() {
+    let required = vec!["mcp.notion.notion_create_pages".to_string()];
+    let mut attempted_counts = HashMap::new();
+    attempted_counts.insert("mcp.notion.notion_create_pages".to_string(), 1);
+
+    let productive_counts = HashMap::new();
+    assert!(
+        unattempted_required_mcp_tools(&required, &productive_counts)
+            .contains("mcp.notion.notion_create_pages")
+    );
+    assert!(unattempted_required_mcp_tools(&required, &attempted_counts).is_empty());
 }
 
 #[test]

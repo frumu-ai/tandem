@@ -194,6 +194,7 @@ impl EngineLoop {
             let mut followup_context: Option<String> = None;
             let mut last_tool_outputs: Vec<String> = Vec::new();
             let mut tool_call_counts: HashMap<String, usize> = HashMap::new();
+            let mut productive_tool_call_counts: HashMap<String, usize> = HashMap::new();
             let mut readonly_tool_cache: HashMap<String, String> = HashMap::new();
             let mut readonly_signature_counts: HashMap<String, usize> = HashMap::new();
             let mut mutable_signature_counts: HashMap<String, usize> = HashMap::new();
@@ -510,7 +511,7 @@ impl EngineLoop {
                     );
                 let pending_required_mcp_tools = unattempted_required_mcp_tools(
                     &required_mcp_tools_before_write,
-                    &tool_call_counts,
+                    &productive_tool_call_counts,
                 );
                 let required_mcp_tool_pending =
                     !mcp_gate_blocked_by_prewrite_repair && !pending_required_mcp_tools.is_empty();
@@ -526,7 +527,7 @@ impl EngineLoop {
                     && required_mcp_source_available
                     && !has_attempted_concrete_mcp_for_wildcard(
                         &required_mcp_source_wildcards_before_write,
-                        &tool_call_counts,
+                        &productive_tool_call_counts,
                     );
                 if prewrite_gate_write || required_mcp_source_pending {
                     tool_schemas.retain(|schema| !is_workspace_write_tool(&schema.name));

@@ -274,6 +274,10 @@
                                 readonly_tool_cache.insert(signature, output.clone());
                             }
                             if productive {
+                                let productive_entry = productive_tool_call_counts
+                                    .entry(tool_key.clone())
+                                    .or_insert(0);
+                                *productive_entry = productive_entry.saturating_add(1);
                                 productive_tool_calls_total =
                                     productive_tool_calls_total.saturating_add(1);
                                 if is_workspace_write_tool(&tool_key) {

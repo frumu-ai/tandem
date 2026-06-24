@@ -366,6 +366,29 @@ fn report_markdown_preserves_full_upstream_inputs() {
     ));
 }
 
+
+#[test]
+fn connector_writer_metadata_preserves_full_upstream_inputs() {
+    let mut node = bare_node();
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "structured_json".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    node.input_refs = vec![AutomationFlowInputRef {
+        from_step_id: "filter_leads".to_string(),
+        alias: "filtered_leads".to_string(),
+    }];
+    node.metadata = Some(json!({
+        "connector_writer": true
+    }));
+
+    assert!(automation_node_uses_upstream_validation_evidence(&node));
+    assert!(automation_node_preserves_full_upstream_inputs(&node));
+}
+
 #[test]
 fn blog_draft_objective_with_negative_gmail_mentions_does_not_require_email_delivery() {
     let mut node = report_markdown_node();

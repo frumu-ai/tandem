@@ -12,13 +12,61 @@ pub(super) fn is_productive_tool_output(tool_name: &str, output: &str) -> bool {
     if is_auth_required_tool_output(output) {
         return false;
     }
+    if normalized_tool == "mcp_list" {
+        return false;
+    }
     if normalized_tool == "glob" {
         return true;
     }
     let Some(result_body) = extract_tool_result_body(output) else {
         return false;
     };
+    if normalized_tool.starts_with("mcp.")
+        && is_non_productive_mcp_result_body(&normalized_tool, result_body)
+    {
+        return false;
+    }
     !is_non_productive_tool_result_body(result_body)
+}
+
+fn is_non_productive_mcp_result_body(tool_name: &str, output: &str) -> bool {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains("apiresponseerror")
+        || lower.contains("validation_error")
+        || lower.contains("object_not_found")
+    {
+        return true;
+    }
+    let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+        return false;
+    };
+    if value
+        .get("status")
+        .and_then(Value::as_u64)
+        .is_some_and(|status| status >= 400)
+    {
+        return true;
+    }
+    if value
+        .get("name")
+        .and_then(Value::as_str)
+        .is_some_and(|name| name.eq_ignore_ascii_case("APIResponseError"))
+    {
+        return true;
+    }
+    if tool_name.contains("notion_create_pages")
+        && value
+            .get("pages")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+    {
+        return true;
+    }
+    false
 }
 
 pub(super) fn is_successful_web_research_output(tool_name: &str, output: &str) -> bool {

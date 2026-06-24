@@ -72,6 +72,23 @@ pub(crate) fn automation_node_is_outbound_action(node: &AutomationFlowNode) -> b
     .any(|needle| objective.contains(needle))
 }
 
+fn automation_node_metadata_bool(node: &AutomationFlowNode, key: &str) -> bool {
+    node.metadata
+        .as_ref()
+        .and_then(|metadata| {
+            metadata
+                .get(key)
+                .or_else(|| metadata.pointer(&format!("/builder/{key}")))
+        })
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn automation_node_forces_full_upstream_inputs(node: &AutomationFlowNode) -> bool {
+    automation_node_metadata_bool(node, "preserve_full_upstream_inputs")
+        || automation_node_metadata_bool(node, "connector_writer")
+}
+
 pub(crate) fn automation_node_uses_upstream_validation_evidence(node: &AutomationFlowNode) -> bool {
     if automation_node_is_research_finalize(node) {
         return true;
@@ -79,6 +96,9 @@ pub(crate) fn automation_node_uses_upstream_validation_evidence(node: &Automatio
     let has_upstream_inputs = !node.input_refs.is_empty() || !node.depends_on.is_empty();
     if !has_upstream_inputs {
         return false;
+    }
+    if automation_node_forces_full_upstream_inputs(node) {
+        return true;
     }
     if automation_node_requires_email_delivery(node) {
         return true;
@@ -110,6 +130,9 @@ pub(crate) fn automation_node_uses_upstream_validation_evidence(node: &Automatio
 pub(crate) fn automation_node_preserves_full_upstream_inputs(node: &AutomationFlowNode) -> bool {
     if !automation_node_uses_upstream_validation_evidence(node) {
         return false;
+    }
+    if automation_node_forces_full_upstream_inputs(node) {
+        return true;
     }
     matches!(
         node.output_contract
