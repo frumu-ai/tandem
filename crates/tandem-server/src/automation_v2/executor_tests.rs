@@ -1156,6 +1156,35 @@ fn derive_terminal_run_state_marks_blocked_outputs_as_blocked() {
 }
 
 #[test]
+fn apply_terminal_run_state_clears_execution_handles() {
+    let mut run = test_run_with_output(json!({
+        "status": "blocked",
+        "failure_kind": "tool_resolution_failed",
+    }));
+    run.active_session_ids = vec!["session-a".to_string(), "session-b".to_string()];
+    run.latest_session_id = Some("session-b".to_string());
+    run.active_instance_ids = vec!["instance-a".to_string()];
+
+    apply_terminal_run_state(
+        &mut run,
+        &DerivedTerminalRunState::Blocked {
+            blocked_nodes: vec!["research-brief".to_string()],
+            detail: "automation run blocked by upstream node outcome".to_string(),
+        },
+    );
+
+    assert_eq!(run.status, crate::AutomationRunStatus::Blocked);
+    assert!(run.finished_at_ms.is_some());
+    assert!(run.active_session_ids.is_empty());
+    assert!(run.latest_session_id.is_none());
+    assert!(run.active_instance_ids.is_empty());
+    assert_eq!(
+        run.checkpoint.blocked_nodes,
+        vec!["research-brief".to_string()]
+    );
+}
+
+#[test]
 fn derive_terminal_run_state_marks_verify_failed_outputs_as_failed() {
     let automation = test_automation();
     let run = test_run_with_output(json!({

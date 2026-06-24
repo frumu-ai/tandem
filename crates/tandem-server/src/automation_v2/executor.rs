@@ -1149,6 +1149,55 @@ fn derive_terminal_run_state(
     }
 }
 
+fn apply_terminal_run_state(
+    row: &mut crate::automation_v2::types::AutomationV2RunRecord,
+    terminal_state: &DerivedTerminalRunState,
+) {
+    let finished_at_ms = now_ms();
+    match terminal_state {
+        DerivedTerminalRunState::Completed => {
+            row.status = AutomationRunStatus::Completed;
+            row.detail = Some("automation run completed".to_string());
+        }
+        DerivedTerminalRunState::Blocked {
+            blocked_nodes,
+            detail,
+        } => {
+            row.checkpoint.blocked_nodes = blocked_nodes.clone();
+            row.status = AutomationRunStatus::Blocked;
+            row.detail = Some(detail.clone());
+        }
+        DerivedTerminalRunState::Failed {
+            failed_nodes,
+            blocked_nodes,
+            detail,
+        } => {
+            row.checkpoint.blocked_nodes = blocked_nodes.clone();
+            if let Some(node_id) = failed_nodes.first() {
+                row.checkpoint.last_failure =
+                    Some(crate::automation_v2::types::AutomationFailureRecord {
+                        node_id: node_id.clone(),
+                        reason: detail.clone(),
+                        failed_at_ms: finished_at_ms,
+                    });
+            }
+            row.status = AutomationRunStatus::Failed;
+            row.detail = Some(detail.clone());
+        }
+    }
+    row.finished_at_ms = Some(row.finished_at_ms.unwrap_or(finished_at_ms));
+    row.active_session_ids.clear();
+    row.latest_session_id = None;
+    row.active_instance_ids.clear();
+}
+
+fn finalize_existing_terminal_run(row: &mut crate::automation_v2::types::AutomationV2RunRecord) {
+    row.finished_at_ms = Some(row.finished_at_ms.unwrap_or_else(now_ms));
+    row.active_session_ids.clear();
+    row.latest_session_id = None;
+    row.active_instance_ids.clear();
+}
+
 pub async fn run_automation_v2_run(
     state: AppState,
     run: crate::automation_v2::types::AutomationV2RunRecord,
@@ -1292,13 +1341,21 @@ pub async fn run_automation_v2_run(
         }
         if matches!(
             latest.status,
+            AutomationRunStatus::Blocked
+                | AutomationRunStatus::Failed
+                | AutomationRunStatus::Completed
+        ) {
+            let _ = state
+                .update_automation_v2_run(&run_id, finalize_existing_terminal_run)
+                .await;
+            break;
+        }
+        if matches!(
+            latest.status,
             AutomationRunStatus::Paused
                 | AutomationRunStatus::Pausing
                 | AutomationRunStatus::AwaitingApproval
                 | AutomationRunStatus::Cancelled
-                | AutomationRunStatus::Blocked
-                | AutomationRunStatus::Failed
-                | AutomationRunStatus::Completed
         ) {
             break;
         }
@@ -1325,36 +1382,8 @@ pub async fn run_automation_v2_run(
                 }
             }
             let _ = state
-                .update_automation_v2_run(&run_id, |row| match &terminal_state {
-                    DerivedTerminalRunState::Completed => {
-                        row.status = AutomationRunStatus::Completed;
-                        row.detail = Some("automation run completed".to_string());
-                    }
-                    DerivedTerminalRunState::Blocked {
-                        blocked_nodes,
-                        detail,
-                    } => {
-                        row.checkpoint.blocked_nodes = blocked_nodes.clone();
-                        row.status = AutomationRunStatus::Blocked;
-                        row.detail = Some(detail.clone());
-                    }
-                    DerivedTerminalRunState::Failed {
-                        failed_nodes,
-                        blocked_nodes,
-                        detail,
-                    } => {
-                        row.checkpoint.blocked_nodes = blocked_nodes.clone();
-                        if let Some(node_id) = failed_nodes.first() {
-                            row.checkpoint.last_failure =
-                                Some(crate::automation_v2::types::AutomationFailureRecord {
-                                    node_id: node_id.clone(),
-                                    reason: detail.clone(),
-                                    failed_at_ms: now_ms(),
-                                });
-                        }
-                        row.status = AutomationRunStatus::Failed;
-                        row.detail = Some(detail.clone());
-                    }
+                .update_automation_v2_run(&run_id, |row| {
+                    apply_terminal_run_state(row, &terminal_state);
                 })
                 .await;
             break;
@@ -1483,36 +1512,8 @@ pub async fn run_automation_v2_run(
                 }
             }
             let _ = state
-                .update_automation_v2_run(&run_id, |row| match &terminal_state {
-                    DerivedTerminalRunState::Completed => {
-                        row.status = AutomationRunStatus::Completed;
-                        row.detail = Some("automation run completed".to_string());
-                    }
-                    DerivedTerminalRunState::Blocked {
-                        blocked_nodes,
-                        detail,
-                    } => {
-                        row.checkpoint.blocked_nodes = blocked_nodes.clone();
-                        row.status = AutomationRunStatus::Blocked;
-                        row.detail = Some(detail.clone());
-                    }
-                    DerivedTerminalRunState::Failed {
-                        failed_nodes,
-                        blocked_nodes,
-                        detail,
-                    } => {
-                        row.checkpoint.blocked_nodes = blocked_nodes.clone();
-                        if let Some(node_id) = failed_nodes.first() {
-                            row.checkpoint.last_failure =
-                                Some(crate::automation_v2::types::AutomationFailureRecord {
-                                    node_id: node_id.clone(),
-                                    reason: detail.clone(),
-                                    failed_at_ms: now_ms(),
-                                });
-                        }
-                        row.status = AutomationRunStatus::Failed;
-                        row.detail = Some(detail.clone());
-                    }
+                .update_automation_v2_run(&run_id, |row| {
+                    apply_terminal_run_state(row, &terminal_state);
                 })
                 .await;
             break;
