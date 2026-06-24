@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tandem-client"
-version = "0.6.2"
+version = "0.6.3"
 description = "Python client for Tandem authority-layer runtime HTTP + SSE APIs"
 readme = "README.md"
 license = { text = "MIT" }

@@ -1,6 +1,6 @@
 {
   "name": "@frumu/tandem-tui",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Tandem authority-layer runtime TUI binary distribution",
   "homepage": "https://tandem.ac",
   "bin": {

@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.3] - 2026-06-24
+
+### Added
+
+- Added destination-neutral Incident Monitor routing foundations behind the
+  existing Bug Monitor API surface, including destination readiness, route
+  preview APIs, destination-aware idempotency, and TypeScript/Python SDK models.
+- Added a centralized Bug Monitor destination router for manual, automatic,
+  approval, recovery, timeout, and service publish paths while preserving the
+  legacy GitHub adapter as the only executable destination in this phase.
+- Added monitored-source route bindings for source kind, route tag, destination
+  allow/default policy, tenant/workspace scope, approval policy, redaction, and
+  retention metadata. Log watchers, scoped intake, drafts, incidents, route
+  preview, publish validation, SDKs, Control Panel display, and regression
+  fixtures now carry those bindings consistently.
+- Added runtime guardrails and regression coverage for connector-action
+  workflows, including concrete source coverage, artifact write completion, MCP
+  progress gating, exact-tool prompting, and blocked-run cleanup.
+
+### Changed
+
+- Updated MCP Settings in the control panel so OAuth-required or disconnected
+  servers are surfaced first, large tool allowlists default collapsed with an
+  animated expand control, and built-in MCP catalog actions use clearer add
+  wording.
+- Preserved full Automation V2 agent and flow configuration when saving from
+  the summary editor, and moved save payload construction into a dedicated
+  helper to keep the automations container below the CI file-size limit.
+- Compacted scoped MCP inventory output so large connected MCP servers remain
+  usable in the control panel and workflow editor.
+
+### Fixed
+
+- Fixed MCP-enabled Automation V2 workflows that lost node execution
+  configuration after editing, which could leave connector runs blocked before
+  any useful work executed.
+- Fixed exact MCP-tool automations so prompts no longer require an initial
+  `mcp_list` discovery call when concrete connector tools are already bound.
+- Fixed workflow artifact/source validation so MCP tool ids are not treated as
+  workspace source files, upstream artifact paths satisfy concrete source
+  coverage, and Notion page/database writes are classified as outbound
+  connector actions.
+- Fixed artifact-write nodes so they complete only after a productive write to
+  the declared artifact target, avoiding false progress on connector workflows.
+- Fixed MCP OAuth persistence and reconnect cleanup so stale OAuth material is
+  removed when auth is deleted, canonical credentials can be reused correctly,
+  and MCP public base URL handling is shared by the HTTP helpers.
+- Fixed Bug Monitor source-bound routing so configured source allowlists,
+  approval policy, high-risk raw-source defaults, granted approvals, and raw
+  routing-field sanitization are enforced before publish.
+
 ## [0.6.2] - 2026-06-23
 
 ### Added

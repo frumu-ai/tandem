@@ -2,6 +2,69 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.6.3 (2026-06-24)
+
+Tandem 0.6.3 is a patch release for workflow-runtime reliability and Bug
+Monitor routing. It repairs the MCP/Notion/Composio workflow paths exercised by
+the Reddit infrastructure leads automation, and it advances Bug Monitor toward
+destination-neutral incident routing while preserving the current GitHub
+publishing behavior.
+
+### Automation V2 MCP Workflows
+
+- Workflow edits now preserve the full Automation V2 agents and flow payload
+  when saving from the summary editor, so MCP-enabled workflows do not lose node
+  execution configuration after operators change model routing, swarm settings,
+  or MCP access.
+- Exact connector-tool workflows no longer receive contradictory instructions
+  to call `mcp_list` first when concrete MCP tools are already bound. This keeps
+  Notion/Composio-style automations on the intended tool path and avoids
+  required-tool failures caused by discovery-only turns.
+- Workflow artifact and source validation now treats MCP tool ids as connector
+  tools instead of workspace files, carries upstream artifact paths into
+  concrete source coverage, and recognizes Notion page/database operations as
+  outbound connector actions.
+- Connector action progress is guarded more tightly: artifact-write nodes only
+  complete after a productive write to the declared artifact target, blocked
+  runs clean up correctly, and runtime tests cover the connector-action review
+  and artifact-write failure modes.
+- MCP OAuth cleanup now removes stale secret-header and OAuth credential
+  material when auth is deleted, canonical OAuth credentials can be reused during
+  refresh, and MCP public base URL handling is shared through one helper.
+
+### MCP Control Panel
+
+- MCP Settings now keeps large tool allowlists collapsed by default with an
+  animated expand control, reducing the amount of space each connected server
+  consumes in the list.
+- MCP servers that still require OAuth or are otherwise disconnected are sorted
+  to the top so operators can see and complete the required connection step
+  before trying to use the server in workflows.
+- The built-in MCP catalog copy now uses clearer add wording instead of the
+  previous pack-oriented label, and scoped MCP inventory output is more compact
+  for large connected servers.
+
+### Bug Monitor Routing
+
+- Bug Monitor now has destination-neutral Incident Monitor routing foundations:
+  destination readiness, route preview APIs, destination-aware post
+  filtering/idempotency, and TypeScript/Python SDK types.
+- A centralized `bug_monitor::router` handles route preview, route matching,
+  destination readiness checks, and publish dispatch for manual, automatic,
+  approval, recovery, timeout, and service paths. GitHub remains the only
+  executable destination in this phase, and unsupported destination overrides
+  fail closed without creating posts.
+- Monitored projects and log sources can now carry route bindings for source
+  kind, route tag, destination allow/default policy, tenant/workspace scope,
+  approval policy, redaction, and retention metadata.
+- Source bindings propagate through log watcher intake, scoped raw reports,
+  drafts, incidents, route preview, recovery publishes, and publish validation.
+  Raw source-supplied routing fields are sanitized before configured source
+  lookup, granted approvals are respected, and high-risk raw sources default to
+  safer approval behavior.
+- Control Panel source setup display, SDK event models, external-log intake
+  documentation, and regression coverage were updated for source-bound routing.
+
 ## v0.6.2 (2026-06-23)
 
 Tandem 0.6.2 starts the enterprise MCP identity workstream for multi-employee
