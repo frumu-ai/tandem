@@ -26,7 +26,8 @@ export function McpToolAllowlistEditor({
   defaultCollapsed = false,
 }: McpToolAllowlistEditorProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  const [collapsedState, setCollapsed] = useState(defaultCollapsed);
+  const collapsed = collapsible ? collapsedState : false;
   const discovered = useMemo(() => normalizeMcpToolNames(discoveredTools), [discoveredTools]);
   const selected = useMemo(() => {
     if (value === null) return [...discovered];
@@ -62,11 +63,71 @@ export function McpToolAllowlistEditor({
     const collapsed = collapseMcpAllowedToolsSelection(discovered, nextSelected);
     onChange(collapsed === null ? null : nextSelected);
   };
+  const body =
+    !discovered.length && !extraSelected.length ? (
+      <div className="text-xs text-slate-500">{emptyText}</div>
+    ) : (
+      <>
+        {discovered.length ? (
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {discovered.map((toolName) => {
+              const checked = value === null || selectedSet.has(toolName);
+              return (
+                <label
+                  key={toolName}
+                  className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-sm transition ${
+                    checked
+                      ? "border-amber-400/40 bg-amber-400/10 text-amber-100"
+                      : "border-slate-700/70 bg-slate-950/20 text-slate-300"
+                  } ${disabled ? "opacity-60" : "cursor-pointer"}`}
+                >
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={checked}
+                    disabled={disabled}
+                    onChange={() => toggleTool(toolName)}
+                  />
+                  <span className="break-all font-mono text-[11px] leading-5">{toolName}</span>
+                </label>
+              );
+            })}
+          </div>
+        ) : null}
+
+        {extraSelected.length ? (
+          <div className="grid gap-2">
+            <div className="text-[11px] uppercase tracking-wide text-amber-200">
+              Saved but not currently discovered
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {extraSelected.map((toolName) => (
+                <label
+                  key={toolName}
+                  className={`flex items-start gap-2 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-100 ${
+                    disabled ? "opacity-60" : "cursor-pointer"
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked
+                    disabled={disabled}
+                    onChange={() => toggleTool(toolName)}
+                  />
+                  <span className="break-all font-mono text-[11px] leading-5">{toolName}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </>
+    );
 
   return (
     <div
       ref={rootRef}
-      className="grid gap-3 rounded-xl border border-slate-700/70 bg-slate-950/30 p-3"
+      className="grid rounded-xl border border-slate-700/70 bg-slate-950/30 p-3"
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="flex min-w-0 flex-1 items-start gap-2">
@@ -118,65 +179,16 @@ export function McpToolAllowlistEditor({
         </div>
       </div>
 
-      {collapsed ? null : !discovered.length && !extraSelected.length ? (
-        <div className="text-xs text-slate-500">{emptyText}</div>
-      ) : (
-        <>
-          {discovered.length ? (
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {discovered.map((toolName) => {
-                const checked = value === null || selectedSet.has(toolName);
-                return (
-                  <label
-                    key={toolName}
-                    className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-sm transition ${
-                      checked
-                        ? "border-amber-400/40 bg-amber-400/10 text-amber-100"
-                        : "border-slate-700/70 bg-slate-950/20 text-slate-300"
-                    } ${disabled ? "opacity-60" : "cursor-pointer"}`}
-                  >
-                    <input
-                      type="checkbox"
-                      className="mt-1"
-                      checked={checked}
-                      disabled={disabled}
-                      onChange={() => toggleTool(toolName)}
-                    />
-                    <span className="break-all font-mono text-[11px] leading-5">{toolName}</span>
-                  </label>
-                );
-              })}
-            </div>
-          ) : null}
-
-          {extraSelected.length ? (
-            <div className="grid gap-2">
-              <div className="text-[11px] uppercase tracking-wide text-amber-200">
-                Saved but not currently discovered
-              </div>
-              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                {extraSelected.map((toolName) => (
-                  <label
-                    key={toolName}
-                    className={`flex items-start gap-2 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-100 ${
-                      disabled ? "opacity-60" : "cursor-pointer"
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      className="mt-1"
-                      checked
-                      disabled={disabled}
-                      onChange={() => toggleTool(toolName)}
-                    />
-                    <span className="break-all font-mono text-[11px] leading-5">{toolName}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          ) : null}
-        </>
-      )}
+      <div
+        className={`grid transition-[grid-template-rows,opacity] duration-200 ease-out ${
+          collapsed ? "grid-rows-[0fr] opacity-0" : "grid-rows-[1fr] opacity-100"
+        }`}
+        aria-hidden={collapsed}
+      >
+        <div className={`min-h-0 overflow-hidden ${collapsed ? "invisible" : "visible"}`}>
+          <div className="grid gap-3 pt-3">{body}</div>
+        </div>
+      </div>
     </div>
   );
 }

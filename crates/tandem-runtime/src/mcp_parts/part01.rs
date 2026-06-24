@@ -693,6 +693,7 @@ impl McpRegistry {
         delete_secret_header_refs(&server.secret_headers, &current_tenant);
         delete_oauth_secret_ref(server.oauth.as_ref(), &current_tenant);
         delete_oauth_credential(
+            name,
             server.oauth.as_ref(),
             &current_tenant,
             &self.oauth_security_dir,
@@ -915,6 +916,31 @@ impl McpRegistry {
             .await;
         self.persist_state().await;
         Ok(true)
+    }
+
+    pub async fn set_oauth_credential_for_tenant(
+        &self,
+        provider_id: &str,
+        credential: tandem_core::OAuthProviderCredential,
+        current_tenant: &TenantContext,
+    ) -> Result<(), String> {
+        if current_tenant.is_local_implicit() {
+            tandem_core::set_provider_oauth_credential_in_dir(
+                &self.oauth_security_dir,
+                provider_id,
+                credential,
+            )
+            .map_err(|error| error.to_string())?;
+        } else {
+            tandem_core::set_provider_oauth_credential_for_tenant_in_dir(
+                &self.oauth_security_dir,
+                current_tenant,
+                provider_id,
+                credential,
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     pub async fn list_tools(&self) -> Vec<McpRemoteTool> {
@@ -1963,21 +1989,37 @@ fn delete_oauth_secret_ref(oauth: Option<&McpOAuthConfig>, current_tenant: &Tena
 }
 
 fn delete_oauth_credential(
+    server_name: &str,
     oauth: Option<&McpOAuthConfig>,
     current_tenant: &TenantContext,
     oauth_security_dir: &Path,
 ) {
-    let Some(oauth) = oauth else {
-        return;
-    };
-    let provider_id = oauth.provider_id.trim();
-    if provider_id.is_empty() {
-        return;
+    let mut provider_ids = Vec::new();
+    if let Some(provider_id) = oauth
+        .map(|oauth| oauth.provider_id.trim())
+        .filter(|provider_id| !provider_id.is_empty())
+    {
+        provider_ids.push(provider_id.to_string());
     }
-    let _ = tandem_core::delete_provider_credential_for_tenant_in_dir(
-        oauth_security_dir,
-        current_tenant,
-        provider_id,
-    );
-    let _ = tandem_core::delete_provider_credential(provider_id);
+    let canonical_provider_segment = server_name
+        .trim()
+        .replace(|ch: char| !ch.is_ascii_alphanumeric(), "_")
+        .trim_matches('_')
+        .to_ascii_lowercase();
+    let canonical_provider_id = format!("mcp-oauth::{canonical_provider_segment}");
+    if !canonical_provider_segment.is_empty()
+        && !provider_ids
+            .iter()
+            .any(|provider_id| provider_id == &canonical_provider_id)
+    {
+        provider_ids.push(canonical_provider_id);
+    }
+    for provider_id in provider_ids {
+        let _ = tandem_core::delete_provider_credential_for_tenant_in_dir(
+            oauth_security_dir,
+            current_tenant,
+            &provider_id,
+        );
+        let _ = tandem_core::delete_provider_credential(&provider_id);
+    }
 }

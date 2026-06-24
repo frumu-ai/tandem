@@ -523,7 +523,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                     onClick={() => setMcpModalTab("catalog")}
                   >
                     <i data-lucide="blocks"></i>
-                    Built-in packs
+                    Built-in catalog
                   </button>
                   <button
                     type="button"
@@ -542,8 +542,8 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                     <div className="flex items-center justify-between gap-3">
                       <div className="tcp-subtle text-sm">
                         {mcpCatalog.generatedAt
-                          ? `Built-in MCP packs · generated ${mcpCatalog.generatedAt}`
-                          : "Built-in MCP packs"}
+                          ? `Built-in MCP catalog · generated ${mcpCatalog.generatedAt}`
+                          : "Built-in MCP catalog"}
                       </div>
                       <button
                         type="button"
@@ -560,7 +560,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                       onInput={(event) =>
                         setMcpCatalogSearch((event.target as HTMLInputElement).value)
                       }
-                      placeholder="Search built-in MCP packs"
+                      placeholder="Search built-in MCP providers"
                     />
                     <div className="grid min-h-0 flex-1 auto-rows-max content-start gap-2 overflow-y-auto pr-1 md:grid-cols-2">
                       {safeFilteredMcpCatalog.length ? (
@@ -598,8 +598,8 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                               <div className="tcp-subtle break-all text-xs">{row.transportUrl}</div>
                               {row.authKind === "oauth" ? (
                                 <div className="rounded-xl border border-sky-700/40 bg-sky-950/20 px-3 py-2 text-xs text-sky-100">
-                                  Save this pack to start browser sign-in. Tandem will keep the MCP
-                                  in a pending state until the authorization completes.
+                                  Save this provider to start browser sign-in. Tandem will keep the
+                                  MCP in a pending state until the authorization completes.
                                 </div>
                               ) : null}
                               <div className="mt-auto flex flex-wrap gap-2">
@@ -633,12 +633,12 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                                     toast(
                                       "ok",
                                       row.authKind === "oauth"
-                                        ? `Loaded ${row.name}. Save to start browser sign-in.`
-                                        : `Loaded ${row.name}. Review and save when ready.`
+                                        ? `Prefilled ${row.name}. Save to start browser sign-in.`
+                                        : `Prefilled ${row.name}. Review and save when ready.`
                                     );
                                   }}
                                 >
-                                  Use pack
+                                  Prefill
                                 </button>
                                 {row.documentationUrl ? (
                                   <a
@@ -657,7 +657,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                           );
                         })
                       ) : (
-                        <EmptyState text="No built-in MCP packs match this search." />
+                        <EmptyState text="No built-in MCP providers match this search." />
                       )}
                     </div>
                   </div>

@@ -1520,6 +1520,79 @@ async fn mcp_delete_auth_clears_stale_oauth_material() {
 }
 
 #[tokio::test]
+async fn mcp_delete_auth_clears_canonical_oauth_material_without_oauth_config() {
+    let state = test_state().await;
+
+    state
+        .mcp
+        .add_or_update(
+            "notion".to_string(),
+            "https://example.test/mcp".to_string(),
+            HashMap::new(),
+            true,
+        )
+        .await;
+    assert!(state.mcp.set_auth_kind("notion", "oauth".to_string()).await);
+
+    let provider_id = "mcp-oauth::notion".to_string();
+    let provider_auth_security_dir = state
+        .shared_resources_path
+        .parent()
+        .expect("state root")
+        .join("security");
+    let stale_credential = tandem_core::OAuthProviderCredential {
+        provider_id: provider_id.clone(),
+        access_token: "stale-oauth-access-token".to_string(),
+        refresh_token: "stale-oauth-refresh-token".to_string(),
+        expires_at_ms: crate::now_ms().saturating_add(60_000),
+        account_id: None,
+        email: None,
+        display_name: None,
+        managed_by: "tandem".to_string(),
+        api_key: None,
+    };
+    tandem_core::set_provider_oauth_credential_in_dir(
+        &provider_auth_security_dir,
+        &provider_id,
+        stale_credential.clone(),
+    )
+    .expect("store registry oauth credential");
+    tandem_core::set_provider_oauth_credential(&provider_id, stale_credential)
+        .expect("store fallback oauth credential");
+
+    let before = state
+        .mcp
+        .list()
+        .await
+        .get("notion")
+        .cloned()
+        .expect("notion row before delete");
+    assert!(before.oauth.is_none());
+    assert!(tandem_core::load_provider_oauth_credential_in_dir(
+        &provider_auth_security_dir,
+        &provider_id,
+    )
+    .is_some());
+    assert!(tandem_core::load_provider_oauth_credential(&provider_id).is_some());
+
+    let app = app_router(state.clone());
+    let req = Request::builder()
+        .method("DELETE")
+        .uri("/mcp/notion/auth")
+        .body(Body::empty())
+        .expect("delete auth request");
+    let resp = app.oneshot(req).await.expect("delete auth response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    assert!(tandem_core::load_provider_oauth_credential_in_dir(
+        &provider_auth_security_dir,
+        &provider_id,
+    )
+    .is_none());
+    assert!(tandem_core::load_provider_oauth_credential(&provider_id).is_none());
+}
+
+#[tokio::test]
 async fn mcp_refresh_silently_renews_expired_oauth_token() {
     let state = test_state().await;
     let (endpoint, server) = spawn_fake_hosted_mcp_oauth_server().await;
@@ -1664,14 +1737,19 @@ async fn mcp_refresh_falls_back_to_global_oauth_credential() {
         .parent()
         .expect("state root")
         .join("security");
-    assert!(
-        tandem_core::load_provider_oauth_credential_in_dir(
-            &provider_auth_security_dir,
-            "mcp-oauth::notion",
-        )
-        .is_none(),
-        "callback writes the current global provider credential, not the registry-local copy"
-    );
+    let callback_stored = tandem_core::load_provider_oauth_credential_in_dir(
+        &provider_auth_security_dir,
+        "mcp-oauth::notion",
+    )
+    .expect("callback writes the current credential to the registry-local store");
+    assert_eq!(callback_stored.access_token, "access-token-123");
+    assert_eq!(callback_stored.refresh_token, "refresh-token-123");
+    assert!(tandem_core::delete_provider_credential_for_tenant_in_dir(
+        &provider_auth_security_dir,
+        &tandem_types::TenantContext::local_implicit(),
+        "mcp-oauth::notion",
+    )
+    .expect("delete registry-local credential for fallback exercise"));
     tandem_core::set_provider_oauth_credential(
         "mcp-oauth::notion",
         tandem_core::OAuthProviderCredential {

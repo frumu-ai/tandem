@@ -143,6 +143,35 @@ function normalizeServerRow(input: any, fallbackName = ""): McpServer | null {
   };
 }
 
+function mcpServerNeedsOAuthAction(server: McpServer) {
+  const authKind = String(server.authKind || "")
+    .trim()
+    .toLowerCase();
+  if (authKind !== "oauth") return false;
+  const challengeUrl = String(
+    server.lastAuthChallenge?.authorization_url ||
+      server.lastAuthChallenge?.authorizationUrl ||
+      server.authorizationUrl ||
+      ""
+  ).trim();
+  const lastError = String(server.lastError || "").toLowerCase();
+  return (
+    !server.connected ||
+    !!server.lastAuthChallenge ||
+    !!challengeUrl ||
+    lastError.includes("authorization") ||
+    lastError.includes("invalid_token") ||
+    lastError.includes("access token")
+  );
+}
+
+function compareMcpServersForDisplay(a: McpServer, b: McpServer) {
+  const attentionDelta =
+    Number(mcpServerNeedsOAuthAction(b)) - Number(mcpServerNeedsOAuthAction(a));
+  if (attentionDelta) return attentionDelta;
+  return a.name.localeCompare(b.name);
+}
+
 function inferMcpCatalogAuthKind(catalog: Catalog, name: string, transport: string) {
   const normalizedName = String(name || "")
     .trim()
@@ -179,7 +208,7 @@ function normalizeServers(raw: any): McpServer[] {
     return raw
       .map((entry) => normalizeServerRow(entry))
       .filter((row): row is McpServer => !!row)
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort(compareMcpServersForDisplay);
   }
 
   if (!raw || typeof raw !== "object") return [];
@@ -187,7 +216,7 @@ function normalizeServers(raw: any): McpServer[] {
     return raw.servers
       .map((entry: any) => normalizeServerRow(entry))
       .filter((row): row is McpServer => !!row)
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort(compareMcpServersForDisplay);
   }
 
   return Object.entries(raw)
@@ -198,7 +227,7 @@ function normalizeServers(raw: any): McpServer[] {
       )
     )
     .filter((row): row is McpServer => !!row)
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .sort(compareMcpServersForDisplay);
 }
 
 function normalizeTools(raw: any): string[] {
@@ -346,7 +375,14 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
 
   const servers = useMemo(() => normalizeServers(serversQuery.data), [serversQuery.data]);
   const connectionRows = useMemo(
-    () => normalizeMcpConnectionsFromInventory(serversQuery.data),
+    () =>
+      normalizeMcpConnectionsFromInventory(serversQuery.data).sort((a, b) => {
+        const authDelta = Number(b.pendingAuth) - Number(a.pendingAuth);
+        if (authDelta) return authDelta;
+        const serverDelta = a.server.localeCompare(b.server);
+        if (serverDelta) return serverDelta;
+        return a.connectionId.localeCompare(b.connectionId);
+      }),
     [serversQuery.data]
   );
   const toolIds = useMemo(() => normalizeTools(toolsQuery.data), [toolsQuery.data]);
@@ -454,6 +490,44 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
   const invalidateMcp = useCallback(async () => {
     await queryClient.invalidateQueries({ queryKey: ["mcp"] });
   }, [queryClient]);
+  const notifyOAuthRequired = useCallback(
+    (serverName: string | undefined, result: any, action: "required" | "pending" | "added") => {
+      const challenge = result?.lastAuthChallenge || result?.last_auth_challenge || {};
+      const authorizationUrl = String(
+        challenge?.authorization_url ||
+          challenge?.authorizationUrl ||
+          result?.authorization_url ||
+          result?.authorizationUrl ||
+          ""
+      ).trim();
+      const challengeMessage = String(challenge?.message || "").trim();
+      const label = serverName || "MCP provider";
+      let linkNotice = "";
+      if (authorizationUrl) {
+        const opened = window.open(authorizationUrl, "_blank", "noopener,noreferrer");
+        if (opened) {
+          opened.opener = null;
+          linkNotice = " Opening the sign-in link.";
+        } else if (navigator.clipboard) {
+          void navigator.clipboard.writeText(authorizationUrl).catch(() => undefined);
+          linkNotice = " Sign-in link copied; it is also shown in the provider row.";
+        } else {
+          linkNotice = " Open the sign-in link shown in the provider row.";
+        }
+      }
+      const prefix =
+        action === "added"
+          ? `MCP provider "${label}" added and account authorization is still required`
+          : action === "pending"
+            ? `OAuth authorization still pending for ${label}`
+            : `OAuth authorization required for ${label}`;
+      toast(
+        "warn",
+        `${prefix}${challengeMessage ? `: ${challengeMessage}` : "."}${linkNotice}`
+      );
+    },
+    [toast]
+  );
   const mcpToolPolicyMutation = useMutation({
     mutationFn: async ({
       serverName,
@@ -551,14 +625,7 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
         .toLowerCase();
       if (vars.action === "connect") {
         if (pendingAuth || (!actionOk && serverAuthKind === "oauth")) {
-          const challenge = (result as any)?.lastAuthChallenge || {};
-          const message = String(challenge?.message || "").trim();
-          toast(
-            "warn",
-            message
-              ? `OAuth authorization required for ${vars.server?.name}: ${message}`
-              : `OAuth authorization required for ${vars.server?.name}.`
-          );
+          notifyOAuthRequired(vars.server?.name, result, "required");
         } else if (!actionOk) {
           const errorMessage = String(
             (result as any)?.error?.message || (result as any)?.error || ""
@@ -576,14 +643,7 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
       if (vars.action === "disconnect") toast("ok", `Disconnected provider ${vars.server?.name}.`);
       if (vars.action === "refresh") {
         if (pendingAuth || (!actionOk && serverAuthKind === "oauth")) {
-          const challenge = (result as any)?.lastAuthChallenge || {};
-          const message = String(challenge?.message || "").trim();
-          toast(
-            "warn",
-            message
-              ? `OAuth authorization required for ${vars.server?.name}: ${message}`
-              : `OAuth authorization required for ${vars.server?.name}.`
-          );
+          notifyOAuthRequired(vars.server?.name, result, "required");
         } else if (!actionOk) {
           const errorMessage = String(
             (result as any)?.error?.message || (result as any)?.error || ""
@@ -611,14 +671,7 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
               : `OAuth authorization check failed for ${vars.server?.name}.`
           );
         } else if (pendingAuth) {
-          const challenge = (result as any)?.lastAuthChallenge || {};
-          const message = String(challenge?.message || "").trim();
-          toast(
-            "warn",
-            message
-              ? `OAuth authorization still pending for ${vars.server?.name}: ${message}`
-              : `OAuth authorization still pending for ${vars.server?.name}.`
-          );
+          notifyOAuthRequired(vars.server?.name, result, "pending");
         } else {
           toast("ok", `Marked your ${vars.server?.name} sign-in as complete.`);
         }
@@ -639,14 +692,7 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
           !!connectResult?.lastAuthChallenge ||
           !!connectResult?.authorizationUrl;
         if (connectAfterAdd && addPendingAuth) {
-          const challenge = connectResult?.lastAuthChallenge || {};
-          const message = String(challenge?.message || "").trim();
-          toast(
-            "warn",
-            message
-              ? `MCP provider "${serverName}" added and account authorization is still required: ${message}`
-              : `MCP provider "${serverName}" added and account authorization is still required.`
-          );
+          notifyOAuthRequired(serverName, connectResult, "added");
         } else if (connectAfterAdd && authKind === "oauth" && connectResult?.ok !== true) {
           toast(
             "warn",
@@ -898,18 +944,19 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
 
         <div className="grid gap-4">
           <PageCard
-            title={`Remote MCP Packs (${catalog.count})`}
+            title={`Remote MCP Catalog (${catalog.count})`}
             subtitle={
               catalog.generatedAt ? `Generated ${catalog.generatedAt}` : "Catalog unavailable"
             }
           >
             <p className="tcp-subtle mb-3 text-xs">
-              Remote MCP packs exported as provider TOML templates. Apply to prefill transport/name.
+              Remote MCP server templates exported from the catalog. Prefill transport/name, then
+              add a provider definition.
             </p>
             <div className="mb-3 grid gap-2 md:grid-cols-[1fr_auto]">
               <input
                 className="tcp-input"
-                placeholder="Search pack name, slug, or URL"
+                placeholder="Search provider name, slug, or URL"
                 value={catalogSearch}
                 onInput={(event) => setCatalogSearch((event.target as HTMLInputElement).value)}
               />
@@ -953,8 +1000,8 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
                       ) : null}
                       {row.authKind === "oauth" ? (
                         <div className="rounded-xl border border-sky-700/40 bg-sky-950/20 px-3 py-2 text-xs text-sky-100">
-                          Add this pack, then finish browser sign-in for your account. Tandem will
-                          keep the connection pending until authorization completes.
+                          Add this provider, then finish browser sign-in for your account. Tandem
+                          will keep the connection pending until authorization completes.
                         </div>
                       ) : null}
                       <div className="mt-auto flex flex-wrap gap-2">
@@ -968,12 +1015,12 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
                             toast(
                               "ok",
                               row.authKind === "oauth"
-                                ? `Loaded pack ${row.name}. Add it to start browser sign-in for your account.`
-                                : `Loaded pack ${row.name}. Add + Connect My Account when ready.`
+                                ? `Prefilled ${row.name}. Add it to start browser sign-in for your account.`
+                                : `Prefilled ${row.name}. Add and connect when ready.`
                             );
                           }}
                         >
-                          Apply
+                          Prefill
                         </button>
                         <button
                           className="tcp-btn"
@@ -1212,10 +1259,12 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
                       </div>
                       <McpToolAllowlistEditor
                         title="Provider tool access"
-                        subtitle="Leave all discovered tools selected to expose the provider, or uncheck tools to hide them from agents and workflows."
+                        subtitle="Expand to choose exact tools. Leave all discovered tools selected to expose the provider."
                         discoveredTools={Array.isArray(server.toolCache) ? server.toolCache : []}
                         value={server.allowedTools}
                         disabled={mcpToolPolicyMutation.isPending}
+                        collapsible
+                        defaultCollapsed
                         onChange={(next) =>
                           mcpToolPolicyMutation.mutate({
                             serverName: server.name,

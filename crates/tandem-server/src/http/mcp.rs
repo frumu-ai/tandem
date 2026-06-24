@@ -1254,16 +1254,27 @@ async fn finish_mcp_oauth_callback(
         api_key: None,
     };
     let credential_result = if session.tenant_context.is_local_implicit() {
-        tandem_core::set_provider_oauth_credential(&session.provider_id, credential)
+        tandem_core::set_provider_oauth_credential(&session.provider_id, credential.clone())
     } else {
         tandem_core::set_provider_oauth_credential_for_tenant(
             &session.tenant_context,
             &session.provider_id,
-            credential,
+            credential.clone(),
         )
     };
     if let Err(error) = credential_result {
         tracing::warn!(%error, provider_id = %session.provider_id, "failed to persist MCP OAuth credential");
+    }
+    if let Err(error) = state
+        .mcp
+        .set_oauth_credential_for_tenant(&session.provider_id, credential, &session.tenant_context)
+        .await
+    {
+        tracing::warn!(
+            %error,
+            provider_id = %session.provider_id,
+            "failed to persist MCP OAuth credential in registry store"
+        );
     }
 
     match state

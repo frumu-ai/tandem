@@ -1,7 +1,7 @@
 import { AnimatePresence, motion } from "motion/react";
 import { ProviderModelSelector } from "../components/ProviderModelSelector";
 import { McpToolAllowlistEditor } from "../components/McpToolAllowlistEditor";
-import { Badge, PanelCard, StaggerGroup, Toolbar } from "../ui/index.tsx";
+import { Badge, EmptyState, PanelCard, StaggerGroup, Toolbar } from "../ui/index.tsx";
 import {
   CHANNEL_NAMES,
   CHANNEL_TOOL_GROUPS,
@@ -30,6 +30,37 @@ type SettingsPageControllerState = ReturnType<typeof useSettingsPageController>;
 type SettingsPageChannelsMcpSectionsProps = {
   controller: SettingsPageControllerState;
 };
+
+function mcpServerNeedsOAuthAction(server: any) {
+  const authKind = String(server?.authKind || server?.auth_kind || "")
+    .trim()
+    .toLowerCase();
+  if (authKind !== "oauth") return false;
+  const challenge = server?.lastAuthChallenge || server?.last_auth_challenge || null;
+  const challengeUrl = String(
+    challenge?.authorization_url ||
+      challenge?.authorizationUrl ||
+      server?.authorizationUrl ||
+      server?.authorization_url ||
+      ""
+  ).trim();
+  const lastError = String(server?.lastError || server?.last_error || "").toLowerCase();
+  return (
+    !server?.connected ||
+    !!challenge ||
+    !!challengeUrl ||
+    lastError.includes("authorization") ||
+    lastError.includes("invalid_token") ||
+    lastError.includes("access token")
+  );
+}
+
+function compareMcpServersForDisplay(a: any, b: any) {
+  const attentionDelta =
+    Number(mcpServerNeedsOAuthAction(b)) - Number(mcpServerNeedsOAuthAction(a));
+  if (attentionDelta) return attentionDelta;
+  return String(a?.name || "").localeCompare(String(b?.name || ""));
+}
 
 export function SettingsPageChannelsMcpSections({
   controller,
@@ -65,7 +96,9 @@ export function SettingsPageChannelsMcpSections({
     setChannelToolScopeSelection,
     verifyChannelMutation,
   } = controller;
-  const safeMcpServers = Array.isArray(mcpServers) ? mcpServers : [];
+  const safeMcpServers = (Array.isArray(mcpServers) ? [...mcpServers] : []).sort(
+    compareMcpServersForDisplay
+  );
 
   return (
     <>
@@ -895,7 +928,7 @@ export function SettingsPageChannelsMcpSections({
                               target="_blank"
                               rel="noreferrer"
                             >
-                              Open auth URL
+                              Open sign-in
                             </a>
                             <button
                               type="button"
@@ -921,10 +954,12 @@ export function SettingsPageChannelsMcpSections({
                     </div>
                     <McpToolAllowlistEditor
                       title="Tool access"
-                      subtitle="Leave all discovered tools selected to expose the full MCP server, or uncheck tools to hide them from agents and workflows."
+                      subtitle="Expand to choose exact tools. Leave all discovered tools selected to expose the full MCP server."
                       discoveredTools={Array.isArray(server.toolCache) ? server.toolCache : []}
                       value={server.allowedTools}
                       disabled={mcpToolPolicyMutation.isPending}
+                      collapsible
+                      defaultCollapsed
                       onChange={(next) =>
                         mcpToolPolicyMutation.mutate({
                           serverName: server.name,
