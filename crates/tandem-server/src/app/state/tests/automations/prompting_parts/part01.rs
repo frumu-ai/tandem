@@ -1039,14 +1039,18 @@ fn generated_prompt_variation_suite_preserves_contract_inference() {
             expected_present: vec![
                 "MCP Discovery:",
                 "Allowed MCP servers",
-                "Call `mcp_list`",
+                "Exact connector tools are already bound",
+                "do not start with `mcp_list`",
                 "Concrete connector source tools available",
                 "`mcp.tandem_mcp.search_docs`",
                 "`mcp.tandem_mcp.*`",
                 "`mcp_list`, `glob`, `grep`, `edit`, and `apply_patch` are not source evidence",
                 "Artifact Delivery Order:",
             ],
-            expected_absent: vec!["External Research Expectation:"],
+            expected_absent: vec![
+                "External Research Expectation:",
+                "If MCP Discovery is present, call `mcp_list` before reading or comparing sources",
+            ],
         },
         GeneratedPromptCase {
             name: "code-change-with-verification",

@@ -781,6 +781,12 @@ pub(crate) fn render_automation_v2_prompt_with_options(
         )
     };
     let effective_mcp_allowed_servers = agent.mcp_policy.effective_allowed_servers();
+    let concrete_connector_tools =
+        automation_prompt_concrete_connector_tools(requested_tools, &effective_mcp_allowed_servers);
+    let exact_connector_tools_bound = concrete_connector_tools
+        .iter()
+        .any(|tool| automation_tool_is_exact_concrete_mcp(tool));
+    let outbound_action_node = automation_node_is_outbound_action(node);
     if validator_kind != crate::AutomationOutputValidatorKind::ReviewDecision
         && tandem_plan_compiler::api::workflow_plan_should_surface_mcp_discovery(
             &connector_discovery_text,
@@ -789,14 +795,6 @@ pub(crate) fn render_automation_v2_prompt_with_options(
     {
         let optional_connector_reference =
             enforcement::automation_node_allows_optional_connector_references(node);
-        let concrete_connector_tools = automation_prompt_concrete_connector_tools(
-            requested_tools,
-            &effective_mcp_allowed_servers,
-        );
-        let exact_connector_tools_bound = concrete_connector_tools
-            .iter()
-            .any(|tool| automation_tool_is_exact_concrete_mcp(tool));
-        let outbound_action_node = automation_node_is_outbound_action(node);
         let concrete_connector_line = if concrete_connector_tools.is_empty() {
             String::new()
         } else if optional_connector_reference {
@@ -958,9 +956,7 @@ pub(crate) fn render_automation_v2_prompt_with_options(
     if let Some(output_path) = required_output_path.as_ref() {
         let optional_connector_reference =
             enforcement::automation_node_allows_optional_connector_references(node);
-        let concrete_mcp_tools = automation_node_concrete_mcp_tool_allowlist(node);
-        let exact_mcp_tools_bound = !concrete_mcp_tools.is_empty();
-        let outbound_action_node = automation_node_is_outbound_action(node);
+        let concrete_mcp_tools = &concrete_connector_tools;
         let concrete_mcp_line = if concrete_mcp_tools.is_empty() {
             String::new()
         } else if optional_connector_reference {
@@ -1009,7 +1005,7 @@ pub(crate) fn render_automation_v2_prompt_with_options(
         } else {
             "- Read or inspect the concrete sources required by the node."
         };
-        let discovery_order_line = if exact_mcp_tools_bound {
+        let discovery_order_line = if exact_connector_tools_bound {
             "- Exact connector tools are already bound for this node. Call the concrete `mcp.*` tool required by the objective directly; do not start with `mcp_list` unless a concrete connector call reports an availability problem."
         } else {
             "- If MCP Discovery is present, call `mcp_list` before reading or comparing sources so you know which connector-backed tools are available.\n- If you need to understand catalog availability or surface a missing connector, call `mcp_list_catalog` next.\n- If the gap requires operator review, use `mcp_request_capability` to file it through the approval queue."
