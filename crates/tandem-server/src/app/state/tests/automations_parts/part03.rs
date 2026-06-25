@@ -2069,7 +2069,7 @@ async fn connector_preflight_executes_declared_required_tool_calls_generically()
 
 
 #[tokio::test]
-async fn notion_connector_writer_short_circuits_empty_leads_with_artifact() {
+async fn notion_connector_writer_short_circuits_empty_rows_with_artifact() {
     let state = ready_test_state().await;
     let workspace_root = std::env::temp_dir().join(format!(
         "tandem-notion-writer-empty-{}",
@@ -2080,7 +2080,7 @@ async fn notion_connector_writer_short_circuits_empty_leads_with_artifact() {
     let automation = AutomationSpecBuilder::new("automation-notion-writer-empty")
         .workspace_root(workspace_root.to_str().expect("workspace").to_string())
         .build();
-    let mut node = AutomationNodeBuilder::new("notion_agent_tool_security")
+    let mut node = AutomationNodeBuilder::new("notion_crm_accounts")
         .output_contract(AutomationFlowOutputContract {
             kind: "structured_json".to_string(),
             validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
@@ -2089,20 +2089,33 @@ async fn notion_connector_writer_short_circuits_empty_leads_with_artifact() {
             summary_guidance: None,
         })
         .metadata(json!({
+            "connector": "notion",
             "connector_writer": true,
+            "input_alias": "filtered_rows",
+            "source_array_key": "rows",
             "notion_data_source_id": "ds-123",
             "notion_data_source_url": "collection://ds-123",
-            "source_node_id": "filter_agent_tool_security",
-            "status_property_value": "Not started",
+            "source_node_id": "filter_accounts",
+            "title_property": "Company",
+            "duplicate_keys": ["Website"],
+            "default_properties": {
+                "Stage": "New"
+            },
+            "property_mappings": {
+                "Company": "company_name",
+                "Website": "website_url",
+                "Owner": ["account_owner", "owner"],
+                "Priority": "priority"
+            },
             "builder": {
                 "task_class": "connector_writer",
-                "output_path": ".tandem/artifacts/notion-agent-tool-security.json"
+                "output_path": ".tandem/artifacts/notion-crm-accounts.json"
             }
         }))
         .build();
     node.input_refs = vec![AutomationFlowInputRef {
-        from_step_id: "filter_agent_tool_security".to_string(),
-        alias: "filtered_leads".to_string(),
+        from_step_id: "filter_accounts".to_string(),
+        alias: "filtered_rows".to_string(),
     }];
     let mut session = Session::new(
         Some("notion writer empty".to_string()),
@@ -2118,11 +2131,11 @@ async fn notion_connector_writer_short_circuits_empty_leads_with_artifact() {
 
     let upstream_output = json!({
         "status": "completed",
-        "leads": []
+        "rows": []
     });
     let upstream_inputs = vec![json!({
-        "alias": "filtered_leads",
-        "from_step_id": "filter_agent_tool_security",
+        "alias": "filtered_rows",
+        "from_step_id": "filter_accounts",
         "output": {
             "content": {
                 "text": upstream_output.to_string()
@@ -2137,7 +2150,7 @@ async fn notion_connector_writer_short_circuits_empty_leads_with_artifact() {
         &node,
         &session_id,
         workspace_root.to_str().expect("workspace"),
-        Some(".tandem/artifacts/notion-agent-tool-security.json"),
+        Some(".tandem/artifacts/notion-crm-accounts.json"),
         &[
             "mcp.notion.notion_fetch".to_string(),
             "mcp.notion.notion_search".to_string(),
@@ -2155,7 +2168,7 @@ async fn notion_connector_writer_short_circuits_empty_leads_with_artifact() {
     let artifact_path = workspace_root
         .join(".tandem/runs")
         .join(run_id)
-        .join("artifacts/notion-agent-tool-security.json");
+        .join("artifacts/notion-crm-accounts.json");
     let artifact: Value =
         serde_json::from_str(&std::fs::read_to_string(&artifact_path).expect("artifact text"))
             .expect("artifact json");
@@ -2164,7 +2177,8 @@ async fn notion_connector_writer_short_circuits_empty_leads_with_artifact() {
     assert_eq!(artifact["skipped_duplicate_count"], 0);
     assert_eq!(artifact["failed_count"], 0);
     assert_eq!(artifact["notion_data_source_url"], "collection://ds-123");
-    assert_eq!(artifact["source_node_id"], "filter_agent_tool_security");
+    assert_eq!(artifact["source_node_id"], "filter_accounts");
+    assert_eq!(artifact["input_alias"], "filtered_rows");
     assert!(artifact["connector_evidence"]
         .as_array()
         .expect("connector evidence")
@@ -2174,7 +2188,7 @@ async fn notion_connector_writer_short_circuits_empty_leads_with_artifact() {
 }
 
 #[tokio::test]
-async fn notion_connector_writer_creates_and_updates_nonempty_lead() {
+async fn notion_connector_writer_uses_generic_metadata_mappings() {
     use async_trait::async_trait;
     use tandem_tools::Tool;
     use tandem_types::{ToolResult, ToolSchema};
@@ -2256,7 +2270,7 @@ async fn notion_connector_writer_creates_and_updates_nonempty_lead() {
     let automation = AutomationSpecBuilder::new("automation-notion-writer-create")
         .workspace_root(workspace_root.to_str().expect("workspace").to_string())
         .build();
-    let mut node = AutomationNodeBuilder::new("notion_agent_tool_security")
+    let mut node = AutomationNodeBuilder::new("notion_crm_accounts")
         .output_contract(AutomationFlowOutputContract {
             kind: "structured_json".to_string(),
             validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
@@ -2265,20 +2279,40 @@ async fn notion_connector_writer_creates_and_updates_nonempty_lead() {
             summary_guidance: None,
         })
         .metadata(json!({
+            "connector": "notion",
             "connector_writer": true,
+            "input_alias": "filtered_rows",
+            "source_array_path": "/payload/accounts",
             "notion_data_source_id": "ds-123",
             "notion_data_source_url": "collection://ds-123",
-            "source_node_id": "filter_agent_tool_security",
-            "status_property_value": "Not started",
+            "source_node_id": "filter_accounts",
+            "title_property": "Company",
+            "duplicate_keys": ["Website"],
+            "default_properties": {
+                "Stage": "New"
+            },
+            "property_mappings": {
+                "Company": "company_name",
+                "Website": "website_url",
+                "Owner": ["account_owner", "owner"],
+                "Priority": {
+                    "source": "priority",
+                    "value_map": {
+                        "high": "High"
+                    },
+                    "allowed_values": ["High", "Medium", "Low"],
+                    "fallback": "Medium"
+                }
+            },
             "builder": {
                 "task_class": "connector_writer",
-                "output_path": ".tandem/artifacts/notion-agent-tool-security.json"
+                "output_path": ".tandem/artifacts/notion-crm-accounts.json"
             }
         }))
         .build();
     node.input_refs = vec![AutomationFlowInputRef {
-        from_step_id: "filter_agent_tool_security".to_string(),
-        alias: "filtered_leads".to_string(),
+        from_step_id: "filter_accounts".to_string(),
+        alias: "filtered_rows".to_string(),
     }];
     let mut session = Session::new(
         Some("notion writer create".to_string()),
@@ -2294,19 +2328,20 @@ async fn notion_connector_writer_creates_and_updates_nonempty_lead() {
 
     let upstream_output = json!({
         "status": "completed",
-        "leads": [
-            {
-                "topic_thread_title": "I was Backend Lead at Manus after building agents",
-                "subreddit": "LocalLLaMA",
-                "core_pain_point": "Production agent tool calls need stronger enterprise boundaries.",
-                "user_handle": "MorroHsu",
-                "thread_link": "https://www.reddit.com/r/LocalLLaMA/comments/1rrisqn/i_was_backend_lead_at_manus_after_building_agents/"
-            }
-        ]
+        "payload": {
+            "accounts": [
+                {
+                    "company_name": "Acme Platform",
+                    "website_url": "https://acme.example",
+                    "owner": "Sam Rivera",
+                    "priority": "high"
+                }
+            ]
+        }
     });
     let upstream_inputs = vec![json!({
-        "alias": "filtered_leads",
-        "from_step_id": "filter_agent_tool_security",
+        "alias": "filtered_rows",
+        "from_step_id": "filter_accounts",
         "output": {
             "content": {
                 "text": upstream_output.to_string()
@@ -2321,7 +2356,7 @@ async fn notion_connector_writer_creates_and_updates_nonempty_lead() {
         &node,
         &session_id,
         workspace_root.to_str().expect("workspace"),
-        Some(".tandem/artifacts/notion-agent-tool-security.json"),
+        Some(".tandem/artifacts/notion-crm-accounts.json"),
         &[
             "mcp.notion.notion_fetch".to_string(),
             "mcp.notion.notion_search".to_string(),
@@ -2339,7 +2374,7 @@ async fn notion_connector_writer_creates_and_updates_nonempty_lead() {
     let artifact_path = workspace_root
         .join(".tandem/runs")
         .join(run_id)
-        .join("artifacts/notion-agent-tool-security.json");
+        .join("artifacts/notion-crm-accounts.json");
     let artifact: Value =
         serde_json::from_str(&std::fs::read_to_string(&artifact_path).expect("artifact text"))
             .expect("artifact json");
@@ -2347,14 +2382,16 @@ async fn notion_connector_writer_creates_and_updates_nonempty_lead() {
     assert_eq!(artifact["inserted_count"], 1);
     assert_eq!(artifact["skipped_duplicate_count"], 0);
     assert_eq!(artifact["failed_count"], 0);
+    assert_eq!(artifact["inserted_row_keys"][0]["title"], "Acme Platform");
     assert_eq!(
-        artifact["inserted_thread_links"][0],
-        "https://www.reddit.com/r/LocalLLaMA/comments/1rrisqn/i_was_backend_lead_at_manus_after_building_agents/"
+        artifact["inserted_row_keys"][0]["duplicate_values"][0]["property"],
+        "Website"
     );
     assert_eq!(
-        artifact["updated_page_ids"][0],
-        "https://www.notion.so/page-123"
+        artifact["inserted_row_keys"][0]["duplicate_values"][0]["value"],
+        "https://acme.example"
     );
+    assert_eq!(artifact["updated_page_ids"][0], "https://www.notion.so/page-123");
 
     let calls = calls.lock().expect("calls lock").clone();
     assert!(calls
@@ -2372,6 +2409,39 @@ async fn notion_connector_writer_creates_and_updates_nonempty_lead() {
     assert!(!calls
         .iter()
         .any(|(tool, _)| tool == "mcp.notion.notion_query_data_sources"));
+    let search_args = calls
+        .iter()
+        .find(|(tool, _)| tool == "mcp.notion.notion_search")
+        .map(|(_, args)| args)
+        .expect("search args");
+    assert_eq!(search_args["query"], "https://acme.example");
+    assert_eq!(search_args["data_source_url"], "collection://ds-123");
+    let create_args = calls
+        .iter()
+        .find(|(tool, _)| tool == "mcp.notion.notion_create_pages")
+        .map(|(_, args)| args)
+        .expect("create_pages args");
+    assert_eq!(create_args["pages"][0]["title"], "Acme Platform");
+    assert_eq!(
+        create_args["pages"][0]["properties"]["Company"],
+        "Acme Platform"
+    );
+    assert_eq!(
+        create_args["pages"][0]["properties"]["Website"],
+        "https://acme.example"
+    );
+    assert_eq!(
+        create_args["pages"][0]["properties"]["Owner"],
+        "Sam Rivera"
+    );
+    assert_eq!(create_args["pages"][0]["properties"]["Priority"], "High");
+    assert_eq!(create_args["pages"][0]["properties"]["Stage"], "New");
+    assert!(create_args["pages"][0]["properties"]
+        .get("Topic / Thread Title")
+        .is_none());
+    assert!(create_args["pages"][0]["properties"]
+        .get("Thread Link")
+        .is_none());
     let update_args = calls
         .iter()
         .find(|(tool, _)| tool == "mcp.notion.notion_update_page")
@@ -2379,13 +2449,8 @@ async fn notion_connector_writer_creates_and_updates_nonempty_lead() {
         .expect("update_page args");
     assert_eq!(update_args["command"], "update_properties");
     assert_eq!(update_args["page_id"], "https://www.notion.so/page-123");
-    assert_eq!(
-        update_args["properties"]["Topic / Thread Title"],
-        "I was Backend Lead at Manus after building agents"
-    );
-    assert_eq!(update_args["properties"]["Subreddit"], "r/LocalLLaMA");
-    assert_eq!(update_args["properties"]["User Handle"], "MorroHsu");
-    assert_eq!(update_args["properties"]["Status"], "Not started");
+    assert_eq!(update_args["properties"]["Company"], "Acme Platform");
+    assert_eq!(update_args["properties"]["Stage"], "New");
 
     let _ = std::fs::remove_dir_all(&workspace_root);
 }

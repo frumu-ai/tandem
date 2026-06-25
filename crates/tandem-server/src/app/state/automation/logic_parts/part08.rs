@@ -6,14 +6,57 @@ fn automation_node_metadata_bool_local(node: &AutomationFlowNode, key: &str) -> 
         .unwrap_or(false)
 }
 
+fn automation_node_metadata_value_local<'a>(
+    node: &'a AutomationFlowNode,
+    key: &str,
+) -> Option<&'a Value> {
+    node.metadata.as_ref().and_then(|metadata| metadata.get(key))
+}
+
 fn automation_node_metadata_string_local(node: &AutomationFlowNode, key: &str) -> Option<String> {
-    node.metadata
-        .as_ref()
-        .and_then(|metadata| metadata.get(key))
+    automation_node_metadata_value_local(node, key)
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn automation_node_metadata_string_array_local(
+    node: &AutomationFlowNode,
+    key: &str,
+) -> Vec<String> {
+    match automation_node_metadata_value_local(node, key) {
+        Some(Value::String(value)) => value
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect(),
+        Some(Value::Array(values)) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+#[derive(Clone, Debug)]
+struct AutomationNotionWriterConfig {
+    data_source_id: String,
+    data_source_url: String,
+    source_node_id: String,
+    input_alias: String,
+    source_array_paths: Vec<String>,
+    source_array_keys: Vec<String>,
+    property_mappings: Vec<(String, Value)>,
+    default_properties: serde_json::Map<String, Value>,
+    duplicate_keys: Vec<String>,
+    title_property: Option<String>,
+    title_source: Option<Value>,
+    update_after_create: bool,
 }
 
 fn automation_notion_data_source_id(node: &AutomationFlowNode) -> Option<String> {
@@ -35,15 +78,121 @@ fn automation_notion_source_node_id(node: &AutomationFlowNode) -> Option<String>
         .or_else(|| node.input_refs.first().map(|input| input.from_step_id.clone()))
 }
 
-fn automation_notion_status_property_value(node: &AutomationFlowNode) -> String {
-    automation_node_metadata_string_local(node, "status_property_value")
-        .unwrap_or_else(|| "Not started".to_string())
-}
-
 fn automation_node_is_notion_connector_writer(node: &AutomationFlowNode) -> bool {
     automation_node_metadata_bool_local(node, "connector_writer")
+        && automation_node_metadata_string_local(node, "connector")
+            .as_deref()
+            .map(|connector| connector.eq_ignore_ascii_case("notion"))
+            .unwrap_or(true)
         && automation_notion_data_source_id(node).is_some()
         && automation_notion_data_source_url(node).is_some()
+}
+
+fn automation_notion_property_mappings(node: &AutomationFlowNode) -> Vec<(String, Value)> {
+    for key in ["property_mappings", "notion_property_mappings"] {
+        if let Some(Value::Object(object)) = automation_node_metadata_value_local(node, key) {
+            return object
+                .iter()
+                .filter(|(property, _)| !property.trim().is_empty())
+                .map(|(property, spec)| (property.clone(), spec.clone()))
+                .collect();
+        }
+    }
+
+    if let Some(Value::Array(items)) = automation_node_metadata_value_local(node, "properties") {
+        return items
+            .iter()
+            .filter_map(|item| {
+                let object = item.as_object()?;
+                let property = object
+                    .get("property")
+                    .or_else(|| object.get("name"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())?;
+                let spec = object
+                    .get("mapping")
+                    .or_else(|| object.get("source"))
+                    .or_else(|| object.get("value"))
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                Some((property.to_string(), spec))
+            })
+            .collect();
+    }
+
+    Vec::new()
+}
+
+fn automation_notion_default_properties(
+    node: &AutomationFlowNode,
+) -> serde_json::Map<String, Value> {
+    let mut defaults = serde_json::Map::new();
+    for key in ["default_properties", "notion_default_properties"] {
+        if let Some(Value::Object(object)) = automation_node_metadata_value_local(node, key) {
+            for (property, value) in object {
+                if !property.trim().is_empty() && !automation_notion_value_missing(value) {
+                    defaults.insert(property.clone(), value.clone());
+                }
+            }
+        }
+    }
+
+    if let Some(status_value) = automation_node_metadata_string_local(node, "status_property_value") {
+        let status_property = automation_node_metadata_string_local(node, "status_property")
+            .or_else(|| automation_node_metadata_string_local(node, "status_property_name"))
+            .unwrap_or_else(|| "Status".to_string());
+        defaults.entry(status_property).or_insert(json!(status_value));
+    }
+    defaults
+}
+
+fn automation_notion_writer_config(node: &AutomationFlowNode) -> Option<AutomationNotionWriterConfig> {
+    if !automation_node_is_notion_connector_writer(node) {
+        return None;
+    }
+    let data_source_id = automation_notion_data_source_id(node)?;
+    let data_source_url = automation_notion_data_source_url(node)?;
+    let source_node_id = automation_notion_source_node_id(node)?;
+    let input_alias = automation_node_metadata_string_local(node, "input_alias")
+        .or_else(|| automation_node_metadata_string_local(node, "source_input_alias"))
+        .unwrap_or_else(|| "filtered_leads".to_string());
+    let mut source_array_paths = automation_node_metadata_string_array_local(node, "source_array_paths");
+    source_array_paths.extend(automation_node_metadata_string_array_local(
+        node,
+        "source_array_path",
+    ));
+    let mut source_array_keys = automation_node_metadata_string_array_local(node, "source_array_keys");
+    source_array_keys.extend(automation_node_metadata_string_array_local(
+        node,
+        "source_array_key",
+    ));
+    if source_array_paths.is_empty() && source_array_keys.is_empty() {
+        source_array_keys.extend(
+            ["rows", "records", "items", "leads"]
+                .into_iter()
+                .map(str::to_string),
+        );
+    }
+    let duplicate_keys = automation_node_metadata_string_array_local(node, "duplicate_keys");
+    let update_after_create = automation_node_metadata_value_local(node, "update_after_create")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+
+    Some(AutomationNotionWriterConfig {
+        data_source_id,
+        data_source_url,
+        source_node_id,
+        input_alias,
+        source_array_paths,
+        source_array_keys,
+        property_mappings: automation_notion_property_mappings(node),
+        default_properties: automation_notion_default_properties(node),
+        duplicate_keys,
+        title_property: automation_node_metadata_string_local(node, "title_property"),
+        title_source: automation_node_metadata_value_local(node, "title_source").cloned(),
+        update_after_create,
+    })
 }
 
 fn automation_parse_json_text(text: &str) -> Option<Value> {
@@ -54,13 +203,28 @@ fn automation_parse_json_text(text: &str) -> Option<Value> {
     serde_json::from_str::<Value>(trimmed).ok()
 }
 
-fn automation_notion_leads_from_candidate(value: &Value) -> Option<Vec<Value>> {
-    if let Some(leads) = value.get("leads").and_then(Value::as_array) {
-        return Some(leads.clone());
+fn automation_notion_rows_from_candidate(
+    value: &Value,
+    config: &AutomationNotionWriterConfig,
+) -> Option<Vec<Value>> {
+    if let Value::Array(rows) = value {
+        return Some(rows.clone());
     }
     if let Some(text) = value.as_str() {
         if let Some(parsed) = automation_parse_json_text(text) {
-            return automation_notion_leads_from_candidate(&parsed);
+            return automation_notion_rows_from_candidate(&parsed, config);
+        }
+    }
+    for pointer in &config.source_array_paths {
+        if let Some(candidate) = value.pointer(pointer) {
+            if let Some(rows) = automation_notion_rows_from_candidate(candidate, config) {
+                return Some(rows);
+            }
+        }
+    }
+    for key in &config.source_array_keys {
+        if let Some(rows) = value.get(key).and_then(Value::as_array) {
+            return Some(rows.clone());
         }
     }
     for pointer in [
@@ -72,39 +236,39 @@ fn automation_notion_leads_from_candidate(value: &Value) -> Option<Vec<Value>> {
         "/text",
     ] {
         if let Some(candidate) = value.pointer(pointer) {
-            if let Some(leads) = automation_notion_leads_from_candidate(candidate) {
-                return Some(leads);
+            if let Some(rows) = automation_notion_rows_from_candidate(candidate, config) {
+                return Some(rows);
             }
         }
     }
     None
 }
 
-fn automation_notion_writer_leads(
+fn automation_notion_writer_rows(
     node: &AutomationFlowNode,
     upstream_inputs: &[Value],
-    source_node_id: &str,
+    config: &AutomationNotionWriterConfig,
 ) -> Vec<Value> {
     for input in upstream_inputs {
-        let alias_matches = input.get("alias").and_then(Value::as_str) == Some("filtered_leads");
+        let alias_matches = input.get("alias").and_then(Value::as_str) == Some(config.input_alias.as_str());
         let source_matches = input
             .get("from_step_id")
             .and_then(Value::as_str)
-            .is_some_and(|value| value == source_node_id);
+            .is_some_and(|value| value == config.source_node_id);
         if !(alias_matches || source_matches) {
             continue;
         }
         if let Some(output) = input.get("output") {
-            if let Some(leads) = automation_notion_leads_from_candidate(output) {
-                return leads;
+            if let Some(rows) = automation_notion_rows_from_candidate(output, config) {
+                return rows;
             }
         }
     }
 
     for input in upstream_inputs {
         if let Some(output) = input.get("output") {
-            if let Some(leads) = automation_notion_leads_from_candidate(output) {
-                return leads;
+            if let Some(rows) = automation_notion_rows_from_candidate(output, config) {
+                return rows;
             }
         }
     }
@@ -115,48 +279,252 @@ fn automation_notion_writer_leads(
     Vec::new()
 }
 
-fn automation_notion_string(value: &Value, keys: &[&str]) -> String {
-    keys.iter()
-        .filter_map(|key| value.get(*key).and_then(Value::as_str))
-        .map(str::trim)
-        .find(|value| !value.is_empty())
-        .unwrap_or_default()
-        .to_string()
-}
-
-fn automation_notion_normalize_subreddit(value: &str) -> String {
-    let trimmed = value.trim();
-    let prefixed = if trimmed.starts_with("r/") {
-        trimmed.to_string()
-    } else if trimmed.is_empty() {
-        String::new()
-    } else {
-        format!("r/{trimmed}")
-    };
-    match prefixed.as_str() {
-        "r/LocalLLaMA" | "r/sysadmin" | "r/mcp" | "r/DevOps" => prefixed,
-        _ => "r/LocalLLaMA".to_string(),
+fn automation_notion_value_missing(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::String(text) => text.trim().is_empty(),
+        _ => false,
     }
 }
 
-fn automation_notion_lead_properties(lead: &Value, status_value: &str) -> Value {
-    let title = automation_notion_string(lead, &["topic_thread_title", "Topic / Thread Title", "title"]);
-    let subreddit = automation_notion_normalize_subreddit(&automation_notion_string(
-        lead,
-        &["subreddit", "Subreddit"],
-    ));
-    let pain = automation_notion_string(lead, &["core_pain_point", "Core Pain Point", "pain_point"]);
-    let handle = automation_notion_string(lead, &["user_handle", "User Handle", "author"]);
-    let link = automation_notion_string(lead, &["thread_link", "Thread Link", "permalink", "url"]);
+fn automation_notion_scalar_value(value: Value) -> Option<Value> {
+    match value {
+        Value::Null => None,
+        Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(json!(trimmed))
+            }
+        }
+        Value::Bool(_) | Value::Number(_) => Some(value),
+        Value::Array(_) | Value::Object(_) => Some(json!(value.to_string())),
+    }
+}
 
-    json!({
-        "Topic / Thread Title": title,
-        "Subreddit": subreddit,
-        "Core Pain Point": pain,
-        "User Handle": handle,
-        "Thread Link": link,
-        "Status": status_value,
-    })
+fn automation_notion_row_source_value(row: &Value, source: &str) -> Option<Value> {
+    let source = source.trim();
+    if source.is_empty() {
+        return None;
+    }
+    if let Some(value) = row.get(source) {
+        return Some(value.clone());
+    }
+    if source.starts_with('/') {
+        return row.pointer(source).cloned();
+    }
+    let mut current = row;
+    let mut found = false;
+    for part in source.split('.') {
+        if part.trim().is_empty() {
+            return None;
+        }
+        let Some(next) = current.get(part) else {
+            return None;
+        };
+        current = next;
+        found = true;
+    }
+    if found {
+        Some(current.clone())
+    } else {
+        None
+    }
+}
+
+fn automation_notion_mapping_sources(spec: &Value) -> Vec<String> {
+    match spec {
+        Value::String(source) => vec![source.clone()],
+        Value::Array(items) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect(),
+        Value::Object(object) => {
+            if let Some(Value::Array(items)) = object.get("sources") {
+                return items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .collect();
+            }
+            if let Some(Value::String(source)) = object.get("source") {
+                return vec![source.clone()];
+            }
+            Vec::new()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn automation_notion_first_source_value(row: &Value, sources: &[String]) -> Option<Value> {
+    for source in sources {
+        let Some(value) = automation_notion_row_source_value(row, source) else {
+            continue;
+        };
+        if !automation_notion_value_missing(&value) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn automation_notion_apply_mapping_transforms(mut value: Value, spec: &Value) -> Option<Value> {
+    let Some(object) = spec.as_object() else {
+        return automation_notion_scalar_value(value);
+    };
+
+    if let Some(Value::Object(map)) = object.get("value_map") {
+        if let Some(text) = value.as_str().map(str::trim) {
+            if let Some(mapped) = map.get(text).or_else(|| map.get(&text.to_ascii_lowercase())) {
+                value = mapped.clone();
+            }
+        }
+    }
+
+    if let Some(prefix) = object.get("prefix_if_missing").and_then(Value::as_str) {
+        if let Some(text) = value.as_str().map(str::trim) {
+            if !text.is_empty() && !text.starts_with(prefix) {
+                value = json!(format!("{prefix}{text}"));
+            }
+        }
+    }
+
+    if let Some(Value::Array(allowed)) = object.get("allowed_values") {
+        let allowed_values = allowed
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        if !allowed_values.is_empty() {
+            let is_allowed = value
+                .as_str()
+                .is_some_and(|text| allowed_values.iter().any(|allowed| *allowed == text));
+            if !is_allowed {
+                value = object
+                    .get("fallback")
+                    .or_else(|| object.get("default"))
+                    .cloned()?;
+            }
+        }
+    }
+
+    automation_notion_scalar_value(value)
+}
+
+fn automation_notion_property_value(row: &Value, spec: &Value) -> Option<Value> {
+    if let Value::Object(object) = spec {
+        if let Some(value) = object.get("literal").or_else(|| object.get("value")) {
+            return automation_notion_scalar_value(value.clone());
+        }
+        let sources = automation_notion_mapping_sources(spec);
+        let value = automation_notion_first_source_value(row, &sources)
+            .or_else(|| object.get("default").or_else(|| object.get("fallback")).cloned())?;
+        return automation_notion_apply_mapping_transforms(value, spec);
+    }
+
+    let sources = automation_notion_mapping_sources(spec);
+    automation_notion_first_source_value(row, &sources).and_then(automation_notion_scalar_value)
+}
+
+fn automation_notion_titleize_key(key: &str) -> String {
+    key.split(['_', '-', ' '])
+        .filter(|part| !part.trim().is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            let Some(first) = chars.next() else {
+                return String::new();
+            };
+            format!("{}{}", first.to_uppercase(), chars.as_str())
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn automation_notion_inferred_property_mappings(row: &Value) -> Vec<(String, Value)> {
+    row.as_object()
+        .map(|object| {
+            object
+                .keys()
+                .filter(|key| !key.trim().is_empty())
+                .map(|key| (automation_notion_titleize_key(key), json!(key)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn automation_notion_row_properties(
+    row: &Value,
+    config: &AutomationNotionWriterConfig,
+) -> serde_json::Map<String, Value> {
+    let mappings = if config.property_mappings.is_empty() {
+        automation_notion_inferred_property_mappings(row)
+    } else {
+        config.property_mappings.clone()
+    };
+    let mut properties = serde_json::Map::new();
+    for (property, spec) in mappings {
+        let Some(value) = automation_notion_property_value(row, &spec) else {
+            continue;
+        };
+        properties.insert(property, value);
+    }
+    for (property, value) in &config.default_properties {
+        if !properties
+            .get(property)
+            .is_some_and(|value| !automation_notion_value_missing(value))
+        {
+            properties.insert(property.clone(), value.clone());
+        }
+    }
+    properties
+}
+
+fn automation_notion_string_from_value(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Value::Bool(_) | Value::Number(_) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn automation_notion_page_title(
+    row: &Value,
+    properties: &serde_json::Map<String, Value>,
+    config: &AutomationNotionWriterConfig,
+) -> String {
+    if let Some(spec) = &config.title_source {
+        if let Some(value) = automation_notion_property_value(row, spec)
+            .and_then(|value| automation_notion_string_from_value(&value))
+        {
+            return value;
+        }
+    }
+    if let Some(property) = &config.title_property {
+        if let Some(value) = properties
+            .get(property)
+            .and_then(automation_notion_string_from_value)
+        {
+            return value;
+        }
+    }
+    for value in properties.values() {
+        if let Some(value) = automation_notion_string_from_value(value) {
+            return value;
+        }
+    }
+    "Notion row".to_string()
 }
 
 fn automation_tool_output_value(output: &str) -> Value {
@@ -316,6 +684,22 @@ async fn automation_dispatch_deterministic_tool(
     }
 }
 
+fn automation_notion_duplicate_queries(
+    properties: &serde_json::Map<String, Value>,
+    config: &AutomationNotionWriterConfig,
+) -> Vec<(String, String)> {
+    config
+        .duplicate_keys
+        .iter()
+        .filter_map(|property| {
+            let value = properties
+                .get(property)
+                .and_then(automation_notion_string_from_value)?;
+            Some((property.clone(), value))
+        })
+        .collect()
+}
+
 pub(crate) async fn try_execute_notion_connector_writer_node(
     state: &AppState,
     run_id: &str,
@@ -327,19 +711,10 @@ pub(crate) async fn try_execute_notion_connector_writer_node(
     requested_tools: &[String],
     upstream_inputs: &[Value],
 ) -> anyhow::Result<Option<Value>> {
-    if !automation_node_is_notion_connector_writer(node) {
+    let Some(config) = automation_notion_writer_config(node) else {
         return Ok(None);
-    }
+    };
     let Some(output_path) = required_output_path else {
-        return Ok(None);
-    };
-    let Some(data_source_id) = automation_notion_data_source_id(node) else {
-        return Ok(None);
-    };
-    let Some(data_source_url) = automation_notion_data_source_url(node) else {
-        return Ok(None);
-    };
-    let Some(source_node_id) = automation_notion_source_node_id(node) else {
         return Ok(None);
     };
 
@@ -349,8 +724,7 @@ pub(crate) async fn try_execute_notion_connector_writer_node(
         std::fs::create_dir_all(parent)?;
     }
 
-    let leads = automation_notion_writer_leads(node, upstream_inputs, &source_node_id);
-    let status_value = automation_notion_status_property_value(node);
+    let rows = automation_notion_writer_rows(node, upstream_inputs, &config);
     let tenant_context = automation.tenant_context();
     let dispatch_scope = if requested_tools.is_empty() {
         vec![
@@ -368,12 +742,13 @@ pub(crate) async fn try_execute_notion_connector_writer_node(
     let mut call_rows = Vec::new();
     let mut errors = Vec::<String>::new();
     let mut inserted_thread_links = Vec::<String>::new();
+    let mut inserted_row_keys = Vec::<Value>::new();
     let mut updated_page_ids = Vec::<String>::new();
     let mut inserted_count = 0usize;
     let mut skipped_duplicate_count = 0usize;
     let mut failed_count = 0usize;
 
-    if !leads.is_empty() {
+    if !rows.is_empty() {
         if let Err(error) = automation_dispatch_deterministic_tool(
             state,
             run_id,
@@ -381,37 +756,39 @@ pub(crate) async fn try_execute_notion_connector_writer_node(
             tenant_context.clone(),
             &dispatch_scope,
             "mcp.notion.notion_fetch",
-            json!({ "id": data_source_url }),
+            json!({ "id": config.data_source_url.clone() }),
             &mut invocation_parts,
             &mut call_rows,
         )
         .await
         {
-            failed_count = leads.len();
-            errors.push(format!("notion_fetch failed for {data_source_url}: {error}"));
+            failed_count = rows.len();
+            errors.push(format!(
+                "notion_fetch failed for {}: {error}",
+                config.data_source_url
+            ));
         } else {
-            for lead in &leads {
-                let properties = automation_notion_lead_properties(lead, &status_value);
-                let thread_link = properties
-                    .get("Thread Link")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                let user_handle = properties
-                    .get("User Handle")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                let title = properties
-                    .get("Topic / Thread Title")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Reddit lead")
-                    .to_string();
+            for row in &rows {
+                let properties = automation_notion_row_properties(row, &config);
+                if properties.is_empty() {
+                    failed_count += 1;
+                    errors.push(format!(
+                        "no Notion properties could be mapped for row `{}`",
+                        truncate_text(&row.to_string(), 400)
+                    ));
+                    continue;
+                }
+                let title = automation_notion_page_title(row, &properties, &config);
+                let duplicate_queries = automation_notion_duplicate_queries(&properties, &config);
+                let row_key = json!({
+                    "duplicate_values": duplicate_queries
+                        .iter()
+                        .map(|(property, value)| json!({ "property": property, "value": value }))
+                        .collect::<Vec<_>>(),
+                    "title": title,
+                });
                 let mut duplicate_ref = None;
-                for query in [&thread_link, &user_handle] {
-                    if query.trim().is_empty() {
-                        continue;
-                    }
+                for (property, query) in &duplicate_queries {
                     match automation_dispatch_deterministic_tool(
                         state,
                         run_id,
@@ -419,7 +796,11 @@ pub(crate) async fn try_execute_notion_connector_writer_node(
                         tenant_context.clone(),
                         &dispatch_scope,
                         "mcp.notion.notion_search",
-                        json!({ "query": query }),
+                        json!({
+                            "query": query,
+                            "data_source_url": config.data_source_url.clone(),
+                            "page_size": 5,
+                        }),
                         &mut invocation_parts,
                         &mut call_rows,
                     )
@@ -434,7 +815,8 @@ pub(crate) async fn try_execute_notion_connector_writer_node(
                             }
                         }
                         Err(error) => errors.push(format!(
-                            "notion_search failed for `{query}` from `{source_node_id}`: {error}"
+                            "notion_search failed for `{query}` ({property}) from `{}`: {error}",
+                            config.source_node_id
                         )),
                     }
                 }
@@ -463,7 +845,10 @@ pub(crate) async fn try_execute_notion_connector_writer_node(
                         }
                         Err(error) => {
                             failed_count += 1;
-                            errors.push(format!("notion_update_page failed for duplicate `{thread_link}`: {error}"));
+                            errors.push(format!(
+                                "notion_update_page failed for duplicate row `{}`: {error}",
+                                truncate_text(&row_key.to_string(), 400)
+                            ));
                         }
                     }
                     continue;
@@ -472,13 +857,13 @@ pub(crate) async fn try_execute_notion_connector_writer_node(
                 let create_args = json!({
                     "parent": {
                         "type": "data_source_id",
-                        "data_source_id": data_source_id,
+                        "data_source_id": config.data_source_id.clone(),
                     },
                     "pages": [
                         {
                             "parent": {
                                 "type": "data_source_id",
-                                "data_source_id": data_source_id,
+                                "data_source_id": config.data_source_id.clone(),
                             },
                             "title": title,
                             "properties": properties,
@@ -502,45 +887,54 @@ pub(crate) async fn try_execute_notion_connector_writer_node(
                         let Some(created_ref) = automation_notion_find_page_ref(&create_result) else {
                             failed_count += 1;
                             errors.push(format!(
-                                "notion_create_pages did not return a page id/url for `{thread_link}`"
+                                "notion_create_pages did not return a page id/url for row `{}`",
+                                truncate_text(&row_key.to_string(), 400)
                             ));
                             continue;
                         };
-                        match automation_dispatch_deterministic_tool(
-                            state,
-                            run_id,
-                            node,
-                            tenant_context.clone(),
-                            &dispatch_scope,
-                            "mcp.notion.notion_update_page",
-                            json!({
-                                "command": "update_properties",
-                                "page_id": created_ref,
-                                "properties": automation_notion_lead_properties(lead, &status_value),
-                            }),
-                            &mut invocation_parts,
-                            &mut call_rows,
-                        )
-                        .await
-                        {
-                            Ok(_) => {
-                                inserted_count += 1;
-                                if !thread_link.trim().is_empty() {
-                                    inserted_thread_links.push(thread_link);
+                        if config.update_after_create {
+                            match automation_dispatch_deterministic_tool(
+                                state,
+                                run_id,
+                                node,
+                                tenant_context.clone(),
+                                &dispatch_scope,
+                                "mcp.notion.notion_update_page",
+                                json!({
+                                    "command": "update_properties",
+                                    "page_id": created_ref,
+                                    "properties": automation_notion_row_properties(row, &config),
+                                }),
+                                &mut invocation_parts,
+                                &mut call_rows,
+                            )
+                            .await
+                            {
+                                Ok(_) => {
+                                    inserted_count += 1;
+                                    inserted_row_keys.push(row_key.clone());
+                                    updated_page_ids.push(created_ref);
                                 }
-                                updated_page_ids.push(created_ref);
+                                Err(error) => {
+                                    failed_count += 1;
+                                    errors.push(format!(
+                                        "notion_update_page failed for created row `{}`: {error}",
+                                        truncate_text(&row_key.to_string(), 400)
+                                    ));
+                                }
                             }
-                            Err(error) => {
-                                failed_count += 1;
-                                errors.push(format!(
-                                    "notion_update_page failed for created lead `{thread_link}`: {error}"
-                                ));
-                            }
+                        } else {
+                            inserted_count += 1;
+                            inserted_row_keys.push(row_key.clone());
+                            updated_page_ids.push(created_ref);
                         }
                     }
                     Err(error) => {
                         failed_count += 1;
-                        errors.push(format!("notion_create_pages failed for `{thread_link}`: {error}"));
+                        errors.push(format!(
+                            "notion_create_pages failed for row `{}`: {error}",
+                            truncate_text(&row_key.to_string(), 400)
+                        ));
                     }
                 }
             }
@@ -554,10 +948,18 @@ pub(crate) async fn try_execute_notion_connector_writer_node(
         "skipped_duplicate_count": skipped_duplicate_count,
         "failed_count": failed_count,
         "inserted_thread_links": inserted_thread_links,
+        "inserted_row_keys": inserted_row_keys,
         "updated_page_ids": updated_page_ids,
         "errors": errors,
-        "notion_data_source_url": data_source_url,
-        "source_node_id": source_node_id,
+        "notion_data_source_url": config.data_source_url,
+        "source_node_id": config.source_node_id,
+        "input_alias": config.input_alias,
+        "duplicate_keys": config.duplicate_keys,
+        "mapped_properties": config
+            .property_mappings
+            .iter()
+            .map(|(property, _)| property.clone())
+            .collect::<Vec<_>>(),
         "node_id": node.node_id,
         "run_id": run_id,
         "connector_evidence": call_rows,
@@ -631,4 +1033,3 @@ pub(crate) async fn try_execute_notion_connector_writer_node(
         ),
     ))
 }
-
