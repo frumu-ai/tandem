@@ -40,3 +40,41 @@ export function takeLastReversed<T>(
   }
   return result;
 }
+
+/**
+ * Returns the maximum element in an array according to a mapping function.
+ * This is an O(N) performance optimization over `[...arr].sort(...)[0]` that
+ * avoids unnecessary O(N log N) sorting overhead and O(N) array allocation.
+ */
+export function maxBy<T>(array: readonly T[], fn: (item: T) => number): T | undefined {
+  if (array.length === 0) return undefined;
+  let maxItem = array[0];
+  let maxVal = fn(maxItem);
+  for (let i = 1; i < array.length; i++) {
+    const val = fn(array[i]);
+    if (val > maxVal) {
+      maxVal = val;
+      maxItem = array[i];
+    }
+  }
+  return maxItem;
+}
+
+/**
+ * Returns the minimum element in an array according to a mapping function.
+ * This is an O(N) performance optimization over `[...arr].sort(...)[0]` that
+ * avoids unnecessary O(N log N) sorting overhead and O(N) array allocation.
+ */
+export function minBy<T>(array: readonly T[], fn: (item: T) => number): T | undefined {
+  if (array.length === 0) return undefined;
+  let minItem = array[0];
+  let minVal = fn(minItem);
+  for (let i = 1; i < array.length; i++) {
+    const val = fn(array[i]);
+    if (val < minVal) {
+      minVal = val;
+      minItem = array[i];
+    }
+  }
+  return minItem;
+}
