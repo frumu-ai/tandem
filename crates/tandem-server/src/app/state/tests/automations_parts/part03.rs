@@ -2066,3 +2066,326 @@ async fn connector_preflight_executes_declared_required_tool_calls_generically()
 
     let _ = std::fs::remove_dir_all(&workspace_root);
 }
+
+
+#[tokio::test]
+async fn notion_connector_writer_short_circuits_empty_leads_with_artifact() {
+    let state = ready_test_state().await;
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-notion-writer-empty-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    let run_id = "run-notion-writer-empty";
+    let automation = AutomationSpecBuilder::new("automation-notion-writer-empty")
+        .workspace_root(workspace_root.to_str().expect("workspace").to_string())
+        .build();
+    let mut node = AutomationNodeBuilder::new("notion_agent_tool_security")
+        .output_contract(AutomationFlowOutputContract {
+            kind: "structured_json".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        })
+        .metadata(json!({
+            "connector_writer": true,
+            "notion_data_source_id": "ds-123",
+            "notion_data_source_url": "collection://ds-123",
+            "source_node_id": "filter_agent_tool_security",
+            "status_property_value": "Not started",
+            "builder": {
+                "task_class": "connector_writer",
+                "output_path": ".tandem/artifacts/notion-agent-tool-security.json"
+            }
+        }))
+        .build();
+    node.input_refs = vec![AutomationFlowInputRef {
+        from_step_id: "filter_agent_tool_security".to_string(),
+        alias: "filtered_leads".to_string(),
+    }];
+    let mut session = Session::new(
+        Some("notion writer empty".to_string()),
+        Some(workspace_root.to_string_lossy().to_string()),
+    );
+    let session_id = session.id.clone();
+    session.workspace_root = Some(workspace_root.to_string_lossy().to_string());
+    state
+        .storage
+        .save_session(session)
+        .await
+        .expect("save session");
+
+    let upstream_output = json!({
+        "status": "completed",
+        "leads": []
+    });
+    let upstream_inputs = vec![json!({
+        "alias": "filtered_leads",
+        "from_step_id": "filter_agent_tool_security",
+        "output": {
+            "content": {
+                "text": upstream_output.to_string()
+            }
+        }
+    })];
+
+    let output = try_execute_notion_connector_writer_node(
+        &state,
+        run_id,
+        &automation,
+        &node,
+        &session_id,
+        workspace_root.to_str().expect("workspace"),
+        Some(".tandem/artifacts/notion-agent-tool-security.json"),
+        &[
+            "mcp.notion.notion_fetch".to_string(),
+            "mcp.notion.notion_search".to_string(),
+            "mcp.notion.notion_create_pages".to_string(),
+            "mcp.notion.notion_update_page".to_string(),
+            "write".to_string(),
+        ],
+        &upstream_inputs,
+    )
+    .await
+    .expect("notion writer")
+    .expect("notion writer output");
+
+    assert_eq!(output["status"], "completed");
+    let artifact_path = workspace_root
+        .join(".tandem/runs")
+        .join(run_id)
+        .join("artifacts/notion-agent-tool-security.json");
+    let artifact: Value =
+        serde_json::from_str(&std::fs::read_to_string(&artifact_path).expect("artifact text"))
+            .expect("artifact json");
+    assert_eq!(artifact["status"], "completed");
+    assert_eq!(artifact["inserted_count"], 0);
+    assert_eq!(artifact["skipped_duplicate_count"], 0);
+    assert_eq!(artifact["failed_count"], 0);
+    assert_eq!(artifact["notion_data_source_url"], "collection://ds-123");
+    assert_eq!(artifact["source_node_id"], "filter_agent_tool_security");
+    assert!(artifact["connector_evidence"]
+        .as_array()
+        .expect("connector evidence")
+        .is_empty());
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[tokio::test]
+async fn notion_connector_writer_creates_and_updates_nonempty_lead() {
+    use async_trait::async_trait;
+    use tandem_tools::Tool;
+    use tandem_types::{ToolResult, ToolSchema};
+
+    struct RecordingTool {
+        name: &'static str,
+        output: Value,
+        calls: std::sync::Arc<std::sync::Mutex<Vec<(String, Value)>>>,
+    }
+
+    #[async_trait]
+    impl Tool for RecordingTool {
+        fn schema(&self) -> ToolSchema {
+            ToolSchema {
+                name: self.name.to_string(),
+                description: "test notion connector writer tool".to_string(),
+                input_schema: json!({"type": "object"}),
+                capabilities: Default::default(),
+                security: Default::default(),
+            }
+        }
+
+        async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
+            self.calls
+                .lock()
+                .expect("calls lock")
+                .push((self.name.to_string(), args.clone()));
+            Ok(ToolResult {
+                output: self.output.to_string(),
+                metadata: json!({"ok": true, "args": args}),
+            })
+        }
+    }
+
+    let state = ready_test_state().await;
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, Value)>::new()));
+    for (name, output) in [
+        (
+            "mcp.notion.notion_fetch",
+            json!({"object": "data_source", "id": "ds-123"}),
+        ),
+        ("mcp.notion.notion_search", json!({"results": []})),
+        (
+            "mcp.notion.notion_create_pages",
+            json!({
+                "pages": [
+                    {
+                        "object": "page",
+                        "id": "page-123",
+                        "url": "https://www.notion.so/page-123"
+                    }
+                ]
+            }),
+        ),
+        (
+            "mcp.notion.notion_update_page",
+            json!({"object": "page", "id": "page-123"}),
+        ),
+    ] {
+        state
+            .tools
+            .register_tool(
+                name.to_string(),
+                std::sync::Arc::new(RecordingTool {
+                    name,
+                    output,
+                    calls: calls.clone(),
+                }),
+            )
+            .await;
+    }
+
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-notion-writer-create-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+    let run_id = "run-notion-writer-create";
+    let automation = AutomationSpecBuilder::new("automation-notion-writer-create")
+        .workspace_root(workspace_root.to_str().expect("workspace").to_string())
+        .build();
+    let mut node = AutomationNodeBuilder::new("notion_agent_tool_security")
+        .output_contract(AutomationFlowOutputContract {
+            kind: "structured_json".to_string(),
+            validator: Some(crate::AutomationOutputValidatorKind::StructuredJson),
+            enforcement: None,
+            schema: None,
+            summary_guidance: None,
+        })
+        .metadata(json!({
+            "connector_writer": true,
+            "notion_data_source_id": "ds-123",
+            "notion_data_source_url": "collection://ds-123",
+            "source_node_id": "filter_agent_tool_security",
+            "status_property_value": "Not started",
+            "builder": {
+                "task_class": "connector_writer",
+                "output_path": ".tandem/artifacts/notion-agent-tool-security.json"
+            }
+        }))
+        .build();
+    node.input_refs = vec![AutomationFlowInputRef {
+        from_step_id: "filter_agent_tool_security".to_string(),
+        alias: "filtered_leads".to_string(),
+    }];
+    let mut session = Session::new(
+        Some("notion writer create".to_string()),
+        Some(workspace_root.to_string_lossy().to_string()),
+    );
+    let session_id = session.id.clone();
+    session.workspace_root = Some(workspace_root.to_string_lossy().to_string());
+    state
+        .storage
+        .save_session(session)
+        .await
+        .expect("save session");
+
+    let upstream_output = json!({
+        "status": "completed",
+        "leads": [
+            {
+                "topic_thread_title": "I was Backend Lead at Manus after building agents",
+                "subreddit": "LocalLLaMA",
+                "core_pain_point": "Production agent tool calls need stronger enterprise boundaries.",
+                "user_handle": "MorroHsu",
+                "thread_link": "https://www.reddit.com/r/LocalLLaMA/comments/1rrisqn/i_was_backend_lead_at_manus_after_building_agents/"
+            }
+        ]
+    });
+    let upstream_inputs = vec![json!({
+        "alias": "filtered_leads",
+        "from_step_id": "filter_agent_tool_security",
+        "output": {
+            "content": {
+                "text": upstream_output.to_string()
+            }
+        }
+    })];
+
+    let output = try_execute_notion_connector_writer_node(
+        &state,
+        run_id,
+        &automation,
+        &node,
+        &session_id,
+        workspace_root.to_str().expect("workspace"),
+        Some(".tandem/artifacts/notion-agent-tool-security.json"),
+        &[
+            "mcp.notion.notion_fetch".to_string(),
+            "mcp.notion.notion_search".to_string(),
+            "mcp.notion.notion_create_pages".to_string(),
+            "mcp.notion.notion_update_page".to_string(),
+            "write".to_string(),
+        ],
+        &upstream_inputs,
+    )
+    .await
+    .expect("notion writer")
+    .expect("notion writer output");
+
+    assert_eq!(output["status"], "completed");
+    let artifact_path = workspace_root
+        .join(".tandem/runs")
+        .join(run_id)
+        .join("artifacts/notion-agent-tool-security.json");
+    let artifact: Value =
+        serde_json::from_str(&std::fs::read_to_string(&artifact_path).expect("artifact text"))
+            .expect("artifact json");
+    assert_eq!(artifact["status"], "completed");
+    assert_eq!(artifact["inserted_count"], 1);
+    assert_eq!(artifact["skipped_duplicate_count"], 0);
+    assert_eq!(artifact["failed_count"], 0);
+    assert_eq!(
+        artifact["inserted_thread_links"][0],
+        "https://www.reddit.com/r/LocalLLaMA/comments/1rrisqn/i_was_backend_lead_at_manus_after_building_agents/"
+    );
+    assert_eq!(
+        artifact["updated_page_ids"][0],
+        "https://www.notion.so/page-123"
+    );
+
+    let calls = calls.lock().expect("calls lock").clone();
+    assert!(calls
+        .iter()
+        .any(|(tool, _)| tool == "mcp.notion.notion_fetch"));
+    assert!(calls
+        .iter()
+        .any(|(tool, _)| tool == "mcp.notion.notion_search"));
+    assert!(calls
+        .iter()
+        .any(|(tool, _)| tool == "mcp.notion.notion_create_pages"));
+    assert!(calls
+        .iter()
+        .any(|(tool, _)| tool == "mcp.notion.notion_update_page"));
+    assert!(!calls
+        .iter()
+        .any(|(tool, _)| tool == "mcp.notion.notion_query_data_sources"));
+    let update_args = calls
+        .iter()
+        .find(|(tool, _)| tool == "mcp.notion.notion_update_page")
+        .map(|(_, args)| args)
+        .expect("update_page args");
+    assert_eq!(update_args["command"], "update_properties");
+    assert_eq!(update_args["page_id"], "https://www.notion.so/page-123");
+    assert_eq!(
+        update_args["properties"]["Topic / Thread Title"],
+        "I was Backend Lead at Manus after building agents"
+    );
+    assert_eq!(update_args["properties"]["Subreddit"], "r/LocalLLaMA");
+    assert_eq!(update_args["properties"]["User Handle"], "MorroHsu");
+    assert_eq!(update_args["properties"]["Status"], "Not started");
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}

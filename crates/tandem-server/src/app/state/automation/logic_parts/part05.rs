@@ -2072,6 +2072,22 @@ pub(crate) async fn execute_automation_v2_node(
         state.clear_automation_v2_session(run_id, &session_id).await;
         return Ok(output);
     }
+    if let Some(output) = try_execute_notion_connector_writer_node(
+        state,
+        run_id,
+        automation,
+        node,
+        &session_id,
+        &workspace_root,
+        required_output_path.as_deref(),
+        &requested_tools,
+        &upstream_inputs,
+    )
+    .await?
+    {
+        state.clear_automation_v2_session(run_id, &session_id).await;
+        return Ok(output);
+    }
     if let Some(output) = try_execute_workspace_scope_preflight_node(
         state,
         run_id,
