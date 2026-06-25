@@ -399,6 +399,21 @@ fn automation_node_max_attempts_for_recorded_output(
     automation_node_execution_error_max_attempts(node, detail, blocker_category)
 }
 
+fn automation_node_recorded_attempts_exhausted(
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+    node_id: &str,
+    node: &crate::automation_v2::types::AutomationFlowNode,
+) -> bool {
+    let attempts = run
+        .checkpoint
+        .node_attempts
+        .get(node_id)
+        .copied()
+        .unwrap_or(0);
+    let output = run.checkpoint.node_outputs.get(node_id);
+    attempts >= automation_node_max_attempts_for_recorded_output(node, output)
+}
+
 fn transient_provider_retry_backoff_ms(detail: &str, attempts: u32) -> Option<u64> {
     match execution_error_blocker_category(detail) {
         "provider_connect_timeout" | "provider_server_error" => Some(match attempts {
@@ -1457,14 +1472,7 @@ pub async fn run_automation_v2_run(
                     .nodes
                     .iter()
                     .find(|n| n.node_id == *node_id)?;
-                let attempts = latest
-                    .checkpoint
-                    .node_attempts
-                    .get(node_id)
-                    .copied()
-                    .unwrap_or(0);
-                let max_attempts = crate::app::state::automation_node_max_attempts(node);
-                if attempts >= max_attempts {
+                if automation_node_recorded_attempts_exhausted(&latest, node_id, node) {
                     return None;
                 }
                 // Dependency check: all deps must be completed.
