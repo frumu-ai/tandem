@@ -166,6 +166,42 @@ mod tests {
     }
 
     #[test]
+    fn connector_source_collection_defaults_enable_connector_capture() {
+        let source_metadata = workflow_step_metadata_defaults(
+            "search_reddit_threads",
+            "research",
+            "Use Reddit MCP to search across subreddits, collect candidate threads, and return source counts for downstream filtering.",
+            false,
+        )
+        .expect("metadata");
+
+        assert_eq!(
+            source_metadata
+                .pointer("/connector_capture/enabled")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            source_metadata
+                .pointer("/builder/connector_capture/enabled")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+
+        let writer_metadata = workflow_step_metadata_defaults(
+            "write_notion_rows",
+            "action",
+            "Save filtered Reddit leads to the Notion database and update duplicate rows.",
+            false,
+        )
+        .expect("metadata");
+        assert!(
+            writer_metadata.get("connector_capture").is_none(),
+            "destination writer steps should not auto-enable source-result capture"
+        );
+    }
+
+    #[test]
     fn extract_json_value_from_text_handles_wrapped_json() {
         let text = r#"
 Here is the planner response:

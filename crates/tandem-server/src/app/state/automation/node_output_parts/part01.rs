@@ -672,6 +672,20 @@ pub(crate) fn research_required_next_tool_actions(
             tool_hint
         ));
     }
+    if has_unmet("connector_remote_result_not_materialized") {
+        actions.push(
+            "Use the available Composio remote bash/workbench tool to materialize the connector remote result file before writing the artifact; do not rely on `data_preview` or placeholder rows."
+                .to_string(),
+        );
+    }
+    if has_unmet("connector_capture_source_not_read") {
+        if missing_required_source_read_paths.is_empty() {
+            actions.push(
+                "Read the required upstream connector capture artifact before filtering or synthesizing downstream data."
+                    .to_string(),
+            );
+        }
+    }
     if requested_has_read
         && (!executed_has_read
             || has_unmet("no_concrete_reads")

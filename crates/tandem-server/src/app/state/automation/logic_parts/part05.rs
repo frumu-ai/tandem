@@ -2515,6 +2515,14 @@ pub(crate) async fn execute_automation_v2_node(
     };
     let tool_telemetry = summarize_automation_tool_activity(node, &session, &requested_tools);
     let mut tool_telemetry = tool_telemetry;
+    annotate_automation_connector_capture_read_requirements(&mut tool_telemetry, &upstream_inputs);
+    let connector_capture = persist_automation_connector_tool_result_capture(
+        automation,
+        run_id,
+        node,
+        &session,
+        &workspace_root,
+    )?;
     let verified_output_resolution = verified_output
         .as_ref()
         .map(|(_, _, resolution)| resolution.clone());
@@ -2561,6 +2569,9 @@ pub(crate) async fn execute_automation_v2_node(
             "attempt_evidence".to_string(),
             base_attempt_evidence.clone(),
         );
+        if let Some(capture) = connector_capture.as_ref() {
+            object.insert("connector_capture".to_string(), capture.clone());
+        }
     }
     let upstream_evidence = if automation_node_uses_upstream_validation_evidence(node) {
         Some(
@@ -2634,6 +2645,14 @@ pub(crate) async fn execute_automation_v2_node(
                 .entry("semantic_block_reason".to_string())
                 .or_insert_with(|| Value::String(reason.clone()));
         }
+    }
+    if let Some(capture) = connector_capture.as_ref() {
+        apply_automation_connector_capture_validation_metadata(
+            &mut artifact_validation,
+            capture,
+            attempt,
+            max_attempts,
+        );
     }
     let artifact_publication = if artifact_validation
         .get("semantic_block_reason")
@@ -2750,6 +2769,7 @@ pub(crate) async fn execute_automation_v2_node(
         "email_delivery_attempted": tool_telemetry.get("email_delivery_attempted").cloned().unwrap_or_else(|| json!(false)),
         "email_delivery_succeeded": tool_telemetry.get("email_delivery_succeeded").cloned().unwrap_or_else(|| json!(false)),
         "latest_email_delivery_failure": tool_telemetry.get("latest_email_delivery_failure").cloned().unwrap_or(Value::Null),
+        "connector_capture": connector_capture.clone().unwrap_or(Value::Null),
     });
     let receipt_attempt_summary = json!({
         "receipt_kind": "attempt_summary",
@@ -2908,6 +2928,9 @@ pub(crate) async fn execute_automation_v2_node(
         verified_output,
         Some(artifact_validation),
     );
+    if let Some(capture) = connector_capture.as_ref() {
+        attach_automation_connector_capture_to_output(&mut output, capture);
+    }
     let run_after = state.get_automation_v2_run(run_id).await.unwrap_or(run);
     let cost_usd_delta = run_after.estimated_cost_usd - start_cost_usd;
     let prompt_tokens_delta = run_after.prompt_tokens.saturating_sub(start_prompt_tokens);

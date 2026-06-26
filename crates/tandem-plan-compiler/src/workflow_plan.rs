@@ -14,3 +14,4 @@ use tandem_workflows::plan_package::{
 include!("workflow_plan_parts/part01.rs");
 include!("workflow_plan_parts/part02.rs");
 include!("workflow_plan_parts/part03.rs");
+include!("workflow_plan_parts/part04.rs");

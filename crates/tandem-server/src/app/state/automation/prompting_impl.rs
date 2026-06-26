@@ -217,6 +217,37 @@ fn automation_prompt_infer_read_only_workspace_paths(text: &str) -> Vec<String> 
     paths
 }
 
+const CONNECTOR_CAPTURE_ARTIFACT_POINTERS: &[&str] = &[
+    "/connector_capture/artifact_path",
+    "/content/connector_capture/artifact_path",
+    "/artifact_validation/connector_capture_artifact_path",
+    "/artifact_validation/connector_capture/artifact_path",
+];
+
+pub(crate) fn automation_prompt_upstream_connector_capture_artifact_paths(
+    upstream_inputs: &[Value],
+) -> Vec<String> {
+    let mut paths = Vec::new();
+    for input in upstream_inputs {
+        let Some(output) = input.get("output") else {
+            continue;
+        };
+        for pointer in CONNECTOR_CAPTURE_ARTIFACT_POINTERS {
+            if let Some(path) = output.pointer(pointer).and_then(Value::as_str) {
+                let trimmed = path.trim().trim_matches('`');
+                if !trimmed.is_empty()
+                    && !automation_prompt_token_looks_like_tool_identifier(trimmed)
+                {
+                    paths.push(trimmed.to_string());
+                }
+            }
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
 fn automation_prompt_upstream_artifact_paths(upstream_inputs: &[Value]) -> Vec<String> {
     let mut paths = Vec::new();
     for input in upstream_inputs {
@@ -244,6 +275,9 @@ fn automation_prompt_upstream_artifact_paths(upstream_inputs: &[Value]) -> Vec<S
             }
         }
     }
+    paths.extend(automation_prompt_upstream_connector_capture_artifact_paths(
+        upstream_inputs,
+    ));
     paths.sort();
     paths.dedup();
     paths
@@ -847,6 +881,21 @@ pub(crate) fn render_automation_v2_prompt_with_options(
             discovery_instruction,
             concrete_connector_line
         ));
+    }
+    let has_composio_multi_execute = requested_tools.iter().any(|tool| {
+        tool.to_ascii_lowercase()
+            .ends_with(".composio_multi_execute_tool")
+    });
+    let has_composio_remote_reader = requested_tools.iter().any(|tool| {
+        let normalized = tool.to_ascii_lowercase();
+        normalized.ends_with(".composio_remote_bash_tool")
+            || normalized.ends_with(".composio_remote_workbench")
+    });
+    if has_composio_multi_execute && has_composio_remote_reader {
+        sections.push(
+            "Connector Large Results:\n- For connector-backed collection calls that may return many records, set Composio `sync_response_to_workbench` to true when the tool supports it.\n- If a Composio response includes `remote_file_info`, `data_preview`, or placeholder rows such as `...N more items`, use the offered Composio remote bash/workbench tool to read the saved response file before writing the run artifact.\n- Do not finalize collection or filtering from `data_preview` alone when a complete remote response file is available; preserve the full parsed records or a clear connector failure in the artifact."
+                .to_string(),
+        );
     }
     if let Some(inputs) = node
         .metadata
@@ -1490,6 +1539,20 @@ fn compact_automation_prompt_output_with_mode(output: &Value, summary_only: bool
             compact.insert("validator_summary".to_string(), Value::Object(validator));
         }
     }
+    if let Some(connector_capture) = object
+        .get("connector_capture")
+        .cloned()
+        .filter(|value| !value.is_null())
+    {
+        compact.insert("connector_capture".to_string(), connector_capture);
+    }
+    if let Some(artifact_refs) = object
+        .get("artifact_refs")
+        .cloned()
+        .filter(|value| !value.is_null())
+    {
+        compact.insert("artifact_refs".to_string(), artifact_refs);
+    }
     if let Some(artifact_validation) = object.get("artifact_validation").and_then(Value::as_object)
     {
         let mut validation = serde_json::Map::new();
@@ -1504,6 +1567,8 @@ fn compact_automation_prompt_output_with_mode(output: &Value, summary_only: bool
             "semantic_block_reason",
             "rejected_artifact_reason",
             "validation_basis",
+            "connector_capture",
+            "connector_capture_artifact_path",
         ] {
             if let Some(value) = artifact_validation
                 .get(key)

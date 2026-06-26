@@ -276,6 +276,13 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         })
         .cloned()
         .collect::<Vec<_>>();
+    let required_connector_capture_read_paths =
+        automation_required_connector_capture_read_paths(tool_telemetry);
+    let missing_required_connector_capture_read_paths = required_connector_capture_read_paths
+        .iter()
+        .filter(|path| !current_read_paths.iter().any(|read| read == *path))
+        .cloned()
+        .collect::<Vec<_>>();
     if let Some(object) = validation_basis.as_object_mut() {
         object.insert(
             "required_source_read_paths".to_string(),
@@ -284,6 +291,14 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         object.insert(
             "missing_required_source_read_paths".to_string(),
             json!(missing_required_source_read_paths),
+        );
+        object.insert(
+            "required_connector_capture_read_paths".to_string(),
+            json!(required_connector_capture_read_paths),
+        );
+        object.insert(
+            "missing_required_connector_capture_read_paths".to_string(),
+            json!(missing_required_connector_capture_read_paths),
         );
     }
     let explicit_input_files =
@@ -1728,6 +1743,9 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         }
         if !missing_required_source_read_paths.is_empty() {
             unmet_requirements.push("required_source_paths_not_read".to_string());
+        }
+        if !missing_required_connector_capture_read_paths.is_empty() {
+            unmet_requirements.push("connector_capture_source_not_read".to_string());
         }
         if !optional_workspace_reads
             && requires_concrete_reads
