@@ -343,6 +343,48 @@ mod tests {
     }
 
     #[test]
+    fn compile_workflow_runtime_projection_preserves_connector_writer_metadata() {
+        let mut plan = test_plan();
+        plan.steps[0].metadata = Some(json!({
+            "connector": "notion",
+            "connector_writer": true,
+            "writer_kind": "database_rows",
+            "notion_data_source_url": "collection://ds-123",
+            "input_alias": "filtered_rows",
+            "source_array_key": "rows",
+            "title_property": "Name",
+            "property_mappings": {
+                "Name": "name",
+                "URL": "url"
+            },
+            "duplicate_keys": ["URL"]
+        }));
+
+        let projection = compile_workflow_runtime_projection(&plan, |allowlist| allowlist);
+        let metadata = projection.nodes[0]
+            .metadata
+            .as_ref()
+            .expect("node metadata");
+
+        assert_eq!(
+            metadata.get("connector").and_then(Value::as_str),
+            Some("notion")
+        );
+        assert_eq!(
+            metadata.get("connector_writer").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            metadata
+                .get("property_mappings")
+                .and_then(Value::as_object)
+                .and_then(|mappings| mappings.get("URL"))
+                .and_then(Value::as_str),
+            Some("url")
+        );
+    }
+
+    #[test]
     fn compile_workflow_runtime_projection_stamps_fintech_brief_profile() {
         let mut plan = test_plan();
         plan.original_prompt =

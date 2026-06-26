@@ -134,6 +134,7 @@ mod system_api;
 mod task_intake;
 mod telegram_interactions;
 pub(crate) mod workflow_planner;
+mod workflow_planner_connector_writers;
 mod workflow_planner_host;
 mod workflow_planner_policy;
 pub(crate) mod workflow_planner_runtime;

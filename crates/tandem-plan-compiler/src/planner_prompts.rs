@@ -31,6 +31,9 @@ pub(crate) fn workflow_plan_common_sections() -> String {
             "- if a step says web research/web_fetch is optional, only when useful, if needed, or may return empty citations, do not mark web_research_expected true and do not create required websearch connector requirements\n",
             "- do not leave tactical tool choice ambiguous in contracts: required tools must be required; optional tools must stay optional and must not gate the run\n",
             "- when the request names connector-backed sources or `allowed_mcp_servers` is non-empty, plan MCP-backed steps instead of inventing hidden capabilities or defaulting to generic web search\n",
+            "- connector-backed source research must collect a useful candidate pool: for Reddit/subreddit lead or signal gathering, default to 10-25 candidates per search shard, preserve source counts and connector limitations, and never use limit=1 unless the user explicitly asks for a smoke test or single-sample probe\n",
+            "- connector database writers must be deterministic: when the capability summary exposes a connector_writer_contract, any database-row write step for that connector must include metadata.connector, metadata.connector_writer=true, metadata.writer_kind, metadata.input_alias, metadata.source_array_key or source_array_path, metadata.property_mappings, metadata.duplicate_keys, and the connector-specific target id/url\n",
+            "- for Notion database-row writes, use the Notion writer contract from the capability summary; target an existing data source with notion_data_source_url or notion_data_source_id, map only schema properties, use the schema title property as title_property, and do not leave duplicate protection for runtime inference\n",
             "- when a prompt names a file as read-only or source of truth, never infer it as a write target; treat it as input-only unless the contract explicitly declares it as output\n",
             "- when a prompt names concrete source files or output files, carry those exact names into the relevant step objectives instead of replacing them with generic workspace language\n",
             "- when a prompt names `websearch`, `webfetch`, or another explicit tool, preserve that tool name in the step objective that will use it\n",
@@ -83,6 +86,8 @@ mod tests {
         assert!(sections.contains("explain: summarize the plan"));
         assert!(sections.contains("proof points"));
         assert!(sections.contains("connector-backed work"));
+        assert!(sections.contains("connector database writers"));
+        assert!(sections.contains("Notion database-row writes"));
         assert!(sections.contains("code_patch"));
         assert!(sections.contains("within 8 leaf tasks"));
         assert!(sections.contains("phase-aware macro steps"));
@@ -102,6 +107,8 @@ mod tests {
         assert!(sections.contains("source_material"));
         assert!(sections.contains("concrete source files or output files"));
         assert!(sections.contains("websearch"));
+        assert!(sections.contains("10-25 candidates per search shard"));
+        assert!(sections.contains("never use limit=1"));
         assert!(sections.contains("max_parallel_agents"));
         assert!(sections.contains("explicit input_refs for the upstream steps"));
         assert!(sections.contains("final recap, merged summary, or daily rollup"));

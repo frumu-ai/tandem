@@ -399,12 +399,23 @@ fn automation_notion_apply_mapping_transforms(mut value: Value, spec: &Value) ->
         let allowed_values = allowed
             .iter()
             .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
             .collect::<Vec<_>>();
         if !allowed_values.is_empty() {
-            let is_allowed = value
-                .as_str()
-                .is_some_and(|text| allowed_values.iter().any(|allowed| *allowed == text));
-            if !is_allowed {
+            if let Some(text) = value.as_str().map(str::trim) {
+                if let Some(canonical) = allowed_values
+                    .iter()
+                    .find(|allowed| allowed.eq_ignore_ascii_case(text))
+                {
+                    value = json!(canonical);
+                } else {
+                    value = object
+                        .get("fallback")
+                        .or_else(|| object.get("default"))
+                        .cloned()?;
+                }
+            } else {
                 value = object
                     .get("fallback")
                     .or_else(|| object.get("default"))
@@ -533,6 +544,25 @@ fn automation_tool_output_value(output: &str) -> Value {
 
 fn automation_notion_tool_error(value: &Value) -> Option<String> {
     if value
+        .get("isError")
+        .and_then(Value::as_bool)
+        .is_some_and(|is_error| is_error)
+    {
+        return Some(value.to_string());
+    }
+    if value
+        .get("text")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|text| {
+            text.starts_with("MCP error")
+                || text.contains("Input validation error")
+                || text.contains("Invalid arguments for tool")
+        })
+    {
+        return Some(value.to_string());
+    }
+    if value
         .get("success")
         .and_then(Value::as_bool)
         .is_some_and(|success| !success)
@@ -561,6 +591,54 @@ fn automation_notion_tool_error(value: &Value) -> Option<String> {
         return Some(value.to_string());
     }
     None
+}
+
+fn automation_connector_tool_error_retryable(error: &str) -> bool {
+    let lowered = error.to_ascii_lowercase();
+    if lowered.contains("input validation error") || lowered.contains("invalid arguments for tool") {
+        return false;
+    }
+
+    [
+        "error sending request",
+        "failed to read mcp response",
+        "error decoding response body",
+        "request timed out",
+        "timed out",
+        "timeout",
+        "connection reset",
+        "connection closed",
+        "connection refused",
+        "connection aborted",
+        "temporarily unavailable",
+        "service unavailable",
+        "bad gateway",
+        "gateway timeout",
+        "too many requests",
+        "rate limit",
+        "http 429",
+        "http 502",
+        "http 503",
+        "http 504",
+    ]
+    .iter()
+    .any(|needle| lowered.contains(needle))
+}
+
+fn automation_connector_tool_max_attempts(tool: &str) -> usize {
+    if tool.starts_with("mcp.") {
+        3
+    } else {
+        1
+    }
+}
+
+fn automation_connector_retry_delay(attempt: usize) -> Duration {
+    match attempt {
+        1 => Duration::from_millis(250),
+        2 => Duration::from_millis(1000),
+        _ => Duration::from_millis(2000),
+    }
 }
 
 fn automation_notion_value_contains(value: &Value, needle: &str) -> bool {
@@ -627,61 +705,93 @@ async fn automation_dispatch_deterministic_tool(
     invocation_parts: &mut Vec<MessagePart>,
     call_rows: &mut Vec<Value>,
 ) -> Result<Value, String> {
-    let dispatch_context = state.tool_dispatch_context(
-        tandem_tools::ToolDispatchSource::new("automation_notion_writer")
-            .run(run_id)
-            .node(node.node_id.clone()),
-        tenant_context,
-        dispatch_scope.to_vec(),
-    );
-    match state
-        .tool_dispatcher
-        .dispatch(tool, args.clone(), dispatch_context)
-        .await
-    {
-        Ok(result) => {
-            let parsed_output = automation_tool_output_value(&result.output);
-            let result_value = json!({
-                "output": result.output,
-                "metadata": result.metadata,
-            });
-            let semantic_error = automation_notion_tool_error(&parsed_output);
-            invocation_parts.push(MessagePart::ToolInvocation {
-                tool: tool.to_string(),
-                args: args.clone(),
-                result: Some(result_value.clone()),
-                error: None,
-            });
-            call_rows.push(json!({
-                "tool": tool,
-                "args": args,
-                "status": if semantic_error.is_some() { "failed" } else { "completed" },
-                "result_excerpt": truncate_text(&result_value.to_string(), 1600),
-                "error": semantic_error,
-            }));
-            if let Some(error) = semantic_error {
-                Err(error)
-            } else {
-                Ok(parsed_output)
+    let max_attempts = automation_connector_tool_max_attempts(tool);
+    let mut last_error = None::<String>;
+
+    for attempt in 1..=max_attempts {
+        let dispatch_context = state.tool_dispatch_context(
+            tandem_tools::ToolDispatchSource::new("automation_notion_writer")
+                .run(run_id)
+                .node(node.node_id.clone()),
+            tenant_context.clone(),
+            dispatch_scope.to_vec(),
+        );
+        match state
+            .tool_dispatcher
+            .dispatch(tool, args.clone(), dispatch_context)
+            .await
+        {
+            Ok(result) => {
+                let parsed_output = automation_tool_output_value(&result.output);
+                let result_value = json!({
+                    "output": result.output,
+                    "metadata": result.metadata,
+                });
+                let semantic_error = automation_notion_tool_error(&parsed_output);
+                let retryable = semantic_error
+                    .as_deref()
+                    .is_some_and(automation_connector_tool_error_retryable);
+                let will_retry = retryable && attempt < max_attempts;
+                invocation_parts.push(MessagePart::ToolInvocation {
+                    tool: tool.to_string(),
+                    args: args.clone(),
+                    result: Some(result_value.clone()),
+                    error: None,
+                });
+                call_rows.push(json!({
+                    "tool": tool,
+                    "args": args,
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "status": if semantic_error.is_some() {
+                        if will_retry { "retrying" } else { "failed" }
+                    } else {
+                        "completed"
+                    },
+                    "result_excerpt": truncate_text(&result_value.to_string(), 1600),
+                    "error": semantic_error,
+                    "retryable": retryable,
+                }));
+                if let Some(error) = semantic_error {
+                    if will_retry {
+                        last_error = Some(error);
+                        tokio::time::sleep(automation_connector_retry_delay(attempt)).await;
+                        continue;
+                    }
+                    return Err(error);
+                }
+                return Ok(parsed_output);
+            }
+            Err(error) => {
+                let error_text = error.to_string();
+                let retryable = automation_connector_tool_error_retryable(&error_text);
+                let will_retry = retryable && attempt < max_attempts;
+                invocation_parts.push(MessagePart::ToolInvocation {
+                    tool: tool.to_string(),
+                    args: args.clone(),
+                    result: None,
+                    error: Some(error_text.clone()),
+                });
+                call_rows.push(json!({
+                    "tool": tool,
+                    "args": args,
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "status": if will_retry { "retrying" } else { "failed" },
+                    "error": error_text,
+                    "retryable": retryable,
+                }));
+                if will_retry {
+                    last_error = Some(error_text);
+                    tokio::time::sleep(automation_connector_retry_delay(attempt)).await;
+                    continue;
+                }
+                return Err(error_text);
             }
         }
-        Err(error) => {
-            let error_text = error.to_string();
-            invocation_parts.push(MessagePart::ToolInvocation {
-                tool: tool.to_string(),
-                args: args.clone(),
-                result: None,
-                error: Some(error_text.clone()),
-            });
-            call_rows.push(json!({
-                "tool": tool,
-                "args": args,
-                "status": "failed",
-                "error": error_text,
-            }));
-            Err(error_text)
-        }
     }
+
+    Err(last_error.unwrap_or_else(|| format!("{tool} failed without returning an output")))
 }
 
 fn automation_notion_duplicate_queries(
@@ -744,6 +854,7 @@ pub(crate) async fn try_execute_notion_connector_writer_node(
     let mut inserted_thread_links = Vec::<String>::new();
     let mut inserted_row_keys = Vec::<Value>::new();
     let mut updated_page_ids = Vec::<String>::new();
+    let mut warnings = Vec::<String>::new();
     let mut inserted_count = 0usize;
     let mut skipped_duplicate_count = 0usize;
     let mut failed_count = 0usize;
@@ -788,6 +899,7 @@ pub(crate) async fn try_execute_notion_connector_writer_node(
                     "title": title,
                 });
                 let mut duplicate_ref = None;
+                let mut duplicate_search_errors = Vec::<String>::new();
                 for (property, query) in &duplicate_queries {
                     match automation_dispatch_deterministic_tool(
                         state,
@@ -814,7 +926,7 @@ pub(crate) async fn try_execute_notion_connector_writer_node(
                                 break;
                             }
                         }
-                        Err(error) => errors.push(format!(
+                        Err(error) => duplicate_search_errors.push(format!(
                             "notion_search failed for `{query}` ({property}) from `{}`: {error}",
                             config.source_node_id
                         )),
@@ -822,6 +934,7 @@ pub(crate) async fn try_execute_notion_connector_writer_node(
                 }
 
                 if let Some(page_ref) = duplicate_ref {
+                    warnings.extend(duplicate_search_errors);
                     match automation_dispatch_deterministic_tool(
                         state,
                         run_id,
@@ -854,6 +967,16 @@ pub(crate) async fn try_execute_notion_connector_writer_node(
                     continue;
                 }
 
+                if !duplicate_search_errors.is_empty() {
+                    failed_count += 1;
+                    errors.extend(duplicate_search_errors.into_iter().map(|error| {
+                        format!(
+                            "{error}; duplicate detection was incomplete, so row creation was skipped"
+                        )
+                    }));
+                    continue;
+                }
+
                 let create_args = json!({
                     "parent": {
                         "type": "data_source_id",
@@ -861,11 +984,6 @@ pub(crate) async fn try_execute_notion_connector_writer_node(
                     },
                     "pages": [
                         {
-                            "parent": {
-                                "type": "data_source_id",
-                                "data_source_id": config.data_source_id.clone(),
-                            },
-                            "title": title,
                             "properties": properties,
                         }
                     ]
@@ -951,6 +1069,7 @@ pub(crate) async fn try_execute_notion_connector_writer_node(
         "inserted_row_keys": inserted_row_keys,
         "updated_page_ids": updated_page_ids,
         "errors": errors,
+        "warnings": warnings,
         "notion_data_source_url": config.data_source_url,
         "source_node_id": config.source_node_id,
         "input_alias": config.input_alias,
@@ -1032,4 +1151,50 @@ pub(crate) async fn try_execute_notion_connector_writer_node(
             Some(artifact_validation),
         ),
     ))
+}
+
+#[cfg(test)]
+mod deterministic_notion_writer_tests {
+    use super::*;
+
+    #[test]
+    fn notion_tool_error_detects_plain_text_mcp_validation_errors() {
+        let error = automation_notion_tool_error(&json!({
+            "text": "MCP error -32602: Input validation error: Invalid arguments for tool notion-create-pages"
+        }))
+        .expect("plain text MCP validation error should be treated as a failed tool call");
+
+        assert!(error.contains("notion-create-pages"));
+    }
+
+    #[test]
+    fn connector_tool_retryable_error_classifier_excludes_schema_errors() {
+        assert!(automation_connector_tool_error_retryable(
+            "MCP request failed: error sending request for url (https://mcp.notion.com/mcp)"
+        ));
+        assert!(automation_connector_tool_error_retryable(
+            "HTTP 503 service unavailable while calling connector"
+        ));
+        assert!(automation_connector_tool_error_retryable(
+            "Failed to read MCP response: error decoding response body"
+        ));
+        assert!(!automation_connector_tool_error_retryable(
+            "MCP error -32602: Input validation error: Invalid arguments for tool notion-create-pages"
+        ));
+    }
+
+    #[test]
+    fn notion_mapping_allowed_values_preserve_canonical_case() {
+        let spec = json!({
+            "sources": ["subreddit"],
+            "prefix_if_missing": "r/",
+            "allowed_values": ["r/LocalLLaMA", "r/sysadmin", "r/mcp", "r/DevOps"],
+            "fallback": "r/LocalLLaMA"
+        });
+
+        let mapped = automation_notion_property_value(&json!({ "subreddit": "devops" }), &spec)
+            .expect("subreddit should map to a canonical allowed value");
+
+        assert_eq!(mapped, json!("r/DevOps"));
+    }
 }
