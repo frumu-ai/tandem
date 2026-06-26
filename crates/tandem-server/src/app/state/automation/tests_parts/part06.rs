@@ -116,3 +116,124 @@ fn connector_prompt_includes_supported_upstream_artifact_path_shapes() {
         );
     }
 }
+
+#[test]
+fn compacted_upstream_prompt_preserves_connector_capture_paths() {
+    let mut node = bare_node();
+    node.node_id = "filter_leads".to_string();
+    node.objective = "Read the upstream connector capture artifact and filter leads.".to_string();
+    node.input_refs = vec![AutomationFlowInputRef {
+        from_step_id: "search_reddit".to_string(),
+        alias: "raw_reddit".to_string(),
+    }];
+    node.output_contract = Some(AutomationFlowOutputContract {
+        kind: "structured_json".to_string(),
+        validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+        enforcement: None,
+        schema: None,
+        summary_guidance: None,
+    });
+    let automation = automation_with_output_targets(vec![node.clone()], Vec::new());
+    let upstream_inputs = vec![json!({
+        "alias": "raw_reddit",
+        "from_step_id": "search_reddit",
+        "output": {
+            "status": "completed",
+            "content": {
+                "path": ".tandem/runs/run-path/artifacts/search-reddit.json"
+            },
+            "connector_capture": {
+                "artifact_path": ".tandem/runs/run-path/artifacts/search-reddit-connector-results.json",
+                "remote_hydration_required": false
+            }
+        }
+    })];
+    let agent = crate::AutomationAgentProfile {
+        agent_id: "lead_filter".to_string(),
+        template_id: None,
+        display_name: "Lead Filter".to_string(),
+        avatar_url: None,
+        model_policy: None,
+        skills: Vec::new(),
+        tool_policy: crate::AutomationAgentToolPolicy {
+            allowlist: Vec::new(),
+            denylist: Vec::new(),
+        },
+        mcp_policy: crate::AutomationAgentMcpPolicy {
+            allowed_servers: Vec::new(),
+            allowed_tools: None,
+            allowed_connections: Vec::new(),
+        },
+        approval_policy: None,
+    };
+
+    let prompt = render_automation_v2_prompt_with_options(
+        &automation,
+        "/tmp/workspace",
+        "run-path",
+        &node,
+        1,
+        &agent,
+        &upstream_inputs,
+        &["read".to_string(), "write".to_string()],
+        None,
+        None,
+        None,
+        AutomationPromptRenderOptions {
+            summary_only_upstream: true,
+            knowledge_context: None,
+            runtime_values: None,
+            mcp_contract_guidance: None,
+        },
+    );
+
+    assert!(prompt.contains(".tandem/runs/run-path/artifacts/search-reddit.json"));
+    assert!(prompt.contains(
+        ".tandem/runs/run-path/artifacts/search-reddit-connector-results.json"
+    ));
+    assert!(prompt.contains("connector_capture"));
+}
+
+#[test]
+fn composio_source_nodes_keep_large_result_remote_helpers() {
+    let mut node = bare_node();
+    node.node_id = "search_reddit".to_string();
+    node.objective =
+        "Use Composio Reddit to search and collect connector-backed lead candidates.".to_string();
+    node.tool_policy = Some(crate::AutomationAgentToolPolicy {
+        allowlist: vec![
+            "write".to_string(),
+            "mcp.composio_gmail.composio_search_tools".to_string(),
+            "mcp.composio_gmail.composio_multi_execute_tool".to_string(),
+        ],
+        denylist: Vec::new(),
+    });
+    node.mcp_policy = Some(crate::AutomationAgentMcpPolicy {
+        allowed_servers: vec!["composio-gmail".to_string()],
+        allowed_tools: Some(vec![
+            "mcp.composio_gmail.composio_search_tools".to_string(),
+            "mcp.composio_gmail.composio_multi_execute_tool".to_string(),
+        ]),
+        allowed_connections: Vec::new(),
+    });
+    let available_tool_names = std::collections::HashSet::from([
+        "mcp.composio_gmail.composio_get_tool_schemas".to_string(),
+        "mcp.composio_gmail.composio_multi_execute_tool".to_string(),
+        "mcp.composio_gmail.composio_remote_bash_tool".to_string(),
+        "mcp.composio_gmail.composio_remote_workbench".to_string(),
+        "mcp.composio_gmail.composio_search_tools".to_string(),
+        "write".to_string(),
+    ]);
+
+    let requested =
+        automation_requested_tools_for_node(&node, "/tmp", Vec::new(), &available_tool_names);
+
+    for expected in [
+        "mcp.composio_gmail.composio_multi_execute_tool",
+        "mcp.composio_gmail.composio_remote_bash_tool",
+        "mcp.composio_gmail.composio_remote_workbench",
+        "mcp.composio_gmail.composio_get_tool_schemas",
+    ] {
+        assert!(requested.contains(&expected.to_string()));
+    }
+}

@@ -524,6 +524,13 @@ pub(crate) fn semantic_block_reason_for_requirements(
             "connector-backed source research completed without using a concrete connector tool"
                 .to_string(),
         )
+    } else if has_unmet("connector_remote_result_not_materialized") {
+        Some(
+            "connector returned a remote result file that was not materialized before artifact write"
+                .to_string(),
+        )
+    } else if has_unmet("connector_capture_source_not_read") {
+        Some("downstream step did not read the required connector capture artifact".to_string())
     } else if has_unmet("required_source_paths_not_read") {
         Some("research completed without reading the exact required source files".to_string())
     } else if has_unmet("current_attempt_output_missing") {

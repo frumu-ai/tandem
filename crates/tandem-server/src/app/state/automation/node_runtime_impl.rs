@@ -802,6 +802,49 @@ fn connector_source_tool_allowed_for_required_capability(
         })
 }
 
+fn composio_large_result_helper_tools(
+    requested_tools: &[String],
+    available_tool_names: &HashSet<String>,
+) -> Vec<String> {
+    let mut namespaces = requested_tools
+        .iter()
+        .filter_map(|tool| {
+            let normalized = tool.trim().to_ascii_lowercase();
+            if !normalized.starts_with("mcp.")
+                || !normalized.contains(".composio_")
+                || !(normalized.ends_with(".composio_multi_execute_tool")
+                    || normalized.ends_with(".composio_search_tools")
+                    || normalized.ends_with(".*"))
+            {
+                return None;
+            }
+            normalized
+                .rsplit_once('.')
+                .map(|(namespace, _)| namespace.to_string())
+        })
+        .collect::<Vec<_>>();
+    namespaces.sort();
+    namespaces.dedup();
+
+    let helper_suffixes = [
+        "composio_remote_bash_tool",
+        "composio_remote_workbench",
+        "composio_get_tool_schemas",
+    ];
+    let mut helpers = Vec::new();
+    for namespace in namespaces {
+        for suffix in helper_suffixes {
+            let candidate = format!("{namespace}.{suffix}");
+            if available_tool_names.contains(&candidate) {
+                helpers.push(candidate);
+            }
+        }
+    }
+    helpers.sort();
+    helpers.dedup();
+    helpers
+}
+
 pub(crate) fn resolve_automation_node_tool_envelope(
     node: &AutomationFlowNode,
     workspace_root: &str,
@@ -836,10 +879,28 @@ pub(crate) fn resolve_automation_node_tool_envelope(
             available_tool_names,
         ));
     }
+    if connector_source_node {
+        requested_tools.extend(composio_large_result_helper_tools(
+            &requested_tools,
+            available_tool_names,
+        ));
+    }
     let explicit_node_tool_allowlist = automation_node_metadata_tool_allowlist(node);
     if !automation_node_is_code_workflow(node) && automation_node_has_explicit_tool_policy(node) {
         let mut explicit_allowed =
             config::channels::normalize_allowed_tools(explicit_node_tool_allowlist.clone());
+        if connector_source_node {
+            let helpers = composio_large_result_helper_tools(
+                &explicit_allowed
+                    .iter()
+                    .chain(requested_tools.iter())
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                available_tool_names,
+            );
+            explicit_allowed.extend(helpers.clone());
+            requested_tools.extend(helpers);
+        }
         if explicit_allowed.iter().any(|tool| tool.starts_with("mcp."))
             && automation_mcp_list_needed_for_tools(&explicit_allowed)
         {
@@ -956,6 +1017,13 @@ fn semantic_block_reason_for_requirements(unmet_requirements: &[String]) -> Opti
         Some("structured handoff completed without required workspace inspection".to_string())
     } else if has_unmet("required_source_paths_not_read") {
         Some("research completed without reading the exact required source files".to_string())
+    } else if has_unmet("connector_remote_result_not_materialized") {
+        Some(
+            "connector returned a remote result file that was not materialized before artifact write"
+                .to_string(),
+        )
+    } else if has_unmet("connector_capture_source_not_read") {
+        Some("downstream step did not read the required connector capture artifact".to_string())
     } else if has_unmet("no_concrete_reads") || has_unmet("concrete_read_required") {
         Some(
             "research completed without concrete file reads or required source coverage"

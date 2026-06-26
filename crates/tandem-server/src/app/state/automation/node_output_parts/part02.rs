@@ -999,6 +999,12 @@ pub(crate) fn detect_automation_node_failure_kind(
         if has_unmet("mcp_required_tool_failed") {
             return Some("mcp_required_tool_failed".to_string());
         }
+        if has_unmet("connector_remote_result_not_materialized") {
+            return Some("connector_remote_result_not_materialized".to_string());
+        }
+        if has_unmet("connector_capture_source_not_read") {
+            return Some("required_tool_unused_read".to_string());
+        }
         if has_unmet("external_mutation_failed") {
             return Some("external_mutation_failed".to_string());
         }

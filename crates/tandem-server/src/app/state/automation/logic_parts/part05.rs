@@ -2515,6 +2515,18 @@ pub(crate) async fn execute_automation_v2_node(
     };
     let tool_telemetry = summarize_automation_tool_activity(node, &session, &requested_tools);
     let mut tool_telemetry = tool_telemetry;
+    let required_connector_capture_read_paths =
+        crate::app::state::automation::prompting_impl::automation_prompt_upstream_connector_capture_artifact_paths(
+            &upstream_inputs,
+        );
+    if !required_connector_capture_read_paths.is_empty() {
+        if let Some(object) = tool_telemetry.as_object_mut() {
+            object.insert(
+                "required_connector_capture_read_paths".to_string(),
+                json!(required_connector_capture_read_paths),
+            );
+        }
+    }
     let connector_capture = persist_automation_connector_tool_result_capture(
         automation,
         run_id,
@@ -2645,6 +2657,14 @@ pub(crate) async fn execute_automation_v2_node(
                 .or_insert_with(|| Value::String(reason.clone()));
         }
     }
+    if let Some(capture) = connector_capture.as_ref() {
+        apply_automation_connector_capture_validation_metadata(
+            &mut artifact_validation,
+            capture,
+            attempt,
+            max_attempts,
+        );
+    }
     let artifact_publication = if artifact_validation
         .get("semantic_block_reason")
         .and_then(Value::as_str)
@@ -2702,14 +2722,6 @@ pub(crate) async fn execute_automation_v2_node(
     if let Some(publication) = artifact_publication.clone() {
         if let Some(object) = artifact_validation.as_object_mut() {
             object.insert("artifact_publication".to_string(), publication);
-        }
-    }
-    if let Some(capture) = connector_capture.as_ref() {
-        if let Some(object) = artifact_validation.as_object_mut() {
-            object.insert("connector_capture".to_string(), capture.clone());
-            if let Some(path) = capture.get("artifact_path").and_then(Value::as_str) {
-                object.insert("connector_capture_artifact_path".to_string(), json!(path));
-            }
         }
     }
     let (receipt_status, receipt_blocked_reason, receipt_approved) =

@@ -217,6 +217,36 @@ fn automation_connector_capture_artifact_path(run_id: &str, node_id: &str) -> St
     )
 }
 
+fn automation_connector_capture_collect_preferred_result_items(
+    value: &Value,
+    items: &mut Vec<Value>,
+    truncated: &mut bool,
+    depth: usize,
+) -> bool {
+    let before = items.len();
+    for pointer in [
+        "/response/data",
+        "/response/data_preview",
+        "/response/data/posts",
+        "/response/data_preview/posts",
+        "/data/posts",
+        "/data_preview/posts",
+    ] {
+        if let Some(child) = value.pointer(pointer) {
+            automation_connector_capture_collect_items_from_payload(
+                child,
+                items,
+                truncated,
+                depth + 1,
+            );
+            if *truncated || items.len() > before {
+                return true;
+            }
+        }
+    }
+    items.len() > before
+}
+
 fn automation_connector_capture_collect_items_from_payload(
     value: &Value,
     items: &mut Vec<Value>,
@@ -241,11 +271,32 @@ fn automation_connector_capture_collect_items_from_payload(
                         *truncated = true;
                         return;
                     }
-                    items.push(row.clone());
+                    if automation_connector_capture_collect_preferred_result_items(
+                        row,
+                        items,
+                        truncated,
+                        depth + 1,
+                    ) {
+                        if *truncated {
+                            return;
+                        }
+                        continue;
+                    }
+                    if matches!(row, Value::Object(_) | Value::Array(_)) {
+                        items.push(row.clone());
+                    }
                 }
             }
         }
         Value::Object(map) => {
+            if automation_connector_capture_collect_preferred_result_items(
+                value,
+                items,
+                truncated,
+                depth + 1,
+            ) {
+                return;
+            }
             for key in [
                 "results",
                 "items",
@@ -303,6 +354,55 @@ fn automation_connector_capture_result_payload(result: Option<&Value>) -> Value 
     automation_tool_result_output_payload(result).unwrap_or(Value::Null)
 }
 
+fn automation_connector_capture_collect_remote_file_info(
+    value: &Value,
+    remote_files: &mut Vec<Value>,
+    depth: usize,
+) {
+    if depth > 6 {
+        return;
+    }
+    match value {
+        Value::Object(map) => {
+            if let Some(info) = map.get("remote_file_info").filter(|info| info.is_object()) {
+                remote_files.push(info.clone());
+            }
+            if map
+                .get("file_path")
+                .and_then(Value::as_str)
+                .is_some_and(|path| path.starts_with("/mnt/files/"))
+                && map
+                    .get("instructions")
+                    .or_else(|| map.get("message"))
+                    .is_some()
+            {
+                remote_files.push(value.clone());
+            }
+            for (key, child) in map {
+                if key == "remote_file_info" {
+                    continue;
+                }
+                automation_connector_capture_collect_remote_file_info(
+                    child,
+                    remote_files,
+                    depth + 1,
+                );
+            }
+        }
+        Value::Array(rows) => {
+            for row in rows {
+                automation_connector_capture_collect_remote_file_info(row, remote_files, depth + 1);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn automation_connector_capture_tool_is_composio_remote_reader(normalized_tool: &str) -> bool {
+    normalized_tool.ends_with(".composio_remote_bash_tool")
+        || normalized_tool.ends_with(".composio_remote_workbench")
+}
+
 pub(crate) fn persist_automation_connector_tool_result_capture(
     automation: &AutomationV2Spec,
     run_id: &str,
@@ -318,6 +418,8 @@ pub(crate) fn persist_automation_connector_tool_result_capture(
     let mut captured_results = Vec::new();
     let mut extracted_items = Vec::new();
     let mut extracted_items_truncated = false;
+    let mut remote_files = Vec::new();
+    let mut remote_hydration_performed = false;
 
     for (call_index, part) in session
         .messages
@@ -349,6 +451,10 @@ pub(crate) fn persist_automation_connector_tool_result_capture(
             continue;
         }
         let payload = automation_connector_capture_result_payload(result.as_ref());
+        automation_connector_capture_collect_remote_file_info(&payload, &mut remote_files, 0);
+        if automation_connector_capture_tool_is_composio_remote_reader(&normalized_tool) {
+            remote_hydration_performed = true;
+        }
         automation_connector_capture_collect_items_from_payload(
             &payload,
             &mut extracted_items,
@@ -369,6 +475,10 @@ pub(crate) fn persist_automation_connector_tool_result_capture(
     if captured_results.is_empty() {
         return Ok(None);
     }
+    remote_files.sort_by(|left, right| left.to_string().cmp(&right.to_string()));
+    remote_files.dedup();
+    let remote_file_count = remote_files.len();
+    let remote_hydration_required = remote_file_count > 0 && !remote_hydration_performed;
 
     let relative_path = automation_connector_capture_artifact_path(run_id, &node.node_id);
     let resolved = resolve_automation_output_path(workspace_root, &relative_path)?;
@@ -394,6 +504,10 @@ pub(crate) fn persist_automation_connector_tool_result_capture(
         "tools": tools,
         "extracted_item_count": extracted_items.len(),
         "extracted_items_truncated": extracted_items_truncated,
+        "remote_file_count": remote_file_count,
+        "remote_files": remote_files,
+        "remote_hydration_required": remote_hydration_required,
+        "remote_hydration_performed": remote_hydration_performed,
         "extracted_items": extracted_items,
         "results": captured_results,
     });
@@ -408,6 +522,9 @@ pub(crate) fn persist_automation_connector_tool_result_capture(
         "tools": payload.get("tools").cloned().unwrap_or_else(|| json!([])),
         "extracted_item_count": payload.get("extracted_item_count").cloned().unwrap_or(json!(0)),
         "extracted_items_truncated": payload.get("extracted_items_truncated").cloned().unwrap_or(json!(false)),
+        "remote_file_count": payload.get("remote_file_count").cloned().unwrap_or(json!(0)),
+        "remote_hydration_required": payload.get("remote_hydration_required").cloned().unwrap_or(json!(false)),
+        "remote_hydration_performed": payload.get("remote_hydration_performed").cloned().unwrap_or(json!(false)),
         "content_digest": digest,
     });
     Ok(Some(summary))
@@ -435,6 +552,69 @@ pub(crate) fn attach_automation_connector_capture_to_output(output: &mut Value, 
     if let Some(content) = object.get_mut("content").and_then(Value::as_object_mut) {
         content.insert("connector_capture".to_string(), capture.clone());
     }
+}
+
+pub(crate) fn apply_automation_connector_capture_validation_metadata(
+    artifact_validation: &mut Value,
+    capture: &Value,
+    attempt: u32,
+    max_attempts: u32,
+) {
+    let Some(object) = artifact_validation.as_object_mut() else {
+        return;
+    };
+    object.insert("connector_capture".to_string(), capture.clone());
+    if let Some(path) = capture.get("artifact_path").and_then(Value::as_str) {
+        object.insert("connector_capture_artifact_path".to_string(), json!(path));
+    }
+    if !capture
+        .get("remote_hydration_required")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let unmet = object
+        .entry("unmet_requirements".to_string())
+        .or_insert_with(|| json!([]));
+    if let Some(rows) = unmet.as_array_mut() {
+        if !rows.iter().any(|value| {
+            value.as_str() == Some("connector_remote_result_not_materialized")
+        }) {
+            rows.push(json!("connector_remote_result_not_materialized"));
+        }
+    }
+    object.insert(
+        "semantic_block_reason".to_string(),
+        json!("connector returned a remote result file, but the workflow artifact was finalized before materializing it"),
+    );
+    object.insert(
+        "validation_outcome".to_string(),
+        json!(if attempt < max_attempts {
+            "needs_repair"
+        } else {
+            "blocked"
+        }),
+    );
+    object.insert(
+        "rejected_artifact_reason".to_string(),
+        json!("connector remote result file was not read through the available remote helper before writing the artifact"),
+    );
+}
+
+pub(crate) fn automation_required_connector_capture_read_paths(
+    tool_telemetry: &Value,
+) -> Vec<String> {
+    tool_telemetry
+        .get("required_connector_capture_read_paths")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flat_map(|rows| rows.iter())
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 #[cfg(test)]
@@ -553,5 +733,60 @@ mod connector_capture_tests {
         );
         assert_eq!(items.len(), 2);
         assert!(!truncated);
+    }
+
+    #[test]
+    fn connector_capture_extracts_composio_preview_records_not_wrapper() {
+        let payload = json!({
+            "data": {
+                "results": [
+                    {
+                        "tool_slug": "REDDIT_SEARCH_ACROSS_SUBREDDITS",
+                        "response": {
+                            "successful": true,
+                            "data_preview": {
+                                "posts": [
+                                    {"id": "a", "title": "first"},
+                                    {"id": "b", "title": "second"},
+                                    "...8 more items"
+                                ],
+                                "total_results": 10
+                            }
+                        }
+                    }
+                ]
+            }
+        });
+        let mut items = Vec::new();
+        let mut truncated = false;
+        automation_connector_capture_collect_items_from_payload(
+            &payload,
+            &mut items,
+            &mut truncated,
+            0,
+        );
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].get("id").and_then(Value::as_str), Some("a"));
+        assert_eq!(items[1].get("id").and_then(Value::as_str), Some("b"));
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn connector_capture_detects_composio_remote_file_info() {
+        let payload = json!({
+            "data": {
+                "remote_file_info": {
+                    "file_path": "/mnt/files/mex/pour.json",
+                    "instructions": "Use COMPOSIO_REMOTE_BASH_TOOL"
+                }
+            }
+        });
+        let mut remote_files = Vec::new();
+        automation_connector_capture_collect_remote_file_info(&payload, &mut remote_files, 0);
+        assert_eq!(remote_files.len(), 1);
+        assert_eq!(
+            remote_files[0].get("file_path").and_then(Value::as_str),
+            Some("/mnt/files/mex/pour.json")
+        );
     }
 }
