@@ -617,6 +617,25 @@ pub(crate) fn automation_required_connector_capture_read_paths(
         .collect()
 }
 
+pub(crate) fn annotate_automation_connector_capture_read_requirements(
+    tool_telemetry: &mut Value,
+    upstream_inputs: &[Value],
+) {
+    let paths =
+        crate::app::state::automation::prompting_impl::automation_prompt_upstream_connector_capture_artifact_paths(
+            upstream_inputs,
+        );
+    if paths.is_empty() {
+        return;
+    }
+    if let Some(object) = tool_telemetry.as_object_mut() {
+        object.insert(
+            "required_connector_capture_read_paths".to_string(),
+            json!(paths),
+        );
+    }
+}
+
 #[cfg(test)]
 mod connector_capture_tests {
     use super::*;

@@ -2515,18 +2515,7 @@ pub(crate) async fn execute_automation_v2_node(
     };
     let tool_telemetry = summarize_automation_tool_activity(node, &session, &requested_tools);
     let mut tool_telemetry = tool_telemetry;
-    let required_connector_capture_read_paths =
-        crate::app::state::automation::prompting_impl::automation_prompt_upstream_connector_capture_artifact_paths(
-            &upstream_inputs,
-        );
-    if !required_connector_capture_read_paths.is_empty() {
-        if let Some(object) = tool_telemetry.as_object_mut() {
-            object.insert(
-                "required_connector_capture_read_paths".to_string(),
-                json!(required_connector_capture_read_paths),
-            );
-        }
-    }
+    annotate_automation_connector_capture_read_requirements(&mut tool_telemetry, &upstream_inputs);
     let connector_capture = persist_automation_connector_tool_result_capture(
         automation,
         run_id,
