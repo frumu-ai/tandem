@@ -294,6 +294,12 @@ pub fn normalize_workflow_step_metadata<
         }
         _ => {}
     }
+    let mut metadata_value = metadata(step).cloned();
+    if let Some(mut metadata) = metadata_value.take() {
+        if normalize_connector_writer_metadata_value(&mut metadata) {
+            set_metadata(step, metadata);
+        }
+    }
 }
 
 fn workflow_step_builder_map_mut(
@@ -1536,10 +1542,13 @@ pub struct PlannerCapabilitySummary {
     pub built_in_capabilities: Vec<String>,
     #[serde(default)]
     pub mcp_servers: Vec<PlannerMcpServerCapabilitySummary>,
+    #[serde(default)]
+    pub connector_writer_contracts: Vec<Value>,
 }
 
 pub fn build_planner_capability_summary(server_tools: &[PlannerMcpServerToolSet]) -> Value {
     let mut servers = Vec::new();
+    let connector_writer_contracts = planner_connector_writer_contracts(server_tools);
     for server in server_tools {
         let mut capabilities = BTreeSet::new();
         let mut sample_tools = Vec::new();
@@ -1567,6 +1576,12 @@ pub fn build_planner_capability_summary(server_tools: &[PlannerMcpServerToolSet]
             if lower.contains("slack") {
                 capabilities.insert("slack_delivery".to_string());
             }
+            if lower.contains("notion_create_pages") || lower.contains("notion_update_page") {
+                capabilities.insert("notion_database_write".to_string());
+            }
+            if lower.contains("notion_fetch") {
+                capabilities.insert("notion_schema_fetch".to_string());
+            }
         }
         servers.push(PlannerMcpServerCapabilitySummary {
             server: server.server.clone(),
@@ -1582,6 +1597,7 @@ pub fn build_planner_capability_summary(server_tools: &[PlannerMcpServerToolSet]
             "workspace_read".to_string(),
         ],
         mcp_servers: servers,
+        connector_writer_contracts,
     })
 }
 

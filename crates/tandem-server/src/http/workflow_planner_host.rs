@@ -3,6 +3,9 @@ use std::collections::BTreeSet;
 use tandem_plan_compiler::api as compiler_api;
 use tandem_types::{Message, MessagePart, MessageRole};
 
+use super::workflow_planner_connector_writers::{
+    merge_planner_diagnostics, resolve_workflow_plan_connector_writers,
+};
 use super::*;
 use compiler_api::{
     prepare_build_request, Clock, McpToolCatalog, PlanStore, PlannerBuildConfig,
@@ -400,6 +403,12 @@ pub(crate) async fn build_workflow_plan(
         ),
     )
     .await;
+    normalize_workflow_plan_file_contracts(&mut result.plan);
+    let connector_writer_diagnostics =
+        resolve_workflow_plan_connector_writers(state, &mut result.plan).await?;
+    if let Some(diagnostics) = connector_writer_diagnostics {
+        merge_planner_diagnostics(&mut result.planner_diagnostics, diagnostics);
+    }
     normalize_workflow_plan_file_contracts(&mut result.plan);
 
     Ok(result)

@@ -2421,7 +2421,19 @@ async fn notion_connector_writer_uses_generic_metadata_mappings() {
         .find(|(tool, _)| tool == "mcp.notion.notion_create_pages")
         .map(|(_, args)| args)
         .expect("create_pages args");
-    assert_eq!(create_args["pages"][0]["title"], "Acme Platform");
+    assert_eq!(
+        create_args["parent"]["data_source_id"],
+        "ds-123",
+        "the data source parent belongs at top level for Notion MCP create_pages"
+    );
+    assert!(
+        create_args["pages"][0].get("parent").is_none(),
+        "current Notion MCP rejects per-page parent"
+    );
+    assert!(
+        create_args["pages"][0].get("title").is_none(),
+        "current Notion MCP rejects per-page title; title property is carried in properties"
+    );
     assert_eq!(
         create_args["pages"][0]["properties"]["Company"],
         "Acme Platform"
