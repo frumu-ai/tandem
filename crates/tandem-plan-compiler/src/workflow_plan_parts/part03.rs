@@ -132,13 +132,21 @@ pub fn planner_connector_writer_contracts(server_tools: &[PlannerMcpServerToolSe
         let has_notion_fetch = tools
             .iter()
             .any(|tool| tool == "mcp.notion.notion_fetch" || tool.ends_with(".notion_fetch"));
+        let has_notion_search = tools
+            .iter()
+            .any(|tool| tool == "mcp.notion.notion_search" || tool.ends_with(".notion_search"));
         let has_notion_create = tools.iter().any(|tool| {
             tool == "mcp.notion.notion_create_pages" || tool.ends_with(".notion_create_pages")
         });
         let has_notion_update = tools.iter().any(|tool| {
             tool == "mcp.notion.notion_update_page" || tool.ends_with(".notion_update_page")
         });
-        if segment == "notion" && has_notion_fetch && has_notion_create && has_notion_update {
+        if segment == "notion"
+            && has_notion_fetch
+            && has_notion_search
+            && has_notion_create
+            && has_notion_update
+        {
             contracts.push(json!({
                 "connector": "notion",
                 "writer_kind": "database_rows",

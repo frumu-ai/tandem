@@ -127,10 +127,7 @@ fn workflow_value_contains_text(value: &Value, needle: &str) -> bool {
     }
 }
 
-fn workflow_step_is_notion_database_writer_candidate(
-    plan: &crate::WorkflowPlan,
-    step: &crate::WorkflowPlanStep,
-) -> bool {
+fn workflow_step_is_notion_database_writer_candidate(step: &crate::WorkflowPlanStep) -> bool {
     let metadata = step.metadata.as_ref();
     let connector_is_notion = workflow_metadata_string(metadata, "connector")
         .as_deref()
@@ -147,8 +144,8 @@ fn workflow_step_is_notion_database_writer_candidate(
     }
 
     let text = format!(
-        "{}\n{}\n{}\n{}\n{}",
-        plan.original_prompt, step.step_id, step.kind, step.objective, step.agent_role
+        "{}\n{}\n{}\n{}",
+        step.step_id, step.kind, step.objective, step.agent_role
     )
     .to_ascii_lowercase();
     let mentions_notion = text.contains("notion")
@@ -819,7 +816,7 @@ pub(crate) async fn resolve_workflow_plan_connector_writers(
         .iter()
         .enumerate()
         .filter_map(|(index, step)| {
-            if workflow_step_is_notion_database_writer_candidate(plan, step) {
+            if workflow_step_is_notion_database_writer_candidate(step) {
                 Some(index)
             } else {
                 None
@@ -955,6 +952,33 @@ mod tests {
             }),
             metadata: Some(metadata),
         }
+    }
+
+    #[test]
+    fn notion_writer_candidate_detection_ignores_global_prompt_intent() {
+        let research_step = crate::WorkflowPlanStep {
+            step_id: "search_reddit".to_string(),
+            kind: "research".to_string(),
+            objective: "Search Reddit for infrastructure lead candidates.".to_string(),
+            agent_role: "researcher".to_string(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: None,
+            metadata: None,
+        };
+
+        assert!(
+            !workflow_step_is_notion_database_writer_candidate(&research_step),
+            "a non-writer step should not be classified from the workflow-level Notion goal"
+        );
+
+        let writer_step = notion_writer_step(json!({
+            "connector": "notion",
+            "connector_writer": true
+        }));
+        assert!(workflow_step_is_notion_database_writer_candidate(
+            &writer_step
+        ));
     }
 
     #[test]

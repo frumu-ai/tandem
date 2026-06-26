@@ -105,6 +105,27 @@ mod tests {
     }
 
     #[test]
+    fn planner_capability_summary_requires_search_for_notion_connector_writer_contract() {
+        let summary = build_planner_capability_summary(&[PlannerMcpServerToolSet {
+            server: "notion".to_string(),
+            tool_names: vec![
+                "mcp.notion.notion_fetch".to_string(),
+                "mcp.notion.notion_create_pages".to_string(),
+                "mcp.notion.notion_update_page".to_string(),
+            ],
+        }]);
+        let contracts = summary
+            .get("connector_writer_contracts")
+            .and_then(Value::as_array)
+            .expect("connector writer contracts");
+
+        assert!(
+            contracts.is_empty(),
+            "do not advertise the writer contract unless duplicate-search tooling is available"
+        );
+    }
+
+    #[test]
     fn optional_web_context_does_not_expect_required_web_research() {
         let objective = "Use web research and web_fetch only when useful to add supporting context for tools, market references, or claims that emerged from collect_reddit_signals. Do not replace Reddit as the primary evidence source. Return concise citations with URLs; if no web context is needed, return an empty citations list with rationale.";
 
