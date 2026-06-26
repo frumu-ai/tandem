@@ -174,6 +174,8 @@ pub fn workflow_step_metadata_defaults(
     validator_is_research_brief: bool,
 ) -> Option<Value> {
     let expects_web_research = workflow_step_expects_web_research(step_id, kind, objective);
+    let connector_capture_expected =
+        workflow_step_expects_connector_source_capture(step_id, kind, objective);
     let mut builder = json!({
         "builder": {
             "knowledge": {
@@ -192,6 +194,17 @@ pub fn workflow_step_metadata_defaults(
                 "web_research_expected".to_string(),
                 Value::Bool(expects_web_research),
             );
+        }
+    }
+    if connector_capture_expected {
+        if let Some(root) = builder.as_object_mut() {
+            root.entry("connector_capture".to_string())
+                .or_insert_with(|| json!({ "enabled": true }));
+        }
+        if let Some(builder_object) = builder.get_mut("builder").and_then(Value::as_object_mut) {
+            builder_object
+                .entry("connector_capture".to_string())
+                .or_insert_with(|| json!({ "enabled": true }));
         }
     }
     Some(builder)

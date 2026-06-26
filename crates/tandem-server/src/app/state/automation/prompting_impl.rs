@@ -232,6 +232,10 @@ fn automation_prompt_upstream_artifact_paths(upstream_inputs: &[Value]) -> Vec<S
                 "/content/data/path",
                 "/path",
                 "/artifact_validation/accepted_artifact_path",
+                "/connector_capture/artifact_path",
+                "/content/connector_capture/artifact_path",
+                "/artifact_validation/connector_capture_artifact_path",
+                "/artifact_validation/connector_capture/artifact_path",
             ] {
                 if let Some(path) = output.pointer(pointer).and_then(Value::as_str) {
                     let trimmed = path.trim().trim_matches('`');

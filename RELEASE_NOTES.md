@@ -2,7 +2,7 @@
 
 This is the canonical release-notes file used by release tooling.
 
-## v0.6.3 (2026-06-24)
+## v0.6.3 (2026-06-26)
 
 Tandem 0.6.3 is a patch release for workflow-runtime reliability and Bug
 Monitor routing. It repairs the MCP/Notion/Composio workflow paths exercised by

@@ -2515,6 +2515,13 @@ pub(crate) async fn execute_automation_v2_node(
     };
     let tool_telemetry = summarize_automation_tool_activity(node, &session, &requested_tools);
     let mut tool_telemetry = tool_telemetry;
+    let connector_capture = persist_automation_connector_tool_result_capture(
+        automation,
+        run_id,
+        node,
+        &session,
+        &workspace_root,
+    )?;
     let verified_output_resolution = verified_output
         .as_ref()
         .map(|(_, _, resolution)| resolution.clone());
@@ -2561,6 +2568,9 @@ pub(crate) async fn execute_automation_v2_node(
             "attempt_evidence".to_string(),
             base_attempt_evidence.clone(),
         );
+        if let Some(capture) = connector_capture.as_ref() {
+            object.insert("connector_capture".to_string(), capture.clone());
+        }
     }
     let upstream_evidence = if automation_node_uses_upstream_validation_evidence(node) {
         Some(
@@ -2694,6 +2704,14 @@ pub(crate) async fn execute_automation_v2_node(
             object.insert("artifact_publication".to_string(), publication);
         }
     }
+    if let Some(capture) = connector_capture.as_ref() {
+        if let Some(object) = artifact_validation.as_object_mut() {
+            object.insert("connector_capture".to_string(), capture.clone());
+            if let Some(path) = capture.get("artifact_path").and_then(Value::as_str) {
+                object.insert("connector_capture_artifact_path".to_string(), json!(path));
+            }
+        }
+    }
     let (receipt_status, receipt_blocked_reason, receipt_approved) =
         node_output::detect_automation_node_status(
             node,
@@ -2750,6 +2768,7 @@ pub(crate) async fn execute_automation_v2_node(
         "email_delivery_attempted": tool_telemetry.get("email_delivery_attempted").cloned().unwrap_or_else(|| json!(false)),
         "email_delivery_succeeded": tool_telemetry.get("email_delivery_succeeded").cloned().unwrap_or_else(|| json!(false)),
         "latest_email_delivery_failure": tool_telemetry.get("latest_email_delivery_failure").cloned().unwrap_or(Value::Null),
+        "connector_capture": connector_capture.clone().unwrap_or(Value::Null),
     });
     let receipt_attempt_summary = json!({
         "receipt_kind": "attempt_summary",
@@ -2908,6 +2927,9 @@ pub(crate) async fn execute_automation_v2_node(
         verified_output,
         Some(artifact_validation),
     );
+    if let Some(capture) = connector_capture.as_ref() {
+        attach_automation_connector_capture_to_output(&mut output, capture);
+    }
     let run_after = state.get_automation_v2_run(run_id).await.unwrap_or(run);
     let cost_usd_delta = run_after.estimated_cost_usd - start_cost_usd;
     let prompt_tokens_delta = run_after.prompt_tokens.saturating_sub(start_prompt_tokens);

@@ -47,6 +47,22 @@ fn connector_prompt_includes_supported_upstream_artifact_path_shapes() {
                 }
             }
         }),
+        json!({
+            "alias": "connector_capture_path",
+            "output": {
+                "connector_capture": {
+                    "artifact_path": ".tandem/runs/run-path/artifacts/connector-results.json"
+                }
+            }
+        }),
+        json!({
+            "alias": "connector_capture_validation_path",
+            "output": {
+                "artifact_validation": {
+                    "connector_capture_artifact_path": ".tandem/runs/run-path/artifacts/connector-validation-results.json"
+                }
+            }
+        }),
     ];
     let agent = crate::AutomationAgentProfile {
         agent_id: "notion_writer".to_string(),
@@ -91,6 +107,8 @@ fn connector_prompt_includes_supported_upstream_artifact_path_shapes() {
         ".tandem/runs/run-path/artifacts/content-data-path.json",
         ".tandem/runs/run-path/artifacts/root-output-path.json",
         ".tandem/runs/run-path/artifacts/accepted-artifact.json",
+        ".tandem/runs/run-path/artifacts/connector-results.json",
+        ".tandem/runs/run-path/artifacts/connector-validation-results.json",
     ] {
         assert!(
             prompt.contains(expected_path),
