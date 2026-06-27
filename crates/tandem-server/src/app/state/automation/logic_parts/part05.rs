@@ -1598,38 +1598,58 @@ fn automation_connector_capture_string_array(capture: &Value, key: &str) -> Vec<
         .unwrap_or_default()
 }
 
-fn automation_connector_remote_workbench_tool(
+pub(crate) fn automation_connector_remote_python_helper_tool(
     requested_tools: &[String],
     connector_capture: &Value,
 ) -> Option<String> {
+    let capture_tools = automation_connector_capture_string_array(connector_capture, "tools");
     let mut candidates = requested_tools
         .iter()
-        .filter(|tool| tool.ends_with(".composio_remote_workbench"))
-        .cloned()
-        .collect::<Vec<_>>();
-    candidates.extend(
-        automation_connector_capture_string_array(connector_capture, "tools")
-            .into_iter()
-            .filter(|tool| tool.ends_with(".composio_remote_workbench")),
-    );
-    if let Some(candidate) = candidates.into_iter().next() {
-        return Some(candidate);
-    }
-
-    let capture_tools = automation_connector_capture_string_array(connector_capture, "tools");
-    requested_tools
-        .iter()
         .chain(capture_tools.iter())
-        .find_map(|tool| {
-            let namespace = tool.rsplit_once('.')?.0;
-            if tool.ends_with(".composio_multi_execute_tool")
-                || tool.ends_with(".composio_search_tools")
-            {
-                Some(format!("{namespace}.composio_remote_workbench"))
+        .filter_map(|tool| {
+            if tool.ends_with(".composio_remote_workbench") {
+                Some((0u8, tool.clone()))
+            } else if tool.ends_with(".composio_remote_bash_tool") {
+                Some((1u8, tool.clone()))
             } else {
                 None
             }
-    })
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    candidates.dedup_by(|left, right| left.1 == right.1);
+    candidates.into_iter().map(|(_, tool)| tool).next()
+}
+
+pub(crate) fn automation_connector_remote_python_args(
+    helper_tool: &str,
+    code: String,
+    current_step: &str,
+    session_id: &str,
+    workspace_root: &str,
+) -> Value {
+    let mut args = if helper_tool.ends_with(".composio_remote_bash_tool") {
+        json!({
+            "command": format!("python3 - <<'PY'\n{code}\nPY"),
+        })
+    } else {
+        json!({
+            "code_to_execute": code,
+        })
+    };
+    if let Some(object) = args.as_object_mut() {
+        object.insert("current_step".to_string(), json!(current_step));
+        object.insert("current_step_metric".to_string(), json!("1/1"));
+        object.insert("session_id".to_string(), json!(session_id));
+        object.insert("__session_id".to_string(), json!(session_id));
+        object.insert("__workspace_root".to_string(), json!(workspace_root));
+        object.insert("__effective_cwd".to_string(), json!(workspace_root));
+        object.insert(
+            "__project_id".to_string(),
+            json!(automation_workspace_project_id(workspace_root)),
+        );
+    }
+    args
 }
 
 fn automation_node_expects_connector_row_filter(node: &AutomationFlowNode) -> bool {
@@ -2258,19 +2278,21 @@ async fn automation_fetch_connector_remote_artifact(
             offset,
             CHUNK_SIZE,
         )?;
-        let args = json!({
-            "code_to_execute": code,
-            "current_step": "FETCH_CONNECTOR_REMOTE_RESULT_CHUNK",
-            "current_step_metric": "1/1",
-            "session_id": session.id.clone(),
-            "__session_id": session.id.clone(),
-            "__workspace_root": workspace_root,
-            "__effective_cwd": workspace_root,
-            "__project_id": automation_workspace_project_id(workspace_root),
-            "remote_artifact_path": remote_artifact_path,
-            "offset": offset,
-            "limit": CHUNK_SIZE,
-        });
+        let mut args = automation_connector_remote_python_args(
+            helper_tool,
+            code,
+            "FETCH_CONNECTOR_REMOTE_RESULT_CHUNK",
+            &session.id,
+            workspace_root,
+        );
+        if let Some(object) = args.as_object_mut() {
+            object.insert(
+                "remote_artifact_path".to_string(),
+                json!(remote_artifact_path),
+            );
+            object.insert("offset".to_string(), json!(offset));
+            object.insert("limit".to_string(), json!(CHUNK_SIZE));
+        }
         let tenant_context = automation.tenant_context();
         let dispatch_context = state.tool_dispatch_context(
             tandem_tools::ToolDispatchSource::new("automation_connector_remote_artifact_fetch")
@@ -2425,7 +2447,7 @@ async fn automation_try_materialize_connector_remote_result_artifact(
         return Ok(None);
     }
     let Some(helper_tool) =
-        automation_connector_remote_workbench_tool(requested_tools, connector_capture)
+        automation_connector_remote_python_helper_tool(requested_tools, connector_capture)
     else {
         return Ok(None);
     };
@@ -2439,16 +2461,13 @@ async fn automation_try_materialize_connector_remote_result_artifact(
         &automation_node_connector_source_array_key(node),
         &preserved_fields,
     )?;
-    let mut args = json!({
-        "code_to_execute": code,
-        "current_step": "MATERIALIZE_CONNECTOR_REMOTE_RESULT",
-        "current_step_metric": "1/1",
-        "session_id": session.id.clone(),
-        "__session_id": session.id.clone(),
-        "__workspace_root": workspace_root,
-        "__effective_cwd": workspace_root,
-        "__project_id": automation_workspace_project_id(workspace_root),
-    });
+    let mut args = automation_connector_remote_python_args(
+        &helper_tool,
+        code,
+        "MATERIALIZE_CONNECTOR_REMOTE_RESULT",
+        &session.id,
+        workspace_root,
+    );
     if let Some(object) = args.as_object_mut() {
         object.insert(
             "remote_file_paths".to_string(),

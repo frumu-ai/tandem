@@ -689,6 +689,60 @@ fn connector_source_retry_accepts_materialized_same_run_artifact() {
 }
 
 #[test]
+fn connector_remote_materializer_selects_available_bash_helper() {
+    let requested_tools = vec![
+        "mcp.composio_gmail.composio_multi_execute_tool".to_string(),
+        "mcp.composio_gmail.composio_remote_bash_tool".to_string(),
+    ];
+    let capture = json!({
+        "tools": ["mcp.composio_gmail.composio_multi_execute_tool"]
+    });
+
+    let helper = automation_connector_remote_python_helper_tool(&requested_tools, &capture)
+        .expect("bash helper selected");
+    assert_eq!(helper, "mcp.composio_gmail.composio_remote_bash_tool");
+
+    let args = automation_connector_remote_python_args(
+        &helper,
+        "print('ok')".to_string(),
+        "MATERIALIZE_CONNECTOR_REMOTE_RESULT",
+        "session-1",
+        "/tmp/workspace",
+    );
+    assert!(args
+        .get("command")
+        .and_then(Value::as_str)
+        .is_some_and(|command| command.contains("python3 - <<'PY'")));
+    assert!(args.get("code_to_execute").is_none());
+}
+
+#[test]
+fn connector_remote_materializer_prefers_workbench_when_available() {
+    let requested_tools = vec![
+        "mcp.composio_gmail.composio_remote_bash_tool".to_string(),
+        "mcp.composio_gmail.composio_remote_workbench".to_string(),
+    ];
+    let capture = json!({});
+
+    let helper = automation_connector_remote_python_helper_tool(&requested_tools, &capture)
+        .expect("workbench helper selected");
+    assert_eq!(helper, "mcp.composio_gmail.composio_remote_workbench");
+
+    let args = automation_connector_remote_python_args(
+        &helper,
+        "print('ok')".to_string(),
+        "MATERIALIZE_CONNECTOR_REMOTE_RESULT",
+        "session-1",
+        "/tmp/workspace",
+    );
+    assert_eq!(
+        args.get("code_to_execute").and_then(Value::as_str),
+        Some("print('ok')")
+    );
+    assert!(args.get("command").is_none());
+}
+
+#[test]
 fn validation_accepts_unknown_mcp_server_artifact_from_concrete_tool_receipt() {
     let workspace_root = std::env::temp_dir().join(format!(
         "tandem-dynamic-mcp-artifact-{}",

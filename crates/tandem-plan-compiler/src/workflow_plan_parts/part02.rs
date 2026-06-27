@@ -188,6 +188,21 @@ mod tests {
             Some(true)
         );
 
+        let updates_metadata = workflow_step_metadata_defaults(
+            "search_security_updates",
+            "research",
+            "Use Reddit MCP to search for infrastructure security updates and collect candidate threads.",
+            false,
+        )
+        .expect("metadata");
+        assert_eq!(
+            updates_metadata
+                .pointer("/connector_capture/enabled")
+                .and_then(Value::as_bool),
+            Some(true),
+            "plural source-update wording must not be treated as destination update intent"
+        );
+
         let writer_metadata = workflow_step_metadata_defaults(
             "write_notion_rows",
             "action",
