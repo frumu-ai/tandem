@@ -676,7 +676,7 @@ pub(crate) fn apply_automation_connector_capture_validation_metadata(
     capture: &Value,
     attempt: u32,
     max_attempts: u32,
-    _source_artifact_materialized: bool,
+    source_artifact_materialized: bool,
 ) {
     let Some(object) = artifact_validation.as_object_mut() else {
         return;
@@ -689,7 +689,7 @@ pub(crate) fn apply_automation_connector_capture_validation_metadata(
         .get("remote_hydration_required")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    if !remote_hydration_required {
+    if !remote_hydration_required || source_artifact_materialized {
         return;
     }
     let unmet = object
@@ -1114,8 +1114,7 @@ mod connector_capture_tests {
     }
 
     #[test]
-    fn connector_capture_validation_requires_remote_file_read_even_with_materialized_source_artifact(
-    ) {
+    fn connector_capture_validation_skips_remote_file_block_when_source_artifact_materialized() {
         let mut validation = json!({});
         let capture = json!({
             "artifact_path": ".tandem/runs/run/artifacts/source-connector-results.json",
@@ -1131,23 +1130,19 @@ mod connector_capture_tests {
             true,
         );
 
-        assert_eq!(
-            validation
-                .get("semantic_block_reason")
-                .and_then(Value::as_str),
-            Some("connector returned a remote result file, but the workflow artifact was finalized before materializing it")
-        );
-        assert!(validation
+        assert!(validation.get("semantic_block_reason").is_none());
+        assert!(!validation
             .get("unmet_requirements")
             .and_then(Value::as_array)
             .is_some_and(|rows| rows.iter().any(|value| {
                 value.as_str() == Some("connector_remote_result_not_materialized")
             })));
-        assert!(validation
-            .get("required_next_tool_actions")
-            .and_then(Value::as_array)
-            .is_some_and(|rows| rows.iter().any(|value| value
-                .as_str()
-                .is_some_and(|text| text.contains("/mnt/files/mex/play.json")))));
+        assert!(validation.get("required_next_tool_actions").is_none());
+        assert_eq!(
+            validation
+                .get("connector_capture_artifact_path")
+                .and_then(Value::as_str),
+            Some(".tandem/runs/run/artifacts/source-connector-results.json")
+        );
     }
 }
