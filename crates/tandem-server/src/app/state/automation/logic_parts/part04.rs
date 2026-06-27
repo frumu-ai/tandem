@@ -1,4 +1,4 @@
-fn automation_node_notion_database_row_update_requires_properties(node_action_text: &str) -> bool {
+fn automation_node_text_suggests_notion_database_row_update(node_action_text: &str) -> bool {
     (node_action_text.contains("notion")
         || node_action_text.contains("database")
         || node_action_text.contains("row"))
@@ -63,82 +63,6 @@ fn session_has_notion_database_property_update(session: &Session) -> bool {
                 .any(|field| properties.contains_key(*field))
         })
     })
-}
-
-fn automation_output_schema_validation_issue(schema: &Value, artifact: &Value) -> Option<String> {
-    fn validate_node(schema: &Value, value: &Value, path: &str) -> Option<String> {
-        if let Some(expected_const) = schema.get("const") {
-            if value != expected_const {
-                return Some(format!("{path} must equal {expected_const}"));
-            }
-        }
-
-        if let Some(type_schema) = schema.get("type") {
-            let type_matches = |expected: &str| match expected {
-                "object" => value.is_object(),
-                "array" => value.is_array(),
-                "string" => value.is_string(),
-                "number" => value.is_number(),
-                "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
-                "boolean" => value.is_boolean(),
-                "null" => value.is_null(),
-                _ => true,
-            };
-            let matches_type = type_schema
-                .as_str()
-                .map(type_matches)
-                .or_else(|| {
-                    type_schema
-                        .as_array()
-                        .map(|types| types.iter().filter_map(Value::as_str).any(type_matches))
-                })
-                .unwrap_or(true);
-            if !matches_type {
-                return Some(format!("{path} has the wrong JSON type"));
-            }
-        }
-
-        if let Some(required) = schema.get("required").and_then(Value::as_array) {
-            let Some(object) = value.as_object() else {
-                return Some(format!("{path} must be an object"));
-            };
-            for field in required.iter().filter_map(Value::as_str) {
-                if !object.contains_key(field) {
-                    return Some(format!("{path}.{field} is required"));
-                }
-            }
-        }
-
-        if let (Some(properties), Some(object)) = (
-            schema.get("properties").and_then(Value::as_object),
-            value.as_object(),
-        ) {
-            for (field, child_schema) in properties {
-                if let Some(child_value) = object.get(field) {
-                    let child_path = if path == "$" {
-                        format!("$.{field}")
-                    } else {
-                        format!("{path}.{field}")
-                    };
-                    if let Some(issue) = validate_node(child_schema, child_value, &child_path) {
-                        return Some(issue);
-                    }
-                }
-            }
-        }
-
-        if let (Some(item_schema), Some(items)) = (schema.get("items"), value.as_array()) {
-            for (index, item) in items.iter().enumerate() {
-                if let Some(issue) = validate_node(item_schema, item, &format!("{path}[{index}]")) {
-                    return Some(issue);
-                }
-            }
-        }
-
-        None
-    }
-
-    validate_node(schema, artifact, "$")
 }
 
 pub(crate) fn validate_automation_artifact_output_with_context(
@@ -549,7 +473,12 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         let task_kind = automation_node_task_kind(node);
         let node_action_text = format!("{} {}", node.node_id, node.objective).to_ascii_lowercase();
         let notion_database_row_update_requires_properties =
-            automation_node_notion_database_row_update_requires_properties(&node_action_text);
+            automation_node_notion_database_row_update_requires_properties(
+                node,
+                session,
+                tool_telemetry,
+                &node_action_text,
+            );
         let notion_database_property_update_satisfied =
             !notion_database_row_update_requires_properties
                 || session_has_notion_database_property_update(session);
@@ -731,10 +660,29 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             || (use_upstream_evidence && upstream_evidence.is_some());
         let current_attempt_has_recorded_activity =
             current_attempt_has_non_verified_activity || verified_output_materialized;
-        let preexisting_output_reuse_allowed =
-            automation_node_allows_preexisting_output_reuse(node);
+        let connector_source_verified_output_has_rows =
+            automation_node_expects_connector_source_materialization(node)
+                && accepted_output.as_ref().is_some_and(|(_, text)| {
+                    serde_json::from_str::<Value>(text)
+                        .ok()
+                        .is_some_and(|artifact| {
+                            automation_artifact_json_has_materialized_source_rows(&artifact, 0)
+                        })
+                });
+        let connector_source_output_is_run_scoped = run_id.is_some_and(|current_run_id| {
+            required_output_path
+                .as_deref()
+                .is_some_and(|path| path.contains(current_run_id))
+        });
+        let connector_source_output_satisfied_by_capture =
+            connector_source_verified_output_has_rows
+                && connector_source_output_is_run_scoped
+                && automation_connector_capture_extracted_item_count(tool_telemetry) > 0;
+        let preexisting_output_reuse_allowed = automation_node_allows_preexisting_output_reuse(node)
+            || connector_source_output_satisfied_by_capture;
         let current_attempt_output_materialized = current_attempt_output_materialized_via_filesystem
-            || (verified_output_materialized && current_attempt_has_non_verified_activity);
+            || (verified_output_materialized && current_attempt_has_non_verified_activity)
+            || connector_source_output_satisfied_by_capture;
         let must_write_file_statuses = must_write_files
             .iter()
             .map(|required_path| {
@@ -775,6 +723,7 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             "current_attempt_output_materialized": current_attempt_output_materialized,
             "current_attempt_output_materialized_via_filesystem": current_attempt_output_materialized_via_filesystem,
             "verified_output_materialized": verified_output_materialized,
+            "connector_source_output_satisfied_by_capture": connector_source_output_satisfied_by_capture,
             "required_output_path": required_output_path,
         });
         if let Some(object) = validation_basis.as_object_mut() {
@@ -1590,26 +1539,54 @@ pub(crate) fn validate_automation_artifact_output_with_context(
     if accepted_output.is_some() && accepted_candidate_source.is_none() {
         accepted_candidate_source = Some("verified_output".to_string());
     }
-    if validator_kind == crate::AutomationOutputValidatorKind::StructuredJson {
-        if let (Some((_, text)), Some(schema)) = (
-            accepted_output.as_ref(),
-            node.output_contract
-                .as_ref()
-                .and_then(|contract| contract.schema.as_ref()),
-        ) {
-            let schema_issue = serde_json::from_str::<Value>(text)
-                .map_err(|err| format!("artifact is not valid JSON: {err}"))
-                .and_then(|artifact| {
-                    automation_output_schema_validation_issue(schema, &artifact)
-                        .map(Err)
-                        .unwrap_or(Ok(()))
-                })
-                .err();
-            if let Some(issue) = schema_issue {
+    if let (Some((_, text)), Some(schema)) = (
+        accepted_output.as_ref(),
+        node.output_contract
+            .as_ref()
+            .and_then(|contract| contract.schema.as_ref()),
+    ) {
+        let schema_issue = serde_json::from_str::<Value>(text)
+            .map_err(|err| format!("artifact is not valid JSON: {err}"))
+            .and_then(|artifact| {
+                automation_output_schema_validation_issue(schema, &artifact)
+                    .map(Err)
+                    .unwrap_or(Ok(()))
+            })
+            .err();
+        if let Some(issue) = schema_issue {
+            accepted_output = None;
+            unmet_requirements.push("output_schema_invalid".to_string());
+            let reason = format!("artifact does not match output_contract.schema: {issue}");
+            rejected_reason = Some(reason.clone());
+            semantic_block_reason = Some(reason);
+        }
+    }
+    if let Some((_, text)) = accepted_output.as_ref() {
+        if let Ok(artifact) = serde_json::from_str::<Value>(text) {
+            if let Some(path) = automation_artifact_truncated_identity_value_path(&artifact) {
                 accepted_output = None;
-                unmet_requirements.push("output_schema_invalid".to_string());
-                let reason = format!("artifact does not match output_contract.schema: {issue}");
+                unmet_requirements.push("truncated_source_identity_value".to_string());
+                let reason = format!(
+                    "artifact contains a truncated source identity value at `{path}`; read the full upstream artifact and write the complete title/link value"
+                );
+                if rejected_reason.is_none() {
+                    rejected_reason = Some(reason.clone());
+                }
+                if semantic_block_reason.is_none() {
+                    semantic_block_reason = Some(reason);
+                }
+            }
+        }
+    }
+    if let Some((_, text)) = accepted_output.as_ref() {
+        if automation_connector_capture_source_rows_missing(node, tool_telemetry, text) {
+            accepted_output = None;
+            unmet_requirements.push("connector_capture_items_not_materialized".to_string());
+            let reason = "connector capture found source rows, but the output artifact did not materialize any source rows".to_string();
+            if rejected_reason.is_none() {
                 rejected_reason = Some(reason.clone());
+            }
+            if semantic_block_reason.is_none() {
                 semantic_block_reason = Some(reason);
             }
         }
@@ -2115,11 +2092,22 @@ pub(crate) fn validate_automation_artifact_output_with_context(
             tool_telemetry,
             scaled_repair_budget,
         );
+    let truncated_source_identity_value = unmet_requirements
+        .iter()
+        .any(|value| value == "truncated_source_identity_value");
+    let effective_node_max_attempts = tool_telemetry_u32(tool_telemetry, "node_max_attempts")
+        .map(|max_attempts| {
+            if truncated_source_identity_value {
+                max_attempts.max(3)
+            } else {
+                max_attempts
+            }
+        });
     let node_attempt_has_retry_remaining = tool_telemetry_u32(tool_telemetry, "node_attempt")
-        .zip(tool_telemetry_u32(tool_telemetry, "node_max_attempts"))
+        .zip(effective_node_max_attempts)
         .is_some_and(|(attempt, max_attempts)| attempt < max_attempts);
     let node_attempt_exhausted = tool_telemetry_u32(tool_telemetry, "node_attempt")
-        .zip(tool_telemetry_u32(tool_telemetry, "node_max_attempts"))
+        .zip(effective_node_max_attempts)
         .is_some_and(|(attempt, max_attempts)| attempt >= max_attempts);
     let external_mutation_failed = unmet_requirements
         .iter()
@@ -2133,6 +2121,7 @@ pub(crate) fn validate_automation_artifact_output_with_context(
                     | "mcp_required_tool_missing"
                     | "external_mutation_failed"
                     | "structured_handoff_missing"
+                    | "truncated_source_identity_value"
             ) || (value == "missing_successful_web_research"
                 && validator_kind != crate::AutomationOutputValidatorKind::ResearchBrief)
                 || (value == "no_concrete_reads"
@@ -2160,12 +2149,17 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         repair_exhausted = false;
     }
     let has_required_tools = !enforcement.required_tools.is_empty();
+    let schema_validation_failed = unmet_requirements
+        .iter()
+        .any(|value| value == "output_schema_invalid");
     let contract_requires_repair = validator_kind
         == crate::AutomationOutputValidatorKind::ResearchBrief
         || !enforcement.retry_on_missing.is_empty()
         || has_required_tools
         || external_mutation_failed
-        || validator_kind == crate::AutomationOutputValidatorKind::StructuredJson;
+        || validator_kind == crate::AutomationOutputValidatorKind::StructuredJson
+        || schema_validation_failed
+        || truncated_source_identity_value;
     let current_attempt_has_recorded_activity = validation_basis
         .get("current_attempt_has_recorded_activity")
         .and_then(Value::as_bool)
@@ -2273,6 +2267,9 @@ pub(crate) fn validate_automation_artifact_output_with_context(
         && !unmet_requirements
             .iter()
             .any(|value| value == "current_attempt_output_missing")
+        && !unmet_requirements
+            .iter()
+            .any(|value| value == "output_schema_invalid")
     {
         if let Some((path, text)) = verified_output_for_restore {
             accepted_output = Some((path.clone(), text.clone()));

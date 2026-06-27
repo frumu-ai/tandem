@@ -1283,6 +1283,29 @@ fn derive_terminal_run_state_allows_pending_verify_failed_before_attempt_cap() {
 }
 
 #[test]
+fn derive_terminal_run_state_allows_pending_needs_repair_before_attempt_cap() {
+    let automation = test_automation();
+    let mut run = test_run_with_output(json!({
+        "status": "needs_repair",
+        "blocked_reason": "connector source artifact only materialized the truncated preview rows",
+        "blocker_category": "artifact_contract_unmet",
+        "artifact_validation": {
+            "repair_exhausted": false,
+            "unmet_requirements": ["connector_truncated_preview_only"]
+        }
+    }));
+    run.checkpoint.pending_nodes = vec!["research-brief".to_string()];
+    run.checkpoint
+        .node_attempts
+        .insert("research-brief".to_string(), 1);
+
+    assert_eq!(
+        derive_terminal_run_state(&automation, &run, false),
+        DerivedTerminalRunState::Completed
+    );
+}
+
+#[test]
 fn derive_terminal_run_state_fails_pending_verify_failed_at_attempt_cap() {
     let automation = test_automation();
     let mut run = test_run_with_output(json!({
@@ -1302,6 +1325,40 @@ fn derive_terminal_run_state_fails_pending_verify_failed_at_attempt_cap() {
             detail: "automation run failed from node outcomes: research-brief".to_string(),
         }
     );
+}
+
+#[test]
+fn recorded_attempt_exhaustion_respects_connector_preview_retry_floor() {
+    let mut automation = test_automation();
+    automation.flow.nodes[0].retry_policy = Some(json!({ "max_attempts": 1 }));
+    let node = &automation.flow.nodes[0];
+    let mut run = test_run_with_output(json!({
+        "status": "needs_repair",
+        "blocker_category": "artifact_contract_unmet",
+        "blocked_reason": "connector source artifact only materialized the truncated preview rows",
+        "artifact_validation": {
+            "unmet_requirements": ["connector_truncated_preview_only"],
+            "repair_exhausted": false
+        }
+    }));
+
+    run.checkpoint
+        .node_attempts
+        .insert("research-brief".to_string(), 1);
+    assert!(!automation_node_recorded_attempts_exhausted(
+        &run,
+        "research-brief",
+        node
+    ));
+
+    run.checkpoint
+        .node_attempts
+        .insert("research-brief".to_string(), 3);
+    assert!(automation_node_recorded_attempts_exhausted(
+        &run,
+        "research-brief",
+        node
+    ));
 }
 
 #[test]
@@ -1759,6 +1816,30 @@ fn missing_required_output_execution_error_gets_repair_retry_floor() {
 
     assert_eq!(
         automation_node_execution_error_max_attempts(&node, detail, category),
+        3
+    );
+}
+
+#[test]
+fn truncated_source_identity_error_gets_repair_retry_floor() {
+    let detail = "artifact contains a truncated source identity value at `leads.0.thread_link`; read the full upstream artifact and write the complete title/link value";
+    let mut node = test_node("filter_local_llm_privacy", Vec::new());
+    node.retry_policy = Some(json!({ "max_attempts": 1 }));
+
+    assert_eq!(
+        automation_node_execution_error_max_attempts(&node, detail, "artifact_contract_unmet"),
+        3
+    );
+}
+
+#[test]
+fn connector_preview_only_error_gets_repair_retry_floor() {
+    let detail = "connector source artifact only materialized the truncated preview rows";
+    let mut node = test_node("search_source", Vec::new());
+    node.retry_policy = Some(json!({ "max_attempts": 1 }));
+
+    assert_eq!(
+        automation_node_execution_error_max_attempts(&node, detail, "artifact_contract_unmet"),
         3
     );
 }

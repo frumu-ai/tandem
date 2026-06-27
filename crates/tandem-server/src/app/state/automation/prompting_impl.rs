@@ -87,6 +87,47 @@ fn automation_prompt_token_looks_like_tool_identifier(token: &str) -> bool {
         || lowered.starts_with("mcp.")
 }
 
+fn automation_prompt_token_looks_like_connector_metadata_path(token: &str) -> bool {
+    let lowered = token.trim().trim_matches('`').to_ascii_lowercase();
+    lowered.starts_with("remote_file_info.")
+        || lowered.starts_with("data_preview.")
+        || lowered.starts_with("response.")
+        || lowered.starts_with("result.")
+        || lowered.starts_with("results.")
+        || lowered.starts_with("content.")
+        || lowered.starts_with("metadata.")
+        || lowered.starts_with("connector_capture.")
+        || lowered.ends_with("_id")
+        || lowered.ends_with("_url")
+}
+
+fn automation_prompt_token_has_workspace_file_extension(token: &str) -> bool {
+    let extension = std::path::Path::new(token)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase());
+    matches!(
+        extension.as_deref(),
+        Some(
+            "md" | "markdown"
+                | "txt"
+                | "json"
+                | "jsonl"
+                | "yaml"
+                | "yml"
+                | "csv"
+                | "toml"
+                | "ini"
+                | "cfg"
+                | "conf"
+                | "env"
+                | "xml"
+                | "html"
+                | "sql"
+        )
+    )
+}
+
 fn automation_prompt_extract_workspace_paths(
     text: &str,
     allow_bare_filenames: bool,
@@ -107,11 +148,12 @@ fn automation_prompt_extract_workspace_paths(
         if automation_prompt_token_looks_like_tool_identifier(token) {
             continue;
         }
-        let path = std::path::Path::new(token);
-        let has_extension = path
-            .extension()
-            .and_then(|value| value.to_str())
-            .is_some_and(|value| !value.is_empty());
+        if token.starts_with("...")
+            || automation_prompt_token_looks_like_connector_metadata_path(token)
+        {
+            continue;
+        }
+        let has_extension = automation_prompt_token_has_workspace_file_extension(token);
         let looks_like_path = token.starts_with('/')
             || token.starts_with("./")
             || token.starts_with("../")
@@ -584,6 +626,38 @@ fn automation_prompt_concrete_connector_tools(
     tools
 }
 
+fn automation_prompt_node_requires_connector_source(node: &AutomationFlowNode) -> bool {
+    let metadata = node.metadata.as_ref();
+    let connector_capture_enabled = metadata
+        .and_then(|metadata| {
+            metadata
+                .get("connector_capture")
+                .or_else(|| metadata.pointer("/builder/connector_capture"))
+        })
+        .is_some_and(|value| match value {
+            Value::Bool(enabled) => *enabled,
+            Value::Object(map) => map.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+            _ => true,
+        });
+    if connector_capture_enabled {
+        return true;
+    }
+    if metadata
+        .and_then(|metadata| metadata.get("artifact_type"))
+        .and_then(Value::as_str)
+        .is_some_and(|artifact_type| artifact_type.to_ascii_lowercase().contains("source"))
+    {
+        return true;
+    }
+    if metadata.is_some_and(|metadata| {
+        metadata.get("source_query").is_some() || metadata.get("search_query").is_some()
+    }) {
+        return true;
+    }
+    let objective = node.objective.to_ascii_lowercase();
+    objective.contains("call mcp.") || objective.contains("call `mcp.")
+}
+
 pub(crate) fn render_automation_v2_prompt(
     automation: &AutomationV2Spec,
     workspace_root: &str,
@@ -827,8 +901,9 @@ pub(crate) fn render_automation_v2_prompt_with_options(
             &effective_mcp_allowed_servers,
         )
     {
-        let optional_connector_reference =
-            enforcement::automation_node_allows_optional_connector_references(node);
+        let required_connector_source = automation_prompt_node_requires_connector_source(node);
+        let optional_connector_reference = !required_connector_source
+            && enforcement::automation_node_allows_optional_connector_references(node);
         let concrete_connector_line = if concrete_connector_tools.is_empty() {
             String::new()
         } else if optional_connector_reference {
@@ -1003,8 +1078,9 @@ pub(crate) fn render_automation_v2_prompt_with_options(
         write_scope_rule
     ));
     if let Some(output_path) = required_output_path.as_ref() {
-        let optional_connector_reference =
-            enforcement::automation_node_allows_optional_connector_references(node);
+        let required_connector_source = automation_prompt_node_requires_connector_source(node);
+        let optional_connector_reference = !required_connector_source
+            && enforcement::automation_node_allows_optional_connector_references(node);
         let concrete_mcp_tools = &concrete_connector_tools;
         let concrete_mcp_line = if concrete_mcp_tools.is_empty() {
             String::new()

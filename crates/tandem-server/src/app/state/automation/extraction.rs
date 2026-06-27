@@ -354,6 +354,7 @@ pub(crate) fn extract_recoverable_json_artifact(raw: &str) -> Option<Value> {
     let nested = [
         handoff.pointer("/structured_handoff").cloned(),
         handoff.pointer("/content/structured_handoff").cloned(),
+        handoff.pointer("/artifact").cloned(),
         handoff.pointer("/content/data").cloned(),
         handoff.pointer("/data").cloned(),
         handoff.pointer("/artifact/content").cloned(),

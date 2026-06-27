@@ -1783,7 +1783,7 @@ pub(crate) async fn execute_automation_v2_node(
     let requested_tools = automation_requested_tools_for_node(
         node,
         &workspace_root,
-        allowlist.clone(),
+        mcp_preflight_scope.allowlist.clone(),
         &available_tool_names,
     );
     let selected_mcp_server_names = mcp_tool_diagnostics
@@ -2445,10 +2445,9 @@ pub(crate) async fn execute_automation_v2_node(
         }
     }
     let expect_tool_activity = !requested_tools.is_empty();
-    let session = load_automation_session_after_run(state, &session_id, expect_tool_activity)
+    let mut session = load_automation_session_after_run(state, &session_id, expect_tool_activity)
         .await
         .ok_or_else(|| anyhow::anyhow!("automation session `{}` missing after run", session_id))?;
-    let session_text = extract_session_text_output(&session);
     let read_only_source_mutations =
         read_only_source_snapshot_mutations(&workspace_root, &read_only_source_snapshot);
     if !read_only_source_mutations.is_empty() {
@@ -2469,66 +2468,54 @@ pub(crate) async fn execute_automation_v2_node(
             mutation_paths.join(", ")
         );
     }
-    let verified_output = if let Some(output_path) = required_output_path.as_deref() {
-        let resolution = reconcile_automation_resolve_verified_output_path(
-            &session,
-            &workspace_root,
-            run_id,
-            node,
-            output_path,
-            250,
-            25,
-        )
-        .await?
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "required output `{}` was not created for node `{}`",
+    let (mut verified_output, mut verified_output_error) =
+        if let Some(output_path) = required_output_path.as_deref() {
+            automation_resolve_required_output_candidate(
+                &session,
+                &workspace_root,
+                run_id,
+                node,
                 output_path,
-                node.node_id
             )
-        })?;
-        let resolved = resolution.path.clone();
-        if !resolved.is_file() {
-            anyhow::bail!(
-                "required output `{}` for node `{}` is not a file",
-                output_path,
-                node.node_id
-            );
-        }
-        let file_text = std::fs::read_to_string(&resolved).map_err(|error| {
-            anyhow::anyhow!(
-                "required output `{}` for node `{}` could not be read: {}",
-                output_path,
-                node.node_id,
-                error
-            )
-        })?;
-        let display_path = resolved
-            .strip_prefix(&workspace_root)
-            .ok()
-            .and_then(|value| value.to_str().map(str::to_string))
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| output_path.to_string());
-        Some((display_path, file_text, resolution))
-    } else {
-        None
-    };
-    let tool_telemetry = summarize_automation_tool_activity(node, &session, &requested_tools);
-    let mut tool_telemetry = tool_telemetry;
-    annotate_automation_connector_capture_read_requirements(&mut tool_telemetry, &upstream_inputs);
-    let connector_capture = persist_automation_connector_tool_result_capture(
+            .await?
+        } else {
+            (None, None)
+        };
+    let mut connector_capture = persist_automation_connector_tool_result_capture(
         automation,
         run_id,
         node,
         &session,
         &workspace_root,
     )?;
+    if let Some(output_path) = required_output_path.as_deref() {
+        automation_materialize_connector_verified_output(
+            state,
+            &run,
+            automation,
+            run_id,
+            node,
+            &mut session,
+            &workspace_root,
+            output_path,
+            &requested_tools,
+            &mut connector_capture,
+            &mut verified_output,
+            &mut verified_output_error,
+        )
+        .await?;
+    }
+    let tool_telemetry = summarize_automation_tool_activity(node, &session, &requested_tools);
+    let mut tool_telemetry = tool_telemetry;
+    annotate_automation_connector_capture_read_requirements(&mut tool_telemetry, &upstream_inputs);
     let verified_output_resolution = verified_output
         .as_ref()
         .map(|(_, _, resolution)| resolution.clone());
     let verified_output_for_evidence = verified_output
         .as_ref()
         .map(|(path, text, _)| (path.clone(), text.clone()));
+    let (connector_source_artifact_materialized, connector_source_artifact_row_count) =
+        automation_connector_source_artifact_stats(node, verified_output_for_evidence.as_ref());
     let base_attempt_evidence = node_output::build_automation_attempt_evidence(
         node,
         attempt,
@@ -2565,6 +2552,9 @@ pub(crate) async fn execute_automation_v2_node(
             "recovered_after_prompt_timeout".to_string(),
             json!(recovered_after_prompt_timeout),
         );
+        if let Some(error) = verified_output_error.as_ref() {
+            object.insert("verified_output_error".to_string(), json!(error));
+        }
         object.insert(
             "attempt_evidence".to_string(),
             base_attempt_evidence.clone(),
@@ -2587,6 +2577,7 @@ pub(crate) async fn execute_automation_v2_node(
     } else {
         None
     };
+    let session_text = extract_session_text_output(&session);
     let verified_output = verified_output.map(|(path, text, _)| (path, text));
     let (verified_output, mut artifact_validation, artifact_rejected_reason) =
         validate_automation_artifact_output_with_context(
@@ -2652,6 +2643,14 @@ pub(crate) async fn execute_automation_v2_node(
             capture,
             attempt,
             max_attempts,
+            connector_source_artifact_materialized,
+        );
+        apply_connector_truncated_preview_validation(
+            &mut artifact_validation,
+            capture,
+            attempt,
+            max_attempts,
+            connector_source_artifact_row_count,
         );
     }
     let artifact_publication = if artifact_validation

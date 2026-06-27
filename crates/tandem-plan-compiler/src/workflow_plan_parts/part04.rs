@@ -34,20 +34,30 @@ pub fn workflow_step_expects_connector_source_capture(
     ]
     .iter()
     .any(|needle| text.contains(needle));
-    let writer_intent = [
+    let writer_intent = workflow_step_text_has_writer_intent(&text);
+    collection_intent && !writer_intent
+}
+
+fn workflow_step_text_has_writer_intent(text: &str) -> bool {
+    let phrase_intent = [
         "write to",
         "save to",
-        "insert",
-        "upsert",
-        "update",
         "create page",
         "send ",
         "post to",
-        "publish",
         "draft email",
-        "outreach",
     ]
     .iter()
     .any(|needle| text.contains(needle));
-    collection_intent && !writer_intent
+    if phrase_intent {
+        return true;
+    }
+
+    let tokens = text
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<std::collections::BTreeSet<_>>();
+    ["insert", "upsert", "update", "publish", "outreach"]
+        .iter()
+        .any(|needle| tokens.contains(needle))
 }
