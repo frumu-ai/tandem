@@ -92,6 +92,69 @@ pub(crate) fn automation_node_metadata_tool_allowlist(node: &AutomationFlowNode)
     config::channels::normalize_allowed_tools(allowlist)
 }
 
+#[derive(Debug)]
+struct ConnectorLargeResultHelperPolicy {
+    namespace_markers: &'static [&'static str],
+    source_tool_suffixes: &'static [&'static str],
+    helper_tool_suffixes: &'static [&'static str],
+}
+
+const CONNECTOR_LARGE_RESULT_HELPER_POLICIES: &[ConnectorLargeResultHelperPolicy] =
+    &[ConnectorLargeResultHelperPolicy {
+        namespace_markers: &[".composio_"],
+        source_tool_suffixes: &["composio_multi_execute_tool", "composio_search_tools"],
+        helper_tool_suffixes: &[
+            "composio_remote_bash_tool",
+            "composio_remote_workbench",
+            "composio_get_tool_schemas",
+        ],
+    }];
+
+fn connector_large_result_helper_policy_for_tool(
+    normalized_tool: &str,
+) -> Option<&'static ConnectorLargeResultHelperPolicy> {
+    if !normalized_tool.starts_with("mcp.") {
+        return None;
+    }
+    CONNECTOR_LARGE_RESULT_HELPER_POLICIES
+        .iter()
+        .find(|policy| {
+            policy
+                .namespace_markers
+                .iter()
+                .any(|marker| normalized_tool.contains(marker))
+                && (normalized_tool.ends_with(".*")
+                    || policy
+                        .source_tool_suffixes
+                        .iter()
+                        .any(|suffix| normalized_tool.ends_with(suffix)))
+        })
+}
+
+fn connector_large_result_helper_policy_tools(requested_tools: &[String]) -> Vec<String> {
+    let mut namespace_policies = requested_tools
+        .iter()
+        .filter_map(|tool| {
+            let normalized = tool.trim().to_ascii_lowercase();
+            let policy = connector_large_result_helper_policy_for_tool(&normalized)?;
+            let namespace = normalized.rsplit_once('.')?.0.to_string();
+            Some((namespace, policy))
+        })
+        .collect::<Vec<_>>();
+    namespace_policies.sort_by(|left, right| left.0.cmp(&right.0));
+    namespace_policies.dedup_by(|left, right| left.0 == right.0);
+
+    let mut helpers = Vec::new();
+    for (namespace, policy) in namespace_policies {
+        for suffix in policy.helper_tool_suffixes {
+            helpers.push(format!("{namespace}.{suffix}"));
+        }
+    }
+    helpers.sort();
+    helpers.dedup();
+    helpers
+}
+
 pub(crate) fn automation_node_has_explicit_tool_policy(node: &AutomationFlowNode) -> bool {
     node.tool_policy.is_some()
         || node.mcp_policy.is_some()
@@ -117,6 +180,10 @@ pub(crate) fn automation_node_mcp_preflight_scope(
 ) -> AutomationNodeMcpPreflightScope {
     if automation_node_has_explicit_tool_policy(node) {
         let policy = node.mcp_policy.as_ref();
+        let mut allowlist = automation_node_metadata_tool_allowlist(node);
+        allowlist.extend(connector_large_result_helper_policy_tools(&allowlist));
+        allowlist.sort();
+        allowlist.dedup();
         return AutomationNodeMcpPreflightScope {
             allowed_servers: policy
                 .map(AutomationAgentMcpPolicy::effective_allowed_servers)
@@ -124,14 +191,18 @@ pub(crate) fn automation_node_mcp_preflight_scope(
             allowed_connections: policy
                 .map(|policy| policy.allowed_connections.clone())
                 .unwrap_or_default(),
-            allowlist: automation_node_metadata_tool_allowlist(node),
+            allowlist,
         };
     }
 
+    let mut allowlist = agent_allowlist.to_vec();
+    allowlist.extend(connector_large_result_helper_policy_tools(&allowlist));
+    allowlist.sort();
+    allowlist.dedup();
     AutomationNodeMcpPreflightScope {
         allowed_servers: agent.mcp_policy.effective_allowed_servers(),
         allowed_connections: agent.mcp_policy.allowed_connections.clone(),
-        allowlist: agent_allowlist.to_vec(),
+        allowlist,
     }
 }
 
@@ -802,38 +873,25 @@ fn connector_source_tool_allowed_for_required_capability(
         })
 }
 
-fn composio_large_result_helper_tools(
+fn connector_large_result_helper_tools(
     requested_tools: &[String],
     available_tool_names: &HashSet<String>,
 ) -> Vec<String> {
-    let mut namespaces = requested_tools
+    let mut namespace_policies = requested_tools
         .iter()
         .filter_map(|tool| {
             let normalized = tool.trim().to_ascii_lowercase();
-            if !normalized.starts_with("mcp.")
-                || !normalized.contains(".composio_")
-                || !(normalized.ends_with(".composio_multi_execute_tool")
-                    || normalized.ends_with(".composio_search_tools")
-                    || normalized.ends_with(".*"))
-            {
-                return None;
-            }
-            normalized
-                .rsplit_once('.')
-                .map(|(namespace, _)| namespace.to_string())
+            let policy = connector_large_result_helper_policy_for_tool(&normalized)?;
+            let namespace = normalized.rsplit_once('.')?.0.to_string();
+            Some((namespace, policy))
         })
         .collect::<Vec<_>>();
-    namespaces.sort();
-    namespaces.dedup();
+    namespace_policies.sort_by(|left, right| left.0.cmp(&right.0));
+    namespace_policies.dedup_by(|left, right| left.0 == right.0);
 
-    let helper_suffixes = [
-        "composio_remote_bash_tool",
-        "composio_remote_workbench",
-        "composio_get_tool_schemas",
-    ];
     let mut helpers = Vec::new();
-    for namespace in namespaces {
-        for suffix in helper_suffixes {
+    for (namespace, policy) in namespace_policies {
+        for suffix in policy.helper_tool_suffixes {
             let candidate = format!("{namespace}.{suffix}");
             if available_tool_names.contains(&candidate) {
                 helpers.push(candidate);
@@ -879,28 +937,24 @@ pub(crate) fn resolve_automation_node_tool_envelope(
             available_tool_names,
         ));
     }
-    if connector_source_node {
-        requested_tools.extend(composio_large_result_helper_tools(
-            &requested_tools,
-            available_tool_names,
-        ));
-    }
+    requested_tools.extend(connector_large_result_helper_tools(
+        &requested_tools,
+        available_tool_names,
+    ));
     let explicit_node_tool_allowlist = automation_node_metadata_tool_allowlist(node);
     if !automation_node_is_code_workflow(node) && automation_node_has_explicit_tool_policy(node) {
         let mut explicit_allowed =
             config::channels::normalize_allowed_tools(explicit_node_tool_allowlist.clone());
-        if connector_source_node {
-            let helpers = composio_large_result_helper_tools(
-                &explicit_allowed
-                    .iter()
-                    .chain(requested_tools.iter())
-                    .cloned()
-                    .collect::<Vec<_>>(),
-                available_tool_names,
-            );
-            explicit_allowed.extend(helpers.clone());
-            requested_tools.extend(helpers);
-        }
+        let helpers = connector_large_result_helper_tools(
+            &explicit_allowed
+                .iter()
+                .chain(requested_tools.iter())
+                .cloned()
+                .collect::<Vec<_>>(),
+            available_tool_names,
+        );
+        explicit_allowed.extend(helpers.clone());
+        requested_tools.extend(helpers);
         if explicit_allowed.iter().any(|tool| tool.starts_with("mcp."))
             && automation_mcp_list_needed_for_tools(&explicit_allowed)
         {

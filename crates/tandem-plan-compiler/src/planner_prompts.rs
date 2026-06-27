@@ -33,6 +33,7 @@ pub(crate) fn workflow_plan_common_sections() -> String {
             "- when the request names connector-backed sources or `allowed_mcp_servers` is non-empty, plan MCP-backed steps instead of inventing hidden capabilities or defaulting to generic web search\n",
             "- connector-backed source research must collect a useful candidate pool: for Reddit/subreddit lead or signal gathering, default to 10-25 candidates per search shard, preserve source counts and connector limitations, and never use limit=1 unless the user explicitly asks for a smoke test or single-sample probe\n",
             "- connector-backed source collection steps must be durable for large result sets: set metadata.connector_capture={{\"enabled\":true}} on MCP-backed search/list/query/fetch/extract steps so the runtime persists full connector tool results to a run artifact for downstream filtering\n",
+            "- when a connector collection tool returns remote_file_info, saved file instructions, data_preview with a \"...N more items\" marker, or total_results greater than the visible rows, the step objective must require reading/materializing the referenced remote result file before writing the workflow artifact; do not allow preview-only artifacts for source collection\n",
             "- connector database writers must be deterministic: when the capability summary exposes a connector_writer_contract, any database-row write step for that connector must include metadata.connector, metadata.connector_writer=true, metadata.writer_kind, metadata.input_alias, metadata.source_array_key or source_array_path, metadata.property_mappings, metadata.duplicate_keys, and the connector-specific target id/url\n",
             "- for Notion database-row writes, use the Notion writer contract from the capability summary; target an existing data source with notion_data_source_url or notion_data_source_id, map only schema properties, use the schema title property as title_property, and do not leave duplicate protection for runtime inference\n",
             "- when a prompt names a file as read-only or source of truth, never infer it as a write target; treat it as input-only unless the contract explicitly declares it as output\n",
@@ -111,6 +112,7 @@ mod tests {
         assert!(sections.contains("10-25 candidates per search shard"));
         assert!(sections.contains("never use limit=1"));
         assert!(sections.contains("metadata.connector_capture"));
+        assert!(sections.contains("reading/materializing the referenced remote result file"));
         assert!(sections.contains("max_parallel_agents"));
         assert!(sections.contains("explicit input_refs for the upstream steps"));
         assert!(sections.contains("final recap, merged summary, or daily rollup"));

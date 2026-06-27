@@ -284,6 +284,11 @@ fn automation_connector_capture_collect_items_from_payload(
                     }
                     if matches!(row, Value::Object(_) | Value::Array(_)) {
                         items.push(row.clone());
+                    } else if row.as_str().is_some_and(
+                        automation_connector_capture_string_is_truncation_marker,
+                    ) {
+                        *truncated = true;
+                        return;
                     }
                 }
             }
@@ -350,6 +355,16 @@ fn automation_connector_capture_collect_items_from_payload(
     }
 }
 
+fn automation_connector_capture_string_is_truncation_marker(value: &str) -> bool {
+    let trimmed = value.trim().to_ascii_lowercase();
+    trimmed.starts_with("...")
+        && (trimmed.contains("more item")
+            || trimmed.contains("more result")
+            || trimmed.contains("more row")
+            || trimmed.contains("more post")
+            || trimmed.contains("truncated"))
+}
+
 fn automation_connector_capture_result_payload(result: Option<&Value>) -> Value {
     automation_tool_result_output_payload(result).unwrap_or(Value::Null)
 }
@@ -403,6 +418,86 @@ fn automation_connector_capture_tool_is_composio_remote_reader(normalized_tool: 
         || normalized_tool.ends_with(".composio_remote_workbench")
 }
 
+fn automation_connector_capture_remote_file_paths(remote_files: &[Value]) -> Vec<String> {
+    remote_files
+        .iter()
+        .filter_map(|value| value.get("file_path").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| value.starts_with("/mnt/files/"))
+        .map(str::to_string)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn automation_connector_capture_value_mentions_any_remote_path(
+    value: &Value,
+    remote_file_paths: &[String],
+) -> bool {
+    if remote_file_paths.is_empty() {
+        return false;
+    }
+    let text = value.to_string();
+    remote_file_paths.iter().any(|path| text.contains(path))
+}
+
+fn automation_connector_capture_exact_remote_paths_from_value(value: &Value) -> Vec<String> {
+    let text = value.to_string();
+    let mut paths = Vec::new();
+    for (index, _) in text.match_indices("/mnt/files/") {
+        let tail = &text[index..];
+        let end = tail
+            .find(|ch: char| {
+                ch.is_whitespace()
+                    || matches!(
+                        ch,
+                        '"' | '`' | '\'' | '\\' | ',' | ';' | '(' | ')' | '[' | ']' | '{' | '}'
+                    )
+            })
+            .unwrap_or(tail.len());
+        let path = tail[..end].trim_matches(|ch: char| matches!(ch, '.' | ':' | '!'));
+        let path_suffix = path.trim_start_matches("/mnt/files/");
+        let first_segment = path_suffix.split('/').next().unwrap_or_default();
+        if path.starts_with("/mnt/files/")
+            && !path.contains('*')
+            && path_suffix.contains('/')
+            && !first_segment.starts_with('.')
+            && path.contains('.')
+            && !paths.iter().any(|seen| seen == path)
+        {
+            paths.push(path.to_string());
+        }
+    }
+    paths
+}
+
+fn automation_connector_capture_reader_args_remote_paths(evidence: &Value) -> Vec<String> {
+    evidence
+        .get("args")
+        .map(automation_connector_capture_exact_remote_paths_from_value)
+        .unwrap_or_default()
+}
+
+fn automation_connector_capture_reader_args_mention_any_remote_path(
+    evidence: &Value,
+    remote_file_paths: &[String],
+) -> bool {
+    evidence
+        .get("args")
+        .is_some_and(|args| automation_connector_capture_value_mentions_any_remote_path(args, remote_file_paths))
+}
+
+fn automation_connector_capture_matched_remote_paths(
+    read_paths: &[String],
+    remote_file_paths: &[String],
+) -> Vec<String> {
+    read_paths
+        .iter()
+        .filter(|path| remote_file_paths.iter().any(|remote_path| remote_path == *path))
+        .cloned()
+        .collect()
+}
+
 pub(crate) fn persist_automation_connector_tool_result_capture(
     automation: &AutomationV2Spec,
     run_id: &str,
@@ -419,7 +514,7 @@ pub(crate) fn persist_automation_connector_tool_result_capture(
     let mut extracted_items = Vec::new();
     let mut extracted_items_truncated = false;
     let mut remote_files = Vec::new();
-    let mut remote_hydration_performed = false;
+    let mut remote_reader_evidence = Vec::new();
 
     for (call_index, part) in session
         .messages
@@ -453,7 +548,10 @@ pub(crate) fn persist_automation_connector_tool_result_capture(
         let payload = automation_connector_capture_result_payload(result.as_ref());
         automation_connector_capture_collect_remote_file_info(&payload, &mut remote_files, 0);
         if automation_connector_capture_tool_is_composio_remote_reader(&normalized_tool) {
-            remote_hydration_performed = true;
+            remote_reader_evidence.push(json!({
+                "args": args,
+                "output_payload": payload,
+            }));
         }
         automation_connector_capture_collect_items_from_payload(
             &payload,
@@ -478,6 +576,18 @@ pub(crate) fn persist_automation_connector_tool_result_capture(
     remote_files.sort_by(|left, right| left.to_string().cmp(&right.to_string()));
     remote_files.dedup();
     let remote_file_count = remote_files.len();
+    let remote_file_paths = automation_connector_capture_remote_file_paths(&remote_files);
+    let remote_reader_read_paths = remote_reader_evidence
+        .iter()
+        .flat_map(automation_connector_capture_reader_args_remote_paths)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let remote_reader_matched_paths = automation_connector_capture_matched_remote_paths(
+        &remote_reader_read_paths,
+        &remote_file_paths,
+    );
+    let remote_hydration_performed = !remote_reader_matched_paths.is_empty();
     let remote_hydration_required = remote_file_count > 0 && !remote_hydration_performed;
 
     let relative_path = automation_connector_capture_artifact_path(run_id, &node.node_id);
@@ -505,7 +615,10 @@ pub(crate) fn persist_automation_connector_tool_result_capture(
         "extracted_item_count": extracted_items.len(),
         "extracted_items_truncated": extracted_items_truncated,
         "remote_file_count": remote_file_count,
+        "remote_file_paths": remote_file_paths,
         "remote_files": remote_files,
+        "remote_reader_read_paths": remote_reader_read_paths,
+        "remote_reader_matched_paths": remote_reader_matched_paths,
         "remote_hydration_required": remote_hydration_required,
         "remote_hydration_performed": remote_hydration_performed,
         "extracted_items": extracted_items,
@@ -523,6 +636,10 @@ pub(crate) fn persist_automation_connector_tool_result_capture(
         "extracted_item_count": payload.get("extracted_item_count").cloned().unwrap_or(json!(0)),
         "extracted_items_truncated": payload.get("extracted_items_truncated").cloned().unwrap_or(json!(false)),
         "remote_file_count": payload.get("remote_file_count").cloned().unwrap_or(json!(0)),
+        "remote_file_paths": remote_file_paths,
+        "remote_files": payload.get("remote_files").cloned().unwrap_or_else(|| json!([])),
+        "remote_reader_read_paths": payload.get("remote_reader_read_paths").cloned().unwrap_or_else(|| json!([])),
+        "remote_reader_matched_paths": payload.get("remote_reader_matched_paths").cloned().unwrap_or_else(|| json!([])),
         "remote_hydration_required": payload.get("remote_hydration_required").cloned().unwrap_or(json!(false)),
         "remote_hydration_performed": payload.get("remote_hydration_performed").cloned().unwrap_or(json!(false)),
         "content_digest": digest,
@@ -559,6 +676,7 @@ pub(crate) fn apply_automation_connector_capture_validation_metadata(
     capture: &Value,
     attempt: u32,
     max_attempts: u32,
+    _source_artifact_materialized: bool,
 ) {
     let Some(object) = artifact_validation.as_object_mut() else {
         return;
@@ -567,11 +685,11 @@ pub(crate) fn apply_automation_connector_capture_validation_metadata(
     if let Some(path) = capture.get("artifact_path").and_then(Value::as_str) {
         object.insert("connector_capture_artifact_path".to_string(), json!(path));
     }
-    if !capture
+    let remote_hydration_required = capture
         .get("remote_hydration_required")
         .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
+        .unwrap_or(false);
+    if !remote_hydration_required {
         return;
     }
     let unmet = object
@@ -600,6 +718,43 @@ pub(crate) fn apply_automation_connector_capture_validation_metadata(
         "rejected_artifact_reason".to_string(),
         json!("connector remote result file was not read through the available remote helper before writing the artifact"),
     );
+    let remote_file_paths = capture
+        .get("remote_file_paths")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if !remote_file_paths.is_empty() {
+        object.insert(
+            "connector_remote_file_paths".to_string(),
+            json!(remote_file_paths.clone()),
+        );
+    }
+    let actions = object
+        .entry("required_next_tool_actions".to_string())
+        .or_insert_with(|| json!([]));
+    if let Some(rows) = actions.as_array_mut() {
+        let exact_file_instruction = if remote_file_paths.is_empty() {
+            "Use the available remote bash/workbench helper to read the exact connector remote result file, then write the required artifact from that file rather than from stale sandbox artifacts or previews.".to_string()
+        } else {
+            format!(
+                "Use the available remote bash/workbench helper to read the exact connector remote result file(s): {}. The helper command/code must reference these path(s) directly; do not read similarly named stale files such as `/mnt/files/<node>.json`.",
+                remote_file_paths.join(", ")
+            )
+        };
+        if !rows
+            .iter()
+            .any(|value| value.as_str() == Some(exact_file_instruction.as_str()))
+        {
+            rows.push(json!(exact_file_instruction));
+        }
+    }
 }
 
 pub(crate) fn automation_required_connector_capture_read_paths(
@@ -787,7 +942,7 @@ mod connector_capture_tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].get("id").and_then(Value::as_str), Some("a"));
         assert_eq!(items[1].get("id").and_then(Value::as_str), Some("b"));
-        assert!(!truncated);
+        assert!(truncated);
     }
 
     #[test]
@@ -807,5 +962,192 @@ mod connector_capture_tests {
             remote_files[0].get("file_path").and_then(Value::as_str),
             Some("/mnt/files/mex/pour.json")
         );
+    }
+
+    #[test]
+    fn connector_capture_remote_hydration_requires_referenced_remote_file() {
+        let remote_files = vec![json!({
+            "file_path": "/mnt/files/mex/pour.json",
+            "instructions": "Use COMPOSIO_REMOTE_BASH_TOOL"
+        })];
+        let remote_file_paths = automation_connector_capture_remote_file_paths(&remote_files);
+
+        let sandbox_only_write = json!({
+            "args": {
+                "command": "mkdir -p .tandem/runs/run/artifacts && cat > .tandem/runs/run/artifacts/search.json"
+            },
+            "output_payload": {
+                "data": {
+                    "stdout": "VERIFIED\n"
+                }
+            }
+        });
+        assert!(
+            !automation_connector_capture_value_mentions_any_remote_path(
+                &sandbox_only_write,
+                &remote_file_paths
+            ),
+            "a remote helper call must not count as hydration unless it reads the remote result file"
+        );
+
+        let remote_file_list_only = json!({
+            "args": {
+                "command": "find /mnt/files -maxdepth 5 -type f"
+            },
+            "output_payload": {
+                "data": {
+                    "stdout": "/mnt/files/mex/pour.json\n"
+                }
+            }
+        });
+        assert!(
+            !automation_connector_capture_reader_args_mention_any_remote_path(
+                &remote_file_list_only,
+                &remote_file_paths
+            ),
+            "listing a remote result file path is not enough; the helper must read that exact file"
+        );
+
+        let remote_file_read = json!({
+            "args": {
+                "command": "jq '.results[0].response.data.posts' /mnt/files/mex/pour.json"
+            },
+            "output_payload": {
+                "data": {
+                    "stdout": "[{\"id\":\"lead-1\"}]"
+                }
+            }
+        });
+        assert!(automation_connector_capture_value_mentions_any_remote_path(
+            &remote_file_read,
+            &remote_file_paths
+        ));
+        assert!(automation_connector_capture_reader_args_mention_any_remote_path(
+            &remote_file_read,
+            &remote_file_paths
+        ));
+
+        let prior_remote_file_read = json!({
+            "args": {
+                "command": "python3 - <<'PY'\nimport json\njson.load(open('/mnt/files/mex/seen.json'))\nPY"
+            },
+            "output_payload": {
+                "data": {
+                    "stdout": "{\"raw_posts\":[{\"id\":\"lead-1\"}]}"
+                }
+            }
+        });
+        assert_eq!(
+            automation_connector_capture_reader_args_remote_paths(&prior_remote_file_read),
+            vec!["/mnt/files/mex/seen.json".to_string()]
+        );
+        assert!(
+            !automation_connector_capture_reader_args_mention_any_remote_path(
+                &prior_remote_file_read,
+                &remote_file_paths
+            ),
+            "the prior path is not the newly advertised file, but it is still an exact remote file read"
+        );
+        assert_eq!(
+            automation_connector_capture_matched_remote_paths(
+                &automation_connector_capture_reader_args_remote_paths(&prior_remote_file_read),
+                &remote_file_paths,
+            ),
+            Vec::<String>::new(),
+            "reading a different exact remote file must not satisfy the current connector result"
+        );
+        assert_eq!(
+            automation_connector_capture_matched_remote_paths(
+                &automation_connector_capture_reader_args_remote_paths(&remote_file_read),
+                &remote_file_paths,
+            ),
+            vec!["/mnt/files/mex/pour.json".to_string()],
+            "only the advertised remote result path satisfies hydration"
+        );
+
+        let remote_artifact_write = json!({
+            "args": {
+                "code_to_execute": "fallback = pathlib.Path('/mnt/files/search-shadow-ai-governance.json'); fallback.write_text(payload); glob('/mnt/files/**/*.json'); pathlib.Path('/mnt/files/.tandem/run/artifact.json').write_text(payload)"
+            }
+        });
+        assert!(
+            automation_connector_capture_reader_args_remote_paths(&remote_artifact_write)
+                .is_empty(),
+            "root-level /mnt/files artifacts written by the helper are not connector result hydration"
+        );
+    }
+
+    #[test]
+    fn connector_capture_validation_metadata_names_exact_remote_file_paths() {
+        let mut validation = json!({});
+        let capture = json!({
+            "artifact_path": ".tandem/runs/run/artifacts/source-connector-results.json",
+            "remote_hydration_required": true,
+            "remote_file_paths": ["/mnt/files/mex/play.json"]
+        });
+
+        apply_automation_connector_capture_validation_metadata(
+            &mut validation,
+            &capture,
+            1,
+            3,
+            false,
+        );
+
+        let actions = validation
+            .get("required_next_tool_actions")
+            .and_then(Value::as_array)
+            .expect("required actions");
+        let action_text = actions
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(action_text.contains("/mnt/files/mex/play.json"));
+        assert!(action_text.contains("must reference these path(s) directly"));
+        assert!(validation
+            .get("connector_remote_file_paths")
+            .and_then(Value::as_array)
+            .is_some_and(|paths| paths
+                .iter()
+                .any(|path| path.as_str() == Some("/mnt/files/mex/play.json"))));
+    }
+
+    #[test]
+    fn connector_capture_validation_requires_remote_file_read_even_with_materialized_source_artifact(
+    ) {
+        let mut validation = json!({});
+        let capture = json!({
+            "artifact_path": ".tandem/runs/run/artifacts/source-connector-results.json",
+            "remote_hydration_required": true,
+            "remote_file_paths": ["/mnt/files/mex/play.json"]
+        });
+
+        apply_automation_connector_capture_validation_metadata(
+            &mut validation,
+            &capture,
+            3,
+            3,
+            true,
+        );
+
+        assert_eq!(
+            validation
+                .get("semantic_block_reason")
+                .and_then(Value::as_str),
+            Some("connector returned a remote result file, but the workflow artifact was finalized before materializing it")
+        );
+        assert!(validation
+            .get("unmet_requirements")
+            .and_then(Value::as_array)
+            .is_some_and(|rows| rows.iter().any(|value| {
+                value.as_str() == Some("connector_remote_result_not_materialized")
+            })));
+        assert!(validation
+            .get("required_next_tool_actions")
+            .and_then(Value::as_array)
+            .is_some_and(|rows| rows.iter().any(|value| value
+                .as_str()
+                .is_some_and(|text| text.contains("/mnt/files/mex/play.json")))));
     }
 }

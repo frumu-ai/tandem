@@ -212,10 +212,27 @@ fn promote_materialized_output(
         "verified_output"
     };
     let content_digest = crate::sha256_hex(&[artifact_text]);
+    let schema_issue = node
+        .output_contract
+        .as_ref()
+        .and_then(|contract| contract.schema.as_ref())
+        .and_then(|schema| {
+            serde_json::from_str::<Value>(artifact_text)
+                .map_err(|err| format!("artifact is not valid JSON: {err}"))
+                .and_then(|artifact| {
+                    crate::app::state::automation::automation_output_schema_validation_issue(
+                        schema, &artifact,
+                    )
+                    .map(Err)
+                    .unwrap_or(Ok(()))
+                })
+                .err()
+        });
     let should_complete = matches!(
         node_output_status(output).as_str(),
         "blocked" | "needs_repair"
-    ) && output_only_failed_for_missing_materialized_artifact(output);
+    ) && schema_issue.is_none()
+        && output_only_failed_for_missing_materialized_artifact(output);
 
     if let Some(object) = output.as_object_mut() {
         object.insert(
@@ -239,6 +256,16 @@ fn promote_materialized_output(
             object.insert("blocked_reason".to_string(), Value::Null);
             object.insert("failure_kind".to_string(), Value::Null);
         }
+        if let Some(issue) = schema_issue.as_ref() {
+            object.insert("status".to_string(), json!("needs_repair"));
+            object.insert(
+                "blocked_reason".to_string(),
+                json!(format!(
+                    "artifact does not match output_contract.schema: {issue}"
+                )),
+            );
+            object.insert("failure_kind".to_string(), json!("artifact_rejected"));
+        }
     }
 
     let artifact_validation = output
@@ -250,7 +277,30 @@ fn promote_materialized_output(
             "accepted_candidate_source".to_string(),
             json!(accepted_candidate_source),
         );
-        artifact_validation.insert("rejected_artifact_reason".to_string(), Value::Null);
+        if let Some(issue) = schema_issue.as_ref() {
+            let reason = format!("artifact does not match output_contract.schema: {issue}");
+            artifact_validation.insert("rejected_artifact_reason".to_string(), json!(reason));
+            artifact_validation.insert(
+                "semantic_block_reason".to_string(),
+                json!(format!(
+                    "artifact does not match output_contract.schema: {issue}"
+                )),
+            );
+            artifact_validation.insert("validation_outcome".to_string(), json!("needs_repair"));
+            let unmet = artifact_validation
+                .entry("unmet_requirements".to_string())
+                .or_insert_with(|| json!([]));
+            if let Some(rows) = unmet.as_array_mut() {
+                if !rows
+                    .iter()
+                    .any(|value| value.as_str() == Some("output_schema_invalid"))
+                {
+                    rows.push(json!("output_schema_invalid"));
+                }
+            }
+        } else {
+            artifact_validation.insert("rejected_artifact_reason".to_string(), Value::Null);
+        }
         if should_complete {
             artifact_validation.insert("semantic_block_reason".to_string(), Value::Null);
             artifact_validation.insert("unmet_requirements".to_string(), json!([]));
@@ -285,6 +335,26 @@ fn promote_materialized_output(
             "accepted_candidate_source".to_string(),
             json!(accepted_candidate_source),
         );
+        if let Some(issue) = schema_issue.as_ref() {
+            validator_summary.insert("outcome".to_string(), json!("needs_repair"));
+            validator_summary.insert(
+                "reason".to_string(),
+                json!(format!(
+                    "artifact does not match output_contract.schema: {issue}"
+                )),
+            );
+            let unmet = validator_summary
+                .entry("unmet_requirements".to_string())
+                .or_insert_with(|| json!([]));
+            if let Some(rows) = unmet.as_array_mut() {
+                if !rows
+                    .iter()
+                    .any(|value| value.as_str() == Some("output_schema_invalid"))
+                {
+                    rows.push(json!("output_schema_invalid"));
+                }
+            }
+        }
         if should_complete {
             validator_summary.insert(
                 "outcome".to_string(),
@@ -364,6 +434,16 @@ fn execution_error_retry_floor(detail: &str, blocker_category: &str) -> Option<u
     }
     let lowered = detail.trim().to_ascii_lowercase();
     if lowered.contains("required output") && lowered.contains("was not created") {
+        return Some(3);
+    }
+    if lowered.contains("truncated source identity")
+        || lowered.contains("read the full upstream artifact")
+    {
+        return Some(3);
+    }
+    if lowered.contains("connector source artifact only materialized the truncated preview rows")
+        || lowered.contains("connector_truncated_preview_only")
+    {
         return Some(3);
     }
     None
@@ -1153,7 +1233,9 @@ fn derive_terminal_run_state(
                         < automation_node_max_attempts_for_recorded_output(node, Some(output))
             });
         if retryable_pending_output
-            && (status == "verify_failed" || failure_kind == "verification_failed")
+            && (status == "needs_repair"
+                || status == "verify_failed"
+                || failure_kind == "verification_failed")
         {
             continue;
         }

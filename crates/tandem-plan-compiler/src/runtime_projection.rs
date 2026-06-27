@@ -51,7 +51,7 @@ where
         .map(|step| ProjectedAutomationNode {
             node_id: step.step_id.clone(),
             agent_id: agent_id_for_role(&step.agent_role),
-            objective: step.objective.clone(),
+            objective: normalize_projected_objective_json_escapes(&step.objective),
             depends_on: step.depends_on.clone(),
             input_refs: step.input_refs.clone(),
             output_contract: step.output_contract.clone(),
@@ -90,6 +90,14 @@ where
         },
         context: None,
         metadata,
+    }
+}
+
+fn normalize_projected_objective_json_escapes(objective: &str) -> String {
+    if objective.contains("\\\"") && (objective.contains('{') || objective.contains('[')) {
+        objective.replace("\\\"", "\"")
+    } else {
+        objective.to_string()
     }
 }
 
@@ -382,6 +390,19 @@ mod tests {
                 .and_then(Value::as_str),
             Some("url")
         );
+    }
+
+    #[test]
+    fn compile_workflow_runtime_projection_normalizes_escaped_json_objective_keys() {
+        let mut plan = test_plan();
+        plan.steps[0].objective =
+            "Call tool with {\"tools\":[{\"arguments\":{\"query\":\"reddit\",\\\"limit\\\":10}}]}"
+                .to_string();
+
+        let projection = compile_workflow_runtime_projection(&plan, |allowlist| allowlist);
+
+        assert!(projection.nodes[0].objective.contains("\"limit\":10"));
+        assert!(!projection.nodes[0].objective.contains("\\\"limit\\\""));
     }
 
     #[test]

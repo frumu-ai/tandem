@@ -237,3 +237,74 @@ fn composio_source_nodes_keep_large_result_remote_helpers() {
         assert!(requested.contains(&expected.to_string()));
     }
 }
+
+#[test]
+fn composio_source_preflight_scope_includes_large_result_helpers() {
+    let mut node = bare_node();
+    node.node_id = "search_reddit".to_string();
+    node.objective =
+        "Use Composio Reddit to search and collect connector-backed lead candidates.".to_string();
+    node.tool_policy = Some(crate::AutomationAgentToolPolicy {
+        allowlist: vec![
+            "write".to_string(),
+            "mcp.composio_gmail.composio_search_tools".to_string(),
+            "mcp.composio_gmail.composio_multi_execute_tool".to_string(),
+        ],
+        denylist: Vec::new(),
+    });
+    node.mcp_policy = Some(crate::AutomationAgentMcpPolicy {
+        allowed_servers: vec!["composio-gmail".to_string()],
+        allowed_tools: Some(vec![
+            "mcp.composio_gmail.composio_search_tools".to_string(),
+            "mcp.composio_gmail.composio_multi_execute_tool".to_string(),
+        ]),
+        allowed_connections: Vec::new(),
+    });
+    let agent = crate::AutomationAgentProfile {
+        agent_id: "reddit_researcher".to_string(),
+        template_id: None,
+        display_name: "Reddit Researcher".to_string(),
+        avatar_url: None,
+        model_policy: None,
+        skills: Vec::new(),
+        tool_policy: crate::AutomationAgentToolPolicy {
+            allowlist: Vec::new(),
+            denylist: Vec::new(),
+        },
+        mcp_policy: crate::AutomationAgentMcpPolicy {
+            allowed_servers: vec!["composio-gmail".to_string()],
+            allowed_tools: Some(vec![
+                "mcp.composio_gmail.composio_search_tools".to_string(),
+                "mcp.composio_gmail.composio_multi_execute_tool".to_string(),
+            ]),
+            allowed_connections: Vec::new(),
+        },
+        approval_policy: None,
+    };
+    let available_tool_names = std::collections::HashSet::from([
+        "mcp.composio_gmail.composio_get_tool_schemas".to_string(),
+        "mcp.composio_gmail.composio_multi_execute_tool".to_string(),
+        "mcp.composio_gmail.composio_remote_bash_tool".to_string(),
+        "mcp.composio_gmail.composio_remote_workbench".to_string(),
+        "mcp.composio_gmail.composio_search_tools".to_string(),
+        "write".to_string(),
+    ]);
+
+    let scope = node_runtime_impl::automation_node_mcp_preflight_scope(&node, &agent, &[]);
+    let requested = automation_requested_tools_for_node(
+        &node,
+        "/tmp",
+        scope.allowlist.clone(),
+        &available_tool_names,
+    );
+
+    for expected in [
+        "mcp.composio_gmail.composio_multi_execute_tool",
+        "mcp.composio_gmail.composio_remote_bash_tool",
+        "mcp.composio_gmail.composio_remote_workbench",
+        "mcp.composio_gmail.composio_get_tool_schemas",
+    ] {
+        assert!(scope.allowlist.contains(&expected.to_string()));
+        assert!(requested.contains(&expected.to_string()));
+    }
+}

@@ -261,9 +261,13 @@ pub(crate) async fn reconcile_automation_resolve_verified_output_path(
                 ..promoted
             }));
         }
-        if let Some(recovered) =
-            recover_required_output_from_session_text(session, workspace_root, run_id, output_path)?
-        {
+        if let Some(recovered) = recover_required_output_from_session_text(
+            session,
+            workspace_root,
+            run_id,
+            node,
+            output_path,
+        )? {
             return Ok(Some(AutomationVerifiedOutputResolution {
                 path: recovered,
                 legacy_workspace_artifact_promoted_from: None,
@@ -287,6 +291,7 @@ pub(crate) fn recover_required_output_from_session_text(
     session: &Session,
     workspace_root: &str,
     run_id: &str,
+    node: &AutomationFlowNode,
     output_path: &str,
 ) -> anyhow::Result<Option<PathBuf>> {
     let resolved = resolve_automation_output_path_for_run(workspace_root, run_id, output_path)?;
@@ -296,7 +301,23 @@ pub(crate) fn recover_required_output_from_session_text(
     if !extension.eq_ignore_ascii_case("json") {
         return Ok(None);
     }
-    let payload = extract_recoverable_json_from_session(session);
+    let payload = node
+        .output_contract
+        .as_ref()
+        .and_then(|contract| contract.schema.as_ref())
+        .and_then(|schema| extract_schema_matching_json_from_session(session, schema))
+        .or_else(|| {
+            if node
+                .output_contract
+                .as_ref()
+                .and_then(|contract| contract.schema.as_ref())
+                .is_some()
+            {
+                None
+            } else {
+                extract_recoverable_json_from_session(session)
+            }
+        });
     let Some(payload) = payload else {
         return Ok(None);
     };
@@ -309,6 +330,76 @@ pub(crate) fn recover_required_output_from_session_text(
     let serialized = serde_json::to_string_pretty(&payload)?;
     std::fs::write(&resolved, serialized)?;
     Ok(Some(resolved))
+}
+
+fn extract_schema_matching_json_from_session(session: &Session, schema: &Value) -> Option<Value> {
+    fn collect_candidates(value: &Value, candidates: &mut Vec<Value>, depth: usize) {
+        if depth > 8 {
+            return;
+        }
+        match value {
+            Value::Object(map) => {
+                candidates.push(value.clone());
+                let preferred_keys = [
+                    "artifact",
+                    "structured_handoff",
+                    "content",
+                    "data",
+                    "result",
+                    "results",
+                    "stdout",
+                    "output",
+                ];
+                for key in preferred_keys {
+                    if let Some(child) = map.get(key) {
+                        collect_candidates(child, candidates, depth + 1);
+                    }
+                }
+                for (key, child) in map {
+                    if !preferred_keys.contains(&key.as_str()) {
+                        collect_candidates(child, candidates, depth + 1);
+                    }
+                }
+            }
+            Value::Array(rows) => {
+                candidates.push(value.clone());
+                for row in rows {
+                    collect_candidates(row, candidates, depth + 1);
+                }
+            }
+            Value::String(text) => {
+                if let Some(parsed) = extract_recoverable_json_artifact(text) {
+                    collect_candidates(&parsed, candidates, depth + 1);
+                } else if let Ok(parsed) = serde_json::from_str::<Value>(text.trim()) {
+                    collect_candidates(&parsed, candidates, depth + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut candidates = Vec::<Value>::new();
+    if let Some(value) = extract_recoverable_json_artifact(&extract_session_text_output(session)) {
+        collect_candidates(&value, &mut candidates, 0);
+    }
+    for message in session.messages.iter().rev() {
+        for part in &message.parts {
+            let MessagePart::ToolInvocation { result, .. } = part else {
+                continue;
+            };
+            if let Some(payload) = automation_tool_result_output_payload(result.as_ref()) {
+                collect_candidates(&payload, &mut candidates, 0);
+            }
+        }
+    }
+
+    let mut seen = std::collections::BTreeSet::<String>::new();
+    candidates.into_iter().find(|candidate| {
+        serde_json::to_string(candidate)
+            .ok()
+            .is_some_and(|serialized| seen.insert(serialized))
+            && automation_output_schema_validation_issue(schema, candidate).is_none()
+    })
 }
 
 pub(crate) fn recoverable_json_matches_required_output(payload: &Value, output_path: &str) -> bool {

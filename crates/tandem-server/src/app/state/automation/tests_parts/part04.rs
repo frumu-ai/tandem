@@ -477,3 +477,118 @@ async fn reconcile_verified_output_path_recovers_json_artifact_from_session_text
 
     let _ = std::fs::remove_dir_all(&workspace_root);
 }
+
+#[tokio::test]
+async fn reconcile_verified_output_path_recovers_schema_matching_remote_artifact() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "tandem-reconcile-remote-artifact-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let run_id = "run-remote-artifact";
+    let output_path = ".tandem/artifacts/search-reddit.json";
+    std::fs::create_dir_all(&workspace_root).expect("create workspace");
+
+    let remote_stdout = serde_json::to_string(&json!({
+        "path": ".tandem/runs/run-remote-artifact/artifacts/search-reddit.json",
+        "returncode": 0,
+        "stdout": "VERIFIED\n",
+        "stderr": "",
+        "artifact": {
+            "status": "completed",
+            "query": "mcp server authentication enterprise",
+            "raw_posts": [
+                {
+                    "title": "Better Auth MCP Server",
+                    "url": "https://www.reddit.com/r/mcp/comments/example",
+                    "subreddit": "r/mcp"
+                }
+            ],
+            "tool_calls": ["mcp.composio_gmail.composio_multi_execute_tool"]
+        }
+    }))
+    .expect("remote stdout json");
+
+    let mut session = Session::new(Some("remote artifact recovery".to_string()), None);
+    session.messages.push(tandem_types::Message::new(
+        tandem_types::MessageRole::Assistant,
+        vec![tandem_types::MessagePart::ToolInvocation {
+            tool: "mcp.composio_gmail.composio_remote_workbench".to_string(),
+            args: json!({
+                "cmd": "materialize connector result"
+            }),
+            result: Some(json!({
+                "output": {
+                    "data": {
+                        "stdout": remote_stdout
+                    },
+                    "error": null,
+                    "successful": true
+                }
+            })),
+            error: None,
+        }],
+    ));
+
+    let resolved = super::reconcile_automation_resolve_verified_output_path(
+        &session,
+        workspace_root.to_str().expect("workspace root"),
+        run_id,
+        &AutomationFlowNode {
+            knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+            node_id: "search_reddit".to_string(),
+            agent_id: "reddit".to_string(),
+            objective: "Search Reddit for infrastructure leads".to_string(),
+            depends_on: vec![],
+            input_refs: vec![],
+            output_contract: Some(AutomationFlowOutputContract {
+                kind: "generic_artifact".to_string(),
+                validator: Some(crate::AutomationOutputValidatorKind::GenericArtifact),
+                enforcement: None,
+                schema: Some(json!({
+                    "type": "object",
+                    "required": ["status", "query", "raw_posts"],
+                    "properties": {
+                        "status": { "type": "string" },
+                        "query": { "type": "string" },
+                        "raw_posts": { "type": "array" }
+                    }
+                })),
+                summary_guidance: None,
+            }),
+            tool_policy: None,
+            mcp_policy: None,
+            retry_policy: None,
+            timeout_ms: None,
+            max_tool_calls: None,
+            stage_kind: None,
+            gate: None,
+            metadata: Some(json!({
+                "builder": {
+                    "output_path": output_path
+                }
+            })),
+        },
+        output_path,
+        50,
+        10,
+    )
+    .await
+    .expect("recover remote artifact")
+    .expect("schema-matching artifact should be recovered");
+
+    let expected =
+        workspace_root.join(".tandem/runs/run-remote-artifact/artifacts/search-reddit.json");
+    assert_eq!(resolved.path, expected.clone());
+    assert!(resolved.materialized_by_current_attempt);
+
+    let written = std::fs::read_to_string(expected).expect("read recovered artifact");
+    let parsed: serde_json::Value = serde_json::from_str(&written).expect("parse recovered json");
+    assert_eq!(parsed["raw_posts"][0]["title"], "Better Auth MCP Server");
+    assert!(parsed.get("data").is_none(), "wrapper payload should not win");
+    assert!(
+        parsed.get("successful").is_none(),
+        "connector wrapper should not be recovered as artifact"
+    );
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}

@@ -40,6 +40,53 @@ fn repair_brief_review_section(rows: &[String], fallback: &str) -> String {
     }
 }
 
+fn repair_brief_remote_paths_from_strings(rows: &[String]) -> Vec<String> {
+    let mut paths = Vec::new();
+    for row in rows {
+        for token in row.split(|ch: char| ch.is_whitespace() || ch == ',' || ch == ';') {
+            let path = token.trim_matches(|ch: char| {
+                matches!(ch, '`' | '"' | '\'' | '[' | ']' | '(' | ')' | '.')
+            });
+            if path.starts_with("/mnt/files/") && !paths.iter().any(|seen| seen == path) {
+                paths.push(path.to_string());
+            }
+        }
+    }
+    paths
+}
+
+fn repair_brief_connector_remote_corrective_line(
+    actions: &[String],
+    unmet: &[String],
+    explicit_paths: &[String],
+) -> String {
+    let mut paths = explicit_paths.to_vec();
+    for path in repair_brief_remote_paths_from_strings(actions) {
+        if !paths.iter().any(|seen| seen == &path) {
+            paths.push(path);
+        }
+    }
+    let connector_remote_missing = unmet
+        .iter()
+        .any(|value| value == "connector_remote_result_not_materialized");
+    if paths.is_empty() && !connector_remote_missing {
+        return String::new();
+    }
+    let path_line = if paths.is_empty() {
+        "the exact `/mnt/files/...` path recorded in the connector capture artifact".to_string()
+    } else {
+        paths
+            .iter()
+            .map(|path| format!("`{path}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!(
+        "\n\nCORRECTIVE — connector remote result must be materialized:\n- The connector returned a full result file at {}.\n- For this retry, call the available remote bash/workbench helper with code or command that directly opens that exact path before writing the run artifact.\n- Do not use `data_preview`, compacted chat previews, stale sandbox artifacts, or a newly invented `.tandem` path as the source.\n- The final artifact must be built from the opened remote result file and must satisfy the output schema.",
+        path_line
+    )
+}
+
 fn repair_brief_context_section(repair_context: Option<&Value>) -> String {
     let Some(context) = repair_context else {
         return String::new();
@@ -101,6 +148,8 @@ fn render_automation_repair_brief_from_verdict(
         .unwrap_or("the previous attempt did not satisfy the runtime contract");
     let unmet = repair_brief_strings(verdict.get("unmet_requirements"));
     let actions = repair_brief_strings(verdict.get("required_next_actions"));
+    let connector_remote_corrective_line =
+        repair_brief_connector_remote_corrective_line(&actions, &unmet, &[]);
     let final_attempt_line = if attempt >= max_attempts {
         let output_path = automation_node_required_output_path_for_run(node, run_id)
             .unwrap_or_else(|| "the declared output path".to_string());
@@ -127,7 +176,7 @@ fn render_automation_repair_brief_from_verdict(
     let next_moves = repair_brief_review_strings(verdict, "next_moves");
     let context_section = repair_brief_context_section(repair_context);
     format!(
-        "Repair Brief:\n- Node `{}` is being retried because the prior attempt did not yet satisfy governance validation.\n- Failure class: `{}`.\n- Reason: {}.\n\nAttempt Review:\n- Progress: {} ({}/100)\n\nWhat went well:\n{}\n\nStill needed:\n{}\n\nWhy this matters:\n{}\n\nNext move:\n{}\n\nExpected:\n{}\n\nObserved:\n{}\n\nRepair:\n- Satisfy the expected contract before finalizing the artifact.\n- Do not stop after discovery, summaries, or partial tool output.\n- If a connector/tool is unavailable or returns no usable data, record the exact limitation in the artifact and still write the required output when the contract allows it.{}\n\nUnmet requirements:\n{}\n\nRequired next actions:\n{}",
+        "Repair Brief:\n- Node `{}` is being retried because the prior attempt did not yet satisfy governance validation.\n- Failure class: `{}`.\n- Reason: {}.\n\nAttempt Review:\n- Progress: {} ({}/100)\n\nWhat went well:\n{}\n\nStill needed:\n{}\n\nWhy this matters:\n{}\n\nNext move:\n{}\n\nExpected:\n{}\n\nObserved:\n{}\n\nRepair:\n- Satisfy the expected contract before finalizing the artifact.\n- Do not stop after discovery, summaries, or partial tool output.\n- If a connector/tool is unavailable or returns no usable data, record the exact limitation in the artifact and still write the required output when the contract allows it.{}{}\n\nUnmet requirements:\n{}\n\nRequired next actions:\n{}",
         node.node_id,
         failure_class,
         validation_reason,
@@ -152,6 +201,7 @@ fn render_automation_repair_brief_from_verdict(
         repair_brief_value(verdict.get("expected")),
         repair_brief_value(verdict.get("observed")),
         final_attempt_line,
+        connector_remote_corrective_line,
         if unmet.is_empty() {
             "none recorded".to_string()
         } else {
@@ -452,6 +502,38 @@ pub(crate) fn render_automation_repair_brief(
     } else {
         required_next_tool_actions.join(" | ")
     };
+    let mut connector_remote_file_paths = artifact_validation
+        .and_then(|value| value.get("connector_remote_file_paths"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if connector_remote_file_paths.is_empty() {
+        connector_remote_file_paths = artifact_validation
+            .and_then(|value| value.get("connector_capture"))
+            .and_then(|value| value.get("remote_file_paths"))
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+    }
+    let connector_remote_corrective_line = repair_brief_connector_remote_corrective_line(
+        &required_next_tool_actions,
+        &unmet_requirements,
+        &connector_remote_file_paths,
+    );
     let code_workflow_line = if automation_node_is_code_workflow(node) {
         let verification_command =
             automation_node_verification_command(node).unwrap_or_else(|| {
@@ -471,7 +553,7 @@ pub(crate) fn render_automation_repair_brief(
         let output_path = automation_node_required_output_path_for_run(node, run_id)
             .unwrap_or_else(|| "the declared output path".to_string());
         format!(
-            "\n\nFINAL ATTEMPT:\n- This is the last retry.\n- The engine will accept the output file at `{}` as-is if it exists when this attempt ends.\n- Do not ask follow-up questions.\n- Do not end with a summary.\n- Write the complete artifact to the output path and include {{\"status\":\"completed\"}} as the last line of your response.",
+            "\n\nFINAL ATTEMPT:\n- This is the last retry.\n- The engine will validate the output file at `{}` when this attempt ends.\n- Do not ask follow-up questions.\n- Do not end with a summary.\n- Write the complete artifact to the output path and include {{\"status\":\"completed\"}} as the last line of your response.",
             output_path
         )
     } else {
@@ -587,7 +669,7 @@ pub(crate) fn render_automation_repair_brief(
     };
 
     Some(format!(
-        "Repair Brief:\n- Node `{}` is being retried because the previous attempt ended in `needs_repair`.\n- Previous validation reason: {}.\n- Validation basis: {}.\n- Upstream read paths available for synthesis: {}.\n- Required source read paths: {}.\n- Missing required source read paths: {}.\n- Unmet requirements: {}.\n- Blocking classification: {}.\n- Required next tool actions: {}.\n- Tools offered last attempt: {}.\n- Tools executed last attempt: {}.\n- Relevant files still unread or explicitly unreviewed: {}.\n- Previous repair attempt count: {}.\n- Remaining repair attempts after this run: {}{}.\n- For this retry, satisfy the unmet requirements before finalizing the artifact.\n- Do not write a blocked handoff unless the required tools were actually attempted and remained unavailable or failed.{}{}{}{}{}{}",
+        "Repair Brief:\n- Node `{}` is being retried because the previous attempt ended in `needs_repair`.\n- Previous validation reason: {}.\n- Validation basis: {}.\n- Upstream read paths available for synthesis: {}.\n- Required source read paths: {}.\n- Missing required source read paths: {}.\n- Unmet requirements: {}.\n- Blocking classification: {}.\n- Required next tool actions: {}.\n- Tools offered last attempt: {}.\n- Tools executed last attempt: {}.\n- Relevant files still unread or explicitly unreviewed: {}.\n- Previous repair attempt count: {}.\n- Remaining repair attempts after this run: {}{}.\n- For this retry, satisfy the unmet requirements before finalizing the artifact.\n- Do not write a blocked handoff unless the required tools were actually attempted and remained unavailable or failed.{}{}{}{}{}{}{}",
         node.node_id,
         reason,
         validation_basis_line,
@@ -609,6 +691,7 @@ pub(crate) fn render_automation_repair_brief(
         concrete_mcp_corrective_line,
         required_source_read_corrective_line,
         web_research_receipt_corrective_line,
+        connector_remote_corrective_line,
     ))
 }
 
