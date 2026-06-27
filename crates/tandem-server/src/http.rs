@@ -95,6 +95,7 @@ mod resources;
 mod router;
 mod routes_approvals;
 mod routes_automation_webhook_management;
+mod routes_automation_webhooks;
 mod routes_bug_monitor;
 mod routes_capabilities;
 mod routes_channel_automation_drafts;

@@ -5,6 +5,7 @@ pub(super) mod approval_gate_matrix;
 pub(super) mod approvals_aggregator;
 pub(super) mod audit;
 pub(super) mod automation_webhook_management;
+pub(super) mod automation_webhooks;
 pub(super) mod bug_monitor;
 pub(super) mod capabilities;
 pub(super) mod channel_automation_drafts;

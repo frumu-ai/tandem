@@ -46,6 +46,9 @@ pub(super) async fn auth_gate(
     if is_public_oauth_callback_path(path) {
         return next.run(request).await;
     }
+    if request.method() == Method::POST && is_public_automation_webhook_path(path) {
+        return next.run(request).await;
+    }
     let runtime_auth_mode = resolve_memory_context_runtime_auth_mode();
     if path == "/bug-monitor/intake/report" || path == "/failure-reporter/intake/report" {
         if !runtime_auth_mode_requires_transport_token(runtime_auth_mode)
@@ -291,6 +294,10 @@ fn is_public_oauth_callback_path(path: &str) -> bool {
         parts.as_slice(),
         ["mcp", _, "auth", "callback"] | ["provider", _, "oauth", "callback"]
     )
+}
+
+fn is_public_automation_webhook_path(path: &str) -> bool {
+    path.starts_with("/webhooks/automations/")
 }
 
 fn request_transport_token_authorized(
