@@ -56,6 +56,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed MCP OAuth persistence and reconnect cleanup so stale OAuth material is
   removed when auth is deleted, canonical credentials can be reused correctly,
   and MCP public base URL handling is shared by the HTTP helpers.
+- Fixed connector-backed workflow data collection so large remote tool results
+  are materialized into run artifacts before model filtering, preventing
+  completed Composio/Notion automations from starving writer nodes with
+  truncated preview data or empty row sets.
+- Fixed generic connector-row filtering and Notion writer handoff paths so
+  compiler-built workflows can preserve full source rows, validate duplicate
+  keys, and write/update the intended database without workflow-specific
+  prompt patches.
 - Fixed Bug Monitor source-bound routing so configured source allowlists,
   approval policy, high-risk raw-source defaults, granted approvals, and raw
   routing-field sanitization are enforced before publish.

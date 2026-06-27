@@ -36,6 +36,17 @@ publishing behavior.
 - MCP OAuth cleanup now removes stale secret-header and OAuth credential
   material when auth is deleted, canonical OAuth credentials can be reused during
   refresh, and MCP public base URL handling is shared through one helper.
+- Connector-backed workflow searches now capture full remote result files into
+  run artifacts before model filtering. This prevents large Composio Reddit
+  responses from being reduced to model-visible previews, which previously let
+  runs complete cleanly while leaving downstream Notion writer nodes with too
+  few or zero rows.
+- Generic connector-row filtering now reads validated source artifacts,
+  preserves writer-ready fields such as title, link, author, and duplicate-key
+  values, and hands Notion writers complete rows without relying on
+  workflow-specific prompt fixes. The Reddit infrastructure leads workflow was
+  used as the validation shape, but the materialization path is connector
+  generic for larger future data-collection workflows.
 
 ### MCP Control Panel
 
