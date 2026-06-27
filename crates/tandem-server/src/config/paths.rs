@@ -172,6 +172,18 @@ pub(crate) fn resolve_automation_v2_runs_archive_path() -> PathBuf {
     resolve_canonical_data_file_path("automation_v2_runs_archive.json")
 }
 
+pub(crate) fn resolve_automation_webhook_triggers_path() -> PathBuf {
+    resolve_canonical_data_file_path("automation_webhooks/triggers.json")
+}
+
+pub(crate) fn resolve_automation_webhook_deliveries_path() -> PathBuf {
+    resolve_canonical_data_file_path("automation_webhooks/deliveries.json")
+}
+
+pub(crate) fn resolve_automation_webhook_secret_material_path() -> PathBuf {
+    resolve_canonical_data_file_path("automation_webhooks/secrets.json")
+}
+
 pub(crate) fn resolve_automation_governance_path() -> PathBuf {
     resolve_canonical_data_file_path("automation_governance.json")
 }

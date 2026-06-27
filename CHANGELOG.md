@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added tenant-scoped Automation V2 webhook trigger and delivery records,
+  including secure secret references, private secret material storage, HMAC
+  signature verification, replay detection, rotation primitives, and tests for
+  cross-tenant isolation.
 - Added a Studio-inspired workflow flow map to the `Edit workflow automation`
   modal so generated automations can be inspected by dependency stage while
   operators edit them.

@@ -157,6 +157,11 @@ pub async fn test_state() -> AppState {
     state.routine_runs_path = root.join("routine_runs.json");
     state.automations_v2_path = root.join("automations_v2.json");
     state.automation_v2_runs_path = root.join("automation_v2_runs.json");
+    state.automation_webhook_triggers_path = root.join("automation_webhooks").join("triggers.json");
+    state.automation_webhook_deliveries_path =
+        root.join("automation_webhooks").join("deliveries.json");
+    state.automation_webhook_secret_material_path =
+        root.join("automation_webhooks").join("secrets.json");
     state.runtime_events_path = root.join("runtime").join("events.jsonl");
     state.optimization_campaigns_path = root.join("optimization_campaigns.json");
     state.optimization_experiments_path = root.join("optimization_experiments.json");
