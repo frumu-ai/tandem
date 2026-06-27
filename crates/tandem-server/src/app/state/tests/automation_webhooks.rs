@@ -58,6 +58,22 @@ async fn webhook_triggers_and_deliveries_are_tenant_scoped() {
     assert!(trigger_file.contains("secret_ref"));
     assert!(!trigger_file.contains(&created.secret));
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mode = std::fs::metadata(&state.automation_webhook_secret_material_path)
+            .expect("secret material state file metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+        assert!(!state
+            .automation_webhook_secret_material_path
+            .with_extension("tmp")
+            .exists());
+    }
+
     assert_eq!(
         state
             .list_automation_webhook_triggers_for_automation(&tenant_a, "automation-a")

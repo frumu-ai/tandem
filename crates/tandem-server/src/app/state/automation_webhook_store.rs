@@ -385,17 +385,38 @@ async fn ensure_parent_dir(path: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
-async fn restrict_secret_material_permissions(path: &std::path::Path) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+async fn write_secret_material_file_atomically(
+    path: &std::path::Path,
+    payload: &str,
+) -> anyhow::Result<()> {
+    let tmp = path.with_extension("tmp");
+    let _ = fs::remove_file(&tmp).await;
 
-    fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await?;
-    Ok(())
-}
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        use tokio::io::AsyncWriteExt;
 
-#[cfg(not(unix))]
-async fn restrict_secret_material_permissions(_path: &std::path::Path) -> anyhow::Result<()> {
-    Ok(())
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)
+            .await?;
+        file.write_all(payload.as_bytes()).await?;
+        file.sync_all().await?;
+        drop(file);
+        fs::rename(&tmp, path).await?;
+        fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await?;
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    {
+        fs::write(&tmp, payload).await?;
+        fs::rename(&tmp, path).await?;
+        Ok(())
+    }
 }
 
 impl AppState {
@@ -460,10 +481,11 @@ impl AppState {
         let secrets = self.automation_webhook_secret_material.read().await.clone();
         let payload = serialize_automation_webhook_secret_material_file(secrets)?;
         ensure_parent_dir(&self.automation_webhook_secret_material_path).await?;
-        super::write_state_file_atomically(&self.automation_webhook_secret_material_path, payload)
-            .await?;
-        restrict_secret_material_permissions(&self.automation_webhook_secret_material_path).await?;
-        Ok(())
+        write_secret_material_file_atomically(
+            &self.automation_webhook_secret_material_path,
+            &payload,
+        )
+        .await
     }
 
     pub(crate) async fn create_automation_webhook_trigger(
@@ -541,17 +563,48 @@ impl AppState {
             rotated_by: None,
         };
 
-        self.automation_webhook_triggers
-            .write()
-            .await
-            .insert(trigger_id, trigger.clone());
+        let secret_key = secret_material_key(&secret_ref);
         self.automation_webhook_secret_material
             .write()
             .await
-            .insert(secret_material_key(&secret_ref), material);
-        self.persist_automation_webhook_triggers_locked().await?;
-        self.persist_automation_webhook_secret_material_locked()
-            .await?;
+            .insert(secret_key.clone(), material);
+        if let Err(error) = self
+            .persist_automation_webhook_secret_material_locked()
+            .await
+        {
+            self.automation_webhook_secret_material
+                .write()
+                .await
+                .remove(&secret_key);
+            return Err(error.context("failed to persist webhook secret material"));
+        }
+
+        self.automation_webhook_triggers
+            .write()
+            .await
+            .insert(trigger_id.clone(), trigger.clone());
+        if let Err(error) = self.persist_automation_webhook_triggers_locked().await {
+            self.automation_webhook_triggers
+                .write()
+                .await
+                .remove(&trigger_id);
+            self.automation_webhook_secret_material
+                .write()
+                .await
+                .remove(&secret_key);
+            if let Err(cleanup_error) = self
+                .persist_automation_webhook_secret_material_locked()
+                .await
+            {
+                tracing::warn!(
+                    target: "tandem_server::state",
+                    error = ?cleanup_error,
+                    trigger_id,
+                    "failed to clean up webhook secret material after trigger persist failure"
+                );
+            }
+            return Err(error.context("failed to persist webhook trigger metadata"));
+        }
 
         Ok(AutomationWebhookCreateResult { trigger, secret })
     }
@@ -565,53 +618,109 @@ impl AppState {
         let _guard = self.automation_webhook_persistence.lock().await;
         let now = now_ms();
         let secret = new_secret();
-        let (old_secret_ref, trigger) = {
-            let mut triggers = self.automation_webhook_triggers.write().await;
+        let current_trigger = {
+            let triggers = self.automation_webhook_triggers.read().await;
             let trigger = triggers
-                .get_mut(trigger_id)
-                .with_context(|| format!("webhook trigger `{trigger_id}` not found"))?;
+                .get(trigger_id)
+                .with_context(|| format!("webhook trigger `{trigger_id}` not found"))?
+                .clone();
             if !trigger.tenant_matches(tenant_context) {
                 anyhow::bail!("webhook trigger tenant mismatch");
             }
-            let old_secret_ref = trigger.secret.secret_ref.clone();
-            let secret_version = trigger.secret.secret_version.saturating_add(1).max(1);
-            let secret_ref = secret_ref_for_trigger(tenant_context, trigger_id, secret_version);
-            secret_ref
-                .validate_for_tenant(tenant_context)
-                .map_err(|error| {
-                    anyhow::anyhow!("webhook secret ref tenant mismatch: {error:?}")
-                })?;
-            trigger.secret = AutomationWebhookSecretMetadata {
-                secret_ref: secret_ref.clone(),
-                secret_digest: secret_digest(&secret, tenant_context, trigger_id),
-                secret_version,
-                created_at_ms: now,
-                rotated_at_ms: Some(now),
-                rotated_by: actor_id.clone(),
-            };
-            trigger.updated_at_ms = now;
-            trigger.updated_by = actor_id.clone();
-            (old_secret_ref, trigger.clone())
+            trigger
         };
+        let old_secret_ref = current_trigger.secret.secret_ref.clone();
+        let secret_version = current_trigger
+            .secret
+            .secret_version
+            .saturating_add(1)
+            .max(1);
+        let secret_ref = secret_ref_for_trigger(tenant_context, trigger_id, secret_version);
+        secret_ref
+            .validate_for_tenant(tenant_context)
+            .map_err(|error| anyhow::anyhow!("webhook secret ref tenant mismatch: {error:?}"))?;
+
+        let mut trigger = current_trigger.clone();
+        trigger.secret = AutomationWebhookSecretMetadata {
+            secret_ref: secret_ref.clone(),
+            secret_digest: secret_digest(&secret, tenant_context, trigger_id),
+            secret_version,
+            created_at_ms: now,
+            rotated_at_ms: Some(now),
+            rotated_by: actor_id.clone(),
+        };
+        trigger.updated_at_ms = now;
+        trigger.updated_by = actor_id.clone();
 
         let material = AutomationWebhookSecretMaterialRecord {
-            secret_ref: trigger.secret.secret_ref.clone(),
+            secret_ref: secret_ref.clone(),
             tenant_context: tenant_context.clone(),
             trigger_id: trigger_id.to_string(),
-            secret_version: trigger.secret.secret_version,
+            secret_version,
             secret: secret.clone(),
             created_at_ms: now,
             rotated_at_ms: Some(now),
             rotated_by: actor_id,
         };
+        let new_secret_key = secret_material_key(&secret_ref);
+        self.automation_webhook_secret_material
+            .write()
+            .await
+            .insert(new_secret_key.clone(), material);
+        if let Err(error) = self
+            .persist_automation_webhook_secret_material_locked()
+            .await
         {
-            let mut secrets = self.automation_webhook_secret_material.write().await;
-            secrets.remove(&secret_material_key(&old_secret_ref));
-            secrets.insert(secret_material_key(&material.secret_ref), material);
+            self.automation_webhook_secret_material
+                .write()
+                .await
+                .remove(&new_secret_key);
+            return Err(error.context("failed to persist rotated webhook secret material"));
         }
-        self.persist_automation_webhook_triggers_locked().await?;
-        self.persist_automation_webhook_secret_material_locked()
-            .await?;
+
+        self.automation_webhook_triggers
+            .write()
+            .await
+            .insert(trigger_id.to_string(), trigger.clone());
+        if let Err(error) = self.persist_automation_webhook_triggers_locked().await {
+            self.automation_webhook_triggers
+                .write()
+                .await
+                .insert(trigger_id.to_string(), current_trigger);
+            self.automation_webhook_secret_material
+                .write()
+                .await
+                .remove(&new_secret_key);
+            if let Err(cleanup_error) = self
+                .persist_automation_webhook_secret_material_locked()
+                .await
+            {
+                tracing::warn!(
+                    target: "tandem_server::state",
+                    error = ?cleanup_error,
+                    trigger_id,
+                    "failed to clean up rotated webhook secret material after trigger persist failure"
+                );
+            }
+            return Err(error.context("failed to persist rotated webhook trigger metadata"));
+        }
+
+        let old_secret_key = secret_material_key(&old_secret_ref);
+        self.automation_webhook_secret_material
+            .write()
+            .await
+            .remove(&old_secret_key);
+        if let Err(error) = self
+            .persist_automation_webhook_secret_material_locked()
+            .await
+        {
+            tracing::warn!(
+                target: "tandem_server::state",
+                error = ?error,
+                trigger_id,
+                "failed to remove old webhook secret material after successful rotation"
+            );
+        }
 
         Ok(AutomationWebhookRotationResult { trigger, secret })
     }
