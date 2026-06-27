@@ -138,7 +138,8 @@ async fn webhook_triggers_and_deliveries_are_tenant_scoped() {
         rejected_at_ms: None,
         sanitized_preview: json!({
             "authorization": "Bearer token",
-            "nested": { "api_key": "secret", "safe": true }
+            "db_password": "secret",
+            "nested": { "api_key": "secret", "userPassword": "secret", "safe": true }
         }),
         audit_event_id: Some("audit-a".to_string()),
     };
@@ -147,7 +148,12 @@ async fn webhook_triggers_and_deliveries_are_tenant_scoped() {
         .await
         .expect("record delivery");
     assert_eq!(stored.sanitized_preview["authorization"], "[redacted]");
+    assert_eq!(stored.sanitized_preview["db_password"], "[redacted]");
     assert_eq!(stored.sanitized_preview["nested"]["api_key"], "[redacted]");
+    assert_eq!(
+        stored.sanitized_preview["nested"]["userPassword"],
+        "[redacted]"
+    );
     assert_eq!(
         state
             .list_automation_webhook_deliveries_for_trigger(&tenant_a, &created.trigger.trigger_id)
@@ -343,7 +349,40 @@ async fn webhook_signature_and_replay_scope_include_tenant_and_trigger() {
         .await
         .expect("record replay baseline");
 
-    let replay_now = now + 1;
+    let distinct_now = now + 1;
+    let distinct_signature =
+        automation_webhook_signature_header(&trigger_a.secret, distinct_now, body);
+    state
+        .verify_automation_webhook_request(
+            &trigger_a.trigger.public_path_token,
+            Some(&distinct_signature),
+            body,
+            Some("evt-distinct".to_string()),
+            distinct_now,
+            300_000,
+        )
+        .await
+        .expect("same body with a distinct provider event id is accepted");
+
+    let body_fallback_now = now + 2;
+    let body_fallback_signature =
+        automation_webhook_signature_header(&trigger_a.secret, body_fallback_now, body);
+    assert_eq!(
+        state
+            .verify_automation_webhook_request(
+                &trigger_a.trigger.public_path_token,
+                Some(&body_fallback_signature),
+                body,
+                None,
+                body_fallback_now,
+                300_000,
+            )
+            .await
+            .expect_err("body digest fallback catches no-id replay"),
+        AutomationWebhookVerificationError::ReplayDetected
+    );
+
+    let replay_now = now + 3;
     let replay_signature = automation_webhook_signature_header(&trigger_a.secret, replay_now, body);
     assert_eq!(
         state
@@ -356,7 +395,7 @@ async fn webhook_signature_and_replay_scope_include_tenant_and_trigger() {
                 300_000,
             )
             .await
-            .expect_err("tenant a replay fails"),
+            .expect_err("tenant a provider event id replay fails"),
         AutomationWebhookVerificationError::ReplayDetected
     );
 

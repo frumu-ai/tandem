@@ -352,7 +352,7 @@ fn sanitize_preview_key(key: &str) -> bool {
         || normalized.contains("authorization")
         || normalized.contains("cookie")
         || normalized.contains("signature")
-        || normalized == "password"
+        || normalized.contains("password")
 }
 
 pub(crate) fn sanitize_automation_webhook_preview(value: &Value) -> Value {
@@ -951,10 +951,10 @@ impl AppState {
                 {
                     return false;
                 }
-                let provider_event_replayed = provider_event_id
-                    .as_ref()
-                    .is_some_and(|event_id| delivery.provider_event_id.as_ref() == Some(event_id));
-                provider_event_replayed || delivery.body_digest == body_digest
+                match provider_event_id.as_ref() {
+                    Some(event_id) => delivery.provider_event_id.as_ref() == Some(event_id),
+                    None => delivery.body_digest == body_digest,
+                }
             });
         if replay {
             return Err(AutomationWebhookVerificationError::ReplayDetected);
