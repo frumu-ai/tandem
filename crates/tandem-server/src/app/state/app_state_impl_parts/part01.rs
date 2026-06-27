@@ -265,11 +265,17 @@ impl AppState {
             )),
             governance_engine,
             automation_v2_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            automation_webhook_triggers: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            automation_webhook_deliveries: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            automation_webhook_secret_material: Arc::new(RwLock::new(
+                std::collections::HashMap::new(),
+            )),
             automation_scheduler: Arc::new(RwLock::new(automation::AutomationScheduler::new(
                 config::env::resolve_scheduler_max_concurrent_runs(),
             ))),
             automation_scheduler_stopping: Arc::new(AtomicBool::new(false)),
             automations_v2_persistence: Arc::new(tokio::sync::Mutex::new(())),
+            automation_webhook_persistence: Arc::new(tokio::sync::Mutex::new(())),
             workflow_plans: Arc::new(RwLock::new(std::collections::HashMap::new())),
             workflow_plan_drafts: Arc::new(RwLock::new(std::collections::HashMap::new())),
             workflow_planner_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -318,6 +324,12 @@ impl AppState {
             automation_v2_runs_path: config::paths::resolve_automation_v2_runs_path(),
             automation_v2_runs_archive_path: config::paths::resolve_automation_v2_runs_archive_path(
             ),
+            automation_webhook_triggers_path: config::paths::resolve_automation_webhook_triggers_path(
+            ),
+            automation_webhook_deliveries_path:
+                config::paths::resolve_automation_webhook_deliveries_path(),
+            automation_webhook_secret_material_path:
+                config::paths::resolve_automation_webhook_secret_material_path(),
             runtime_events_path: config::paths::resolve_runtime_events_path(),
             optimization_campaigns_path: config::paths::resolve_optimization_campaigns_path(),
             optimization_experiments_path: config::paths::resolve_optimization_experiments_path(),
@@ -524,6 +536,7 @@ impl AppState {
         let _ = self.load_automation_governance().await;
         let _ = self.bootstrap_automation_governance().await;
         let _ = self.load_automation_v2_runs().await;
+        let _ = self.load_automation_webhook_records().await;
         let _ = self.load_optimization_campaigns().await;
         let _ = self.load_optimization_experiments().await;
         let _ = self.load_bug_monitor_config().await;

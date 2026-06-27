@@ -363,6 +363,18 @@ pub(crate) async fn ready_test_state() -> AppState {
     state.shared_resources_path = root.join("shared_resources.json");
     state.automations_v2_path = tandem_home.join("data").join("automations_v2.json");
     state.automation_v2_runs_path = tandem_home.join("data").join("automation_v2_runs.json");
+    state.automation_webhook_triggers_path = tandem_home
+        .join("data")
+        .join("automation_webhooks")
+        .join("triggers.json");
+    state.automation_webhook_deliveries_path = tandem_home
+        .join("data")
+        .join("automation_webhooks")
+        .join("deliveries.json");
+    state.automation_webhook_secret_material_path = tandem_home
+        .join("data")
+        .join("automation_webhooks")
+        .join("secrets.json");
     state.memory_db_path = tandem_home.join("memory.sqlite");
     state
         .mark_ready(crate::RuntimeState {
@@ -1063,6 +1075,7 @@ fn prompt_memory_record(label: &str, content: &str) -> tandem_memory::types::Glo
     }
 }
 
+mod automation_webhooks;
 mod automations;
 mod bug_monitor_recovery;
 mod handoff;

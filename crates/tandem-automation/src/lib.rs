@@ -6,6 +6,7 @@ pub mod routine;
 pub mod run_mutability;
 pub mod scheduler;
 pub mod types;
+pub mod webhooks;
 
 #[cfg(test)]
 mod execution_profile_tests;
@@ -27,6 +28,7 @@ pub use mcp_policy::{AutomationAgentMcpPolicy, AutomationMcpConnectionGrant, Aut
 pub use routine::RoutineMisfirePolicy;
 pub use scheduler::{QueueReason, SchedulerMetadata};
 pub use types::*;
+pub use webhooks::*;
 
 pub fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};

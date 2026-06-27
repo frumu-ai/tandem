@@ -28,6 +28,7 @@ cron = "0.12"
 dirs = "6"
 ed25519-dalek = "2"
 flate2 = "1"
+hmac = "0.12"
 futures = "0.3"
 ignore = "0.4"
 image = "0.25"
@@ -67,7 +68,6 @@ tandem-observability = { path = "../tandem-observability", version = "0.6.3" }
 tandem-plan-compiler = { path = "../tandem-plan-compiler", version = "0.6.3" }
 
 [dev-dependencies]
-hmac = "0.12"
 tempfile = "3"
 tower = "0.5"
 serial_test = "3"
