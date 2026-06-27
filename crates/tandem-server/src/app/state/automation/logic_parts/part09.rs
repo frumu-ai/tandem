@@ -690,17 +690,65 @@ pub(crate) fn apply_automation_connector_capture_validation_metadata(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     if source_artifact_materialized {
-        if let Some(rows) = object
+        let unmet_remote_only = if let Some(rows) = object
             .get_mut("unmet_requirements")
             .and_then(Value::as_array_mut)
         {
             rows.retain(|value| value.as_str() != Some("connector_remote_result_not_materialized"));
+            rows.is_empty()
+        } else {
+            true
+        };
+        let remote_block_reason =
+            "connector returned a remote result file, but the workflow artifact was finalized before materializing it";
+        let cleared_remote_semantic = if object
+            .get("semantic_block_reason")
+            .and_then(Value::as_str)
+            == Some(remote_block_reason)
+        {
+            object.remove("semantic_block_reason");
+            true
+        } else {
+            false
+        };
+        let cleared_remote_rejection = if object
+            .get("rejected_artifact_reason")
+            .and_then(Value::as_str)
+            == Some("connector remote result file was not read through the available remote helper before writing the artifact")
+        {
+            object.remove("rejected_artifact_reason");
+            true
+        } else {
+            false
+        };
+        let remove_required_actions = if let Some(rows) = object
+            .get_mut("required_next_tool_actions")
+            .and_then(Value::as_array_mut)
+        {
+            rows.retain(|value| {
+                let Some(action) = value.as_str() else {
+                    return true;
+                };
+                !(action.contains("remote helper") && action.contains("/mnt/files/"))
+            });
+            rows.is_empty()
+        } else {
+            false
+        };
+        if remove_required_actions {
+            object.remove("required_next_tool_actions");
         }
-        object.remove("semantic_block_reason");
-        object.remove("validation_outcome");
-        object.remove("rejected_artifact_reason");
-        object.remove("required_next_tool_actions");
         object.remove("connector_remote_file_paths");
+        if unmet_remote_only
+            && cleared_remote_semantic
+            && cleared_remote_rejection
+            && object
+                .get("validation_outcome")
+                .and_then(Value::as_str)
+                .is_some_and(|value| matches!(value, "needs_repair" | "blocked"))
+        {
+            object.remove("validation_outcome");
+        }
         return;
     }
     if !remote_hydration_required {
@@ -1167,6 +1215,10 @@ mod connector_capture_tests {
             .is_some_and(|rows| rows.iter().any(|value| {
                 value.as_str() == Some("current_attempt_output_missing")
             })));
+        assert_eq!(
+            validation.get("validation_outcome").and_then(Value::as_str),
+            Some("blocked")
+        );
         assert!(validation.get("required_next_tool_actions").is_none());
         assert!(validation.get("connector_remote_file_paths").is_none());
         assert_eq!(
@@ -1175,5 +1227,76 @@ mod connector_capture_tests {
                 .and_then(Value::as_str),
             Some(".tandem/runs/run/artifacts/source-connector-results.json")
         );
+    }
+
+    #[test]
+    fn connector_capture_validation_preserves_non_remote_blockers_when_source_artifact_materialized(
+    ) {
+        let mut validation = json!({
+            "semantic_block_reason": "artifact does not match output_contract.schema: $.raw_posts is required",
+            "validation_outcome": "blocked",
+            "rejected_artifact_reason": "artifact does not match output_contract.schema: $.raw_posts is required",
+            "required_next_tool_actions": [
+                "Read /mnt/files/mex/play.json through the remote helper.",
+                "Rewrite the artifact so it satisfies the output schema."
+            ],
+            "connector_remote_file_paths": ["/mnt/files/mex/play.json"],
+            "unmet_requirements": [
+                "output_schema_invalid",
+                "connector_remote_result_not_materialized"
+            ]
+        });
+        let capture = json!({
+            "artifact_path": ".tandem/runs/run/artifacts/source-connector-results.json",
+            "remote_hydration_required": true,
+            "remote_file_paths": ["/mnt/files/mex/play.json"]
+        });
+
+        apply_automation_connector_capture_validation_metadata(
+            &mut validation,
+            &capture,
+            3,
+            3,
+            true,
+        );
+
+        assert_eq!(
+            validation
+                .get("semantic_block_reason")
+                .and_then(Value::as_str),
+            Some("artifact does not match output_contract.schema: $.raw_posts is required")
+        );
+        assert_eq!(
+            validation
+                .get("rejected_artifact_reason")
+                .and_then(Value::as_str),
+            Some("artifact does not match output_contract.schema: $.raw_posts is required")
+        );
+        assert_eq!(
+            validation.get("validation_outcome").and_then(Value::as_str),
+            Some("blocked")
+        );
+        let unmet = validation
+            .get("unmet_requirements")
+            .and_then(Value::as_array)
+            .expect("unmet requirements");
+        assert!(unmet
+            .iter()
+            .any(|value| value.as_str() == Some("output_schema_invalid")));
+        assert!(!unmet.iter().any(|value| {
+            value.as_str() == Some("connector_remote_result_not_materialized")
+        }));
+        let actions = validation
+            .get("required_next_tool_actions")
+            .and_then(Value::as_array)
+            .expect("required actions");
+        assert!(actions.iter().any(|value| {
+            value.as_str() == Some("Rewrite the artifact so it satisfies the output schema.")
+        }));
+        assert!(!actions.iter().any(|value| {
+            value
+                .as_str()
+                .is_some_and(|action| action.contains("remote helper"))
+        }));
     }
 }

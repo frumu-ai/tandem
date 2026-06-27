@@ -409,6 +409,23 @@ fn automation_connector_source_artifact_from_texts(
         .find_map(|text| automation_parse_connector_source_artifact_from_text(node, text))
 }
 
+fn automation_connector_source_artifact_from_value(
+    node: &AutomationFlowNode,
+    value: &Value,
+) -> Option<Value> {
+    let mut candidates = Vec::new();
+    if let Some(artifact) = automation_connector_source_artifact_candidate(value) {
+        candidates.push(artifact);
+    }
+    if let Some(artifact) = automation_build_connector_source_artifact_from_raw_payload(node, value)
+    {
+        candidates.push(artifact);
+    }
+    candidates
+        .into_iter()
+        .max_by_key(automation_connector_source_artifact_row_count)
+}
+
 fn automation_write_recovered_connector_source_artifact(
     artifact: Value,
     workspace_root: &str,
@@ -450,15 +467,26 @@ fn automation_recover_connector_source_artifact_from_session(
     }
 
     let mut texts = Vec::new();
+    let mut candidates = Vec::new();
     for part in session.messages.iter().flat_map(|message| message.parts.iter()) {
         let MessagePart::ToolInvocation { result, .. } = part else {
             continue;
         };
         let payload = automation_connector_capture_result_payload(result.as_ref());
+        if let Some(artifact) = automation_connector_source_artifact_from_value(node, &payload) {
+            candidates.push(artifact);
+        }
         automation_collect_connector_result_texts(&payload, &mut texts, 0);
     }
 
     if let Some(artifact) = automation_connector_source_artifact_from_texts(node, &mut texts) {
+        candidates.push(artifact);
+    }
+
+    if let Some(artifact) = candidates
+        .into_iter()
+        .max_by_key(automation_connector_source_artifact_row_count)
+    {
         return Ok(Some(automation_write_recovered_connector_source_artifact(
             artifact,
             workspace_root,
@@ -1142,8 +1170,18 @@ async fn automation_try_materialize_connector_remote_result_artifact(
     }
     if recovered.is_none() {
         let mut texts = Vec::new();
+        let mut candidates = Vec::new();
+        if let Some(artifact) = automation_connector_source_artifact_from_value(node, &result_value)
+        {
+            candidates.push(artifact);
+        }
         automation_collect_connector_result_texts(&result_value, &mut texts, 0);
-        recovered = automation_connector_source_artifact_from_texts(node, &mut texts)
+        if let Some(artifact) = automation_connector_source_artifact_from_texts(node, &mut texts) {
+            candidates.push(artifact);
+        }
+        recovered = candidates
+            .into_iter()
+            .max_by_key(automation_connector_source_artifact_row_count)
             .map(|artifact| {
                 automation_write_recovered_connector_source_artifact(
                     artifact,
@@ -1265,6 +1303,23 @@ async fn automation_resolve_required_output_candidate(
     }
 }
 
+fn automation_should_materialize_connector_remote_result(
+    node: &AutomationFlowNode,
+    connector_capture: &Value,
+    verified_output: Option<&(String, String, AutomationVerifiedOutputResolution)>,
+) -> bool {
+    let remote_hydration_required = connector_capture
+        .get("remote_hydration_required")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !remote_hydration_required {
+        return false;
+    }
+    verified_output
+        .map(|(_, text, _)| automation_connector_source_artifact_needs_recovery(node, text))
+        .unwrap_or(true)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn automation_materialize_connector_verified_output(
     state: &AppState,
@@ -1281,8 +1336,13 @@ async fn automation_materialize_connector_verified_output(
     verified_output_error: &mut Option<String>,
 ) -> anyhow::Result<()> {
     if let Some(capture) = connector_capture.as_ref() {
-        if let Some((materialized, updated_capture)) =
-            automation_try_materialize_connector_remote_result_artifact(
+        if automation_should_materialize_connector_remote_result(
+            node,
+            capture,
+            verified_output.as_ref(),
+        ) {
+            if let Some((materialized, updated_capture)) =
+                automation_try_materialize_connector_remote_result_artifact(
                 state,
                 run_id,
                 automation,
@@ -1294,10 +1354,11 @@ async fn automation_materialize_connector_verified_output(
                 capture,
             )
             .await?
-        {
-            *verified_output = Some(materialized);
-            *verified_output_error = None;
-            *connector_capture = Some(updated_capture);
+            {
+                *verified_output = Some(materialized);
+                *verified_output_error = None;
+                *connector_capture = Some(updated_capture);
+            }
         }
     }
 
@@ -1531,6 +1592,37 @@ VERIFY complete"#;
     }
 
     #[test]
+    fn connector_source_recovery_normalizes_structured_connector_payload() {
+        let node = source_node();
+        let payload = json!({
+            "data": {
+                "results": [{
+                    "response": {
+                        "data": {
+                            "posts": [{
+                                "title": "Structured row",
+                                "url": "https://example.test/structured"
+                            }]
+                        }
+                    }
+                }]
+            }
+        });
+
+        let artifact = automation_connector_source_artifact_from_value(&node, &payload)
+            .expect("structured connector payload normalized");
+
+        assert_eq!(
+            artifact.pointer("/raw_posts/0/title").and_then(Value::as_str),
+            Some("Structured row")
+        );
+        assert_eq!(
+            artifact.get("query").and_then(Value::as_str),
+            Some("local llm data privacy corporate")
+        );
+    }
+
+    #[test]
     fn connector_source_recovery_normalizes_embedded_stdout_payload() {
         let node = source_node();
         let stdout = r#"{"data":{"stdout":"PATH /mnt/files/mex/source.json\n{\"success\":true,\"results\":[{\"response\":{\"data\":{\"posts\":[{\"title\":\"Embedded row\",\"url\":\"https://example.test/embedded\"}]}}}]}"}}"#;
@@ -1624,5 +1716,54 @@ VERIFY complete"#;
                 .and_then(Value::as_str),
             Some("/mnt/files/.composio/output/tandem_connector_artifact.json")
         );
+    }
+
+    #[test]
+    fn connector_remote_materialization_skips_when_verified_output_is_valid() {
+        let node = source_node();
+        let capture = json!({
+            "remote_hydration_required": true,
+            "remote_file_paths": ["/mnt/files/mex/source.json"]
+        });
+        let verified_output = (
+            ".tandem/runs/run/artifacts/source.json".to_string(),
+            json!({
+                "status": "completed",
+                "raw_posts": [{
+                    "title": "Already materialized",
+                    "url": "https://example.test/already"
+                }]
+            })
+            .to_string(),
+            AutomationVerifiedOutputResolution {
+                path: std::path::PathBuf::from(
+                    "/tmp/workspace/.tandem/runs/run/artifacts/source.json",
+                ),
+                legacy_workspace_artifact_promoted_from: None,
+                materialized_by_current_attempt: true,
+                resolution_kind: AutomationVerifiedOutputResolutionKind::SessionTextRecovery,
+            },
+        );
+
+        assert!(!automation_should_materialize_connector_remote_result(
+            &node,
+            &capture,
+            Some(&verified_output)
+        ));
+    }
+
+    #[test]
+    fn connector_remote_materialization_runs_when_remote_hydration_required_and_output_missing() {
+        let node = source_node();
+        let capture = json!({
+            "remote_hydration_required": true,
+            "remote_file_paths": ["/mnt/files/mex/source.json"]
+        });
+
+        assert!(automation_should_materialize_connector_remote_result(
+            &node,
+            &capture,
+            None
+        ));
     }
 }
