@@ -2,6 +2,34 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.6.4 (2026-06-27)
+
+Tandem 0.6.4 is a control-panel usability patch for editing generated workflow
+automations. It borrows the practical workflow-map affordance from Workflow
+Studio without turning the automation editor into a full Zapier/n8n-style
+builder: operators get enough flow context to understand and tune generated
+nodes, especially prompts and MCP-bound steps, from the existing edit modal.
+
+### Visual Workflow Editing
+
+- The `Edit workflow automation` modal now starts with a Studio-inspired flow
+  map that groups workflow nodes into dependency stages, shows start nodes and
+  upstream dependency counts, and flags missing dependencies before operators
+  start editing individual node prompts.
+- Flow-map node cards summarize the details operators need while reviewing a
+  generated automation: bound agent, objective preview, input-reference count,
+  output kind, inherited workflow MCP servers, task-specific MCP overrides, and
+  send-capable MCP tool usage.
+- Selecting a node in the map scrolls directly to that node's prompt/model/MCP
+  editor card and highlights it, making generated workflows easier to adjust
+  without hunting through a long modal.
+- Workflow edit drafts now retain dependency, input-reference, stage, and output
+  metadata from the saved automation payload so the visual editor can represent
+  the actual generated flow instead of only showing editable prompt text.
+- The prompt editor section now opens by default, which makes the map useful for
+  generic reusable workflow tuning where the common edit is changing a node's
+  objective prompt while keeping the generated structure intact.
+
 ## v0.6.3 (2026-06-26)
 
 Tandem 0.6.3 is a patch release for workflow-runtime reliability and Bug

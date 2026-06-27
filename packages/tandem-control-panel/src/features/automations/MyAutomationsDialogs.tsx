@@ -14,6 +14,7 @@ import { ScopePolicyEditor } from "./ScopePolicyEditor";
 import { HandoffConfigEditor } from "./HandoffConfigEditor";
 import { HandoffPanel } from "./HandoffPanel";
 import { ExecutionProfileToggle } from "./ExecutionProfileToggle";
+import { WorkflowEditFlowMap } from "./WorkflowEditFlowMap";
 
 function normalizeMcpNamespaceSegment(raw: string) {
   let out = "";
@@ -80,6 +81,10 @@ function safeWorkflowExportName(raw: string) {
     .replace(/[^a-z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "");
   return cleaned || "workflow-automation";
+}
+
+function workflowNodeEditorDomId(nodeId: string) {
+  return `workflow-node-editor-${safeWorkflowExportName(nodeId)}`;
 }
 
 function downloadWorkflowRecoveryBundle(workflowEditDraft: any) {
@@ -421,6 +426,7 @@ export function WorkflowAutomationEditDialog({
   const [workspaceBrowserDir, setWorkspaceBrowserDir] = useState("");
   const [workspaceBrowserSearch, setWorkspaceBrowserSearch] = useState("");
   const [exportingAutomation, setExportingAutomation] = useState(false);
+  const [selectedFlowNodeId, setSelectedFlowNodeId] = useState("");
   const healthQuery = useQuery({
     queryKey: ["global", "health", "workflow-edit"],
     enabled: !!workflowEditDraft,
@@ -451,6 +457,22 @@ export function WorkflowAutomationEditDialog({
         return name.includes(workspaceSearchQuery);
       })
     : workspaceDirectories;
+  const workflowNodeIdSignature = Array.isArray(workflowEditDraft?.nodes)
+    ? workflowEditDraft.nodes.map((node: any) => String(node?.nodeId || "").trim()).join("|")
+    : "";
+
+  useEffect(() => {
+    if (!workflowEditDraft) {
+      if (selectedFlowNodeId) setSelectedFlowNodeId("");
+      return;
+    }
+    const nodeIds = Array.isArray(workflowEditDraft.nodes)
+      ? workflowEditDraft.nodes.map((node: any) => String(node?.nodeId || "").trim()).filter(Boolean)
+      : [];
+    if (nodeIds.length && !nodeIds.includes(selectedFlowNodeId)) {
+      setSelectedFlowNodeId(nodeIds[0]);
+    }
+  }, [workflowEditDraft?.automationId, workflowNodeIdSignature, selectedFlowNodeId]);
 
   if (!workflowEditDraft) return null;
 
@@ -458,6 +480,18 @@ export function WorkflowAutomationEditDialog({
     automationWizardConfig.executionModes.find(
       (mode: any) => mode.id === workflowEditDraft.executionMode
     ) || automationWizardConfig.executionModes[0];
+  const activeFlowNodeId =
+    selectedFlowNodeId || String(workflowEditDraft.nodes?.[0]?.nodeId || "").trim();
+  const selectWorkflowNode = (nodeId: string) => {
+    const nextNodeId = String(nodeId || "").trim();
+    if (!nextNodeId) return;
+    setSelectedFlowNodeId(nextNodeId);
+    window.setTimeout(() => {
+      document
+        .getElementById(workflowNodeEditorDomId(nextNodeId))
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
+  };
   const executionModeNotes: Record<string, string> = {
     single: "One focused operator handles the full workflow from start to finish.",
     team: "A planner coordinates a small set of specialized agents. This is best when the work has multiple steps but still needs tight sequencing and review.",
@@ -494,6 +528,13 @@ export function WorkflowAutomationEditDialog({
         </div>
         <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 py-4">
           <div className="grid content-start gap-4 min-w-0">
+            <WorkflowEditFlowMap
+              nodes={workflowEditDraft.nodes || []}
+              workflowMcpServers={workflowEditDraft.selectedMcpServers || []}
+              selectedNodeId={activeFlowNodeId}
+              onSelectNode={selectWorkflowNode}
+            />
+
             <AccordionSection title="General setup" defaultOpen={true}>
               <div className="grid gap-1">
                 <label className="text-xs text-slate-400">Automation name</label>
@@ -1115,7 +1156,7 @@ export function WorkflowAutomationEditDialog({
               <AccordionSection
                 title="Prompt Editor"
                 description="Edit the actual prompts Tandem sends for each workflow step. These objectives control what every node does at runtime."
-                defaultOpen={false}
+                defaultOpen={true}
               >
                 {workflowEditDraft.nodes.length ? (
                   <div className="grid gap-3">
@@ -1152,10 +1193,17 @@ export function WorkflowAutomationEditDialog({
                         ...inferredTaskServers,
                       ]);
                       const nodeSendCapable = nodeMcpTools.some(toolLooksSendCapable);
+                      const editorNodeId = String(node.nodeId || `node-${index + 1}`).trim();
+                      const editorSelected = activeFlowNodeId === editorNodeId;
                       return (
                         <div
+                          id={workflowNodeEditorDomId(editorNodeId)}
                           key={node.nodeId || index}
-                          className="rounded-lg border border-slate-700/60 bg-slate-950/30 p-3"
+                          className={`rounded-lg border p-3 ${
+                            editorSelected
+                              ? "border-amber-400/70 bg-amber-400/10"
+                              : "border-slate-700/60 bg-slate-950/30"
+                          }`}
                         >
                           <div className="mb-2 flex flex-wrap items-center gap-2">
                             <strong className="text-sm text-slate-100">
