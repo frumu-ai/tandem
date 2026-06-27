@@ -100,6 +100,10 @@ interface WorkflowNodeEditDraft {
   title: string;
   objective: string;
   agentId: string;
+  dependsOn: string[];
+  inputRefs: Array<{ fromStepId: string; alias: string }>;
+  stageKind: string;
+  outputKind: string;
   modelProvider: string;
   modelId: string;
   toolAccessMode: WorkflowTaskToolAccessMode;
@@ -761,6 +765,16 @@ function workflowAutomationToEditDraft(automation: any): WorkflowEditDraft | nul
   );
   const nodes = Array.isArray(automation?.flow?.nodes)
     ? automation.flow.nodes.map((node: any, index: number) => {
+        const dependsOnSource = Array.isArray(node?.depends_on)
+          ? node.depends_on
+          : Array.isArray(node?.dependsOn)
+            ? node.dependsOn
+            : [];
+        const inputRefsSource = Array.isArray(node?.input_refs)
+          ? node.input_refs
+          : Array.isArray(node?.inputRefs)
+            ? node.inputRefs
+            : [];
         const approvalMetadata =
           node?.metadata?.approval && typeof node.metadata.approval === "object"
             ? node.metadata.approval
@@ -786,6 +800,17 @@ function workflowAutomationToEditDraft(automation: any): WorkflowEditDraft | nul
           ).trim(),
           objective: String(node?.objective || "").trim(),
           agentId: String(node?.agent_id || node?.agentId || "").trim(),
+          dependsOn: dependsOnSource.map((entry: any) => String(entry || "").trim()).filter(Boolean),
+          inputRefs: inputRefsSource
+            .map((ref: any) => ({
+              fromStepId: String(ref?.from_step_id || ref?.fromStepId || "").trim(),
+              alias: String(ref?.alias || "").trim(),
+            }))
+            .filter((ref: any) => ref.fromStepId),
+          stageKind: String(node?.stage_kind || node?.stageKind || "").trim(),
+          outputKind: String(
+            node?.output_contract?.kind || node?.outputContract?.kind || ""
+          ).trim(),
           approvalOverride,
           approvalCondition,
           ...workflowNodeToolAccessDraft(node),

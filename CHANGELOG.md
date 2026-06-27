@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.4] - 2026-06-27
+
+### Added
+
+- Added a Studio-inspired workflow flow map to the `Edit workflow automation`
+  modal so generated automations can be inspected by dependency stage while
+  operators edit them.
+- Added node-level visual context for upstream dependencies, input references,
+  output kind, bound agent, workflow-level MCP inheritance, task MCP overrides,
+  send-capable MCP tools, and missing dependency warnings.
+
+### Changed
+
+- Linked flow-map node selection to the existing prompt/model/MCP editor cards,
+  including selected-node highlighting and automatic scroll-to-editor behavior.
+- Preserved dependency, input-reference, stage, and output-contract metadata in
+  workflow edit drafts so generated workflow structure remains visible after an
+  automation is opened for editing.
+- Opened the prompt editor by default in the workflow automation edit modal so
+  generic workflow prompts are immediately reachable from the visual map.
+
 ## [0.6.3] - 2026-06-26
 
 ### Added
