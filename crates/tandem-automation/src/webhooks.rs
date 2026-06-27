@@ -20,16 +20,11 @@ fn default_enabled() -> bool {
     true
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AutomationWebhookSignatureScheme {
+    #[default]
     HmacSha256V1,
-}
-
-impl Default for AutomationWebhookSignatureScheme {
-    fn default() -> Self {
-        Self::HmacSha256V1
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
