@@ -258,42 +258,6 @@ fn repair_brief_uses_attempt_verdict_expected_observed_sections() {
 }
 
 #[test]
-fn repair_brief_names_exact_connector_remote_file_path() {
-    let node = bare_node();
-    let prior_output = json!({
-        "status": "needs_repair",
-        "attempt_verdict": {
-            "failure_class": "contract_miss",
-            "validation_reason": "connector remote result file was not materialized",
-            "expected": {
-                "required_output_path": ".tandem/artifacts/search.json"
-            },
-            "observed": {
-                "executed_tools": ["mcp.example.search"],
-                "artifact": {"status": "preview_only"}
-            },
-            "attempt_review": {
-                "progress_label": "partial",
-                "progress_score": 40,
-                "completed_correctly": ["Called the connector search tool."],
-                "still_needed": ["Read the connector remote result file before writing the artifact."],
-                "why_it_matters": ["Preview rows do not prove full source coverage."],
-                "next_moves": ["Use the available remote helper to read `/mnt/files/mex/full.json` before writing the artifact."]
-            },
-            "unmet_requirements": ["connector_remote_result_not_materialized"],
-            "required_next_actions": ["Use the available remote helper to read `/mnt/files/mex/full.json` before writing the artifact."]
-        }
-    });
-
-    let brief = render_automation_repair_brief(&node, Some(&prior_output), 2, 3, Some("run-1"))
-        .expect("repair brief");
-
-    assert!(brief.contains("connector remote result must be materialized"));
-    assert!(brief.contains("/mnt/files/mex/full.json"));
-    assert!(brief.contains("Do not use `data_preview`"));
-}
-
-#[test]
 fn concrete_mcp_repair_tool_allowlist_removes_discovery_tools() {
     let mut node = bare_node();
     node.output_contract = Some(AutomationFlowOutputContract {

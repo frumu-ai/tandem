@@ -689,7 +689,21 @@ pub(crate) fn apply_automation_connector_capture_validation_metadata(
         .get("remote_hydration_required")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    if !remote_hydration_required || source_artifact_materialized {
+    if source_artifact_materialized {
+        if let Some(rows) = object
+            .get_mut("unmet_requirements")
+            .and_then(Value::as_array_mut)
+        {
+            rows.retain(|value| value.as_str() != Some("connector_remote_result_not_materialized"));
+        }
+        object.remove("semantic_block_reason");
+        object.remove("validation_outcome");
+        object.remove("rejected_artifact_reason");
+        object.remove("required_next_tool_actions");
+        object.remove("connector_remote_file_paths");
+        return;
+    }
+    if !remote_hydration_required {
         return;
     }
     let unmet = object
@@ -1115,7 +1129,17 @@ mod connector_capture_tests {
 
     #[test]
     fn connector_capture_validation_skips_remote_file_block_when_source_artifact_materialized() {
-        let mut validation = json!({});
+        let mut validation = json!({
+            "semantic_block_reason": "connector returned a remote result file, but the workflow artifact was finalized before materializing it",
+            "validation_outcome": "blocked",
+            "rejected_artifact_reason": "connector remote result file was not read through the available remote helper before writing the artifact",
+            "required_next_tool_actions": ["Read /mnt/files/mex/play.json through the remote helper."],
+            "connector_remote_file_paths": ["/mnt/files/mex/play.json"],
+            "unmet_requirements": [
+                "current_attempt_output_missing",
+                "connector_remote_result_not_materialized"
+            ]
+        });
         let capture = json!({
             "artifact_path": ".tandem/runs/run/artifacts/source-connector-results.json",
             "remote_hydration_required": true,
@@ -1137,7 +1161,14 @@ mod connector_capture_tests {
             .is_some_and(|rows| rows.iter().any(|value| {
                 value.as_str() == Some("connector_remote_result_not_materialized")
             })));
+        assert!(validation
+            .get("unmet_requirements")
+            .and_then(Value::as_array)
+            .is_some_and(|rows| rows.iter().any(|value| {
+                value.as_str() == Some("current_attempt_output_missing")
+            })));
         assert!(validation.get("required_next_tool_actions").is_none());
+        assert!(validation.get("connector_remote_file_paths").is_none());
         assert_eq!(
             validation
                 .get("connector_capture_artifact_path")
