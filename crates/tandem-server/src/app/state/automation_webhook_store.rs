@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::Context;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tandem_types::{
     DataClass, PrincipalRef, ResourceScope, SecretRef, TenantContext, ToolRiskTier,
@@ -104,6 +104,21 @@ pub(crate) struct VerifiedAutomationWebhookRequest {
     pub provider_event_id: Option<String>,
     pub body_digest: String,
     pub received_at_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum AutomationWebhookQueueResult {
+    Accepted {
+        delivery: AutomationWebhookDeliveryRecord,
+        run: AutomationV2RunRecord,
+    },
+    Duplicate {
+        delivery: AutomationWebhookDeliveryRecord,
+    },
+    Rejected {
+        delivery: AutomationWebhookDeliveryRecord,
+        reason_code: String,
+    },
 }
 
 fn parse_automation_webhook_triggers_file(
@@ -375,6 +390,93 @@ pub(crate) fn sanitize_automation_webhook_preview(value: &Value) -> Value {
                 .collect(),
         ),
         _ => value.clone(),
+    }
+}
+
+fn new_automation_webhook_delivery_id() -> String {
+    format!("automation-webhook-delivery-{}", Uuid::new_v4())
+}
+
+fn automation_webhook_delivery_matches_key(
+    delivery: &AutomationWebhookDeliveryRecord,
+    trigger: &AutomationWebhookTriggerRecord,
+    provider_event_id: Option<&String>,
+    body_digest: &str,
+) -> bool {
+    if delivery.trigger_id != trigger.trigger_id
+        || !delivery.tenant_matches(&trigger.tenant_context)
+    {
+        return false;
+    }
+    if !matches!(
+        delivery.status,
+        AutomationWebhookDeliveryStatus::Accepted | AutomationWebhookDeliveryStatus::Duplicate
+    ) {
+        return false;
+    }
+    match provider_event_id {
+        Some(event_id) => delivery.provider_event_id.as_ref() == Some(event_id),
+        None => delivery.body_digest == body_digest,
+    }
+}
+
+fn insert_automation_metadata_value(metadata: &mut Option<Value>, key: &str, value: Value) {
+    match metadata {
+        Some(Value::Object(map)) => {
+            map.insert(key.to_string(), value);
+        }
+        _ => {
+            let mut map = serde_json::Map::new();
+            map.insert(key.to_string(), value);
+            *metadata = Some(Value::Object(map));
+        }
+    }
+}
+
+fn automation_webhook_run_metadata(
+    trigger: &AutomationWebhookTriggerRecord,
+    delivery: &AutomationWebhookDeliveryRecord,
+) -> Value {
+    json!({
+        "trigger_id": trigger.trigger_id,
+        "delivery_id": delivery.delivery_id,
+        "provider": trigger.provider,
+        "provider_event_kind": trigger.provider_event_kind,
+        "provider_event_id": delivery.provider_event_id,
+        "body_digest": delivery.body_digest,
+        "preview": delivery.sanitized_preview,
+        "data_class": trigger.default_data_class,
+        "risk_tier": trigger.default_risk_tier,
+        "owning_org_unit_id": trigger.owning_org_unit_id,
+        "resource_scope": trigger.resource_scope,
+        "trust": "untrusted_external_webhook",
+    })
+}
+
+fn automation_webhook_rejection_delivery(
+    trigger: &AutomationWebhookTriggerRecord,
+    provider_event_id: Option<String>,
+    body_digest: String,
+    status: AutomationWebhookDeliveryStatus,
+    reason_code: impl Into<String>,
+    received_at_ms: u64,
+    sanitized_preview: Value,
+) -> AutomationWebhookDeliveryRecord {
+    AutomationWebhookDeliveryRecord {
+        delivery_id: new_automation_webhook_delivery_id(),
+        trigger_id: trigger.trigger_id.clone(),
+        automation_id: trigger.automation_id.clone(),
+        tenant_context: trigger.tenant_context.clone(),
+        provider_event_id,
+        body_digest,
+        status,
+        rejection_reason_code: Some(reason_code.into()),
+        queued_run_id: None,
+        received_at_ms,
+        accepted_at_ms: None,
+        rejected_at_ms: Some(received_at_ms),
+        sanitized_preview,
+        audit_event_id: None,
     }
 }
 
@@ -754,6 +856,18 @@ impl AppState {
             .cloned()
     }
 
+    pub(crate) async fn get_automation_webhook_trigger_by_public_token(
+        &self,
+        public_path_token: &str,
+    ) -> Option<AutomationWebhookTriggerRecord> {
+        self.automation_webhook_triggers
+            .read()
+            .await
+            .values()
+            .find(|trigger| trigger.public_path_token == public_path_token)
+            .cloned()
+    }
+
     pub(crate) async fn disable_automation_webhook_trigger(
         &self,
         tenant_context: &TenantContext,
@@ -857,6 +971,180 @@ impl AppState {
             "recorded automation webhook delivery"
         );
         Ok(delivery)
+    }
+
+    pub(crate) async fn record_automation_webhook_rejection(
+        &self,
+        trigger: &AutomationWebhookTriggerRecord,
+        provider_event_id: Option<String>,
+        body_digest: String,
+        status: AutomationWebhookDeliveryStatus,
+        reason_code: impl Into<String>,
+        received_at_ms: u64,
+        sanitized_preview: Value,
+    ) -> anyhow::Result<AutomationWebhookDeliveryRecord> {
+        let delivery = automation_webhook_rejection_delivery(
+            trigger,
+            provider_event_id,
+            body_digest,
+            status,
+            reason_code,
+            received_at_ms,
+            sanitized_preview,
+        );
+        self.record_automation_webhook_delivery(delivery).await
+    }
+
+    pub(crate) async fn queue_automation_v2_run_from_webhook_delivery(
+        &self,
+        verified: VerifiedAutomationWebhookRequest,
+        sanitized_preview: Value,
+    ) -> anyhow::Result<AutomationWebhookQueueResult> {
+        let trigger = verified.trigger;
+        let sanitized_preview = sanitize_automation_webhook_preview(&sanitized_preview);
+
+        let duplicate = self
+            .automation_webhook_deliveries
+            .read()
+            .await
+            .values()
+            .any(|delivery| {
+                automation_webhook_delivery_matches_key(
+                    delivery,
+                    &trigger,
+                    verified.provider_event_id.as_ref(),
+                    &verified.body_digest,
+                )
+            });
+        if duplicate {
+            let delivery = self
+                .record_automation_webhook_rejection(
+                    &trigger,
+                    verified.provider_event_id,
+                    verified.body_digest,
+                    AutomationWebhookDeliveryStatus::Duplicate,
+                    "duplicate_delivery",
+                    verified.received_at_ms,
+                    sanitized_preview,
+                )
+                .await?;
+            return Ok(AutomationWebhookQueueResult::Duplicate { delivery });
+        }
+
+        let automation = match self.get_automation_v2(&trigger.automation_id).await {
+            Some(automation) => automation,
+            None => {
+                let delivery = self
+                    .record_automation_webhook_rejection(
+                        &trigger,
+                        verified.provider_event_id,
+                        verified.body_digest,
+                        AutomationWebhookDeliveryStatus::Failed,
+                        "automation_missing",
+                        verified.received_at_ms,
+                        sanitized_preview,
+                    )
+                    .await?;
+                return Ok(AutomationWebhookQueueResult::Rejected {
+                    delivery,
+                    reason_code: "automation_missing".to_string(),
+                });
+            }
+        };
+        if !tenant_context_matches(&automation.tenant_context(), &trigger.tenant_context) {
+            let delivery = self
+                .record_automation_webhook_rejection(
+                    &trigger,
+                    verified.provider_event_id,
+                    verified.body_digest,
+                    AutomationWebhookDeliveryStatus::Rejected,
+                    "automation_tenant_mismatch",
+                    verified.received_at_ms,
+                    sanitized_preview,
+                )
+                .await?;
+            return Ok(AutomationWebhookQueueResult::Rejected {
+                delivery,
+                reason_code: "automation_tenant_mismatch".to_string(),
+            });
+        }
+        if !matches!(automation.status, AutomationV2Status::Active) {
+            let delivery = self
+                .record_automation_webhook_rejection(
+                    &trigger,
+                    verified.provider_event_id,
+                    verified.body_digest,
+                    AutomationWebhookDeliveryStatus::Rejected,
+                    "automation_inactive",
+                    verified.received_at_ms,
+                    sanitized_preview,
+                )
+                .await?;
+            return Ok(AutomationWebhookQueueResult::Rejected {
+                delivery,
+                reason_code: "automation_inactive".to_string(),
+            });
+        }
+
+        let run = self
+            .create_automation_v2_run(&automation, "webhook")
+            .await?;
+        let delivery = AutomationWebhookDeliveryRecord {
+            delivery_id: new_automation_webhook_delivery_id(),
+            trigger_id: trigger.trigger_id.clone(),
+            automation_id: trigger.automation_id.clone(),
+            tenant_context: trigger.tenant_context.clone(),
+            provider_event_id: verified.provider_event_id,
+            body_digest: verified.body_digest,
+            status: AutomationWebhookDeliveryStatus::Accepted,
+            rejection_reason_code: None,
+            queued_run_id: Some(run.run_id.clone()),
+            received_at_ms: verified.received_at_ms,
+            accepted_at_ms: Some(verified.received_at_ms),
+            rejected_at_ms: None,
+            sanitized_preview,
+            audit_event_id: None,
+        };
+        let delivery = self.record_automation_webhook_delivery(delivery).await?;
+        let webhook_metadata = automation_webhook_run_metadata(&trigger, &delivery);
+        let trigger_reason = format!(
+            "{} webhook delivery {}",
+            trigger.provider, delivery.delivery_id
+        );
+        let run = self
+            .update_automation_v2_run(&run.run_id, |row| {
+                row.trigger_reason = Some(trigger_reason.clone());
+                row.detail = Some(format!(
+                    "Queued from {} webhook delivery {}",
+                    trigger.provider, delivery.delivery_id
+                ));
+                if let Some(snapshot) = row.automation_snapshot.as_mut() {
+                    insert_automation_metadata_value(
+                        &mut snapshot.metadata,
+                        "automation_webhook",
+                        webhook_metadata.clone(),
+                    );
+                }
+            })
+            .await
+            .unwrap_or(run);
+        let _ =
+            crate::http::context_runs::sync_automation_v2_run_blackboard(self, &automation, &run)
+                .await;
+        self.event_bus.publish(crate::EngineEvent::new(
+            "automation.v2.run.created",
+            json!({
+                "automationID": run.automation_id,
+                "runID": run.run_id,
+                "run": run.clone(),
+                "tenantContext": run.tenant_context,
+                "triggerType": "webhook",
+                "deliveryID": delivery.delivery_id,
+                "triggerID": trigger.trigger_id,
+                "provider": trigger.provider,
+            }),
+        ));
+        Ok(AutomationWebhookQueueResult::Accepted { delivery, run })
     }
 
     pub(crate) async fn list_automation_webhook_deliveries_for_trigger(

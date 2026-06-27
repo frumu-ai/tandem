@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   including secure secret references, private secret material storage, HMAC
   signature verification, replay detection, rotation primitives, and tests for
   cross-tenant isolation.
+- Added a public Automation V2 webhook intake route with a dedicated auth bypass
+  for signed trigger calls, sanitized rejection delivery records, and
+  tenant-scoped validation before any run is queued.
+- Added webhook-triggered Automation V2 run queueing with delivery provenance,
+  duplicate suppression, untrusted sanitized event previews, trigger data-class
+  and risk defaults, and `automation.v2.run.created` events using
+  `triggerType: "webhook"`.
 - Added a Studio-inspired workflow flow map to the `Edit workflow automation`
   modal so generated automations can be inspected by dependency stage while
   operators edit them.

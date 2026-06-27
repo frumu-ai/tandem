@@ -102,6 +102,7 @@ pub(super) fn build_router(state: AppState, route_extensions: &[super::RouteRegi
     let mut router: Router<AppState> = Router::new();
 
     router = super::routes_approvals::apply(router);
+    router = super::routes_automation_webhooks::apply(router);
     router = router.route(
         "/audit/protected",
         axum::routing::get(super::audit_stream::protected_audit_events),

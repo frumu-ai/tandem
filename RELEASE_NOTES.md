@@ -10,6 +10,20 @@ Studio without turning the automation editor into a full Zapier/n8n-style
 builder: operators get enough flow context to understand and tune generated
 nodes, especially prompts and MCP-bound steps, from the existing edit modal.
 
+### Automation Webhooks
+
+- Automation V2 now accepts signed public webhook deliveries at trigger-scoped
+  URLs without requiring the normal Tandem transport token on that one route.
+  The handler resolves tenant and automation only from the stored trigger,
+  verifies HMAC signatures and replay windows, enforces JSON payload handling,
+  and records sanitized internal rejection delivery records without leaking
+  trigger, tenant, automation, or signature details in public errors.
+- Accepted webhook deliveries now queue Automation V2 runs with
+  `trigger_type = "webhook"`, delivery/trigger/provider provenance on the run
+  snapshot, tenant context inherited from the trigger-bound automation,
+  duplicate suppression, and `automation.v2.run.created` events with
+  `triggerType: "webhook"`.
+
 ### Visual Workflow Editing
 
 - The `Edit workflow automation` modal now starts with a Studio-inspired flow
