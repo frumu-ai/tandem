@@ -2,7 +2,7 @@
 
 This is the canonical release-notes file used by release tooling.
 
-## v0.6.4 (2026-06-27)
+## v0.6.4 (2026-06-28)
 
 Tandem 0.6.4 adds secure Automation V2 webhook management and improves the
 control-panel editing experience for generated workflow automations. Operators

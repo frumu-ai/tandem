@@ -1,6 +1,6 @@
 {
   "name": "@frumu/tandem-enterprise",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "Hosted enterprise Tandem engine binary distribution for Linux x64",
   "homepage": "https://tandem.ac",
   "bin": {

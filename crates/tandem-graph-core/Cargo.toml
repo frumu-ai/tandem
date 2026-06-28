@@ -1,6 +1,6 @@
 [package]
 name = "tandem-graph-core"
-version = "0.6.3"
+version = "0.6.4"
 description = "Shared context graph primitives for Tandem"
 edition = "2021"
 license = "MIT OR Apache-2.0"
