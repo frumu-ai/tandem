@@ -26,7 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Pending.
+- Legacy stateful runtime snapshots that predate explicit phase fields now
+  derive phase, phase history, and allowed next phases from their stored status
+  when read.
 
 ## [0.6.4] - 2026-06-28
 

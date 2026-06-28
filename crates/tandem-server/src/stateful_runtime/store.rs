@@ -1,9 +1,11 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use serde_json::Value;
 use tandem_types::TenantContext;
 use tokio::io::AsyncWriteExt;
 
+use super::phases::phase_state_from_status;
 use super::types::{StatefulRunEventRecord, StatefulRunSnapshotRecord};
 
 #[derive(Debug, Clone, Copy)]
@@ -125,8 +127,48 @@ pub async fn write_stateful_run_snapshot(
 pub fn read_stateful_run_snapshot(path: &Path) -> anyhow::Result<StatefulRunSnapshotRecord> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read stateful snapshot {}", path.display()))?;
-    serde_json::from_str(&content)
-        .with_context(|| format!("failed to parse stateful snapshot {}", path.display()))
+    let value = serde_json::from_str::<Value>(&content)
+        .with_context(|| format!("failed to parse stateful snapshot {}", path.display()))?;
+    let has_phase = value.get("phase").is_some();
+    let has_phase_history = value.get("phase_history").is_some();
+    let has_allowed_next_phases = value.get("allowed_next_phases").is_some();
+    let mut snapshot = serde_json::from_value::<StatefulRunSnapshotRecord>(value)
+        .with_context(|| format!("failed to parse stateful snapshot {}", path.display()))?;
+    hydrate_legacy_snapshot_phase_fields(
+        &mut snapshot,
+        has_phase,
+        has_phase_history,
+        has_allowed_next_phases,
+    );
+    Ok(snapshot)
+}
+
+fn hydrate_legacy_snapshot_phase_fields(
+    snapshot: &mut StatefulRunSnapshotRecord,
+    has_phase: bool,
+    has_phase_history: bool,
+    has_allowed_next_phases: bool,
+) {
+    if !has_phase {
+        let phase_state = phase_state_from_status(
+            &snapshot.run_id,
+            &snapshot.status,
+            snapshot.created_at_ms,
+            snapshot.phase_id.as_deref(),
+        );
+        snapshot.phase = phase_state.phase;
+        if !has_phase_history {
+            snapshot.phase_history = phase_state.phase_history;
+        }
+        if !has_allowed_next_phases {
+            snapshot.allowed_next_phases = phase_state.allowed_next_phases;
+        }
+        return;
+    }
+
+    if !has_allowed_next_phases {
+        snapshot.allowed_next_phases = snapshot.phase.allowed_next_phases().to_vec();
+    }
 }
 
 fn tmp_path_for(path: &Path) -> PathBuf {
@@ -165,11 +207,11 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::stateful_runtime::phase_state_from_status;
     use crate::stateful_runtime::types::{
         StatefulRunEventRecord, StatefulRunSnapshotRecord, StatefulRuntimeScope,
         StatefulWorkflowRunStatus,
     };
+    use crate::stateful_runtime::StatefulWorkflowPhase;
 
     fn tenant(org: &str, workspace: &str) -> TenantContext {
         TenantContext::explicit_user_workspace(org, workspace, None, "user-a")
@@ -265,6 +307,45 @@ mod tests {
         assert_eq!(loaded.snapshot_id, snapshot.snapshot_id);
         assert_eq!(loaded.run_id, snapshot.run_id);
         let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn read_snapshot_derives_phase_fields_for_legacy_v1_rows() {
+        let path =
+            std::env::temp_dir().join(format!("stateful-runtime-legacy-{}.json", Uuid::new_v4()));
+        let legacy = json!({
+            "schema_version": 1,
+            "snapshot_id": "snapshot-1",
+            "run_id": "run-1",
+            "seq": 42,
+            "created_at_ms": 4200,
+            "scope": StatefulRuntimeScope::from_tenant_context(tenant("org-a", "workspace-a")),
+            "status": "running",
+            "phase_id": "node-a",
+            "checkpoint": { "step": "legacy" }
+        });
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&legacy).expect("serialize legacy"),
+        )
+        .expect("write legacy snapshot");
+
+        let loaded = read_stateful_run_snapshot(&path).expect("read legacy snapshot");
+
+        assert_eq!(loaded.phase, StatefulWorkflowPhase::RunningPhase);
+        assert_eq!(
+            loaded.allowed_next_phases,
+            StatefulWorkflowPhase::RunningPhase
+                .allowed_next_phases()
+                .to_vec()
+        );
+        assert_eq!(loaded.phase_history.len(), 1);
+        assert_eq!(
+            loaded.phase_history[0].reason.as_deref(),
+            Some("observed_status:running")
+        );
+        assert_eq!(loaded.phase_history[0].phase_id.as_deref(), Some("node-a"));
+        let _ = tokio::fs::remove_file(path).await;
     }
 
     #[tokio::test]
