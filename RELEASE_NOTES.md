@@ -2,6 +2,12 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.6.5 (Unreleased)
+
+Tandem 0.6.5 is currently in development. This train starts the stateful agent
+runtime work with enterprise-aware durable run scope, event, and snapshot
+foundations.
+
 ## v0.6.4 (2026-06-28)
 
 Tandem 0.6.4 adds secure Automation V2 webhook management and improves the
