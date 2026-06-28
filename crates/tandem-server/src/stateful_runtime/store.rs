@@ -141,7 +141,7 @@ fn tmp_path_for(path: &Path) -> PathBuf {
 }
 
 fn safe_path_segment(value: &str) -> String {
-    value
+    let segment = value
         .chars()
         .map(|ch| {
             if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
@@ -150,7 +150,12 @@ fn safe_path_segment(value: &str) -> String {
                 '_'
             }
         })
-        .collect()
+        .collect::<String>();
+    if segment.is_empty() || segment == "." || segment == ".." {
+        "_".to_string()
+    } else {
+        segment
+    }
 }
 
 #[cfg(test)]
@@ -251,6 +256,46 @@ mod tests {
         let loaded = read_stateful_run_snapshot(&path).expect("read snapshot");
         assert_eq!(loaded.snapshot_id, snapshot.snapshot_id);
         assert_eq!(loaded.run_id, snapshot.run_id);
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn snapshot_paths_rewrite_dot_only_and_empty_segments() {
+        let root =
+            std::env::temp_dir().join(format!("stateful-runtime-snapshots-dot-{}", Uuid::new_v4()));
+        for (run_id, snapshot_id) in [("..", "."), ("", "")] {
+            let snapshot = StatefulRunSnapshotRecord {
+                schema_version: 1,
+                snapshot_id: snapshot_id.to_string(),
+                run_id: run_id.to_string(),
+                seq: 1,
+                created_at_ms: 100,
+                scope: StatefulRuntimeScope::from_tenant_context(tenant("org-a", "workspace-a")),
+                status: StatefulWorkflowRunStatus::Running,
+                phase_id: None,
+                source_record_kind: None,
+                checkpoint: None,
+                payload_digest: None,
+                workflow_definition_version: None,
+                metadata: None,
+            };
+
+            let path = write_stateful_run_snapshot(&root, &snapshot)
+                .await
+                .expect("write snapshot");
+
+            assert!(path.starts_with(&root));
+            assert_eq!(
+                path.parent()
+                    .and_then(|path| path.file_name())
+                    .and_then(|name| name.to_str()),
+                Some("_")
+            );
+            assert_eq!(
+                path.file_name().and_then(|name| name.to_str()),
+                Some("_.json")
+            );
+        }
         let _ = tokio::fs::remove_dir_all(root).await;
     }
 }
