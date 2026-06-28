@@ -414,10 +414,9 @@ fn automation_webhook_delivery_matches_key(
     ) {
         return false;
     }
-    match provider_event_id {
-        Some(event_id) => delivery.provider_event_id.as_ref() == Some(event_id),
-        None => delivery.body_digest == body_digest,
-    }
+    delivery.body_digest == body_digest
+        || provider_event_id
+            .is_some_and(|event_id| delivery.provider_event_id.as_ref() == Some(event_id))
 }
 
 fn insert_automation_metadata_value(metadata: &mut Option<Value>, key: &str, value: Value) {
@@ -920,11 +919,10 @@ impl AppState {
         Ok(true)
     }
 
-    pub(crate) async fn record_automation_webhook_delivery(
+    async fn record_automation_webhook_delivery_locked(
         &self,
         mut delivery: AutomationWebhookDeliveryRecord,
     ) -> anyhow::Result<AutomationWebhookDeliveryRecord> {
-        let _guard = self.automation_webhook_persistence.lock().await;
         let now = now_ms();
         let updated_trigger = {
             let mut triggers = self.automation_webhook_triggers.write().await;
@@ -973,6 +971,15 @@ impl AppState {
         Ok(delivery)
     }
 
+    pub(crate) async fn record_automation_webhook_delivery(
+        &self,
+        delivery: AutomationWebhookDeliveryRecord,
+    ) -> anyhow::Result<AutomationWebhookDeliveryRecord> {
+        let _guard = self.automation_webhook_persistence.lock().await;
+        self.record_automation_webhook_delivery_locked(delivery)
+            .await
+    }
+
     pub(crate) async fn record_automation_webhook_rejection(
         &self,
         trigger: &AutomationWebhookTriggerRecord,
@@ -1002,35 +1009,6 @@ impl AppState {
     ) -> anyhow::Result<AutomationWebhookQueueResult> {
         let trigger = verified.trigger;
         let sanitized_preview = sanitize_automation_webhook_preview(&sanitized_preview);
-
-        let duplicate = self
-            .automation_webhook_deliveries
-            .read()
-            .await
-            .values()
-            .any(|delivery| {
-                automation_webhook_delivery_matches_key(
-                    delivery,
-                    &trigger,
-                    verified.provider_event_id.as_ref(),
-                    &verified.body_digest,
-                )
-            });
-        if duplicate {
-            let delivery = self
-                .record_automation_webhook_rejection(
-                    &trigger,
-                    verified.provider_event_id,
-                    verified.body_digest,
-                    AutomationWebhookDeliveryStatus::Duplicate,
-                    "duplicate_delivery",
-                    verified.received_at_ms,
-                    sanitized_preview,
-                )
-                .await?;
-            return Ok(AutomationWebhookQueueResult::Duplicate { delivery });
-        }
-
         let automation = match self.get_automation_v2(&trigger.automation_id).await {
             Some(automation) => automation,
             None => {
@@ -1086,26 +1064,92 @@ impl AppState {
             });
         }
 
-        let run = self
-            .create_automation_v2_run(&automation, "webhook")
-            .await?;
-        let delivery = AutomationWebhookDeliveryRecord {
-            delivery_id: new_automation_webhook_delivery_id(),
-            trigger_id: trigger.trigger_id.clone(),
-            automation_id: trigger.automation_id.clone(),
-            tenant_context: trigger.tenant_context.clone(),
-            provider_event_id: verified.provider_event_id,
-            body_digest: verified.body_digest,
-            status: AutomationWebhookDeliveryStatus::Accepted,
-            rejection_reason_code: None,
-            queued_run_id: Some(run.run_id.clone()),
-            received_at_ms: verified.received_at_ms,
-            accepted_at_ms: Some(verified.received_at_ms),
-            rejected_at_ms: None,
-            sanitized_preview,
-            audit_event_id: None,
+        let (delivery, run) = {
+            let _guard = self.automation_webhook_persistence.lock().await;
+            let current_trigger = self
+                .automation_webhook_triggers
+                .read()
+                .await
+                .get(&trigger.trigger_id)
+                .cloned()
+                .filter(|current| {
+                    current.tenant_matches(&trigger.tenant_context)
+                        && current.automation_id == trigger.automation_id
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!("webhook trigger changed before delivery queueing")
+                })?;
+            if !current_trigger.enabled {
+                let delivery = automation_webhook_rejection_delivery(
+                    &trigger,
+                    verified.provider_event_id,
+                    verified.body_digest,
+                    AutomationWebhookDeliveryStatus::Disabled,
+                    "trigger_disabled",
+                    verified.received_at_ms,
+                    sanitized_preview,
+                );
+                let delivery = self
+                    .record_automation_webhook_delivery_locked(delivery)
+                    .await?;
+                return Ok(AutomationWebhookQueueResult::Rejected {
+                    delivery,
+                    reason_code: "trigger_disabled".to_string(),
+                });
+            }
+            let duplicate = self
+                .automation_webhook_deliveries
+                .read()
+                .await
+                .values()
+                .any(|delivery| {
+                    automation_webhook_delivery_matches_key(
+                        delivery,
+                        &trigger,
+                        verified.provider_event_id.as_ref(),
+                        &verified.body_digest,
+                    )
+                });
+            if duplicate {
+                let delivery = automation_webhook_rejection_delivery(
+                    &trigger,
+                    verified.provider_event_id,
+                    verified.body_digest,
+                    AutomationWebhookDeliveryStatus::Duplicate,
+                    "duplicate_delivery",
+                    verified.received_at_ms,
+                    sanitized_preview,
+                );
+                let delivery = self
+                    .record_automation_webhook_delivery_locked(delivery)
+                    .await?;
+                return Ok(AutomationWebhookQueueResult::Duplicate { delivery });
+            }
+
+            let run = self
+                .create_automation_v2_run(&automation, "webhook")
+                .await?;
+            let delivery = AutomationWebhookDeliveryRecord {
+                delivery_id: new_automation_webhook_delivery_id(),
+                trigger_id: trigger.trigger_id.clone(),
+                automation_id: trigger.automation_id.clone(),
+                tenant_context: trigger.tenant_context.clone(),
+                provider_event_id: verified.provider_event_id,
+                body_digest: verified.body_digest,
+                status: AutomationWebhookDeliveryStatus::Accepted,
+                rejection_reason_code: None,
+                queued_run_id: Some(run.run_id.clone()),
+                received_at_ms: verified.received_at_ms,
+                accepted_at_ms: Some(verified.received_at_ms),
+                rejected_at_ms: None,
+                sanitized_preview,
+                audit_event_id: None,
+            };
+            let delivery = self
+                .record_automation_webhook_delivery_locked(delivery)
+                .await?;
+            (delivery, run)
         };
-        let delivery = self.record_automation_webhook_delivery(delivery).await?;
         let webhook_metadata = automation_webhook_run_metadata(&trigger, &delivery);
         let trigger_reason = format!(
             "{} webhook delivery {}",
@@ -1239,10 +1283,10 @@ impl AppState {
                 {
                     return false;
                 }
-                match provider_event_id.as_ref() {
-                    Some(event_id) => delivery.provider_event_id.as_ref() == Some(event_id),
-                    None => delivery.body_digest == body_digest,
-                }
+                delivery.body_digest == body_digest
+                    || provider_event_id.as_ref().is_some_and(|event_id| {
+                        delivery.provider_event_id.as_ref() == Some(event_id)
+                    })
             });
         if replay {
             return Err(AutomationWebhookVerificationError::ReplayDetected);
