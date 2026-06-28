@@ -2,6 +2,7 @@ import { Badge, PanelCard } from "../ui/index.tsx";
 import type { GithubRepoRef, TaskSourceType } from "./CodingWorkflowsHelpers";
 
 type LinearCatalog = {
+  ok?: boolean;
   auth_required?: boolean;
   auth_status?: string;
   authorization_url?: string;
@@ -104,6 +105,11 @@ export function CodingWorkflowsRegisterProjectPanel({
   const linearProjects = Array.isArray(linearCatalog?.projects) ? linearCatalog.projects : [];
   const linearAuthRequired = !!linearCatalog?.auth_required && linearCatalog?.connected !== true;
   const linearMessage = String(linearCatalog?.message || "").trim();
+  const linearCatalogPartial =
+    linearCatalog?.ok === false && (linearTeams.length > 0 || linearProjects.length > 0);
+  const linearCatalogUnavailable =
+    !!linearCatalogError || (linearCatalog?.ok === false && !linearCatalogPartial);
+  const linearCatalogNotice = linearCatalogError || (!linearAuthRequired ? linearMessage : "");
   return (
     <PanelCard
       title="Register project"
@@ -237,9 +243,19 @@ export function CodingWorkflowsRegisterProjectPanel({
           <>
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100">
               <div className="flex flex-wrap items-center gap-2">
-                <Badge tone={linearCatalogError ? "warn" : linearProjects.length ? "ok" : "info"}>
-                  {linearCatalogError
+                <Badge
+                  tone={
+                    linearCatalogUnavailable || linearCatalogPartial
+                      ? "warn"
+                      : linearProjects.length
+                        ? "ok"
+                        : "info"
+                  }
+                >
+                  {linearCatalogUnavailable
                     ? "Catalog unavailable"
+                    : linearCatalogPartial
+                      ? "Partial catalog"
                     : linearAuthRequired
                       ? "Connect Linear"
                     : linearCatalogLoading
@@ -275,9 +291,9 @@ export function CodingWorkflowsRegisterProjectPanel({
                 {linearMessage}
               </div>
             ) : null}
-            {linearCatalogError ? (
+            {linearCatalogNotice ? (
               <div className="rounded-xl border border-yellow-500/20 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-100">
-                {linearCatalogError}
+                {linearCatalogNotice}
               </div>
             ) : null}
             {linearTeams.length ? (

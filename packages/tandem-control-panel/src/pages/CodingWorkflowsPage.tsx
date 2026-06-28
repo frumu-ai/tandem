@@ -46,6 +46,9 @@ import {
   runUpdatedAt,
   toArray,
 } from "./CodingWorkflowsHelpers";
+
+const LINEAR_CATALOG_TIMEOUT_MS = 8_000;
+
 export function CodingWorkflowsPage({
   api,
   client,
@@ -142,12 +145,28 @@ export function CodingWorkflowsPage({
   });
   const linearCatalogQuery = useQuery({
     queryKey: ["coding-workflows", "linear-catalog", taskSourceLinearTeam],
-    queryFn: () => {
+    queryFn: async ({ signal }) => {
       const params = new URLSearchParams();
       if (taskSourceLinearTeam.trim()) params.set("team", taskSourceLinearTeam.trim());
-      return api(`/api/aca/linear/catalog${params.toString() ? `?${params.toString()}` : ""}`);
+      const path = `/api/aca/linear/catalog${params.toString() ? `?${params.toString()}` : ""}`;
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
+      try {
+        return await Promise.race([
+          api(path, { signal }),
+          new Promise((_, reject) => {
+            timeoutId = setTimeout(() => {
+              reject(
+                new Error("Linear catalog timed out. Manual team/project entry is still available.")
+              );
+            }, LINEAR_CATALOG_TIMEOUT_MS);
+          }),
+        ]);
+      } finally {
+        if (timeoutId) clearTimeout(timeoutId);
+      }
     },
     enabled: acaAvailable && taskSourceType === "linear",
+    retry: false,
     staleTime: 60_000,
   });
   const runsQuery = useQuery({
@@ -1813,7 +1832,10 @@ export function CodingWorkflowsPage({
               linearCatalogError={
                 linearCatalogQuery.error instanceof Error ? linearCatalogQuery.error.message : ""
               }
-              linearCatalogLoading={linearCatalogQuery.isLoading || linearCatalogQuery.isFetching}
+              linearCatalogLoading={
+                linearCatalogQuery.isLoading ||
+                (linearCatalogQuery.isFetching && !linearCatalogQuery.data)
+              }
               newCredentialFile={newCredentialFile}
               newDefaultBranch={newDefaultBranch}
               newProjectName={newProjectName}
