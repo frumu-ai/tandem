@@ -207,6 +207,8 @@ async fn webhook_management_routes_redact_secrets_and_delivery_payloads() {
             tenant_context: tenant_a,
             provider_event_id: Some("evt-a".to_string()),
             body_digest: automation_webhook_body_digest(br#"{"ok":true}"#),
+            signature_scheme: Some(crate::AutomationWebhookSignatureScheme::HmacSha256V1),
+            verification_result_code: Some("tandem_hmac_sha256_v1_verified".to_string()),
             status: AutomationWebhookDeliveryStatus::Accepted,
             rejection_reason_code: None,
             queued_run_id: Some("automation-v2-run-webhook-a".to_string()),
@@ -259,6 +261,18 @@ async fn webhook_management_routes_redact_secrets_and_delivery_payloads() {
             .pointer("/deliveries/0/queued_run_id")
             .and_then(Value::as_str),
         Some("automation-v2-run-webhook-a")
+    );
+    assert_eq!(
+        deliveries_payload
+            .pointer("/deliveries/0/signature_scheme")
+            .and_then(Value::as_str),
+        Some("hmac_sha256_v1")
+    );
+    assert_eq!(
+        deliveries_payload
+            .pointer("/deliveries/0/verification_result_code")
+            .and_then(Value::as_str),
+        Some("tandem_hmac_sha256_v1_verified")
     );
 
     let rotate_req = tenant_request(

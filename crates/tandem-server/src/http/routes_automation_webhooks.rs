@@ -8,15 +8,16 @@ use serde_json::{json, Value};
 
 use crate::app::state::{
     automation_webhook_body_digest, sanitize_automation_webhook_preview,
-    AutomationWebhookQueueResult, AutomationWebhookVerificationError,
+    AutomationWebhookQueueResult, AutomationWebhookSignatureHeaders,
+    AutomationWebhookVerificationError, AUTOMATION_WEBHOOK_GITHUB_SIGNATURE_HEADER,
+    AUTOMATION_WEBHOOK_GITLAB_TOKEN_HEADER, AUTOMATION_WEBHOOK_LEGACY_SIGNATURE_HEADER,
+    AUTOMATION_WEBHOOK_SHARED_SECRET_HEADER, AUTOMATION_WEBHOOK_SIGNATURE_HEADER,
 };
 use crate::automation_v2::types::automation_webhook_provider_event_id_headers;
 use crate::{AppState, AutomationWebhookDeliveryStatus};
 
 const AUTOMATION_WEBHOOK_MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
 const AUTOMATION_WEBHOOK_SIGNATURE_TOLERANCE_MS: u64 = 5 * 60 * 1000;
-const AUTOMATION_WEBHOOK_SIGNATURE_HEADER: &str = "x-tandem-webhook-signature";
-const AUTOMATION_WEBHOOK_LEGACY_SIGNATURE_HEADER: &str = "x-tandem-signature";
 
 pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
     router
@@ -47,12 +48,11 @@ async fn automation_webhook_intake(
     let advisory_provider_event_id =
         advisory_provider_event_id(&state, &public_path_token, &headers).await;
     let body_digest = automation_webhook_body_digest(body.as_ref());
-    let signature_header = header_str(&headers, AUTOMATION_WEBHOOK_SIGNATURE_HEADER)
-        .or_else(|| header_str(&headers, AUTOMATION_WEBHOOK_LEGACY_SIGNATURE_HEADER));
+    let signature_headers = automation_webhook_signature_headers(&headers);
     let verified = match state
-        .verify_automation_webhook_request(
+        .verify_automation_webhook_request_with_signature_headers(
             &public_path_token,
-            signature_header,
+            &signature_headers,
             body.as_ref(),
             advisory_provider_event_id.clone(),
             received_at_ms,
@@ -122,6 +122,20 @@ fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
         .filter(|value| !value.is_empty())
+}
+
+fn automation_webhook_signature_headers(headers: &HeaderMap) -> AutomationWebhookSignatureHeaders {
+    AutomationWebhookSignatureHeaders {
+        tandem_signature: header_str(headers, AUTOMATION_WEBHOOK_SIGNATURE_HEADER)
+            .map(ToOwned::to_owned),
+        legacy_tandem_signature: header_str(headers, AUTOMATION_WEBHOOK_LEGACY_SIGNATURE_HEADER)
+            .map(ToOwned::to_owned),
+        github_sha256_signature: header_str(headers, AUTOMATION_WEBHOOK_GITHUB_SIGNATURE_HEADER)
+            .map(ToOwned::to_owned),
+        shared_secret: header_str(headers, AUTOMATION_WEBHOOK_SHARED_SECRET_HEADER)
+            .or_else(|| header_str(headers, AUTOMATION_WEBHOOK_GITLAB_TOKEN_HEADER))
+            .map(ToOwned::to_owned),
+    }
 }
 
 fn is_json_content_type(headers: &HeaderMap) -> bool {

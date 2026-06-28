@@ -104,6 +104,9 @@ pub fn automation_webhook_provider_event_id_headers(provider: &str) -> &'static 
 pub enum AutomationWebhookSignatureScheme {
     #[default]
     HmacSha256V1,
+    GithubSha256,
+    SharedSecretHeader,
+    UnsignedDev,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,6 +192,10 @@ pub struct AutomationWebhookDeliveryRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_event_id: Option<String>,
     pub body_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_scheme: Option<AutomationWebhookSignatureScheme>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_result_code: Option<String>,
     pub status: AutomationWebhookDeliveryStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rejection_reason_code: Option<String>,

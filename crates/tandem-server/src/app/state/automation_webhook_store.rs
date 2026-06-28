@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use anyhow::Context;
-use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -14,9 +13,10 @@ use uuid::Uuid;
 use crate::automation_v2::types::*;
 use crate::util::time::now_ms;
 
-use super::AppState;
-
-type HmacSha256 = Hmac<Sha256>;
+use super::{
+    verify_automation_webhook_signature, AppState, AutomationWebhookSignatureHeaders,
+    AutomationWebhookSignatureVerificationInput,
+};
 
 const AUTOMATION_WEBHOOK_SCHEMA_VERSION: u32 = 1;
 const AUTOMATION_WEBHOOK_SECRET_PROVIDER: &str = "tandem_automation_webhooks";
@@ -114,6 +114,8 @@ pub(crate) struct VerifiedAutomationWebhookRequest {
     pub trigger: AutomationWebhookTriggerRecord,
     pub provider_event_id: Option<String>,
     pub body_digest: String,
+    pub signature_scheme: AutomationWebhookSignatureScheme,
+    pub verification_result_code: String,
     pub received_at_ms: u64,
 }
 
@@ -299,74 +301,8 @@ pub(crate) fn automation_webhook_body_digest(body: &[u8]) -> String {
     format!("sha256:{}", hex_encode(&hasher.finalize()))
 }
 
-pub(crate) fn automation_webhook_signature_header(
-    secret: &str,
-    timestamp_ms: u64,
-    body: &[u8],
-) -> String {
-    let signature = automation_webhook_signature(secret, timestamp_ms, body);
-    format!("t={timestamp_ms},v1={signature}")
-}
-
-fn automation_webhook_signature(secret: &str, timestamp_ms: u64, body: &[u8]) -> String {
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .expect("HMAC-SHA256 accepts secrets of any length");
-    mac.update(&automation_webhook_signature_payload(timestamp_ms, body));
-    let signature = mac.finalize().into_bytes();
-    hex_encode(&signature)
-}
-
-fn automation_webhook_signature_payload(timestamp_ms: u64, body: &[u8]) -> Vec<u8> {
-    let mut payload = timestamp_ms.to_string().into_bytes();
-    payload.push(b'.');
-    payload.extend_from_slice(body);
-    payload
-}
-
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn hex_decode(value: &str) -> Option<Vec<u8>> {
-    if value.len() % 2 != 0 || !value.is_ascii() {
-        return None;
-    }
-    (0..value.len())
-        .step_by(2)
-        .map(|idx| u8::from_str_radix(&value[idx..idx + 2], 16).ok())
-        .collect()
-}
-
-fn parse_signature_header(
-    header: &str,
-) -> Result<(u64, Vec<u8>), AutomationWebhookVerificationError> {
-    let mut timestamp_ms = None;
-    let mut signature = None;
-    for part in header.split(',') {
-        let Some((key, value)) = part.trim().split_once('=') else {
-            return Err(AutomationWebhookVerificationError::MalformedSignature);
-        };
-        match key.trim() {
-            "t" => {
-                timestamp_ms = value.trim().parse::<u64>().ok();
-            }
-            "v1" => {
-                signature = hex_decode(value.trim());
-            }
-            _ => {}
-        }
-    }
-    let timestamp_ms =
-        timestamp_ms.ok_or(AutomationWebhookVerificationError::MalformedSignature)?;
-    let signature = signature.ok_or(AutomationWebhookVerificationError::MalformedSignature)?;
-    if signature.is_empty() {
-        return Err(AutomationWebhookVerificationError::MalformedSignature);
-    }
-    Ok((timestamp_ms, signature))
-}
-
-fn webhook_timestamp_is_stale(timestamp_ms: u64, now_ms: u64, tolerance_ms: u64) -> bool {
-    timestamp_ms.abs_diff(now_ms) > tolerance_ms
 }
 
 fn sanitize_preview_key(key: &str) -> bool {
@@ -472,6 +408,7 @@ fn automation_webhook_rejection_delivery(
     received_at_ms: u64,
     sanitized_preview: Value,
 ) -> AutomationWebhookDeliveryRecord {
+    let reason_code = reason_code.into();
     AutomationWebhookDeliveryRecord {
         delivery_id: new_automation_webhook_delivery_id(),
         trigger_id: trigger.trigger_id.clone(),
@@ -479,8 +416,10 @@ fn automation_webhook_rejection_delivery(
         tenant_context: trigger.tenant_context.clone(),
         provider_event_id,
         body_digest,
+        signature_scheme: Some(trigger.signature_scheme.clone()),
+        verification_result_code: Some(reason_code.clone()),
         status,
-        rejection_reason_code: Some(reason_code.into()),
+        rejection_reason_code: Some(reason_code),
         queued_run_id: None,
         received_at_ms,
         accepted_at_ms: None,
@@ -1236,6 +1175,8 @@ impl AppState {
                 tenant_context: trigger.tenant_context.clone(),
                 provider_event_id: verified.provider_event_id,
                 body_digest: verified.body_digest,
+                signature_scheme: Some(verified.signature_scheme.clone()),
+                verification_result_code: Some(verified.verification_result_code.clone()),
                 status: AutomationWebhookDeliveryStatus::Accepted,
                 rejection_reason_code: None,
                 queued_run_id: None,
@@ -1339,6 +1280,28 @@ impl AppState {
         request_now_ms: u64,
         signature_tolerance_ms: u64,
     ) -> Result<VerifiedAutomationWebhookRequest, AutomationWebhookVerificationError> {
+        let signature_headers =
+            AutomationWebhookSignatureHeaders::from_tandem_header(signature_header);
+        self.verify_automation_webhook_request_with_signature_headers(
+            public_path_token,
+            &signature_headers,
+            body,
+            provider_event_id,
+            request_now_ms,
+            signature_tolerance_ms,
+        )
+        .await
+    }
+
+    pub(crate) async fn verify_automation_webhook_request_with_signature_headers(
+        &self,
+        public_path_token: &str,
+        signature_headers: &AutomationWebhookSignatureHeaders,
+        body: &[u8],
+        provider_event_id: Option<String>,
+        request_now_ms: u64,
+        signature_tolerance_ms: u64,
+    ) -> Result<VerifiedAutomationWebhookRequest, AutomationWebhookVerificationError> {
         let trigger = self
             .automation_webhook_triggers
             .read()
@@ -1349,13 +1312,6 @@ impl AppState {
             .ok_or(AutomationWebhookVerificationError::UnknownTrigger)?;
         if !trigger.enabled {
             return Err(AutomationWebhookVerificationError::DisabledTrigger);
-        }
-        let signature_header = signature_header
-            .filter(|value| !value.trim().is_empty())
-            .ok_or(AutomationWebhookVerificationError::MissingSignature)?;
-        let (timestamp_ms, signature) = parse_signature_header(signature_header)?;
-        if webhook_timestamp_is_stale(timestamp_ms, request_now_ms, signature_tolerance_ms) {
-            return Err(AutomationWebhookVerificationError::StaleTimestamp);
         }
         let material = self
             .automation_webhook_secret_material
@@ -1370,11 +1326,17 @@ impl AppState {
             return Err(AutomationWebhookVerificationError::MissingSecretMaterial);
         }
 
-        let mut mac = HmacSha256::new_from_slice(material.secret.as_bytes())
-            .expect("HMAC-SHA256 accepts secrets of any length");
-        mac.update(&automation_webhook_signature_payload(timestamp_ms, body));
-        mac.verify_slice(&signature)
-            .map_err(|_| AutomationWebhookVerificationError::BadSignature)?;
+        let verification =
+            verify_automation_webhook_signature(&AutomationWebhookSignatureVerificationInput {
+                scheme: &trigger.signature_scheme,
+                provider: &trigger.provider,
+                headers: signature_headers,
+                secret: &material.secret,
+                body,
+                request_now_ms,
+                signature_tolerance_ms,
+                allow_unsigned_dev: trigger.tenant_context.is_local_implicit(),
+            })?;
 
         let body_digest = automation_webhook_body_digest(body);
         let replay = self
@@ -1406,6 +1368,8 @@ impl AppState {
             trigger,
             provider_event_id,
             body_digest,
+            signature_scheme: verification.scheme,
+            verification_result_code: verification.result_code.to_string(),
             received_at_ms: request_now_ms,
         })
     }

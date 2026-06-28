@@ -1,5 +1,8 @@
 use super::*;
-use crate::app::state::{automation_webhook_signature_header, AutomationWebhookTriggerCreateInput};
+use crate::app::state::{
+    automation_webhook_github_sha256_signature_header, automation_webhook_signature_header,
+    AutomationWebhookTriggerCreateInput,
+};
 use tandem_types::{DataClass, TenantContext, ToolRiskTier};
 
 fn tenant(org: &str, workspace: &str) -> TenantContext {
@@ -333,6 +336,75 @@ async fn public_automation_webhook_prefers_provider_specific_event_id_header() {
     assert_eq!(
         deliveries[0].provider_event_id.as_deref(),
         Some("github-delivery-1")
+    );
+}
+
+#[tokio::test]
+async fn public_automation_webhook_accepts_github_signature_scheme() {
+    let state = test_state().await;
+    state.set_api_token(Some("tk_test".to_string())).await;
+    let tenant_context = tenant("org-a", "workspace-a");
+    state
+        .put_automation_v2(minimal_automation(
+            "automation-webhook-github-signature",
+            &tenant_context,
+        ))
+        .await
+        .expect("put automation");
+    let mut input = create_input(
+        "automation-webhook-github-signature",
+        tenant_context.clone(),
+    );
+    input.provider = "github".to_string();
+    let created = state
+        .create_automation_webhook_trigger(input)
+        .await
+        .expect("create github trigger");
+    {
+        let mut triggers = state.automation_webhook_triggers.write().await;
+        let trigger = triggers
+            .get_mut(&created.trigger.trigger_id)
+            .expect("trigger");
+        trigger.signature_scheme = crate::AutomationWebhookSignatureScheme::GithubSha256;
+    }
+
+    let app = app_router(state.clone());
+    let body = br#"{"action":"opened"}"#;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/webhooks/automations/{}",
+                    created.trigger.public_path_token
+                ))
+                .header("content-type", "application/json")
+                .header("x-github-delivery", "github-delivery-signature")
+                .header(
+                    "x-hub-signature-256",
+                    automation_webhook_github_sha256_signature_header(&created.secret, body),
+                )
+                .body(Body::from(body.as_slice()))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+    let deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+        )
+        .await;
+    assert_eq!(deliveries.len(), 1);
+    assert_eq!(
+        deliveries[0].signature_scheme,
+        Some(crate::AutomationWebhookSignatureScheme::GithubSha256)
+    );
+    assert_eq!(
+        deliveries[0].verification_result_code.as_deref(),
+        Some("github_sha256_verified")
     );
 }
 
