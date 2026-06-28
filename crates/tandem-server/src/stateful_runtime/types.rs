@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tandem_types::{DataClass, PrincipalRef, ResourceScope, TenantContext, ToolRiskTier};
 
+use super::phases::{StatefulWorkflowPhase, StatefulWorkflowPhaseTransitionRecord};
+
 pub const STATEFUL_RUNTIME_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -125,6 +127,12 @@ pub struct StatefulWorkflowRunRecord {
     pub automation_run_id: Option<String>,
     pub scope: StatefulRuntimeScope,
     pub status: StatefulWorkflowRunStatus,
+    #[serde(default)]
+    pub phase: StatefulWorkflowPhase,
+    #[serde(default)]
+    pub phase_history: Vec<StatefulWorkflowPhaseTransitionRecord>,
+    #[serde(default)]
+    pub allowed_next_phases: Vec<StatefulWorkflowPhase>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -172,6 +180,8 @@ pub struct StatefulRunEventRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_transition: Option<StatefulWorkflowPhaseTransitionRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_kind: Option<StatefulWaitKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub causation_id: Option<String>,
@@ -197,6 +207,12 @@ pub struct StatefulRunSnapshotRecord {
     pub created_at_ms: u64,
     pub scope: StatefulRuntimeScope,
     pub status: StatefulWorkflowRunStatus,
+    #[serde(default)]
+    pub phase: StatefulWorkflowPhase,
+    #[serde(default)]
+    pub phase_history: Vec<StatefulWorkflowPhaseTransitionRecord>,
+    #[serde(default)]
+    pub allowed_next_phases: Vec<StatefulWorkflowPhase>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

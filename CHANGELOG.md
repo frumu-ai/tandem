@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added stateful runtime definition identity helpers so snapshot-backed
   automation runs expose durable workflow definition versions and `sha256:`
   snapshot hashes for future replay and resume checks.
+- Added an explicit stateful workflow phase model with guarded transitions,
+  phase transition event records, status compatibility mapping, and serialized
+  allowed-next-phase exposure on durable runtime records.
 
 ### Changed
 

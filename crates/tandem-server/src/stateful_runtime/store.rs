@@ -165,6 +165,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+    use crate::stateful_runtime::phase_state_from_status;
     use crate::stateful_runtime::types::{
         StatefulRunEventRecord, StatefulRunSnapshotRecord, StatefulRuntimeScope,
         StatefulWorkflowRunStatus,
@@ -185,6 +186,7 @@ mod tests {
             scope: StatefulRuntimeScope::from_tenant_context(tenant_context),
             actor: Some(PrincipalRef::new(PrincipalKind::HumanUser, "user-a")),
             phase_id: None,
+            phase_transition: None,
             wait_kind: None,
             causation_id: None,
             correlation_id: None,
@@ -228,6 +230,8 @@ mod tests {
     async fn snapshot_paths_are_scoped_under_sanitized_run_directory() {
         let root =
             std::env::temp_dir().join(format!("stateful-runtime-snapshots-{}", Uuid::new_v4()));
+        let status = StatefulWorkflowRunStatus::Running;
+        let phase_state = phase_state_from_status("run/../a", &status, 700, Some("phase-a"));
         let snapshot = StatefulRunSnapshotRecord {
             schema_version: 1,
             snapshot_id: "snapshot/../a".to_string(),
@@ -235,7 +239,10 @@ mod tests {
             seq: 7,
             created_at_ms: 700,
             scope: StatefulRuntimeScope::from_tenant_context(tenant("org-a", "workspace-a")),
-            status: StatefulWorkflowRunStatus::Running,
+            status,
+            phase: phase_state.phase,
+            phase_history: phase_state.phase_history,
+            allowed_next_phases: phase_state.allowed_next_phases,
             phase_id: Some("phase-a".to_string()),
             source_record_kind: None,
             checkpoint: Some(json!({ "phase": "phase-a" })),
@@ -265,6 +272,8 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("stateful-runtime-snapshots-dot-{}", Uuid::new_v4()));
         for (run_id, snapshot_id) in [("..", "."), ("", "")] {
+            let status = StatefulWorkflowRunStatus::Running;
+            let phase_state = phase_state_from_status(run_id, &status, 100, None);
             let snapshot = StatefulRunSnapshotRecord {
                 schema_version: 1,
                 snapshot_id: snapshot_id.to_string(),
@@ -272,7 +281,10 @@ mod tests {
                 seq: 1,
                 created_at_ms: 100,
                 scope: StatefulRuntimeScope::from_tenant_context(tenant("org-a", "workspace-a")),
-                status: StatefulWorkflowRunStatus::Running,
+                status,
+                phase: phase_state.phase,
+                phase_history: phase_state.phase_history,
+                allowed_next_phases: phase_state.allowed_next_phases,
                 phase_id: None,
                 source_record_kind: None,
                 checkpoint: None,

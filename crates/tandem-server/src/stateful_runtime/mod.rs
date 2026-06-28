@@ -1,5 +1,6 @@
 pub mod adapters;
 pub mod definition;
+pub mod phases;
 pub mod store;
 pub mod types;
 
@@ -11,6 +12,7 @@ pub use definition::{
     automation_definition_snapshot_hash, automation_definition_version,
     stable_definition_snapshot_hash,
 };
+pub use phases::*;
 pub use store::{
     append_stateful_run_event, load_stateful_run_events, query_stateful_run_events,
     read_stateful_run_snapshot, write_stateful_run_snapshot, StatefulRunEventQuery,
