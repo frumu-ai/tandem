@@ -166,6 +166,7 @@ export function CodingWorkflowsPage({
       }
     },
     enabled: acaAvailable && taskSourceType === "linear",
+    retry: false,
     staleTime: 60_000,
   });
   const runsQuery = useQuery({
