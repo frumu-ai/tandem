@@ -153,6 +153,12 @@ async fn webhook_management_routes_redact_secrets_and_delivery_payloads() {
     );
     assert_eq!(
         create_payload
+            .pointer("/trigger/provider_metadata/verification/signature_scheme")
+            .and_then(Value::as_str),
+        Some("github_hmac_sha256")
+    );
+    assert_eq!(
+        create_payload
             .pointer("/trigger/provider_metadata/verification/provider_specific")
             .and_then(Value::as_bool),
         Some(true)
@@ -211,6 +217,12 @@ async fn webhook_management_routes_redact_secrets_and_delivery_payloads() {
             .pointer("/trigger/signature_scheme")
             .and_then(Value::as_str),
         Some("shared_secret_header_v1")
+    );
+    assert_eq!(
+        patch_payload
+            .pointer("/trigger/provider_metadata/verification/provider_specific")
+            .and_then(Value::as_bool),
+        Some(false)
     );
 
     let tenant_a = tandem_types::TenantContext::explicit_user_workspace(

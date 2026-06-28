@@ -4,6 +4,7 @@ use crate::app::state::{
     AutomationWebhookQueueResult, AutomationWebhookTriggerCreateInput,
     AutomationWebhookTriggerUpdateInput, AutomationWebhookVerificationError,
 };
+use crate::automation_v2::types::AutomationWebhookSignatureScheme;
 
 fn tenant(org: &str, workspace: &str) -> TenantContext {
     TenantContext::explicit_user_workspace(org, workspace, None, "actor-a")
@@ -188,6 +189,7 @@ async fn webhook_trigger_create_and_update_normalize_provider_metadata() {
     let mut input = create_input("automation-provider-normalize", tenant_a.clone());
     input.provider = " GitHub.com ".to_string();
     input.provider_event_kind = Some(" Issues.Opened ".to_string());
+    input.signature_scheme = Some(AutomationWebhookSignatureScheme::GithubHmacSha256);
     input.name = None;
 
     let created = state
@@ -200,6 +202,10 @@ async fn webhook_trigger_create_and_update_normalize_provider_metadata() {
         created.trigger.provider_event_kind.as_deref(),
         Some("issues.opened")
     );
+    assert_eq!(
+        created.trigger.signature_scheme,
+        AutomationWebhookSignatureScheme::GithubHmacSha256
+    );
 
     let updated = state
         .update_automation_webhook_trigger(
@@ -209,6 +215,7 @@ async fn webhook_trigger_create_and_update_normalize_provider_metadata() {
             AutomationWebhookTriggerUpdateInput {
                 provider: Some(" Stripe.COM ".to_string()),
                 provider_event_kind: Some(Some(" Checkout.Session.Completed ".to_string())),
+                signature_scheme: Some(AutomationWebhookSignatureScheme::SharedSecretHeaderV1),
                 ..AutomationWebhookTriggerUpdateInput::default()
             },
             Some("actor-a".to_string()),
@@ -219,6 +226,10 @@ async fn webhook_trigger_create_and_update_normalize_provider_metadata() {
     assert_eq!(
         updated.provider_event_kind.as_deref(),
         Some("checkout.session.completed")
+    );
+    assert_eq!(
+        updated.signature_scheme,
+        AutomationWebhookSignatureScheme::SharedSecretHeaderV1
     );
 }
 

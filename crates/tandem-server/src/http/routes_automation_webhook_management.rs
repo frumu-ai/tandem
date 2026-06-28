@@ -55,8 +55,7 @@ struct WebhookTriggerCreateRequest {
     provider: String,
     #[serde(default)]
     provider_event_kind: Option<String>,
-    #[serde(default)]
-    #[serde(alias = "signatureScheme")]
+    #[serde(default, alias = "signatureScheme")]
     signature_scheme: Option<AutomationWebhookSignatureScheme>,
     #[serde(default)]
     enabled: Option<bool>,
@@ -94,8 +93,7 @@ struct WebhookTriggerUpdateRequest {
     provider: Option<String>,
     #[serde(default, deserialize_with = "nullable_string_patch")]
     provider_event_kind: Option<Option<String>>,
-    #[serde(default)]
-    #[serde(alias = "signatureScheme")]
+    #[serde(default, alias = "signatureScheme")]
     signature_scheme: Option<AutomationWebhookSignatureScheme>,
     #[serde(default)]
     default_data_class: Option<DataClass>,
