@@ -71,6 +71,8 @@ pub struct AutomationWebhookTriggerRecord {
     pub default_data_class: DataClass,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_risk_tier: Option<ToolRiskTier>,
+    #[serde(default)]
+    pub name: String,
     pub provider: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_event_kind: Option<String>,

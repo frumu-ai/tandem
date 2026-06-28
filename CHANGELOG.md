@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   including secure secret references, private secret material storage, HMAC
   signature verification, replay detection, rotation primitives, and tests for
   cross-tenant isolation.
+- Added authenticated Automation V2 webhook management endpoints for listing,
+  creating, reading, updating, disabling, deleting, rotating secrets, and
+  inspecting sanitized delivery history within the owning tenant and automation.
+- Added a Control Panel webhook management section to the `Edit workflow
+  automation` modal with callback URL copy, one-time secret reveal on
+  create/rotate, trigger status badges, and sanitized recent delivery rows that
+  link to queued Automation V2 runs.
 - Added a Studio-inspired workflow flow map to the `Edit workflow automation`
   modal so generated automations can be inspected by dependency stage while
   operators edit them.

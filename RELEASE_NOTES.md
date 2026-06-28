@@ -4,11 +4,25 @@ This is the canonical release-notes file used by release tooling.
 
 ## v0.6.4 (2026-06-27)
 
-Tandem 0.6.4 is a control-panel usability patch for editing generated workflow
-automations. It borrows the practical workflow-map affordance from Workflow
-Studio without turning the automation editor into a full Zapier/n8n-style
-builder: operators get enough flow context to understand and tune generated
-nodes, especially prompts and MCP-bound steps, from the existing edit modal.
+Tandem 0.6.4 adds secure Automation V2 webhook management and improves the
+control-panel editing experience for generated workflow automations. Operators
+can configure scoped webhook triggers, inspect sanitized delivery history, and
+use the Studio-inspired workflow map to understand and tune generated nodes,
+especially prompts and MCP-bound steps, from the existing edit modal.
+
+### Automation Webhooks
+
+- Automation V2 now exposes authenticated webhook management APIs for trigger
+  list/create/read/update/disable/delete, one-time secret rotation, and scoped
+  delivery history inspection without making public intake routes part of the
+  management surface.
+- The `Edit workflow automation` modal now includes webhook trigger management:
+  create triggers, copy callback URLs, reveal generated secrets once, rotate or
+  disable triggers, and inspect sanitized recent deliveries with queued run
+  references.
+- Management responses redact raw secrets, stored secret references, secret
+  digests, raw payloads, auth headers, cookies, bearer tokens, and API-key-like
+  preview fields while preserving safe delivery metadata for operators.
 
 ### Visual Workflow Editing
 

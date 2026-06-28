@@ -15,6 +15,7 @@ import { HandoffConfigEditor } from "./HandoffConfigEditor";
 import { HandoffPanel } from "./HandoffPanel";
 import { ExecutionProfileToggle } from "./ExecutionProfileToggle";
 import { WorkflowEditFlowMap } from "./WorkflowEditFlowMap";
+import { AutomationWebhookManager } from "./AutomationWebhookManager";
 
 function normalizeMcpNamespaceSegment(raw: string) {
   let out = "";
@@ -419,6 +420,8 @@ export function WorkflowAutomationEditDialog({
   automationsV2List = [],
   client,
   onRecreateWorkflowAutomation,
+  onSelectRunId,
+  onOpenRunningView,
   toast,
 }: any) {
   const dialogRef = useDialogIconRender(!!workflowEditDraft);
@@ -611,6 +614,22 @@ export function WorkflowAutomationEditDialog({
                 }}
               />
             </AccordionSection>
+
+            {workflowEditDraft.automationId ? (
+              <AccordionSection
+                title="Webhooks"
+                description="Manage external triggers, callback URLs, secrets, and recent delivery history."
+                icon="link"
+              >
+                <AutomationWebhookManager
+                  client={client}
+                  automationId={workflowEditDraft.automationId}
+                  toast={toast}
+                  onSelectRunId={onSelectRunId}
+                  onOpenRunningView={onOpenRunningView}
+                />
+              </AccordionSection>
+            ) : null}
 
             <AccordionSection
               title="Recovery"

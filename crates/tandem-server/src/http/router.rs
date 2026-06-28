@@ -162,6 +162,7 @@ pub(super) fn build_router(state: AppState, route_extensions: &[super::RouteRegi
     router = super::routes_system_api::apply(router);
     router = super::routes_channel_automation_drafts::apply(router);
     router = super::routes_routines_automations::apply(router);
+    router = super::routes_automation_webhook_management::apply(router);
     router = super::routes_governance::apply(router);
     router = super::routes_permissions_questions::apply(router);
     router = super::routes_resources::apply(router);

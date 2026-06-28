@@ -69,9 +69,20 @@ pub(crate) struct AutomationWebhookTriggerCreateInput {
     pub resource_scope: Option<ResourceScope>,
     pub default_data_class: DataClass,
     pub default_risk_tier: Option<ToolRiskTier>,
+    pub name: Option<String>,
     pub provider: String,
     pub provider_event_kind: Option<String>,
     pub enabled: bool,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct AutomationWebhookTriggerUpdateInput {
+    pub name: Option<String>,
+    pub provider: Option<String>,
+    pub provider_event_kind: Option<Option<String>>,
+    pub default_data_class: Option<DataClass>,
+    pub default_risk_tier: Option<Option<ToolRiskTier>>,
+    pub enabled: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -496,6 +507,13 @@ impl AppState {
         if provider.is_empty() {
             anyhow::bail!("webhook provider is required");
         }
+        let name = input
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(provider.as_str())
+            .to_string();
 
         {
             let automations = self.automations_v2.read().await;
@@ -533,6 +551,7 @@ impl AppState {
             resource_scope: input.resource_scope,
             default_data_class: input.default_data_class,
             default_risk_tier: input.default_risk_tier,
+            name,
             provider,
             provider_event_kind: input.provider_event_kind,
             enabled: input.enabled,
@@ -752,6 +771,62 @@ impl AppState {
             .get(trigger_id)
             .filter(|trigger| trigger.tenant_matches(tenant_context))
             .cloned()
+    }
+
+    pub(crate) async fn update_automation_webhook_trigger(
+        &self,
+        tenant_context: &TenantContext,
+        automation_id: &str,
+        trigger_id: &str,
+        input: AutomationWebhookTriggerUpdateInput,
+        actor_id: Option<String>,
+    ) -> anyhow::Result<AutomationWebhookTriggerRecord> {
+        let _guard = self.automation_webhook_persistence.lock().await;
+        let updated = {
+            let mut triggers = self.automation_webhook_triggers.write().await;
+            let trigger = triggers
+                .get_mut(trigger_id)
+                .with_context(|| format!("webhook trigger `{trigger_id}` not found"))?;
+            if !trigger.tenant_matches(tenant_context) || trigger.automation_id != automation_id {
+                anyhow::bail!("webhook trigger tenant or automation mismatch");
+            }
+            if let Some(name) = input.name {
+                let name = name.trim();
+                if name.is_empty() {
+                    anyhow::bail!("webhook trigger name is required");
+                }
+                trigger.name = name.to_string();
+            }
+            if let Some(provider) = input.provider {
+                let provider = provider.trim();
+                if provider.is_empty() {
+                    anyhow::bail!("webhook provider is required");
+                }
+                trigger.provider = provider.to_string();
+                if trigger.name.trim().is_empty() {
+                    trigger.name = provider.to_string();
+                }
+            }
+            if let Some(provider_event_kind) = input.provider_event_kind {
+                trigger.provider_event_kind = provider_event_kind
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty());
+            }
+            if let Some(default_data_class) = input.default_data_class {
+                trigger.default_data_class = default_data_class;
+            }
+            if let Some(default_risk_tier) = input.default_risk_tier {
+                trigger.default_risk_tier = default_risk_tier;
+            }
+            if let Some(enabled) = input.enabled {
+                trigger.enabled = enabled;
+            }
+            trigger.updated_at_ms = now_ms();
+            trigger.updated_by = actor_id;
+            trigger.clone()
+        };
+        self.persist_automation_webhook_triggers_locked().await?;
+        Ok(updated)
     }
 
     pub(crate) async fn disable_automation_webhook_trigger(

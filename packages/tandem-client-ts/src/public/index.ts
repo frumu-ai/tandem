@@ -2351,6 +2351,189 @@ export interface AutomationV2RunRecord {
   [key: string]: unknown;
 }
 
+export type AutomationWebhookDataClass =
+  | "public"
+  | "internal"
+  | "confidential"
+  | "restricted"
+  | "executive"
+  | "credential"
+  | "regulated"
+  | "customer_data"
+  | "source_code"
+  | "financial_record";
+
+export type AutomationWebhookRiskTier =
+  | "read_discover"
+  | "internal_write"
+  | "external_draft"
+  | "external_send"
+  | "customer_data_access"
+  | "source_code_mutation"
+  | "financial_record_access"
+  | "credential_admin"
+  | "destructive_delete"
+  | "money_movement_contract";
+
+export interface AutomationWebhookSecretStatus {
+  configured?: boolean;
+  secret_version?: number;
+  secretVersion?: number;
+  created_at_ms?: number;
+  createdAtMs?: number;
+  rotated_at_ms?: number | null;
+  rotatedAtMs?: number | null;
+  rotated_by?: string | null;
+  rotatedBy?: string | null;
+  [key: string]: unknown;
+}
+
+export interface AutomationWebhookDeliveryCounts {
+  total: number;
+  received?: number;
+  accepted?: number;
+  rejected?: number;
+  duplicate?: number;
+  disabled?: number;
+  failed?: number;
+  [key: string]: unknown;
+}
+
+export interface AutomationWebhookTrigger {
+  trigger_id?: string;
+  triggerID?: string;
+  automation_id?: string;
+  automationID?: string;
+  name?: string;
+  provider?: string;
+  provider_event_kind?: string | null;
+  providerEventKind?: string | null;
+  enabled?: boolean;
+  callback_path?: string;
+  callbackPath?: string;
+  callback_url?: string;
+  callbackUrl?: string;
+  tenant_label?: string;
+  tenantLabel?: string;
+  owning_org_unit_id?: string | null;
+  owningOrgUnitId?: string | null;
+  resource_scope?: JsonObject | null;
+  resourceScope?: JsonObject | null;
+  default_data_class?: AutomationWebhookDataClass | string;
+  defaultDataClass?: AutomationWebhookDataClass | string;
+  default_risk_tier?: AutomationWebhookRiskTier | string | null;
+  defaultRiskTier?: AutomationWebhookRiskTier | string | null;
+  signature_scheme?: string;
+  signatureScheme?: string;
+  secret_status?: AutomationWebhookSecretStatus;
+  secretStatus?: AutomationWebhookSecretStatus;
+  delivery_counts?: AutomationWebhookDeliveryCounts;
+  deliveryCounts?: AutomationWebhookDeliveryCounts;
+  last_received_at_ms?: number | null;
+  lastReceivedAtMs?: number | null;
+  last_accepted_at_ms?: number | null;
+  lastAcceptedAtMs?: number | null;
+  last_rejected_at_ms?: number | null;
+  lastRejectedAtMs?: number | null;
+  created_at_ms?: number;
+  createdAtMs?: number;
+  updated_at_ms?: number;
+  updatedAtMs?: number;
+  [key: string]: unknown;
+}
+
+export interface AutomationWebhookDelivery {
+  delivery_id?: string;
+  deliveryID?: string;
+  trigger_id?: string;
+  triggerID?: string;
+  automation_id?: string;
+  automationID?: string;
+  provider_event_id?: string | null;
+  providerEventID?: string | null;
+  body_digest?: string;
+  bodyDigest?: string;
+  status?: "received" | "accepted" | "rejected" | "duplicate" | "disabled" | "failed" | string;
+  rejection_reason_code?: string | null;
+  rejectionReasonCode?: string | null;
+  queued_run_id?: string | null;
+  queuedRunID?: string | null;
+  queued_run_path?: string | null;
+  queuedRunPath?: string | null;
+  received_at_ms?: number;
+  receivedAtMs?: number;
+  accepted_at_ms?: number | null;
+  acceptedAtMs?: number | null;
+  rejected_at_ms?: number | null;
+  rejectedAtMs?: number | null;
+  sanitized_preview?: JsonValue;
+  sanitizedPreview?: JsonValue;
+  audit_event_id?: string | null;
+  auditEventID?: string | null;
+  [key: string]: unknown;
+}
+
+export interface AutomationWebhookTriggerCreateInput {
+  name?: string;
+  provider: string;
+  provider_event_kind?: string | null;
+  providerEventKind?: string | null;
+  enabled?: boolean;
+  owning_org_unit_id?: string | null;
+  owningOrgUnitId?: string | null;
+  resource_scope?: JsonObject | null;
+  resourceScope?: JsonObject | null;
+  default_data_class?: AutomationWebhookDataClass | string;
+  defaultDataClass?: AutomationWebhookDataClass | string;
+  default_risk_tier?: AutomationWebhookRiskTier | string | null;
+  defaultRiskTier?: AutomationWebhookRiskTier | string | null;
+}
+
+export interface AutomationWebhookTriggerUpdateInput {
+  name?: string;
+  provider?: string;
+  provider_event_kind?: string | null;
+  providerEventKind?: string | null;
+  enabled?: boolean;
+  default_data_class?: AutomationWebhookDataClass | string;
+  defaultDataClass?: AutomationWebhookDataClass | string;
+  default_risk_tier?: AutomationWebhookRiskTier | string | null;
+  defaultRiskTier?: AutomationWebhookRiskTier | string | null;
+}
+
+export interface AutomationWebhookTriggerListResponse {
+  triggers: AutomationWebhookTrigger[];
+  count: number;
+}
+
+export interface AutomationWebhookTriggerResponse {
+  trigger: AutomationWebhookTrigger;
+}
+
+export interface AutomationWebhookTriggerSecretResponse extends AutomationWebhookTriggerResponse {
+  new_secret?: string;
+  newSecret?: string;
+  secret_one_time?: boolean;
+  secretOneTime?: boolean;
+}
+
+export interface AutomationWebhookDeleteResponse {
+  ok?: boolean;
+  deleted?: boolean;
+  trigger_id?: string;
+  triggerID?: string;
+}
+
+export interface AutomationWebhookDeliveryListResponse {
+  deliveries: AutomationWebhookDelivery[];
+  count: number;
+  limit?: number;
+}
+
+export interface AutomationWebhookDeliveryResponse {
+  delivery: AutomationWebhookDelivery;
+}
+
 // ─── Missions ────────────────────────────────────────────────────────────────
 
 export interface MissionWorkItem {

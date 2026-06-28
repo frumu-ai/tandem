@@ -1270,6 +1270,8 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
         automationsV2List={automationsV2 ?? []}
         client={client}
         onRecreateWorkflowAutomation={onRecreateWorkflowAutomation}
+        onSelectRunId={onSelectRunId}
+        onOpenRunningView={onOpenRunningView}
         toast={toast}
       />
       <DeleteAutomationDialog
