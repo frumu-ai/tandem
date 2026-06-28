@@ -17,7 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Pending.
+- Running Automation V2 runs interrupted by a server restart are now queued for
+  resume when their persisted checkpoint can be safely rehydrated; in-progress
+  nodes receive repair markers, while corrupt records still fail closed.
 
 ### Fixed
 

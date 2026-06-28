@@ -346,7 +346,7 @@ async fn recover_in_flight_runs_records_attributed_protected_audit() {
     let recovery_event = events
         .iter()
         .find(|event| {
-            event.event_type == "automation_v2.internal_sweep.server_restart_failed_run"
+            event.event_type == "automation_v2.internal_sweep.server_restart_queued_run_for_resume"
                 && event.payload.get("run_id").and_then(Value::as_str) == Some(run.run_id.as_str())
         })
         .expect("protected restart recovery audit event");
@@ -358,5 +358,12 @@ async fn recover_in_flight_runs_records_attributed_protected_audit() {
     assert_eq!(
         recovery_event.payload.get("sweep").and_then(Value::as_str),
         Some("recover_in_flight_runs")
+    );
+    assert_eq!(
+        recovery_event
+            .payload
+            .get("outcome")
+            .and_then(Value::as_str),
+        Some("queued_for_resume")
     );
 }
