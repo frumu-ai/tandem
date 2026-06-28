@@ -12,8 +12,8 @@ use tandem_types::{
 
 use crate::app::state::{AutomationWebhookTriggerCreateInput, AutomationWebhookTriggerUpdateInput};
 use crate::automation_v2::types::{
-    automation_webhook_provider_event_id_headers, AutomationV2Spec,
-    AutomationWebhookDeliveryRecord, AutomationWebhookDeliveryStatus,
+    automation_webhook_provider_event_id_headers, normalize_automation_webhook_provider,
+    AutomationV2Spec, AutomationWebhookDeliveryRecord, AutomationWebhookDeliveryStatus,
     AutomationWebhookTriggerRecord,
 };
 use crate::AppState;
@@ -491,10 +491,12 @@ fn delivery_counts(deliveries: &[AutomationWebhookDeliveryRecord]) -> Value {
 }
 
 fn provider_metadata(trigger: &AutomationWebhookTriggerRecord) -> Value {
-    let event_id_headers = automation_webhook_provider_event_id_headers(&trigger.provider);
+    let canonical_provider = normalize_automation_webhook_provider(&trigger.provider)
+        .unwrap_or_else(|| "generic".to_string());
+    let event_id_headers = automation_webhook_provider_event_id_headers(&canonical_provider);
     json!({
-        "canonical_provider": trigger.provider,
-        "canonicalProvider": trigger.provider,
+        "canonical_provider": canonical_provider.as_str(),
+        "canonicalProvider": canonical_provider.as_str(),
         "provider_event_kind": trigger.provider_event_kind,
         "providerEventKind": trigger.provider_event_kind,
         "event_id_headers": event_id_headers,
