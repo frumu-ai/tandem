@@ -2513,6 +2513,8 @@ export interface AutomationWebhookTriggerCreateInput {
   provider: string;
   provider_event_kind?: string | null;
   providerEventKind?: string | null;
+  signature_scheme?: string | null;
+  signatureScheme?: string | null;
   enabled?: boolean;
   owning_org_unit_id?: string | null;
   owningOrgUnitId?: string | null;
@@ -2529,6 +2531,8 @@ export interface AutomationWebhookTriggerUpdateInput {
   provider?: string;
   provider_event_kind?: string | null;
   providerEventKind?: string | null;
+  signature_scheme?: string | null;
+  signatureScheme?: string | null;
   enabled?: boolean;
   default_data_class?: AutomationWebhookDataClass | string;
   defaultDataClass?: AutomationWebhookDataClass | string;

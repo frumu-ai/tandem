@@ -56,6 +56,9 @@ struct WebhookTriggerCreateRequest {
     #[serde(default)]
     provider_event_kind: Option<String>,
     #[serde(default)]
+    #[serde(alias = "signatureScheme")]
+    signature_scheme: Option<AutomationWebhookSignatureScheme>,
+    #[serde(default)]
     enabled: Option<bool>,
     #[serde(default)]
     owning_org_unit_id: Option<String>,
@@ -91,6 +94,9 @@ struct WebhookTriggerUpdateRequest {
     provider: Option<String>,
     #[serde(default, deserialize_with = "nullable_string_patch")]
     provider_event_kind: Option<Option<String>>,
+    #[serde(default)]
+    #[serde(alias = "signatureScheme")]
+    signature_scheme: Option<AutomationWebhookSignatureScheme>,
     #[serde(default)]
     default_data_class: Option<DataClass>,
     #[serde(default, deserialize_with = "nullable_risk_tier_patch")]
@@ -739,6 +745,7 @@ async fn create_webhook_trigger(
                 .provider_event_kind
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
+            signature_scheme: input.signature_scheme,
             enabled: input.enabled.unwrap_or(true),
         })
         .await
@@ -759,6 +766,7 @@ async fn create_webhook_trigger(
             "triggerID": result.trigger.trigger_id,
             "provider": result.trigger.provider,
             "providerEventKind": result.trigger.provider_event_kind,
+            "signatureScheme": result.trigger.signature_scheme,
         }),
     )
     .await;
@@ -822,6 +830,7 @@ async fn update_webhook_trigger(
                 name: input.name,
                 provider: input.provider,
                 provider_event_kind: input.provider_event_kind,
+                signature_scheme: input.signature_scheme,
                 default_data_class: input.default_data_class,
                 default_risk_tier: input.default_risk_tier,
                 enabled: input.enabled,

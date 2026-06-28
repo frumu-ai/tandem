@@ -128,6 +128,7 @@ async def test_automation_v2_webhook_trigger_management_routes() -> None:
                 "provider": "github",
                 "provider_event_kind": "issues.assigned",
                 "providerEventKind": "issues.opened",
+                "signatureScheme": "github_hmac_sha256",
                 "defaultDataClass": "customer_data",
                 "defaultRiskTier": "internal_write",
                 "owningOrgUnitId": "support",
@@ -140,6 +141,7 @@ async def test_automation_v2_webhook_trigger_management_routes() -> None:
             "trigger-1",
             AutomationWebhookTriggerUpdateInput(
                 providerEventKind=None,
+                signatureScheme="shared_secret_header_v1",
                 defaultDataClass="internal",
                 defaultRiskTier=None,
             ),
@@ -189,6 +191,7 @@ async def test_automation_v2_webhook_trigger_management_routes() -> None:
     assert create_body == {
         "provider": "github",
         "provider_event_kind": "issues.assigned",
+        "signature_scheme": "github_hmac_sha256",
         "default_data_class": "customer_data",
         "default_risk_tier": "internal_write",
         "owning_org_unit_id": "support",
@@ -198,6 +201,7 @@ async def test_automation_v2_webhook_trigger_management_routes() -> None:
     update_body = json.loads(update_route.calls[0].request.content.decode("utf-8"))
     assert update_body == {
         "provider_event_kind": None,
+        "signature_scheme": "shared_secret_header_v1",
         "default_data_class": "internal",
         "default_risk_tier": None,
     }

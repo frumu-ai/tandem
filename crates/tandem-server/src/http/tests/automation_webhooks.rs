@@ -59,6 +59,7 @@ fn create_input(
         name: Some("Generic webhook".to_string()),
         provider: "generic".to_string(),
         provider_event_kind: Some("event.created".to_string()),
+        signature_scheme: None,
         enabled: true,
     }
 }
@@ -360,7 +361,6 @@ async fn public_automation_webhook_prefers_provider_specific_event_id_header() {
 #[tokio::test]
 async fn public_automation_webhook_uses_trigger_signature_scheme_registry() {
     let state = test_state().await;
-    state.set_api_token(Some("tk_test".to_string())).await;
     let tenant_context = tenant("org-a", "workspace-a");
     state
         .put_automation_v2(minimal_automation(
@@ -374,17 +374,16 @@ async fn public_automation_webhook_uses_trigger_signature_scheme_registry() {
         tenant_context.clone(),
     );
     input.provider = "github".to_string();
+    input.signature_scheme = Some(AutomationWebhookSignatureScheme::GithubHmacSha256);
     let created = state
         .create_automation_webhook_trigger(input)
         .await
         .expect("create github trigger");
-    {
-        let mut triggers = state.automation_webhook_triggers.write().await;
-        triggers
-            .get_mut(&created.trigger.trigger_id)
-            .expect("stored trigger")
-            .signature_scheme = AutomationWebhookSignatureScheme::GithubHmacSha256;
-    }
+    assert_eq!(
+        created.trigger.signature_scheme,
+        AutomationWebhookSignatureScheme::GithubHmacSha256
+    );
+    state.set_api_token(Some("tk_test".to_string())).await;
 
     let app = app_router(state.clone());
     let body = br#"{"action":"opened"}"#;

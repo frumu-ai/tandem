@@ -39,6 +39,7 @@ fn create_input(
         name: Some("Generic webhook".to_string()),
         provider: "generic".to_string(),
         provider_event_kind: Some("event.created".to_string()),
+        signature_scheme: None,
         enabled: true,
     }
 }

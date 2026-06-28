@@ -73,6 +73,7 @@ pub(crate) struct AutomationWebhookTriggerCreateInput {
     pub name: Option<String>,
     pub provider: String,
     pub provider_event_kind: Option<String>,
+    pub signature_scheme: Option<AutomationWebhookSignatureScheme>,
     pub enabled: bool,
 }
 
@@ -81,6 +82,7 @@ pub(crate) struct AutomationWebhookTriggerUpdateInput {
     pub name: Option<String>,
     pub provider: Option<String>,
     pub provider_event_kind: Option<Option<String>>,
+    pub signature_scheme: Option<AutomationWebhookSignatureScheme>,
     pub default_data_class: Option<DataClass>,
     pub default_risk_tier: Option<Option<ToolRiskTier>>,
     pub enabled: Option<bool>,
@@ -593,7 +595,7 @@ impl AppState {
                 .and_then(normalize_automation_webhook_provider_event_kind),
             enabled: input.enabled,
             public_path_token,
-            signature_scheme: AutomationWebhookSignatureScheme::HmacSha256V1,
+            signature_scheme: input.signature_scheme.unwrap_or_default(),
             secret: AutomationWebhookSecretMetadata {
                 secret_ref: secret_ref.clone(),
                 secret_digest,
@@ -846,6 +848,9 @@ impl AppState {
                 trigger.provider_event_kind = provider_event_kind
                     .as_deref()
                     .and_then(normalize_automation_webhook_provider_event_kind);
+            }
+            if let Some(signature_scheme) = input.signature_scheme {
+                trigger.signature_scheme = signature_scheme;
             }
             if let Some(default_data_class) = input.default_data_class {
                 trigger.default_data_class = default_data_class;
