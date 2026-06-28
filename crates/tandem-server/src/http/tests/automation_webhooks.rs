@@ -52,6 +52,7 @@ fn create_input(
         resource_scope: None,
         default_data_class: DataClass::Internal,
         default_risk_tier: Some(ToolRiskTier::InternalWrite),
+        name: Some("Generic webhook".to_string()),
         provider: "generic".to_string(),
         provider_event_kind: Some("event.created".to_string()),
         enabled: true,

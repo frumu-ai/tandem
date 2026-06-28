@@ -476,6 +476,62 @@ async fn webhook_queue_rejects_automation_tenant_mismatch_without_run() {
 }
 
 #[tokio::test]
+async fn webhook_queue_treats_accepted_marker_without_run_as_duplicate() {
+    let state = ready_test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a");
+    insert_test_automation(&state, "automation-marker", &tenant_a).await;
+    let created = state
+        .create_automation_webhook_trigger(create_input("automation-marker", tenant_a.clone()))
+        .await
+        .expect("create webhook trigger");
+
+    let body = br#"{"ok":true}"#;
+    let now = now_ms();
+    let signature = automation_webhook_signature_header(&created.secret, now, body);
+    let verified = state
+        .verify_automation_webhook_request(
+            &created.trigger.public_path_token,
+            Some(&signature),
+            body,
+            Some("evt-marker".to_string()),
+            now,
+            300_000,
+        )
+        .await
+        .expect("verified request");
+    state
+        .record_automation_webhook_delivery(AutomationWebhookDeliveryRecord {
+            delivery_id: "delivery-marker".to_string(),
+            trigger_id: created.trigger.trigger_id.clone(),
+            automation_id: "automation-marker".to_string(),
+            tenant_context: tenant_a.clone(),
+            provider_event_id: verified.provider_event_id.clone(),
+            body_digest: verified.body_digest.clone(),
+            status: AutomationWebhookDeliveryStatus::Accepted,
+            rejection_reason_code: None,
+            queued_run_id: None,
+            received_at_ms: verified.received_at_ms,
+            accepted_at_ms: Some(verified.received_at_ms),
+            rejected_at_ms: None,
+            sanitized_preview: json!({"ok": true}),
+            audit_event_id: None,
+        })
+        .await
+        .expect("record idempotency marker");
+
+    let outcome = state
+        .queue_automation_v2_run_from_webhook_delivery(verified, json!({"ok": true}))
+        .await
+        .expect("queue outcome");
+    let delivery = match outcome {
+        AutomationWebhookQueueResult::Duplicate { delivery } => delivery,
+        other => panic!("expected duplicate outcome, got {other:?}"),
+    };
+    assert_eq!(delivery.status, AutomationWebhookDeliveryStatus::Duplicate);
+    assert!(state.automation_v2_runs.read().await.is_empty());
+}
+
+#[tokio::test]
 async fn webhook_queue_serializes_duplicate_delivery_race() {
     let state = ready_test_state().await;
     let tenant_a = tenant("org-a", "workspace-a");

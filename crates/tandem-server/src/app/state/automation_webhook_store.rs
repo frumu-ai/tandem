@@ -1046,6 +1046,35 @@ impl AppState {
         Ok(delivery)
     }
 
+    async fn attach_automation_webhook_delivery_run_locked(
+        &self,
+        tenant_context: &TenantContext,
+        delivery_id: &str,
+        run_id: &str,
+    ) -> anyhow::Result<AutomationWebhookDeliveryRecord> {
+        let delivery = {
+            let mut deliveries = self.automation_webhook_deliveries.write().await;
+            let delivery = deliveries
+                .get_mut(delivery_id)
+                .with_context(|| format!("webhook delivery `{delivery_id}` not found"))?;
+            if !delivery.tenant_matches(tenant_context) {
+                anyhow::bail!("webhook delivery tenant mismatch");
+            }
+            if !matches!(delivery.status, AutomationWebhookDeliveryStatus::Accepted) {
+                anyhow::bail!("webhook delivery is not accepted");
+            }
+            if let Some(existing_run_id) = delivery.queued_run_id.as_ref() {
+                if existing_run_id != run_id {
+                    anyhow::bail!("webhook delivery already linked to another run");
+                }
+            }
+            delivery.queued_run_id = Some(run_id.to_string());
+            delivery.clone()
+        };
+        self.persist_automation_webhook_deliveries_locked().await?;
+        Ok(delivery)
+    }
+
     pub(crate) async fn record_automation_webhook_delivery(
         &self,
         delivery: AutomationWebhookDeliveryRecord,
@@ -1139,7 +1168,7 @@ impl AppState {
             });
         }
 
-        let (delivery, run) = {
+        let delivery = {
             let _guard = self.automation_webhook_persistence.lock().await;
             let current_trigger = self
                 .automation_webhook_triggers
@@ -1201,9 +1230,6 @@ impl AppState {
                 return Ok(AutomationWebhookQueueResult::Duplicate { delivery });
             }
 
-            let run = self
-                .create_automation_v2_run(&automation, "webhook")
-                .await?;
             let delivery = AutomationWebhookDeliveryRecord {
                 delivery_id: new_automation_webhook_delivery_id(),
                 trigger_id: trigger.trigger_id.clone(),
@@ -1213,17 +1239,27 @@ impl AppState {
                 body_digest: verified.body_digest,
                 status: AutomationWebhookDeliveryStatus::Accepted,
                 rejection_reason_code: None,
-                queued_run_id: Some(run.run_id.clone()),
+                queued_run_id: None,
                 received_at_ms: verified.received_at_ms,
                 accepted_at_ms: Some(verified.received_at_ms),
                 rejected_at_ms: None,
                 sanitized_preview,
                 audit_event_id: None,
             };
-            let delivery = self
-                .record_automation_webhook_delivery_locked(delivery)
-                .await?;
-            (delivery, run)
+            self.record_automation_webhook_delivery_locked(delivery)
+                .await?
+        };
+        let run = self
+            .create_automation_v2_run(&automation, "webhook")
+            .await?;
+        let delivery = {
+            let _guard = self.automation_webhook_persistence.lock().await;
+            self.attach_automation_webhook_delivery_run_locked(
+                &trigger.tenant_context,
+                &delivery.delivery_id,
+                &run.run_id,
+            )
+            .await?
         };
         let webhook_metadata = automation_webhook_run_metadata(&trigger, &delivery);
         let trigger_reason = format!(

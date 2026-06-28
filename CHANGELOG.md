@@ -44,6 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opened the prompt editor by default in the workflow automation edit modal so
   generic workflow prompts are immediately reachable from the visual map.
 
+### Fixed
+
+- Persisted Automation V2 webhook delivery idempotency markers before queueing
+  runs so provider retries cannot create duplicate runs if delivery linking
+  fails after run creation.
+
 ## [0.6.3] - 2026-06-26
 
 ### Added
