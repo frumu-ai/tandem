@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.5] - Unreleased
+
+### Added
+
+- Added enterprise-aware stateful runtime kernel types, adapters, and JSONL
+  persistence helpers for durable run events and snapshots.
+- Added stateful runtime definition identity helpers so snapshot-backed
+  automation runs expose durable workflow definition versions and `sha256:`
+  snapshot hashes for future replay and resume checks.
+
+### Changed
+
+- Pending.
+
+### Fixed
+
+- Pending.
+
 ## [0.6.4] - 2026-06-28
 
 ### Added
