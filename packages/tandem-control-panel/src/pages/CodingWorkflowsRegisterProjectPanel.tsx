@@ -53,6 +53,13 @@ function linearProjectProgress(project: LinearProject): number | null {
 function shortDate(value: unknown): string {
   const text = textValue(value);
   if (!text) return "";
+  const dateOnly = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateOnly) {
+    const [, year, month, day] = dateOnly;
+    return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(
+      new Date(Number(year), Number(month) - 1, Number(day))
+    );
+  }
   const date = new Date(text);
   if (Number.isNaN(date.getTime())) return text;
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date);
