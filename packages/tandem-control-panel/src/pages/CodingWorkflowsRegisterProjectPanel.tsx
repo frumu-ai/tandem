@@ -12,6 +12,68 @@ type LinearCatalog = {
   projects?: Array<Record<string, any>>;
 };
 
+type LinearProject = Record<string, any>;
+
+function textValue(value: unknown): string {
+  return String(value || "").trim();
+}
+
+function linearProjectIcon(project: LinearProject): string {
+  const icon = textValue(project?.icon).toLowerCase();
+  const name = textValue(project?.name).toLowerCase();
+  if (icon === "server" || name.includes("hosted")) return "server";
+  if (icon.includes("shield") || name.includes("security") || name.includes("boundary")) return "shield";
+  if (icon.includes("database") || name.includes("data")) return "database";
+  if (icon.includes("workflow") || name.includes("workflow")) return "workflow";
+  if (icon.includes("activity") || name.includes("monitor")) return "activity";
+  if (icon.includes("rocket") || name.includes("launch")) return "rocket";
+  if (icon.includes("bug") || name.includes("bug")) return "bug";
+  if (icon.includes("code") || name.includes("runtime") || name.includes("engine")) return "code";
+  return "folder-code";
+}
+
+function linearProjectColor(project: LinearProject): string {
+  const color = textValue(project?.color);
+  return /^#[0-9a-f]{3,8}$/i.test(color) ? color : "#38bdf8";
+}
+
+function linearProjectProgress(project: LinearProject): number | null {
+  const raw =
+    project?.completion_percent ??
+    project?.completionPercent ??
+    project?.progress_percent ??
+    project?.progressPercent ??
+    project?.completion ??
+    project?.progress;
+  const value = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(value)) return null;
+  return Math.max(0, Math.min(100, value <= 1 ? value * 100 : value));
+}
+
+function shortDate(value: unknown): string {
+  const text = textValue(value);
+  if (!text) return "";
+  const dateOnly = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateOnly) {
+    const [, year, month, day] = dateOnly;
+    return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(
+      new Date(Number(year), Number(month) - 1, Number(day))
+    );
+  }
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return text;
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date);
+}
+
+function statusTone(statusType: unknown): string {
+  const key = textValue(statusType).toLowerCase();
+  if (key === "completed") return "border-emerald-400/30 bg-emerald-500/10 text-emerald-100";
+  if (key === "started") return "border-sky-400/30 bg-sky-500/10 text-sky-100";
+  if (key === "canceled" || key === "cancelled") return "border-slate-500/30 bg-slate-500/10 text-slate-300";
+  if (key === "backlog" || key === "unstarted") return "border-amber-400/30 bg-amber-500/10 text-amber-100";
+  return "border-white/10 bg-white/5 text-slate-200";
+}
+
 type Props = {
   hostedManaged: boolean;
   linearCatalog?: LinearCatalog | null;
@@ -110,6 +172,30 @@ export function CodingWorkflowsRegisterProjectPanel({
   const linearCatalogUnavailable =
     !!linearCatalogError || (linearCatalog?.ok === false && !linearCatalogPartial);
   const linearCatalogNotice = linearCatalogError || (!linearAuthRequired ? linearMessage : "");
+  const filteredLinearProjects = linearProjects.filter((project) => {
+    const selectedTeam = String(taskSourceLinearTeam || "").trim();
+    const teamValues = [project?.team_key, project?.team_id, project?.team_name]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean);
+    return !selectedTeam || !teamValues.length || teamValues.includes(selectedTeam);
+  });
+  const selectLinearProject = (project: LinearProject) => {
+    const value = String(project?.id || project?.name || "").trim();
+    setTaskSourceLinearProject(value);
+    if (project && !newProjectName.trim()) {
+      setNewProjectName(String(project?.name || value));
+    }
+    if (project && !newProjectSlug.trim()) {
+      const teamSeed = String(
+        project?.team_key || project?.team_id || project?.team_name || taskSourceLinearTeam || "linear"
+      ).toLowerCase();
+      const projectSeed = String(project?.name || value)
+        .toLowerCase()
+        .replace(/[^a-z0-9._/-]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+      setNewProjectSlug(`${teamSeed}-${projectSeed}`);
+    }
+  };
   return (
     <PanelCard
       title="Register project"
@@ -327,57 +413,109 @@ export function CodingWorkflowsRegisterProjectPanel({
               />
             )}
             {linearProjects.length ? (
-              <select
-                className="tcp-input"
-                value={taskSourceLinearProject}
-                onChange={(event) => {
-                  const value = (event.target as HTMLSelectElement).value;
-                  const selected = linearProjects.find(
-                    (project) => String(project?.id || project?.name || "") === value
-                  );
-                  setTaskSourceLinearProject(value);
-                  if (selected && !newProjectName.trim()) {
-                    setNewProjectName(String(selected?.name || value));
-                  }
-                  if (selected && !newProjectSlug.trim()) {
-                    const teamSeed = String(
-                      selected?.team_key || selected?.team_id || selected?.team_name || taskSourceLinearTeam || "linear"
-                    ).toLowerCase();
-                    const projectSeed = String(selected?.name || value)
-                      .toLowerCase()
-                      .replace(/[^a-z0-9._/-]+/g, "-")
-                      .replace(/^-+|-+$/g, "");
-                    setNewProjectSlug(`${teamSeed}-${projectSeed}`);
-                  }
-                }}
+              <div
+                className="max-h-[min(32rem,58dvh)] overflow-y-auto rounded-xl border border-white/10 bg-black/20"
+                role="radiogroup"
+                aria-label="Linear project"
               >
-                <option value="">Select Linear project</option>
-                {linearProjects
-                  .filter((project) => {
-                    const selectedTeam = String(taskSourceLinearTeam || "").trim();
-                    const teamValues = [
-                      project?.team_key,
-                      project?.team_id,
-                      project?.team_name,
-                    ]
-                      .map((value) => String(value || "").trim())
-                      .filter(Boolean);
-                    return !selectedTeam || !teamValues.length || teamValues.includes(selectedTeam);
-                  })
-                  .map((project) => {
-                    const value = String(project?.id || project?.name || "").trim();
-                    const count =
-                      project?.issue_count === null || project?.issue_count === undefined
-                        ? ""
-                        : ` · ${project.issue_count} issue${Number(project.issue_count) === 1 ? "" : "s"}`;
-                    return (
-                      <option key={String(project?.id || value)} value={value}>
-                        {String(project?.name || value)}
-                        {count}
-                      </option>
-                    );
-                  })}
-              </select>
+                {filteredLinearProjects.map((project) => {
+                  const value = String(project?.id || project?.name || "").trim();
+                  const selected = value === taskSourceLinearProject;
+                  const color = linearProjectColor(project);
+                  const progress = linearProjectProgress(project);
+                  const issueCount =
+                    project?.issue_count === null || project?.issue_count === undefined
+                      ? ""
+                      : `${project.issue_count} issue${Number(project.issue_count) === 1 ? "" : "s"}`;
+                  const targetDate = shortDate(project?.target_date || project?.targetDate);
+                  const summary = textValue(project?.summary);
+                  const priority = textValue(project?.priority_name || project?.priority?.name);
+                  const lead = textValue(project?.lead_name || project?.lead?.name);
+                  const status = textValue(project?.status_name || project?.status?.name);
+                  const statusType = textValue(project?.status_type || project?.status?.type);
+                  return (
+                    <button
+                      key={String(project?.id || value)}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      className={`grid min-h-[72px] w-full grid-cols-[auto_minmax(0,1fr)_auto] gap-3 border-b border-white/10 px-3 py-3 text-left transition last:border-b-0 sm:px-4 ${
+                        selected
+                          ? "bg-sky-500/12 text-white"
+                          : "bg-transparent text-slate-100 hover:bg-white/[0.04]"
+                      }`}
+                      onClick={() => selectLinearProject(project)}
+                    >
+                      <span
+                        className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border"
+                        style={{ borderColor: color, backgroundColor: `${color}1f`, color }}
+                      >
+                        <i data-lucide={linearProjectIcon(project)} className="h-4 w-4"></i>
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block break-words text-sm font-semibold leading-5">
+                          {String(project?.name || value)}
+                        </span>
+                        {summary ? (
+                          <span className="tcp-subtle mt-1 line-clamp-2 break-words text-xs leading-5">
+                            {summary}
+                          </span>
+                        ) : null}
+                        <span className="mt-2 flex flex-wrap gap-1.5">
+                          {status ? (
+                            <span
+                              className={`rounded-full border px-2 py-0.5 text-[11px] ${statusTone(statusType)}`}
+                            >
+                              {status}
+                            </span>
+                          ) : null}
+                          {priority ? (
+                            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-slate-200">
+                              {priority}
+                            </span>
+                          ) : null}
+                          {targetDate ? (
+                            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-slate-200">
+                              {targetDate}
+                            </span>
+                          ) : null}
+                          {lead ? (
+                            <span className="max-w-full truncate rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-slate-200">
+                              {lead}
+                            </span>
+                          ) : null}
+                          {issueCount ? (
+                            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-slate-200">
+                              {issueCount}
+                            </span>
+                          ) : null}
+                        </span>
+                        {progress !== null ? (
+                          <span className="mt-2 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+                            <span className="h-1.5 overflow-hidden rounded-full bg-white/10">
+                              <span
+                                className="block h-full rounded-full"
+                                style={{ width: `${progress}%`, backgroundColor: color }}
+                              />
+                            </span>
+                            <span className="text-[11px] text-slate-300">{Math.round(progress)}%</span>
+                          </span>
+                        ) : null}
+                      </span>
+                      <span
+                        className={`mt-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${
+                          selected
+                            ? "border-sky-300 bg-sky-400 text-slate-950"
+                            : "border-slate-500 text-transparent"
+                        }`}
+                        aria-hidden="true"
+                      >
+                        <i data-lucide="check" className="h-3.5 w-3.5"></i>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             ) : (
               <input
                 className="tcp-input"
