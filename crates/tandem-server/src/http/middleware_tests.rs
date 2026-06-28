@@ -131,6 +131,21 @@ fn public_oauth_callback_paths_bypass_transport_auth() {
 }
 
 #[test]
+fn public_automation_webhook_paths_bypass_transport_auth() {
+    assert!(is_public_automation_webhook_path(
+        "/webhooks/automations/whpub_test"
+    ));
+    assert!(is_public_automation_webhook_path(
+        "/api/engine/webhooks/automations/whpub_test"
+    ));
+
+    assert!(!is_public_automation_webhook_path("/webhooks/automation"));
+    assert!(!is_public_automation_webhook_path(
+        "/api/engine/automations/v2/auto-a/webhook-triggers"
+    ));
+}
+
+#[test]
 fn hosted_mode_rejects_unsigned_tenant_headers() {
     let mut headers = HeaderMap::new();
     headers.insert("x-tandem-org-id", HeaderValue::from_static("acme"));

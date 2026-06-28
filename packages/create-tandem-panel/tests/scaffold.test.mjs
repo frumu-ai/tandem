@@ -49,4 +49,6 @@ test("scaffold creates a standalone editable app payload", async () => {
   assert.match(viteSource, /proxy/);
   assert.match(devRunner, /TANDEM_CONTROL_PANEL_DISABLE_STATIC/);
   assert.match(startRunner, /const REPO_ROOT = resolve\(__dirname, "\.\."\);/);
+  assert.match(startRunner, /isPublicEngineAutomationWebhookPath/);
+  assert.match(startRunner, /proxyPublicEngineAutomationWebhook/);
 });
