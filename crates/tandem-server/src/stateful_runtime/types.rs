@@ -141,6 +141,8 @@ pub struct StatefulWorkflowRunRecord {
     pub active_wait_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_definition_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_definition_snapshot_hash: Option<String>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -205,6 +207,8 @@ pub struct StatefulRunSnapshotRecord {
     pub payload_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_definition_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_definition_snapshot_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
 }

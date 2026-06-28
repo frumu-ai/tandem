@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added enterprise-aware stateful runtime kernel types, adapters, and JSONL
   persistence helpers for durable run events and snapshots.
+- Added stateful runtime definition identity helpers so snapshot-backed
+  automation runs expose durable workflow definition versions and `sha256:`
+  snapshot hashes for future replay and resume checks.
 
 ### Changed
 

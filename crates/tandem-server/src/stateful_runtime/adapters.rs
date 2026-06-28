@@ -3,6 +3,7 @@ use serde_json::json;
 use crate::automation_v2::types::{AutomationRunStatus, AutomationV2RunRecord};
 use tandem_workflows::{WorkflowRunRecord, WorkflowRunStatus};
 
+use super::definition::{automation_definition_snapshot_hash, automation_definition_version};
 use super::types::{
     StatefulRuntimeScope, StatefulWaitKind, StatefulWorkflowRunKind, StatefulWorkflowRunRecord,
     StatefulWorkflowRunStatus, STATEFUL_RUNTIME_SCHEMA_VERSION,
@@ -10,6 +11,15 @@ use super::types::{
 
 pub fn stateful_run_from_automation_v2(run: &AutomationV2RunRecord) -> StatefulWorkflowRunRecord {
     let awaiting_gate = run.checkpoint.awaiting_gate.as_ref();
+    let (workflow_definition_version, workflow_definition_snapshot_hash) = run
+        .automation_snapshot
+        .as_ref()
+        .map(|snapshot| {
+            let snapshot_hash = automation_definition_snapshot_hash(snapshot);
+            let version = automation_definition_version(snapshot, &snapshot_hash);
+            (Some(version), Some(snapshot_hash))
+        })
+        .unwrap_or((None, None));
     StatefulWorkflowRunRecord {
         schema_version: STATEFUL_RUNTIME_SCHEMA_VERSION,
         run_id: run.run_id.clone(),
@@ -26,7 +36,8 @@ pub fn stateful_run_from_automation_v2(run: &AutomationV2RunRecord) -> StatefulW
         current_phase_id: awaiting_gate.map(|gate| gate.node_id.clone()),
         active_wait_kind: awaiting_gate.map(|_| StatefulWaitKind::Approval),
         active_wait_id: awaiting_gate.map(|gate| gate.node_id.clone()),
-        workflow_definition_version: None,
+        workflow_definition_version,
+        workflow_definition_snapshot_hash,
         created_at_ms: run.created_at_ms,
         updated_at_ms: run.updated_at_ms,
         started_at_ms: run.started_at_ms,
@@ -62,6 +73,7 @@ pub fn stateful_run_from_workflow(run: &WorkflowRunRecord) -> StatefulWorkflowRu
         active_wait_kind: awaiting_gate.map(|_| StatefulWaitKind::Approval),
         active_wait_id: awaiting_gate.map(|gate| gate.action_id.clone()),
         workflow_definition_version: None,
+        workflow_definition_snapshot_hash: None,
         created_at_ms: run.created_at_ms,
         updated_at_ms: run.updated_at_ms,
         started_at_ms: None,
@@ -106,8 +118,11 @@ pub fn workflow_status_to_stateful(status: &WorkflowRunStatus) -> StatefulWorkfl
 #[cfg(test)]
 mod tests {
     use crate::automation_v2::types::{
-        AutomationRunCheckpoint, AutomationRunStatus, AutomationV2RunRecord,
+        AutomationExecutionPolicy, AutomationFlowSpec, AutomationRunCheckpoint,
+        AutomationRunStatus, AutomationV2RunRecord, AutomationV2Schedule, AutomationV2ScheduleType,
+        AutomationV2Spec, AutomationV2Status,
     };
+    use serde_json::json;
     use tandem_types::TenantContext;
     use tandem_workflows::{WorkflowRunRecord, WorkflowRunStatus};
 
@@ -115,6 +130,75 @@ mod tests {
 
     fn tenant() -> TenantContext {
         TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "user-a")
+    }
+
+    fn automation_snapshot(automation_id: &str) -> AutomationV2Spec {
+        AutomationV2Spec {
+            automation_id: automation_id.to_string(),
+            name: "Definition test".to_string(),
+            description: None,
+            status: AutomationV2Status::Active,
+            schedule: AutomationV2Schedule {
+                schedule_type: AutomationV2ScheduleType::Manual,
+                cron_expression: None,
+                interval_seconds: None,
+                timezone: "UTC".to_string(),
+                misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
+            },
+            knowledge: Default::default(),
+            agents: Vec::new(),
+            flow: AutomationFlowSpec { nodes: Vec::new() },
+            execution: AutomationExecutionPolicy::default(),
+            output_targets: Vec::new(),
+            created_at_ms: 1,
+            updated_at_ms: 2,
+            creator_id: "user-a".to_string(),
+            workspace_root: None,
+            metadata: Some(json!({ "definition_version": "release-17" })),
+            next_fire_at_ms: None,
+            last_fired_at_ms: None,
+            scope_policy: None,
+            watch_conditions: Vec::new(),
+            handoff_config: None,
+        }
+    }
+
+    fn automation_run(
+        automation_snapshot: Option<AutomationV2Spec>,
+        checkpoint: AutomationRunCheckpoint,
+    ) -> AutomationV2RunRecord {
+        AutomationV2RunRecord {
+            run_id: "run-a".to_string(),
+            automation_id: "automation-a".to_string(),
+            tenant_context: tenant(),
+            trigger_type: "webhook".to_string(),
+            status: AutomationRunStatus::AwaitingApproval,
+            created_at_ms: 10,
+            updated_at_ms: 20,
+            started_at_ms: Some(11),
+            finished_at_ms: None,
+            active_session_ids: vec!["session-a".to_string()],
+            latest_session_id: Some("session-a".to_string()),
+            active_instance_ids: vec!["context-run-a".to_string()],
+            checkpoint,
+            runtime_context: None,
+            automation_snapshot,
+            pause_reason: None,
+            resume_reason: None,
+            detail: None,
+            stop_kind: None,
+            stop_reason: None,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            estimated_cost_usd: 0.0,
+            scheduler: None,
+            trigger_reason: None,
+            consumed_handoff_id: None,
+            learning_summary: None,
+            effective_execution_profile: Default::default(),
+            requested_execution_profile: None,
+        }
     }
 
     #[test]
@@ -143,38 +227,9 @@ mod tests {
             expiry_policy: None,
         });
 
-        let record = AutomationV2RunRecord {
-            run_id: "run-a".to_string(),
-            automation_id: "automation-a".to_string(),
-            tenant_context: tenant(),
-            trigger_type: "webhook".to_string(),
-            status: AutomationRunStatus::AwaitingApproval,
-            created_at_ms: 10,
-            updated_at_ms: 20,
-            started_at_ms: Some(11),
-            finished_at_ms: None,
-            active_session_ids: vec!["session-a".to_string()],
-            latest_session_id: Some("session-a".to_string()),
-            active_instance_ids: vec!["context-run-a".to_string()],
-            checkpoint,
-            runtime_context: None,
-            automation_snapshot: None,
-            pause_reason: None,
-            resume_reason: None,
-            detail: None,
-            stop_kind: None,
-            stop_reason: None,
-            prompt_tokens: 0,
-            completion_tokens: 0,
-            total_tokens: 0,
-            estimated_cost_usd: 0.0,
-            scheduler: None,
-            trigger_reason: None,
-            consumed_handoff_id: None,
-            learning_summary: None,
-            effective_execution_profile: Default::default(),
-            requested_execution_profile: None,
-        };
+        let snapshot = automation_snapshot("automation-a");
+        let expected_hash = automation_definition_snapshot_hash(&snapshot);
+        let record = automation_run(Some(snapshot), checkpoint);
 
         let stateful = stateful_run_from_automation_v2(&record);
 
@@ -184,6 +239,53 @@ mod tests {
         assert_eq!(stateful.active_wait_kind, Some(StatefulWaitKind::Approval));
         assert_eq!(stateful.active_wait_id.as_deref(), Some("approve-plan"));
         assert_eq!(stateful.related_context_run_ids, vec!["context-run-a"]);
+        assert_eq!(
+            stateful.workflow_definition_version.as_deref(),
+            Some("release-17")
+        );
+        assert_eq!(
+            stateful.workflow_definition_snapshot_hash.as_deref(),
+            Some(expected_hash.as_str())
+        );
+    }
+
+    #[test]
+    fn automation_adapter_derives_distinct_fallback_versions_from_snapshot_hashes() {
+        let mut first_snapshot = automation_snapshot("automation-a");
+        first_snapshot.metadata = None;
+        let mut second_snapshot = first_snapshot.clone();
+        second_snapshot.name = "Definition test changed".to_string();
+
+        let checkpoint = AutomationRunCheckpoint {
+            completed_nodes: Vec::new(),
+            pending_nodes: Vec::new(),
+            node_outputs: Default::default(),
+            node_attempts: Default::default(),
+            node_attempt_verdicts: Default::default(),
+            blocked_nodes: Vec::new(),
+            awaiting_gate: None,
+            gate_history: Vec::new(),
+            lifecycle_history: Vec::new(),
+            last_failure: None,
+        };
+        let first_run = automation_run(Some(first_snapshot), checkpoint.clone());
+        let second_run = automation_run(Some(second_snapshot), checkpoint);
+
+        let first_stateful = stateful_run_from_automation_v2(&first_run);
+        let second_stateful = stateful_run_from_automation_v2(&second_run);
+
+        assert_ne!(
+            first_stateful.workflow_definition_snapshot_hash,
+            second_stateful.workflow_definition_snapshot_hash
+        );
+        assert_ne!(
+            first_stateful.workflow_definition_version,
+            second_stateful.workflow_definition_version
+        );
+        assert!(first_stateful
+            .workflow_definition_version
+            .as_deref()
+            .is_some_and(|version| version.starts_with("automation:automation-a@")));
     }
 
     #[test]

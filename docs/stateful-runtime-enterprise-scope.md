@@ -7,6 +7,9 @@ tenant and governance boundary that created the run.
 ## Durable Scope Invariants
 
 - Every stateful run, event, and snapshot carries a `TenantContext`.
+- Snapshot-backed runs also carry the workflow definition version and snapshot
+  hash used to start the run. Explicit definition metadata wins; otherwise the
+  runtime derives a stable version from plan ID/revision or the definition hash.
 - Enterprise deployments must also preserve the owning organization unit,
   owner principal, resource scope, data classes, risk tier, policy version, and
   delegation grants whenever the caller or trigger provides them.
@@ -28,3 +31,11 @@ saved `resource_scope`, `data_classes`, `policy_version_id`, and
 `delegation_grant_ids` from the durable run scope. This keeps replayed work from
 silently widening access if organization membership, connector bindings, or
 memory policy defaults change after the run was first scheduled.
+
+## Definition Identity
+
+Stateful automation adapters derive a `sha256:` snapshot hash from the persisted
+`automation_snapshot` and preserve a matching definition version on the
+canonical run record. This lets future resume and replay paths compare the
+definition that originally started a run against the current mutable workflow
+definition before reclaiming leases, applying migrations, or executing effects.

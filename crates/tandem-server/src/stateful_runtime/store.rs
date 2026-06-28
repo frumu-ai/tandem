@@ -241,6 +241,7 @@ mod tests {
             checkpoint: Some(json!({ "phase": "phase-a" })),
             payload_digest: Some("sha256:test".to_string()),
             workflow_definition_version: None,
+            workflow_definition_snapshot_hash: None,
             metadata: None,
         };
 
@@ -277,6 +278,7 @@ mod tests {
                 checkpoint: None,
                 payload_digest: None,
                 workflow_definition_version: None,
+                workflow_definition_snapshot_hash: None,
                 metadata: None,
             };
 
