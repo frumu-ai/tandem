@@ -209,7 +209,7 @@ async fn public_automation_webhook_rejects_unsigned_request_without_creating_run
 }
 
 #[tokio::test]
-async fn public_automation_webhook_duplicate_does_not_queue_second_run() {
+async fn public_automation_webhook_duplicate_body_digest_does_not_queue_second_run() {
     let state = test_state().await;
     state.set_api_token(Some("tk_test".to_string())).await;
     let tenant_context = tenant("org-a", "workspace-a");
@@ -235,7 +235,7 @@ async fn public_automation_webhook_duplicate_does_not_queue_second_run() {
             &created.trigger.public_path_token,
             Some(&created.secret),
             body,
-            "evt-duplicate",
+            "evt-duplicate-renamed",
             now + 1,
         ))
         .await
