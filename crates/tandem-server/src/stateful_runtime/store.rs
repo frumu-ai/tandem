@@ -77,14 +77,17 @@ pub async fn append_stateful_run_event_once(
     record: &StatefulRunEventRecord,
 ) -> anyhow::Result<bool> {
     let _guard = STATEFUL_RUN_EVENT_APPEND_ONCE_LOCK.lock().await;
-    let duplicate = load_stateful_run_events(path)
-        .into_iter()
-        .any(|existing| existing.run_id == record.run_id && existing.event_id == record.event_id);
-    if duplicate {
+    if stateful_run_event_exists(path, record) {
         return Ok(false);
     }
     append_stateful_run_event(path, record).await?;
     Ok(true)
+}
+
+fn stateful_run_event_exists(path: &Path, record: &StatefulRunEventRecord) -> bool {
+    load_stateful_run_events(path)
+        .into_iter()
+        .any(|existing| existing.run_id == record.run_id && existing.event_id == record.event_id)
 }
 
 pub fn load_stateful_run_events(path: &Path) -> Vec<StatefulRunEventRecord> {
