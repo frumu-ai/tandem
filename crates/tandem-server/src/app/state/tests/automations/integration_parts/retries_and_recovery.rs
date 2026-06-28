@@ -1190,6 +1190,76 @@ async fn restart_recovery_requeues_in_progress_node_with_repair_marker() {
 }
 
 #[tokio::test]
+async fn restart_recovery_prefers_run_snapshot_after_automation_edit() {
+    let workspace_root = restart_test_workspace("tandem-restart-running-snapshot-first");
+    let state = ready_test_state().await;
+    let automation =
+        consequential_restart_automation("automation-restart-snapshot-first", &workspace_root);
+    let run = create_persisted_restart_run(&state, &automation).await;
+    let mut edited_automation = automation.clone();
+    edited_automation.flow.nodes.clear();
+    edited_automation.updated_at_ms = crate::now_ms();
+    state
+        .put_automation_v2(edited_automation)
+        .await
+        .expect("persist edited current automation");
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = AutomationRunStatus::Running;
+            row.started_at_ms = Some(crate::now_ms());
+            row.active_session_ids = vec!["session-in-flight-before-restart".to_string()];
+            row.latest_session_id = Some("session-in-flight-before-restart".to_string());
+            row.checkpoint
+                .node_attempts
+                .insert("send_customer_update".to_string(), 1);
+            row.checkpoint.lifecycle_history.push(
+                crate::automation_v2::types::AutomationLifecycleRecord {
+                    event: "node_started".to_string(),
+                    recorded_at_ms: crate::now_ms(),
+                    reason: Some("node `send_customer_update` started".to_string()),
+                    stop_kind: None,
+                    metadata: Some(json!({
+                        "node_id": "send_customer_update",
+                        "attempt": 1,
+                    })),
+                },
+            );
+        })
+        .await
+        .expect("mark running restart run");
+
+    let (reloaded, recovered) = reload_automation_state_after_restart(&state).await;
+    assert_eq!(recovered, 1);
+    let recovered_run = reloaded
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("recovered running run");
+    let golden = restart_resume_golden(&recovered_run);
+
+    assert_eq!(golden.status, AutomationRunStatus::Queued);
+    assert_eq!(
+        golden.pending_nodes,
+        vec!["send_customer_update".to_string()]
+    );
+    assert_eq!(
+        golden.detail.as_deref(),
+        Some(
+            "automation run queued for resume after server restart; repairable node(s): send_customer_update"
+        )
+    );
+    assert_eq!(
+        recovered_run
+            .checkpoint
+            .node_outputs
+            .get("send_customer_update")
+            .and_then(|output| output.get("blocker_category"))
+            .and_then(Value::as_str),
+        Some("server_restart_interrupted")
+    );
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[tokio::test]
 async fn restart_recovery_fails_corrupt_running_run_without_replay() {
     let workspace_root = restart_test_workspace("tandem-restart-running-corrupt");
     let state = ready_test_state().await;

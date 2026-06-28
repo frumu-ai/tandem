@@ -38,6 +38,16 @@ impl AppState {
         .await;
     }
 
+    async fn automation_definition_for_restart_recovery(
+        &self,
+        run: &AutomationV2RunRecord,
+    ) -> Option<AutomationV2Spec> {
+        match run.automation_snapshot.clone() {
+            Some(snapshot) => Some(snapshot),
+            None => self.get_automation_v2(&run.automation_id).await,
+        }
+    }
+
     pub async fn recover_in_flight_runs(&self) -> usize {
         let runs = self
             .automation_v2_runs
@@ -107,10 +117,8 @@ impl AppState {
                             })
                             .is_some_and(|record| record.decision != "rework");
                         if has_settled_gate_decision {
-                            let automation = self
-                                .get_automation_v2(&run.automation_id)
-                                .await
-                                .or_else(|| run.automation_snapshot.clone());
+                            let automation =
+                                self.automation_definition_for_restart_recovery(&run).await;
                             if let Some(automation) = automation {
                                 if let Some(updated_run) = self
                                     .update_automation_v2_run(&run.run_id, |row| {
@@ -171,10 +179,7 @@ impl AppState {
 
     async fn recover_running_run_after_restart(&self, run: &AutomationV2RunRecord) -> bool {
         self.forget_interrupted_run_handles(run).await;
-        let automation = self
-            .get_automation_v2(&run.automation_id)
-            .await
-            .or_else(|| run.automation_snapshot.clone());
+        let automation = self.automation_definition_for_restart_recovery(run).await;
         let Some(automation) = automation else {
             let detail = "automation run interrupted by server restart".to_string();
             return self
