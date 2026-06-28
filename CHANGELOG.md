@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added stateful runtime definition identity helpers so snapshot-backed
   automation runs expose durable workflow definition versions and `sha256:`
   snapshot hashes for future replay and resume checks.
+- Added a provider-aware Automation V2 webhook signature verifier registry with
+  Tandem HMAC, GitHub SHA-256, shared-secret header, and unsigned-dev schemes
+  plus queryable delivery verification metadata exposed through clients.
 
 ### Changed
 
