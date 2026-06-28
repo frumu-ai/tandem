@@ -92,8 +92,8 @@ async fn webhook_management_routes_redact_secrets_and_delivery_payloads() {
         "actor-a",
         Some(json!({
             "name": "GitHub issues",
-            "provider": "github",
-            "provider_event_kind": "issues.opened",
+            "provider": " GitHub.com ",
+            "provider_event_kind": " Issues.Opened ",
             "default_data_class": "customer_data",
             "default_risk_tier": "internal_write",
             "enabled": true
@@ -120,6 +120,36 @@ async fn webhook_management_routes_redact_secrets_and_delivery_payloads() {
     assert!(!create_text.contains("secret_ref"));
     assert!(!create_text.contains("secret_digest"));
     assert!(create_text.contains("/webhooks/automations/"));
+    assert_eq!(
+        create_payload
+            .pointer("/trigger/provider")
+            .and_then(Value::as_str),
+        Some("github")
+    );
+    assert_eq!(
+        create_payload
+            .pointer("/trigger/provider_event_kind")
+            .and_then(Value::as_str),
+        Some("issues.opened")
+    );
+    assert_eq!(
+        create_payload
+            .pointer("/trigger/provider_metadata/canonical_provider")
+            .and_then(Value::as_str),
+        Some("github")
+    );
+    assert_eq!(
+        create_payload
+            .pointer("/trigger/provider_metadata/event_id_headers/0")
+            .and_then(Value::as_str),
+        Some("x-github-delivery")
+    );
+    assert_eq!(
+        create_payload
+            .pointer("/trigger/provider_metadata/polling/supported")
+            .and_then(Value::as_bool),
+        Some(false)
+    );
 
     let list_req = tenant_request(
         "GET",

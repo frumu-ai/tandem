@@ -278,6 +278,65 @@ async fn public_automation_webhook_accepts_hosted_prefixed_path_without_transpor
 }
 
 #[tokio::test]
+async fn public_automation_webhook_prefers_provider_specific_event_id_header() {
+    let state = test_state().await;
+    state.set_api_token(Some("tk_test".to_string())).await;
+    let tenant_context = tenant("org-a", "workspace-a");
+    state
+        .put_automation_v2(minimal_automation(
+            "automation-webhook-github-event",
+            &tenant_context,
+        ))
+        .await
+        .expect("put automation");
+    let mut input = create_input("automation-webhook-github-event", tenant_context.clone());
+    input.provider = " GitHub.com ".to_string();
+    input.provider_event_kind = Some(" Issues.Opened ".to_string());
+    let created = state
+        .create_automation_webhook_trigger(input)
+        .await
+        .expect("create github trigger");
+    assert_eq!(created.trigger.provider, "github");
+
+    let app = app_router(state.clone());
+    let body = br#"{"ok":true}"#;
+    let now = crate::now_ms();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/webhooks/automations/{}",
+                    created.trigger.public_path_token
+                ))
+                .header("content-type", "application/json")
+                .header("x-tandem-webhook-event-id", "evt-generic")
+                .header("x-github-delivery", "github-delivery-1")
+                .header(
+                    "x-tandem-webhook-signature",
+                    automation_webhook_signature_header(&created.secret, now, body),
+                )
+                .body(Body::from(body.as_slice()))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+    let deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+        )
+        .await;
+    assert_eq!(deliveries.len(), 1);
+    assert_eq!(
+        deliveries[0].provider_event_id.as_deref(),
+        Some("github-delivery-1")
+    );
+}
+
+#[tokio::test]
 async fn public_automation_webhook_duplicate_body_digest_does_not_queue_second_run() {
     let state = test_state().await;
     state.set_api_token(Some("tk_test".to_string())).await;

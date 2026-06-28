@@ -604,10 +604,8 @@ impl AppState {
         &self,
         input: AutomationWebhookTriggerCreateInput,
     ) -> anyhow::Result<AutomationWebhookCreateResult> {
-        let provider = input.provider.trim().to_string();
-        if provider.is_empty() {
-            anyhow::bail!("webhook provider is required");
-        }
+        let provider = normalize_automation_webhook_provider(&input.provider)
+            .ok_or_else(|| anyhow::anyhow!("webhook provider is required"))?;
         let name = input
             .name
             .as_deref()
@@ -654,7 +652,10 @@ impl AppState {
             default_risk_tier: input.default_risk_tier,
             name,
             provider,
-            provider_event_kind: input.provider_event_kind,
+            provider_event_kind: input
+                .provider_event_kind
+                .as_deref()
+                .and_then(normalize_automation_webhook_provider_event_kind),
             enabled: input.enabled,
             public_path_token,
             signature_scheme: AutomationWebhookSignatureScheme::HmacSha256V1,
@@ -899,19 +900,17 @@ impl AppState {
                 trigger.name = name.to_string();
             }
             if let Some(provider) = input.provider {
-                let provider = provider.trim();
-                if provider.is_empty() {
-                    anyhow::bail!("webhook provider is required");
-                }
-                trigger.provider = provider.to_string();
+                let provider = normalize_automation_webhook_provider(&provider)
+                    .ok_or_else(|| anyhow::anyhow!("webhook provider is required"))?;
+                trigger.provider = provider.clone();
                 if trigger.name.trim().is_empty() {
-                    trigger.name = provider.to_string();
+                    trigger.name = provider;
                 }
             }
             if let Some(provider_event_kind) = input.provider_event_kind {
                 trigger.provider_event_kind = provider_event_kind
-                    .map(|value| value.trim().to_string())
-                    .filter(|value| !value.is_empty());
+                    .as_deref()
+                    .and_then(normalize_automation_webhook_provider_event_kind);
             }
             if let Some(default_data_class) = input.default_data_class {
                 trigger.default_data_class = default_data_class;

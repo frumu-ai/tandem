@@ -1515,6 +1515,39 @@ class AutomationWebhookDeliveryCounts(BaseModel):
     failed: int = 0
 
 
+class AutomationWebhookProviderVerification(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    signature_scheme: Optional[str] = Field(
+        None, validation_alias=AliasChoices("signatureScheme", "signature_scheme")
+    )
+    provider_specific: Optional[bool] = Field(
+        None, validation_alias=AliasChoices("providerSpecific", "provider_specific")
+    )
+
+
+class AutomationWebhookProviderPolling(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    supported: Optional[bool] = None
+    reconciliation_supported: Optional[bool] = Field(
+        None, validation_alias=AliasChoices("reconciliationSupported", "reconciliation_supported")
+    )
+
+
+class AutomationWebhookProviderMetadata(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    canonical_provider: Optional[str] = Field(
+        None, validation_alias=AliasChoices("canonicalProvider", "canonical_provider")
+    )
+    provider_event_kind: Optional[str] = Field(
+        None, validation_alias=AliasChoices("providerEventKind", "provider_event_kind")
+    )
+    event_id_headers: list[str] = Field(
+        default_factory=list, validation_alias=AliasChoices("eventIdHeaders", "event_id_headers")
+    )
+    verification: Optional[AutomationWebhookProviderVerification] = None
+    polling: Optional[AutomationWebhookProviderPolling] = None
+
+
 class AutomationWebhookTrigger(BaseModel):
     model_config = ConfigDict(extra="allow")
     trigger_id: Optional[str] = Field(
@@ -1527,6 +1560,9 @@ class AutomationWebhookTrigger(BaseModel):
     provider: Optional[str] = None
     provider_event_kind: Optional[str] = Field(
         None, validation_alias=AliasChoices("providerEventKind", "provider_event_kind")
+    )
+    provider_metadata: Optional[AutomationWebhookProviderMetadata] = Field(
+        None, validation_alias=AliasChoices("providerMetadata", "provider_metadata")
     )
     enabled: Optional[bool] = None
     callback_path: Optional[str] = Field(

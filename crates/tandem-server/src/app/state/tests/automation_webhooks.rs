@@ -2,7 +2,7 @@ use super::*;
 use crate::app::state::{
     automation_webhook_body_digest, automation_webhook_signature_header,
     AutomationWebhookQueueResult, AutomationWebhookTriggerCreateInput,
-    AutomationWebhookVerificationError,
+    AutomationWebhookTriggerUpdateInput, AutomationWebhookVerificationError,
 };
 
 fn tenant(org: &str, workspace: &str) -> TenantContext {
@@ -171,6 +171,48 @@ async fn webhook_triggers_and_deliveries_are_tenant_scoped() {
         .get_automation_webhook_delivery(&tenant_b, "delivery-a")
         .await
         .is_none());
+}
+
+#[tokio::test]
+async fn webhook_trigger_create_and_update_normalize_provider_metadata() {
+    let state = ready_test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a");
+    insert_test_automation(&state, "automation-provider-normalize", &tenant_a).await;
+    let mut input = create_input("automation-provider-normalize", tenant_a.clone());
+    input.provider = " GitHub.com ".to_string();
+    input.provider_event_kind = Some(" Issues.Opened ".to_string());
+    input.name = None;
+
+    let created = state
+        .create_automation_webhook_trigger(input)
+        .await
+        .expect("create trigger");
+    assert_eq!(created.trigger.provider, "github");
+    assert_eq!(created.trigger.name, "github");
+    assert_eq!(
+        created.trigger.provider_event_kind.as_deref(),
+        Some("issues.opened")
+    );
+
+    let updated = state
+        .update_automation_webhook_trigger(
+            &tenant_a,
+            "automation-provider-normalize",
+            &created.trigger.trigger_id,
+            AutomationWebhookTriggerUpdateInput {
+                provider: Some(" Stripe.COM ".to_string()),
+                provider_event_kind: Some(Some(" Checkout.Session.Completed ".to_string())),
+                ..AutomationWebhookTriggerUpdateInput::default()
+            },
+            Some("actor-a".to_string()),
+        )
+        .await
+        .expect("update trigger");
+    assert_eq!(updated.provider, "stripe");
+    assert_eq!(
+        updated.provider_event_kind.as_deref(),
+        Some("checkout.session.completed")
+    );
 }
 
 #[tokio::test]

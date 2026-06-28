@@ -12,7 +12,8 @@ use tandem_types::{
 
 use crate::app::state::{AutomationWebhookTriggerCreateInput, AutomationWebhookTriggerUpdateInput};
 use crate::automation_v2::types::{
-    AutomationV2Spec, AutomationWebhookDeliveryRecord, AutomationWebhookDeliveryStatus,
+    automation_webhook_provider_event_id_headers, AutomationV2Spec,
+    AutomationWebhookDeliveryRecord, AutomationWebhookDeliveryStatus,
     AutomationWebhookTriggerRecord,
 };
 use crate::AppState;
@@ -489,6 +490,29 @@ fn delivery_counts(deliveries: &[AutomationWebhookDeliveryRecord]) -> Value {
     })
 }
 
+fn provider_metadata(trigger: &AutomationWebhookTriggerRecord) -> Value {
+    let event_id_headers = automation_webhook_provider_event_id_headers(&trigger.provider);
+    json!({
+        "canonical_provider": trigger.provider,
+        "canonicalProvider": trigger.provider,
+        "provider_event_kind": trigger.provider_event_kind,
+        "providerEventKind": trigger.provider_event_kind,
+        "event_id_headers": event_id_headers,
+        "eventIdHeaders": event_id_headers,
+        "verification": {
+            "signature_scheme": trigger.signature_scheme,
+            "signatureScheme": trigger.signature_scheme,
+            "provider_specific": false,
+            "providerSpecific": false,
+        },
+        "polling": {
+            "supported": false,
+            "reconciliation_supported": false,
+            "reconciliationSupported": false,
+        },
+    })
+}
+
 fn trigger_value(
     trigger: &AutomationWebhookTriggerRecord,
     deliveries: &[AutomationWebhookDeliveryRecord],
@@ -503,6 +527,8 @@ fn trigger_value(
         "provider": trigger.provider,
         "provider_event_kind": trigger.provider_event_kind,
         "providerEventKind": trigger.provider_event_kind,
+        "provider_metadata": provider_metadata(trigger),
+        "providerMetadata": provider_metadata(trigger),
         "enabled": trigger.enabled,
         "callback_path": callback_path(trigger),
         "callbackPath": callback_path(trigger),

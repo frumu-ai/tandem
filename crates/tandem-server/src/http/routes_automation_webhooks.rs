@@ -10,18 +10,13 @@ use crate::app::state::{
     automation_webhook_body_digest, sanitize_automation_webhook_preview,
     AutomationWebhookQueueResult, AutomationWebhookVerificationError,
 };
+use crate::automation_v2::types::automation_webhook_provider_event_id_headers;
 use crate::{AppState, AutomationWebhookDeliveryStatus};
 
 const AUTOMATION_WEBHOOK_MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
 const AUTOMATION_WEBHOOK_SIGNATURE_TOLERANCE_MS: u64 = 5 * 60 * 1000;
 const AUTOMATION_WEBHOOK_SIGNATURE_HEADER: &str = "x-tandem-webhook-signature";
 const AUTOMATION_WEBHOOK_LEGACY_SIGNATURE_HEADER: &str = "x-tandem-signature";
-const AUTOMATION_WEBHOOK_EVENT_ID_HEADERS: &[&str] = &[
-    "x-tandem-webhook-event-id",
-    "x-webhook-event-id",
-    "x-event-id",
-    "x-github-delivery",
-];
 
 pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
     router
@@ -49,7 +44,8 @@ async fn automation_webhook_intake(
         return webhook_public_response(StatusCode::UNSUPPORTED_MEDIA_TYPE, "rejected");
     }
 
-    let advisory_provider_event_id = provider_event_id_from_headers(&headers);
+    let advisory_provider_event_id =
+        advisory_provider_event_id(&state, &public_path_token, &headers).await;
     let body_digest = automation_webhook_body_digest(body.as_ref());
     let signature_header = header_str(&headers, AUTOMATION_WEBHOOK_SIGNATURE_HEADER)
         .or_else(|| header_str(&headers, AUTOMATION_WEBHOOK_LEGACY_SIGNATURE_HEADER));
@@ -138,8 +134,31 @@ fn is_json_content_type(headers: &HeaderMap) -> bool {
         .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"))
 }
 
-fn provider_event_id_from_headers(headers: &HeaderMap) -> Option<String> {
-    AUTOMATION_WEBHOOK_EVENT_ID_HEADERS
+async fn advisory_provider_event_id(
+    state: &AppState,
+    public_path_token: &str,
+    headers: &HeaderMap,
+) -> Option<String> {
+    if let Some(trigger) = state
+        .get_automation_webhook_trigger_by_public_token(public_path_token)
+        .await
+    {
+        return provider_event_id_from_headers(
+            headers,
+            automation_webhook_provider_event_id_headers(&trigger.provider),
+        );
+    }
+    provider_event_id_from_headers(
+        headers,
+        automation_webhook_provider_event_id_headers("generic"),
+    )
+}
+
+fn provider_event_id_from_headers(
+    headers: &HeaderMap,
+    event_id_headers: &[&str],
+) -> Option<String> {
+    event_id_headers
         .iter()
         .find_map(|name| header_str(headers, name))
         .map(|value| value.chars().take(256).collect::<String>())
