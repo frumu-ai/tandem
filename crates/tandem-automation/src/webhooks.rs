@@ -179,6 +179,71 @@ impl AutomationWebhookTriggerRecord {
     }
 }
 
+fn default_raw_payload_retention_ms() -> u64 {
+    30 * 24 * 60 * 60 * 1000
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutomationWebhookEventRetentionPolicy {
+    #[serde(default = "default_raw_payload_retention_ms")]
+    pub raw_payload_retention_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_after_ms: Option<u64>,
+    #[serde(default)]
+    pub headers_redacted: bool,
+}
+
+impl Default for AutomationWebhookEventRetentionPolicy {
+    fn default() -> Self {
+        Self {
+            raw_payload_retention_ms: default_raw_payload_retention_ms(),
+            delete_after_ms: None,
+            headers_redacted: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AutomationWebhookRawEventRecord {
+    pub event_id: String,
+    pub trigger_id: String,
+    pub automation_id: String,
+    #[serde(default = "default_tenant_context")]
+    pub tenant_context: TenantContext,
+    pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_event_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_event_id: Option<String>,
+    pub body_digest: String,
+    pub headers_digest: String,
+    #[serde(default)]
+    pub headers_redacted: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    pub payload_ref: String,
+    pub payload_bytes: u64,
+    pub status: AutomationWebhookDeliveryStatus,
+    pub received_at_ms: u64,
+    pub updated_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection_reason_code: Option<String>,
+    #[serde(default)]
+    pub retention_policy: AutomationWebhookEventRetentionPolicy,
+}
+
+impl AutomationWebhookRawEventRecord {
+    pub fn tenant_matches(&self, tenant_context: &TenantContext) -> bool {
+        self.tenant_context.org_id == tenant_context.org_id
+            && self.tenant_context.workspace_id == tenant_context.workspace_id
+            && self.tenant_context.deployment_id == tenant_context.deployment_id
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AutomationWebhookDeliveryRecord {
     pub delivery_id: String,

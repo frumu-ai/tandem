@@ -84,6 +84,7 @@ use crate::{
 pub mod approval_message_map;
 mod automation_v2_run_store;
 mod automation_v2_startup_recovery;
+mod automation_webhook_inbox;
 mod automation_webhook_store;
 pub mod channel_user_capabilities;
 pub mod enterprise_state;
@@ -93,6 +94,7 @@ mod prompt_context_hook;
 mod prompt_memory_context;
 
 pub(crate) use automation_v2_run_store::*;
+pub(crate) use automation_webhook_inbox::*;
 pub(crate) use automation_webhook_store::*;
 pub use enterprise_state::EnterpriseState;
 pub use oauth_state::OAuthState;

@@ -165,6 +165,37 @@ async fn public_automation_webhook_accepts_signed_request_without_transport_auth
         .await;
     assert_eq!(deliveries.len(), 1);
     let delivery = &deliveries[0];
+    let raw_events = state
+        .list_automation_webhook_raw_events_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+        )
+        .await;
+    assert_eq!(raw_events.len(), 1);
+    let raw_event = &raw_events[0];
+    assert_eq!(
+        raw_event.status,
+        crate::AutomationWebhookDeliveryStatus::Accepted
+    );
+    assert_eq!(
+        raw_event.delivery_id.as_deref(),
+        Some(delivery.delivery_id.as_str())
+    );
+    assert_eq!(raw_event.body_digest, delivery.body_digest);
+    assert!(raw_event.headers_digest.starts_with("sha256:"));
+    assert_eq!(
+        raw_event
+            .headers_redacted
+            .get("x-tandem-webhook-signature")
+            .and_then(Value::as_str),
+        Some("[redacted]")
+    );
+    let persisted_payload = state
+        .read_automation_webhook_raw_event_payload(&tenant_context, &raw_event.event_id)
+        .await
+        .expect("raw payload read")
+        .expect("raw payload");
+    assert_eq!(persisted_payload, body);
     let run_id = delivery.queued_run_id.as_deref().expect("queued run id");
     let run = state
         .get_automation_v2_run(run_id)
@@ -386,6 +417,21 @@ async fn public_automation_webhook_duplicate_body_digest_does_not_queue_second_r
         delivery.status,
         crate::AutomationWebhookDeliveryStatus::Duplicate
     )));
+    let raw_events = state
+        .list_automation_webhook_raw_events_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+        )
+        .await;
+    assert_eq!(raw_events.len(), 2);
+    assert!(raw_events.iter().any(|event| matches!(
+        event.status,
+        crate::AutomationWebhookDeliveryStatus::Accepted
+    )));
+    assert!(raw_events.iter().any(|event| matches!(
+        event.status,
+        crate::AutomationWebhookDeliveryStatus::Duplicate
+    )));
 }
 
 #[tokio::test]
@@ -516,6 +562,10 @@ async fn public_automation_webhook_tenant_mismatch_does_not_queue_run() {
     );
     assert!(state
         .list_automation_webhook_deliveries_for_trigger(&tenant_b, &created.trigger.trigger_id)
+        .await
+        .is_empty());
+    assert!(state
+        .list_automation_webhook_raw_events_for_trigger(&tenant_b, &created.trigger.trigger_id)
         .await
         .is_empty());
 }

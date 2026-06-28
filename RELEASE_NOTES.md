@@ -11,6 +11,9 @@ versions and `sha256:` snapshot hashes for future replay and resume checks, and
 restart-interrupted Automation V2 runs are queued for resume when their
 persisted checkpoint is recoverable while corrupt in-flight records continue to
 fail closed.
+Automation webhooks now persist tenant-scoped raw inbox events with raw payload
+pointers, body/header digests, redacted header previews, and delivery/run
+correlation for accepted, rejected, and duplicate intake paths.
 
 ## v0.6.4 (2026-06-28)
 
