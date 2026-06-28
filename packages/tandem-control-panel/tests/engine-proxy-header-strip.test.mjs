@@ -260,3 +260,97 @@ test("control panel proxies OAuth callbacks without a panel session", async (t) 
   assert.equal(forwarded?.xToken, engineToken);
   assert.equal(forwarded?.cookie, "");
 });
+
+test("control panel proxies automation webhooks without a panel session", async (t) => {
+  const enginePort = await getFreePort();
+  const panelPort = await getFreePort();
+  const engineToken = "engine-token";
+  const seenRequests = [];
+
+  const fakeEngine = await new Promise((resolve) => {
+    const server = createServer(async (req, res) => {
+      const url = new URL(req.url || "/", `http://127.0.0.1:${enginePort}`);
+      let body = "";
+      for await (const chunk of req) {
+        body += chunk.toString("utf8");
+      }
+      seenRequests.push({
+        path: url.pathname,
+        search: url.search,
+        method: req.method,
+        auth: String(req.headers.authorization || ""),
+        xToken: String(req.headers["x-tandem-token"] || ""),
+        cookie: String(req.headers.cookie || ""),
+        signature: String(req.headers["x-tandem-webhook-signature"] || ""),
+        eventId: String(req.headers["x-tandem-webhook-event-id"] || ""),
+        forwardedHost: String(req.headers["x-forwarded-host"] || ""),
+        forwardedProto: String(req.headers["x-forwarded-proto"] || ""),
+        body,
+      });
+
+      if (url.pathname === "/global/health") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ready: true, healthy: true, version: "fake-engine" }));
+        return;
+      }
+      if (url.pathname === "/webhooks/automations/whpub_test") {
+        res.writeHead(202, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, status: "accepted" }));
+        return;
+      }
+
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "not found" }));
+    });
+    server.listen(enginePort, "127.0.0.1", () => resolve(server));
+  });
+  t.after(() => fakeEngine.close());
+
+  const baseUrl = `http://127.0.0.1:${panelPort}`;
+  const panel = spawn(process.execPath, ["bin/setup.js"], {
+    cwd: new URL("..", import.meta.url),
+    env: {
+      ...process.env,
+      TANDEM_CONTROL_PANEL_PORT: String(panelPort),
+      TANDEM_CONTROL_PANEL_PUBLIC_URL: "https://testing.tandem.ac",
+      TANDEM_ENGINE_URL: `http://127.0.0.1:${enginePort}`,
+      TANDEM_CONTROL_PANEL_AUTO_START_ENGINE: "0",
+      TANDEM_API_TOKEN: engineToken,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  t.after(() => {
+    if (!panel.killed) panel.kill("SIGTERM");
+  });
+
+  await waitForReady(baseUrl);
+
+  const response = await request(
+    baseUrl,
+    "/api/engine/webhooks/automations/whpub_test?source=provider",
+    {
+      method: "POST",
+      cookie: "tcp_sid=browser-session-should-not-forward",
+      headers: {
+        authorization: "Bearer browser-token-should-not-forward",
+        "x-tandem-token": "browser-token-should-not-forward",
+        "x-tandem-webhook-signature": "t=123,v1=abc",
+        "x-tandem-webhook-event-id": "evt-public-proxy",
+      },
+      body: { ok: true },
+    }
+  );
+  assert.equal(response.status, 202);
+
+  const forwarded = seenRequests.find((row) => row.path === "/webhooks/automations/whpub_test");
+  assert.equal(forwarded?.method, "POST");
+  assert.equal(forwarded?.search, "?source=provider");
+  assert.equal(forwarded?.auth, "");
+  assert.equal(forwarded?.xToken, "");
+  assert.equal(forwarded?.cookie, "");
+  assert.equal(forwarded?.signature, "t=123,v1=abc");
+  assert.equal(forwarded?.eventId, "evt-public-proxy");
+  assert.equal(forwarded?.forwardedHost, "testing.tandem.ac");
+  assert.equal(forwarded?.forwardedProto, "https");
+  assert.equal(forwarded?.body, JSON.stringify({ ok: true }));
+});

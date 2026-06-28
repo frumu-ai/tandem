@@ -24,10 +24,15 @@ const AUTOMATION_WEBHOOK_EVENT_ID_HEADERS: &[&str] = &[
 ];
 
 pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
-    router.route(
-        "/webhooks/automations/{public_path_token}",
-        post(automation_webhook_intake),
-    )
+    router
+        .route(
+            "/webhooks/automations/{public_path_token}",
+            post(automation_webhook_intake),
+        )
+        .route(
+            "/api/engine/webhooks/automations/{public_path_token}",
+            post(automation_webhook_intake),
+        )
 }
 
 async fn automation_webhook_intake(

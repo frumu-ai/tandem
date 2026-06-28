@@ -97,9 +97,25 @@ fn webhook_request(
     event_id: &str,
     now_ms: u64,
 ) -> Request<Body> {
+    webhook_request_at(
+        format!("/webhooks/automations/{public_path_token}"),
+        secret,
+        body,
+        event_id,
+        now_ms,
+    )
+}
+
+fn webhook_request_at(
+    uri: impl Into<String>,
+    secret: Option<&str>,
+    body: &'static [u8],
+    event_id: &str,
+    now_ms: u64,
+) -> Request<Body> {
     let mut builder = Request::builder()
         .method("POST")
-        .uri(format!("/webhooks/automations/{public_path_token}"))
+        .uri(uri.into())
         .header("content-type", "application/json")
         .header("x-tandem-webhook-event-id", event_id);
     if let Some(secret) = secret {
@@ -224,6 +240,41 @@ async fn public_automation_webhook_rejects_unsigned_request_without_creating_run
         deliveries[0].rejection_reason_code.as_deref(),
         Some("missing_signature")
     );
+}
+
+#[tokio::test]
+async fn public_automation_webhook_accepts_hosted_prefixed_path_without_transport_auth() {
+    let state = test_state().await;
+    state.set_api_token(Some("tk_test".to_string())).await;
+    let tenant_context = tenant("org-a", "workspace-a");
+    let created = setup_webhook(&state, "automation-webhook-prefixed", &tenant_context).await;
+    let app = app_router(state.clone());
+    let body = br#"{"ok":true}"#;
+    let now = crate::now_ms();
+
+    let resp = app
+        .oneshot(webhook_request_at(
+            format!(
+                "/api/engine/webhooks/automations/{}",
+                created.trigger.public_path_token
+            ),
+            Some(&created.secret),
+            body,
+            "evt-prefixed",
+            now,
+        ))
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+    let deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+        )
+        .await;
+    assert_eq!(deliveries.len(), 1);
+    assert!(deliveries[0].queued_run_id.is_some());
 }
 
 #[tokio::test]
