@@ -225,6 +225,39 @@ const parseRunId = (payload: JsonObject): string => {
   throw new Error("Run ID missing in engine response");
 };
 
+const hasOwn = (value: object, key: string): boolean =>
+  Object.prototype.hasOwnProperty.call(value, key);
+
+type PayloadAlias = readonly [snakeCase: string, camelCase: string];
+
+const webhookTriggerCreateAliases = [
+  ["provider_event_kind", "providerEventKind"],
+  ["owning_org_unit_id", "owningOrgUnitId"],
+  ["resource_scope", "resourceScope"],
+  ["default_data_class", "defaultDataClass"],
+  ["default_risk_tier", "defaultRiskTier"],
+] as const satisfies readonly PayloadAlias[];
+
+const webhookTriggerUpdateAliases = [
+  ["provider_event_kind", "providerEventKind"],
+  ["default_data_class", "defaultDataClass"],
+  ["default_risk_tier", "defaultRiskTier"],
+] as const satisfies readonly PayloadAlias[];
+
+const normalizeWebhookTriggerPayload = (
+  input: AutomationWebhookTriggerCreateInput | AutomationWebhookTriggerUpdateInput,
+  aliases: readonly PayloadAlias[]
+): Record<string, unknown> => {
+  const payload: Record<string, unknown> = { ...(input as Record<string, unknown>) };
+  for (const [snakeCase, camelCase] of aliases) {
+    if (payload[snakeCase] === undefined && hasOwn(payload, camelCase)) {
+      payload[snakeCase] = payload[camelCase];
+    }
+    delete payload[camelCase];
+  }
+  return payload;
+};
+
 type RequestInitWithTimeout = RequestInit & {
   timeoutMs?: number;
 };
@@ -3382,7 +3415,12 @@ class AutomationsV2 {
   ): Promise<AutomationWebhookTriggerSecretResponse> {
     return this.req<AutomationWebhookTriggerSecretResponse>(
       `/automations/v2/${encodeURIComponent(id)}/webhook-triggers`,
-      { method: "POST", body: JSON.stringify(input) }
+      {
+        method: "POST",
+        body: JSON.stringify(
+          normalizeWebhookTriggerPayload(input, webhookTriggerCreateAliases)
+        ),
+      }
     );
   }
 
@@ -3402,7 +3440,12 @@ class AutomationsV2 {
   ): Promise<AutomationWebhookTriggerResponse> {
     return this.req<AutomationWebhookTriggerResponse>(
       `/automations/v2/${encodeURIComponent(id)}/webhook-triggers/${encodeURIComponent(triggerId)}`,
-      { method: "PATCH", body: JSON.stringify(input) }
+      {
+        method: "PATCH",
+        body: JSON.stringify(
+          normalizeWebhookTriggerPayload(input, webhookTriggerUpdateAliases)
+        ),
+      }
     );
   }
 

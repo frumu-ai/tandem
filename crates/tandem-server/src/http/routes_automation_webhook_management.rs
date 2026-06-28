@@ -6,7 +6,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tandem_types::{
-    AccessEffect, AccessPermission, DataClass, PrincipalRef, RequestPrincipal, ResourceScope,
+    AccessDecision, AccessPermission, DataClass, PrincipalRef, RequestPrincipal, ResourceScope,
     TenantContext, ToolRiskTier, VerifiedTenantContext,
 };
 
@@ -303,19 +303,23 @@ fn strict_scope_allows(
     verified: &VerifiedTenantContext,
     scope: &ResourceScope,
     permission: AccessPermission,
+    data_class: DataClass,
 ) -> bool {
     let Some(strict) = verified.strict_projection.as_ref() else {
         return false;
     };
-    if strict.resource_scope.contains(&scope.root) {
+    let now_ms = crate::now_ms();
+    let requested = strict.evaluate_access(&scope.root, permission, data_class, now_ms);
+    if requested.decision == AccessDecision::Allow {
         return true;
     }
-    strict.grants.iter().any(|grant| {
-        grant.effect == AccessEffect::Allow
-            && grant.resource.applies_to(&scope.root)
-            && (grant.permissions.contains(&permission)
-                || grant.permissions.contains(&AccessPermission::Admin))
-    })
+    if permission == AccessPermission::Admin {
+        return false;
+    }
+    strict
+        .evaluate_access(&scope.root, AccessPermission::Admin, data_class, now_ms)
+        .decision
+        == AccessDecision::Allow
 }
 
 fn trigger_scope_allowed(
@@ -340,7 +344,7 @@ fn trigger_scope_allowed(
         }
     }
     if let Some(scope) = trigger.resource_scope.as_ref() {
-        return strict_scope_allows(verified, scope, permission);
+        return strict_scope_allows(verified, scope, permission, trigger.default_data_class);
     }
     true
 }
@@ -348,6 +352,7 @@ fn trigger_scope_allowed(
 fn requested_scope_allowed(
     owning_org_unit_id: Option<&str>,
     resource_scope: Option<&ResourceScope>,
+    data_class: DataClass,
     verified: Option<&VerifiedTenantContext>,
 ) -> bool {
     let Some(verified) = verified else {
@@ -365,8 +370,8 @@ fn requested_scope_allowed(
         }
     }
     if let Some(scope) = resource_scope {
-        return strict_scope_allows(verified, scope, AccessPermission::Admin)
-            || strict_scope_allows(verified, scope, AccessPermission::Edit);
+        return strict_scope_allows(verified, scope, AccessPermission::Admin, data_class)
+            || strict_scope_allows(verified, scope, AccessPermission::Edit, data_class);
     }
     true
 }
@@ -667,9 +672,11 @@ async fn create_webhook_trigger(
         false,
     )
     .await?;
+    let default_data_class = input.default_data_class.unwrap_or(DataClass::Internal);
     if !requested_scope_allowed(
         input.owning_org_unit_id.as_deref(),
         input.resource_scope.as_ref(),
+        default_data_class,
         verified,
     ) {
         return Err(access_denied());
@@ -686,7 +693,7 @@ async fn create_webhook_trigger(
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
             resource_scope: input.resource_scope,
-            default_data_class: input.default_data_class.unwrap_or(DataClass::Internal),
+            default_data_class,
             default_risk_tier: input.default_risk_tier,
             name: input.name,
             provider: input.provider,
@@ -1027,4 +1034,122 @@ async fn get_webhook_delivery(
     Ok(Json(json!({
         "delivery": delivery_value(&delivery),
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tandem_types::{
+        AssertionMetadata, AuthorityChain, DataBoundary, GrantSource, HumanActor, ResourceKind,
+        ResourceRef, ScopedGrant, StrictTenantContext,
+    };
+
+    fn verified_with_strict_grant(
+        permissions: Vec<AccessPermission>,
+        data_classes: Vec<DataClass>,
+    ) -> (VerifiedTenantContext, ResourceScope) {
+        let tenant_context =
+            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "actor-a");
+        let principal = PrincipalRef::human_user("actor-a");
+        let request_principal = RequestPrincipal::authenticated_user("actor-a", "tandem-web");
+        let authority_chain = AuthorityChain::from_request(request_principal);
+        let resource = ResourceRef::new(
+            "org-a",
+            "workspace-a",
+            ResourceKind::Project,
+            "automation-project",
+        );
+        let scope = ResourceScope::root(resource.clone());
+        let grant = ScopedGrant::new(
+            "grant-webhook-scope",
+            principal.clone(),
+            resource,
+            GrantSource::Delegation,
+        )
+        .with_permissions(permissions)
+        .with_data_classes(data_classes.clone());
+        let strict_projection = StrictTenantContext::new(
+            tenant_context.clone(),
+            principal,
+            authority_chain.clone(),
+            scope.clone(),
+            AssertionMetadata::new(
+                "tandem-web",
+                "tandem-runtime",
+                1_000,
+                9_999_999_999_999,
+                "assertion-webhook-scope",
+            ),
+        )
+        .with_grants(vec![grant])
+        .with_data_boundary(DataBoundary::allow(data_classes));
+        let verified = VerifiedTenantContext {
+            tenant_context,
+            human_actor: HumanActor::tandem_user("actor-a"),
+            authority_chain,
+            roles: Vec::new(),
+            org_units: Vec::new(),
+            capabilities: Vec::new(),
+            policy_version: None,
+            strict_projection: Some(strict_projection),
+            issuer: "tandem-web".to_string(),
+            audience: "tandem-runtime".to_string(),
+            issued_at_ms: 1_000,
+            expires_at_ms: 9_999_999_999_999,
+            assertion_id: "assertion-webhook-scope".to_string(),
+            assertion_key_id: None,
+        };
+        (verified, scope)
+    }
+
+    #[test]
+    fn strict_scope_allows_requires_matching_permission_grant() {
+        let (viewer, scope) =
+            verified_with_strict_grant(vec![AccessPermission::View], vec![DataClass::Internal]);
+        assert!(strict_scope_allows(
+            &viewer,
+            &scope,
+            AccessPermission::View,
+            DataClass::Internal,
+        ));
+        assert!(!strict_scope_allows(
+            &viewer,
+            &scope,
+            AccessPermission::Edit,
+            DataClass::Internal,
+        ));
+        assert!(!strict_scope_allows(
+            &viewer,
+            &scope,
+            AccessPermission::Admin,
+            DataClass::Internal,
+        ));
+
+        let (admin, scope) =
+            verified_with_strict_grant(vec![AccessPermission::Admin], vec![DataClass::Internal]);
+        assert!(strict_scope_allows(
+            &admin,
+            &scope,
+            AccessPermission::Edit,
+            DataClass::Internal,
+        ));
+        assert!(strict_scope_allows(
+            &admin,
+            &scope,
+            AccessPermission::Admin,
+            DataClass::Internal,
+        ));
+    }
+
+    #[test]
+    fn strict_scope_allows_requires_matching_data_class() {
+        let (verified, scope) =
+            verified_with_strict_grant(vec![AccessPermission::Admin], vec![DataClass::Internal]);
+        assert!(!strict_scope_allows(
+            &verified,
+            &scope,
+            AccessPermission::Admin,
+            DataClass::Confidential,
+        ));
+    }
 }
