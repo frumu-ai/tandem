@@ -74,6 +74,22 @@ async fn setup_webhook(
         .expect("create trigger")
 }
 
+async fn set_automation_status(
+    state: &AppState,
+    automation_id: &str,
+    status: crate::AutomationV2Status,
+) {
+    let mut automation = state
+        .get_automation_v2(automation_id)
+        .await
+        .expect("automation");
+    automation.status = status;
+    state
+        .put_automation_v2(automation)
+        .await
+        .expect("update automation");
+}
+
 fn webhook_request(
     public_path_token: &str,
     secret: Option<&str>,
@@ -139,6 +155,7 @@ async fn public_automation_webhook_accepts_signed_request_without_transport_auth
         .await
         .expect("queued run");
     assert_eq!(run.trigger_type, "webhook");
+    assert_eq!(run.automation_id, "automation-webhook-a");
     assert_eq!(run.tenant_context.org_id, tenant_context.org_id);
     assert_eq!(run.tenant_context.workspace_id, tenant_context.workspace_id);
     let metadata = run
@@ -259,4 +276,136 @@ async fn public_automation_webhook_duplicate_body_digest_does_not_queue_second_r
         delivery.status,
         crate::AutomationWebhookDeliveryStatus::Duplicate
     )));
+}
+
+#[tokio::test]
+async fn public_automation_webhook_disabled_trigger_does_not_queue_run() {
+    let state = test_state().await;
+    state.set_api_token(Some("tk_test".to_string())).await;
+    let tenant_context = tenant("org-a", "workspace-a");
+    let created = setup_webhook(&state, "automation-webhook-disabled", &tenant_context).await;
+    state
+        .disable_automation_webhook_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+            Some("actor-a".to_string()),
+        )
+        .await
+        .expect("disable trigger");
+    let app = app_router(state.clone());
+    let body = br#"{"ok":true}"#;
+
+    let resp = app
+        .oneshot(webhook_request(
+            &created.trigger.public_path_token,
+            Some(&created.secret),
+            body,
+            "evt-disabled",
+            crate::now_ms(),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::GONE);
+    assert!(state.automation_v2_runs.read().await.is_empty());
+
+    let deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+        )
+        .await;
+    assert_eq!(deliveries.len(), 1);
+    assert_eq!(
+        deliveries[0].status,
+        crate::AutomationWebhookDeliveryStatus::Disabled
+    );
+    assert_eq!(
+        deliveries[0].rejection_reason_code.as_deref(),
+        Some("trigger_disabled")
+    );
+}
+
+#[tokio::test]
+async fn public_automation_webhook_inactive_automation_does_not_queue_run() {
+    let state = test_state().await;
+    state.set_api_token(Some("tk_test".to_string())).await;
+    let tenant_context = tenant("org-a", "workspace-a");
+    let created = setup_webhook(&state, "automation-webhook-inactive", &tenant_context).await;
+    set_automation_status(
+        &state,
+        "automation-webhook-inactive",
+        crate::AutomationV2Status::Draft,
+    )
+    .await;
+    let app = app_router(state.clone());
+    let body = br#"{"ok":true}"#;
+
+    let resp = app
+        .oneshot(webhook_request(
+            &created.trigger.public_path_token,
+            Some(&created.secret),
+            body,
+            "evt-inactive",
+            crate::now_ms(),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    assert!(state.automation_v2_runs.read().await.is_empty());
+
+    let deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+        )
+        .await;
+    assert_eq!(deliveries.len(), 1);
+    assert_eq!(
+        deliveries[0].rejection_reason_code.as_deref(),
+        Some("automation_inactive")
+    );
+}
+
+#[tokio::test]
+async fn public_automation_webhook_tenant_mismatch_does_not_queue_run() {
+    let state = test_state().await;
+    state.set_api_token(Some("tk_test".to_string())).await;
+    let tenant_a = tenant("org-a", "workspace-a");
+    let tenant_b = tenant("org-b", "workspace-b");
+    let created = setup_webhook(&state, "automation-webhook-tenant-mismatch", &tenant_a).await;
+    state
+        .put_automation_v2(minimal_automation(
+            "automation-webhook-tenant-mismatch",
+            &tenant_b,
+        ))
+        .await
+        .expect("replace automation with tenant b");
+    let app = app_router(state.clone());
+    let body = br#"{"tenant_id":"org-b","automation_id":"automation-webhook-tenant-mismatch"}"#;
+
+    let resp = app
+        .oneshot(webhook_request(
+            &created.trigger.public_path_token,
+            Some(&created.secret),
+            body,
+            "evt-tenant-mismatch",
+            crate::now_ms(),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    assert!(state.automation_v2_runs.read().await.is_empty());
+
+    let tenant_a_deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(&tenant_a, &created.trigger.trigger_id)
+        .await;
+    assert_eq!(tenant_a_deliveries.len(), 1);
+    assert_eq!(
+        tenant_a_deliveries[0].rejection_reason_code.as_deref(),
+        Some("automation_tenant_mismatch")
+    );
+    assert!(state
+        .list_automation_webhook_deliveries_for_trigger(&tenant_b, &created.trigger.trigger_id)
+        .await
+        .is_empty());
 }

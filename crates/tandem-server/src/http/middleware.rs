@@ -297,7 +297,11 @@ fn is_public_oauth_callback_path(path: &str) -> bool {
 }
 
 fn is_public_automation_webhook_path(path: &str) -> bool {
-    path.starts_with("/webhooks/automations/")
+    let trimmed = path
+        .strip_prefix("/api/engine")
+        .filter(|suffix| suffix.starts_with('/'))
+        .unwrap_or(path);
+    trimmed.starts_with("/webhooks/automations/")
 }
 
 fn request_transport_token_authorized(
