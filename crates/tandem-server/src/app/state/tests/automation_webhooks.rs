@@ -1,7 +1,8 @@
 use super::*;
 use crate::app::state::{
     automation_webhook_body_digest, automation_webhook_signature_header,
-    AutomationWebhookTriggerCreateInput, AutomationWebhookVerificationError,
+    AutomationWebhookQueueResult, AutomationWebhookTriggerCreateInput,
+    AutomationWebhookVerificationError,
 };
 
 fn tenant(org: &str, workspace: &str) -> TenantContext {
@@ -352,17 +353,20 @@ async fn webhook_signature_and_replay_scope_include_tenant_and_trigger() {
     let distinct_now = now + 1;
     let distinct_signature =
         automation_webhook_signature_header(&trigger_a.secret, distinct_now, body);
-    state
-        .verify_automation_webhook_request(
-            &trigger_a.trigger.public_path_token,
-            Some(&distinct_signature),
-            body,
-            Some("evt-distinct".to_string()),
-            distinct_now,
-            300_000,
-        )
-        .await
-        .expect("same body with a distinct provider event id is accepted");
+    assert_eq!(
+        state
+            .verify_automation_webhook_request(
+                &trigger_a.trigger.public_path_token,
+                Some(&distinct_signature),
+                body,
+                Some("evt-distinct".to_string()),
+                distinct_now,
+                300_000,
+            )
+            .await
+            .expect_err("same body with a distinct unsigned event id is a replay"),
+        AutomationWebhookVerificationError::ReplayDetected
+    );
 
     let body_fallback_now = now + 2;
     let body_fallback_signature =
@@ -412,4 +416,115 @@ async fn webhook_signature_and_replay_scope_include_tenant_and_trigger() {
         )
         .await
         .expect("tenant b can use same provider event id independently");
+}
+
+#[tokio::test]
+async fn webhook_queue_rejects_automation_tenant_mismatch_without_run() {
+    let state = ready_test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a");
+    let tenant_b = tenant("org-b", "workspace-b");
+    insert_test_automation(&state, "automation-a", &tenant_a).await;
+    let created = state
+        .create_automation_webhook_trigger(create_input("automation-a", tenant_a.clone()))
+        .await
+        .expect("create webhook trigger");
+
+    let mut tenant_b_automation = AutomationSpecBuilder::new("automation-a").build();
+    tenant_b_automation.set_tenant_context(&tenant_b);
+    state
+        .automations_v2
+        .write()
+        .await
+        .insert("automation-a".to_string(), tenant_b_automation);
+
+    let body = br#"{"ok":true}"#;
+    let now = now_ms();
+    let signature = automation_webhook_signature_header(&created.secret, now, body);
+    let verified = state
+        .verify_automation_webhook_request(
+            &created.trigger.public_path_token,
+            Some(&signature),
+            body,
+            Some("evt-tenant-mismatch".to_string()),
+            now,
+            300_000,
+        )
+        .await
+        .expect("verified request");
+
+    let outcome = state
+        .queue_automation_v2_run_from_webhook_delivery(verified, json!({"ok": true}))
+        .await
+        .expect("queue outcome");
+    let delivery = match outcome {
+        AutomationWebhookQueueResult::Rejected {
+            delivery,
+            reason_code,
+        } => {
+            assert_eq!(reason_code, "automation_tenant_mismatch");
+            delivery
+        }
+        other => panic!("expected tenant mismatch rejection, got {other:?}"),
+    };
+    assert_eq!(delivery.status, AutomationWebhookDeliveryStatus::Rejected);
+    assert_eq!(
+        delivery.rejection_reason_code.as_deref(),
+        Some("automation_tenant_mismatch")
+    );
+    assert!(state.automation_v2_runs.read().await.is_empty());
+}
+
+#[tokio::test]
+async fn webhook_queue_serializes_duplicate_delivery_race() {
+    let state = ready_test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a");
+    insert_test_automation(&state, "automation-race", &tenant_a).await;
+    let created = state
+        .create_automation_webhook_trigger(create_input("automation-race", tenant_a.clone()))
+        .await
+        .expect("create webhook trigger");
+
+    let body = br#"{"ok":true}"#;
+    let now = now_ms();
+    let signature = automation_webhook_signature_header(&created.secret, now, body);
+    let verified = state
+        .verify_automation_webhook_request(
+            &created.trigger.public_path_token,
+            Some(&signature),
+            body,
+            Some("evt-race".to_string()),
+            now,
+            300_000,
+        )
+        .await
+        .expect("verified request");
+    let preview = json!({"ok": true});
+
+    let (first, second) = tokio::join!(
+        state.queue_automation_v2_run_from_webhook_delivery(verified.clone(), preview.clone()),
+        state.queue_automation_v2_run_from_webhook_delivery(verified, preview),
+    );
+    let outcomes = vec![
+        first.expect("first outcome"),
+        second.expect("second outcome"),
+    ];
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, AutomationWebhookQueueResult::Accepted { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, AutomationWebhookQueueResult::Duplicate { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(state.automation_v2_runs.read().await.len(), 1);
+    let deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(&tenant_a, &created.trigger.trigger_id)
+        .await;
+    assert_eq!(deliveries.len(), 2);
 }
