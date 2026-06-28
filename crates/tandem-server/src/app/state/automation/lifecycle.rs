@@ -56,10 +56,18 @@ pub fn automation_last_activity_at_ms(run: &AutomationV2RunRecord) -> u64 {
     run.checkpoint
         .lifecycle_history
         .iter()
+        .filter(|record| automation_lifecycle_event_counts_as_activity(&record.event))
         .map(|record| record.recorded_at_ms)
         .max()
         .or(run.started_at_ms)
         .unwrap_or(run.created_at_ms)
+}
+
+fn automation_lifecycle_event_counts_as_activity(event: &str) -> bool {
+    !matches!(
+        event,
+        "run_execution_claimed" | "run_execution_claim_expired_requeued"
+    )
 }
 
 pub fn automation_in_progress_node_ids(run: &AutomationV2RunRecord) -> Vec<String> {
@@ -446,6 +454,8 @@ mod tests {
             },
             runtime_context: None,
             automation_snapshot: None,
+            execution_claim: None,
+            execution_claim_epoch: 0,
             pause_reason: None,
             resume_reason: None,
             detail: None,
@@ -503,6 +513,33 @@ mod tests {
             Some("guided")
         );
         assert_eq!(metadata.get("node_id").and_then(Value::as_str), Some("x"));
+    }
+
+    #[test]
+    fn last_activity_ignores_execution_claim_bookkeeping() {
+        let mut run = run_with_profile(ExecutionProfile::Strict);
+        run.created_at_ms = 10;
+        run.started_at_ms = Some(20);
+        run.checkpoint
+            .lifecycle_history
+            .push(AutomationLifecycleRecord {
+                event: "node_started".to_string(),
+                recorded_at_ms: 30,
+                reason: None,
+                stop_kind: None,
+                metadata: Some(json!({ "node_id": "draft" })),
+            });
+        run.checkpoint
+            .lifecycle_history
+            .push(AutomationLifecycleRecord {
+                event: "run_execution_claimed".to_string(),
+                recorded_at_ms: 10_000,
+                reason: None,
+                stop_kind: None,
+                metadata: None,
+            });
+
+        assert_eq!(automation_last_activity_at_ms(&run), 30);
     }
 
     #[test]

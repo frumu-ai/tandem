@@ -1170,6 +1170,8 @@ impl AppState {
             },
             runtime_context,
             automation_snapshot: Some(snapshot),
+            execution_claim: None,
+            execution_claim_epoch: 0,
             pause_reason: None,
             resume_reason: None,
             detail: None,
@@ -1259,6 +1261,8 @@ impl AppState {
             },
             runtime_context,
             automation_snapshot: Some(snapshot),
+            execution_claim: None,
+            execution_claim_epoch: 0,
             pause_reason: None,
             resume_reason: None,
             detail: Some("dry_run".to_string()),
@@ -1442,7 +1446,21 @@ impl AppState {
         last_activity_at_ms
     }
 
+    fn automation_run_has_unexpired_launch_claim(
+        run: &AutomationV2RunRecord,
+        now_ms: u64,
+    ) -> bool {
+        run.status == AutomationRunStatus::Running
+            && run.active_session_ids.is_empty()
+            && run.active_instance_ids.is_empty()
+            && run
+                .execution_claim
+                .as_ref()
+                .is_some_and(|claim| !claim.is_expired(now_ms))
+    }
+
     pub async fn reap_stale_running_automation_runs(&self, stale_after_ms: u64) -> usize {
+        let _ = self.reclaim_abandoned_automation_v2_run_leases().await;
         let now = now_ms();
         let candidate_runs = self
             .automation_v2_runs
@@ -1450,6 +1468,7 @@ impl AppState {
             .await
             .values()
             .filter(|run| run.status == AutomationRunStatus::Running)
+            .filter(|run| !Self::automation_run_has_unexpired_launch_claim(run, now))
             .cloned()
             .collect::<Vec<_>>();
         let mut runs = Vec::new();
