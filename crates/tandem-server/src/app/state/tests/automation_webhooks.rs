@@ -113,6 +113,9 @@ async fn webhook_triggers_and_deliveries_are_tenant_scoped() {
         body_digest: automation_webhook_body_digest(br#"{"ok":true}"#),
         status: AutomationWebhookDeliveryStatus::Accepted,
         rejection_reason_code: None,
+        verification_scheme: None,
+        verification_provider: None,
+        verification_reason_code: None,
         queued_run_id: None,
         received_at_ms: 1_000,
         accepted_at_ms: Some(1_000),
@@ -134,6 +137,9 @@ async fn webhook_triggers_and_deliveries_are_tenant_scoped() {
         body_digest: automation_webhook_body_digest(br#"{"ok":true}"#),
         status: AutomationWebhookDeliveryStatus::Accepted,
         rejection_reason_code: None,
+        verification_scheme: None,
+        verification_provider: None,
+        verification_reason_code: None,
         queued_run_id: None,
         received_at_ms: 1_000,
         accepted_at_ms: Some(1_000),
@@ -242,6 +248,21 @@ async fn webhook_signature_verification_and_rotation_fail_closed() {
         AutomationWebhookVerificationError::MissingSignature
     );
 
+    assert_eq!(
+        state
+            .verify_automation_webhook_request(
+                &created.trigger.public_path_token,
+                Some("t=not-a-timestamp,v1=not-hex"),
+                body,
+                Some("evt-malformed".to_string()),
+                now,
+                300_000,
+            )
+            .await
+            .expect_err("malformed signature fails"),
+        AutomationWebhookVerificationError::MalformedSignature
+    );
+
     let bad_header = automation_webhook_signature_header("wrong-secret", now, body);
     assert_eq!(
         state
@@ -288,6 +309,8 @@ async fn webhook_signature_verification_and_rotation_fail_closed() {
         .await
         .expect("valid signature verifies");
     assert_eq!(verified.trigger.trigger_id, created.trigger.trigger_id);
+    assert_eq!(verified.verification.provider, "generic");
+    assert_eq!(verified.verification.reason_code, "verified");
 
     let rotated = state
         .rotate_automation_webhook_secret(
@@ -383,6 +406,9 @@ async fn webhook_signature_and_replay_scope_include_tenant_and_trigger() {
             body_digest: verified_a.body_digest.clone(),
             status: AutomationWebhookDeliveryStatus::Accepted,
             rejection_reason_code: None,
+            verification_scheme: Some(verified_a.verification.scheme.clone()),
+            verification_provider: Some(verified_a.verification.provider.clone()),
+            verification_reason_code: Some(verified_a.verification.reason_code.clone()),
             queued_run_id: None,
             received_at_ms: verified_a.received_at_ms,
             accepted_at_ms: Some(verified_a.received_at_ms),
@@ -551,6 +577,9 @@ async fn webhook_queue_treats_accepted_marker_without_run_as_duplicate() {
             body_digest: verified.body_digest.clone(),
             status: AutomationWebhookDeliveryStatus::Accepted,
             rejection_reason_code: None,
+            verification_scheme: Some(verified.verification.scheme.clone()),
+            verification_provider: Some(verified.verification.provider.clone()),
+            verification_reason_code: Some(verified.verification.reason_code.clone()),
             queued_run_id: None,
             received_at_ms: verified.received_at_ms,
             accepted_at_ms: Some(verified.received_at_ms),

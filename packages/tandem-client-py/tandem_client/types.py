@@ -1634,6 +1634,16 @@ class AutomationWebhookDelivery(BaseModel):
     rejection_reason_code: Optional[str] = Field(
         None, validation_alias=AliasChoices("rejectionReasonCode", "rejection_reason_code")
     )
+    verification_scheme: Optional[str] = Field(
+        None, validation_alias=AliasChoices("verificationScheme", "verification_scheme")
+    )
+    verification_provider: Optional[str] = Field(
+        None, validation_alias=AliasChoices("verificationProvider", "verification_provider")
+    )
+    verification_reason_code: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("verificationReasonCode", "verification_reason_code"),
+    )
     queued_run_id: Optional[str] = Field(
         None, validation_alias=AliasChoices("queuedRunID", "queuedRunId", "queued_run_id")
     )
