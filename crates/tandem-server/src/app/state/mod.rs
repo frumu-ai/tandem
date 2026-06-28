@@ -84,17 +84,23 @@ use crate::{
 pub mod approval_message_map;
 mod automation_v2_run_store;
 mod automation_v2_startup_recovery;
+mod automation_webhook_delivery;
+mod automation_webhook_idempotency;
 mod automation_webhook_store;
 pub mod channel_user_capabilities;
 pub mod enterprise_state;
+mod idempotency;
 mod oauth_state;
 mod prompt_context_blocks;
 mod prompt_context_hook;
 mod prompt_memory_context;
 
 pub(crate) use automation_v2_run_store::*;
+pub(crate) use automation_webhook_delivery::*;
+pub(crate) use automation_webhook_idempotency::*;
 pub(crate) use automation_webhook_store::*;
 pub use enterprise_state::EnterpriseState;
+pub(crate) use idempotency::*;
 pub use oauth_state::OAuthState;
 use prompt_context_hook::*;
 
@@ -164,10 +170,13 @@ pub struct AppState {
         Arc<RwLock<std::collections::HashMap<String, AutomationWebhookDeliveryRecord>>>,
     pub(crate) automation_webhook_secret_material:
         Arc<RwLock<std::collections::HashMap<String, AutomationWebhookSecretMaterialRecord>>>,
+    pub(crate) idempotency_keys:
+        Arc<RwLock<std::collections::HashMap<String, IdempotencyKeyRecord>>>,
     pub automation_scheduler: Arc<RwLock<automation::AutomationScheduler>>,
     pub automation_scheduler_stopping: Arc<AtomicBool>,
     pub automations_v2_persistence: Arc<tokio::sync::Mutex<()>>,
     pub(crate) automation_webhook_persistence: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) idempotency_persistence: Arc<tokio::sync::Mutex<()>>,
     pub workflow_plans: Arc<RwLock<std::collections::HashMap<String, WorkflowPlan>>>,
     pub workflow_plan_drafts:
         Arc<RwLock<std::collections::HashMap<String, WorkflowPlanDraftRecord>>>,
@@ -228,6 +237,7 @@ pub struct AppState {
     pub automation_webhook_triggers_path: PathBuf,
     pub automation_webhook_deliveries_path: PathBuf,
     pub automation_webhook_secret_material_path: PathBuf,
+    pub(crate) idempotency_keys_path: PathBuf,
     pub runtime_events_path: PathBuf,
     pub optimization_campaigns_path: PathBuf,
     pub optimization_experiments_path: PathBuf,

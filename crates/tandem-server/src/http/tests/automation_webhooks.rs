@@ -378,14 +378,32 @@ async fn public_automation_webhook_duplicate_body_digest_does_not_queue_second_r
         )
         .await;
     assert_eq!(deliveries.len(), 2);
-    assert!(deliveries.iter().any(|delivery| matches!(
-        delivery.status,
-        crate::AutomationWebhookDeliveryStatus::Accepted
-    )));
-    assert!(deliveries.iter().any(|delivery| matches!(
-        delivery.status,
-        crate::AutomationWebhookDeliveryStatus::Duplicate
-    )));
+    let accepted = deliveries
+        .iter()
+        .find(|delivery| {
+            matches!(
+                delivery.status,
+                crate::AutomationWebhookDeliveryStatus::Accepted
+            )
+        })
+        .expect("accepted delivery");
+    let duplicate = deliveries
+        .iter()
+        .find(|delivery| {
+            matches!(
+                delivery.status,
+                crate::AutomationWebhookDeliveryStatus::Duplicate
+            )
+        })
+        .expect("duplicate delivery");
+    assert_eq!(
+        duplicate.dedupe_result,
+        Some(crate::AutomationWebhookDedupeResult::Duplicate)
+    );
+    assert_eq!(
+        duplicate.duplicate_of_delivery_id.as_deref(),
+        Some(accepted.delivery_id.as_str())
+    );
 }
 
 #[tokio::test]

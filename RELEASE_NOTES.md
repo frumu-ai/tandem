@@ -10,7 +10,11 @@ foundations. Snapshot-backed automation runs now expose stable definition
 versions and `sha256:` snapshot hashes for future replay and resume checks, and
 restart-interrupted Automation V2 runs are queued for resume when their
 persisted checkpoint is recoverable while corrupt in-flight records continue to
-fail closed.
+fail closed. Automation V2 webhook intake now persists tenant-scoped
+idempotency keys before creating runs, reports accepted/duplicate/conflict
+dedupe outcomes on delivery records and SDK types, and keeps original
+delivery/run correlation available after restarts so provider retries do not
+fan out duplicate automation runs.
 
 ## v0.6.4 (2026-06-28)
 

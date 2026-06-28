@@ -79,6 +79,10 @@ async def test_automation_v2_webhook_trigger_management_routes() -> None:
                         "automation_id": "automation-1",
                         "provider_event_id": "evt-1",
                         "status": "accepted",
+                        "idempotency_key": "idem-key-1",
+                        "idempotency_record_id": "idem-record-1",
+                        "dedupe_result": "accepted",
+                        "dedupe_reason_code": "accepted_provider_event_id",
                         "queued_run_id": "run-1",
                         "sanitized_preview": {"action": "opened"},
                     }
@@ -100,6 +104,10 @@ async def test_automation_v2_webhook_trigger_management_routes() -> None:
                     "automationID": "automation-1",
                     "providerEventID": "evt-1",
                     "status": "accepted",
+                    "idempotencyKey": "idem-key-1",
+                    "idempotencyRecordID": "idem-record-1",
+                    "dedupeResult": "accepted",
+                    "dedupeReasonCode": "accepted_provider_event_id",
                     "queuedRunID": "run-1",
                     "sanitizedPreview": {"action": "opened"},
                 }
@@ -170,7 +178,11 @@ async def test_automation_v2_webhook_trigger_management_routes() -> None:
     assert rotated.new_secret == "whsec_rotated"
     assert deliveries.limit == 10
     assert deliveries.deliveries[0].provider_event_id == "evt-1"
+    assert deliveries.deliveries[0].idempotency_key == "idem-key-1"
+    assert deliveries.deliveries[0].dedupe_reason_code == "accepted_provider_event_id"
     assert delivery.delivery.delivery_id == "delivery-1"
+    assert delivery.delivery.idempotency_record_id == "idem-record-1"
+    assert delivery.delivery.dedupe_result == "accepted"
     assert delivery.delivery.queued_run_id == "run-1"
     assert deleted.ok is True
     assert deleted.trigger_id == "trigger-1"

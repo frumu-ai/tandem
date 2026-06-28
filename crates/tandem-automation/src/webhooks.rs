@@ -118,6 +118,16 @@ pub enum AutomationWebhookDeliveryStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationWebhookDedupeResult {
+    Accepted,
+    Duplicate,
+    Replay,
+    Conflict,
+    IgnoredFeedbackLoop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AutomationWebhookSecretMetadata {
     pub secret_ref: SecretRef,
     pub secret_digest: String,
@@ -192,6 +202,18 @@ pub struct AutomationWebhookDeliveryRecord {
     pub status: AutomationWebhookDeliveryStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rejection_reason_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_record_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedupe_result: Option<AutomationWebhookDedupeResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedupe_reason_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate_of_delivery_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate_of_run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queued_run_id: Option<String>,
     pub received_at_ms: u64,

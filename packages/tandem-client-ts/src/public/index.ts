@@ -2485,6 +2485,18 @@ export interface AutomationWebhookDelivery {
   status?: "received" | "accepted" | "rejected" | "duplicate" | "disabled" | "failed" | string;
   rejection_reason_code?: string | null;
   rejectionReasonCode?: string | null;
+  idempotency_key?: string | null;
+  idempotencyKey?: string | null;
+  idempotency_record_id?: string | null;
+  idempotencyRecordID?: string | null;
+  dedupe_result?: "accepted" | "duplicate" | "replay" | "conflict" | "ignored_feedback_loop" | string | null;
+  dedupeResult?: "accepted" | "duplicate" | "replay" | "conflict" | "ignored_feedback_loop" | string | null;
+  dedupe_reason_code?: string | null;
+  dedupeReasonCode?: string | null;
+  duplicate_of_delivery_id?: string | null;
+  duplicateOfDeliveryID?: string | null;
+  duplicate_of_run_id?: string | null;
+  duplicateOfRunID?: string | null;
   queued_run_id?: string | null;
   queuedRunID?: string | null;
   queued_run_path?: string | null;

@@ -162,6 +162,7 @@ pub async fn test_state() -> AppState {
         root.join("automation_webhooks").join("deliveries.json");
     state.automation_webhook_secret_material_path =
         root.join("automation_webhooks").join("secrets.json");
+    state.idempotency_keys_path = root.join("runtime").join("idempotency_keys.json");
     state.runtime_events_path = root.join("runtime").join("events.jsonl");
     state.optimization_campaigns_path = root.join("optimization_campaigns.json");
     state.optimization_experiments_path = root.join("optimization_experiments.json");
