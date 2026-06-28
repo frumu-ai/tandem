@@ -1453,6 +1453,253 @@ class AutomationV2RunListResponse(BaseModel):
 # ─── Workflow Plans ───────────────────────────────────────────────────────────
 
 
+AutomationWebhookDataClass = Literal[
+    "public",
+    "internal",
+    "confidential",
+    "restricted",
+    "executive",
+    "credential",
+    "regulated",
+    "customer_data",
+    "source_code",
+    "financial_record",
+]
+AutomationWebhookRiskTier = Literal[
+    "read_discover",
+    "internal_write",
+    "external_draft",
+    "external_send",
+    "customer_data_access",
+    "source_code_mutation",
+    "financial_record_access",
+    "credential_admin",
+    "destructive_delete",
+    "money_movement_contract",
+]
+AutomationWebhookDeliveryStatus = Literal[
+    "received",
+    "accepted",
+    "rejected",
+    "duplicate",
+    "disabled",
+    "failed",
+]
+
+
+class AutomationWebhookSecretStatus(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    configured: Optional[bool] = None
+    secret_version: Optional[int] = Field(
+        None, validation_alias=AliasChoices("secretVersion", "secret_version")
+    )
+    created_at_ms: Optional[int] = Field(
+        None, validation_alias=AliasChoices("createdAtMs", "created_at_ms")
+    )
+    rotated_at_ms: Optional[int] = Field(
+        None, validation_alias=AliasChoices("rotatedAtMs", "rotated_at_ms")
+    )
+    rotated_by: Optional[str] = Field(
+        None, validation_alias=AliasChoices("rotatedBy", "rotated_by")
+    )
+
+
+class AutomationWebhookDeliveryCounts(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    total: int = 0
+    received: int = 0
+    accepted: int = 0
+    rejected: int = 0
+    duplicate: int = 0
+    disabled: int = 0
+    failed: int = 0
+
+
+class AutomationWebhookTrigger(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    trigger_id: Optional[str] = Field(
+        None, validation_alias=AliasChoices("triggerID", "triggerId", "trigger_id")
+    )
+    automation_id: Optional[str] = Field(
+        None, validation_alias=AliasChoices("automationID", "automationId", "automation_id")
+    )
+    name: Optional[str] = None
+    provider: Optional[str] = None
+    provider_event_kind: Optional[str] = Field(
+        None, validation_alias=AliasChoices("providerEventKind", "provider_event_kind")
+    )
+    enabled: Optional[bool] = None
+    callback_path: Optional[str] = Field(
+        None, validation_alias=AliasChoices("callbackPath", "callback_path")
+    )
+    callback_url: Optional[str] = Field(
+        None, validation_alias=AliasChoices("callbackUrl", "callback_url")
+    )
+    tenant_label: Optional[str] = Field(
+        None, validation_alias=AliasChoices("tenantLabel", "tenant_label")
+    )
+    owning_org_unit_id: Optional[str] = Field(
+        None, validation_alias=AliasChoices("owningOrgUnitId", "owning_org_unit_id")
+    )
+    resource_scope: Optional[dict[str, Any]] = Field(
+        None, validation_alias=AliasChoices("resourceScope", "resource_scope")
+    )
+    default_data_class: Optional[str] = Field(
+        None, validation_alias=AliasChoices("defaultDataClass", "default_data_class")
+    )
+    default_risk_tier: Optional[str] = Field(
+        None, validation_alias=AliasChoices("defaultRiskTier", "default_risk_tier")
+    )
+    signature_scheme: Optional[str] = Field(
+        None, validation_alias=AliasChoices("signatureScheme", "signature_scheme")
+    )
+    secret_status: Optional[AutomationWebhookSecretStatus] = Field(
+        None, validation_alias=AliasChoices("secretStatus", "secret_status")
+    )
+    delivery_counts: Optional[AutomationWebhookDeliveryCounts] = Field(
+        None, validation_alias=AliasChoices("deliveryCounts", "delivery_counts")
+    )
+    last_received_at_ms: Optional[int] = Field(
+        None, validation_alias=AliasChoices("lastReceivedAtMs", "last_received_at_ms")
+    )
+    last_accepted_at_ms: Optional[int] = Field(
+        None, validation_alias=AliasChoices("lastAcceptedAtMs", "last_accepted_at_ms")
+    )
+    last_rejected_at_ms: Optional[int] = Field(
+        None, validation_alias=AliasChoices("lastRejectedAtMs", "last_rejected_at_ms")
+    )
+    created_at_ms: Optional[int] = Field(
+        None, validation_alias=AliasChoices("createdAtMs", "created_at_ms")
+    )
+    updated_at_ms: Optional[int] = Field(
+        None, validation_alias=AliasChoices("updatedAtMs", "updated_at_ms")
+    )
+
+
+class AutomationWebhookDelivery(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    delivery_id: Optional[str] = Field(
+        None, validation_alias=AliasChoices("deliveryID", "deliveryId", "delivery_id")
+    )
+    trigger_id: Optional[str] = Field(
+        None, validation_alias=AliasChoices("triggerID", "triggerId", "trigger_id")
+    )
+    automation_id: Optional[str] = Field(
+        None, validation_alias=AliasChoices("automationID", "automationId", "automation_id")
+    )
+    provider_event_id: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("providerEventID", "providerEventId", "provider_event_id"),
+    )
+    body_digest: Optional[str] = Field(
+        None, validation_alias=AliasChoices("bodyDigest", "body_digest")
+    )
+    status: Optional[str] = None
+    rejection_reason_code: Optional[str] = Field(
+        None, validation_alias=AliasChoices("rejectionReasonCode", "rejection_reason_code")
+    )
+    queued_run_id: Optional[str] = Field(
+        None, validation_alias=AliasChoices("queuedRunID", "queuedRunId", "queued_run_id")
+    )
+    queued_run_path: Optional[str] = Field(
+        None, validation_alias=AliasChoices("queuedRunPath", "queued_run_path")
+    )
+    received_at_ms: Optional[int] = Field(
+        None, validation_alias=AliasChoices("receivedAtMs", "received_at_ms")
+    )
+    accepted_at_ms: Optional[int] = Field(
+        None, validation_alias=AliasChoices("acceptedAtMs", "accepted_at_ms")
+    )
+    rejected_at_ms: Optional[int] = Field(
+        None, validation_alias=AliasChoices("rejectedAtMs", "rejected_at_ms")
+    )
+    sanitized_preview: Optional[JsonValue] = Field(
+        None, validation_alias=AliasChoices("sanitizedPreview", "sanitized_preview")
+    )
+    audit_event_id: Optional[str] = Field(
+        None, validation_alias=AliasChoices("auditEventID", "auditEventId", "audit_event_id")
+    )
+
+
+class AutomationWebhookTriggerCreateInput(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    name: Optional[str] = None
+    provider: str
+    provider_event_kind: Optional[str] = Field(
+        None, validation_alias=AliasChoices("providerEventKind", "provider_event_kind")
+    )
+    enabled: Optional[bool] = None
+    owning_org_unit_id: Optional[str] = Field(
+        None, validation_alias=AliasChoices("owningOrgUnitId", "owning_org_unit_id")
+    )
+    resource_scope: Optional[dict[str, Any]] = Field(
+        None, validation_alias=AliasChoices("resourceScope", "resource_scope")
+    )
+    default_data_class: Optional[str] = Field(
+        None, validation_alias=AliasChoices("defaultDataClass", "default_data_class")
+    )
+    default_risk_tier: Optional[str] = Field(
+        None, validation_alias=AliasChoices("defaultRiskTier", "default_risk_tier")
+    )
+
+
+class AutomationWebhookTriggerUpdateInput(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    name: Optional[str] = None
+    provider: Optional[str] = None
+    provider_event_kind: Optional[str] = Field(
+        None, validation_alias=AliasChoices("providerEventKind", "provider_event_kind")
+    )
+    enabled: Optional[bool] = None
+    default_data_class: Optional[str] = Field(
+        None, validation_alias=AliasChoices("defaultDataClass", "default_data_class")
+    )
+    default_risk_tier: Optional[str] = Field(
+        None, validation_alias=AliasChoices("defaultRiskTier", "default_risk_tier")
+    )
+
+
+class AutomationWebhookTriggerListResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    triggers: list[AutomationWebhookTrigger] = []
+    count: int = 0
+
+
+class AutomationWebhookTriggerResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    trigger: AutomationWebhookTrigger
+
+
+class AutomationWebhookTriggerSecretResponse(AutomationWebhookTriggerResponse):
+    new_secret: Optional[str] = Field(
+        None, validation_alias=AliasChoices("newSecret", "new_secret")
+    )
+    secret_one_time: Optional[bool] = Field(
+        None, validation_alias=AliasChoices("secretOneTime", "secret_one_time")
+    )
+
+
+class AutomationWebhookDeleteResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    ok: Optional[bool] = None
+    deleted: Optional[bool] = None
+    trigger_id: Optional[str] = Field(
+        None, validation_alias=AliasChoices("triggerID", "triggerId", "trigger_id")
+    )
+
+
+class AutomationWebhookDeliveryListResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    deliveries: list[AutomationWebhookDelivery] = []
+    count: int = 0
+    limit: Optional[int] = None
+
+
+class AutomationWebhookDeliveryResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    delivery: AutomationWebhookDelivery
+
+
 class WorkflowPlanInputRef(BaseModel):
     model_config = ConfigDict(extra="allow")
     from_step_id: Optional[str] = Field(

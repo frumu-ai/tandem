@@ -74,16 +74,16 @@ Use as an async context manager or call `await client.aclose()` manually.
 
 ### `client.sessions`
 
-| Method                                                       | Description                                          |
-| ------------------------------------------------------------ | ---------------------------------------------------- |
-| `create(title?, directory?, provider?, model?, temperature?, top_p?, max_tokens?)` | Create session, returns `session_id`     |
-| `list(q?, page?, page_size?, archived?, scope?, workspace?)` | List sessions                                        |
-| `get(session_id)`                                            | Get session details                                  |
-| `delete(session_id)`                                         | Delete a session                                     |
-| `messages(session_id)`                                       | Get message history                                  |
-| `active_run(session_id)`                                     | Get active run state                                 |
-| `prompt_async(session_id, prompt, *, temperature?, top_p?, max_tokens?)` | Start async run, returns `PromptAsyncResult(run_id)` |
-| `prompt_async_parts(session_id, parts, *, temperature?, top_p?, max_tokens?)` | Start async run with text/file parts            |
+| Method                                                                             | Description                                          |
+| ---------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `create(title?, directory?, provider?, model?, temperature?, top_p?, max_tokens?)` | Create session, returns `session_id`                 |
+| `list(q?, page?, page_size?, archived?, scope?, workspace?)`                       | List sessions                                        |
+| `get(session_id)`                                                                  | Get session details                                  |
+| `delete(session_id)`                                                               | Delete a session                                     |
+| `messages(session_id)`                                                             | Get message history                                  |
+| `active_run(session_id)`                                                           | Get active run state                                 |
+| `prompt_async(session_id, prompt, *, temperature?, top_p?, max_tokens?)`           | Start async run, returns `PromptAsyncResult(run_id)` |
+| `prompt_async_parts(session_id, parts, *, temperature?, top_p?, max_tokens?)`      | Start async run with text/file parts                 |
 
 **Sampling parameters:** `temperature`, `top_p`, and `max_tokens` are optional.
 Set them on `create(...)` for a session-level default, and/or on
@@ -230,6 +230,24 @@ automation = await client.automations_v2.create({
     },
 })
 run = await client.automations_v2.run_now(automation.automation_id or "")
+
+webhook = await client.automations_v2.create_webhook_trigger(
+    automation.automation_id or "",
+    {
+        "name": "GitHub issues",
+        "provider": "github",
+        "providerEventKind": "issues.opened",
+        "defaultDataClass": "customer_data",
+        "defaultRiskTier": "internal_write",
+    },
+)
+print(webhook.trigger.callback_url)
+print(webhook.new_secret)  # Returned once; store it securely.
+
+deliveries = await client.automations_v2.list_webhook_deliveries(
+    automation.automation_id or "",
+    webhook.trigger.trigger_id or "",
+)
 ```
 
 ### `client.workflow_plans`

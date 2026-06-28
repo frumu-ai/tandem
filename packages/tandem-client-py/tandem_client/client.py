@@ -18,6 +18,14 @@ from .types import (
     AgentTeamSpawnResponse,
     AgentTeamTemplatesResponse,
     AgentTeamTemplateWriteResponse,
+    AutomationWebhookDeleteResponse,
+    AutomationWebhookDeliveryListResponse,
+    AutomationWebhookDeliveryResponse,
+    AutomationWebhookTriggerCreateInput,
+    AutomationWebhookTriggerListResponse,
+    AutomationWebhookTriggerResponse,
+    AutomationWebhookTriggerSecretResponse,
+    AutomationWebhookTriggerUpdateInput,
     AutomationV2ListResponse,
     AutomationV2Record,
     AutomationV2RunListResponse,
@@ -2053,6 +2061,27 @@ class _Automations:
         return stream_sse(f"{self._base_url}/automations/events{qs}", self._token, client=self._http)
 
 
+_WEBHOOK_TRIGGER_PAYLOAD_ALIASES = {
+    "providerEventKind": "provider_event_kind",
+    "owningOrgUnitId": "owning_org_unit_id",
+    "resourceScope": "resource_scope",
+    "defaultDataClass": "default_data_class",
+    "defaultRiskTier": "default_risk_tier",
+}
+
+
+def _normalize_webhook_trigger_payload(payload: dict[str, Any] | BaseModel) -> dict[str, Any]:
+    raw = (
+        payload.model_dump(exclude_unset=True)
+        if isinstance(payload, BaseModel)
+        else dict(payload)
+    )
+    return {
+        _WEBHOOK_TRIGGER_PAYLOAD_ALIASES.get(key, key): value
+        for key, value in raw.items()
+    }
+
+
 class _AutomationsV2:
     def __init__(self, base_url: str, token: str, http: httpx.AsyncClient) -> None:
         self._base_url = base_url
@@ -2103,6 +2132,103 @@ class _AutomationsV2:
         res = await self._http.post(f"/automations/v2/{quote(automation_id)}/resume", json={})
         res.raise_for_status()
         return AutomationV2Record.model_validate(res.json().get("automation", {}))
+
+    async def list_webhook_triggers(
+        self, automation_id: str
+    ) -> AutomationWebhookTriggerListResponse:
+        res = await self._http.get(
+            f"/automations/v2/{quote(automation_id)}/webhook-triggers"
+        )
+        res.raise_for_status()
+        return AutomationWebhookTriggerListResponse.model_validate(res.json())
+
+    async def create_webhook_trigger(
+        self,
+        automation_id: str,
+        payload: dict[str, Any] | AutomationWebhookTriggerCreateInput,
+    ) -> AutomationWebhookTriggerSecretResponse:
+        res = await self._http.post(
+            f"/automations/v2/{quote(automation_id)}/webhook-triggers",
+            json=_normalize_webhook_trigger_payload(payload),
+        )
+        res.raise_for_status()
+        return AutomationWebhookTriggerSecretResponse.model_validate(res.json())
+
+    async def get_webhook_trigger(
+        self, automation_id: str, trigger_id: str
+    ) -> AutomationWebhookTriggerResponse:
+        res = await self._http.get(
+            f"/automations/v2/{quote(automation_id)}/webhook-triggers/{quote(trigger_id)}"
+        )
+        res.raise_for_status()
+        return AutomationWebhookTriggerResponse.model_validate(res.json())
+
+    async def update_webhook_trigger(
+        self,
+        automation_id: str,
+        trigger_id: str,
+        patch: dict[str, Any] | AutomationWebhookTriggerUpdateInput,
+    ) -> AutomationWebhookTriggerResponse:
+        res = await self._http.patch(
+            f"/automations/v2/{quote(automation_id)}/webhook-triggers/{quote(trigger_id)}",
+            json=_normalize_webhook_trigger_payload(patch),
+        )
+        res.raise_for_status()
+        return AutomationWebhookTriggerResponse.model_validate(res.json())
+
+    async def disable_webhook_trigger(
+        self, automation_id: str, trigger_id: str
+    ) -> AutomationWebhookTriggerResponse:
+        res = await self._http.post(
+            f"/automations/v2/{quote(automation_id)}/webhook-triggers/{quote(trigger_id)}/disable",
+            json={},
+        )
+        res.raise_for_status()
+        return AutomationWebhookTriggerResponse.model_validate(res.json())
+
+    async def delete_webhook_trigger(
+        self, automation_id: str, trigger_id: str
+    ) -> AutomationWebhookDeleteResponse:
+        res = await self._http.delete(
+            f"/automations/v2/{quote(automation_id)}/webhook-triggers/{quote(trigger_id)}"
+        )
+        res.raise_for_status()
+        return AutomationWebhookDeleteResponse.model_validate(res.json())
+
+    async def rotate_webhook_secret(
+        self, automation_id: str, trigger_id: str
+    ) -> AutomationWebhookTriggerSecretResponse:
+        res = await self._http.post(
+            f"/automations/v2/{quote(automation_id)}/webhook-triggers/{quote(trigger_id)}/rotate-secret",
+            json={},
+        )
+        res.raise_for_status()
+        return AutomationWebhookTriggerSecretResponse.model_validate(res.json())
+
+    async def list_webhook_deliveries(
+        self,
+        automation_id: str,
+        trigger_id: str,
+        limit: int = 50,
+    ) -> AutomationWebhookDeliveryListResponse:
+        res = await self._http.get(
+            f"/automations/v2/{quote(automation_id)}/webhook-triggers/{quote(trigger_id)}/deliveries",
+            params={"limit": limit},
+        )
+        res.raise_for_status()
+        return AutomationWebhookDeliveryListResponse.model_validate(res.json())
+
+    async def get_webhook_delivery(
+        self,
+        automation_id: str,
+        trigger_id: str,
+        delivery_id: str,
+    ) -> AutomationWebhookDeliveryResponse:
+        res = await self._http.get(
+            f"/automations/v2/{quote(automation_id)}/webhook-triggers/{quote(trigger_id)}/deliveries/{quote(delivery_id)}"
+        )
+        res.raise_for_status()
+        return AutomationWebhookDeliveryResponse.model_validate(res.json())
 
     async def list_runs(self, automation_id: str, limit: int = 50) -> AutomationV2RunListResponse:
         res = await self._http.get(
