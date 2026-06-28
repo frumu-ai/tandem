@@ -199,6 +199,11 @@ fn webhook_header_is_sensitive(name: &str) -> bool {
     let normalized = name.to_ascii_lowercase();
     normalized.contains("authorization")
         || normalized.contains("cookie")
+        || normalized.contains("api-key")
+        || normalized.contains("apikey")
+        || normalized.contains("password")
+        || normalized.contains("passwd")
+        || normalized.contains("credential")
         || normalized.contains("secret")
         || normalized.contains("signature")
         || normalized.contains("token")
@@ -248,6 +253,12 @@ fn preview_for_rejected_body(body: &[u8], body_digest: &str) -> Value {
     serde_json::from_slice::<Value>(body)
         .map(|value| sanitize_automation_webhook_preview(&value))
         .unwrap_or_else(|_| json!({ "body_digest": body_digest }))
+}
+
+fn verification_error_allows_raw_payload_persistence(
+    error: &AutomationWebhookVerificationError,
+) -> bool {
+    matches!(error, AutomationWebhookVerificationError::ReplayDetected)
 }
 
 async fn record_raw_event_for_trigger(
@@ -320,26 +331,30 @@ async fn record_verification_rejection(
     else {
         return;
     };
-    let raw_event = match record_raw_event_for_trigger(
-        state,
-        &trigger,
-        provider_event_id.clone(),
-        body_digest.clone(),
-        headers,
-        body,
-        received_at_ms,
-    )
-    .await
-    {
-        Ok(raw_event) => Some(raw_event),
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                trigger_id = %trigger.trigger_id,
-                "failed to persist rejected automation webhook raw event"
-            );
-            None
+    let raw_event = if verification_error_allows_raw_payload_persistence(error) {
+        match record_raw_event_for_trigger(
+            state,
+            &trigger,
+            provider_event_id.clone(),
+            body_digest.clone(),
+            headers,
+            body,
+            received_at_ms,
+        )
+        .await
+        {
+            Ok(raw_event) => Some(raw_event),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    trigger_id = %trigger.trigger_id,
+                    "failed to persist rejected automation webhook raw event"
+                );
+                None
+            }
         }
+    } else {
+        None
     };
     if let Ok(delivery) = state
         .record_automation_webhook_rejection(

@@ -138,16 +138,18 @@ async fn public_automation_webhook_accepts_signed_request_without_transport_auth
     let body = br#"{"customer":"acme","token":"secret-value"}"#;
     let now = crate::now_ms();
 
-    let resp = app
-        .oneshot(webhook_request(
-            &created.trigger.public_path_token,
-            Some(&created.secret),
-            body,
-            "evt-1",
-            now,
-        ))
-        .await
-        .expect("response");
+    let mut request = webhook_request(
+        &created.trigger.public_path_token,
+        Some(&created.secret),
+        body,
+        "evt-1",
+        now,
+    );
+    request.headers_mut().insert(
+        "x-api-key",
+        axum::http::HeaderValue::from_static("super-secret-api-key"),
+    );
+    let resp = app.oneshot(request).await.expect("response");
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     let payload: Value =
         serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await.expect("body"))
@@ -187,6 +189,13 @@ async fn public_automation_webhook_accepts_signed_request_without_transport_auth
         raw_event
             .headers_redacted
             .get("x-tandem-webhook-signature")
+            .and_then(Value::as_str),
+        Some("[redacted]")
+    );
+    assert_eq!(
+        raw_event
+            .headers_redacted
+            .get("x-api-key")
             .and_then(Value::as_str),
         Some("[redacted]")
     );
@@ -271,6 +280,13 @@ async fn public_automation_webhook_rejects_unsigned_request_without_creating_run
         deliveries[0].rejection_reason_code.as_deref(),
         Some("missing_signature")
     );
+    assert!(state
+        .list_automation_webhook_raw_events_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id
+        )
+        .await
+        .is_empty());
 }
 
 #[tokio::test]
@@ -479,6 +495,13 @@ async fn public_automation_webhook_disabled_trigger_does_not_queue_run() {
         deliveries[0].rejection_reason_code.as_deref(),
         Some("trigger_disabled")
     );
+    assert!(state
+        .list_automation_webhook_raw_events_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id
+        )
+        .await
+        .is_empty());
 }
 
 #[tokio::test]
