@@ -6,6 +6,9 @@ use tokio::io::AsyncWriteExt;
 
 use super::types::{StatefulRunEventRecord, StatefulRunSnapshotRecord};
 
+static STATEFUL_RUN_EVENT_APPEND_ONCE_LOCK: tokio::sync::Mutex<()> =
+    tokio::sync::Mutex::const_new(());
+
 #[derive(Debug, Clone)]
 pub struct StatefulRuntimeStoragePaths {
     pub run_events_path: PathBuf,
@@ -73,6 +76,7 @@ pub async fn append_stateful_run_event_once(
     path: &Path,
     record: &StatefulRunEventRecord,
 ) -> anyhow::Result<bool> {
+    let _guard = STATEFUL_RUN_EVENT_APPEND_ONCE_LOCK.lock().await;
     let duplicate = load_stateful_run_events(path)
         .into_iter()
         .any(|existing| existing.run_id == record.run_id && existing.event_id == record.event_id);
@@ -193,7 +197,8 @@ pub fn list_stateful_run_snapshots(
     snapshots.sort_by_key(|snapshot| snapshot.seq);
     if let Some(limit) = limit.filter(|limit| *limit > 0) {
         if snapshots.len() > limit {
-            snapshots.truncate(limit);
+            let remove_count = snapshots.len() - limit;
+            snapshots.drain(0..remove_count);
         }
     }
     snapshots
@@ -348,6 +353,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn append_once_serializes_concurrent_duplicate_writes() {
+        let path = std::env::temp_dir().join(format!(
+            "stateful-runtime-events-once-concurrent-{}.jsonl",
+            Uuid::new_v4()
+        ));
+        let tenant = tenant("org-a", "workspace-a");
+        let record = event(1, "run-a", tenant);
+
+        let (first, second) = tokio::join!(
+            append_stateful_run_event_once(&path, &record),
+            append_stateful_run_event_once(&path, &record)
+        );
+        let appended = [first.expect("first append"), second.expect("second append")]
+            .into_iter()
+            .filter(|value| *value)
+            .count();
+
+        assert_eq!(appended, 1);
+        let rows = load_stateful_run_events(&path);
+        assert_eq!(rows.len(), 1);
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
     async fn snapshot_paths_are_scoped_under_sanitized_run_directory() {
         let root =
             std::env::temp_dir().join(format!("stateful-runtime-snapshots-{}", Uuid::new_v4()));
@@ -472,6 +501,14 @@ mod tests {
         let hidden = read_stateful_run_snapshot_for_run(&root, &tenant_a, "run-a", "snapshot-2")
             .expect("read hidden snapshot");
         assert!(hidden.is_none());
+        let latest = list_stateful_run_snapshots(&root, &tenant_a, "run-a", Some(1));
+        assert_eq!(
+            latest
+                .iter()
+                .map(|snapshot| snapshot.seq)
+                .collect::<Vec<_>>(),
+            vec![3]
+        );
         let _ = tokio::fs::remove_dir_all(root).await;
     }
 }
