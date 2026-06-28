@@ -1058,7 +1058,7 @@ async fn restart_recovery_preserves_blocked_run_golden_after_reload() {
 }
 
 #[tokio::test]
-async fn restart_recovery_fails_running_consequential_run_without_replay() {
+async fn restart_recovery_queues_running_consequential_run_for_resume() {
     let workspace_root = restart_test_workspace("tandem-restart-running-consequential");
     let state = ready_test_state().await;
     let automation =
@@ -1073,6 +1073,152 @@ async fn restart_recovery_fails_running_consequential_run_without_replay() {
         })
         .await
         .expect("mark running restart run");
+
+    let (reloaded, recovered) = reload_automation_state_after_restart(&state).await;
+    assert_eq!(recovered, 1);
+    let recovered_run = reloaded
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("recovered running run");
+    let golden = restart_resume_golden(&recovered_run);
+
+    assert_eq!(golden.status, AutomationRunStatus::Queued);
+    assert_eq!(golden.stop_kind, None);
+    assert_eq!(
+        golden.detail.as_deref(),
+        Some("automation run queued for resume after server restart")
+    );
+    assert!(golden.node_attempts.is_empty());
+    assert!(golden.node_outputs.is_empty());
+    assert_eq!(
+        golden.pending_nodes,
+        vec!["send_customer_update".to_string()]
+    );
+    assert_eq!(golden.last_failure, None);
+    assert!(recovered_run.active_session_ids.is_empty());
+    assert!(recovered_run.latest_session_id.is_none());
+    assert!(recovered_run
+        .checkpoint
+        .lifecycle_history
+        .iter()
+        .any(|event| event.event == "run_queued_for_resume_after_restart"));
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[tokio::test]
+async fn restart_recovery_requeues_in_progress_node_with_repair_marker() {
+    let workspace_root = restart_test_workspace("tandem-restart-running-repairable");
+    let state = ready_test_state().await;
+    let automation =
+        consequential_restart_automation("automation-restart-running-repairable", &workspace_root);
+    let run = create_persisted_restart_run(&state, &automation).await;
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = AutomationRunStatus::Running;
+            row.started_at_ms = Some(crate::now_ms());
+            row.active_session_ids = vec!["session-in-flight-before-restart".to_string()];
+            row.latest_session_id = Some("session-in-flight-before-restart".to_string());
+            row.checkpoint
+                .node_attempts
+                .insert("send_customer_update".to_string(), 1);
+            row.checkpoint.lifecycle_history.push(
+                crate::automation_v2::types::AutomationLifecycleRecord {
+                    event: "node_started".to_string(),
+                    recorded_at_ms: crate::now_ms(),
+                    reason: Some("node `send_customer_update` started".to_string()),
+                    stop_kind: None,
+                    metadata: Some(json!({
+                        "node_id": "send_customer_update",
+                        "attempt": 1,
+                    })),
+                },
+            );
+        })
+        .await
+        .expect("mark running restart run");
+
+    let (reloaded, recovered) = reload_automation_state_after_restart(&state).await;
+    assert_eq!(recovered, 1);
+    let recovered_run = reloaded
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("recovered running run");
+    let golden = restart_resume_golden(&recovered_run);
+
+    assert_eq!(golden.status, AutomationRunStatus::Queued);
+    assert_eq!(
+        golden.detail.as_deref(),
+        Some(
+            "automation run queued for resume after server restart; repairable node(s): send_customer_update"
+        )
+    );
+    assert_eq!(golden.stop_kind, None);
+    assert_eq!(
+        golden.pending_nodes,
+        vec!["send_customer_update".to_string()]
+    );
+    assert_eq!(
+        golden.node_attempts,
+        [("send_customer_update".to_string(), 1)]
+            .into_iter()
+            .collect()
+    );
+    let output = recovered_run
+        .checkpoint
+        .node_outputs
+        .get("send_customer_update")
+        .expect("repair marker");
+    assert_eq!(
+        output.get("status").and_then(Value::as_str),
+        Some("needs_repair")
+    );
+    assert_eq!(
+        output.get("blocker_category").and_then(Value::as_str),
+        Some("server_restart_interrupted")
+    );
+    assert_eq!(
+        golden.last_failure,
+        Some((
+            "send_customer_update".to_string(),
+            "node execution interrupted by server restart before an outcome was recorded"
+                .to_string()
+        ))
+    );
+    assert!(recovered_run.active_session_ids.is_empty());
+    assert!(recovered_run.latest_session_id.is_none());
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[tokio::test]
+async fn restart_recovery_fails_corrupt_running_run_without_replay() {
+    let workspace_root = restart_test_workspace("tandem-restart-running-corrupt");
+    let state = ready_test_state().await;
+    let automation = consequential_restart_automation("automation-restart-corrupt", &workspace_root);
+    let run = create_persisted_restart_run(&state, &automation).await;
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = AutomationRunStatus::Running;
+            row.started_at_ms = Some(crate::now_ms());
+            row.active_session_ids = vec!["session-in-flight-before-restart".to_string()];
+            row.latest_session_id = Some("session-in-flight-before-restart".to_string());
+            row.checkpoint
+                .node_attempts
+                .insert("missing_after_definition_change".to_string(), 1);
+            row.checkpoint.lifecycle_history.push(
+                crate::automation_v2::types::AutomationLifecycleRecord {
+                    event: "node_started".to_string(),
+                    recorded_at_ms: crate::now_ms(),
+                    reason: Some("node `missing_after_definition_change` started".to_string()),
+                    stop_kind: None,
+                    metadata: Some(json!({
+                        "node_id": "missing_after_definition_change",
+                        "attempt": 1,
+                    })),
+                },
+            );
+        })
+        .await
+        .expect("mark corrupt running restart run");
 
     let (reloaded, recovered) = reload_automation_state_after_restart(&state).await;
     assert_eq!(recovered, 1);
@@ -1092,7 +1238,12 @@ async fn restart_recovery_fails_running_consequential_run_without_replay() {
         golden.detail.as_deref(),
         Some("automation run interrupted by server restart")
     );
-    assert!(golden.node_attempts.is_empty());
+    assert_eq!(
+        golden.node_attempts,
+        [("missing_after_definition_change".to_string(), 1)]
+            .into_iter()
+            .collect()
+    );
     assert!(golden.node_outputs.is_empty());
     assert_eq!(
         golden.pending_nodes,

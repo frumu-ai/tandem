@@ -6,8 +6,11 @@ This is the canonical release-notes file used by release tooling.
 
 Tandem 0.6.5 is currently in development. This train starts the stateful agent
 runtime work with enterprise-aware durable run scope, event, and snapshot
-foundations. Snapshot-backed automation runs now also expose stable definition
-versions and `sha256:` snapshot hashes for future replay and resume checks.
+foundations. Snapshot-backed automation runs now expose stable definition
+versions and `sha256:` snapshot hashes for future replay and resume checks, and
+restart-interrupted Automation V2 runs are queued for resume when their
+persisted checkpoint is recoverable while corrupt in-flight records continue to
+fail closed.
 
 ## v0.6.4 (2026-06-28)
 
