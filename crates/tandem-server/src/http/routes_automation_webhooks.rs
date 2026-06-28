@@ -44,7 +44,7 @@ async fn automation_webhook_intake(
         return webhook_public_response(StatusCode::UNSUPPORTED_MEDIA_TYPE, "rejected");
     }
 
-    let provider_event_id = provider_event_id_from_headers(&headers);
+    let advisory_provider_event_id = provider_event_id_from_headers(&headers);
     let body_digest = automation_webhook_body_digest(body.as_ref());
     let signature_header = header_str(&headers, AUTOMATION_WEBHOOK_SIGNATURE_HEADER)
         .or_else(|| header_str(&headers, AUTOMATION_WEBHOOK_LEGACY_SIGNATURE_HEADER));
@@ -53,7 +53,7 @@ async fn automation_webhook_intake(
             &public_path_token,
             signature_header,
             body.as_ref(),
-            provider_event_id.clone(),
+            advisory_provider_event_id.clone(),
             received_at_ms,
             AUTOMATION_WEBHOOK_SIGNATURE_TOLERANCE_MS,
         )
@@ -66,7 +66,7 @@ async fn automation_webhook_intake(
                 &state,
                 &public_path_token,
                 &error,
-                provider_event_id,
+                advisory_provider_event_id,
                 body_digest,
                 received_at_ms,
                 preview,
