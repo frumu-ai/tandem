@@ -2071,15 +2071,17 @@ _WEBHOOK_TRIGGER_PAYLOAD_ALIASES = {
 
 
 def _normalize_webhook_trigger_payload(payload: dict[str, Any] | BaseModel) -> dict[str, Any]:
-    raw = (
+    normalized = (
         payload.model_dump(exclude_unset=True)
         if isinstance(payload, BaseModel)
         else dict(payload)
     )
-    return {
-        _WEBHOOK_TRIGGER_PAYLOAD_ALIASES.get(key, key): value
-        for key, value in raw.items()
-    }
+    for camel_case, snake_case in _WEBHOOK_TRIGGER_PAYLOAD_ALIASES.items():
+        if camel_case in normalized:
+            if snake_case not in normalized:
+                normalized[snake_case] = normalized[camel_case]
+            del normalized[camel_case]
+    return normalized
 
 
 class _AutomationsV2:

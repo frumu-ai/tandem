@@ -114,6 +114,7 @@ async def test_automation_v2_webhook_trigger_management_routes() -> None:
             "automation-1",
             {
                 "provider": "github",
+                "provider_event_kind": "issues.assigned",
                 "providerEventKind": "issues.opened",
                 "defaultDataClass": "customer_data",
                 "defaultRiskTier": "internal_write",
@@ -168,7 +169,7 @@ async def test_automation_v2_webhook_trigger_management_routes() -> None:
     create_body = json.loads(create_route.calls[0].request.content.decode("utf-8"))
     assert create_body == {
         "provider": "github",
-        "provider_event_kind": "issues.opened",
+        "provider_event_kind": "issues.assigned",
         "default_data_class": "customer_data",
         "default_risk_tier": "internal_write",
         "owning_org_unit_id": "support",
