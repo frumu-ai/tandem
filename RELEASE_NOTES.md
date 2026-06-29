@@ -15,6 +15,11 @@ idempotency keys before creating runs, reports accepted/duplicate/conflict
 dedupe outcomes on delivery records and SDK types, and keeps original
 delivery/run correlation available after restarts so provider retries do not
 fan out duplicate automation runs.
+Durable wait foundations now persist timer/webhook/approval wait metadata,
+tenant-boundary identity, wake times, timeout policy, and wake claim state for
+future sleep/resume scheduling.
+Stateful runtime event and snapshot read endpoints are now available for
+tenant-filtered replay/debug and future control-panel views.
 
 ## v0.6.4 (2026-06-28)
 

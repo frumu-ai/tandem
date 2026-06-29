@@ -150,6 +150,19 @@ pub(super) fn build_router(state: AppState, route_extensions: &[super::RouteRegi
         "/runs/{run_id}/events",
         axum::routing::get(super::runtime_events::get_run_events),
     );
+    router = router
+        .route(
+            "/stateful-runtime/runs/{run_id}/events",
+            axum::routing::get(super::stateful_runtime_api::get_stateful_run_events),
+        )
+        .route(
+            "/stateful-runtime/runs/{run_id}/snapshots",
+            axum::routing::get(super::stateful_runtime_api::list_stateful_run_snapshots),
+        )
+        .route(
+            "/stateful-runtime/runs/{run_id}/snapshots/{snapshot_id}",
+            axum::routing::get(super::stateful_runtime_api::get_stateful_run_snapshot),
+        );
     router = super::routes_bug_monitor::apply(router);
     router = super::routes_external_actions::apply(router);
     router = super::routes_goal_capability_learning::apply(router);

@@ -111,6 +111,104 @@ pub enum StatefulWaitKind {
     RetryBackoff,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StatefulWaitStatus {
+    Waiting,
+    Claimed,
+    Woken,
+    TimedOut,
+    Escalated,
+    Cancelled,
+}
+
+impl StatefulWaitStatus {
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Woken | Self::TimedOut | Self::Escalated | Self::Cancelled
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StatefulWaitTimeoutAction {
+    Cancel,
+    Escalate,
+    Remind,
+    Resume,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StatefulWaitTimeoutPolicy {
+    pub timeout_at_ms: u64,
+    pub on_timeout: StatefulWaitTimeoutAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escalate_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remind_every_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StatefulWaitRecord {
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
+    pub wait_id: String,
+    pub run_id: String,
+    pub wait_kind: StatefulWaitKind,
+    pub status: StatefulWaitStatus,
+    pub scope: StatefulRuntimeScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_policy: Option<StatefulWaitTimeoutPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_seq: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake_idempotency_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claimed_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claimed_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_expires_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+}
+
+impl StatefulWaitRecord {
+    pub fn visible_to_tenant(&self, tenant: &TenantContext) -> bool {
+        self.scope.visible_to_tenant(tenant)
+    }
+
+    pub fn is_due_at(&self, now_ms: u64) -> bool {
+        self.status == StatefulWaitStatus::Waiting
+            && self
+                .wake_at_ms
+                .map(|wake_at_ms| wake_at_ms <= now_ms)
+                .unwrap_or(false)
+    }
+
+    pub fn claim_is_active_at(&self, now_ms: u64) -> bool {
+        self.status == StatefulWaitStatus::Claimed
+            && self
+                .claim_expires_at_ms
+                .map(|expires_at_ms| expires_at_ms > now_ms)
+                .unwrap_or(false)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StatefulWorkflowRunRecord {
     #[serde(default = "default_schema_version")]
@@ -211,6 +309,12 @@ pub struct StatefulRunSnapshotRecord {
     pub workflow_definition_snapshot_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+}
+
+impl StatefulRunSnapshotRecord {
+    pub fn visible_to_tenant(&self, tenant: &TenantContext) -> bool {
+        self.scope.visible_to_tenant(tenant)
+    }
 }
 
 pub fn default_schema_version() -> u32 {
