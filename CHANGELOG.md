@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a dedicated stateful run list in the Control Panel with status, phase,
   trigger, tenant/workspace, active wait, retry, and last-event columns across
   workflow, automation, and context runs.
+- Added stateful runtime durable wait records and a tenant-filtered wait store
+  with tenant-boundary wait identity, due timer selection, missed-wakeup
+  recovery queries, timeout policy metadata, and idempotent wake claiming
+  foundations.
+- Added tenant-filtered stateful runtime event and snapshot read endpoints for
+  replay and control-panel consumers.
 
 ### Changed
 

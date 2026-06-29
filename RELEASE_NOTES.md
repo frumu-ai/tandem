@@ -14,6 +14,11 @@ fail closed. The Control Panel now has a dedicated stateful run list for
 scanning workflow, automation, and context runs by status, phase, trigger,
 tenant/workspace, active wait, retry state, and last event without opening the
 full automation debugger first.
+Durable wait foundations now persist timer/webhook/approval wait metadata,
+tenant-boundary identity, wake times, timeout policy, and wake claim state for
+future sleep/resume scheduling.
+Stateful runtime event and snapshot read endpoints are now available for
+tenant-filtered replay/debug and future control-panel views.
 
 ## v0.6.4 (2026-06-28)
 
