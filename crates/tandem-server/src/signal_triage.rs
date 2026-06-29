@@ -36,7 +36,7 @@ pub struct SignalTriageMemoryPolicy {
     pub source_refs: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SignalTriageSignal {
     #[serde(default)]
     pub domain: SignalTriageDomain,
@@ -72,6 +72,33 @@ pub struct SignalTriageSignal {
     pub auto_enable_workflow: bool,
     #[serde(default)]
     pub memory_policy: SignalTriageMemoryPolicy,
+}
+
+impl Default for SignalTriageSignal {
+    fn default() -> Self {
+        Self {
+            domain: SignalTriageDomain::default(),
+            signal_id: String::new(),
+            source: String::new(),
+            title: String::new(),
+            summary: String::new(),
+            confidence: String::new(),
+            risk: String::new(),
+            evidence_refs: Vec::new(),
+            duplicate_of: None,
+            review_required: false,
+            research_claims: Vec::new(),
+            research_sources: Vec::new(),
+            recommendation: None,
+            observed_problem: None,
+            candidate_use_case: None,
+            expected_value: None,
+            risks: Vec::new(),
+            rollout_disabled: default_rollout_disabled(),
+            auto_enable_workflow: false,
+            memory_policy: SignalTriageMemoryPolicy::default(),
+        }
+    }
 }
 
 fn default_rollout_disabled() -> bool {
@@ -174,8 +201,8 @@ pub fn evaluate_signal_triage_gate(signal: &SignalTriageSignal) -> SignalTriageG
         gate(
             "evidence_present",
             "Evidence refs present",
-            !signal.evidence_refs.is_empty(),
-            signal.evidence_refs.first().cloned(),
+            has_non_empty_value(&signal.evidence_refs),
+            first_non_empty_value(&signal.evidence_refs),
         ),
         gate(
             "confidence_sufficient",
@@ -318,7 +345,7 @@ pub fn triage_signal(signal: &SignalTriageSignal) -> SignalTriageOutcome {
             title: signal.title.clone(),
             confidence: signal.confidence.clone(),
             risk: signal.risk.clone(),
-            evidence_refs: signal.evidence_refs.clone(),
+            evidence_refs: non_empty_values(&signal.evidence_refs),
             memory_write: memory_disposition(&signal.memory_policy),
             payload: SignalTriageReviewedPayload::ResearchEvidence {
                 claims: signal.research_claims.clone(),
@@ -337,7 +364,7 @@ pub fn triage_signal(signal: &SignalTriageSignal) -> SignalTriageOutcome {
             title: signal.title.clone(),
             confidence: signal.confidence.clone(),
             risk: signal.risk.clone(),
-            evidence_refs: signal.evidence_refs.clone(),
+            evidence_refs: non_empty_values(&signal.evidence_refs),
             memory_write: memory_disposition(&signal.memory_policy),
             payload: SignalTriageReviewedPayload::UseCaseDiscovery {
                 problem: signal.observed_problem.clone().unwrap_or_default(),
@@ -380,6 +407,27 @@ fn first_non_empty(values: [&str; 2]) -> Option<String> {
         .into_iter()
         .find(|value| non_empty(value))
         .map(ToString::to_string)
+}
+
+fn has_non_empty_value(values: &[String]) -> bool {
+    values.iter().any(|value| non_empty(value))
+}
+
+fn first_non_empty_value(values: &[String]) -> Option<String> {
+    values
+        .iter()
+        .find(|value| non_empty(value))
+        .map(|value| value.trim().to_string())
+}
+
+fn non_empty_values(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .filter_map(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        })
+        .collect()
 }
 
 fn confidence_is_sufficient(value: &str) -> bool {
@@ -492,7 +540,6 @@ mod tests {
                 "Source freshness can decay.".to_string(),
                 "Market signal correlation can be mistaken for causality.".to_string(),
             ],
-            rollout_disabled: true,
             auto_enable_workflow: false,
             memory_policy: SignalTriageMemoryPolicy {
                 enabled: true,
@@ -569,6 +616,28 @@ mod tests {
         assert!(outcome.artifact.is_none());
         assert_missing(&outcome.gate, "evidence_present");
         assert_missing(&outcome.gate, "confidence_sufficient");
+    }
+
+    #[test]
+    fn blank_evidence_refs_do_not_satisfy_gate() {
+        let mut signal = research_fixture();
+        signal.evidence_refs = vec!["   ".to_string()];
+
+        let outcome = triage_signal(&signal);
+
+        assert_eq!(outcome.status, "blocked");
+        assert!(outcome.artifact.is_none());
+        assert_missing(&outcome.gate, "evidence_present");
+    }
+
+    #[test]
+    fn rust_default_keeps_use_case_rollout_disabled() {
+        let signal = SignalTriageSignal {
+            domain: SignalTriageDomain::UseCaseDiscovery,
+            ..SignalTriageSignal::default()
+        };
+
+        assert!(signal.rollout_disabled);
     }
 
     #[test]
