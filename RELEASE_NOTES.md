@@ -10,7 +10,10 @@ foundations. Snapshot-backed automation runs now expose stable definition
 versions and `sha256:` snapshot hashes for future replay and resume checks, and
 restart-interrupted Automation V2 runs are queued for resume when their
 persisted checkpoint is recoverable while corrupt in-flight records continue to
-fail closed.
+fail closed. Automation V2 retry handling now also has a shared policy schema
+and structured retry decision record so node failures can explain retryability,
+attempt budget, terminal behavior, and next retry timing while preserving legacy
+`max_attempts` compatibility.
 
 ## v0.6.4 (2026-06-28)
 
