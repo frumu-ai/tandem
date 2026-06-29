@@ -130,7 +130,7 @@ pub async fn publish_draft(
         Some(id) => state.get_bug_monitor_incident(id).await,
         None => None,
     };
-    let evidence_digest = compute_evidence_digest(&draft, incident.as_ref());
+    let evidence_digest = compute_evidence_digest(&draft);
     draft.evidence_digest = Some(evidence_digest.clone());
 
     let target_ref = destination.target_ref()?;
@@ -609,17 +609,12 @@ fn deterministic_record_id(
     Ok(format!("{prefix}_{}", &digest[..24]))
 }
 
-fn compute_evidence_digest(
-    draft: &BugMonitorDraftRecord,
-    incident: Option<&BugMonitorIncidentRecord>,
-) -> String {
-    let incident_id = incident.map(|row| row.incident_id.as_str()).unwrap_or("");
+fn compute_evidence_digest(draft: &BugMonitorDraftRecord) -> String {
     sha256_hex(&[
         draft.repo.as_str(),
         draft.fingerprint.as_str(),
         draft.title.as_deref().unwrap_or(""),
         draft.detail.as_deref().unwrap_or(""),
-        incident_id,
     ])
 }
 

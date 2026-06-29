@@ -209,6 +209,94 @@ async fn bug_monitor_telemetry_destination_records_filters_and_skips_duplicate()
 
 #[tokio::test]
 #[serial_test::serial(bug_monitor_http)]
+async fn bug_monitor_local_destination_idempotency_ignores_incident_entrypoint() {
+    let state = test_state().await;
+    configure_local_bug_monitor_destination(
+        &state,
+        "telemetry-primary",
+        crate::BugMonitorDestinationKind::Telemetry,
+        Some("incidents"),
+        None,
+        true,
+    )
+    .await;
+
+    let app = app_router(state.clone());
+    let draft_id =
+        create_ready_linear_bug_monitor_draft(app.clone(), "fingerprint-telemetry-incident").await;
+    let draft = state
+        .get_bug_monitor_draft(&draft_id)
+        .await
+        .expect("stored draft");
+    let incident_id = format!("failure-incident-{}", uuid::Uuid::new_v4().simple());
+    state
+        .put_bug_monitor_incident(crate::BugMonitorIncidentRecord {
+            incident_id: incident_id.clone(),
+            fingerprint: draft.fingerprint.clone(),
+            event_type: "bug_monitor.failure".to_string(),
+            status: "triaged".to_string(),
+            repo: draft.repo.clone(),
+            workspace_root: "/tmp/acme".to_string(),
+            title: draft
+                .title
+                .clone()
+                .unwrap_or_else(|| "Telemetry destination failure".to_string()),
+            draft_id: Some(draft_id.clone()),
+            triage_run_id: draft.triage_run_id.clone(),
+            detail: Some(
+                "incident-specific context should not affect local idempotency".to_string(),
+            ),
+            confidence: draft.confidence.clone(),
+            risk_level: draft.risk_level.clone(),
+            expected_destination: draft.expected_destination.clone(),
+            created_at_ms: crate::now_ms(),
+            updated_at_ms: crate::now_ms(),
+            ..Default::default()
+        })
+        .await
+        .expect("incident");
+
+    let first = crate::bug_monitor::router::publish_draft(
+        &state,
+        crate::bug_monitor::router::BugMonitorPublishRequest {
+            draft_id: draft_id.clone(),
+            incident_id: Some(incident_id),
+            mode: crate::bug_monitor_github::PublishMode::Auto,
+            destination_ids: Vec::new(),
+        },
+    )
+    .await
+    .expect("incident publish");
+    assert_eq!(first.action, "record_telemetry");
+    let first_post_id = first.post.expect("first post").post_id;
+
+    let second = crate::bug_monitor::router::publish_draft(
+        &state,
+        crate::bug_monitor::router::BugMonitorPublishRequest {
+            draft_id,
+            incident_id: None,
+            mode: crate::bug_monitor_github::PublishMode::ManualPublish,
+            destination_ids: Vec::new(),
+        },
+    )
+    .await
+    .expect("manual publish");
+    assert_eq!(second.action, "skip_duplicate");
+    assert_eq!(
+        second.post.as_ref().map(|post| post.post_id.as_str()),
+        Some(first_post_id.as_str())
+    );
+    assert_eq!(
+        state
+            .list_bug_monitor_posts_by_destination(10, "telemetry-primary")
+            .await
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(bug_monitor_http)]
 async fn bug_monitor_internal_memory_destination_stores_redacted_summary_and_skips_duplicate() {
     let state = test_state().await;
     configure_local_bug_monitor_destination(
