@@ -132,6 +132,7 @@ mod sessions;
 mod setup_understanding;
 mod skills_memory;
 mod slack_interactions;
+mod stateful_runtime_api;
 mod system_api;
 mod task_intake;
 mod telegram_interactions;
