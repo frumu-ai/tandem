@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::runtime_event_log::{query_runtime_event_log, RuntimeEventLogQuery};
+use crate::runtime_event_log::{query_runtime_event_log_window, RuntimeEventLogWindowQuery};
 
 const DEFAULT_RUNTIME_EVENTS_LIMIT: usize = 250;
 const MAX_RUNTIME_EVENTS_LIMIT: usize = 1_000;
@@ -8,8 +8,10 @@ const MAX_RUNTIME_EVENTS_LIMIT: usize = 1_000;
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct RuntimeEventsQuery {
     pub after_seq: Option<u64>,
+    pub before_seq: Option<u64>,
     pub since_seq: Option<u64>,
     pub limit: Option<usize>,
+    pub tail: Option<usize>,
 }
 
 pub(super) async fn get_run_events(
@@ -22,15 +24,22 @@ pub(super) async fn get_run_events(
         .limit
         .unwrap_or(DEFAULT_RUNTIME_EVENTS_LIMIT)
         .clamp(1, MAX_RUNTIME_EVENTS_LIMIT);
-    let rows = query_runtime_event_log(
+    let tail = query
+        .tail
+        .filter(|tail| *tail > 0)
+        .map(|tail| tail.clamp(1, MAX_RUNTIME_EVENTS_LIMIT));
+    let rows = query_runtime_event_log_window(
         &state.runtime_events_path,
         &tenant_context,
-        RuntimeEventLogQuery {
+        RuntimeEventLogWindowQuery {
             run_id: &run_id,
             after_seq: query.after_seq.or(query.since_seq),
-            limit: Some(limit),
+            before_seq: query.before_seq,
+            limit: tail.map(|_| None).unwrap_or(Some(limit)),
+            tail,
         },
     );
+    let first_seq = rows.first().map(|row| row.seq());
     let last_seq = rows.last().map(|row| row.seq());
     let events = rows
         .iter()
@@ -41,8 +50,10 @@ pub(super) async fn get_run_events(
         "run_id": run_id,
         "events": events,
         "count": events.len(),
+        "first_seq": first_seq,
         "last_seq": last_seq,
         "limit": limit,
+        "tail": tail,
         "sequence_scope": "runtime_event_bus",
     }))
 }
@@ -107,8 +118,10 @@ mod tests {
             Path("run-a".to_string()),
             Query(RuntimeEventsQuery {
                 after_seq: Some(1),
+                before_seq: None,
                 since_seq: None,
                 limit: Some(10),
+                tail: None,
             }),
         )
         .await;
@@ -122,6 +135,62 @@ mod tests {
         assert_eq!(
             events[0].get("event_type").and_then(Value::as_str),
             Some("session.run.started")
+        );
+
+        let _ = tokio::fs::remove_file(state.runtime_events_path).await;
+    }
+
+    #[tokio::test]
+    async fn get_run_events_supports_tail_and_previous_page_cursor() {
+        let mut state = crate::test_support::test_state().await;
+        state.runtime_events_path =
+            std::env::temp_dir().join(format!("runtime-events-tail-api-{}.jsonl", Uuid::new_v4()));
+        let tenant_a = tenant("org-a", "workspace-a");
+
+        for seq in 1..=5 {
+            let row = RuntimeEventLogRow::from_engine_event(&event(seq, "run-a", tenant_a.clone()))
+                .expect("runtime row");
+            append_runtime_event_log_row(&state.runtime_events_path, &row)
+                .await
+                .expect("append row");
+        }
+
+        let Json(tail_body) = get_run_events(
+            State(state.clone()),
+            Extension(tenant_a.clone()),
+            Path("run-a".to_string()),
+            Query(RuntimeEventsQuery {
+                after_seq: None,
+                before_seq: None,
+                since_seq: None,
+                limit: Some(2),
+                tail: Some(2),
+            }),
+        )
+        .await;
+        assert_eq!(tail_body.get("first_seq").and_then(Value::as_u64), Some(4));
+        assert_eq!(tail_body.get("last_seq").and_then(Value::as_u64), Some(5));
+
+        let Json(previous_body) = get_run_events(
+            State(state.clone()),
+            Extension(tenant_a),
+            Path("run-a".to_string()),
+            Query(RuntimeEventsQuery {
+                after_seq: None,
+                before_seq: Some(4),
+                since_seq: None,
+                limit: Some(2),
+                tail: Some(2),
+            }),
+        )
+        .await;
+        assert_eq!(
+            previous_body.get("first_seq").and_then(Value::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            previous_body.get("last_seq").and_then(Value::as_u64),
+            Some(3)
         );
 
         let _ = tokio::fs::remove_file(state.runtime_events_path).await;

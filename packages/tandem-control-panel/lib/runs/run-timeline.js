@@ -317,9 +317,12 @@ function runTimelineRequestPath(runId, options = {}) {
   const encoded = encodeURIComponent(compactString(runId));
   const params = new URLSearchParams();
   const afterSeq = toNumber(options.afterSeq ?? options.after_seq);
+  const beforeSeq = toNumber(options.beforeSeq ?? options.before_seq);
   const limit = toNumber(options.limit) || DEFAULT_TIMELINE_LIMIT;
   if (afterSeq > 0) params.set("after_seq", String(afterSeq));
+  if (beforeSeq > 0) params.set("before_seq", String(beforeSeq));
   params.set("limit", String(limit));
+  if (options.tail) params.set("tail", String(toNumber(options.tail) || limit));
   return `/api/engine/runs/${encoded}/events?${params.toString()}`;
 }
 

@@ -71,6 +71,10 @@ test("run timeline orders persisted pages and exposes the next sequence cursor",
     runTimelineRequestPath("run/a", { afterSeq: 7, limit: 50 }),
     "/api/engine/runs/run%2Fa/events?after_seq=7&limit=50"
   );
+  assert.equal(
+    runTimelineRequestPath("run/a", { beforeSeq: 3, limit: 50, tail: true }),
+    "/api/engine/runs/run%2Fa/events?before_seq=3&limit=50&tail=50"
+  );
 });
 
 test("run timeline dedupes live and persisted copies by canonical event id", () => {

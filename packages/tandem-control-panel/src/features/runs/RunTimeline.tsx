@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../lib/api";
 import { Badge, EmptyState, IconButton, LoadingState, PanelCard } from "../../ui/index.tsx";
 import { useEngineStream } from "../stream/useEngineStream";
 import {
   DEFAULT_TIMELINE_LIMIT,
   buildRunTimeline,
-  nextRunTimelineAfterSeq,
   runTimelineRequestPath,
 } from "../../../lib/runs/run-timeline.js";
 
@@ -75,6 +74,13 @@ function pageEventCount(page: any) {
   return 0;
 }
 
+function firstSequence(entries: RunTimelineEntry[]) {
+  return entries.reduce((min, entry) => {
+    const seq = Number(entry.sequence || 0);
+    return seq > 0 ? Math.min(min, seq) : min;
+  }, Number.POSITIVE_INFINITY);
+}
+
 export function useRunTimeline({
   runId,
   enabled = true,
@@ -86,22 +92,36 @@ export function useRunTimeline({
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
+  const activeRunIdRef = useRef(runId);
+  activeRunIdRef.current = runId;
 
   const loadPage = useCallback(
-    async (afterSeq = 0, mode: "replace" | "append" = "replace") => {
+    async (cursorSeq = 0, mode: "replace" | "prepend" = "replace") => {
       if (!runId || !enabled) return;
+      const requestedRunId = runId;
+      const isCurrentRun = () => activeRunIdRef.current === requestedRunId;
       setError("");
-      if (mode === "append") setLoadingMore(true);
+      if (mode === "prepend") setLoadingMore(true);
       else setLoading(true);
       try {
-        const page = await api(runTimelineRequestPath(runId, { afterSeq, limit }));
-        setPages((prev) => (mode === "append" ? [...prev, page] : [page]));
+        const page = await api(
+          runTimelineRequestPath(requestedRunId, {
+            beforeSeq: mode === "prepend" ? cursorSeq : 0,
+            limit,
+            tail: limit,
+          })
+        );
+        if (!isCurrentRun()) return;
+        setPages((prev) => (mode === "prepend" ? [page, ...prev] : [page]));
       } catch (err: any) {
+        if (!isCurrentRun()) return;
         setError(err instanceof Error ? err.message : String(err));
         if (mode === "replace") setPages([]);
       } finally {
-        setLoading(false);
-        setLoadingMore(false);
+        if (isCurrentRun()) {
+          setLoading(false);
+          setLoadingMore(false);
+        }
       }
     },
     [enabled, limit, runId]
@@ -137,11 +157,16 @@ export function useRunTimeline({
     () => buildRunTimeline({ persistedPages: pages }),
     [pages]
   );
-  const lastPage = pages[pages.length - 1];
-  const hasMore = pageEventCount(lastPage) >= limit;
+  const firstPage = pages[0];
+  const firstPersistedSeq = firstSequence(persistedEntries);
+  const hasMore =
+    pageEventCount(firstPage) >= limit &&
+    Number.isFinite(firstPersistedSeq) &&
+    firstPersistedSeq > 1;
   const loadMore = useCallback(() => {
-    const afterSeq = nextRunTimelineAfterSeq(persistedEntries);
-    void loadPage(afterSeq, "append");
+    const beforeSeq = firstSequence(persistedEntries);
+    if (!Number.isFinite(beforeSeq)) return;
+    void loadPage(beforeSeq, "prepend");
   }, [loadPage, persistedEntries]);
 
   return {
@@ -233,7 +258,7 @@ export function RunTimeline({
               onClick={onLoadMore}
             >
               <i data-lucide={loadingMore ? "loader-2" : "chevrons-down"}></i>
-              {loadingMore ? "Loading" : "Load More"}
+              {loadingMore ? "Loading" : "Load Older"}
             </button>
           ) : null}
         </div>

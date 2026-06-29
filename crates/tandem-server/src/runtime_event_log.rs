@@ -73,6 +73,15 @@ pub struct RuntimeEventLogQuery<'a> {
     pub limit: Option<usize>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct RuntimeEventLogWindowQuery<'a> {
+    pub run_id: &'a str,
+    pub after_seq: Option<u64>,
+    pub before_seq: Option<u64>,
+    pub limit: Option<usize>,
+    pub tail: Option<usize>,
+}
+
 pub async fn append_runtime_event_log_row(
     path: &Path,
     row: &RuntimeEventLogRow,
@@ -133,6 +142,24 @@ pub fn query_runtime_event_log(
     tenant: &TenantContext,
     query: RuntimeEventLogQuery<'_>,
 ) -> Vec<RuntimeEventLogRow> {
+    query_runtime_event_log_window(
+        path,
+        tenant,
+        RuntimeEventLogWindowQuery {
+            run_id: query.run_id,
+            after_seq: query.after_seq,
+            before_seq: None,
+            limit: query.limit,
+            tail: None,
+        },
+    )
+}
+
+pub fn query_runtime_event_log_window(
+    path: &Path,
+    tenant: &TenantContext,
+    query: RuntimeEventLogWindowQuery<'_>,
+) -> Vec<RuntimeEventLogRow> {
     let mut rows = load_runtime_event_log_rows(path)
         .into_iter()
         .filter(|row| row.run_id() == Some(query.run_id))
@@ -142,8 +169,20 @@ pub fn query_runtime_event_log(
                 .map(|after_seq| row.seq() > after_seq)
                 .unwrap_or(true)
         })
+        .filter(|row| {
+            query
+                .before_seq
+                .map(|before_seq| row.seq() < before_seq)
+                .unwrap_or(true)
+        })
         .filter(|row| row.visible_to_tenant(tenant))
         .collect::<Vec<_>>();
+    if let Some(tail) = query.tail.filter(|tail| *tail > 0) {
+        if rows.len() > tail {
+            rows = rows.split_off(rows.len() - tail);
+        }
+        return rows;
+    }
     if let Some(limit) = query.limit.filter(|limit| *limit > 0) {
         if rows.len() > limit {
             rows.truncate(limit);
@@ -274,6 +313,62 @@ mod tests {
             rows.iter().map(RuntimeEventLogRow::seq).collect::<Vec<_>>(),
             vec![4]
         );
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn query_supports_tail_and_before_sequence_pages() {
+        let path =
+            std::env::temp_dir().join(format!("runtime-events-tail-{}.jsonl", Uuid::new_v4()));
+        let tenant_a = tenant("org-a", "workspace-a");
+        for seq in 1..=6 {
+            let row = RuntimeEventLogRow::from_engine_event(&event(
+                seq,
+                "run-a",
+                Some(tenant_a.clone()),
+                100 + seq,
+            ))
+            .expect("canonical row");
+            append_runtime_event_log_row(&path, &row)
+                .await
+                .expect("append");
+        }
+
+        let tail = query_runtime_event_log_window(
+            &path,
+            &tenant_a,
+            RuntimeEventLogWindowQuery {
+                run_id: "run-a",
+                after_seq: None,
+                before_seq: None,
+                limit: Some(2),
+                tail: Some(2),
+            },
+        );
+        assert_eq!(
+            tail.iter().map(RuntimeEventLogRow::seq).collect::<Vec<_>>(),
+            vec![5, 6]
+        );
+
+        let previous = query_runtime_event_log_window(
+            &path,
+            &tenant_a,
+            RuntimeEventLogWindowQuery {
+                run_id: "run-a",
+                after_seq: None,
+                before_seq: Some(5),
+                limit: None,
+                tail: Some(2),
+            },
+        );
+        assert_eq!(
+            previous
+                .iter()
+                .map(RuntimeEventLogRow::seq)
+                .collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+
         let _ = tokio::fs::remove_file(path).await;
     }
 

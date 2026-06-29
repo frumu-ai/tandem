@@ -12,8 +12,8 @@ restart-interrupted Automation V2 runs are queued for resume when their
 persisted checkpoint is recoverable while corrupt in-flight records continue to
 fail closed. The Control Loop view also has a reusable runtime event timeline
 that renders canonical persisted run events alongside live run stream updates
-with dedupe, ordering, actor/source/phase/sequence metadata, and tenant scope
-labels.
+with latest-tail loading, backward pagination, dedupe, ordering,
+actor/source/phase/sequence metadata, and tenant scope labels.
 
 ## v0.6.4 (2026-06-28)
 
