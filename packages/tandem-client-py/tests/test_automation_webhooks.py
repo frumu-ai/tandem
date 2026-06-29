@@ -18,6 +18,12 @@ def _trigger_payload() -> dict[str, object]:
         "provider_event_kind": "issues.opened",
         "enabled": True,
         "callback_url": "https://example.com/webhooks/automations/whpub_test",
+        "provider_metadata": {
+            "canonical_provider": "github",
+            "event_id_headers": ["x-github-delivery", "x-tandem-webhook-event-id"],
+            "verification": {"signature_scheme": "hmac_sha256_v1", "provider_specific": False},
+            "polling": {"supported": False, "reconciliation_supported": False},
+        },
         "secret_status": {"configured": True, "secret_version": 1},
         "delivery_counts": {"total": 1, "accepted": 1},
     }
@@ -150,6 +156,9 @@ async def test_automation_v2_webhook_trigger_management_routes() -> None:
 
     assert listed.count == 1
     assert listed.triggers[0].trigger_id == "trigger-1"
+    assert listed.triggers[0].provider_metadata is not None
+    assert listed.triggers[0].provider_metadata.canonical_provider == "github"
+    assert listed.triggers[0].provider_metadata.event_id_headers[0] == "x-github-delivery"
     assert listed.triggers[0].delivery_counts is not None
     assert listed.triggers[0].delivery_counts.accepted == 1
     assert created.new_secret == "whsec_new"

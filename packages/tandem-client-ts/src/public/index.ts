@@ -2399,6 +2399,33 @@ export interface AutomationWebhookDeliveryCounts {
   [key: string]: unknown;
 }
 
+export interface AutomationWebhookProviderVerification {
+  signature_scheme?: string;
+  signatureScheme?: string;
+  provider_specific?: boolean;
+  providerSpecific?: boolean;
+  [key: string]: unknown;
+}
+
+export interface AutomationWebhookProviderPolling {
+  supported?: boolean;
+  reconciliation_supported?: boolean;
+  reconciliationSupported?: boolean;
+  [key: string]: unknown;
+}
+
+export interface AutomationWebhookProviderMetadata {
+  canonical_provider?: string;
+  canonicalProvider?: string;
+  provider_event_kind?: string | null;
+  providerEventKind?: string | null;
+  event_id_headers?: string[];
+  eventIdHeaders?: string[];
+  verification?: AutomationWebhookProviderVerification;
+  polling?: AutomationWebhookProviderPolling;
+  [key: string]: unknown;
+}
+
 export interface AutomationWebhookTrigger {
   trigger_id?: string;
   triggerID?: string;
@@ -2408,6 +2435,8 @@ export interface AutomationWebhookTrigger {
   provider?: string;
   provider_event_kind?: string | null;
   providerEventKind?: string | null;
+  provider_metadata?: AutomationWebhookProviderMetadata;
+  providerMetadata?: AutomationWebhookProviderMetadata;
   enabled?: boolean;
   callback_path?: string;
   callbackPath?: string;

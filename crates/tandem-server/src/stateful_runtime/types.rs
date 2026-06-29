@@ -311,6 +311,12 @@ pub struct StatefulRunSnapshotRecord {
     pub metadata: Option<Value>,
 }
 
+impl StatefulRunSnapshotRecord {
+    pub fn visible_to_tenant(&self, tenant: &TenantContext) -> bool {
+        self.scope.visible_to_tenant(tenant)
+    }
+}
+
 pub fn default_schema_version() -> u32 {
     STATEFUL_RUNTIME_SCHEMA_VERSION
 }

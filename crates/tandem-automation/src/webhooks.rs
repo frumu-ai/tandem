@@ -20,6 +20,85 @@ fn default_enabled() -> bool {
     true
 }
 
+const GENERIC_PROVIDER_EVENT_ID_HEADERS: &[&str] = &[
+    "x-tandem-webhook-event-id",
+    "x-webhook-event-id",
+    "x-event-id",
+];
+const GITHUB_PROVIDER_EVENT_ID_HEADERS: &[&str] = &[
+    "x-github-delivery",
+    "x-tandem-webhook-event-id",
+    "x-webhook-event-id",
+    "x-event-id",
+];
+const GITLAB_PROVIDER_EVENT_ID_HEADERS: &[&str] = &[
+    "x-gitlab-event-uuid",
+    "x-gitlab-delivery",
+    "x-tandem-webhook-event-id",
+    "x-webhook-event-id",
+    "x-event-id",
+];
+const LINEAR_PROVIDER_EVENT_ID_HEADERS: &[&str] = &[
+    "linear-delivery",
+    "x-linear-delivery",
+    "x-tandem-webhook-event-id",
+    "x-webhook-event-id",
+    "x-event-id",
+];
+const STRIPE_PROVIDER_EVENT_ID_HEADERS: &[&str] = &[
+    "x-stripe-event-id",
+    "stripe-event-id",
+    "x-tandem-webhook-event-id",
+    "x-webhook-event-id",
+    "x-event-id",
+];
+
+pub fn normalize_automation_webhook_provider(value: &str) -> Option<String> {
+    let normalized = value
+        .trim()
+        .chars()
+        .filter_map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                Some(ch.to_ascii_lowercase())
+            } else if ch.is_ascii_whitespace() {
+                Some('-')
+            } else {
+                None
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if normalized.is_empty() {
+        return None;
+    }
+    let canonical = match normalized.as_str() {
+        "custom" | "http" => "generic",
+        "gh" | "github.com" => "github",
+        "gitlab.com" => "gitlab",
+        "linear.app" => "linear",
+        "slack.com" => "slack",
+        "stripe.com" => "stripe",
+        _ => normalized.as_str(),
+    };
+    Some(canonical.to_string())
+}
+
+pub fn normalize_automation_webhook_provider_event_kind(value: &str) -> Option<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+pub fn automation_webhook_provider_event_id_headers(provider: &str) -> &'static [&'static str] {
+    match normalize_automation_webhook_provider(provider).as_deref() {
+        Some("github") => GITHUB_PROVIDER_EVENT_ID_HEADERS,
+        Some("gitlab") => GITLAB_PROVIDER_EVENT_ID_HEADERS,
+        Some("linear") => LINEAR_PROVIDER_EVENT_ID_HEADERS,
+        Some("stripe") => STRIPE_PROVIDER_EVENT_ID_HEADERS,
+        _ => GENERIC_PROVIDER_EVENT_ID_HEADERS,
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AutomationWebhookSignatureScheme {
@@ -131,5 +210,35 @@ impl AutomationWebhookDeliveryRecord {
         self.tenant_context.org_id == tenant_context.org_id
             && self.tenant_context.workspace_id == tenant_context.workspace_id
             && self.tenant_context.deployment_id == tenant_context.deployment_id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_normalization_canonicalizes_known_aliases() {
+        assert_eq!(
+            normalize_automation_webhook_provider(" GitHub.com "),
+            Some("github".to_string())
+        );
+        assert_eq!(
+            normalize_automation_webhook_provider("custom"),
+            Some("generic".to_string())
+        );
+        assert_eq!(normalize_automation_webhook_provider("  "), None);
+    }
+
+    #[test]
+    fn provider_event_id_headers_prefer_provider_specific_headers() {
+        assert_eq!(
+            automation_webhook_provider_event_id_headers("github")[0],
+            "x-github-delivery"
+        );
+        assert_eq!(
+            automation_webhook_provider_event_id_headers("unknown-provider")[0],
+            "x-tandem-webhook-event-id"
+        );
     }
 }

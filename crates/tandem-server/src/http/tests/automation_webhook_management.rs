@@ -92,8 +92,8 @@ async fn webhook_management_routes_redact_secrets_and_delivery_payloads() {
         "actor-a",
         Some(json!({
             "name": "GitHub issues",
-            "provider": "github",
-            "provider_event_kind": "issues.opened",
+            "provider": " GitHub.com ",
+            "provider_event_kind": " Issues.Opened ",
             "default_data_class": "customer_data",
             "default_risk_tier": "internal_write",
             "enabled": true
@@ -120,6 +120,36 @@ async fn webhook_management_routes_redact_secrets_and_delivery_payloads() {
     assert!(!create_text.contains("secret_ref"));
     assert!(!create_text.contains("secret_digest"));
     assert!(create_text.contains("/webhooks/automations/"));
+    assert_eq!(
+        create_payload
+            .pointer("/trigger/provider")
+            .and_then(Value::as_str),
+        Some("github")
+    );
+    assert_eq!(
+        create_payload
+            .pointer("/trigger/provider_event_kind")
+            .and_then(Value::as_str),
+        Some("issues.opened")
+    );
+    assert_eq!(
+        create_payload
+            .pointer("/trigger/provider_metadata/canonical_provider")
+            .and_then(Value::as_str),
+        Some("github")
+    );
+    assert_eq!(
+        create_payload
+            .pointer("/trigger/provider_metadata/event_id_headers/0")
+            .and_then(Value::as_str),
+        Some("x-github-delivery")
+    );
+    assert_eq!(
+        create_payload
+            .pointer("/trigger/provider_metadata/polling/supported")
+            .and_then(Value::as_bool),
+        Some(false)
+    );
 
     let list_req = tenant_request(
         "GET",
@@ -295,6 +325,76 @@ async fn webhook_management_routes_redact_secrets_and_delivery_payloads() {
     assert_eq!(
         delete_payload.get("deleted").and_then(Value::as_bool),
         Some(true)
+    );
+}
+
+#[tokio::test]
+async fn webhook_management_metadata_canonicalizes_legacy_provider_on_read() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    create_automation(&app, "auto-webhook-legacy-provider").await;
+
+    let create_req = tenant_request(
+        "POST",
+        "/automations/v2/auto-webhook-legacy-provider/webhook-triggers",
+        "org-a",
+        "workspace-a",
+        "actor-a",
+        Some(json!({
+            "name": "Legacy GitHub provider",
+            "provider": "github",
+            "provider_event_kind": "issues.opened"
+        })),
+    );
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("create webhook");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let create_payload = response_json(create_resp).await;
+    let trigger_id = create_payload
+        .pointer("/trigger/trigger_id")
+        .and_then(Value::as_str)
+        .expect("trigger id")
+        .to_string();
+
+    {
+        let mut triggers = state.automation_webhook_triggers.write().await;
+        let trigger = triggers
+            .get_mut(&trigger_id)
+            .expect("stored webhook trigger");
+        trigger.provider = "GitHub.com".to_string();
+    }
+
+    let get_req = tenant_request(
+        "GET",
+        format!("/automations/v2/auto-webhook-legacy-provider/webhook-triggers/{trigger_id}"),
+        "org-a",
+        "workspace-a",
+        "actor-a",
+        None,
+    );
+    let get_resp = app.clone().oneshot(get_req).await.expect("get webhook");
+    assert_eq!(get_resp.status(), StatusCode::OK);
+    let get_payload = response_json(get_resp).await;
+    assert_eq!(
+        get_payload
+            .pointer("/trigger/provider")
+            .and_then(Value::as_str),
+        Some("GitHub.com")
+    );
+    assert_eq!(
+        get_payload
+            .pointer("/trigger/provider_metadata/canonical_provider")
+            .and_then(Value::as_str),
+        Some("github")
+    );
+    assert_eq!(
+        get_payload
+            .pointer("/trigger/provider_metadata/event_id_headers/0")
+            .and_then(Value::as_str),
+        Some("x-github-delivery")
     );
 }
 
