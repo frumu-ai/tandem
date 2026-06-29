@@ -36,6 +36,10 @@ while preparing GitHub-style and shared-secret provider schemes.
 Durable wait foundations now persist timer/webhook/approval wait metadata,
 tenant-boundary identity, wake times, timeout policy, and wake claim state for
 future sleep/resume scheduling.
+The Automation V2 executor now runs a durable stateful wait scheduler tick that
+claims due waits, recovers missed timer wakeups after downtime, records
+idempotent wake/timeout events and snapshots, and marks timeout cancellations
+or escalations for operator visibility.
 Stateful runtime event and snapshot read endpoints are now available for
 tenant-filtered replay/debug and future control-panel views.
 

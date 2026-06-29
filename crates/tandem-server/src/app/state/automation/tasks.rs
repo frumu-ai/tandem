@@ -3,12 +3,16 @@ use std::panic::AssertUnwindSafe;
 use std::time::Duration;
 
 use futures::FutureExt;
+use tandem_types::EngineEvent;
 use tokio::task::JoinSet;
 
 use crate::app::state::automation::{record_automation_lifecycle_event, QueueReason};
 use crate::app::state::AppState;
 use crate::automation_v2::executor::run_automation_v2_run;
 use crate::automation_v2::types::{AutomationRunStatus, AutomationStopKind, AutomationV2RunRecord};
+use crate::stateful_runtime::{
+    process_due_stateful_waits, StatefulRuntimeStoragePaths,
+};
 
 const STALE_RUNNING_AUTOMATION_RUN_MS: u64 = 600_000;
 
@@ -69,6 +73,39 @@ async fn run_automation_v2_executor_supervised(state: AppState) {
     tracing::info!("automation_v2_executor: main loop exited");
 }
 
+async fn process_stateful_wait_scheduler_tick(state: &AppState) {
+    let paths = StatefulRuntimeStoragePaths::from_runtime_events_path(&state.runtime_events_path);
+    let tick = process_due_stateful_waits(&paths, crate::util::time::now_ms(), Default::default())
+        .await;
+    for outcome in &tick.outcomes {
+        state.event_bus.publish(EngineEvent::new(
+            outcome.event_type.clone(),
+            serde_json::json!({
+                "runID": &outcome.run_id,
+                "waitID": &outcome.wait_id,
+                "tenantContext": &outcome.tenant_context,
+                "eventSeq": outcome.event_seq,
+                "waitStatus": &outcome.wait_status,
+                "runStatus": &outcome.run_status,
+                "lagMs": outcome.lag_ms,
+            }),
+        ));
+    }
+    for error in &tick.errors {
+        tracing::warn!(error = %error, "stateful wait scheduler tick failed for a wait");
+    }
+    if tick.completed > 0 || tick.failed > 0 {
+        tracing::info!(
+            checked = tick.checked,
+            claimed = tick.claimed,
+            completed = tick.completed,
+            failed = tick.failed,
+            max_lag_ms = tick.max_lag_ms,
+            "stateful wait scheduler tick completed"
+        );
+    }
+}
+
 async fn run_automation_v2_executor_single(state: AppState) {
     let mut active = JoinSet::new();
     loop {
@@ -95,6 +132,8 @@ async fn run_automation_v2_executor_single(state: AppState) {
         let _ = state.mark_stale_awaiting_approval_runs().await;
 
         let _ = state.auto_resume_stale_reaped_runs().await;
+
+        process_stateful_wait_scheduler_tick(&state).await;
 
         if active.is_empty() {
             if let Some(run) = state.claim_next_queued_automation_v2_run().await {
@@ -132,6 +171,8 @@ async fn run_automation_v2_executor_multi(state: AppState) {
         let _ = state.mark_stale_awaiting_approval_runs().await;
 
         let _ = state.auto_resume_stale_reaped_runs().await;
+
+        process_stateful_wait_scheduler_tick(&state).await;
 
         let capacity = {
             let scheduler = state.automation_scheduler.read().await;

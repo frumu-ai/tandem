@@ -203,6 +203,53 @@ pub async fn mark_stateful_wait_woken(
     Ok(Some(woken))
 }
 
+pub async fn mark_stateful_wait_timeout_result(
+    path: &Path,
+    tenant: &TenantContext,
+    run_id: &str,
+    wait_id: &str,
+    timeout_idempotency_key: &str,
+    event_seq: u64,
+    status: StatefulWaitStatus,
+    now_ms: u64,
+) -> anyhow::Result<Option<StatefulWaitRecord>> {
+    if !matches!(
+        status,
+        StatefulWaitStatus::TimedOut
+            | StatefulWaitStatus::Escalated
+            | StatefulWaitStatus::Cancelled
+    ) {
+        anyhow::bail!("invalid stateful wait timeout result status: {status:?}");
+    }
+
+    let _guard = STATEFUL_WAIT_STORE_LOCK.lock().await;
+    let mut waits = load_stateful_waits(path);
+    let Some(wait) = waits.iter_mut().find(|wait| {
+        wait.run_id == run_id && wait.wait_id == wait_id && wait.visible_to_tenant(tenant)
+    }) else {
+        return Ok(None);
+    };
+    if wait.status == status {
+        return Ok(
+            (wait.wake_idempotency_key.as_deref() == Some(timeout_idempotency_key))
+                .then(|| wait.clone()),
+        );
+    }
+    if wait.status.is_terminal() {
+        return Ok(None);
+    }
+
+    wait.status = status;
+    wait.wake_idempotency_key = Some(timeout_idempotency_key.to_string());
+    wait.event_seq = Some(event_seq);
+    wait.completed_at_ms = Some(now_ms);
+    wait.updated_at_ms = now_ms;
+    wait.claim_expires_at_ms = None;
+    let completed = wait.clone();
+    write_stateful_waits_unlocked(path, &waits).await?;
+    Ok(Some(completed))
+}
+
 pub fn stateful_webhook_wait_metadata(
     match_rules: StatefulWebhookWaitMatch,
     extra_metadata: Option<Value>,
@@ -269,19 +316,23 @@ fn optional_match(expected: Option<&str>, actual: Option<&str>) -> bool {
 
 fn wait_is_claimable(wait: &StatefulWaitRecord, now_ms: u64) -> bool {
     if wait.status == StatefulWaitStatus::Waiting {
-        return wait.is_due_at(now_ms);
+        return wait.is_due_at(now_ms) || wait_timeout_is_due_at(wait, now_ms);
     }
     wait.status == StatefulWaitStatus::Claimed
         && !wait.claim_is_active_at(now_ms)
-        && wait
-            .wake_at_ms
-            .map(|wake_at_ms| wake_at_ms <= now_ms)
-            .unwrap_or(false)
+        && (wait.is_due_at(now_ms) || wait_timeout_is_due_at(wait, now_ms))
 }
 
 fn webhook_wait_is_claimable(wait: &StatefulWaitRecord, now_ms: u64) -> bool {
     wait.status == StatefulWaitStatus::Waiting
         || (wait.status == StatefulWaitStatus::Claimed && !wait.claim_is_active_at(now_ms))
+}
+
+fn wait_timeout_is_due_at(wait: &StatefulWaitRecord, now_ms: u64) -> bool {
+    wait.timeout_policy
+        .as_ref()
+        .map(|policy| policy.timeout_at_ms <= now_ms)
+        .unwrap_or(false)
 }
 
 fn wait_identity_matches(left: &StatefulWaitRecord, right: &StatefulWaitRecord) -> bool {
@@ -306,12 +357,25 @@ fn apply_limit(rows: &mut Vec<StatefulWaitRecord>, limit: Option<usize>) {
 
 fn sort_waits(rows: &mut [StatefulWaitRecord]) {
     rows.sort_by(|left, right| {
-        left.wake_at_ms
-            .unwrap_or(u64::MAX)
-            .cmp(&right.wake_at_ms.unwrap_or(u64::MAX))
+        wait_sort_at_ms(left)
+            .cmp(&wait_sort_at_ms(right))
             .then_with(|| left.created_at_ms.cmp(&right.created_at_ms))
             .then_with(|| left.wait_id.cmp(&right.wait_id))
     });
+}
+
+fn wait_sort_at_ms(wait: &StatefulWaitRecord) -> u64 {
+    match (
+        wait.wake_at_ms,
+        wait.timeout_policy
+            .as_ref()
+            .map(|policy| policy.timeout_at_ms),
+    ) {
+        (Some(wake_at_ms), Some(timeout_at_ms)) => wake_at_ms.min(timeout_at_ms),
+        (Some(wake_at_ms), None) => wake_at_ms,
+        (None, Some(timeout_at_ms)) => timeout_at_ms,
+        (None, None) => u64::MAX,
+    }
 }
 
 async fn write_stateful_waits_unlocked(
