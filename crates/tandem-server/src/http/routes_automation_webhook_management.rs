@@ -14,7 +14,7 @@ use crate::app::state::{AutomationWebhookTriggerCreateInput, AutomationWebhookTr
 use crate::automation_v2::types::{
     automation_webhook_provider_event_id_headers, normalize_automation_webhook_provider,
     AutomationV2Spec, AutomationWebhookDeliveryRecord, AutomationWebhookDeliveryStatus,
-    AutomationWebhookTriggerRecord,
+    AutomationWebhookSignatureScheme, AutomationWebhookTriggerRecord,
 };
 use crate::AppState;
 
@@ -55,6 +55,8 @@ struct WebhookTriggerCreateRequest {
     provider: String,
     #[serde(default)]
     provider_event_kind: Option<String>,
+    #[serde(default, alias = "signatureScheme")]
+    signature_scheme: Option<AutomationWebhookSignatureScheme>,
     #[serde(default)]
     enabled: Option<bool>,
     #[serde(default)]
@@ -91,6 +93,8 @@ struct WebhookTriggerUpdateRequest {
     provider: Option<String>,
     #[serde(default, deserialize_with = "nullable_string_patch")]
     provider_event_kind: Option<Option<String>>,
+    #[serde(default, alias = "signatureScheme")]
+    signature_scheme: Option<AutomationWebhookSignatureScheme>,
     #[serde(default)]
     default_data_class: Option<DataClass>,
     #[serde(default, deserialize_with = "nullable_risk_tier_patch")]
@@ -494,6 +498,10 @@ fn provider_metadata(trigger: &AutomationWebhookTriggerRecord) -> Value {
     let canonical_provider = normalize_automation_webhook_provider(&trigger.provider)
         .unwrap_or_else(|| "generic".to_string());
     let event_id_headers = automation_webhook_provider_event_id_headers(&canonical_provider);
+    let provider_specific_verification = matches!(
+        trigger.signature_scheme,
+        AutomationWebhookSignatureScheme::GithubHmacSha256
+    );
     json!({
         "canonical_provider": canonical_provider.as_str(),
         "canonicalProvider": canonical_provider.as_str(),
@@ -504,8 +512,8 @@ fn provider_metadata(trigger: &AutomationWebhookTriggerRecord) -> Value {
         "verification": {
             "signature_scheme": trigger.signature_scheme,
             "signatureScheme": trigger.signature_scheme,
-            "provider_specific": false,
-            "providerSpecific": false,
+            "provider_specific": provider_specific_verification,
+            "providerSpecific": provider_specific_verification,
         },
         "polling": {
             "supported": false,
@@ -589,6 +597,12 @@ fn delivery_value(delivery: &AutomationWebhookDeliveryRecord) -> Value {
         "status": delivery_status_key(&delivery.status),
         "rejection_reason_code": delivery.rejection_reason_code,
         "rejectionReasonCode": delivery.rejection_reason_code,
+        "verification_scheme": delivery.verification_scheme,
+        "verificationScheme": delivery.verification_scheme,
+        "verification_provider": delivery.verification_provider,
+        "verificationProvider": delivery.verification_provider,
+        "verification_reason_code": delivery.verification_reason_code,
+        "verificationReasonCode": delivery.verification_reason_code,
         "queued_run_id": delivery.queued_run_id,
         "queuedRunID": delivery.queued_run_id,
         "queued_run_path": delivery.queued_run_id.as_ref().map(|run_id| format!("/automations/v2/runs/{run_id}")),
@@ -729,6 +743,7 @@ async fn create_webhook_trigger(
                 .provider_event_kind
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
+            signature_scheme: input.signature_scheme,
             enabled: input.enabled.unwrap_or(true),
         })
         .await
@@ -749,6 +764,7 @@ async fn create_webhook_trigger(
             "triggerID": result.trigger.trigger_id,
             "provider": result.trigger.provider,
             "providerEventKind": result.trigger.provider_event_kind,
+            "signatureScheme": result.trigger.signature_scheme,
         }),
     )
     .await;
@@ -812,6 +828,7 @@ async fn update_webhook_trigger(
                 name: input.name,
                 provider: input.provider,
                 provider_event_kind: input.provider_event_kind,
+                signature_scheme: input.signature_scheme,
                 default_data_class: input.default_data_class,
                 default_risk_tier: input.default_risk_tier,
                 enabled: input.enabled,

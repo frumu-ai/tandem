@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added persisted Automation V2 execution claim metadata with claim ids,
   claimant ids, lease expiry, and claim epochs so resumed runs can distinguish
   the active executor from abandoned launch claims.
+- Added a provider-aware Automation V2 webhook signature verifier registry with
+  Tandem HMAC, GitHub SHA-256, shared-secret header, and unsigned-dev schemes
+  plus queryable delivery verification metadata exposed through clients.
 - Added stateful runtime durable wait records and a tenant-filtered wait store
   with tenant-boundary wait identity, due timer selection, missed-wakeup
   recovery queries, timeout policy metadata, and idempotent wake claiming

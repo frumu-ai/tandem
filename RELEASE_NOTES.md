@@ -13,6 +13,9 @@ persisted checkpoint is recoverable while corrupt in-flight records continue to
 fail closed. Automation V2 run claims are now persisted with lease metadata, and
 expired launch claims without active session or agent handles are reclaimed back
 to the queue so only one executor can safely resume the run.
+Automation webhooks now use a provider-aware signature verification registry
+with queryable delivery verification metadata, keeping Tandem HMAC compatibility
+while preparing GitHub-style and shared-secret provider schemes.
 Durable wait foundations now persist timer/webhook/approval wait metadata,
 tenant-boundary identity, wake times, timeout policy, and wake claim state for
 future sleep/resume scheduling.
