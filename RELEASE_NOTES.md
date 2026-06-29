@@ -14,6 +14,9 @@ fail closed.
 Automation webhooks now persist tenant-scoped raw inbox events with raw payload
 pointers, body/header digests, redacted header previews, and delivery/run
 correlation for accepted, rejected, and duplicate intake paths.
+Automation webhooks now use a provider-aware signature verification registry
+with queryable delivery verification metadata, keeping Tandem HMAC compatibility
+while preparing GitHub-style and shared-secret provider schemes.
 Durable wait foundations now persist timer/webhook/approval wait metadata,
 tenant-boundary identity, wake times, timeout policy, and wake claim state for
 future sleep/resume scheduling.
