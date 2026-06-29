@@ -2,6 +2,7 @@ pub mod context_metadata;
 pub mod execution_profile;
 pub mod governance;
 pub mod mcp_policy;
+pub mod retry_policy;
 pub mod routine;
 pub mod run_mutability;
 pub mod scheduler;
@@ -10,6 +11,8 @@ pub mod webhooks;
 
 #[cfg(test)]
 mod execution_profile_tests;
+#[cfg(test)]
+mod retry_policy_tests;
 #[cfg(test)]
 mod types_tests;
 
@@ -25,6 +28,7 @@ pub use execution_profile::{
 };
 pub use governance::*;
 pub use mcp_policy::{AutomationAgentMcpPolicy, AutomationMcpConnectionGrant, AutomationMcpRunAs};
+pub use retry_policy::*;
 pub use routine::RoutineMisfirePolicy;
 pub use scheduler::{QueueReason, SchedulerMetadata};
 pub use types::*;

@@ -210,6 +210,8 @@ mod stale_auto_resume_window_tests {
             active_instance_ids: Vec::new(),
             runtime_context: None,
             automation_snapshot: None,
+            execution_claim: None,
+            execution_claim_epoch: 0,
             pause_reason: None,
             resume_reason: None,
             detail: Some("retrying node `collect` after transient provider failure".to_string()),
@@ -974,149 +976,6 @@ impl AppState {
         failed
     }
 
-    pub async fn claim_next_queued_automation_v2_run(&self) -> Option<AutomationV2RunRecord> {
-        let run_id = self
-            .automation_v2_runs
-            .read()
-            .await
-            .values()
-            .filter(|row| row.status == AutomationRunStatus::Queued)
-            .min_by(|a, b| a.created_at_ms.cmp(&b.created_at_ms))
-            .map(|row| row.run_id.clone())?;
-        self.claim_specific_automation_v2_run(&run_id).await
-    }
-    pub async fn claim_specific_automation_v2_run(
-        &self,
-        run_id: &str,
-    ) -> Option<AutomationV2RunRecord> {
-        const STARTUP_RUNTIME_CONTEXT_MISSING: &str =
-            "runtime context partition missing for automation run";
-        const STARTUP_RUNTIME_CONTEXT_FAILURE_NODE: &str = "runtime_context";
-
-        let (automation_snapshot, previous_status, automation_id, stored_runtime_context) = {
-            let mut guard = self.automation_v2_runs.write().await;
-            let run = guard.get_mut(run_id)?;
-            if run.status != AutomationRunStatus::Queued {
-                return None;
-            }
-            (
-                run.automation_snapshot.clone(),
-                run.status.clone(),
-                run.automation_id.clone(),
-                run.runtime_context.clone(),
-            )
-        };
-        let automation_for_context = if let Some(automation) = automation_snapshot {
-            Some(automation)
-        } else {
-            self.get_automation_v2(&automation_id).await
-        };
-        let runtime_context_required = automation_for_context
-            .as_ref()
-            .map(crate::automation_v2::types::AutomationV2Spec::requires_runtime_context)
-            .unwrap_or(false);
-        let computed_runtime_context = match automation_for_context.as_ref() {
-            Some(automation) => self
-                .automation_v2_effective_runtime_context(
-                    automation,
-                    automation
-                        .runtime_context_materialization()
-                        .or_else(|| automation.approved_plan_runtime_context_materialization()),
-                )
-                .await
-                .ok()
-                .flatten(),
-            None => None,
-        };
-        let runtime_context = computed_runtime_context.or(stored_runtime_context);
-        if runtime_context_required && runtime_context.is_none() {
-            let mut guard = self.automation_v2_runs.write().await;
-            let run = guard.get_mut(run_id)?;
-            if run.status != AutomationRunStatus::Queued {
-                return None;
-            }
-            let previous_status = run.status.clone();
-            let now = now_ms();
-            run.status = AutomationRunStatus::Failed;
-            run.updated_at_ms = now;
-            run.finished_at_ms.get_or_insert(now);
-            run.scheduler = None;
-            run.detail = Some(STARTUP_RUNTIME_CONTEXT_MISSING.to_string());
-            if run.checkpoint.last_failure.is_none() {
-                run.checkpoint.last_failure = Some(crate::AutomationFailureRecord {
-                    node_id: STARTUP_RUNTIME_CONTEXT_FAILURE_NODE.to_string(),
-                    reason: STARTUP_RUNTIME_CONTEXT_MISSING.to_string(),
-                    failed_at_ms: now,
-                });
-            }
-            let claimed = run.clone();
-            drop(guard);
-            self.sync_automation_scheduler_for_run_transition(previous_status, &claimed)
-                .await;
-            let _ = self.persist_automation_v2_runs().await;
-            return None;
-        }
-
-        // GOV-B6a: re-check governance at the moment of launch. A run queued before
-        // its agent hit the weekly spend cap must not transition into execution and
-        // burn more budget; hold it as `Paused + GuardrailStopped` so the existing
-        // `auto_resume_guardrail_stopped_runs` sweep resumes it once a quota override
-        // is approved.
-        if let Some(automation) = automation_for_context.as_ref() {
-            if self.run_launch_blocked_by_spend_pause(automation).await {
-                let mut guard = self.automation_v2_runs.write().await;
-                let run = guard.get_mut(run_id)?;
-                if run.status != AutomationRunStatus::Queued {
-                    return None;
-                }
-                let previous_status = run.status.clone();
-                let now = now_ms();
-                let reason =
-                    "automation run held at launch: agent weekly spend cap reached".to_string();
-                run.status = AutomationRunStatus::Paused;
-                run.updated_at_ms = now;
-                run.scheduler = None;
-                run.stop_kind = Some(AutomationStopKind::GuardrailStopped);
-                run.pause_reason = Some(reason.clone());
-                run.detail = Some(reason.clone());
-                run.stop_reason = Some(reason.clone());
-                automation::record_automation_lifecycle_event_with_metadata(
-                    run,
-                    "run_launch_held",
-                    Some(reason.clone()),
-                    Some(AutomationStopKind::GuardrailStopped),
-                    Some(json!({ "reason": "agent_spend_paused" })),
-                );
-                let held = run.clone();
-                drop(guard);
-                self.sync_automation_scheduler_for_run_transition(previous_status, &held)
-                    .await;
-                let _ = self.persist_automation_v2_runs().await;
-                return None;
-            }
-        }
-
-        let mut guard = self.automation_v2_runs.write().await;
-        let run = guard.get_mut(run_id)?;
-        if run.status != AutomationRunStatus::Queued {
-            return None;
-        }
-        let now = now_ms();
-        if run.automation_snapshot.is_none() {
-            run.automation_snapshot = automation_for_context.clone();
-        }
-        run.runtime_context = runtime_context;
-        run.status = AutomationRunStatus::Running;
-        run.updated_at_ms = now;
-        run.started_at_ms.get_or_insert(now);
-        run.scheduler = None;
-        let claimed = run.clone();
-        drop(guard);
-        self.sync_automation_scheduler_for_run_transition(previous_status, &claimed)
-            .await;
-        let _ = self.persist_automation_v2_runs().await;
-        Some(claimed)
-    }
     pub async fn update_automation_v2_run(
         &self,
         run_id: &str,
@@ -1150,6 +1009,9 @@ impl AppState {
         refresh_stale_running_detail(run);
         if run.status != AutomationRunStatus::Queued {
             run.scheduler = None;
+        }
+        if run.status != AutomationRunStatus::Running {
+            run.execution_claim = None;
         }
         run.updated_at_ms = now_ms();
         if matches!(

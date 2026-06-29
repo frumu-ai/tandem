@@ -260,6 +260,8 @@ fn connector_row_filter_materializer_builds_full_leads_from_upstream_source() {
         },
         runtime_context: None,
         automation_snapshot: None,
+        execution_claim: None,
+        execution_claim_epoch: 0,
         pause_reason: None,
         resume_reason: None,
         detail: None,
@@ -454,4 +456,3 @@ fn connector_remote_materializer_prefers_workbench_when_available() {
     );
     assert!(args.get("command").is_none());
 }
-

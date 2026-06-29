@@ -200,6 +200,10 @@ pub(crate) fn resolve_runtime_events_path() -> PathBuf {
     resolve_canonical_data_file_path("runtime/events.jsonl")
 }
 
+pub(crate) fn resolve_idempotency_keys_path() -> PathBuf {
+    resolve_canonical_data_file_path("runtime/idempotency_keys.json")
+}
+
 pub(crate) fn resolve_automation_attempt_receipts_dir() -> PathBuf {
     resolve_canonical_data_file_path("automation_attempt_receipts")
 }
