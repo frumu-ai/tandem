@@ -28,6 +28,8 @@ Use it when a workflow failure, recurring runtime error, manual report, or opera
 
 Bug Monitor is intentionally not "report everything immediately to GitHub". It keeps intake, triage, and approval separate so the system can add evidence before anything leaves Tandem.
 
+Incident Monitor is the destination-router evolution of this pipeline. GitHub remains the current production destination, but Incident Monitor separates source identity, routing, destination readiness, approval, and receipts so future Linear, webhook, telemetry/database, MCP tool, and internal memory destinations can use the same governed flow. See [Incident Monitor Overview](../incident-monitor/overview/) and [Destination Router](../incident-monitor/destination-router/).
+
 ## External Project Log Intake
 
 Bug Monitor can also watch local logs for projects outside a Tandem workflow. Configure `monitored_projects` in `Settings -> Bug Monitor`, then use the external-project panel to inspect source health, create scoped intake keys, reset offsets, and replay the latest log candidate.
@@ -132,3 +134,4 @@ async with TandemClient(base_url="http://localhost:39731", token="...") as clien
 - [TypeScript SDK](../sdk/typescript/)
 - [Python SDK](../sdk/python/)
 - [Control Panel](../control-panel/)
+- [Incident Monitor Overview](../incident-monitor/overview/)

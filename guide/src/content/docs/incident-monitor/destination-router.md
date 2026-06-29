@@ -1,0 +1,56 @@
+---
+title: Incident Monitor Destination Router
+description: Route Incident Monitor drafts to governed destinations with preview, readiness, approval, and receipts.
+---
+
+The destination router decides where an incident draft can be published. It is deliberately separate from intake and triage so Tandem can explain route decisions before mutating any external system.
+
+## Router concepts
+
+- `destinations` describe publish targets such as GitHub, Linear, webhook, telemetry, MCP tool, or internal memory.
+- `routes` match incident context to destination IDs.
+- `default_destination_ids` are used when no route matches.
+- `allowed_destination_ids` on a monitored project or log source restrict where that source can publish.
+- `route_tags` provide low-cardinality routing hints from sources, submissions, drafts, and incidents.
+- readiness checks explain whether the selected destination can publish.
+- receipts record the destination, external ID, external URL, route, operation, status, and evidence digest.
+
+## Route preview
+
+Route preview is the safe read path for publish planning. It should answer:
+
+- which routes matched
+- which destination IDs are effective
+- whether approval is required
+- whether a destination is blocked or unready
+- whether a source allowlist prevents a destination
+
+Preview does not publish, call destination tools, or mutate external systems.
+
+## Approval and fail-closed behavior
+
+Publishing can be blocked by global config, destination readiness, route approval policy, source approval policy, or high-risk safety defaults.
+
+High-risk incidents should require approval unless a trusted route/source policy explicitly says otherwise. Untrusted report-only submissions cannot downgrade approval policy.
+
+When `block_unready_destinations` is enabled, unready destinations fail closed before publish. Without that setting, preview can still show readiness problems while legacy compatibility remains intact where existing behavior expects it.
+
+## GitHub compatibility
+
+Legacy Bug Monitor configs synthesize:
+
+```json
+{
+  "destination_id": "legacy-github",
+  "kind": "github_issue"
+}
+```
+
+Configured GitHub destinations use the same publisher adapter but carry their configured destination ID in posts, receipts, route metadata, and external-action mirrors.
+
+## Agent guidance
+
+- Prefer route preview before changing publish behavior.
+- Keep duplicate checks destination-aware.
+- Preserve legacy `/bug-monitor/drafts/{id}/publish` response fields.
+- Never let a scoped intake key choose arbitrary destinations or invoke destination tools.

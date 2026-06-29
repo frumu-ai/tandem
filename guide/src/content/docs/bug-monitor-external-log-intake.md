@@ -16,6 +16,7 @@ Use this when an external app, CI job, or long-running agent writes logs that sh
 - Scoped intake keys can only report for their configured project and scope. They cannot change config, run workflows, publish issues, call tools, or read files.
 - Reset/replay debug actions require the full engine API token because they mutate watcher state.
 - GitHub posting is still governed by Bug Monitor draft, approval, and publish policy.
+- Incident Monitor extends this model with destination routing, route preview, destination readiness, and destination-neutral receipts. See [Incident Monitor Overview](./incident-monitor/overview/).
 
 ## Setup Checklist
 
@@ -231,6 +232,8 @@ When explaining this feature to an operator:
 ## Related
 
 - [Bug Monitor And Issue Reporter](./reference/bug-monitor/)
+- [Incident Monitor Overview](./incident-monitor/overview/)
+- [Incident Monitor Destination Router](./incident-monitor/destination-router/)
 - [Control Panel](./control-panel/)
 - [Engine Authentication For Agents](./engine-authentication-for-agents/)
 - [TypeScript SDK](./sdk/typescript/)

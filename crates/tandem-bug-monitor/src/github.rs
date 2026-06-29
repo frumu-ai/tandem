@@ -49,6 +49,65 @@ pub struct PublishOutcome {
     pub post: Option<BugMonitorPostRecord>,
 }
 
+#[derive(Debug, Clone)]
+pub struct GithubDestinationContext {
+    pub destination_id: String,
+    pub route_id: Option<String>,
+    pub route_match_reason: Option<String>,
+    pub repo: Option<String>,
+    pub mcp_server: Option<String>,
+}
+
+impl Default for GithubDestinationContext {
+    fn default() -> Self {
+        Self {
+            destination_id: BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string(),
+            route_id: None,
+            route_match_reason: Some("legacy_github".to_string()),
+            repo: None,
+            mcp_server: None,
+        }
+    }
+}
+
+impl GithubDestinationContext {
+    pub fn legacy() -> Self {
+        Self::default()
+    }
+
+    fn target_repo(&self, draft: &BugMonitorDraftRecord) -> String {
+        self.repo
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&draft.repo)
+            .to_string()
+    }
+
+    fn publish_config(&self, config: &BugMonitorConfig, target_repo: &str) -> BugMonitorConfig {
+        let mut out = config.clone();
+        if !target_repo.trim().is_empty() {
+            out.repo = Some(target_repo.to_string());
+        }
+        if let Some(server) = self
+            .mcp_server
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            out.mcp_server = Some(server.to_string());
+        }
+        out
+    }
+
+    fn route_match_reason(&self) -> Option<String> {
+        self.route_match_reason.clone().or_else(|| {
+            (self.destination_id == BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID)
+                .then(|| "legacy_github".to_string())
+        })
+    }
+}
+
 #[async_trait::async_trait]
 pub trait BugMonitorGithubHost: Sync {
     async fn bug_monitor_status_snapshot(&self) -> BugMonitorStatus;
@@ -113,6 +172,7 @@ pub async fn record_post_failure(
     error: &str,
 ) -> anyhow::Result<BugMonitorPostRecord> {
     let now = now_ms();
+    let destination = GithubDestinationContext::legacy();
     let post = BugMonitorPostRecord {
         post_id: format!("failure-post-{}", uuid::Uuid::new_v4().simple()),
         draft_id: draft.draft_id.clone(),
@@ -125,10 +185,10 @@ pub async fn record_post_failure(
         issue_url: draft.github_issue_url.clone(),
         comment_id: None,
         comment_url: draft.github_comment_url.clone(),
-        destination_id: Some(BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()),
+        destination_id: Some(destination.destination_id.clone()),
         destination_kind: Some(BugMonitorDestinationKind::GithubIssue),
-        route_id: None,
-        route_match_reason: Some("legacy_github".to_string()),
+        route_id: destination.route_id.clone(),
+        route_match_reason: destination.route_match_reason(),
         external_id: draft.issue_number.map(|number| number.to_string()),
         external_url: draft
             .github_comment_url
@@ -140,6 +200,7 @@ pub async fn record_post_failure(
         target_ref: Some(draft.repo.clone()),
         receipt: Some(json!({
             "provider": "github",
+            "destination_id": destination.destination_id,
             "operation": operation,
             "status": "failed",
         })),
@@ -150,6 +211,7 @@ pub async fn record_post_failure(
         evidence_refs: draft.evidence_refs.clone(),
         quality_gate: draft.quality_gate.clone(),
         idempotency_key: build_idempotency_key(
+            BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID,
             &draft.repo,
             &draft.fingerprint,
             operation,
@@ -204,6 +266,7 @@ pub async fn publish_draft(
     draft_id: &str,
     incident_id: Option<&str>,
     mode: PublishMode,
+    destination: GithubDestinationContext,
 ) -> anyhow::Result<PublishOutcome> {
     let status = state.bug_monitor_status_snapshot().await;
     let config = status.config.clone();
@@ -234,8 +297,10 @@ pub async fn publish_draft(
         });
     }
 
+    let target_repo = destination.target_repo(&draft);
+    let publish_config = destination.publish_config(&config, &target_repo);
     let tools = state
-        .resolve_github_tool_set(&config)
+        .resolve_github_tool_set(&publish_config)
         .await
         .context("resolve GitHub MCP tools for Bug Monitor")?;
     let incident = match incident_id {
@@ -245,8 +310,13 @@ pub async fn publish_draft(
     let evidence_digest = compute_evidence_digest(&draft, incident.as_ref());
     draft.evidence_digest = Some(evidence_digest.clone());
     if mode != PublishMode::RecheckOnly {
-        if let Some(existing) =
-            successful_post_for_draft(state, &draft.draft_id, Some(&evidence_digest)).await
+        if let Some(existing) = successful_post_for_draft(
+            state,
+            &draft.draft_id,
+            &destination.destination_id,
+            Some(&evidence_digest),
+        )
+        .await
         {
             draft.github_status = Some("duplicate_skipped".to_string());
             draft.issue_number = existing.issue_number;
@@ -297,7 +367,7 @@ pub async fn publish_draft(
         draft = state.put_bug_monitor_draft(draft).await?;
     }
 
-    let owner_repo = split_owner_repo(&draft.repo)?;
+    let owner_repo = split_owner_repo(&target_repo)?;
     let matched_issue = find_matching_issue(state, &tools, &owner_repo, &draft)
         .await
         .context("match existing GitHub issue for Bug Monitor draft")?;
@@ -324,7 +394,8 @@ pub async fn publish_draft(
                 });
             }
             let idempotency_key = build_idempotency_key(
-                &draft.repo,
+                &destination.destination_id,
+                &target_repo,
                 &draft.fingerprint,
                 "comment_issue",
                 &evidence_digest,
@@ -368,16 +439,17 @@ pub async fn publish_draft(
                 issue_url: issue.html_url.clone(),
                 comment_id: result.id.clone(),
                 comment_url: result.html_url.clone(),
-                destination_id: Some(BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()),
+                destination_id: Some(destination.destination_id.clone()),
                 destination_kind: Some(BugMonitorDestinationKind::GithubIssue),
-                route_id: None,
-                route_match_reason: Some("legacy_github".to_string()),
+                route_id: destination.route_id.clone(),
+                route_match_reason: destination.route_match_reason(),
                 external_id: result.id.clone(),
                 external_url: result.html_url.clone().or_else(|| issue.html_url.clone()),
                 external_title: Some(format!("GitHub issue #{} comment", issue.number)),
-                target_ref: Some(draft.repo.clone()),
+                target_ref: Some(target_repo.clone()),
                 receipt: Some(json!({
                     "provider": "github",
+                    "destination_id": destination.destination_id,
                     "operation": "comment_issue",
                     "issue_number": issue.number,
                     "comment_id": result.id,
@@ -413,6 +485,8 @@ pub async fn publish_draft(
                     "draft_id": draft.draft_id,
                     "issue_number": issue.number,
                     "repo": draft.repo,
+                    "target_repo": target_repo,
+                    "destination_id": destination.destination_id,
                 }),
             ));
             Ok(PublishOutcome {
@@ -441,6 +515,8 @@ pub async fn publish_draft(
                 Some(&issue),
                 &evidence_digest,
                 issue_draft.as_ref(),
+                &destination,
+                &target_repo,
             )
             .await
         }
@@ -462,6 +538,8 @@ pub async fn publish_draft(
                 None,
                 &evidence_digest,
                 issue_draft.as_ref(),
+                &destination,
+                &target_repo,
             )
             .await
         }
@@ -491,6 +569,8 @@ async fn create_issue_from_draft(
     matched_closed_issue: Option<&GithubIssue>,
     evidence_digest: &str,
     issue_draft: Option<&Value>,
+    destination: &GithubDestinationContext,
+    target_repo: &str,
 ) -> anyhow::Result<PublishOutcome> {
     if config.require_approval_for_new_issues && !draft.status.eq_ignore_ascii_case("draft_ready") {
         draft.status = "approval_required".to_string();
@@ -511,7 +591,8 @@ async fn create_issue_from_draft(
         });
     }
     let idempotency_key = build_idempotency_key(
-        &draft.repo,
+        &destination.destination_id,
+        target_repo,
         &draft.fingerprint,
         "create_issue",
         evidence_digest,
@@ -531,7 +612,10 @@ async fn create_issue_from_draft(
             post: Some(existing),
         });
     }
-    if let Some(previous) = latest_failed_create_post_for_draft(state, &draft).await {
+    if let Some(previous) =
+        latest_failed_create_post_for_draft(state, &draft, &destination.destination_id, target_repo)
+            .await
+    {
         let detail = format!(
             "suppressed automatic GitHub issue creation for fingerprint {} after previous {} post attempt {} failed; refusing to retry create_issue because the previous attempt may have created an issue without returning a parseable payload",
             draft.fingerprint, previous.operation, previous.post_id
@@ -558,16 +642,17 @@ async fn create_issue_from_draft(
         issue_url: None,
         comment_id: None,
         comment_url: None,
-        destination_id: Some(BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()),
+        destination_id: Some(destination.destination_id.clone()),
         destination_kind: Some(BugMonitorDestinationKind::GithubIssue),
-        route_id: None,
-        route_match_reason: Some("legacy_github".to_string()),
+        route_id: destination.route_id.clone(),
+        route_match_reason: destination.route_match_reason(),
         external_id: None,
         external_url: None,
         external_title: None,
-        target_ref: Some(draft.repo.clone()),
+        target_ref: Some(target_repo.to_string()),
         receipt: Some(json!({
             "provider": "github",
+            "destination_id": destination.destination_id,
             "operation": "create_issue",
             "status": "pending",
         })),
@@ -614,7 +699,7 @@ async fn create_issue_from_draft(
         });
     }
 
-    let owner_repo = split_owner_repo(&draft.repo)?;
+    let owner_repo = split_owner_repo(target_repo)?;
     let title = issue_draft
         .and_then(|row| row.get("suggested_title"))
         .and_then(Value::as_str)
@@ -655,6 +740,7 @@ async fn create_issue_from_draft(
         external_title: Some(format!("GitHub issue #{}", created.number)),
         receipt: Some(json!({
             "provider": "github",
+            "destination_id": destination.destination_id,
             "operation": "create_issue",
             "issue_number": created.number,
             "issue_url": created.html_url.clone(),
@@ -682,6 +768,8 @@ async fn create_issue_from_draft(
             "draft_id": draft.draft_id,
             "issue_number": created.number,
             "repo": draft.repo,
+            "target_repo": target_repo,
+            "destination_id": destination.destination_id,
         }),
     ));
     Ok(PublishOutcome {
@@ -747,12 +835,14 @@ async fn successful_post_by_idempotency(
 async fn successful_post_for_draft(
     state: &dyn BugMonitorGithubHost,
     draft_id: &str,
+    destination_id: &str,
     evidence_digest: Option<&str>,
 ) -> Option<BugMonitorPostRecord> {
     let mut rows = state.list_bug_monitor_posts_by_draft(draft_id).await;
     rows.sort_by_key(|post| std::cmp::Reverse(post.updated_at_ms));
     rows.into_iter().find(|row| {
         row.status == "posted"
+            && post_matches_destination(row, destination_id)
             && match evidence_digest {
                 Some(expected) => row.evidence_digest.as_deref() == Some(expected),
                 None => true,
@@ -760,12 +850,22 @@ async fn successful_post_for_draft(
     })
 }
 
+fn post_matches_destination(post: &BugMonitorPostRecord, destination_id: &str) -> bool {
+    match post.destination_id.as_deref() {
+        Some(existing) => existing == destination_id,
+        None => destination_id == BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID,
+    }
+}
+
 fn failed_post_suppresses_create(
     draft: &BugMonitorDraftRecord,
     post: &BugMonitorPostRecord,
+    destination_id: &str,
+    target_repo: &str,
 ) -> bool {
-    post.repo == draft.repo
+    post.repo == target_repo
         && post.fingerprint == draft.fingerprint
+        && post_matches_destination(post, destination_id)
         && post.status == "failed"
         && (post.operation == "create_issue"
             || (post.operation == "auto_post" && !post_failure_is_preflight_only(post)))
@@ -788,12 +888,14 @@ fn post_failure_is_preflight_only(post: &BugMonitorPostRecord) -> bool {
 async fn latest_failed_create_post_for_draft(
     state: &dyn BugMonitorGithubHost,
     draft: &BugMonitorDraftRecord,
+    destination_id: &str,
+    target_repo: &str,
 ) -> Option<BugMonitorPostRecord> {
     let mut rows = state
-        .list_bug_monitor_posts_by_fingerprint(&draft.repo, &draft.fingerprint)
+        .list_bug_monitor_posts_by_fingerprint(target_repo, &draft.fingerprint)
         .await
         .into_iter()
-        .filter(|post| failed_post_suppresses_create(draft, post))
+        .filter(|post| failed_post_suppresses_create(draft, post, destination_id, target_repo))
         .collect::<Vec<_>>();
     rows.sort_by_key(|post| std::cmp::Reverse(post.updated_at_ms));
     rows.into_iter().next()
@@ -817,9 +919,15 @@ fn compute_evidence_digest(
     ])
 }
 
-fn build_idempotency_key(repo: &str, fingerprint: &str, operation: &str, digest: &str) -> String {
+fn build_idempotency_key(
+    destination_id: &str,
+    repo: &str,
+    fingerprint: &str,
+    operation: &str,
+    digest: &str,
+) -> String {
     sha256_hex(&[
-        BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID,
+        destination_id,
         "github_issue",
         repo,
         fingerprint,

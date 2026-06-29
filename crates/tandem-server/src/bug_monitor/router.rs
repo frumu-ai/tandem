@@ -293,6 +293,7 @@ pub async fn publish_draft(
         route_publish_approval_required(&status.config, &preview, &context, &status.destinations);
 
     validate_publish_plan(&status.config, &preview, request.mode)?;
+    let github_destination = github_destination_context(&preview)?;
     if request.mode != bug_monitor_github::PublishMode::RecheckOnly
         && router_approval_required
         && !draft.status.eq_ignore_ascii_case("denied")
@@ -313,6 +314,7 @@ pub async fn publish_draft(
         &request.draft_id,
         request.incident_id.as_deref(),
         request.mode,
+        github_destination,
     )
     .await
     .context("publish Bug Monitor draft through destination router")
@@ -359,7 +361,7 @@ fn validate_publish_plan(
     }
     if preview.destinations.len() != 1 {
         anyhow::bail!(
-            "Bug Monitor destination router supports one legacy GitHub destination in this phase"
+            "Bug Monitor destination router supports one GitHub destination per publish in this phase"
         );
     }
     let destination = &preview.destinations[0];
@@ -373,12 +375,6 @@ fn validate_publish_plan(
             destination.kind
         );
     }
-    if destination.destination_id != BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID {
-        anyhow::bail!(
-            "GitHub destination `{}` is configured but only the legacy GitHub destination can publish before GitHub adapter parity lands",
-            destination.destination_id
-        );
-    }
     if config.safety_defaults.block_unready_destinations
         && mode != bug_monitor_github::PublishMode::RecheckOnly
         && preview.blocked
@@ -386,6 +382,30 @@ fn validate_publish_plan(
         anyhow::bail!("{}", preview.blocked_reasons.join("; "));
     }
     Ok(())
+}
+
+fn github_destination_context(
+    preview: &BugMonitorRoutePreviewResponse,
+) -> anyhow::Result<bug_monitor_github::GithubDestinationContext> {
+    let destination = preview
+        .destinations
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("Bug Monitor destination router found no destination"))?;
+    let preview_match = preview.matches.iter().find(|preview_match| {
+        preview_match
+            .destination_ids
+            .iter()
+            .any(|destination_id| destination_id == &destination.destination_id)
+    });
+    Ok(bug_monitor_github::GithubDestinationContext {
+        destination_id: destination.destination_id.clone(),
+        route_id: preview_match.and_then(|row| row.route_id.clone()),
+        route_match_reason: preview_match
+            .and_then(|row| row.reason.clone())
+            .or_else(|| Some("destination_router".to_string())),
+        repo: destination.repo.clone(),
+        mcp_server: destination.mcp_server.clone(),
+    })
 }
 
 fn draft_satisfies_route_approval(draft: &BugMonitorDraftRecord) -> bool {

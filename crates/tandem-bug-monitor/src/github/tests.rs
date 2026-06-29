@@ -239,12 +239,14 @@ fn failed_create_posts_suppress_unsafe_create_retries() {
         fingerprint: "fp-create".to_string(),
         ..Default::default()
     };
+    let destination_id = BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID;
     let failed_create = BugMonitorPostRecord {
         post_id: "post-create".to_string(),
         repo: draft.repo.clone(),
         fingerprint: draft.fingerprint.clone(),
         operation: "create_issue".to_string(),
         status: "failed".to_string(),
+        destination_id: Some(destination_id.to_string()),
         ..Default::default()
     };
     let failed_auto_post = BugMonitorPostRecord {
@@ -270,19 +272,73 @@ fn failed_create_posts_suppress_unsafe_create_retries() {
         fingerprint: "other-fingerprint".to_string(),
         ..failed_create.clone()
     };
+    let different_destination = BugMonitorPostRecord {
+        destination_id: Some("github-secondary".to_string()),
+        ..failed_create.clone()
+    };
 
-    assert!(failed_post_suppresses_create(&draft, &failed_create));
-    assert!(failed_post_suppresses_create(&draft, &failed_auto_post));
+    assert!(failed_post_suppresses_create(
+        &draft,
+        &failed_create,
+        destination_id,
+        &draft.repo
+    ));
+    assert!(failed_post_suppresses_create(
+        &draft,
+        &failed_auto_post,
+        destination_id,
+        &draft.repo
+    ));
     assert!(!failed_post_suppresses_create(
         &draft,
-        &failed_preflight_auto_post
+        &failed_preflight_auto_post,
+        destination_id,
+        &draft.repo
     ));
-    assert!(!failed_post_suppresses_create(&draft, &failed_comment));
-    assert!(!failed_post_suppresses_create(&draft, &posted_create));
     assert!(!failed_post_suppresses_create(
         &draft,
-        &different_fingerprint
+        &failed_comment,
+        destination_id,
+        &draft.repo
     ));
+    assert!(!failed_post_suppresses_create(
+        &draft,
+        &posted_create,
+        destination_id,
+        &draft.repo
+    ));
+    assert!(!failed_post_suppresses_create(
+        &draft,
+        &different_fingerprint,
+        destination_id,
+        &draft.repo
+    ));
+    assert!(!failed_post_suppresses_create(
+        &draft,
+        &different_destination,
+        destination_id,
+        &draft.repo
+    ));
+}
+
+#[test]
+fn idempotency_key_is_destination_aware() {
+    let legacy = build_idempotency_key(
+        BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID,
+        "acme/platform",
+        "fp-create",
+        "create_issue",
+        "digest",
+    );
+    let secondary = build_idempotency_key(
+        "github-secondary",
+        "acme/platform",
+        "fp-create",
+        "create_issue",
+        "digest",
+    );
+
+    assert_ne!(legacy, secondary);
 }
 
 #[test]

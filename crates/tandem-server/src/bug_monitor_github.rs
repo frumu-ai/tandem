@@ -12,7 +12,7 @@ use crate::{
 };
 
 pub use tandem_bug_monitor::github::{
-    publish_draft, record_post_failure, PublishMode, PublishOutcome,
+    publish_draft, record_post_failure, GithubDestinationContext, PublishMode, PublishOutcome,
 };
 
 const BUG_MONITOR_LABEL: &str = "bug-monitor";
@@ -125,7 +125,11 @@ impl BugMonitorGithubHost for AppState {
             context_run_id: draft.triage_run_id.clone(),
             capability_id,
             provider: Some(BUG_MONITOR_LABEL.to_string()),
-            target: Some(draft.repo.clone()),
+            target: Some(
+                post.target_ref
+                    .clone()
+                    .unwrap_or_else(|| draft.repo.clone()),
+            ),
             approval_state: Some(if draft.status.eq_ignore_ascii_case("approval_required") {
                 "approval_required".to_string()
             } else {
@@ -136,15 +140,28 @@ impl BugMonitorGithubHost for AppState {
                 "post_id": post.post_id,
                 "draft_id": post.draft_id,
                 "incident_id": post.incident_id,
+                "destination_id": post.destination_id,
+                "destination_kind": post.destination_kind,
+                "route_id": post.route_id,
+                "route_match_reason": post.route_match_reason,
                 "issue_number": post.issue_number,
                 "issue_url": post.issue_url,
                 "comment_id": post.comment_id,
                 "comment_url": post.comment_url,
+                "external_id": post.external_id,
+                "external_url": post.external_url,
+                "external_title": post.external_title,
+                "target_ref": post.target_ref,
                 "response_excerpt": post.response_excerpt,
             })),
             error: post.error.clone(),
             metadata: Some(json!({
                 "repo": post.repo,
+                "destination_id": post.destination_id,
+                "destination_kind": post.destination_kind,
+                "route_id": post.route_id,
+                "route_match_reason": post.route_match_reason,
+                "target_ref": post.target_ref,
                 "fingerprint": post.fingerprint,
                 "evidence_digest": post.evidence_digest,
                 "confidence": post.confidence,
