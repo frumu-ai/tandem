@@ -4,6 +4,7 @@ use crate::automation_v2::types::{AutomationRunStatus, AutomationV2RunRecord};
 use tandem_workflows::{WorkflowRunRecord, WorkflowRunStatus};
 
 use super::definition::{automation_definition_snapshot_hash, automation_definition_version};
+use super::phases::phase_state_from_status;
 use super::types::{
     StatefulRuntimeScope, StatefulWaitKind, StatefulWorkflowRunKind, StatefulWorkflowRunRecord,
     StatefulWorkflowRunStatus, STATEFUL_RUNTIME_SCHEMA_VERSION,
@@ -11,6 +12,14 @@ use super::types::{
 
 pub fn stateful_run_from_automation_v2(run: &AutomationV2RunRecord) -> StatefulWorkflowRunRecord {
     let awaiting_gate = run.checkpoint.awaiting_gate.as_ref();
+    let current_phase_id = awaiting_gate.map(|gate| gate.node_id.clone());
+    let status = automation_status_to_stateful(&run.status);
+    let phase_state = phase_state_from_status(
+        &run.run_id,
+        &status,
+        run.updated_at_ms,
+        current_phase_id.as_deref(),
+    );
     let (workflow_definition_version, workflow_definition_snapshot_hash) = run
         .automation_snapshot
         .as_ref()
@@ -28,12 +37,15 @@ pub fn stateful_run_from_automation_v2(run: &AutomationV2RunRecord) -> StatefulW
         automation_id: Some(run.automation_id.clone()),
         automation_run_id: Some(run.run_id.clone()),
         scope: StatefulRuntimeScope::from_tenant_context(run.tenant_context.clone()),
-        status: automation_status_to_stateful(&run.status),
+        status,
+        phase: phase_state.phase,
+        phase_history: phase_state.phase_history,
+        allowed_next_phases: phase_state.allowed_next_phases,
         trigger_type: Some(run.trigger_type.clone()),
         trigger_event: None,
         source_event_id: None,
         task_id: None,
-        current_phase_id: awaiting_gate.map(|gate| gate.node_id.clone()),
+        current_phase_id,
         active_wait_kind: awaiting_gate.map(|_| StatefulWaitKind::Approval),
         active_wait_id: awaiting_gate.map(|gate| gate.node_id.clone()),
         workflow_definition_version,
@@ -56,6 +68,14 @@ pub fn stateful_run_from_automation_v2(run: &AutomationV2RunRecord) -> StatefulW
 
 pub fn stateful_run_from_workflow(run: &WorkflowRunRecord) -> StatefulWorkflowRunRecord {
     let awaiting_gate = run.awaiting_gate.as_ref();
+    let current_phase_id = awaiting_gate.map(|gate| gate.action_id.clone());
+    let status = workflow_status_to_stateful(&run.status);
+    let phase_state = phase_state_from_status(
+        &run.run_id,
+        &status,
+        run.updated_at_ms,
+        current_phase_id.as_deref(),
+    );
     StatefulWorkflowRunRecord {
         schema_version: STATEFUL_RUNTIME_SCHEMA_VERSION,
         run_id: run.run_id.clone(),
@@ -64,12 +84,15 @@ pub fn stateful_run_from_workflow(run: &WorkflowRunRecord) -> StatefulWorkflowRu
         automation_id: run.automation_id.clone(),
         automation_run_id: run.automation_run_id.clone(),
         scope: StatefulRuntimeScope::from_tenant_context(run.tenant_context.clone()),
-        status: workflow_status_to_stateful(&run.status),
+        status,
+        phase: phase_state.phase,
+        phase_history: phase_state.phase_history,
+        allowed_next_phases: phase_state.allowed_next_phases,
         trigger_type: None,
         trigger_event: run.trigger_event.clone(),
         source_event_id: run.source_event_id.clone(),
         task_id: run.task_id.clone(),
-        current_phase_id: awaiting_gate.map(|gate| gate.action_id.clone()),
+        current_phase_id,
         active_wait_kind: awaiting_gate.map(|_| StatefulWaitKind::Approval),
         active_wait_id: awaiting_gate.map(|gate| gate.action_id.clone()),
         workflow_definition_version: None,
@@ -122,6 +145,7 @@ mod tests {
         AutomationRunStatus, AutomationV2RunRecord, AutomationV2Schedule, AutomationV2ScheduleType,
         AutomationV2Spec, AutomationV2Status,
     };
+    use crate::stateful_runtime::StatefulWorkflowPhase;
     use serde_json::json;
     use tandem_types::TenantContext;
     use tandem_workflows::{WorkflowRunRecord, WorkflowRunStatus};
@@ -238,6 +262,18 @@ mod tests {
         assert_eq!(stateful.run_id, "run-a");
         assert_eq!(stateful.scope.organization_id(), "org-a");
         assert_eq!(stateful.status, StatefulWorkflowRunStatus::AwaitingApproval);
+        assert_eq!(stateful.phase, StatefulWorkflowPhase::AwaitingApproval);
+        assert_eq!(
+            stateful.allowed_next_phases,
+            StatefulWorkflowPhase::AwaitingApproval
+                .allowed_next_phases()
+                .to_vec()
+        );
+        assert_eq!(stateful.phase_history.len(), 1);
+        assert_eq!(
+            stateful.phase_history[0].phase_id.as_deref(),
+            Some("approve-plan")
+        );
         assert_eq!(stateful.active_wait_kind, Some(StatefulWaitKind::Approval));
         assert_eq!(stateful.active_wait_id.as_deref(), Some("approve-plan"));
         assert_eq!(stateful.related_context_run_ids, vec!["context-run-a"]);
@@ -323,5 +359,9 @@ mod tests {
         assert_eq!(stateful.scope.workspace_id(), "workspace-a");
         assert_eq!(stateful.source_event_id.as_deref(), Some("event-a"));
         assert_eq!(stateful.status, StatefulWorkflowRunStatus::Running);
+        assert_eq!(stateful.phase, StatefulWorkflowPhase::RunningPhase);
+        assert!(stateful
+            .allowed_next_phases
+            .contains(&StatefulWorkflowPhase::AwaitingApproval));
     }
 }
