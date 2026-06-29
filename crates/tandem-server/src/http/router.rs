@@ -156,8 +156,21 @@ pub(super) fn build_router(state: AppState, route_extensions: &[super::RouteRegi
             axum::routing::get(super::stateful_runtime_api::list_stateful_runs),
         )
         .route(
+            "/stateful-runtime/reliability",
+            axum::routing::get(super::stateful_runtime_reliability::list_stateful_reliability),
+        )
+        .route(
             "/stateful-runtime/runs/{run_id}",
             axum::routing::get(super::stateful_runtime_api::get_stateful_run),
+        )
+        .route(
+            "/stateful-runtime/runs/{run_id}/reliability",
+            axum::routing::get(super::stateful_runtime_reliability::get_stateful_run_reliability),
+        )
+        .route(
+            "/stateful-runtime/runs/{run_id}/resume-plan",
+            axum::routing::get(super::stateful_runtime_reliability::get_stateful_run_resume_plan)
+                .post(super::stateful_runtime_reliability::apply_stateful_run_resume_plan_action),
         )
         .route(
             "/stateful-runtime/runs/{run_id}/events",

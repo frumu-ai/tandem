@@ -1104,7 +1104,76 @@ impl AppState {
                 );
             }
         }
+        let reliability_path =
+            crate::stateful_runtime::stateful_reliability_path_from_runtime_events_path(
+                &self.runtime_events_path,
+            );
+        let reliability_scope = self.stateful_scope_for_external_action(&action).await;
+        if let Err(error) = crate::stateful_runtime::record_external_action_reliability_bridge(
+            &reliability_path,
+            reliability_scope,
+            &action,
+        )
+        .await
+        {
+            tracing::warn!(
+                "failed to mirror external action {} into stateful reliability store: {}",
+                action.action_id,
+                error
+            );
+        }
         Ok(action)
+    }
+
+    async fn stateful_scope_for_external_action(
+        &self,
+        action: &ExternalActionRecord,
+    ) -> crate::stateful_runtime::StatefulRuntimeScope {
+        if let Some(tenant_context) = action
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("tenant_context").or_else(|| metadata.get("tenantContext")))
+            .cloned()
+            .and_then(|value| serde_json::from_value::<TenantContext>(value).ok())
+        {
+            return crate::stateful_runtime::StatefulRuntimeScope::from_tenant_context(
+                tenant_context,
+            );
+        }
+
+        if let Some(run_id) = external_action_metadata_string(action, "automationRunID")
+            .or_else(|| external_action_metadata_string(action, "automation_run_id"))
+            .or_else(|| {
+                action
+                    .context_run_id
+                    .as_deref()
+                    .and_then(|value| value.strip_prefix("automation-v2-"))
+                    .map(str::to_string)
+            })
+        {
+            let runs = self.automation_v2_runs.read().await;
+            if let Some(run) = runs.get(&run_id) {
+                return crate::stateful_runtime::stateful_run_from_automation_v2(run).scope;
+            }
+        }
+
+        if let Some(run_id) = external_action_metadata_string(action, "workflowRunID")
+            .or_else(|| external_action_metadata_string(action, "workflow_run_id"))
+            .or_else(|| {
+                action
+                    .context_run_id
+                    .as_deref()
+                    .and_then(|value| value.strip_prefix("workflow-run-"))
+                    .map(str::to_string)
+            })
+        {
+            let runs = self.workflow_runs.read().await;
+            if let Some(run) = runs.get(&run_id) {
+                return crate::stateful_runtime::stateful_run_from_workflow(run).scope;
+            }
+        }
+
+        crate::stateful_runtime::StatefulRuntimeScope::local_implicit()
     }
 
     pub async fn update_bug_monitor_runtime_status(
@@ -1173,4 +1242,19 @@ impl AppState {
         }
         Ok(removed)
     }
+}
+
+fn external_action_metadata_string(action: &ExternalActionRecord, key: &str) -> Option<String> {
+    action
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get(key))
+        .and_then(|value| match value {
+            Value::String(value) => Some(value.clone()),
+            Value::Number(value) => Some(value.to_string()),
+            Value::Bool(value) => Some(value.to_string()),
+            _ => None,
+        })
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
