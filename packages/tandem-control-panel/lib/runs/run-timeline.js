@@ -313,8 +313,7 @@ function nextRunTimelineAfterSeq(entries) {
   );
 }
 
-function runTimelineRequestPath(runId, options = {}) {
-  const encoded = encodeURIComponent(compactString(runId));
+function runTimelineQueryParams(options = {}) {
   const params = new URLSearchParams();
   const afterSeq = toNumber(options.afterSeq ?? options.after_seq);
   const beforeSeq = toNumber(options.beforeSeq ?? options.before_seq);
@@ -323,16 +322,35 @@ function runTimelineRequestPath(runId, options = {}) {
   if (beforeSeq > 0) params.set("before_seq", String(beforeSeq));
   params.set("limit", String(limit));
   if (options.tail) params.set("tail", String(toNumber(options.tail) || limit));
-  return `/api/engine/stateful-runtime/runs/${encoded}/events?${params.toString()}`;
+  return params;
+}
+
+function runTimelineRequestPath(runId, options = {}) {
+  const encoded = encodeURIComponent(compactString(runId));
+  return `/api/engine/stateful-runtime/runs/${encoded}/events?${runTimelineQueryParams(options).toString()}`;
+}
+
+function legacyRunTimelineRequestPath(runId, options = {}) {
+  const encoded = encodeURIComponent(compactString(runId));
+  return `/api/engine/runs/${encoded}/events?${runTimelineQueryParams(options).toString()}`;
+}
+
+function runTimelinePageEventCount(page) {
+  if (Array.isArray(page?.events)) return page.events.length;
+  if (Array.isArray(page?.rows)) return page.rows.length;
+  if (Array.isArray(page)) return page.length;
+  return 0;
 }
 
 export {
   DEFAULT_TIMELINE_LIMIT,
   appendRunTimelineLiveEvent,
   buildRunTimeline,
+  legacyRunTimelineRequestPath,
   mergeRunTimelineEntries,
   nextRunTimelineAfterSeq,
   normalizeRunTimelineEntry,
   normalizeRunTimelinePage,
+  runTimelinePageEventCount,
   runTimelineRequestPath,
 };

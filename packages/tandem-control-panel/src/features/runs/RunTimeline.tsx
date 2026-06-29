@@ -5,6 +5,8 @@ import { useEngineStream } from "../stream/useEngineStream";
 import {
   DEFAULT_TIMELINE_LIMIT,
   buildRunTimeline,
+  legacyRunTimelineRequestPath,
+  runTimelinePageEventCount,
   runTimelineRequestPath,
 } from "../../../lib/runs/run-timeline.js";
 
@@ -47,6 +49,12 @@ type RunTimelineProps = {
   onLoadMore?: () => void;
 };
 
+type TimelineRequestOptions = {
+  beforeSeq?: number | null;
+  limit: number;
+  tail?: number | boolean;
+};
+
 function formatTime(ms = 0) {
   if (!ms) return "n/a";
   return new Date(ms).toLocaleString(undefined, {
@@ -68,17 +76,32 @@ function liveRunStreamPath(runId: string) {
   return runId ? `/api/engine/run/${encodeURIComponent(runId)}/events` : "";
 }
 
-function pageEventCount(page: any) {
-  if (Array.isArray(page?.events)) return page.events.length;
-  if (Array.isArray(page?.rows)) return page.rows.length;
-  return 0;
-}
-
 function firstSequence(entries: RunTimelineEntry[]) {
   return entries.reduce((min, entry) => {
     const seq = Number(entry.sequence || 0);
     return seq > 0 ? Math.min(min, seq) : min;
   }, Number.POSITIVE_INFINITY);
+}
+
+async function fetchRunTimelinePage(runId: string, options: TimelineRequestOptions) {
+  let canonicalPage: any = null;
+  try {
+    canonicalPage = await api(runTimelineRequestPath(runId, options));
+    if (runTimelinePageEventCount(canonicalPage) > 0) return canonicalPage;
+  } catch (canonicalError) {
+    try {
+      return await api(legacyRunTimelineRequestPath(runId, options));
+    } catch {
+      throw canonicalError;
+    }
+  }
+
+  try {
+    const legacyPage = await api(legacyRunTimelineRequestPath(runId, options));
+    return runTimelinePageEventCount(legacyPage) > 0 ? legacyPage : canonicalPage;
+  } catch {
+    return canonicalPage;
+  }
 }
 
 export function useRunTimeline({
@@ -104,13 +127,11 @@ export function useRunTimeline({
       if (mode === "prepend") setLoadingMore(true);
       else setLoading(true);
       try {
-        const page = await api(
-          runTimelineRequestPath(requestedRunId, {
-            beforeSeq: mode === "prepend" ? cursorSeq : null,
-            limit,
-            tail: limit,
-          })
-        );
+        const page = await fetchRunTimelinePage(requestedRunId, {
+          beforeSeq: mode === "prepend" ? cursorSeq : null,
+          limit,
+          tail: limit,
+        });
         if (!isCurrentRun()) return;
         setPages((prev) => (mode === "prepend" ? [page, ...prev] : [page]));
       } catch (err: any) {
@@ -160,7 +181,7 @@ export function useRunTimeline({
   const firstPage = pages[0];
   const firstPersistedSeq = firstSequence(persistedEntries);
   const hasMore =
-    pageEventCount(firstPage) >= limit &&
+    runTimelinePageEventCount(firstPage) >= limit &&
     Number.isFinite(firstPersistedSeq) &&
     firstPersistedSeq > 1;
   const loadMore = useCallback(() => {

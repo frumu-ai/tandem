@@ -158,7 +158,8 @@ pub(super) async fn get_stateful_run_events(
 ) -> Json<Value> {
     let paths = StatefulRuntimeStoragePaths::from_runtime_events_path(&state.runtime_events_path);
     let limit = query
-        .limit
+        .tail
+        .or(query.limit)
         .unwrap_or(DEFAULT_STATEFUL_RUNTIME_LIMIT)
         .clamp(1, MAX_STATEFUL_RUNTIME_LIMIT);
     let tail = query.tail.is_some();
@@ -662,6 +663,57 @@ mod tests {
             body.get("sequence_scope").and_then(Value::as_str),
             Some("stateful_runtime")
         );
+        let _ = tokio::fs::remove_dir_all(
+            paths
+                .run_events_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new(".")),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn get_events_uses_tail_value_as_window_size() {
+        let state = stateful_test_state().await;
+        let tenant_a = tenant("org-a", "workspace-a");
+        let paths =
+            StatefulRuntimeStoragePaths::from_runtime_events_path(&state.runtime_events_path);
+        for seq in 1..=4 {
+            append_stateful_run_event(
+                &paths.run_events_path,
+                &event(seq, "run-a", tenant_a.clone()),
+            )
+            .await
+            .expect("append event");
+        }
+
+        let Json(body) = get_stateful_run_events(
+            State(state.clone()),
+            Extension(tenant_a),
+            Path("run-a".to_string()),
+            Query(StatefulRunEventsQuery {
+                after_seq: None,
+                since_seq: None,
+                before_seq: None,
+                limit: None,
+                tail: Some(2),
+            }),
+        )
+        .await;
+
+        assert_eq!(body.get("count").and_then(Value::as_u64), Some(2));
+        assert_eq!(body.get("limit").and_then(Value::as_u64), Some(2));
+        let sequences = body
+            .get("events")
+            .and_then(Value::as_array)
+            .map(|events| {
+                events
+                    .iter()
+                    .filter_map(|event| event.get("seq").and_then(Value::as_u64))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        assert_eq!(sequences, vec![3, 4]);
         let _ = tokio::fs::remove_dir_all(
             paths
                 .run_events_path
