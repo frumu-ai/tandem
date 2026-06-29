@@ -152,6 +152,14 @@ pub(super) fn build_router(state: AppState, route_extensions: &[super::RouteRegi
     );
     router = router
         .route(
+            "/stateful-runtime/runs",
+            axum::routing::get(super::stateful_runtime_api::list_stateful_runs),
+        )
+        .route(
+            "/stateful-runtime/runs/{run_id}",
+            axum::routing::get(super::stateful_runtime_api::get_stateful_run),
+        )
+        .route(
             "/stateful-runtime/runs/{run_id}/events",
             axum::routing::get(super::stateful_runtime_api::get_stateful_run_events),
         )

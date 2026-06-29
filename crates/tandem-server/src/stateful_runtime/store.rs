@@ -44,7 +44,9 @@ impl StatefulRuntimeStoragePaths {
 pub struct StatefulRunEventQuery<'a> {
     pub run_id: &'a str,
     pub after_seq: Option<u64>,
+    pub before_seq: Option<u64>,
     pub limit: Option<usize>,
+    pub tail: bool,
 }
 
 pub async fn append_stateful_run_event(
@@ -134,11 +136,22 @@ pub fn query_stateful_run_events(
                 .map(|after_seq| row.seq > after_seq)
                 .unwrap_or(true)
         })
+        .filter(|row| {
+            query
+                .before_seq
+                .map(|before_seq| row.seq < before_seq)
+                .unwrap_or(true)
+        })
         .filter(|row| row.visible_to_tenant(tenant))
         .collect::<Vec<_>>();
     if let Some(limit) = query.limit.filter(|limit| *limit > 0) {
         if rows.len() > limit {
-            rows.truncate(limit);
+            if query.tail {
+                let remove_count = rows.len() - limit;
+                rows.drain(0..remove_count);
+            } else {
+                rows.truncate(limit);
+            }
         }
     }
     rows
@@ -373,11 +386,46 @@ mod tests {
             StatefulRunEventQuery {
                 run_id: "run-a",
                 after_seq: Some(1),
+                before_seq: None,
                 limit: None,
+                tail: false,
             },
         );
 
         assert_eq!(rows.iter().map(|row| row.seq).collect::<Vec<_>>(), vec![4]);
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn query_supports_before_sequence_and_tail_window() {
+        let path = std::env::temp_dir().join(format!(
+            "stateful-runtime-events-window-{}.jsonl",
+            Uuid::new_v4()
+        ));
+        let tenant_a = tenant("org-a", "workspace-a");
+
+        for seq in 1..=5 {
+            append_stateful_run_event(&path, &event(seq, "run-a", tenant_a.clone()))
+                .await
+                .expect("append");
+        }
+
+        let rows = query_stateful_run_events(
+            &path,
+            &tenant_a,
+            StatefulRunEventQuery {
+                run_id: "run-a",
+                after_seq: None,
+                before_seq: Some(5),
+                limit: Some(2),
+                tail: true,
+            },
+        );
+
+        assert_eq!(
+            rows.iter().map(|row| row.seq).collect::<Vec<_>>(),
+            vec![3, 4]
+        );
         let _ = tokio::fs::remove_file(path).await;
     }
 

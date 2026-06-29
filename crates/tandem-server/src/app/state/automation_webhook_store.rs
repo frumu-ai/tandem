@@ -398,7 +398,9 @@ fn next_stateful_run_event_seq(
         StatefulRunEventQuery {
             run_id,
             after_seq: None,
+            before_seq: None,
             limit: None,
+            tail: false,
         },
     )
     .last()
@@ -418,7 +420,9 @@ fn stateful_run_event_seq_by_id(
         StatefulRunEventQuery {
             run_id,
             after_seq: None,
+            before_seq: None,
             limit: None,
+            tail: false,
         },
     )
     .into_iter()

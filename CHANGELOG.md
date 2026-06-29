@@ -45,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   timeout cancellation/escalation statuses, and scheduler lag metrics.
 - Added tenant-filtered stateful runtime event and snapshot read endpoints for
   replay and control-panel consumers.
+- Added canonical stateful runtime run list/detail read endpoints with
+  tenant/workspace/status/phase filters, current wait, latest event, latest
+  snapshot, and replay-boundary metadata for control-panel consumers.
 
 ### Changed
 

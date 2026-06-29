@@ -44,7 +44,7 @@ function normalizeKey(value) {
 
 function titleCase(value, fallback = "Unknown") {
   return stringValue(value, fallback)
-    .replace(/[_-]+/g, " ")
+    .replace(/[_.-]+/g, " ")
     .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
@@ -91,7 +91,13 @@ function canonicalRunId(id) {
 }
 
 function tenantContextOf(row) {
-  const tenant = row?.tenant_context || row?.tenantContext || row?.scheduler?.tenant_context || {};
+  const tenant =
+    row?.tenant_context ||
+    row?.tenantContext ||
+    row?.scope?.tenant_context ||
+    row?.scope?.tenantContext ||
+    row?.scheduler?.tenant_context ||
+    {};
   return {
     orgId: stringValue(tenant.org_id || tenant.orgId || row?.org_id || row?.orgId, "local"),
     workspaceId: stringValue(
@@ -172,6 +178,15 @@ function statusTone(group) {
 }
 
 function latestLifecycleEvent(row) {
+  const latestEvent = row?.latest_event || row?.latestEvent;
+  if (latestEvent && typeof latestEvent === "object") {
+    return {
+      label: titleCase(latestEvent.event_type || latestEvent.eventType || "event"),
+      detail: compact([latestEvent.phase_id || latestEvent.phaseId, latestEvent.wait_kind || latestEvent.waitKind]).join(" · "),
+      atMs: timestampMs(latestEvent.occurred_at_ms || latestEvent.occurredAtMs),
+    };
+  }
+
   const history = Array.isArray(row?.checkpoint?.lifecycle_history)
     ? row.checkpoint.lifecycle_history
     : Array.isArray(row?.checkpoint?.lifecycleHistory)
@@ -191,6 +206,16 @@ function latestLifecycleEvent(row) {
 }
 
 function currentWaitOf(row) {
+  const wait = row?.current_wait || row?.currentWait;
+  if (wait && typeof wait === "object") {
+    const kind = stringValue(wait.wait_kind || wait.waitKind);
+    return {
+      kind,
+      label: stringValue(wait.reason, kind ? titleCase(kind) : "Waiting"),
+      detail: compact([wait.wait_id || wait.waitId, wait.status]).join(" · "),
+    };
+  }
+
   const gate = row?.checkpoint?.awaiting_gate || row?.checkpoint?.awaitingGate || row?.awaiting_gate;
   if (gate) {
     return {
@@ -243,6 +268,15 @@ function phaseOf(row, wait) {
 }
 
 function retryStateOf(row) {
+  const wait = row?.current_wait || row?.currentWait;
+  const timeout = wait?.timeout_policy || wait?.timeoutPolicy;
+  if (timeout?.on_timeout || timeout?.onTimeout) {
+    return {
+      label: `Timeout: ${titleCase(timeout.on_timeout || timeout.onTimeout)}`,
+      detail: timeout.timeout_at_ms || timeout.timeoutAtMs ? `at ${timeout.timeout_at_ms || timeout.timeoutAtMs}` : "",
+    };
+  }
+
   const failure = row?.checkpoint?.last_failure || row?.checkpoint?.lastFailure || row?.last_failure;
   if (failure) {
     return {
@@ -356,6 +390,29 @@ function projectRun(row, source) {
   };
 }
 
+function sourceFromStatefulKind(kind) {
+  const normalized = normalizeKey(kind);
+  if (normalized === "context_run") return "context";
+  if (normalized === "workflow") return "workflow";
+  return "workflow";
+}
+
+function projectCanonicalRun(row) {
+  const run = row?.run && typeof row.run === "object" ? row.run : row;
+  if (!run || typeof run !== "object") return null;
+  const source = sourceFromStatefulKind(run.kind);
+  return projectRun(
+    {
+      ...run,
+      current_wait: row?.current_wait || row?.currentWait,
+      latest_event: row?.latest_event || row?.latestEvent,
+      latest_snapshot: row?.latest_snapshot || row?.latestSnapshot,
+      replay_boundaries: row?.replay_boundaries || row?.replayBoundaries,
+    },
+    source
+  );
+}
+
 function mergeRows(existing, candidate) {
   if (!existing) return candidate;
   const useCandidate = candidate.sourcePriority > existing.sourcePriority;
@@ -381,6 +438,9 @@ function mergeRows(existing, candidate) {
 
 function buildStatefulRunRows(input = {}) {
   const rows = [
+    ...toArray(input.statefulRuns || input.canonicalRuns || input.runs, "runs").map((row) =>
+      projectCanonicalRun(row)
+    ),
     ...toArray(input.workflowRuns || input.automationV2Runs || input.automationRunsV2, "runs").map((row) =>
       projectRun(row, "workflow")
     ),

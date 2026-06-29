@@ -132,6 +132,58 @@ test("stateful run helpers classify waits, retries, and summary buckets", () => 
   });
 });
 
+test("stateful run helpers project canonical stateful runtime API rows", () => {
+  const rows = buildStatefulRunRows({
+    statefulRuns: [
+      {
+        run: {
+          run_id: "run-stateful",
+          kind: "automation_v2",
+          automation_id: "automation-a",
+          status: "awaiting_webhook",
+          phase: "waiting_webhook",
+          trigger_type: "webhook",
+          updated_at_ms: 7000,
+          scope: {
+            tenant_context: {
+              org_id: "org-a",
+              workspace_id: "workspace-a",
+              deployment_id: "prod",
+            },
+          },
+        },
+        current_wait: {
+          wait_id: "wait-a",
+          wait_kind: "webhook",
+          status: "waiting",
+          reason: "wait for provider callback",
+        },
+        latest_event: {
+          event_id: "evt-a",
+          event_type: "stateful_runtime.wait.webhook_registered",
+          occurred_at_ms: 7100,
+          phase_id: "phase-a",
+        },
+        latest_snapshot: {
+          snapshot_id: "snapshot-a",
+          seq: 3,
+        },
+      },
+    ],
+  });
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, "run-stateful");
+  assert.equal(rows[0].source, "workflow");
+  assert.equal(rows[0].statusGroup, "waiting");
+  assert.equal(rows[0].phase, "Waiting Webhook");
+  assert.equal(rows[0].currentWait, "wait for provider callback");
+  assert.equal(rows[0].waitDetail, "wait-a · waiting");
+  assert.equal(rows[0].tenantOrg, "org-a");
+  assert.equal(rows[0].tenantWorkspace, "workspace-a");
+  assert.equal(rows[0].lastEventLabel, "Stateful Runtime Wait Webhook Registered");
+});
+
 test("stateful run helpers filter by status source tenant workspace and phase wait text", () => {
   const rows = buildStatefulRunRows({
     workflowRuns: [

@@ -18,6 +18,7 @@ type RunsProps = Pick<AppPageProps, "api" | "client" | "navigate">;
 type RunListRequest = Pick<AppPageProps, "api" | "client">;
 
 type RunListPayload = {
+  statefulRuns: any[];
   workflowRuns: any[];
   legacyRuns: any[];
   contextRuns: any[];
@@ -35,6 +36,24 @@ function errorText(error: any) {
 }
 
 async function runListPayload({ api, client }: RunListRequest): Promise<RunListPayload> {
+  const canonicalRuns = await api("/api/engine/stateful-runtime/runs?limit=120").catch((error: any) => ({
+    runs: [],
+    error: errorText(error),
+  }));
+  if (!canonicalRuns?.error) {
+    const contextRuns = await api("/api/engine/context/runs?limit=120").catch((error: any) => ({
+      runs: [],
+      error: errorText(error),
+    }));
+    return {
+      statefulRuns: toArray(canonicalRuns, "runs"),
+      workflowRuns: [],
+      legacyRuns: [],
+      contextRuns: toArray(contextRuns, "runs"),
+      errors: [contextRuns?.error].filter(Boolean),
+    };
+  }
+
   const [workflowRuns, legacyRuns, contextRuns] = await Promise.all([
     api("/api/engine/automations/v2/runs?limit=120").catch((error: any) => ({
       runs: [],
@@ -51,10 +70,11 @@ async function runListPayload({ api, client }: RunListRequest): Promise<RunListP
   ]);
 
   return {
+    statefulRuns: [],
     workflowRuns: toArray(workflowRuns, "runs"),
     legacyRuns: toArray(legacyRuns, "runs"),
     contextRuns: toArray(contextRuns, "runs"),
-    errors: [workflowRuns?.error, legacyRuns?.error, contextRuns?.error].filter(Boolean),
+    errors: [canonicalRuns?.error, workflowRuns?.error, legacyRuns?.error, contextRuns?.error].filter(Boolean),
   };
 }
 
@@ -92,6 +112,7 @@ export function StatefulRunsPage({ api, client, navigate }: RunsProps) {
   const rows = useMemo(
     () =>
       buildStatefulRunRows({
+        statefulRuns: runsQuery.data?.statefulRuns ?? [],
         workflowRuns: runsQuery.data?.workflowRuns ?? [],
         legacyRuns: runsQuery.data?.legacyRuns ?? [],
         contextRuns: runsQuery.data?.contextRuns ?? [],

@@ -323,7 +323,7 @@ function runTimelineRequestPath(runId, options = {}) {
   if (beforeSeq > 0) params.set("before_seq", String(beforeSeq));
   params.set("limit", String(limit));
   if (options.tail) params.set("tail", String(toNumber(options.tail) || limit));
-  return `/api/engine/runs/${encoded}/events?${params.toString()}`;
+  return `/api/engine/stateful-runtime/runs/${encoded}/events?${params.toString()}`;
 }
 
 export {

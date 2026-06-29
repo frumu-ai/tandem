@@ -42,6 +42,10 @@ idempotent wake/timeout events and snapshots, and marks timeout cancellations
 or escalations for operator visibility.
 Stateful runtime event and snapshot read endpoints are now available for
 tenant-filtered replay/debug and future control-panel views.
+Stateful runtime run list and detail endpoints now provide canonical
+tenant-filtered run records with current wait, latest event, latest snapshot,
+and replay-boundary metadata, and the control-panel run list prefers those
+endpoints while retaining the legacy fan-out fallback.
 
 ## v0.6.4 (2026-06-28)
 
