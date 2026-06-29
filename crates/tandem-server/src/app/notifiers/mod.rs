@@ -241,6 +241,7 @@ mod tests {
     fn fake_request() -> ApprovalRequest {
         ApprovalRequest {
             request_id: "automation_v2:run-1:send_email".to_string(),
+            approval_wait: None,
             source: ApprovalSourceKind::AutomationV2,
             tenant: ApprovalTenantRef {
                 org_id: "org".to_string(),

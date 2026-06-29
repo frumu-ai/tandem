@@ -15,6 +15,7 @@
 
 use tandem_types::{
     ApprovalDecision, ApprovalListFilter, ApprovalRequest, ApprovalSourceKind, ApprovalTenantRef,
+    ApprovalWaitRef,
 };
 
 use crate::automation_v2::types::{
@@ -140,8 +141,22 @@ pub(crate) fn workflow_run_to_approval_request(
         .skip(1)
         .find(|action| action.status != tandem_workflows::WorkflowActionRunStatus::Completed)
         .map(|action| action.action.clone());
+    let approval_wait =
+        ApprovalWaitRef::for_gate(ApprovalSourceKind::Workflow, &run.run_id, &gate.action_id);
+    let mut surface_payload = serde_json::json!({
+        "workflow_run_id": run.run_id,
+        "workflow_id": run.workflow_id,
+        "action_id": gate.action_id,
+        "decide_endpoint": format!("/workflows/runs/{}/gate", run.run_id),
+        "wait_id": approval_wait.wait_id.clone(),
+        "approval_request_id": approval_wait.approval_request_id.clone(),
+    });
+    if let Some(transition_id) = approval_wait.transition_id.as_ref() {
+        surface_payload["transition_id"] = serde_json::json!(transition_id);
+    }
     ApprovalRequest {
-        request_id: format!("workflow:{}:{}", run.run_id, gate.action_id),
+        request_id: approval_wait.approval_request_id.clone(),
+        approval_wait: Some(approval_wait),
         source: ApprovalSourceKind::Workflow,
         tenant: ApprovalTenantRef {
             org_id: run.tenant_context.org_id.clone(),
@@ -153,12 +168,7 @@ pub(crate) fn workflow_run_to_approval_request(
         workflow_name: Some(run.workflow_id.clone()),
         action_kind,
         action_preview_markdown: None,
-        surface_payload: Some(serde_json::json!({
-            "workflow_run_id": run.run_id,
-            "workflow_id": run.workflow_id,
-            "action_id": gate.action_id,
-            "decide_endpoint": format!("/workflows/runs/{}/gate", run.run_id),
-        })),
+        surface_payload: Some(surface_payload),
         requested_at_ms: gate.requested_at_ms,
         expires_at_ms: None,
         decisions: gate
@@ -239,6 +249,8 @@ pub(crate) fn automation_v2_run_to_approval_request(
 
     let decisions = approval_decisions_for_gate(gate);
     let expires_at_ms = crate::app::state::automation_gate_expires_at_ms(gate);
+    let approval_wait =
+        ApprovalWaitRef::for_gate(ApprovalSourceKind::AutomationV2, &run.run_id, &gate.node_id);
     let mut surface_payload = serde_json::json!({
         "automation_v2_run_id": run.run_id,
         "automation_id": run.automation_id,
@@ -247,7 +259,12 @@ pub(crate) fn automation_v2_run_to_approval_request(
             "/automations/v2/runs/{}/gate",
             run.run_id
         ),
+        "wait_id": approval_wait.wait_id.clone(),
+        "approval_request_id": approval_wait.approval_request_id.clone(),
     });
+    if let Some(transition_id) = approval_wait.transition_id.as_ref() {
+        surface_payload["transition_id"] = serde_json::json!(transition_id);
+    }
     if let Some(expires_at_ms) = expires_at_ms {
         surface_payload["expires_at_ms"] = serde_json::json!(expires_at_ms);
     }
@@ -271,7 +288,8 @@ pub(crate) fn automation_v2_run_to_approval_request(
     }
 
     ApprovalRequest {
-        request_id: format!("automation_v2:{}:{}", run.run_id, gate.node_id),
+        request_id: approval_wait.approval_request_id.clone(),
+        approval_wait: Some(approval_wait),
         source: ApprovalSourceKind::AutomationV2,
         tenant: ApprovalTenantRef {
             org_id: run.tenant_context.org_id.clone(),

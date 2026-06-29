@@ -27,8 +27,66 @@ pub enum ApprovalSourceKind {
     AutomationV2,
     /// Coder context run in `AwaitingApproval` state.
     Coder,
-    /// Workflow run paused on a `HumanApprovalGate` (future — not yet wired).
+    /// Workflow run paused on a `HumanApprovalGate`.
     Workflow,
+}
+
+impl ApprovalSourceKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ApprovalSourceKind::AutomationV2 => "automation_v2",
+            ApprovalSourceKind::Coder => "coder",
+            ApprovalSourceKind::Workflow => "workflow",
+        }
+    }
+}
+
+/// Stable IDs that bind a human approval request to the durable runtime wait
+/// it unlocks.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApprovalWaitRef {
+    /// Stable wait identity for runtime state, audit, and observability joins.
+    pub wait_id: String,
+    /// Stable public approval request identity. Matches `ApprovalRequest.request_id`.
+    pub approval_request_id: String,
+    /// Which subsystem owns the wait.
+    pub source: ApprovalSourceKind,
+    /// Owning run identifier in that subsystem.
+    pub run_id: String,
+    /// Node/action that created the wait.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+    /// Transition unlocked by the decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition_id: Option<String>,
+    /// Policy decision that required this approval, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_decision_id: Option<String>,
+    /// Run event that recorded the wait, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_event_id: Option<String>,
+}
+
+impl ApprovalWaitRef {
+    pub fn for_gate(
+        source: ApprovalSourceKind,
+        run_id: impl AsRef<str>,
+        node_id: impl AsRef<str>,
+    ) -> Self {
+        let run_id = run_id.as_ref().to_string();
+        let node_id = node_id.as_ref().to_string();
+        let approval_request_id = format!("{}:{}:{}", source.as_str(), run_id, node_id);
+        Self {
+            wait_id: format!("{approval_request_id}:wait"),
+            transition_id: Some(format!("{approval_request_id}:decision")),
+            approval_request_id,
+            source,
+            run_id,
+            node_id: Some(node_id),
+            policy_decision_id: None,
+            run_event_id: None,
+        }
+    }
 }
 
 /// The decision a human (or programmatic surface acting on their behalf) can make.
@@ -62,6 +120,10 @@ pub struct ApprovalRequest {
     /// is `automation_v2:{run_id}:{node_id}`; for coder runs it is
     /// `coder:{context_run_id}`. Aggregators are responsible for stable IDs.
     pub request_id: String,
+
+    /// Durable runtime wait metadata tied to this approval request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_wait: Option<ApprovalWaitRef>,
 
     /// Which subsystem produced this pending state.
     pub source: ApprovalSourceKind,
@@ -227,6 +289,11 @@ mod tests {
     fn approval_request_round_trips_minimal() {
         let request = ApprovalRequest {
             request_id: "automation_v2:run-1:node-2".to_string(),
+            approval_wait: Some(ApprovalWaitRef::for_gate(
+                ApprovalSourceKind::AutomationV2,
+                "run-1",
+                "node-2",
+            )),
             source: ApprovalSourceKind::AutomationV2,
             tenant: ApprovalTenantRef {
                 org_id: "local-default-org".to_string(),
@@ -256,6 +323,13 @@ mod tests {
         let json = serde_json::to_string(&request).unwrap();
         let parsed: ApprovalRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.request_id, request.request_id);
+        assert_eq!(
+            parsed
+                .approval_wait
+                .as_ref()
+                .map(|wait| wait.wait_id.as_str()),
+            Some("automation_v2:run-1:node-2:wait")
+        );
         assert_eq!(parsed.source, ApprovalSourceKind::AutomationV2);
         assert_eq!(parsed.decisions.len(), 3);
         assert!(parsed.decided_at_ms.is_none());

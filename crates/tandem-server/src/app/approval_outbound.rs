@@ -289,6 +289,7 @@ mod tests {
     fn fake_request(request_id: &str) -> ApprovalRequest {
         ApprovalRequest {
             request_id: request_id.to_string(),
+            approval_wait: None,
             source: ApprovalSourceKind::AutomationV2,
             tenant: ApprovalTenantRef {
                 org_id: "local-default-org".to_string(),

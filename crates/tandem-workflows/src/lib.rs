@@ -151,6 +151,8 @@ pub struct WorkflowGateDecisionRecord {
     pub action_id: String,
     pub decision: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_wait: Option<tandem_types::ApprovalWaitRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     pub decided_at_ms: u64,
     /// Serialized governance actor (kind/actor_id/source).

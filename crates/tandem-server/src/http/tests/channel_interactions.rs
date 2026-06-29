@@ -142,6 +142,7 @@ async fn seed_telegram_callback(run: &crate::AutomationV2RunRecord) {
     .await;
     let request = ApprovalRequest {
         request_id: "ct05-telegram-callback".to_string(),
+        approval_wait: None,
         source: ApprovalSourceKind::AutomationV2,
         tenant: ApprovalTenantRef {
             org_id: TENANT_B_ORG.to_string(),
