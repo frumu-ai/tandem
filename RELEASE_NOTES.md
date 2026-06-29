@@ -13,6 +13,11 @@ persisted checkpoint is recoverable while corrupt in-flight records continue to
 fail closed. Automation V2 run claims are now persisted with lease metadata, and
 expired launch claims without active session or agent handles are reclaimed back
 to the queue so only one executor can safely resume the run.
+Durable wait foundations now persist timer/webhook/approval wait metadata,
+tenant-boundary identity, wake times, timeout policy, and wake claim state for
+future sleep/resume scheduling.
+Stateful runtime event and snapshot read endpoints are now available for
+tenant-filtered replay/debug and future control-panel views.
 
 ## v0.6.4 (2026-06-28)
 
