@@ -32,18 +32,13 @@ fn default_retryable_failure_classes() -> Vec<String> {
     .collect()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum RetryBackoffStrategy {
+    #[default]
     None,
     Fixed,
     Exponential,
-}
-
-impl Default for RetryBackoffStrategy {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -108,18 +103,13 @@ impl RetryBackoffPolicy {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RetryTerminalMode {
+    #[default]
     FailRun,
     PauseForReview,
     DeadLetter,
-}
-
-impl Default for RetryTerminalMode {
-    fn default() -> Self {
-        Self::FailRun
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
