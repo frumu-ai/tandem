@@ -1048,6 +1048,7 @@ pub async fn run_automation_v2_run(
     run: crate::automation_v2::types::AutomationV2RunRecord,
 ) {
     let run_id = run.run_id.clone();
+    let run_claim_epoch = run.execution_claim_epoch;
     let automation = state
         .get_automation_v2(&run.automation_id)
         .await
@@ -2335,6 +2336,7 @@ pub async fn run_automation_v2_run(
                         max_attempts,
                         &retry_decision,
                         &detail,
+                        run_claim_epoch,
                         scheduled_at_ms,
                     );
                 })

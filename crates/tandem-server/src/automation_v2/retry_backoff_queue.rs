@@ -62,9 +62,12 @@ pub(crate) fn queue_run_for_retry_backoff(
     max_attempts: u32,
     retry_decision: &tandem_automation::RetryDecision,
     detail: &str,
+    expected_execution_claim_epoch: u64,
     now_ms: u64,
 ) -> Option<SchedulerMetadata> {
-    if run.status != AutomationRunStatus::Running {
+    if run.status != AutomationRunStatus::Running
+        || run.execution_claim_epoch != expected_execution_claim_epoch
+    {
         return None;
     }
     let metadata =
@@ -228,6 +231,7 @@ mod tests {
             3,
             &decision,
             "provider timeout",
+            run.execution_claim_epoch,
             1_000,
         )
         .expect("metadata");
@@ -277,6 +281,7 @@ mod tests {
                 3,
                 &decision,
                 "provider timeout",
+                run.execution_claim_epoch,
                 1_000,
             ),
             None
