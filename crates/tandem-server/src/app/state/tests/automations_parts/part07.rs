@@ -88,7 +88,8 @@ async fn automation_v2_run_snapshot_replacement_restamps_definition_metadata() {
         uuid::Uuid::new_v4()
     ));
     std::fs::create_dir_all(&root).expect("state root");
-    let mut state = test_state_with_path(root.join("shared.json"));
+    let mut state = ready_test_state().await;
+    state.shared_resources_path = root.join("shared.json");
     state.automations_v2_path = root.join("automations_v2.json");
     state.automation_v2_runs_path = root.join("automation_v2_runs.json");
     state.automation_governance_path = root.join("automation_governance.json");
