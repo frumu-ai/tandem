@@ -11,6 +11,9 @@ versions and `sha256:` snapshot hashes for future replay and resume checks, and
 restart-interrupted Automation V2 runs are queued for resume when their
 persisted checkpoint is recoverable while corrupt in-flight records continue to
 fail closed.
+Automation webhooks now use a provider-aware signature verification registry
+with queryable delivery verification metadata, keeping Tandem HMAC compatibility
+while preparing GitHub-style and shared-secret provider schemes.
 Durable wait foundations now persist timer/webhook/approval wait metadata,
 tenant-boundary identity, wake times, timeout policy, and wake claim state for
 future sleep/resume scheduling.
