@@ -14,6 +14,11 @@ fail closed. Automation V2 retry handling now also has a shared policy schema
 and structured retry decision record so node failures can explain retryability,
 attempt budget, terminal behavior, and next retry timing while preserving legacy
 `max_attempts` compatibility.
+Durable wait foundations now persist timer/webhook/approval wait metadata,
+tenant-boundary identity, wake times, timeout policy, and wake claim state for
+future sleep/resume scheduling.
+Stateful runtime event and snapshot read endpoints are now available for
+tenant-filtered replay/debug and future control-panel views.
 
 ## v0.6.4 (2026-06-28)
 
