@@ -12,7 +12,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
 use crate::{execute_workflow, simulate_workflow_event};
-use tandem_types::{EngineEvent, TenantContext};
+use tandem_types::{ApprovalSourceKind, ApprovalWaitRef, EngineEvent, TenantContext};
 
 use super::AppState;
 
@@ -278,6 +278,11 @@ pub(super) async fn workflow_run_gate_decide(
     let record = tandem_workflows::WorkflowGateDecisionRecord {
         action_id: gate.action_id.clone(),
         decision: decision.clone(),
+        approval_wait: Some(ApprovalWaitRef::for_gate(
+            ApprovalSourceKind::Workflow,
+            &run.run_id,
+            &gate.action_id,
+        )),
         reason: input.reason.clone(),
         decided_at_ms: crate::now_ms(),
         decided_by: serde_json::to_value(&decider).ok(),

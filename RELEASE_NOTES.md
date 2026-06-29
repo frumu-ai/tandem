@@ -10,7 +10,9 @@ foundations. Snapshot-backed automation runs now expose stable definition
 versions and `sha256:` snapshot hashes for future replay and resume checks, and
 restart-interrupted Automation V2 runs are queued for resume when their
 persisted checkpoint is recoverable while corrupt in-flight records continue to
-fail closed.
+fail closed. Automation V2 and workflow approval gates now share stable
+approval wait/request IDs across pending approval APIs and persisted gate
+decision records, laying the common approval primitive for durable waits.
 
 ## v0.6.4 (2026-06-28)
 

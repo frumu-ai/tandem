@@ -189,6 +189,7 @@ mod tests {
     fn request(run_id: &str) -> ApprovalRequest {
         ApprovalRequest {
             request_id: format!("automation_v2:{run_id}:send_email"),
+            approval_wait: None,
             source: ApprovalSourceKind::AutomationV2,
             tenant: ApprovalTenantRef {
                 org_id: "org".to_string(),

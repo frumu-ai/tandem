@@ -128,6 +128,18 @@ async fn approvals_pending_endpoint_surfaces_automation_v2_awaiting_gate() {
         request_id.starts_with("automation_v2:"),
         "request_id should be namespaced: {request_id}",
     );
+    let expected_wait_id = format!("{request_id}:wait");
+    let approval_wait = first.get("approval_wait").expect("approval_wait");
+    assert_eq!(
+        approval_wait
+            .get("approval_request_id")
+            .and_then(Value::as_str),
+        Some(request_id)
+    );
+    assert_eq!(
+        approval_wait.get("wait_id").and_then(Value::as_str),
+        Some(expected_wait_id.as_str())
+    );
     let decisions = first
         .get("decisions")
         .and_then(Value::as_array)
@@ -145,6 +157,10 @@ async fn approvals_pending_endpoint_surfaces_automation_v2_awaiting_gate() {
     assert_eq!(
         surface.get("decide_endpoint").and_then(Value::as_str),
         Some(format!("/automations/v2/runs/{}/gate", run.run_id).as_str())
+    );
+    assert_eq!(
+        surface.get("wait_id").and_then(Value::as_str),
+        Some(expected_wait_id.as_str())
     );
 
     let count = payload.get("count").and_then(Value::as_u64).unwrap_or(0);
@@ -538,6 +554,21 @@ async fn gate_decide_recovers_missing_awaiting_gate_from_pending_node() {
         .await
         .expect("updated run");
     assert!(updated.checkpoint.awaiting_gate.is_none());
+    let record = updated
+        .checkpoint
+        .gate_history
+        .last()
+        .expect("gate decision record");
+    let expected_request_id = format!("automation_v2:{}:approval", run.run_id);
+    assert_eq!(
+        record
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("approval_wait"))
+            .and_then(|wait| wait.get("approval_request_id"))
+            .and_then(Value::as_str),
+        Some(expected_request_id.as_str())
+    );
     assert!(updated
         .checkpoint
         .completed_nodes

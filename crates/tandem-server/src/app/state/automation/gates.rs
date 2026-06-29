@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
-use serde_json::json;
+use serde_json::{json, Value};
+use tandem_types::{ApprovalSourceKind, ApprovalWaitRef};
 
 use crate::{
     AutomationGateDecisionRecord, AutomationGateExpiryAction, AutomationGateExpiryPolicy,
@@ -140,6 +141,8 @@ pub(crate) fn apply_automation_gate_decision(
         );
     }
 
+    let approval_wait =
+        ApprovalWaitRef::for_gate(ApprovalSourceKind::AutomationV2, &run.run_id, &gate.node_id);
     run.checkpoint
         .gate_history
         .push(AutomationGateDecisionRecord {
@@ -148,7 +151,10 @@ pub(crate) fn apply_automation_gate_decision(
             reason: reason.clone(),
             decided_at_ms: crate::now_ms(),
             decided_by,
-            metadata: gate.metadata.clone(),
+            metadata: gate_decision_metadata_with_approval_wait(
+                gate.metadata.clone(),
+                &approval_wait,
+            ),
         });
     run.checkpoint.awaiting_gate = None;
     match decision {
@@ -183,6 +189,8 @@ pub(crate) fn apply_automation_gate_expiry(
     }
 
     let expired_at_ms = crate::now_ms();
+    let approval_wait =
+        ApprovalWaitRef::for_gate(ApprovalSourceKind::AutomationV2, &run.run_id, &gate.node_id);
     run.checkpoint
         .gate_history
         .push(AutomationGateDecisionRecord {
@@ -196,6 +204,7 @@ pub(crate) fn apply_automation_gate_expiry(
                 ),
             ),
             metadata: Some(json!({
+                "approval_wait": approval_wait,
                 "expiry_policy": policy,
                 "expires_at_ms": expires_at_ms,
                 "expired_at_ms": expired_at_ms,
@@ -269,6 +278,25 @@ pub(crate) fn recover_settled_automation_gate_decision(
             true
         }
         _ => false,
+    }
+}
+
+fn gate_decision_metadata_with_approval_wait(
+    metadata: Option<Value>,
+    approval_wait: &ApprovalWaitRef,
+) -> Option<Value> {
+    match metadata {
+        Some(Value::Object(mut object)) => {
+            object.insert("approval_wait".to_string(), json!(approval_wait));
+            Some(Value::Object(object))
+        }
+        Some(gate_metadata) => Some(json!({
+            "approval_wait": approval_wait,
+            "gate_metadata": gate_metadata,
+        })),
+        None => Some(json!({
+            "approval_wait": approval_wait,
+        })),
     }
 }
 

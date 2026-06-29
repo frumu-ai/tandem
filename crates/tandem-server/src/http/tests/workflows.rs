@@ -838,6 +838,16 @@ async fn workflow_gate_pauses_run_and_resumes_after_human_approval() {
         entry["surface_payload"]["decide_endpoint"].as_str(),
         Some(format!("/workflows/runs/{run_id}/gate").as_str())
     );
+    let request_id = entry["request_id"].as_str().expect("request_id");
+    let expected_wait_id = format!("{request_id}:wait");
+    assert_eq!(
+        entry["approval_wait"]["approval_request_id"].as_str(),
+        Some(request_id)
+    );
+    assert_eq!(
+        entry["approval_wait"]["wait_id"].as_str(),
+        Some(expected_wait_id.as_str())
+    );
     // The demo gate has no rework_targets, so rework must not be advertised
     // (the decide endpoint would reject it).
     let advertised = entry["decisions"]
@@ -881,6 +891,13 @@ async fn workflow_gate_pauses_run_and_resumes_after_human_approval() {
     .expect("run did not complete after approval");
     assert_eq!(run.gate_history.len(), 1);
     assert_eq!(run.gate_history[0].decision, "approve");
+    assert_eq!(
+        run.gate_history[0]
+            .approval_wait
+            .as_ref()
+            .map(|wait| wait.approval_request_id.as_str()),
+        Some(request_id)
+    );
     assert!(run.awaiting_gate.is_none());
     assert_eq!(crm_calls.lock().await.len(), 1);
 
