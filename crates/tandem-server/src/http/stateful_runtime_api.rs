@@ -153,12 +153,7 @@ mod tests {
         tenant_context: TenantContext,
     ) -> StatefulRunSnapshotRecord {
         let status = StatefulWorkflowRunStatus::Running;
-        let phase_state = phase_state_from_status(
-            run_id,
-            &status,
-            2_000 + seq,
-            Some("phase-a"),
-        );
+        let phase_state = phase_state_from_status(run_id, &status, 2_000 + seq, Some("phase-a"));
         StatefulRunSnapshotRecord {
             schema_version: 1,
             snapshot_id: format!("snapshot-{seq}"),

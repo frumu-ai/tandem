@@ -1012,26 +1012,22 @@ fn build_connector_preflight_blocked_output(
 }
 
 pub(crate) fn automation_node_max_attempts(node: &AutomationFlowNode) -> u32 {
-    let explicit = node
-        .retry_policy
-        .as_ref()
-        .and_then(|value| value.get("max_attempts"))
-        .and_then(Value::as_u64)
-        .map(|value| value.clamp(1, 10) as u32);
-    if let Some(value) = explicit {
-        return value;
-    }
     let validator_kind = automation_output_validator_kind(node);
-    if validator_kind == crate::AutomationOutputValidatorKind::StandupUpdate {
-        return 3;
-    }
-    if validator_kind == crate::AutomationOutputValidatorKind::ResearchBrief
+    let default_max_attempts = if validator_kind == crate::AutomationOutputValidatorKind::StandupUpdate
+    {
+        3
+    } else if validator_kind == crate::AutomationOutputValidatorKind::ResearchBrief
         || !automation_node_required_tools(node).is_empty()
     {
         5
     } else {
         3
-    }
+    };
+    tandem_automation::RetryPolicy::from_node_retry_policy(
+        node.retry_policy.as_ref(),
+        default_max_attempts,
+    )
+    .max_attempts
 }
 
 pub(crate) fn automation_output_is_blocked(output: &Value) -> bool {

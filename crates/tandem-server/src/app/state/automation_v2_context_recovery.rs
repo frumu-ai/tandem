@@ -151,6 +151,8 @@ async fn load_recovered_automation_v2_context_run(
         checkpoint,
         runtime_context: None,
         automation_snapshot: Some(automation_snapshot),
+        execution_claim: None,
+        execution_claim_epoch: 0,
         pause_reason: None,
         resume_reason: None,
         detail: value

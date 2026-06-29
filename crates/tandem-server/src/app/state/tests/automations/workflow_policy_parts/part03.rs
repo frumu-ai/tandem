@@ -372,6 +372,8 @@ fn workflow_state_events_capture_typed_stability_transitions() {
         },
         runtime_context: None,
         automation_snapshot: None,
+        execution_claim: None,
+        execution_claim_epoch: 0,
         pause_reason: None,
         resume_reason: None,
         detail: None,
