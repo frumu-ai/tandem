@@ -20,10 +20,12 @@ pub use scheduler::{
     StatefulWaitSchedulerTick,
 };
 pub use store::{
-    append_stateful_run_event, append_stateful_run_event_once, list_stateful_run_snapshots,
-    load_stateful_run_events, query_stateful_run_events, read_stateful_run_snapshot,
-    read_stateful_run_snapshot_for_run, stateful_run_snapshot_path, write_stateful_run_snapshot,
-    StatefulRunEventQuery, StatefulRuntimeStoragePaths,
+    append_stateful_run_event, append_stateful_run_event_once,
+    append_stateful_run_event_once_with_next_seq, list_stateful_run_snapshots,
+    load_stateful_run_events, next_stateful_run_event_seq, query_stateful_run_events,
+    read_stateful_run_snapshot, read_stateful_run_snapshot_for_run, stateful_run_event_seq_by_id,
+    stateful_run_snapshot_path, write_stateful_run_snapshot, StatefulRunEventQuery,
+    StatefulRuntimeStoragePaths,
 };
 pub use types::*;
 pub use waits::{

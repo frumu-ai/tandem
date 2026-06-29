@@ -1029,6 +1029,8 @@ impl AppState {
             .await;
         let _ = self.persist_automation_v2_runs().await;
         let _ = self.persist_automation_v2_run_status_json(&out).await;
+        self.project_automation_v2_stateful_boundaries_or_warn(&out)
+            .await;
         if matches!(
             out.status,
             AutomationRunStatus::Completed

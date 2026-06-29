@@ -52,6 +52,12 @@ knowledge source bindings, and filters for org unit, owner, resource, policy,
 data class, risk tier, delegation grant, and source binding. The Control Panel
 run dashboard surfaces those fields as scope metrics, filters, and per-run scope
 cards.
+Automation V2 lifecycle transitions now project into the authoritative
+stateful runtime event and snapshot stores. Each newly recorded lifecycle
+boundary gets an idempotent stateful event, monotonic per-run sequence, summary
+snapshot, checkpoint digest, and workflow definition version/hash metadata so
+future replay and resume paths can inspect durable run history without reading
+only the hot embedded checkpoint.
 Bug Monitor/Incident Monitor routing now supports Linear issue destinations
 with MCP readiness checks, duplicate issue matching, destination-aware receipts,
 and external-action records, and publish/recheck errors include the underlying

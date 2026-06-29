@@ -91,6 +91,39 @@ pub async fn append_stateful_run_event_once(
     Ok(true)
 }
 
+pub async fn append_stateful_run_event_once_with_next_seq(
+    path: &Path,
+    tenant_context: &TenantContext,
+    record: &StatefulRunEventRecord,
+) -> anyhow::Result<(bool, u64)> {
+    let _guard = STATEFUL_RUN_EVENT_APPEND_ONCE_LOCK.lock().await;
+    let rows = query_stateful_run_events(
+        path,
+        tenant_context,
+        StatefulRunEventQuery {
+            run_id: &record.run_id,
+            after_seq: None,
+            before_seq: None,
+            limit: None,
+            tail: false,
+        },
+    );
+    if let Some(existing) = rows
+        .iter()
+        .find(|existing| existing.event_id == record.event_id)
+    {
+        return Ok((false, existing.seq));
+    }
+    let seq = rows
+        .last()
+        .map(|event| event.seq.saturating_add(1))
+        .unwrap_or(1);
+    let mut record = record.clone();
+    record.seq = seq;
+    append_stateful_run_event(path, &record).await?;
+    Ok((true, seq))
+}
+
 fn stateful_run_event_exists(path: &Path, record: &StatefulRunEventRecord) -> bool {
     load_stateful_run_events(path)
         .into_iter()
@@ -155,6 +188,49 @@ pub fn query_stateful_run_events(
         }
     }
     rows
+}
+
+pub fn next_stateful_run_event_seq(
+    path: &Path,
+    tenant_context: &TenantContext,
+    run_id: &str,
+) -> u64 {
+    query_stateful_run_events(
+        path,
+        tenant_context,
+        StatefulRunEventQuery {
+            run_id,
+            after_seq: None,
+            before_seq: None,
+            limit: None,
+            tail: false,
+        },
+    )
+    .last()
+    .map(|event| event.seq.saturating_add(1))
+    .unwrap_or(1)
+}
+
+pub fn stateful_run_event_seq_by_id(
+    path: &Path,
+    tenant_context: &TenantContext,
+    run_id: &str,
+    event_id: &str,
+) -> Option<u64> {
+    query_stateful_run_events(
+        path,
+        tenant_context,
+        StatefulRunEventQuery {
+            run_id,
+            after_seq: None,
+            before_seq: None,
+            limit: None,
+            tail: false,
+        },
+    )
+    .into_iter()
+    .find(|event| event.event_id == event_id)
+    .map(|event| event.seq)
 }
 
 pub async fn write_stateful_run_snapshot(
@@ -430,6 +506,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn event_sequence_helpers_read_latest_and_existing_event_id() {
+        let path = std::env::temp_dir().join(format!(
+            "stateful-runtime-events-seq-{}.jsonl",
+            Uuid::new_v4()
+        ));
+        let tenant_a = tenant("org-a", "workspace-a");
+        append_stateful_run_event(&path, &event(3, "run-a", tenant_a.clone()))
+            .await
+            .expect("append first");
+        append_stateful_run_event(&path, &event(7, "run-a", tenant_a.clone()))
+            .await
+            .expect("append second");
+
+        assert_eq!(next_stateful_run_event_seq(&path, &tenant_a, "run-a"), 8);
+        assert_eq!(
+            stateful_run_event_seq_by_id(&path, &tenant_a, "run-a", "event-3"),
+            Some(3)
+        );
+        assert_eq!(
+            stateful_run_event_seq_by_id(&path, &tenant_a, "run-a", "missing"),
+            None
+        );
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
     async fn append_once_uses_event_id_as_idempotency_key() {
         let path = std::env::temp_dir().join(format!(
             "stateful-runtime-events-once-{}.jsonl",
@@ -471,6 +573,44 @@ mod tests {
         assert_eq!(appended, 1);
         let rows = load_stateful_run_events(&path);
         assert_eq!(rows.len(), 1);
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn append_once_with_next_seq_assigns_monotonic_sequence_under_lock() {
+        let path = std::env::temp_dir().join(format!(
+            "stateful-runtime-events-next-seq-{}.jsonl",
+            Uuid::new_v4()
+        ));
+        let tenant = tenant("org-a", "workspace-a");
+        let first = event(0, "run-a", tenant.clone());
+        let mut second = event(0, "run-a", tenant.clone());
+        second.event_id = "event-second".to_string();
+
+        let (first_appended, first_seq) =
+            append_stateful_run_event_once_with_next_seq(&path, &tenant, &first)
+                .await
+                .expect("first append");
+        let (second_appended, second_seq) =
+            append_stateful_run_event_once_with_next_seq(&path, &tenant, &second)
+                .await
+                .expect("second append");
+        let (duplicate_appended, duplicate_seq) =
+            append_stateful_run_event_once_with_next_seq(&path, &tenant, &first)
+                .await
+                .expect("duplicate append");
+
+        assert!(first_appended);
+        assert!(second_appended);
+        assert!(!duplicate_appended);
+        assert_eq!(first_seq, 1);
+        assert_eq!(second_seq, 2);
+        assert_eq!(duplicate_seq, 1);
+        let rows = load_stateful_run_events(&path);
+        assert_eq!(
+            rows.iter().map(|row| row.seq).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
         let _ = tokio::fs::remove_file(path).await;
     }
 
