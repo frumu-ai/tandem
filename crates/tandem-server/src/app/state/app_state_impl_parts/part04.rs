@@ -235,6 +235,8 @@ impl AppState {
             },
             runtime_context,
             automation_snapshot: Some(automation.clone()),
+            execution_claim: None,
+            execution_claim_epoch: 0,
             pause_reason: None,
             resume_reason: None,
             detail: None,

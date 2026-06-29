@@ -1634,6 +1634,31 @@ class AutomationWebhookDelivery(BaseModel):
     rejection_reason_code: Optional[str] = Field(
         None, validation_alias=AliasChoices("rejectionReasonCode", "rejection_reason_code")
     )
+    idempotency_key: Optional[str] = Field(
+        None, validation_alias=AliasChoices("idempotencyKey", "idempotency_key")
+    )
+    idempotency_record_id: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices(
+            "idempotencyRecordID", "idempotencyRecordId", "idempotency_record_id"
+        ),
+    )
+    dedupe_result: Optional[str] = Field(
+        None, validation_alias=AliasChoices("dedupeResult", "dedupe_result")
+    )
+    dedupe_reason_code: Optional[str] = Field(
+        None, validation_alias=AliasChoices("dedupeReasonCode", "dedupe_reason_code")
+    )
+    duplicate_of_delivery_id: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices(
+            "duplicateOfDeliveryID", "duplicateOfDeliveryId", "duplicate_of_delivery_id"
+        ),
+    )
+    duplicate_of_run_id: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("duplicateOfRunID", "duplicateOfRunId", "duplicate_of_run_id"),
+    )
     verification_scheme: Optional[str] = Field(
         None, validation_alias=AliasChoices("verificationScheme", "verification_scheme")
     )
