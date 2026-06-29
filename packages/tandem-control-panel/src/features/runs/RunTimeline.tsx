@@ -96,7 +96,7 @@ export function useRunTimeline({
   activeRunIdRef.current = runId;
 
   const loadPage = useCallback(
-    async (cursorSeq = 0, mode: "replace" | "prepend" = "replace") => {
+    async (cursorSeq: number | null = null, mode: "replace" | "prepend" = "replace") => {
       if (!runId || !enabled) return;
       const requestedRunId = runId;
       const isCurrentRun = () => activeRunIdRef.current === requestedRunId;
@@ -106,7 +106,7 @@ export function useRunTimeline({
       try {
         const page = await api(
           runTimelineRequestPath(requestedRunId, {
-            beforeSeq: mode === "prepend" ? cursorSeq : 0,
+            beforeSeq: mode === "prepend" ? cursorSeq : null,
             limit,
             tail: limit,
           })
@@ -131,7 +131,7 @@ export function useRunTimeline({
     setPages([]);
     setLiveEvents([]);
     setError("");
-    if (enabled && runId) void loadPage(0, "replace");
+    if (enabled && runId) void loadPage(null, "replace");
   }, [enabled, loadPage, runId]);
 
   useEngineStream(
