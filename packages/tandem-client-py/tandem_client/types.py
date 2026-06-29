@@ -1650,6 +1650,12 @@ class AutomationWebhookDelivery(BaseModel):
     queued_run_path: Optional[str] = Field(
         None, validation_alias=AliasChoices("queuedRunPath", "queued_run_path")
     )
+    woken_run_id: Optional[str] = Field(
+        None, validation_alias=AliasChoices("wokenRunID", "wokenRunId", "woken_run_id")
+    )
+    woken_wait_id: Optional[str] = Field(
+        None, validation_alias=AliasChoices("wokenWaitID", "wokenWaitId", "woken_wait_id")
+    )
     received_at_ms: Optional[int] = Field(
         None, validation_alias=AliasChoices("receivedAtMs", "received_at_ms")
     )

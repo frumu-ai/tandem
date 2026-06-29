@@ -5,6 +5,12 @@ use crate::app::state::{
     AutomationWebhookTriggerUpdateInput, AutomationWebhookVerificationError,
 };
 use crate::automation_v2::types::AutomationWebhookSignatureScheme;
+use crate::stateful_runtime::{
+    list_stateful_waits, query_stateful_run_events, read_stateful_run_snapshot_for_run,
+    stateful_webhook_wait_metadata, upsert_stateful_wait, StatefulRunEventQuery,
+    StatefulRuntimeScope, StatefulRuntimeStoragePaths, StatefulWaitKind, StatefulWaitQuery,
+    StatefulWaitRecord, StatefulWaitStatus, StatefulWebhookWaitMatch, StatefulWorkflowRunStatus,
+};
 
 fn tenant(org: &str, workspace: &str) -> TenantContext {
     TenantContext::explicit_user_workspace(org, workspace, None, "actor-a")
@@ -42,6 +48,67 @@ fn create_input(
         provider_event_kind: Some("event.created".to_string()),
         signature_scheme: None,
         enabled: true,
+    }
+}
+
+async fn ready_stateful_webhook_test_state() -> AppState {
+    let mut state = ready_test_state().await;
+    let root = std::env::temp_dir().join(format!(
+        "tandem-stateful-webhook-test-{}",
+        uuid::Uuid::new_v4()
+    ));
+    state.runtime_events_path = root.join("runtime").join("events.jsonl");
+    state
+}
+
+async fn reload_stateful_webhook_test_state(source: &AppState) -> AppState {
+    let mut reloaded = ready_test_state().await;
+    reloaded.automations_v2_path = source.automations_v2_path.clone();
+    reloaded.automation_v2_runs_path = source.automation_v2_runs_path.clone();
+    reloaded.automation_v2_runs_archive_path = source.automation_v2_runs_archive_path.clone();
+    reloaded.automation_webhook_triggers_path = source.automation_webhook_triggers_path.clone();
+    reloaded.automation_webhook_deliveries_path = source.automation_webhook_deliveries_path.clone();
+    reloaded.automation_webhook_secret_material_path =
+        source.automation_webhook_secret_material_path.clone();
+    reloaded.runtime_events_path = source.runtime_events_path.clone();
+    reloaded
+        .load_automations_v2()
+        .await
+        .expect("reload automations");
+    reloaded
+        .load_automation_webhook_records()
+        .await
+        .expect("reload webhook records");
+    reloaded
+}
+
+fn webhook_wait_record(
+    wait_id: &str,
+    run_id: &str,
+    tenant_context: TenantContext,
+    match_rules: StatefulWebhookWaitMatch,
+    now: u64,
+) -> StatefulWaitRecord {
+    StatefulWaitRecord {
+        schema_version: 1,
+        wait_id: wait_id.to_string(),
+        run_id: run_id.to_string(),
+        wait_kind: StatefulWaitKind::Webhook,
+        status: StatefulWaitStatus::Waiting,
+        scope: StatefulRuntimeScope::from_tenant_context(tenant_context),
+        phase_id: Some("phase-webhook".to_string()),
+        reason: Some("wait for matching webhook".to_string()),
+        created_at_ms: now,
+        updated_at_ms: now,
+        wake_at_ms: None,
+        timeout_policy: None,
+        event_seq: None,
+        wake_idempotency_key: None,
+        claimed_by: None,
+        claimed_at_ms: None,
+        claim_expires_at_ms: None,
+        completed_at_ms: None,
+        metadata: Some(stateful_webhook_wait_metadata(match_rules, None)),
     }
 }
 
@@ -119,6 +186,8 @@ async fn webhook_triggers_and_deliveries_are_tenant_scoped() {
         verification_provider: None,
         verification_reason_code: None,
         queued_run_id: None,
+        woken_run_id: None,
+        woken_wait_id: None,
         received_at_ms: 1_000,
         accepted_at_ms: Some(1_000),
         rejected_at_ms: None,
@@ -143,6 +212,8 @@ async fn webhook_triggers_and_deliveries_are_tenant_scoped() {
         verification_provider: None,
         verification_reason_code: None,
         queued_run_id: None,
+        woken_run_id: None,
+        woken_wait_id: None,
         received_at_ms: 1_000,
         accepted_at_ms: Some(1_000),
         rejected_at_ms: None,
@@ -422,6 +493,8 @@ async fn webhook_signature_and_replay_scope_include_tenant_and_trigger() {
             verification_provider: Some(verified_a.verification.provider.clone()),
             verification_reason_code: Some(verified_a.verification.reason_code.clone()),
             queued_run_id: None,
+            woken_run_id: None,
+            woken_wait_id: None,
             received_at_ms: verified_a.received_at_ms,
             accepted_at_ms: Some(verified_a.received_at_ms),
             rejected_at_ms: None,
@@ -593,6 +666,8 @@ async fn webhook_queue_treats_accepted_marker_without_run_as_duplicate() {
             verification_provider: Some(verified.verification.provider.clone()),
             verification_reason_code: Some(verified.verification.reason_code.clone()),
             queued_run_id: None,
+            woken_run_id: None,
+            woken_wait_id: None,
             received_at_ms: verified.received_at_ms,
             accepted_at_ms: Some(verified.received_at_ms),
             rejected_at_ms: None,
@@ -612,6 +687,217 @@ async fn webhook_queue_treats_accepted_marker_without_run_as_duplicate() {
     };
     assert_eq!(delivery.status, AutomationWebhookDeliveryStatus::Duplicate);
     assert!(state.automation_v2_runs.read().await.is_empty());
+}
+
+#[tokio::test]
+async fn webhook_queue_wakes_persisted_stateful_wait_after_restart_once() {
+    let state = ready_stateful_webhook_test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a");
+    insert_test_automation(&state, "automation-wake", &tenant_a).await;
+    state
+        .persist_automations_v2()
+        .await
+        .expect("persist automation");
+    let created = state
+        .create_automation_webhook_trigger(create_input("automation-wake", tenant_a.clone()))
+        .await
+        .expect("create webhook trigger");
+    let paths = StatefulRuntimeStoragePaths::from_runtime_events_path(&state.runtime_events_path);
+    upsert_stateful_wait(
+        &paths.waits_path,
+        webhook_wait_record(
+            "wait-webhook",
+            "run-waiting",
+            tenant_a.clone(),
+            StatefulWebhookWaitMatch {
+                trigger_id: Some(created.trigger.trigger_id.clone()),
+                provider: Some("generic".to_string()),
+                provider_event_kind: Some("event.created".to_string()),
+                ..StatefulWebhookWaitMatch::default()
+            },
+            1_000,
+        ),
+    )
+    .await
+    .expect("persist webhook wait");
+
+    let reloaded = reload_stateful_webhook_test_state(&state).await;
+    let body = br#"{"ok":true}"#;
+    let now = now_ms();
+    let signature = automation_webhook_signature_header(&created.secret, now, body);
+    let verified = reloaded
+        .verify_automation_webhook_request(
+            &created.trigger.public_path_token,
+            Some(&signature),
+            body,
+            Some("evt-wake".to_string()),
+            now,
+            300_000,
+        )
+        .await
+        .expect("verified request");
+
+    let first = reloaded
+        .queue_automation_v2_run_from_webhook_delivery(verified.clone(), json!({"ok": true}))
+        .await
+        .expect("queue wake");
+    let delivery = match first {
+        AutomationWebhookQueueResult::Woken { delivery, wait } => {
+            assert_eq!(wait.wait_id, "wait-webhook");
+            assert_eq!(wait.run_id, "run-waiting");
+            delivery
+        }
+        other => panic!("expected webhook wake outcome, got {other:?}"),
+    };
+    assert_eq!(delivery.status, AutomationWebhookDeliveryStatus::Accepted);
+    assert_eq!(delivery.queued_run_id.as_deref(), None);
+    assert_eq!(delivery.woken_run_id.as_deref(), Some("run-waiting"));
+    assert_eq!(delivery.woken_wait_id.as_deref(), Some("wait-webhook"));
+    assert!(reloaded.automation_v2_runs.read().await.is_empty());
+
+    let waits = list_stateful_waits(
+        &paths.waits_path,
+        &tenant_a,
+        StatefulWaitQuery {
+            run_id: Some("run-waiting"),
+            wait_kind: Some(StatefulWaitKind::Webhook),
+            status: Some(StatefulWaitStatus::Woken),
+            limit: None,
+        },
+    );
+    assert_eq!(waits.len(), 1);
+    assert_eq!(waits[0].event_seq, Some(1));
+    assert!(waits[0]
+        .wake_idempotency_key
+        .as_deref()
+        .unwrap_or_default()
+        .contains("evt-wake"));
+
+    let events = query_stateful_run_events(
+        &paths.run_events_path,
+        &tenant_a,
+        StatefulRunEventQuery {
+            run_id: "run-waiting",
+            after_seq: None,
+            limit: None,
+        },
+    );
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_type, "stateful_runtime.wait.webhook_woken");
+    assert_eq!(
+        events[0].payload["delivery_id"].as_str(),
+        Some(delivery.delivery_id.as_str())
+    );
+    assert_eq!(events[0].payload["wait_id"], "wait-webhook");
+
+    let snapshot = read_stateful_run_snapshot_for_run(
+        &paths.snapshots_root,
+        &tenant_a,
+        "run-waiting",
+        &format!("stateful-webhook-wake-{}", delivery.delivery_id),
+    )
+    .expect("read snapshot")
+    .expect("wake snapshot");
+    assert_eq!(snapshot.status, StatefulWorkflowRunStatus::Running);
+    assert_eq!(
+        snapshot.payload_digest.as_deref(),
+        Some(verified.body_digest.as_str())
+    );
+
+    let duplicate = reloaded
+        .queue_automation_v2_run_from_webhook_delivery(verified, json!({"ok": true}))
+        .await
+        .expect("queue duplicate");
+    let duplicate_delivery = match duplicate {
+        AutomationWebhookQueueResult::Duplicate { delivery } => delivery,
+        other => panic!("expected duplicate webhook delivery, got {other:?}"),
+    };
+    assert_eq!(
+        duplicate_delivery.status,
+        AutomationWebhookDeliveryStatus::Duplicate
+    );
+    assert_eq!(duplicate_delivery.woken_run_id, None);
+    assert_eq!(duplicate_delivery.woken_wait_id, None);
+    assert_eq!(
+        query_stateful_run_events(
+            &paths.run_events_path,
+            &tenant_a,
+            StatefulRunEventQuery {
+                run_id: "run-waiting",
+                after_seq: None,
+                limit: None,
+            },
+        )
+        .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn webhook_queue_does_not_wake_wait_from_another_tenant() {
+    let state = ready_stateful_webhook_test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a");
+    let tenant_b = tenant("org-b", "workspace-b");
+    insert_test_automation(&state, "automation-tenant-wake", &tenant_a).await;
+    let created = state
+        .create_automation_webhook_trigger(create_input("automation-tenant-wake", tenant_a.clone()))
+        .await
+        .expect("create webhook trigger");
+    let paths = StatefulRuntimeStoragePaths::from_runtime_events_path(&state.runtime_events_path);
+    upsert_stateful_wait(
+        &paths.waits_path,
+        webhook_wait_record(
+            "wait-tenant-b",
+            "run-tenant-b",
+            tenant_b.clone(),
+            StatefulWebhookWaitMatch {
+                trigger_id: Some(created.trigger.trigger_id.clone()),
+                ..StatefulWebhookWaitMatch::default()
+            },
+            1_000,
+        ),
+    )
+    .await
+    .expect("persist tenant b wait");
+
+    let body = br#"{"ok":true}"#;
+    let now = now_ms();
+    let signature = automation_webhook_signature_header(&created.secret, now, body);
+    let verified = state
+        .verify_automation_webhook_request(
+            &created.trigger.public_path_token,
+            Some(&signature),
+            body,
+            Some("evt-tenant-wake".to_string()),
+            now,
+            300_000,
+        )
+        .await
+        .expect("verified request");
+    let outcome = state
+        .queue_automation_v2_run_from_webhook_delivery(verified, json!({"ok": true}))
+        .await
+        .expect("queue outcome");
+    let delivery = match outcome {
+        AutomationWebhookQueueResult::Accepted { delivery, .. } => delivery,
+        other => panic!("expected new run because tenant b wait is hidden, got {other:?}"),
+    };
+    assert!(delivery.queued_run_id.is_some());
+    assert_eq!(delivery.woken_run_id, None);
+    assert_eq!(delivery.woken_wait_id, None);
+
+    let tenant_b_waits = list_stateful_waits(
+        &paths.waits_path,
+        &tenant_b,
+        StatefulWaitQuery {
+            run_id: Some("run-tenant-b"),
+            wait_kind: Some(StatefulWaitKind::Webhook),
+            status: Some(StatefulWaitStatus::Waiting),
+            limit: None,
+        },
+    );
+    assert_eq!(tenant_b_waits.len(), 1);
+    assert_eq!(tenant_b_waits[0].wait_id, "wait-tenant-b");
 }
 
 #[tokio::test]

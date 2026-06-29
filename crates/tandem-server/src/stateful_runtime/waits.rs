@@ -1,15 +1,18 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use serde_json::{json, Value};
 use tandem_types::TenantContext;
 use tokio::io::AsyncWriteExt;
 
 use super::types::{
     StatefulRuntimeScope, StatefulWaitKind, StatefulWaitRecord, StatefulWaitStatus,
-    StatefulWaitTimeoutAction, StatefulWaitTimeoutPolicy,
+    StatefulWaitTimeoutAction, StatefulWaitTimeoutPolicy, StatefulWebhookWaitEvent,
+    StatefulWebhookWaitMatch,
 };
 
 static STATEFUL_WAIT_STORE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+const WEBHOOK_MATCH_METADATA_KEY: &str = "webhook_match";
 
 #[derive(Debug, Clone, Default)]
 pub struct StatefulWaitQuery<'a> {
@@ -134,6 +137,35 @@ pub async fn claim_due_stateful_wait(
     Ok(Some(claimed))
 }
 
+pub async fn claim_matching_stateful_webhook_wait(
+    path: &Path,
+    tenant: &TenantContext,
+    event: &StatefulWebhookWaitEvent,
+    claimant_id: &str,
+    now_ms: u64,
+    lease_ms: u64,
+) -> anyhow::Result<Option<StatefulWaitRecord>> {
+    let _guard = STATEFUL_WAIT_STORE_LOCK.lock().await;
+    let mut waits = load_stateful_waits(path);
+    let Some(wait) = waits.iter_mut().find(|wait| {
+        wait.wait_kind == StatefulWaitKind::Webhook
+            && wait.visible_to_tenant(tenant)
+            && webhook_wait_is_claimable(wait, now_ms)
+            && wait_matches_webhook_event(wait, event)
+    }) else {
+        return Ok(None);
+    };
+
+    wait.status = StatefulWaitStatus::Claimed;
+    wait.claimed_by = Some(claimant_id.to_string());
+    wait.claimed_at_ms = Some(now_ms);
+    wait.claim_expires_at_ms = Some(now_ms.saturating_add(lease_ms.max(1)));
+    wait.updated_at_ms = now_ms;
+    let claimed = wait.clone();
+    write_stateful_waits_unlocked(path, &waits).await?;
+    Ok(Some(claimed))
+}
+
 pub async fn mark_stateful_wait_woken(
     path: &Path,
     tenant: &TenantContext,
@@ -171,6 +203,70 @@ pub async fn mark_stateful_wait_woken(
     Ok(Some(woken))
 }
 
+pub fn stateful_webhook_wait_metadata(
+    match_rules: StatefulWebhookWaitMatch,
+    extra_metadata: Option<Value>,
+) -> Value {
+    let match_value = serde_json::to_value(match_rules).unwrap_or(Value::Null);
+    match extra_metadata {
+        Some(Value::Object(mut metadata)) => {
+            metadata.insert(WEBHOOK_MATCH_METADATA_KEY.to_string(), match_value);
+            Value::Object(metadata)
+        }
+        Some(value) => json!({
+            WEBHOOK_MATCH_METADATA_KEY: match_value,
+            "extra": value,
+        }),
+        None => json!({
+            WEBHOOK_MATCH_METADATA_KEY: match_value,
+        }),
+    }
+}
+
+pub fn stateful_webhook_wait_match_from_metadata(
+    metadata: Option<&Value>,
+) -> Option<StatefulWebhookWaitMatch> {
+    metadata
+        .and_then(Value::as_object)
+        .and_then(|metadata| metadata.get(WEBHOOK_MATCH_METADATA_KEY))
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+}
+
+fn wait_matches_webhook_event(wait: &StatefulWaitRecord, event: &StatefulWebhookWaitEvent) -> bool {
+    let Some(match_rules) = stateful_webhook_wait_match_from_metadata(wait.metadata.as_ref())
+    else {
+        return false;
+    };
+    if !match_rules.has_constraint() {
+        return false;
+    }
+    optional_match(
+        match_rules.trigger_id.as_deref(),
+        Some(event.trigger_id.as_str()),
+    ) && optional_match(
+        match_rules.provider.as_deref(),
+        Some(event.provider.as_str()),
+    ) && optional_match(
+        match_rules.provider_event_kind.as_deref(),
+        event.provider_event_kind.as_deref(),
+    ) && optional_match(
+        match_rules.provider_event_id.as_deref(),
+        event.provider_event_id.as_deref(),
+    ) && optional_match(
+        match_rules.body_digest.as_deref(),
+        Some(event.body_digest.as_str()),
+    ) && optional_match(
+        match_rules.idempotency_key.as_deref(),
+        Some(event.idempotency_key.as_str()),
+    )
+}
+
+fn optional_match(expected: Option<&str>, actual: Option<&str>) -> bool {
+    expected
+        .map(|expected| actual == Some(expected))
+        .unwrap_or(true)
+}
+
 fn wait_is_claimable(wait: &StatefulWaitRecord, now_ms: u64) -> bool {
     if wait.status == StatefulWaitStatus::Waiting {
         return wait.is_due_at(now_ms);
@@ -181,6 +277,11 @@ fn wait_is_claimable(wait: &StatefulWaitRecord, now_ms: u64) -> bool {
             .wake_at_ms
             .map(|wake_at_ms| wake_at_ms <= now_ms)
             .unwrap_or(false)
+}
+
+fn webhook_wait_is_claimable(wait: &StatefulWaitRecord, now_ms: u64) -> bool {
+    wait.status == StatefulWaitStatus::Waiting
+        || (wait.status == StatefulWaitStatus::Claimed && !wait.claim_is_active_at(now_ms))
 }
 
 fn wait_identity_matches(left: &StatefulWaitRecord, right: &StatefulWaitRecord) -> bool {
@@ -297,6 +398,51 @@ mod tests {
             claim_expires_at_ms: None,
             completed_at_ms: None,
             metadata: Some(json!({ "source": "test" })),
+        }
+    }
+
+    fn webhook_wait(
+        wait_id: &str,
+        run_id: &str,
+        tenant_context: TenantContext,
+        match_rules: StatefulWebhookWaitMatch,
+    ) -> StatefulWaitRecord {
+        StatefulWaitRecord {
+            schema_version: 1,
+            wait_id: wait_id.to_string(),
+            run_id: run_id.to_string(),
+            wait_kind: StatefulWaitKind::Webhook,
+            status: StatefulWaitStatus::Waiting,
+            scope: StatefulRuntimeScope::from_tenant_context(tenant_context),
+            phase_id: Some("phase-webhook".to_string()),
+            reason: Some("wait for correlated webhook".to_string()),
+            created_at_ms: 1_000,
+            updated_at_ms: 1_000,
+            wake_at_ms: None,
+            timeout_policy: None,
+            event_seq: None,
+            wake_idempotency_key: None,
+            claimed_by: None,
+            claimed_at_ms: None,
+            claim_expires_at_ms: None,
+            completed_at_ms: None,
+            metadata: Some(stateful_webhook_wait_metadata(match_rules, None)),
+        }
+    }
+
+    fn webhook_event(
+        trigger_id: &str,
+        provider_event_id: Option<&str>,
+    ) -> StatefulWebhookWaitEvent {
+        StatefulWebhookWaitEvent {
+            trigger_id: trigger_id.to_string(),
+            provider: "github".to_string(),
+            provider_event_kind: Some("issues.opened".to_string()),
+            provider_event_id: provider_event_id.map(ToOwned::to_owned),
+            body_digest: "sha256:body".to_string(),
+            idempotency_key: provider_event_id
+                .map(|event_id| format!("github:{event_id}"))
+                .unwrap_or_else(|| "sha256:body".to_string()),
         }
     }
 
@@ -595,6 +741,111 @@ mod tests {
         .await
         .expect("conflicting wake")
         .is_none());
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn webhook_wait_claim_matches_metadata_once() {
+        let path = temp_wait_store("stateful-waits-webhook-match");
+        let tenant_a = tenant("org-a", "workspace-a");
+        upsert_stateful_wait(
+            &path,
+            webhook_wait(
+                "wait-a",
+                "run-a",
+                tenant_a.clone(),
+                StatefulWebhookWaitMatch {
+                    trigger_id: Some("trigger-a".to_string()),
+                    provider_event_id: Some("evt-a".to_string()),
+                    ..StatefulWebhookWaitMatch::default()
+                },
+            ),
+        )
+        .await
+        .expect("insert wait");
+
+        assert!(claim_matching_stateful_webhook_wait(
+            &path,
+            &tenant_a,
+            &webhook_event("trigger-a", Some("evt-b")),
+            "webhook-router",
+            1_500,
+            500,
+        )
+        .await
+        .expect("nonmatching event")
+        .is_none());
+        let claimed = claim_matching_stateful_webhook_wait(
+            &path,
+            &tenant_a,
+            &webhook_event("trigger-a", Some("evt-a")),
+            "webhook-router",
+            1_500,
+            500,
+        )
+        .await
+        .expect("claim")
+        .expect("claimed wait");
+        assert_eq!(claimed.wait_id, "wait-a");
+        assert_eq!(claimed.claimed_by.as_deref(), Some("webhook-router"));
+        assert!(claim_matching_stateful_webhook_wait(
+            &path,
+            &tenant_a,
+            &webhook_event("trigger-a", Some("evt-a")),
+            "webhook-router-2",
+            1_600,
+            500,
+        )
+        .await
+        .expect("active duplicate claim")
+        .is_none());
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn webhook_wait_claim_is_tenant_scoped_and_ordered() {
+        let path = temp_wait_store("stateful-waits-webhook-tenant");
+        let tenant_a = tenant("org-a", "workspace-a");
+        let tenant_b = tenant("org-b", "workspace-b");
+        let match_rules = StatefulWebhookWaitMatch {
+            trigger_id: Some("trigger-a".to_string()),
+            ..StatefulWebhookWaitMatch::default()
+        };
+        upsert_stateful_wait(
+            &path,
+            webhook_wait("wait-b", "run-b", tenant_b.clone(), match_rules.clone()),
+        )
+        .await
+        .expect("insert tenant b");
+        upsert_stateful_wait(
+            &path,
+            webhook_wait("wait-a", "run-a", tenant_a.clone(), match_rules),
+        )
+        .await
+        .expect("insert tenant a");
+
+        let claimed = claim_matching_stateful_webhook_wait(
+            &path,
+            &tenant_a,
+            &webhook_event("trigger-a", Some("evt-a")),
+            "webhook-router",
+            1_500,
+            500,
+        )
+        .await
+        .expect("claim")
+        .expect("tenant a wait");
+        assert_eq!(claimed.run_id, "run-a");
+        let tenant_b_waits = list_stateful_waits(
+            &path,
+            &tenant_b,
+            StatefulWaitQuery {
+                status: Some(StatefulWaitStatus::Waiting),
+                wait_kind: Some(StatefulWaitKind::Webhook),
+                ..StatefulWaitQuery::default()
+            },
+        );
+        assert_eq!(tenant_b_waits.len(), 1);
         let _ = tokio::fs::remove_file(path).await;
     }
 

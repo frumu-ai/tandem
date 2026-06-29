@@ -13,13 +13,15 @@ static STATEFUL_RUN_EVENT_APPEND_ONCE_LOCK: tokio::sync::Mutex<()> =
 pub struct StatefulRuntimeStoragePaths {
     pub run_events_path: PathBuf,
     pub snapshots_root: PathBuf,
+    pub waits_path: PathBuf,
 }
 
 impl StatefulRuntimeStoragePaths {
-    pub fn new(run_events_path: PathBuf, snapshots_root: PathBuf) -> Self {
+    pub fn new(run_events_path: PathBuf, snapshots_root: PathBuf, waits_path: PathBuf) -> Self {
         Self {
             run_events_path,
             snapshots_root,
+            waits_path,
         }
     }
 
@@ -31,6 +33,7 @@ impl StatefulRuntimeStoragePaths {
         Self {
             run_events_path: runtime_root.join("stateful_events.jsonl"),
             snapshots_root: runtime_root.join("stateful_snapshots"),
+            waits_path: runtime_root.join("stateful_waits.json"),
         }
     }
 }

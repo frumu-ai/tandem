@@ -203,6 +203,10 @@ pub struct AutomationWebhookDeliveryRecord {
     pub verification_reason_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queued_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub woken_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub woken_wait_id: Option<String>,
     pub received_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accepted_at_ms: Option<u64>,

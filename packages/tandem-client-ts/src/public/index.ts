@@ -2495,6 +2495,10 @@ export interface AutomationWebhookDelivery {
   queuedRunID?: string | null;
   queued_run_path?: string | null;
   queuedRunPath?: string | null;
+  woken_run_id?: string | null;
+  wokenRunID?: string | null;
+  woken_wait_id?: string | null;
+  wokenWaitID?: string | null;
   received_at_ms?: number;
   receivedAtMs?: number;
   accepted_at_ms?: number | null;

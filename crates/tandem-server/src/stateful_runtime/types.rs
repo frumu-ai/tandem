@@ -152,6 +152,45 @@ pub struct StatefulWaitTimeoutPolicy {
     pub metadata: Option<Value>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StatefulWebhookWaitMatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_event_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+}
+
+impl StatefulWebhookWaitMatch {
+    pub fn has_constraint(&self) -> bool {
+        self.trigger_id.is_some()
+            || self.provider.is_some()
+            || self.provider_event_kind.is_some()
+            || self.provider_event_id.is_some()
+            || self.body_digest.is_some()
+            || self.idempotency_key.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StatefulWebhookWaitEvent {
+    pub trigger_id: String,
+    pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_event_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_event_id: Option<String>,
+    pub body_digest: String,
+    pub idempotency_key: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StatefulWaitRecord {
     #[serde(default = "default_schema_version")]

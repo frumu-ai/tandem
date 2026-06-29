@@ -245,6 +245,8 @@ async fn webhook_management_routes_redact_secrets_and_delivery_payloads() {
             verification_provider: None,
             verification_reason_code: None,
             queued_run_id: Some("automation-v2-run-webhook-a".to_string()),
+            woken_run_id: None,
+            woken_wait_id: None,
             received_at_ms: 2_000,
             accepted_at_ms: Some(2_001),
             rejected_at_ms: None,
@@ -295,6 +297,12 @@ async fn webhook_management_routes_redact_secrets_and_delivery_payloads() {
             .and_then(Value::as_str),
         Some("automation-v2-run-webhook-a")
     );
+    assert!(deliveries_payload
+        .pointer("/deliveries/0/woken_run_id")
+        .is_some_and(Value::is_null));
+    assert!(deliveries_payload
+        .pointer("/deliveries/0/woken_wait_id")
+        .is_some_and(Value::is_null));
 
     let rotate_req = tenant_request(
         "POST",

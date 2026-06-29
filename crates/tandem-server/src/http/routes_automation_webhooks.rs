@@ -109,6 +109,9 @@ async fn automation_webhook_intake(
         Ok(AutomationWebhookQueueResult::Duplicate { .. }) => {
             webhook_public_response(StatusCode::ACCEPTED, "accepted")
         }
+        Ok(AutomationWebhookQueueResult::Woken { .. }) => {
+            webhook_public_response(StatusCode::ACCEPTED, "accepted")
+        }
         Ok(AutomationWebhookQueueResult::Rejected { .. }) => {
             webhook_public_response(StatusCode::CONFLICT, "rejected")
         }
