@@ -14,6 +14,11 @@ fail closed.
 Automation webhooks now use a provider-aware signature verification registry
 with queryable delivery verification metadata, keeping Tandem HMAC compatibility
 while preparing GitHub-style and shared-secret provider schemes.
+Durable wait foundations now persist timer/webhook/approval wait metadata,
+tenant-boundary identity, wake times, timeout policy, and wake claim state for
+future sleep/resume scheduling.
+Stateful runtime event and snapshot read endpoints are now available for
+tenant-filtered replay/debug and future control-panel views.
 
 ## v0.6.4 (2026-06-28)
 

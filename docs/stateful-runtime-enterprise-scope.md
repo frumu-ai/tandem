@@ -39,3 +39,16 @@ Stateful automation adapters derive a `sha256:` snapshot hash from the persisted
 canonical run record. This lets future resume and replay paths compare the
 definition that originally started a run against the current mutable workflow
 definition before reclaiming leases, applying migrations, or executing effects.
+
+## Durable Waits
+
+Durable waits use the same `StatefulRuntimeScope` as runs, events, and
+snapshots. Timer, webhook, approval, external-condition, and retry-backoff waits
+must persist the run ID, wait ID, wait kind, phase, wake time, timeout policy,
+event sequence, and wake idempotency key before execution is released. Wake
+claiming is tenant-filtered and lease-bound so startup recovery can find missed
+timer wakeups without allowing another tenant or concurrent scheduler worker to
+resume the same wait twice. Wait identity is scoped to the tenant boundary, so
+duplicate wait IDs in another organization, workspace, or deployment cannot
+overwrite or shadow the visible wait. Claim and wake-completion operations
+address waits by run ID and wait ID inside that tenant boundary.
