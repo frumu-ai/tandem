@@ -321,6 +321,8 @@ pub async fn submit_log_candidate(
     let mut incident = latest_bug_monitor_incident_by_repo_fingerprint(
         state,
         &project.repo,
+        &project.project_id,
+        &source.source_id,
         &candidate.fingerprint,
     )
     .await
@@ -617,6 +619,8 @@ pub fn resolve_log_source_path(
 async fn latest_bug_monitor_incident_by_repo_fingerprint(
     state: &AppState,
     repo: &str,
+    project_id: &str,
+    source_id: &str,
     fingerprint: &str,
 ) -> Option<BugMonitorIncidentRecord> {
     state
@@ -624,7 +628,12 @@ async fn latest_bug_monitor_incident_by_repo_fingerprint(
         .read()
         .await
         .values()
-        .filter(|row| row.repo == repo && row.fingerprint == fingerprint)
+        .filter(|row| {
+            row.repo == repo
+                && row.fingerprint == fingerprint
+                && row.project_id.as_deref() == Some(project_id)
+                && row.log_source_id.as_deref() == Some(source_id)
+        })
         .max_by_key(|row| row.updated_at_ms)
         .cloned()
 }
@@ -815,6 +824,31 @@ mod tests {
         }
     }
 
+    fn log_candidate(root: &Path, source_id: &str, fingerprint: &str) -> BugMonitorLogCandidate {
+        BugMonitorLogCandidate {
+            project_id: "customer-api".to_string(),
+            source_id: source_id.to_string(),
+            source_kind: crate::BugMonitorSourceKind::Ci,
+            repo: "owner/customer-api".to_string(),
+            workspace_root: root.display().to_string(),
+            path: format!("logs/{source_id}.log"),
+            offset_start: 0,
+            offset_end: 64,
+            title: "Shared source failure".to_string(),
+            detail: format!("{source_id} reported the shared failure"),
+            source: format!("log.{source_id}"),
+            event: "log.error".to_string(),
+            level: "error".to_string(),
+            excerpt: vec![format!("ERROR {source_id} failed")],
+            raw_excerpt_redacted: vec![format!("ERROR {source_id} failed")],
+            fingerprint: fingerprint.to_string(),
+            confidence: "high".to_string(),
+            risk_level: "medium".to_string(),
+            expected_destination: "bug_monitor_issue_draft".to_string(),
+            ..BugMonitorLogCandidate::default()
+        }
+    }
+
     fn test_state(root: &Path) -> AppState {
         let mut state = AppState::new_starting("test".to_string(), true);
         state.bug_monitor_config_path = root.join("config.json");
@@ -900,6 +934,68 @@ mod tests {
             incidents[0].source_kind,
             Some(crate::BugMonitorSourceKind::Ci)
         );
+    }
+
+    #[tokio::test]
+    async fn same_fingerprint_from_different_sources_creates_source_bound_incidents() {
+        let dir = tempdir().unwrap();
+        let state_dir = tempdir().unwrap();
+        let state = test_state(state_dir.path());
+        let api_source = source();
+        let mut worker_source = source();
+        worker_source.source_id = "worker-log".to_string();
+        worker_source.path = "logs/worker.log".to_string();
+        worker_source.default_route_tags = vec!["worker-log".to_string()];
+        worker_source.workspace_id = Some("workspace-b".to_string());
+        let project = BugMonitorMonitoredProject {
+            log_sources: vec![api_source.clone(), worker_source.clone()],
+            ..project(dir.path())
+        };
+        state
+            .put_bug_monitor_config(BugMonitorConfig {
+                enabled: true,
+                monitored_projects: vec![project.clone()],
+                ..BugMonitorConfig::default()
+            })
+            .await
+            .unwrap();
+
+        let first = submit_log_candidate(
+            &state,
+            &project,
+            &api_source,
+            log_candidate(dir.path(), "api-log", "shared-fingerprint"),
+        )
+        .await
+        .unwrap()
+        .expect("first source draft");
+        let second = submit_log_candidate(
+            &state,
+            &project,
+            &worker_source,
+            log_candidate(dir.path(), "worker-log", "shared-fingerprint"),
+        )
+        .await
+        .unwrap()
+        .expect("second source draft");
+
+        assert_ne!(first.draft_id, second.draft_id);
+        let drafts = state.list_bug_monitor_drafts(10).await;
+        let incidents = state.list_bug_monitor_incidents(10).await;
+        assert_eq!(drafts.len(), 2);
+        assert_eq!(incidents.len(), 2);
+        assert!(drafts
+            .iter()
+            .any(|draft| draft.log_source_id.as_deref() == Some("api-log")));
+        assert!(drafts
+            .iter()
+            .any(|draft| draft.log_source_id.as_deref() == Some("worker-log")));
+        assert!(incidents
+            .iter()
+            .any(|incident| incident.log_source_id.as_deref() == Some("api-log")));
+        assert!(incidents
+            .iter()
+            .any(|incident| incident.log_source_id.as_deref() == Some("worker-log")));
     }
 
     #[tokio::test]

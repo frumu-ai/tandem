@@ -30,6 +30,7 @@ pub struct BugMonitorRouteContext {
     pub default_destination_ids: Vec<String>,
     pub source_approval_policy: Option<BugMonitorApprovalPolicy>,
     pub source_approval_policy_trusted: bool,
+    pub source_binding_trusted: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +70,8 @@ pub fn build_route_context(
         draft.and_then(|row| row.source_approval_policy.as_ref()),
         incident.and_then(|row| row.source_approval_policy.as_ref()),
     ]);
+    let has_persisted_context = report.is_some() || draft.is_some() || incident.is_some();
+    let source_binding_trusted = source_approval_policy.is_some() || !has_persisted_context;
 
     let allowed_destination_ids = first_non_empty_destination_ids(&[
         report.map(|row| row.allowed_destination_ids.as_slice()),
@@ -152,6 +155,7 @@ pub fn build_route_context(
         ]),
         source_approval_policy,
         source_approval_policy_trusted: false,
+        source_binding_trusted,
     }
 }
 
@@ -513,27 +517,35 @@ fn enrich_route_context_from_sources(
     });
     let binding = project.source_binding(source);
 
-    if out.source_kind.is_none() {
-        out.source_kind = Some(binding.source_kind.as_str().to_string());
+    if !out.source_binding_trusted {
+        out.project_id = None;
+        out.log_source_id = None;
+        out.source_kind = None;
+        out.tenant_id = None;
+        out.workspace_id = None;
+        out.event_schema_version = None;
+        out.route_tags.clear();
+        out.allowed_destination_ids.clear();
+        out.destination_allowlist_enforced = false;
+        out.default_destination_ids.clear();
+        out.source_approval_policy = None;
+        out.source_approval_policy_trusted = false;
+        return out;
     }
-    if out.tenant_id.is_none() {
-        out.tenant_id = binding
-            .tenant_id
-            .as_deref()
-            .and_then(|value| normalize_route_value(Some(value)));
-    }
-    if out.workspace_id.is_none() {
-        out.workspace_id = binding
-            .workspace_id
-            .as_deref()
-            .and_then(|value| normalize_route_value(Some(value)));
-    }
-    if out.event_schema_version.is_none() {
-        out.event_schema_version = binding
-            .event_schema_version
-            .as_deref()
-            .and_then(|value| normalize_route_value(Some(value)));
-    }
+
+    out.source_kind = Some(binding.source_kind.as_str().to_string());
+    out.tenant_id = binding
+        .tenant_id
+        .as_deref()
+        .and_then(|value| normalize_route_value(Some(value)));
+    out.workspace_id = binding
+        .workspace_id
+        .as_deref()
+        .and_then(|value| normalize_route_value(Some(value)));
+    out.event_schema_version = binding
+        .event_schema_version
+        .as_deref()
+        .and_then(|value| normalize_route_value(Some(value)));
     push_normalized_values(&mut out.route_tags, &binding.default_route_tags);
 
     let existing_allowed_destination_ids = std::mem::take(&mut out.allowed_destination_ids);
@@ -553,9 +565,7 @@ fn enrich_route_context_from_sources(
         ),
     };
     out.destination_allowlist_enforced = existing_allowlist_enforced || binding_allowlist_enforced;
-    if out.default_destination_ids.is_empty() {
-        out.default_destination_ids = binding.default_destination_ids.clone();
-    }
+    out.default_destination_ids = binding.default_destination_ids.clone();
     let existing_policy_matches_binding = out
         .source_approval_policy
         .as_ref()
@@ -866,5 +876,136 @@ fn first_approval_policy(
 fn push_unique(values: &mut Vec<String>, value: &str) {
     if !values.iter().any(|existing| existing == value) {
         values.push(value.to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{BugMonitorLogSource, BugMonitorMonitoredProject, BugMonitorSourceKind};
+
+    fn source_bound_config() -> BugMonitorConfig {
+        BugMonitorConfig {
+            monitored_projects: vec![BugMonitorMonitoredProject {
+                project_id: "payments".to_string(),
+                name: "Payments".to_string(),
+                repo: "acme/payments".to_string(),
+                workspace_root: "/tmp/payments".to_string(),
+                source_kind: BugMonitorSourceKind::ExternalApp,
+                allowed_destination_ids: vec!["triage".to_string(), "pager".to_string()],
+                default_destination_ids: vec!["triage".to_string()],
+                default_route_tags: vec!["payments".to_string()],
+                tenant_id: Some("tenant-payments".to_string()),
+                workspace_id: Some("workspace-project".to_string()),
+                event_schema_version: Some("project-v1".to_string()),
+                log_sources: vec![BugMonitorLogSource {
+                    source_id: "ci".to_string(),
+                    path: "logs/ci.jsonl".to_string(),
+                    source_kind: Some(BugMonitorSourceKind::Ci),
+                    allowed_destination_ids: vec!["pager".to_string()],
+                    default_destination_ids: vec!["pager".to_string()],
+                    default_route_tags: vec!["ci".to_string()],
+                    tenant_id: Some("tenant-ci".to_string()),
+                    workspace_id: Some("workspace-ci".to_string()),
+                    event_schema_version: Some("ci-v1".to_string()),
+                    approval_policy: BugMonitorApprovalPolicy::Never,
+                    ..BugMonitorLogSource::default()
+                }],
+                ..BugMonitorMonitoredProject::default()
+            }],
+            ..BugMonitorConfig::default()
+        }
+    }
+
+    #[test]
+    fn untrusted_report_source_ids_do_not_inherit_source_binding_routes() {
+        let report = BugMonitorSubmission {
+            project_id: Some("payments".to_string()),
+            log_source_id: Some("ci".to_string()),
+            source_kind: Some(BugMonitorSourceKind::ExternalApp),
+            route_tags: vec!["forged".to_string()],
+            allowed_destination_ids: vec!["pager".to_string()],
+            default_destination_ids: vec!["pager".to_string()],
+            tenant_id: Some("tenant-forged".to_string()),
+            workspace_id: Some("workspace-forged".to_string()),
+            event_schema_version: Some("forged-v1".to_string()),
+            source_approval_policy: None,
+            ..BugMonitorSubmission::default()
+        };
+
+        let context = build_route_context(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            Some(&report),
+            None,
+            None,
+        );
+        let enriched = enrich_route_context_from_sources(&source_bound_config(), &context);
+
+        assert_eq!(enriched.project_id, None);
+        assert_eq!(enriched.log_source_id, None);
+        assert_eq!(enriched.source_kind, None);
+        assert_eq!(enriched.tenant_id, None);
+        assert_eq!(enriched.workspace_id, None);
+        assert_eq!(enriched.event_schema_version, None);
+        assert!(enriched.route_tags.is_empty());
+        assert!(enriched.allowed_destination_ids.is_empty());
+        assert!(enriched.default_destination_ids.is_empty());
+        assert!(!enriched.source_approval_policy_trusted);
+    }
+
+    #[test]
+    fn trusted_report_source_binding_overrides_forged_source_fields() {
+        let report = BugMonitorSubmission {
+            project_id: Some("payments".to_string()),
+            log_source_id: Some("ci".to_string()),
+            source_kind: Some(BugMonitorSourceKind::ExternalApp),
+            route_tags: vec!["candidate".to_string()],
+            allowed_destination_ids: vec!["triage".to_string(), "pager".to_string()],
+            default_destination_ids: vec!["triage".to_string()],
+            tenant_id: Some("tenant-forged".to_string()),
+            workspace_id: Some("workspace-forged".to_string()),
+            event_schema_version: Some("forged-v1".to_string()),
+            source_approval_policy: Some(BugMonitorApprovalPolicy::Never),
+            ..BugMonitorSubmission::default()
+        };
+
+        let context = build_route_context(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            Some(&report),
+            None,
+            None,
+        );
+        let enriched = enrich_route_context_from_sources(&source_bound_config(), &context);
+
+        assert_eq!(enriched.project_id.as_deref(), Some("payments"));
+        assert_eq!(enriched.log_source_id.as_deref(), Some("ci"));
+        assert_eq!(enriched.source_kind.as_deref(), Some("ci"));
+        assert_eq!(enriched.tenant_id.as_deref(), Some("tenant-ci"));
+        assert_eq!(enriched.workspace_id.as_deref(), Some("workspace-ci"));
+        assert_eq!(enriched.event_schema_version.as_deref(), Some("ci-v1"));
+        assert_eq!(enriched.route_tags, vec!["candidate", "payments", "ci"]);
+        assert_eq!(enriched.allowed_destination_ids, vec!["pager"]);
+        assert_eq!(enriched.default_destination_ids, vec!["pager"]);
+        assert_eq!(
+            enriched.source_approval_policy,
+            Some(BugMonitorApprovalPolicy::Never)
+        );
+        assert!(enriched.source_approval_policy_trusted);
     }
 }

@@ -23,7 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Pending.
+- Tightened Bug Monitor source-bound routing so raw reports cannot inherit
+  configured source route fields or approval downgrades, while log-watcher
+  incidents with the same fingerprint stay scoped to the originating
+  project/source binding.
 
 ## [0.6.4] - 2026-06-28
 

@@ -9,7 +9,9 @@ fn apply_bug_monitor_report_source_approval_binding(
 }
 
 fn clear_bug_monitor_raw_source_routing_fields(report: &mut BugMonitorSubmission) {
+    report.project_id = None;
     report.source_kind = None;
+    report.log_source_id = None;
     report.route_tags.clear();
     report.allowed_destination_ids.clear();
     report.default_destination_ids.clear();
