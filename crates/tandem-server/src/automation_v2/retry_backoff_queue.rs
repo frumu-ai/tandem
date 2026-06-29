@@ -64,6 +64,9 @@ pub(crate) fn queue_run_for_retry_backoff(
     detail: &str,
     now_ms: u64,
 ) -> Option<SchedulerMetadata> {
+    if run.status != AutomationRunStatus::Running {
+        return None;
+    }
     let metadata =
         retry_backoff_scheduler_metadata(run, node_id, attempts, retry_decision, detail, now_ms)?;
     let backoff_ms = metadata.retry_backoff_ms.unwrap_or_default();
@@ -243,5 +246,42 @@ mod tests {
             json!(run.scheduler.unwrap().queue_reason),
             json!("retry_backoff")
         );
+    }
+
+    #[test]
+    fn queue_run_for_retry_backoff_does_not_resurrect_stopped_run() {
+        let mut run = run_with_retry_after(100);
+        run.status = AutomationRunStatus::Cancelled;
+        run.scheduler = None;
+        let decision = tandem_automation::RetryDecision {
+            version: 1,
+            policy_version_id: "policy".to_string(),
+            decision: "retry_scheduled".to_string(),
+            failure_class: "provider_transient".to_string(),
+            reason: "provider timeout".to_string(),
+            attempt: 1,
+            max_attempts: 3,
+            retryable: true,
+            terminal: false,
+            next_retry_at_ms: Some(1_500),
+            backoff_ms: Some(500),
+            terminal_behavior: tandem_automation::RetryTerminalBehavior::default(),
+            manual_override_allowed: true,
+        };
+
+        assert_eq!(
+            queue_run_for_retry_backoff(
+                &mut run,
+                "node-a",
+                1,
+                3,
+                &decision,
+                "provider timeout",
+                1_000,
+            ),
+            None
+        );
+        assert_eq!(run.status, AutomationRunStatus::Cancelled);
+        assert_eq!(run.scheduler, None);
     }
 }
