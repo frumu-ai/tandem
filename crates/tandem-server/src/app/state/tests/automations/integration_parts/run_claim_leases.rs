@@ -155,6 +155,98 @@ async fn abandoned_run_claim_with_active_handles_is_not_requeued() {
 }
 
 #[tokio::test]
+async fn expired_run_claim_after_lifecycle_progress_is_not_requeued() {
+    let workspace_root = restart_test_workspace("tandem-run-claim-progress");
+    let state = ready_test_state().await;
+    let automation = empty_restart_automation("automation-run-claim-progress", &workspace_root);
+    let run = create_persisted_restart_run(&state, &automation).await;
+
+    state
+        .claim_specific_automation_v2_run(&run.run_id)
+        .await
+        .expect("claim run");
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            let claim = row.execution_claim.as_mut().expect("execution claim");
+            claim.claimed_at_ms = 1;
+            claim.lease_expires_at_ms = 2;
+            row.active_session_ids.clear();
+            row.latest_session_id = None;
+            row.active_instance_ids.clear();
+            crate::app::state::automation::lifecycle::record_automation_lifecycle_event_with_metadata(
+                row,
+                "node_started",
+                Some("node `progressed` started".to_string()),
+                None,
+                Some(json!({ "node_id": "progressed" })),
+            );
+            row.checkpoint
+                .lifecycle_history
+                .last_mut()
+                .expect("progress event")
+                .recorded_at_ms = 3;
+        })
+        .await
+        .expect("expire progressed claim");
+
+    assert_eq!(state.reclaim_abandoned_automation_v2_run_leases().await, 0);
+    let still_running = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("running run");
+    assert_eq!(still_running.status, AutomationRunStatus::Running);
+    assert!(still_running.execution_claim.is_some());
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[tokio::test]
+async fn stale_reaper_does_not_defer_unexpired_claim_after_lifecycle_progress() {
+    let workspace_root = restart_test_workspace("tandem-run-claim-progress-stale");
+    let state = ready_test_state().await;
+    let automation = empty_restart_automation("automation-run-claim-progress-stale", &workspace_root);
+    let run = create_persisted_restart_run(&state, &automation).await;
+
+    state
+        .claim_specific_automation_v2_run(&run.run_id)
+        .await
+        .expect("claim run");
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            let now = crate::now_ms();
+            let claim = row.execution_claim.as_mut().expect("execution claim");
+            claim.claimed_at_ms = 1;
+            claim.lease_expires_at_ms = now.saturating_add(60_000);
+            row.active_session_ids.clear();
+            row.latest_session_id = None;
+            row.active_instance_ids.clear();
+            crate::app::state::automation::lifecycle::record_automation_lifecycle_event_with_metadata(
+                row,
+                "node_started",
+                Some("node `progressed` started".to_string()),
+                None,
+                Some(json!({ "node_id": "progressed" })),
+            );
+            row.checkpoint
+                .lifecycle_history
+                .last_mut()
+                .expect("progress event")
+                .recorded_at_ms = 2;
+        })
+        .await
+        .expect("record progress");
+
+    assert_eq!(state.reap_stale_running_automation_runs(0).await, 1);
+    let paused = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("paused run");
+    assert_ne!(paused.status, AutomationRunStatus::Running);
+
+    let _ = std::fs::remove_dir_all(&workspace_root);
+}
+
+#[tokio::test]
 async fn stale_reaper_defers_to_unexpired_launch_claim_and_reclaims_expired_one() {
     let workspace_root = restart_test_workspace("tandem-run-claim-stale-reaper");
     let state = ready_test_state().await;
