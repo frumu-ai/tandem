@@ -230,12 +230,14 @@ async fn run_automation_v2_executor_multi(state: AppState) {
 }
 
 async fn queued_runs_for_admission(state: &AppState) -> Vec<AutomationV2RunRecord> {
+    let now = crate::util::time::now_ms();
     let mut queued = state
         .automation_v2_runs
         .read()
         .await
         .values()
         .filter(|run| run.status == AutomationRunStatus::Queued)
+        .filter(|run| crate::automation_v2::retry_backoff_queue::retry_backoff_is_due(run, now))
         .cloned()
         .collect::<Vec<AutomationV2RunRecord>>();
     queued.sort_by(|a, b| {
@@ -464,6 +466,11 @@ mod tests {
             resource_key: Some(workspace_root.clone()),
             rate_limited_provider: None,
             queued_at_ms: crate::util::time::now_ms(),
+            retry_node_id: None,
+            retry_attempt: None,
+            retry_backoff_ms: None,
+            retry_after_ms: None,
+            retry_reason: None,
         };
 
         tokio::time::timeout(

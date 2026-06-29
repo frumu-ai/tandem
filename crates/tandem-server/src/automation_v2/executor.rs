@@ -2291,19 +2291,32 @@ pub async fn run_automation_v2_run(
                         })
                         .await;
                     if let Some(backoff_ms) = retry_decision.backoff_ms {
-                        let _ = state
+                        let scheduled_at_ms = now_ms();
+                        let scheduled = state
                             .update_automation_v2_run(&run_id, |row| {
-                                row.detail = Some(format!(
-                                    "retrying node `{}` after transient provider failure; waiting {} ms before attempt {}/{}: {}",
-                                    node_id,
-                                    backoff_ms,
-                                    attempts + 1,
-                                    max_attempts,
-                                    detail
-                                ));
+                                let _ =
+                                    crate::automation_v2::retry_backoff_queue::queue_run_for_retry_backoff(
+                                        row,
+                                        &node_id,
+                                        attempts,
+                                        max_attempts,
+                                        &retry_decision,
+                                        &detail,
+                                        scheduled_at_ms,
+                                    );
                             })
                             .await;
-                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                        if scheduled.is_some() {
+                            tracing::info!(
+                                run_id = %run_id,
+                                node_id = %node_id,
+                                backoff_ms = backoff_ms,
+                                next_attempt = attempts.saturating_add(1),
+                                max_attempts = max_attempts,
+                                "automation node retry queued for durable backoff"
+                            );
+                            return;
+                        }
                     }
                 }
             }

@@ -7,6 +7,7 @@ pub enum QueueReason {
     Capacity,
     WorkspaceLock,
     RateLimit,
+    RetryBackoff,
 }
 
 impl QueueReason {
@@ -15,6 +16,7 @@ impl QueueReason {
             Self::Capacity => "capacity",
             Self::WorkspaceLock => "workspace_lock",
             Self::RateLimit => "rate_limit",
+            Self::RetryBackoff => "retry_backoff",
         }
     }
 }
@@ -30,6 +32,16 @@ pub struct SchedulerMetadata {
     pub rate_limited_provider: Option<String>,
     #[serde(default)]
     pub queued_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_attempt: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_backoff_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_reason: Option<String>,
 }
 
 fn default_tenant_context() -> TenantContext {
