@@ -226,6 +226,8 @@ fn cleanup_test_automation_run(
         },
         runtime_context: None,
         automation_snapshot: None,
+        workflow_definition_version: None,
+        workflow_definition_snapshot_hash: None,
         execution_claim: None,
         execution_claim_epoch: 0,
         pause_reason: None,

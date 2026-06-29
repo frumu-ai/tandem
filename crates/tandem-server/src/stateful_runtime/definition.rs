@@ -56,6 +56,15 @@ pub fn ensure_automation_run_definition_metadata(run: &mut AutomationV2RunRecord
     }
 }
 
+pub fn stamp_automation_run_definition_metadata(run: &mut AutomationV2RunRecord) {
+    let Some(snapshot) = run.automation_snapshot.as_ref() else {
+        return;
+    };
+    let (version, snapshot_hash) = automation_run_definition_metadata(snapshot);
+    run.workflow_definition_version = Some(version);
+    run.workflow_definition_snapshot_hash = Some(snapshot_hash);
+}
+
 pub fn automation_run_definition_snapshot_hash_mismatch(
     run: &AutomationV2RunRecord,
 ) -> Option<(String, String)> {

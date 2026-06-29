@@ -1571,6 +1571,7 @@ pub(super) async fn automations_v2_run_now(
         let _ = state
             .update_automation_v2_run(&run.run_id, |row| {
                 row.automation_snapshot = Some(automation_with_trigger);
+                crate::stateful_runtime::stamp_automation_run_definition_metadata(row);
             })
             .await;
     }

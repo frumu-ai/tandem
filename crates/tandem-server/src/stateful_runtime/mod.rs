@@ -14,7 +14,7 @@ pub use definition::{
     automation_definition_snapshot_hash, automation_definition_version,
     automation_run_definition_fields, automation_run_definition_metadata,
     automation_run_definition_snapshot_hash_mismatch, ensure_automation_run_definition_metadata,
-    stable_definition_snapshot_hash,
+    stable_definition_snapshot_hash, stamp_automation_run_definition_metadata,
 };
 pub use phases::*;
 pub use scheduler::{
