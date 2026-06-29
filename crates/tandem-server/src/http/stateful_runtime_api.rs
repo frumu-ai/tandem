@@ -119,8 +119,9 @@ mod tests {
 
     use super::*;
     use crate::stateful_runtime::{
-        append_stateful_run_event, write_stateful_run_snapshot, StatefulRunEventRecord,
-        StatefulRunSnapshotRecord, StatefulRuntimeScope, StatefulWorkflowRunStatus,
+        append_stateful_run_event, phase_state_from_status, write_stateful_run_snapshot,
+        StatefulRunEventRecord, StatefulRunSnapshotRecord, StatefulRuntimeScope,
+        StatefulWorkflowRunStatus,
     };
 
     fn tenant(org: &str, workspace: &str) -> TenantContext {
@@ -138,6 +139,7 @@ mod tests {
             scope: StatefulRuntimeScope::from_tenant_context(tenant_context),
             actor: Some(PrincipalRef::new(PrincipalKind::Automation, "automation-a")),
             phase_id: Some("phase-a".to_string()),
+            phase_transition: None,
             wait_kind: None,
             causation_id: None,
             correlation_id: None,
@@ -150,6 +152,13 @@ mod tests {
         run_id: &str,
         tenant_context: TenantContext,
     ) -> StatefulRunSnapshotRecord {
+        let status = StatefulWorkflowRunStatus::Running;
+        let phase_state = phase_state_from_status(
+            run_id,
+            &status,
+            2_000 + seq,
+            Some("phase-a"),
+        );
         StatefulRunSnapshotRecord {
             schema_version: 1,
             snapshot_id: format!("snapshot-{seq}"),
@@ -157,7 +166,10 @@ mod tests {
             seq,
             created_at_ms: 2_000 + seq,
             scope: StatefulRuntimeScope::from_tenant_context(tenant_context),
-            status: StatefulWorkflowRunStatus::Running,
+            status,
+            phase: phase_state.phase,
+            phase_history: phase_state.phase_history,
+            allowed_next_phases: phase_state.allowed_next_phases,
             phase_id: Some("phase-a".to_string()),
             source_record_kind: None,
             checkpoint: Some(json!({ "seq": seq })),

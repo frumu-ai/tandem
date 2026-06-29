@@ -75,6 +75,16 @@ Local desktop remains intentionally simpler: the local engine is trusted as the
 single-user runtime for that machine, and stronger hosted tenant assertions are
 not required unless the deployment mode is changed.
 
+## Automation Webhook Raw Events
+
+Automation webhook intake persists a tenant-scoped raw inbox record after
+signature verification and before delivery routing. The raw request body is
+stored by payload pointer under the runtime data directory; the inbox record
+keeps the body digest, header digest, redacted header preview, trigger/provider
+scope, retention deadline, delivery ID, and queued run ID when routing produces
+one. Sensitive header names such as authorization, cookie, token, secret, and
+signature are redacted in the persisted preview.
+
 ## Threat Table
 
 | Threat                               | Current mitigation                                                                                                                                                                                   | Remaining gap                                                                                                         |

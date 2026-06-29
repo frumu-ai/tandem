@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added stateful runtime definition identity helpers so snapshot-backed
   automation runs expose durable workflow definition versions and `sha256:`
   snapshot hashes for future replay and resume checks.
+- Added an explicit stateful workflow phase model with guarded transitions,
+  phase transition event records, status compatibility mapping, and serialized
+  allowed-next-phase exposure on durable runtime records.
+- Added Automation V2 webhook raw event inbox persistence with tenant-scoped raw
+  payload pointers, body/header digests, redacted header previews, delivery/run
+  correlation, and duplicate-event coverage.
 - Added a provider-aware Automation V2 webhook signature verifier registry with
   Tandem HMAC, GitHub SHA-256, shared-secret header, and unsigned-dev schemes
   plus queryable delivery verification metadata exposed through clients.
@@ -32,7 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Pending.
+- Legacy stateful runtime snapshots that predate explicit phase fields now
+  derive phase, phase history, and allowed next phases from their stored status
+  when read.
 
 ## [0.6.4] - 2026-06-28
 
