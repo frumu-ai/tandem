@@ -63,7 +63,7 @@ pub fn automation_last_activity_at_ms(run: &AutomationV2RunRecord) -> u64 {
         .unwrap_or(run.created_at_ms)
 }
 
-fn automation_lifecycle_event_counts_as_activity(event: &str) -> bool {
+pub(crate) fn automation_lifecycle_event_counts_as_activity(event: &str) -> bool {
     !matches!(
         event,
         "run_execution_claimed" | "run_execution_claim_expired_requeued"

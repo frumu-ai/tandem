@@ -47,6 +47,16 @@ canonical run record. This lets future resume and replay paths compare the
 definition that originally started a run against the current mutable workflow
 definition before reclaiming leases, applying migrations, or executing effects.
 
+Automation V2 lifecycle boundaries are projected into the authoritative
+stateful runtime event log. The projection uses deterministic event IDs based
+on the run and lifecycle index, so repeated writes are idempotent while per-run
+sequences remain monotonic. Each projected boundary also writes a redacted
+summary snapshot with checkpoint node IDs, attempts, gate summary, execution
+claim metadata, a stable checkpoint digest, and the workflow definition
+version/hash. Raw node outputs stay out of these snapshots; consumers that need
+full payloads should follow the referenced Automation V2 run or future
+payload-pointer APIs under the same tenant boundary.
+
 ## Durable Waits
 
 Durable waits use the same `StatefulRuntimeScope` as runs, events, and

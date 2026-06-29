@@ -53,6 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   data-class, delegation, and knowledge-source visibility.
 - Added enterprise-aware scope metrics, filters, and per-run scope cards to the
   Control Panel stateful runs dashboard.
+- Added Automation V2 lifecycle projection into the authoritative stateful
+  runtime event log, with idempotent per-run lifecycle event IDs, monotonic
+  sequences, summary snapshots, checkpoint digests, and definition version/hash
+  metadata at durable execution boundaries.
 
 ### Changed
 
