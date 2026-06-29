@@ -1479,14 +1479,7 @@ pub async fn run_automation_v2_run(
         let outcomes = join_all(tasks).await;
 
         let mut terminal_failure = None::<String>;
-        let mut pending_retry_backoff = None::<(
-            String,
-            u32,
-            u32,
-            tandem_automation::RetryDecision,
-            String,
-            u64,
-        )>;
+        let mut pending_retry_backoff = None;
         let run_started_at_ms = state
             .get_automation_v2_run(&run_id)
             .await
@@ -2300,16 +2293,15 @@ pub async fn run_automation_v2_run(
                         })
                         .await;
                     if let Some(backoff_ms) = retry_decision.backoff_ms {
-                        pending_retry_backoff.get_or_insert_with(|| {
-                            (
-                                node_id.clone(),
-                                attempts,
-                                max_attempts,
-                                retry_decision.clone(),
-                                detail.clone(),
-                                backoff_ms,
-                            )
-                        });
+                        crate::automation_v2::retry_backoff_queue::record_pending_retry_backoff(
+                            &mut pending_retry_backoff,
+                            &node_id,
+                            attempts,
+                            max_attempts,
+                            &retry_decision,
+                            &detail,
+                            backoff_ms,
+                        );
                     }
                 }
             }
@@ -2323,42 +2315,15 @@ pub async fn run_automation_v2_run(
                 .await;
             break;
         }
-        if let Some((node_id, attempts, max_attempts, retry_decision, detail, backoff_ms)) =
-            pending_retry_backoff
+        if crate::automation_v2::retry_backoff_queue::queue_pending_retry_backoff(
+            &state,
+            &run_id,
+            run_claim_epoch,
+            pending_retry_backoff,
+        )
+        .await
         {
-            let scheduled_at_ms = now_ms();
-            let scheduled = state
-                .update_automation_v2_run(&run_id, |row| {
-                    let _ = crate::automation_v2::retry_backoff_queue::queue_run_for_retry_backoff(
-                        row,
-                        &node_id,
-                        attempts,
-                        max_attempts,
-                        &retry_decision,
-                        &detail,
-                        run_claim_epoch,
-                        scheduled_at_ms,
-                    );
-                })
-                .await;
-            if scheduled.as_ref().is_some_and(|row| {
-                row.status == AutomationRunStatus::Queued
-                    && row.scheduler.as_ref().is_some_and(|metadata| {
-                        metadata.queue_reason
-                            == Some(crate::app::state::automation::QueueReason::RetryBackoff)
-                            && metadata.retry_node_id.as_deref() == Some(node_id.as_str())
-                    })
-            }) {
-                tracing::info!(
-                    run_id = %run_id,
-                    node_id = %node_id,
-                    backoff_ms = backoff_ms,
-                    next_attempt = attempts.saturating_add(1),
-                    max_attempts = max_attempts,
-                    "automation node retry queued for durable backoff"
-                );
-                return;
-            }
+            return;
         }
     }
     let final_run = state.get_automation_v2_run(&run_id).await;

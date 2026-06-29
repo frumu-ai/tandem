@@ -1,7 +1,17 @@
 use serde_json::json;
 
 use crate::app::state::automation::{QueueReason, SchedulerMetadata};
+use crate::app::state::AppState;
 use crate::automation_v2::types::{AutomationRunStatus, AutomationV2RunRecord};
+
+pub(crate) struct RetryBackoffRequest {
+    node_id: String,
+    attempts: u32,
+    max_attempts: u32,
+    retry_decision: tandem_automation::RetryDecision,
+    detail: String,
+    backoff_ms: u64,
+}
 
 pub(crate) fn retry_backoff_is_due(run: &AutomationV2RunRecord, now_ms: u64) -> bool {
     let Some(scheduler) = run.scheduler.as_ref() else {
@@ -55,6 +65,28 @@ pub(crate) fn retry_backoff_scheduler_metadata(
     })
 }
 
+pub(crate) fn record_pending_retry_backoff(
+    pending: &mut Option<RetryBackoffRequest>,
+    node_id: &str,
+    attempts: u32,
+    max_attempts: u32,
+    retry_decision: &tandem_automation::RetryDecision,
+    detail: &str,
+    backoff_ms: u64,
+) {
+    if pending.is_some() {
+        return;
+    }
+    *pending = Some(RetryBackoffRequest {
+        node_id: node_id.to_string(),
+        attempts,
+        max_attempts,
+        retry_decision: retry_decision.clone(),
+        detail: detail.to_string(),
+        backoff_ms,
+    });
+}
+
 pub(crate) fn queue_run_for_retry_backoff(
     run: &mut AutomationV2RunRecord,
     node_id: &str,
@@ -106,6 +138,50 @@ pub(crate) fn queue_run_for_retry_backoff(
         })),
     );
     Some(metadata)
+}
+
+pub(crate) async fn queue_pending_retry_backoff(
+    state: &AppState,
+    run_id: &str,
+    expected_execution_claim_epoch: u64,
+    pending: Option<RetryBackoffRequest>,
+) -> bool {
+    let Some(request) = pending else {
+        return false;
+    };
+    let scheduled_at_ms = crate::util::time::now_ms();
+    let scheduled = state
+        .update_automation_v2_run(run_id, |row| {
+            let _ = queue_run_for_retry_backoff(
+                row,
+                &request.node_id,
+                request.attempts,
+                request.max_attempts,
+                &request.retry_decision,
+                &request.detail,
+                expected_execution_claim_epoch,
+                scheduled_at_ms,
+            );
+        })
+        .await;
+    let queued = scheduled.as_ref().is_some_and(|row| {
+        row.status == AutomationRunStatus::Queued
+            && row.scheduler.as_ref().is_some_and(|metadata| {
+                metadata.queue_reason == Some(QueueReason::RetryBackoff)
+                    && metadata.retry_node_id.as_deref() == Some(request.node_id.as_str())
+            })
+    });
+    if queued {
+        tracing::info!(
+            run_id = %run_id,
+            node_id = %request.node_id,
+            backoff_ms = request.backoff_ms,
+            next_attempt = request.attempts.saturating_add(1),
+            max_attempts = request.max_attempts,
+            "automation node retry queued for durable backoff"
+        );
+    }
+    queued
 }
 
 #[cfg(test)]
