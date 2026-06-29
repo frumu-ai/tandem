@@ -30,7 +30,7 @@ async fn bug_monitor_router_publishes_configured_github_destination_metadata() {
                 destination_id: "github-primary".to_string(),
                 name: "Primary GitHub".to_string(),
                 kind: crate::BugMonitorDestinationKind::GithubIssue,
-                repo: Some("acme/platform".to_string()),
+                repo: Some("acme/incidents".to_string()),
                 mcp_server: Some("github".to_string()),
                 ..Default::default()
             }],
@@ -127,6 +127,27 @@ async fn bug_monitor_router_publishes_configured_github_destination_metadata() {
     assert_eq!(
         publish_payload
             .get("post")
+            .and_then(|row| row.get("repo"))
+            .and_then(Value::as_str),
+        Some("acme/incidents")
+    );
+    assert_eq!(
+        publish_payload
+            .get("post")
+            .and_then(|row| row.get("target_ref"))
+            .and_then(Value::as_str),
+        Some("acme/incidents")
+    );
+    assert_eq!(
+        publish_payload
+            .get("post")
+            .and_then(|row| row.get("issue_url"))
+            .and_then(Value::as_str),
+        Some("https://github.com/acme/incidents/issues/101")
+    );
+    assert_eq!(
+        publish_payload
+            .get("post")
             .and_then(|row| row.get("receipt"))
             .and_then(|row| row.get("destination_id"))
             .and_then(Value::as_str),
@@ -139,6 +160,21 @@ async fn bug_monitor_router_publishes_configured_github_destination_metadata() {
             .and_then(|row| row.get("destination_id"))
             .and_then(Value::as_str),
         Some("github-primary")
+    );
+    assert_eq!(
+        publish_payload
+            .get("external_action")
+            .and_then(|row| row.get("target"))
+            .and_then(Value::as_str),
+        Some("acme/incidents")
+    );
+    assert_eq!(
+        publish_payload
+            .get("external_action")
+            .and_then(|row| row.get("metadata"))
+            .and_then(|row| row.get("target_ref"))
+            .and_then(Value::as_str),
+        Some("acme/incidents")
     );
     let first_post_id = publish_payload
         .get("post")

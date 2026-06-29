@@ -100,12 +100,20 @@ async fn spawn_fake_bug_monitor_github_mcp_server_with_issues(
                                 "mcp.github.create_issue" => {
                                     let mut issue_rows = issues.write().await;
                                     let issue_number = (issue_rows.len() as u64) + 101;
+                                    let owner = arguments
+                                        .get("owner")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("acme");
+                                    let repo = arguments
+                                        .get("repo")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("platform");
                                     let issue = json!({
                                         "number": issue_number,
                                         "title": arguments.get("title").and_then(Value::as_str).unwrap_or("Bug Monitor issue"),
                                         "body": arguments.get("body").and_then(Value::as_str).unwrap_or(""),
                                         "state": "open",
-                                        "html_url": format!("https://github.com/acme/platform/issues/{issue_number}")
+                                        "html_url": format!("https://github.com/{owner}/{repo}/issues/{issue_number}")
                                     });
                                     issue_rows.push(issue.clone());
                                     json!({ "issue": issue })
@@ -117,9 +125,17 @@ async fn spawn_fake_bug_monitor_github_mcp_server_with_issues(
                                         .get("issue_number")
                                         .and_then(Value::as_u64)
                                         .unwrap_or_default();
+                                    let owner = arguments
+                                        .get("owner")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("acme");
+                                    let repo = arguments
+                                        .get("repo")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("platform");
                                     let comment = json!({
                                         "id": comment_id,
-                                        "html_url": format!("https://github.com/acme/platform/issues/{issue_number}#issuecomment-{}", comment_rows.len() + 1)
+                                        "html_url": format!("https://github.com/{owner}/{repo}/issues/{issue_number}#issuecomment-{}", comment_rows.len() + 1)
                                     });
                                     comment_rows.push(comment.clone());
                                     json!({ "comment": comment })

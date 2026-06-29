@@ -314,6 +314,7 @@ pub async fn publish_draft(
             state,
             &draft.draft_id,
             &destination.destination_id,
+            &target_repo,
             Some(&evidence_digest),
         )
         .await
@@ -635,7 +636,7 @@ async fn create_issue_from_draft(
         draft_id: draft.draft_id.clone(),
         incident_id: incident.map(|row| row.incident_id.clone()),
         fingerprint: draft.fingerprint.clone(),
-        repo: draft.repo.clone(),
+        repo: target_repo.to_string(),
         operation: "create_issue".to_string(),
         status: "pending".to_string(),
         issue_number: None,
@@ -836,6 +837,7 @@ async fn successful_post_for_draft(
     state: &dyn BugMonitorGithubHost,
     draft_id: &str,
     destination_id: &str,
+    target_repo: &str,
     evidence_digest: Option<&str>,
 ) -> Option<BugMonitorPostRecord> {
     let mut rows = state.list_bug_monitor_posts_by_draft(draft_id).await;
@@ -843,11 +845,16 @@ async fn successful_post_for_draft(
     rows.into_iter().find(|row| {
         row.status == "posted"
             && post_matches_destination(row, destination_id)
+            && post_matches_target_repo(row, target_repo)
             && match evidence_digest {
                 Some(expected) => row.evidence_digest.as_deref() == Some(expected),
                 None => true,
             }
     })
+}
+
+fn post_matches_target_repo(post: &BugMonitorPostRecord, target_repo: &str) -> bool {
+    post.target_ref.as_deref().unwrap_or(post.repo.as_str()) == target_repo
 }
 
 fn post_matches_destination(post: &BugMonitorPostRecord, destination_id: &str) -> bool {
