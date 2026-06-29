@@ -1133,8 +1133,9 @@ mod tests {
         let _ = fs::remove_file(&path).await;
     }
 
-    #[test]
-    fn strip_persisted_secrets_removes_channel_bot_tokens_with_runtime_env() {
+    #[tokio::test]
+    async fn strip_persisted_secrets_removes_channel_bot_tokens_with_runtime_env() {
+        let _provider_guard = provider_auth_test_lock().await;
         let _guard = env_test_lock();
         std::env::set_var("TANDEM_TELEGRAM_BOT_TOKEN", "runtime-secret");
         std::env::set_var("TANDEM_DISCORD_BOT_TOKEN", "runtime-secret");
