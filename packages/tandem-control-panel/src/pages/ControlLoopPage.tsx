@@ -8,6 +8,7 @@ import {
   StatusPulse,
   Toolbar,
 } from "../ui/index.tsx";
+import { RunTimeline, useRunTimeline } from "../features/runs/RunTimeline";
 import { EmptyState } from "./ui";
 import type { AppPageProps } from "./pageTypes";
 
@@ -379,6 +380,11 @@ export function ControlLoopPage({ api, client, navigate, toast }: AppPageProps) 
     contextRuns.find((run: any) => matchesRunId(run, new Set(contextCandidates)));
   const contextRunId = runIdOf(selectedContextRun) || contextCandidates.find((candidate) => candidate.startsWith("automation-v2-")) || "";
   const runIds = buildRunIdSet(effectiveRunId, contextRunId);
+  const runTimeline = useRunTimeline({
+    runId: effectiveRunId,
+    enabled: !!effectiveRunId,
+    limit: 120,
+  });
 
   const policyDecisionsQuery = useQuery({
     queryKey: ["control-loop", "policy-decisions", effectiveRunId],
@@ -707,6 +713,7 @@ export function ControlLoopPage({ api, client, navigate, toast }: AppPageProps) 
                   contextLedgerQuery.refetch();
                   acaRunApprovalsQuery.refetch();
                   memoryAuditQuery.refetch();
+                  runTimeline.refresh();
                 }
               }}
             >
@@ -795,6 +802,18 @@ export function ControlLoopPage({ api, client, navigate, toast }: AppPageProps) 
                   <LoopStepCard key={step.id} step={step} index={index} />
                 ))}
               </section>
+
+              <RunTimeline
+                entries={runTimeline.entries}
+                loading={runTimeline.loading}
+                loadingMore={runTimeline.loadingMore}
+                error={runTimeline.error}
+                hasMore={runTimeline.hasMore}
+                onRefresh={runTimeline.refresh}
+                onLoadMore={runTimeline.loadMore}
+                title="Runtime Event Timeline"
+                subtitle={effectiveRunId}
+              />
 
               <section className="grid gap-4 lg:grid-cols-2">
                 <EvidencePanel
@@ -888,6 +907,7 @@ export function ControlLoopPage({ api, client, navigate, toast }: AppPageProps) 
                       run: selectedAutomationRun || selectedAcaRun || selectedContextRun,
                       policy_decisions: selectedPolicyDecisions,
                       approvals: selectedApprovals,
+                      runtime_events: runTimeline.entries,
                       ledger_records: ledgerRecords,
                       memory: selectedMemoryRows,
                       memory_audit: memoryAuditRows,
