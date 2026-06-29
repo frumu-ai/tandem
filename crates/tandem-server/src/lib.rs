@@ -85,6 +85,7 @@ pub mod routines;
 pub mod runtime;
 pub mod runtime_event_log;
 pub mod shared_resources;
+pub mod signal_triage;
 pub mod stateful_runtime;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
@@ -127,6 +128,7 @@ pub use runtime::runs::*;
 pub use runtime::state::*;
 pub use runtime::worktrees::*;
 pub use shared_resources::types::*;
+pub use signal_triage::*;
 pub use stateful_runtime::*;
 pub use tandem_types::EngineEvent;
 pub use tandem_workflows::{WorkflowRunRecord, WorkflowRunStatus, WorkflowSourceRef};
