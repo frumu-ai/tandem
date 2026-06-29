@@ -48,7 +48,7 @@ test("stateful run helpers project and dedupe workflow, automation, and context 
     ],
     contextRuns: [
       {
-        run_id: "automation-v2-run-1",
+        run_id: "automation-v2-automation-v2-run-1",
         run_type: "workflow",
         status: "running",
         updated_at_ms: 4000,
@@ -152,7 +152,10 @@ test("stateful run helpers filter by status source tenant workspace and phase wa
         status: "completed",
         updated_at_ms: 2000,
         tenant_context: { org_id: "org-b", workspace_id: "finance" },
-        workspace: "/work/finance",
+        workspace: {
+          workspace_id: "finance",
+          canonical_path: "/work/finance",
+        },
       },
     ],
   });
@@ -163,6 +166,9 @@ test("stateful run helpers filter by status source tenant workspace and phase wa
     "ctx-b",
   ]);
   assert.deepEqual(filterStatefulRunRows(rows, { workspace: "hr" }).map((row) => row.id), ["run-a"]);
+  assert.deepEqual(filterStatefulRunRows(rows, { workspace: "finance" }).map((row) => row.id), [
+    "ctx-b",
+  ]);
   assert.deepEqual(filterStatefulRunRows(rows, { wait: "legal" }).map((row) => row.id), ["run-a"]);
   assert.deepEqual(filterStatefulRunRows(rows, { query: "hire" }).map((row) => row.id), ["run-a"]);
 });

@@ -83,8 +83,11 @@ function runIdOf(row) {
 }
 
 function canonicalRunId(id) {
-  const text = stringValue(id);
-  return text.startsWith("automation-v2-") ? text.replace(/^automation-v2-/, "") : text;
+  let text = stringValue(id);
+  while (text.startsWith("automation-v2-")) {
+    text = text.slice("automation-v2-".length);
+  }
+  return text;
 }
 
 function tenantContextOf(row) {
@@ -100,18 +103,37 @@ function tenantContextOf(row) {
   };
 }
 
-function workspaceOf(row) {
+function workspacePathValue(value) {
+  if (!value || typeof value !== "object") return stringValue(value);
   return stringValue(
-    row?.workspace_root ||
-      row?.workspaceRoot ||
-      row?.workspace ||
-      row?.workspace_path ||
-      row?.workspacePath ||
-      row?.runtime_context?.workspace_root ||
-      row?.runtimeContext?.workspaceRoot ||
-      row?.automation_snapshot?.workspace_root ||
-      row?.automationSnapshot?.workspaceRoot
+    value.canonical_path ||
+      value.canonicalPath ||
+      value.path ||
+      value.current_path ||
+      value.currentPath ||
+      value.workspace_root ||
+      value.workspaceRoot ||
+      value.root
   );
+}
+
+function workspaceOf(row) {
+  const candidates = [
+    row?.workspace_root,
+    row?.workspaceRoot,
+    row?.workspace,
+    row?.workspace_path,
+    row?.workspacePath,
+    row?.runtime_context?.workspace_root,
+    row?.runtimeContext?.workspaceRoot,
+    row?.automation_snapshot?.workspace_root,
+    row?.automationSnapshot?.workspaceRoot,
+  ];
+  for (const candidate of candidates) {
+    const workspace = workspacePathValue(candidate);
+    if (workspace) return workspace;
+  }
+  return "";
 }
 
 function statusGroup(status, waitKind) {
