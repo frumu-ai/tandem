@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added stateful runtime definition identity helpers so snapshot-backed
   automation runs expose durable workflow definition versions and `sha256:`
   snapshot hashes for future replay and resume checks.
+- Added a dedicated stateful run list in the Control Panel with status, phase,
+  trigger, tenant/workspace, active wait, retry, and last-event columns across
+  workflow, automation, and context runs.
 
 ### Changed
 
