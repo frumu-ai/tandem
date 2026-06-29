@@ -4,6 +4,7 @@ use crate::app::state::{
     AutomationWebhookQueueResult, AutomationWebhookTriggerCreateInput,
     AutomationWebhookTriggerUpdateInput, AutomationWebhookVerificationError,
 };
+use crate::automation_v2::types::AutomationWebhookSignatureScheme;
 
 fn tenant(org: &str, workspace: &str) -> TenantContext {
     TenantContext::explicit_user_workspace(org, workspace, None, "actor-a")
@@ -39,6 +40,7 @@ fn create_input(
         name: Some("Generic webhook".to_string()),
         provider: "generic".to_string(),
         provider_event_kind: Some("event.created".to_string()),
+        signature_scheme: None,
         enabled: true,
     }
 }
@@ -119,6 +121,9 @@ async fn webhook_triggers_and_deliveries_are_tenant_scoped() {
         dedupe_reason_code: None,
         duplicate_of_delivery_id: None,
         duplicate_of_run_id: None,
+        verification_scheme: None,
+        verification_provider: None,
+        verification_reason_code: None,
         queued_run_id: None,
         received_at_ms: 1_000,
         accepted_at_ms: Some(1_000),
@@ -146,6 +151,9 @@ async fn webhook_triggers_and_deliveries_are_tenant_scoped() {
         dedupe_reason_code: None,
         duplicate_of_delivery_id: None,
         duplicate_of_run_id: None,
+        verification_scheme: None,
+        verification_provider: None,
+        verification_reason_code: None,
         queued_run_id: None,
         received_at_ms: 1_000,
         accepted_at_ms: Some(1_000),
@@ -193,6 +201,7 @@ async fn webhook_trigger_create_and_update_normalize_provider_metadata() {
     let mut input = create_input("automation-provider-normalize", tenant_a.clone());
     input.provider = " GitHub.com ".to_string();
     input.provider_event_kind = Some(" Issues.Opened ".to_string());
+    input.signature_scheme = Some(AutomationWebhookSignatureScheme::GithubHmacSha256);
     input.name = None;
 
     let created = state
@@ -205,6 +214,10 @@ async fn webhook_trigger_create_and_update_normalize_provider_metadata() {
         created.trigger.provider_event_kind.as_deref(),
         Some("issues.opened")
     );
+    assert_eq!(
+        created.trigger.signature_scheme,
+        AutomationWebhookSignatureScheme::GithubHmacSha256
+    );
 
     let updated = state
         .update_automation_webhook_trigger(
@@ -214,6 +227,7 @@ async fn webhook_trigger_create_and_update_normalize_provider_metadata() {
             AutomationWebhookTriggerUpdateInput {
                 provider: Some(" Stripe.COM ".to_string()),
                 provider_event_kind: Some(Some(" Checkout.Session.Completed ".to_string())),
+                signature_scheme: Some(AutomationWebhookSignatureScheme::SharedSecretHeaderV1),
                 ..AutomationWebhookTriggerUpdateInput::default()
             },
             Some("actor-a".to_string()),
@@ -224,6 +238,10 @@ async fn webhook_trigger_create_and_update_normalize_provider_metadata() {
     assert_eq!(
         updated.provider_event_kind.as_deref(),
         Some("checkout.session.completed")
+    );
+    assert_eq!(
+        updated.signature_scheme,
+        AutomationWebhookSignatureScheme::SharedSecretHeaderV1
     );
 }
 
@@ -252,6 +270,21 @@ async fn webhook_signature_verification_and_rotation_fail_closed() {
             .await
             .expect_err("missing signature fails"),
         AutomationWebhookVerificationError::MissingSignature
+    );
+
+    assert_eq!(
+        state
+            .verify_automation_webhook_request(
+                &created.trigger.public_path_token,
+                Some("t=not-a-timestamp,v1=not-hex"),
+                body,
+                Some("evt-malformed".to_string()),
+                now,
+                300_000,
+            )
+            .await
+            .expect_err("malformed signature fails"),
+        AutomationWebhookVerificationError::MalformedSignature
     );
 
     let bad_header = automation_webhook_signature_header("wrong-secret", now, body);
@@ -300,6 +333,8 @@ async fn webhook_signature_verification_and_rotation_fail_closed() {
         .await
         .expect("valid signature verifies");
     assert_eq!(verified.trigger.trigger_id, created.trigger.trigger_id);
+    assert_eq!(verified.verification.provider, "generic");
+    assert_eq!(verified.verification.reason_code, "verified");
 
     let rotated = state
         .rotate_automation_webhook_secret(
@@ -401,6 +436,9 @@ async fn webhook_signature_and_dedupe_scope_include_tenant_and_trigger() {
             dedupe_reason_code: None,
             duplicate_of_delivery_id: None,
             duplicate_of_run_id: None,
+            verification_scheme: Some(verified_a.verification.scheme.clone()),
+            verification_provider: Some(verified_a.verification.provider.clone()),
+            verification_reason_code: Some(verified_a.verification.reason_code.clone()),
             queued_run_id: None,
             received_at_ms: verified_a.received_at_ms,
             accepted_at_ms: Some(verified_a.received_at_ms),
@@ -606,6 +644,9 @@ async fn webhook_queue_treats_accepted_marker_without_run_as_duplicate() {
             dedupe_reason_code: None,
             duplicate_of_delivery_id: None,
             duplicate_of_run_id: None,
+            verification_scheme: Some(verified.verification.scheme.clone()),
+            verification_provider: Some(verified.verification.provider.clone()),
+            verification_reason_code: Some(verified.verification.reason_code.clone()),
             queued_run_id: None,
             received_at_ms: verified.received_at_ms,
             accepted_at_ms: Some(verified.received_at_ms),

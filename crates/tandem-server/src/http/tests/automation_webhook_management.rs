@@ -94,6 +94,7 @@ async fn webhook_management_routes_redact_secrets_and_delivery_payloads() {
             "name": "GitHub issues",
             "provider": " GitHub.com ",
             "provider_event_kind": " Issues.Opened ",
+            "signature_scheme": "github_hmac_sha256",
             "default_data_class": "customer_data",
             "default_risk_tier": "internal_write",
             "enabled": true
@@ -146,6 +147,24 @@ async fn webhook_management_routes_redact_secrets_and_delivery_payloads() {
     );
     assert_eq!(
         create_payload
+            .pointer("/trigger/signature_scheme")
+            .and_then(Value::as_str),
+        Some("github_hmac_sha256")
+    );
+    assert_eq!(
+        create_payload
+            .pointer("/trigger/provider_metadata/verification/signature_scheme")
+            .and_then(Value::as_str),
+        Some("github_hmac_sha256")
+    );
+    assert_eq!(
+        create_payload
+            .pointer("/trigger/provider_metadata/verification/provider_specific")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        create_payload
             .pointer("/trigger/provider_metadata/polling/supported")
             .and_then(Value::as_bool),
         Some(false)
@@ -177,6 +196,7 @@ async fn webhook_management_routes_redact_secrets_and_delivery_payloads() {
         Some(json!({
             "name": "GitHub issue intake",
             "provider_event_kind": null,
+            "signatureScheme": "shared_secret_header_v1",
             "default_data_class": "internal"
         })),
     );
@@ -192,6 +212,18 @@ async fn webhook_management_routes_redact_secrets_and_delivery_payloads() {
     assert!(patch_payload
         .pointer("/trigger/provider_event_kind")
         .is_some_and(Value::is_null));
+    assert_eq!(
+        patch_payload
+            .pointer("/trigger/signature_scheme")
+            .and_then(Value::as_str),
+        Some("shared_secret_header_v1")
+    );
+    assert_eq!(
+        patch_payload
+            .pointer("/trigger/provider_metadata/verification/provider_specific")
+            .and_then(Value::as_bool),
+        Some(false)
+    );
 
     let tenant_a = tandem_types::TenantContext::explicit_user_workspace(
         "org-a",
@@ -215,6 +247,9 @@ async fn webhook_management_routes_redact_secrets_and_delivery_payloads() {
             dedupe_reason_code: Some("accepted_provider_event_id".to_string()),
             duplicate_of_delivery_id: None,
             duplicate_of_run_id: None,
+            verification_scheme: None,
+            verification_provider: None,
+            verification_reason_code: None,
             queued_run_id: Some("automation-v2-run-webhook-a".to_string()),
             received_at_ms: 2_000,
             accepted_at_ms: Some(2_001),

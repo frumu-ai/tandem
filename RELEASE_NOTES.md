@@ -15,6 +15,9 @@ idempotency keys before creating runs, reports accepted/duplicate/conflict
 dedupe outcomes on delivery records and SDK types, and keeps original
 delivery/run correlation available after restarts so provider retries do not
 fan out duplicate automation runs.
+Automation webhooks now use a provider-aware signature verification registry
+with queryable delivery verification metadata, keeping Tandem HMAC compatibility
+while preparing GitHub-style and shared-secret provider schemes.
 Durable wait foundations now persist timer/webhook/approval wait metadata,
 tenant-boundary identity, wake times, timeout policy, and wake claim state for
 future sleep/resume scheduling.

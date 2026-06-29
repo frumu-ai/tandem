@@ -3,6 +3,8 @@ use uuid::Uuid;
 
 use crate::automation_v2::types::*;
 
+use super::AutomationWebhookVerificationDecision;
+
 pub(crate) fn new_automation_webhook_delivery_id() -> String {
     format!("automation-webhook-delivery-{}", Uuid::new_v4())
 }
@@ -44,6 +46,9 @@ pub(crate) fn automation_webhook_run_metadata(
         "idempotency_record_id": delivery.idempotency_record_id,
         "dedupe_result": delivery.dedupe_result,
         "dedupe_reason_code": delivery.dedupe_reason_code,
+        "verification_scheme": delivery.verification_scheme,
+        "verification_provider": delivery.verification_provider,
+        "verification_reason_code": delivery.verification_reason_code,
         "preview": delivery.sanitized_preview,
         "data_class": trigger.default_data_class,
         "risk_tier": trigger.default_risk_tier,
@@ -61,7 +66,15 @@ pub(crate) fn automation_webhook_rejection_delivery(
     reason_code: impl Into<String>,
     received_at_ms: u64,
     sanitized_preview: Value,
+    verification: Option<AutomationWebhookVerificationDecision>,
 ) -> AutomationWebhookDeliveryRecord {
+    let verification_scheme = verification
+        .as_ref()
+        .map(|decision| decision.scheme.clone());
+    let verification_provider = verification
+        .as_ref()
+        .map(|decision| decision.provider.clone());
+    let verification_reason_code = verification.map(|decision| decision.reason_code);
     AutomationWebhookDeliveryRecord {
         delivery_id: new_automation_webhook_delivery_id(),
         trigger_id: trigger.trigger_id.clone(),
@@ -77,6 +90,9 @@ pub(crate) fn automation_webhook_rejection_delivery(
         dedupe_reason_code: None,
         duplicate_of_delivery_id: None,
         duplicate_of_run_id: None,
+        verification_scheme,
+        verification_provider,
+        verification_reason_code,
         queued_run_id: None,
         received_at_ms,
         accepted_at_ms: None,

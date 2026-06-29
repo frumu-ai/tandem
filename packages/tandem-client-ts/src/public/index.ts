@@ -2497,6 +2497,12 @@ export interface AutomationWebhookDelivery {
   duplicateOfDeliveryID?: string | null;
   duplicate_of_run_id?: string | null;
   duplicateOfRunID?: string | null;
+  verification_scheme?: string | null;
+  verificationScheme?: string | null;
+  verification_provider?: string | null;
+  verificationProvider?: string | null;
+  verification_reason_code?: string | null;
+  verificationReasonCode?: string | null;
   queued_run_id?: string | null;
   queuedRunID?: string | null;
   queued_run_path?: string | null;
@@ -2519,6 +2525,8 @@ export interface AutomationWebhookTriggerCreateInput {
   provider: string;
   provider_event_kind?: string | null;
   providerEventKind?: string | null;
+  signature_scheme?: string | null;
+  signatureScheme?: string | null;
   enabled?: boolean;
   owning_org_unit_id?: string | null;
   owningOrgUnitId?: string | null;
@@ -2535,6 +2543,8 @@ export interface AutomationWebhookTriggerUpdateInput {
   provider?: string;
   provider_event_kind?: string | null;
   providerEventKind?: string | null;
+  signature_scheme?: string | null;
+  signatureScheme?: string | null;
   enabled?: boolean;
   default_data_class?: AutomationWebhookDataClass | string;
   defaultDataClass?: AutomationWebhookDataClass | string;

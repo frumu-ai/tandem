@@ -1659,6 +1659,16 @@ class AutomationWebhookDelivery(BaseModel):
         None,
         validation_alias=AliasChoices("duplicateOfRunID", "duplicateOfRunId", "duplicate_of_run_id"),
     )
+    verification_scheme: Optional[str] = Field(
+        None, validation_alias=AliasChoices("verificationScheme", "verification_scheme")
+    )
+    verification_provider: Optional[str] = Field(
+        None, validation_alias=AliasChoices("verificationProvider", "verification_provider")
+    )
+    verification_reason_code: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("verificationReasonCode", "verification_reason_code"),
+    )
     queued_run_id: Optional[str] = Field(
         None, validation_alias=AliasChoices("queuedRunID", "queuedRunId", "queued_run_id")
     )
@@ -1689,6 +1699,9 @@ class AutomationWebhookTriggerCreateInput(BaseModel):
     provider_event_kind: Optional[str] = Field(
         None, validation_alias=AliasChoices("providerEventKind", "provider_event_kind")
     )
+    signature_scheme: Optional[str] = Field(
+        None, validation_alias=AliasChoices("signatureScheme", "signature_scheme")
+    )
     enabled: Optional[bool] = None
     owning_org_unit_id: Optional[str] = Field(
         None, validation_alias=AliasChoices("owningOrgUnitId", "owning_org_unit_id")
@@ -1710,6 +1723,9 @@ class AutomationWebhookTriggerUpdateInput(BaseModel):
     provider: Optional[str] = None
     provider_event_kind: Optional[str] = Field(
         None, validation_alias=AliasChoices("providerEventKind", "provider_event_kind")
+    )
+    signature_scheme: Optional[str] = Field(
+        None, validation_alias=AliasChoices("signatureScheme", "signature_scheme")
     )
     enabled: Optional[bool] = None
     default_data_class: Optional[str] = Field(
