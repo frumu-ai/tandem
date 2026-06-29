@@ -139,6 +139,40 @@ fn bug_monitor_destination_readiness(
 
                     config.enabled && !config.paused && destination.enabled && webhook_ready
                 }
+                BugMonitorDestinationKind::Telemetry => {
+                    if destination
+                        .telemetry_path
+                        .as_deref()
+                        .is_some_and(|value| value.trim().is_empty())
+                    {
+                        missing.push("Telemetry path is blank".to_string());
+                    }
+                    config.enabled
+                        && !config.paused
+                        && destination.enabled
+                        && !destination
+                            .telemetry_path
+                            .as_deref()
+                            .is_some_and(|value| value.trim().is_empty())
+                }
+                BugMonitorDestinationKind::InternalMemory => {
+                    let category = destination
+                        .memory_category
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or("failure_pattern");
+                    if !crate::bug_monitor_local::is_supported_memory_category(category) {
+                        missing.push(
+                            "Memory category must be failure_pattern, recurrence, policy_gap, or safety_risk"
+                                .to_string(),
+                        );
+                    }
+                    config.enabled
+                        && !config.paused
+                        && destination.enabled
+                        && crate::bug_monitor_local::is_supported_memory_category(category)
+                }
                 _ => {
                     detail = Some(
                         "Destination kind is configured but is not available in this phase"

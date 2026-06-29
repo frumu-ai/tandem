@@ -262,11 +262,11 @@ async fn bug_monitor_router_blocks_manual_publish_to_unsupported_destination_ove
             repo: Some("acme/platform".to_string()),
             workspace_root: Some("/tmp/acme".to_string()),
             destinations: vec![crate::BugMonitorDestinationConfig {
-                destination_id: "telemetry-prod".to_string(),
-                name: "Telemetry production".to_string(),
-                kind: crate::BugMonitorDestinationKind::Telemetry,
+                destination_id: "mcp-tool-prod".to_string(),
+                name: "MCP tool production".to_string(),
+                kind: crate::BugMonitorDestinationKind::McpTool,
                 enabled: true,
-                telemetry_path: Some("incidents".to_string()),
+                mcp_tool: Some("incident.create".to_string()),
                 ..Default::default()
             }],
             ..Default::default()
@@ -291,7 +291,7 @@ async fn bug_monitor_router_blocks_manual_publish_to_unsupported_destination_ove
         .uri(format!("/bug-monitor/drafts/{}/publish", draft.draft_id))
         .header("content-type", "application/json")
         .body(Body::from(
-            json!({ "destination_ids": ["telemetry-prod"] }).to_string(),
+            json!({ "destination_ids": ["mcp-tool-prod"] }).to_string(),
         ))
         .expect("publish request");
     let publish_resp = app.oneshot(publish_req).await.expect("publish response");

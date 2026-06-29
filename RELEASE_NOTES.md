@@ -72,6 +72,11 @@ bounded payloads and response excerpts, capped retry attempts, and durable
 per-delivery receipts. URL validation classifies parsed IPv4/IPv6 literals
 before DNS lookup so IPv4-mapped private IPv6 webhook hosts fail closed
 consistently across platforms.
+Bug Monitor/Incident Monitor routing now also supports local telemetry and
+internal memory destinations. Telemetry publishes durable destination-aware post
+receipts that can be filtered by destination id, while internal memory
+destinations store bounded, redacted summaries with category-specific record
+refs and duplicate suppression.
 Linear duplicate handling preserves matched-issue status on repeated publishes
 and suppresses retrying an ambiguous failed Linear `create_issue` response that
 may already have created an external issue.

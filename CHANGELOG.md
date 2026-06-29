@@ -66,6 +66,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added signed webhook destinations for Bug Monitor/Incident Monitor routing,
   including env-backed HMAC signing secrets, SSRF-safe URL validation, bounded
   payloads, capped retries, and durable destination-specific receipts.
+- Added local telemetry and internal memory destinations for Bug
+  Monitor/Incident Monitor routing, including durable destination-aware post
+  receipts, destination-id filtering, duplicate suppression, bounded redacted
+  memory summaries, and category-specific memory refs.
 
 ### Changed
 
