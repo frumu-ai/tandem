@@ -315,12 +315,11 @@ fn optional_match(expected: Option<&str>, actual: Option<&str>) -> bool {
 }
 
 fn wait_is_claimable(wait: &StatefulWaitRecord, now_ms: u64) -> bool {
+    let due = wait_wake_is_due_at(wait, now_ms) || wait_timeout_is_due_at(wait, now_ms);
     if wait.status == StatefulWaitStatus::Waiting {
-        return wait.is_due_at(now_ms) || wait_timeout_is_due_at(wait, now_ms);
+        return due;
     }
-    wait.status == StatefulWaitStatus::Claimed
-        && !wait.claim_is_active_at(now_ms)
-        && (wait.is_due_at(now_ms) || wait_timeout_is_due_at(wait, now_ms))
+    wait.status == StatefulWaitStatus::Claimed && !wait.claim_is_active_at(now_ms) && due
 }
 
 fn webhook_wait_is_claimable(wait: &StatefulWaitRecord, now_ms: u64) -> bool {
@@ -332,6 +331,12 @@ fn wait_timeout_is_due_at(wait: &StatefulWaitRecord, now_ms: u64) -> bool {
     wait.timeout_policy
         .as_ref()
         .map(|policy| policy.timeout_at_ms <= now_ms)
+        .unwrap_or(false)
+}
+
+fn wait_wake_is_due_at(wait: &StatefulWaitRecord, now_ms: u64) -> bool {
+    wait.wake_at_ms
+        .map(|wake_at_ms| wake_at_ms <= now_ms)
         .unwrap_or(false)
 }
 
@@ -755,6 +760,19 @@ mod tests {
         .expect("reclaimed record");
         assert_eq!(reclaimed.claimed_by.as_deref(), Some("scheduler-b"));
         let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[test]
+    fn expired_claimed_timer_wait_without_timeout_remains_claimable() {
+        let tenant_a = tenant("org-a", "workspace-a");
+        let mut wait = timer_wait("wait-a", "run-a", tenant_a, 1_000);
+        wait.status = StatefulWaitStatus::Claimed;
+        wait.claimed_by = Some("scheduler-a".to_string());
+        wait.claimed_at_ms = Some(1_500);
+        wait.claim_expires_at_ms = Some(2_000);
+
+        assert!(!wait_is_claimable(&wait, 1_999));
+        assert!(wait_is_claimable(&wait, 2_000));
     }
 
     #[tokio::test]
