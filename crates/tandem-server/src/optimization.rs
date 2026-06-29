@@ -1675,6 +1675,8 @@ mod tests {
             },
             runtime_context: None,
             automation_snapshot: Some(workflow.clone()),
+            execution_claim: None,
+            execution_claim_epoch: 0,
             pause_reason: None,
             resume_reason: None,
             detail: None,
