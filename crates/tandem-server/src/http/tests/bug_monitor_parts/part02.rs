@@ -262,11 +262,11 @@ async fn bug_monitor_router_blocks_manual_publish_to_unsupported_destination_ove
             repo: Some("acme/platform".to_string()),
             workspace_root: Some("/tmp/acme".to_string()),
             destinations: vec![crate::BugMonitorDestinationConfig {
-                destination_id: "webhook-prod".to_string(),
-                name: "Webhook production".to_string(),
-                kind: crate::BugMonitorDestinationKind::Webhook,
+                destination_id: "telemetry-prod".to_string(),
+                name: "Telemetry production".to_string(),
+                kind: crate::BugMonitorDestinationKind::Telemetry,
                 enabled: true,
-                webhook_url: Some("https://example.invalid/bug-monitor".to_string()),
+                telemetry_path: Some("incidents".to_string()),
                 ..Default::default()
             }],
             ..Default::default()
@@ -277,7 +277,7 @@ async fn bug_monitor_router_blocks_manual_publish_to_unsupported_destination_ove
         .submit_bug_monitor_draft(crate::BugMonitorSubmission {
             source: Some("manual".to_string()),
             title: Some("Unsupported destination publish".to_string()),
-            detail: Some("A report that should not leave through webhook yet".to_string()),
+            detail: Some("A report that should not leave through telemetry yet".to_string()),
             risk_level: Some("medium".to_string()),
             confidence: Some("medium".to_string()),
             ..Default::default()
@@ -291,7 +291,7 @@ async fn bug_monitor_router_blocks_manual_publish_to_unsupported_destination_ove
         .uri(format!("/bug-monitor/drafts/{}/publish", draft.draft_id))
         .header("content-type", "application/json")
         .body(Body::from(
-            json!({ "destination_ids": ["webhook-prod"] }).to_string(),
+            json!({ "destination_ids": ["telemetry-prod"] }).to_string(),
         ))
         .expect("publish request");
     let publish_resp = app.oneshot(publish_req).await.expect("publish response");
@@ -383,6 +383,10 @@ async fn bug_monitor_router_matches_project_route_from_persisted_draft_context()
             enabled: true,
             repo: Some("acme/platform".to_string()),
             workspace_root: Some("/tmp/acme".to_string()),
+            safety_defaults: crate::BugMonitorSafetyDefaults {
+                block_unready_destinations: true,
+                ..Default::default()
+            },
             destinations: vec![crate::BugMonitorDestinationConfig {
                 destination_id: "webhook-prod".to_string(),
                 name: "Webhook production".to_string(),
@@ -440,9 +444,9 @@ async fn bug_monitor_router_matches_project_route_from_persisted_draft_context()
             .get("detail")
             .and_then(Value::as_str)
             .is_some_and(|detail| {
-                detail.contains("webhook-prod") && detail.contains("not available in this phase")
+                detail.contains("webhook-prod") && detail.contains("Webhook secret reference is missing")
             }),
-        "publish should match the project route before adapter fallback: {publish_payload:?}"
+        "publish should match the project route before webhook readiness fallback: {publish_payload:?}"
     );
     assert!(state.list_bug_monitor_posts(10).await.is_empty());
 }

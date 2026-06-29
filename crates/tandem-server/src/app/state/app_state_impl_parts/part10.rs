@@ -131,6 +131,14 @@ fn bug_monitor_destination_readiness(
                         && linear_list_ready
                         && linear_create_ready
                 }
+                BugMonitorDestinationKind::Webhook => {
+                    let (webhook_ready, webhook_missing, webhook_detail) =
+                        crate::bug_monitor_webhook::webhook_destination_readiness(destination);
+                    missing.extend(webhook_missing);
+                    detail = webhook_detail;
+
+                    config.enabled && !config.paused && destination.enabled && webhook_ready
+                }
                 _ => {
                     detail = Some(
                         "Destination kind is configured but is not available in this phase"

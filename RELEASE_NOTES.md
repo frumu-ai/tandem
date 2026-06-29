@@ -62,6 +62,10 @@ Bug Monitor/Incident Monitor routing now supports Linear issue destinations
 with MCP readiness checks, duplicate issue matching, destination-aware receipts,
 and external-action records, and publish/recheck errors include the underlying
 destination failure chain for easier operator diagnosis.
+Bug Monitor/Incident Monitor routing also supports signed webhook destinations
+with env-backed HMAC secrets, default SSRF blocking for private/internal URLs,
+bounded payloads and response excerpts, capped retry attempts, and durable
+per-delivery receipts.
 Linear duplicate handling preserves matched-issue status on repeated publishes
 and suppresses retrying an ambiguous failed Linear `create_issue` response that
 may already have created an external issue.

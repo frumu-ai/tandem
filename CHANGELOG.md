@@ -60,6 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added Linear issue destinations for Bug Monitor/Incident Monitor routing,
   including Linear MCP readiness checks, issue creation, duplicate matching,
   destination-aware receipts, and external-action mirrors.
+- Added signed webhook destinations for Bug Monitor/Incident Monitor routing,
+  including env-backed HMAC signing secrets, SSRF-safe URL validation, bounded
+  payloads, capped retries, and durable destination-specific receipts.
 
 ### Changed
 

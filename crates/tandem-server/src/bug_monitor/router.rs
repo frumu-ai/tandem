@@ -3,11 +3,12 @@ use std::collections::BTreeSet;
 use anyhow::Context;
 
 use crate::{
-    bug_monitor_github, bug_monitor_linear, now_ms, AppState, BugMonitorApprovalPolicy,
-    BugMonitorConfig, BugMonitorDestinationConfig, BugMonitorDestinationKind,
-    BugMonitorDestinationReadiness, BugMonitorDraftRecord, BugMonitorIncidentRecord,
-    BugMonitorPostRecord, BugMonitorRouteConfig, BugMonitorRoutePreviewMatch,
-    BugMonitorRoutePreviewResponse, BugMonitorSubmission, BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID,
+    bug_monitor_github, bug_monitor_linear, bug_monitor_webhook, now_ms, AppState,
+    BugMonitorApprovalPolicy, BugMonitorConfig, BugMonitorDestinationConfig,
+    BugMonitorDestinationKind, BugMonitorDestinationReadiness, BugMonitorDraftRecord,
+    BugMonitorIncidentRecord, BugMonitorPostRecord, BugMonitorRouteConfig,
+    BugMonitorRoutePreviewMatch, BugMonitorRoutePreviewResponse, BugMonitorSubmission,
+    BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -330,6 +331,16 @@ pub async fn publish_draft(
             )
             .await
         }
+        BugMonitorDestinationKind::Webhook => {
+            bug_monitor_webhook::publish_draft(
+                state,
+                &request.draft_id,
+                request.incident_id.as_deref(),
+                request.mode,
+                webhook_destination_context(&preview)?,
+            )
+            .await
+        }
         _ => anyhow::bail!(
             "Destination `{}` uses {:?}, which is not available in this phase",
             selected_destination.destination_id,
@@ -389,7 +400,9 @@ fn validate_publish_plan(
     }
     if !matches!(
         destination.kind,
-        BugMonitorDestinationKind::GithubIssue | BugMonitorDestinationKind::LinearIssue
+        BugMonitorDestinationKind::GithubIssue
+            | BugMonitorDestinationKind::LinearIssue
+            | BugMonitorDestinationKind::Webhook
     ) {
         anyhow::bail!(
             "Destination `{}` uses {:?}, which is not available in this phase",
@@ -458,6 +471,28 @@ fn linear_destination_context(
         mcp_server: destination.mcp_server.clone(),
         linear_team: destination.linear_team.clone(),
         linear_project: destination.linear_project.clone(),
+    })
+}
+
+fn webhook_destination_context(
+    preview: &BugMonitorRoutePreviewResponse,
+) -> anyhow::Result<bug_monitor_webhook::WebhookDestinationContext> {
+    let destination = selected_publish_destination(preview)?;
+    let preview_match = preview.matches.iter().find(|preview_match| {
+        preview_match
+            .destination_ids
+            .iter()
+            .any(|destination_id| destination_id == &destination.destination_id)
+    });
+    Ok(bug_monitor_webhook::WebhookDestinationContext {
+        destination_id: destination.destination_id.clone(),
+        route_id: preview_match.and_then(|row| row.route_id.clone()),
+        route_match_reason: preview_match
+            .and_then(|row| row.reason.clone())
+            .or_else(|| Some("destination_router".to_string())),
+        webhook_url: destination.webhook_url.clone(),
+        webhook_secret_ref: destination.webhook_secret_ref.clone(),
+        config: destination.config.clone(),
     })
 }
 
