@@ -461,19 +461,19 @@ pub async fn record_external_action_reliability_bridge(
     outbox.effect_id = Some(effect.effect_id.clone());
     outbox.receipt_id = Some(effect.effect_id.clone());
 
-    if effect.status.is_failure() {
-        let dead_letter = dead_letter_from_tool_effect(&effect, action);
-        outbox.dead_letter_id = Some(dead_letter.dead_letter_id.clone());
-        upsert_by(&mut store.dead_letters, dead_letter, |row| {
-            &row.dead_letter_id
-        });
-    }
     if let Some(compensation) = compensation_from_action_metadata(&scope, action, &effect, &outbox)
     {
         effect.compensation_id = Some(compensation.compensation_id.clone());
         outbox.compensation_id = Some(compensation.compensation_id.clone());
         upsert_by(&mut store.compensations, compensation, |row| {
             &row.compensation_id
+        });
+    }
+    if effect.status.is_failure() {
+        let dead_letter = dead_letter_from_tool_effect(&effect, action);
+        outbox.dead_letter_id = Some(dead_letter.dead_letter_id.clone());
+        upsert_by(&mut store.dead_letters, dead_letter, |row| {
+            &row.dead_letter_id
         });
     }
 
@@ -747,15 +747,16 @@ fn compensation_from_action_metadata(
     let compensation = metadata
         .get("compensation")
         .or_else(|| metadata.get("compensation_policy"))?;
-    let compensation_type = value_string(
-        compensation
-            .get("type")
-            .or_else(|| compensation.get("kind"))?,
-    )
-    .unwrap_or_else(|| "operator_review".to_string());
+    let compensation_type = compensation
+        .get("type")
+        .or_else(|| compensation.get("kind"))
+        .and_then(value_string)
+        .unwrap_or_else(|| "operator_review".to_string());
     Some(StatefulCompensationRecord {
         schema_version: STATEFUL_RUNTIME_SCHEMA_VERSION,
-        compensation_id: value_string(compensation.get("compensation_id")?)
+        compensation_id: compensation
+            .get("compensation_id")
+            .and_then(value_string)
             .unwrap_or_else(|| format!("compensation-{}", effect.effect_id)),
         run_id: effect.run_id.clone(),
         scope: scope.clone(),
@@ -829,6 +830,13 @@ fn external_action_run_id(action: &ExternalActionRecord) -> Option<String> {
         .or_else(|| external_action_string_metadata(action, "automation_run_id"))
         .or_else(|| external_action_string_metadata(action, "workflowRunID"))
         .or_else(|| external_action_string_metadata(action, "workflow_run_id"))
+        .or_else(|| trimmed_owned(action.routine_run_id.as_deref()))
+        .or_else(|| {
+            action
+                .context_run_id
+                .as_deref()
+                .and_then(runtime_run_id_from_context_run_id)
+        })
 }
 
 fn external_action_node_id(action: &ExternalActionRecord) -> Option<String> {
@@ -854,6 +862,26 @@ fn external_action_u64_metadata(action: &ExternalActionRecord, key: &str) -> Opt
         .as_ref()
         .and_then(|metadata| metadata.get(key))
         .and_then(Value::as_u64)
+}
+
+fn runtime_run_id_from_context_run_id(context_run_id: &str) -> Option<String> {
+    let context_run_id = context_run_id.trim();
+    if context_run_id.is_empty() {
+        return None;
+    }
+    context_run_id
+        .strip_prefix("automation-v2-")
+        .or_else(|| context_run_id.strip_prefix("workflow-"))
+        .or_else(|| context_run_id.strip_prefix("routine-"))
+        .map(str::to_string)
+        .or_else(|| Some(context_run_id.to_string()))
+}
+
+fn trimmed_owned(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn digest_value(value: &Value) -> Option<String> {
@@ -1079,6 +1107,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn external_action_bridge_preserves_context_only_run_id() {
+        let path = std::env::temp_dir().join(format!(
+            "tandem-stateful-reliability-{}.json",
+            Uuid::new_v4()
+        ));
+        let tenant_a = tenant("org-a", "workspace-a");
+        let scope = StatefulRuntimeScope::from_tenant_context(tenant_a.clone());
+        let mut record = action("action-context-only", "posted", None);
+        record.context_run_id = Some("automation-v2-run-context-only".to_string());
+        record.metadata = Some(json!({
+            "nodeID": "node-a",
+            "attempt": 1,
+            "tool": "SendMessage",
+            "input": {"message": "hello"}
+        }));
+
+        let effect = record_external_action_reliability_bridge(&path, scope, &record)
+            .await
+            .expect("bridge");
+
+        assert_eq!(effect.run_id.as_deref(), Some("run-context-only"));
+        let effects = list_stateful_tool_effects(
+            &path,
+            &tenant_a,
+            StatefulReliabilityQuery {
+                run_id: Some("run-context-only"),
+                ..Default::default()
+            },
+        );
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].action_id.as_deref(), Some("action-context-only"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn failed_external_action_bridge_creates_tenant_filtered_dead_letter() {
         let path = std::env::temp_dir().join(format!(
             "tandem-stateful-reliability-{}.json",
@@ -1114,6 +1177,47 @@ mod tests {
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].reason, "provider timeout");
         assert!(hidden.is_empty());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn failed_external_action_bridge_links_default_compensation_to_dead_letter() {
+        let path = std::env::temp_dir().join(format!(
+            "tandem-stateful-reliability-{}.json",
+            Uuid::new_v4()
+        ));
+        let scope = StatefulRuntimeScope::from_tenant_context(tenant("org-a", "workspace-a"));
+        let mut record = action("action-compensation", "failed", Some("provider timeout"));
+        record.metadata = Some(json!({
+            "automationRunID": "run-a",
+            "nodeID": "node-a",
+            "attempt": 2,
+            "tool": "SendMessage",
+            "input": {"message": "hello"},
+            "compensation_policy": {
+                "approval_required": true,
+                "rollback_instruction": "remove the posted message"
+            }
+        }));
+
+        let effect = record_external_action_reliability_bridge(&path, scope, &record)
+            .await
+            .expect("bridge");
+
+        let store = load_stateful_reliability(&path);
+        assert_eq!(store.compensations.len(), 1);
+        assert_eq!(store.dead_letters.len(), 1);
+        let compensation_id = format!("compensation-{}", effect.effect_id);
+        assert_eq!(
+            effect.compensation_id.as_deref(),
+            Some(compensation_id.as_str())
+        );
+        assert_eq!(store.compensations[0].compensation_id, compensation_id);
+        assert_eq!(store.compensations[0].compensation_type, "operator_review");
+        assert_eq!(
+            store.dead_letters[0].compensation_id.as_deref(),
+            Some(store.compensations[0].compensation_id.as_str())
+        );
         let _ = std::fs::remove_file(path);
     }
 }
