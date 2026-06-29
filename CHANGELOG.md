@@ -48,6 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added canonical stateful runtime run list/detail read endpoints with
   tenant/workspace/status/phase filters, current wait, latest event, latest
   snapshot, and replay-boundary metadata for control-panel consumers.
+- Added enterprise scope summaries and filters to canonical stateful runtime run
+  list/detail responses, including organization-unit, owner, resource, policy,
+  data-class, delegation, and knowledge-source visibility.
+- Added enterprise-aware scope metrics, filters, and per-run scope cards to the
+  Control Panel stateful runs dashboard.
 
 ### Changed
 

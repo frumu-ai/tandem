@@ -6,9 +6,13 @@ use crate::stateful_runtime::{
     stateful_run_from_workflow, StatefulRunEventQuery, StatefulRuntimeStoragePaths,
     StatefulWaitQuery, StatefulWorkflowRunKind, StatefulWorkflowRunRecord,
 };
+use tandem_types::{
+    OrganizationUnit, OrganizationUnitAccessGrant, ResourceRef, ResourceScope, SourceBinding,
+};
 
 const DEFAULT_STATEFUL_RUNTIME_LIMIT: usize = 250;
 const MAX_STATEFUL_RUNTIME_LIMIT: usize = 1_000;
+const MAX_SCOPE_SOURCE_BINDINGS: usize = 12;
 
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct StatefulRunEventsQuery {
@@ -37,6 +41,16 @@ pub(super) struct StatefulRunsQuery {
     pub deployment_id: Option<String>,
     pub workflow_id: Option<String>,
     pub automation_id: Option<String>,
+    pub org_unit_id: Option<String>,
+    pub owner_id: Option<String>,
+    pub owner_kind: Option<String>,
+    pub resource_kind: Option<String>,
+    pub resource_id: Option<String>,
+    pub policy_version_id: Option<String>,
+    pub data_class: Option<String>,
+    pub risk_tier: Option<String>,
+    pub delegation_grant_id: Option<String>,
+    pub source_binding_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -55,8 +69,12 @@ pub(super) async fn list_stateful_runs(
         .limit
         .unwrap_or(DEFAULT_STATEFUL_RUNTIME_LIMIT)
         .clamp(1, MAX_STATEFUL_RUNTIME_LIMIT);
+    let enterprise_catalog = EnterpriseScopeCatalog::from_state(&state).await;
     let mut rows = collect_stateful_runs(&state, &tenant_context).await;
-    rows.retain(|run| run_matches_query(run, &query));
+    rows.retain(|run| {
+        run_matches_query(run, &query)
+            && run_matches_enterprise_query(run, &query, &enterprise_catalog)
+    });
     rows.sort_by(|left, right| {
         right
             .updated_at_ms
@@ -66,7 +84,7 @@ pub(super) async fn list_stateful_runs(
     rows.truncate(limit);
     let runs = rows
         .into_iter()
-        .map(|run| stateful_run_response(&paths, &tenant_context, run, false))
+        .map(|run| stateful_run_response(&paths, &tenant_context, &enterprise_catalog, run, false))
         .collect::<Vec<_>>();
     let count = runs.len();
 
@@ -84,6 +102,16 @@ pub(super) async fn list_stateful_runs(
             "deployment_id": query.deployment_id,
             "workflow_id": query.workflow_id,
             "automation_id": query.automation_id,
+            "org_unit_id": query.org_unit_id,
+            "owner_id": query.owner_id,
+            "owner_kind": query.owner_kind,
+            "resource_kind": query.resource_kind,
+            "resource_id": query.resource_id,
+            "policy_version_id": query.policy_version_id,
+            "data_class": query.data_class,
+            "risk_tier": query.risk_tier,
+            "delegation_grant_id": query.delegation_grant_id,
+            "source_binding_id": query.source_binding_id,
         },
         "source": "stateful_runtime",
     }))
@@ -136,7 +164,8 @@ pub(super) async fn get_stateful_run(
         &run_id,
         Some(snapshot_limit),
     );
-    let mut body = stateful_run_response(&paths, &tenant_context, run, true);
+    let enterprise_catalog = EnterpriseScopeCatalog::from_state(&state).await;
+    let mut body = stateful_run_response(&paths, &tenant_context, &enterprise_catalog, run, true);
     if let Some(object) = body.as_object_mut() {
         object.insert("events".to_string(), json!(events));
         object.insert("snapshots".to_string(), json!(snapshots));
@@ -285,9 +314,51 @@ fn insert_visible_stateful_run(
     }
 }
 
+#[derive(Default)]
+struct EnterpriseScopeCatalog {
+    org_units: Vec<OrganizationUnit>,
+    org_unit_access_grants: Vec<OrganizationUnitAccessGrant>,
+    source_bindings: Vec<SourceBinding>,
+}
+
+impl EnterpriseScopeCatalog {
+    async fn from_state(state: &AppState) -> Self {
+        let org_units = state
+            .enterprise
+            .org_units
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect();
+        let org_unit_access_grants = state
+            .enterprise
+            .org_unit_access_grants
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect();
+        let source_bindings = state
+            .enterprise
+            .source_bindings
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect();
+        Self {
+            org_units,
+            org_unit_access_grants,
+            source_bindings,
+        }
+    }
+}
+
 fn stateful_run_response(
     paths: &StatefulRuntimeStoragePaths,
     tenant_context: &TenantContext,
+    enterprise_catalog: &EnterpriseScopeCatalog,
     mut run: StatefulWorkflowRunRecord,
     include_details: bool,
 ) -> Value {
@@ -316,6 +387,7 @@ fn stateful_run_response(
     let first_event_seq = events.first().map(|event| event.seq);
     let latest_event_seq = events.last().map(|event| event.seq);
     let latest_snapshot_summary = latest_snapshot.as_ref().map(stateful_snapshot_summary);
+    let enterprise_scope = stateful_enterprise_scope_summary(enterprise_catalog, &run);
     let replay_boundaries = json!({
         "earliest_event_seq": first_event_seq,
         "latest_event_seq": latest_event_seq,
@@ -330,11 +402,192 @@ fn stateful_run_response(
         "current_wait": current_wait,
         "latest_event": latest_event,
         "latest_snapshot": latest_snapshot_summary,
+        "enterprise_scope": enterprise_scope,
         "replay_boundaries": replay_boundaries,
         "event_source": "stateful_runtime",
         "event_authority": "authoritative_runtime_log",
         "detail_level": if include_details { "detail" } else { "list" },
     })
+}
+
+fn stateful_enterprise_scope_summary(
+    catalog: &EnterpriseScopeCatalog,
+    run: &StatefulWorkflowRunRecord,
+) -> Value {
+    let scope = &run.scope;
+    let root_resource = scope.resource_scope.as_ref().map(|scope| &scope.root);
+    let org_unit = scope
+        .owning_org_unit_id
+        .as_deref()
+        .and_then(|unit_id| organization_unit_for_scope(catalog, scope, unit_id))
+        .map(organization_unit_summary);
+    let org_unit_label = org_unit
+        .as_ref()
+        .and_then(|unit| unit.get("display_name"))
+        .and_then(Value::as_str)
+        .or(scope.owning_org_unit_id.as_deref())
+        .map(ToOwned::to_owned);
+    let org_unit_grants = active_org_unit_grants_for_scope(catalog, scope)
+        .into_iter()
+        .map(org_unit_grant_summary)
+        .collect::<Vec<_>>();
+    let visible_sources = visible_source_bindings_for_scope(catalog, scope)
+        .into_iter()
+        .map(source_binding_summary)
+        .collect::<Vec<_>>();
+    let source_count = visible_sources.len();
+    let grant_count = org_unit_grants.len();
+
+    json!({
+        "tenant_context": &scope.tenant_context,
+        "owning_org_unit_id": &scope.owning_org_unit_id,
+        "owning_org_unit": org_unit,
+        "owner_principal": &scope.owner_principal,
+        "resource_scope": &scope.resource_scope,
+        "resource_kind": root_resource.map(|resource| &resource.resource_kind),
+        "resource_id": root_resource.map(|resource| resource.resource_id.as_str()),
+        "data_classes": &scope.data_classes,
+        "risk_tier": &scope.risk_tier,
+        "policy_version_id": &scope.policy_version_id,
+        "delegation_grant_ids": &scope.delegation_grant_ids,
+        "org_unit_grants": org_unit_grants,
+        "visible_knowledge_sources": visible_sources,
+        "summary": {
+            "org_unit": org_unit_label,
+            "resource": root_resource.map(resource_ref_label),
+            "knowledge_source_count": source_count,
+            "org_unit_grant_count": grant_count,
+            "data_class_count": scope.data_classes.len(),
+            "delegation_grant_count": scope.delegation_grant_ids.len(),
+        },
+    })
+}
+
+fn organization_unit_for_scope<'a>(
+    catalog: &'a EnterpriseScopeCatalog,
+    scope: &crate::stateful_runtime::StatefulRuntimeScope,
+    unit_id: &str,
+) -> Option<&'a OrganizationUnit> {
+    catalog.org_units.iter().find(|unit| {
+        tenant_matches(&unit.tenant_context, &scope.tenant_context)
+            && organization_unit_id_matches(unit, unit_id)
+    })
+}
+
+fn organization_unit_id_matches(unit: &OrganizationUnit, unit_id: &str) -> bool {
+    unit.unit_id == unit_id || format!("{}/{}", unit.taxonomy_id, unit.unit_id) == unit_id
+}
+
+fn organization_unit_summary(unit: &OrganizationUnit) -> Value {
+    json!({
+        "unit_id": &unit.unit_id,
+        "taxonomy_id": &unit.taxonomy_id,
+        "display_name": &unit.display_name,
+        "kind": &unit.kind,
+        "parent_unit_id": &unit.parent_unit_id,
+        "state": &unit.state,
+        "labels": &unit.labels,
+    })
+}
+
+fn active_org_unit_grants_for_scope<'a>(
+    catalog: &'a EnterpriseScopeCatalog,
+    scope: &crate::stateful_runtime::StatefulRuntimeScope,
+) -> Vec<&'a OrganizationUnitAccessGrant> {
+    let Some(org_unit_id) = scope.owning_org_unit_id.as_deref() else {
+        return Vec::new();
+    };
+    let now = crate::util::time::now_ms();
+    let mut grants = catalog
+        .org_unit_access_grants
+        .iter()
+        .filter(|grant| {
+            tenant_matches(&grant.tenant_context, &scope.tenant_context)
+                && principal_matches_org_unit_id(&grant.unit, org_unit_id)
+                && grant.is_active_at(now)
+                && scope
+                    .resource_scope
+                    .as_ref()
+                    .map(|resource_scope| {
+                        resource_ref_matches_scope(&grant.resource, resource_scope)
+                    })
+                    .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+    grants.sort_by(|left, right| left.grant_id.cmp(&right.grant_id));
+    grants
+}
+
+fn principal_matches_org_unit_id(
+    principal: &tandem_types::PrincipalRef,
+    org_unit_id: &str,
+) -> bool {
+    principal.id == org_unit_id || principal.id.ends_with(&format!("/{org_unit_id}"))
+}
+
+fn org_unit_grant_summary(grant: &OrganizationUnitAccessGrant) -> Value {
+    json!({
+        "grant_id": &grant.grant_id,
+        "unit": &grant.unit,
+        "resource": &grant.resource,
+        "effect": &grant.effect,
+        "permissions": &grant.permissions,
+        "data_classes": &grant.data_classes,
+        "tool_patterns": &grant.tool_patterns,
+        "state": &grant.state,
+        "expires_at_ms": grant.expires_at_ms,
+    })
+}
+
+fn visible_source_bindings_for_scope<'a>(
+    catalog: &'a EnterpriseScopeCatalog,
+    scope: &crate::stateful_runtime::StatefulRuntimeScope,
+) -> Vec<&'a SourceBinding> {
+    let mut bindings = catalog
+        .source_bindings
+        .iter()
+        .filter(|binding| {
+            binding.tenant_matches(&scope.tenant_context)
+                && binding.state.allows_ingestion()
+                && binding.ingestion_policy.allow_prompt_context
+                && scope
+                    .resource_scope
+                    .as_ref()
+                    .map(|resource_scope| {
+                        resource_ref_matches_scope(&binding.resource_ref, resource_scope)
+                    })
+                    .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+    bindings.sort_by(|left, right| left.binding_id.cmp(&right.binding_id));
+    bindings.truncate(MAX_SCOPE_SOURCE_BINDINGS);
+    bindings
+}
+
+fn resource_ref_matches_scope(resource: &ResourceRef, scope: &ResourceScope) -> bool {
+    scope.contains(resource) || resource.applies_to(&scope.root)
+}
+
+fn source_binding_summary(binding: &SourceBinding) -> Value {
+    json!({
+        "binding_id": &binding.binding_id,
+        "connector_id": &binding.connector_id,
+        "source_type": &binding.source_type,
+        "native_source_id": &binding.native_source_id,
+        "source_root_label": &binding.source_root_label,
+        "resource_ref": &binding.resource_ref,
+        "data_class": &binding.data_class,
+        "state": &binding.state,
+        "ingestion_policy": &binding.ingestion_policy,
+    })
+}
+
+fn resource_ref_label(resource: &ResourceRef) -> String {
+    format!(
+        "{}:{}",
+        serialized_key(&resource.resource_kind),
+        resource.resource_id
+    )
 }
 
 fn current_wait_for_run(
@@ -410,6 +663,130 @@ fn run_matches_query(run: &StatefulWorkflowRunRecord, query: &StatefulRunsQuery)
         && kind_filter_matches(run, query.kind.as_deref().or(query.source.as_deref()))
 }
 
+fn run_matches_enterprise_query(
+    run: &StatefulWorkflowRunRecord,
+    query: &StatefulRunsQuery,
+    catalog: &EnterpriseScopeCatalog,
+) -> bool {
+    org_unit_filter_matches(&run.scope, query.org_unit_id.as_deref())
+        && owner_filter_matches(
+            &run.scope,
+            query.owner_id.as_deref(),
+            query.owner_kind.as_deref(),
+        )
+        && resource_scope_filter_matches(
+            run.scope.resource_scope.as_ref(),
+            query.resource_kind.as_deref(),
+            query.resource_id.as_deref(),
+        )
+        && option_filter_matches(
+            query.policy_version_id.as_deref(),
+            run.scope.policy_version_id.as_deref(),
+        )
+        && data_class_filter_matches(run, query.data_class.as_deref(), catalog)
+        && option_serialized_filter_matches(
+            query.risk_tier.as_deref(),
+            run.scope.risk_tier.as_ref(),
+        )
+        && delegation_grant_filter_matches(&run.scope, query.delegation_grant_id.as_deref())
+        && source_binding_filter_matches(&run.scope, query.source_binding_id.as_deref(), catalog)
+}
+
+fn org_unit_filter_matches(
+    scope: &crate::stateful_runtime::StatefulRuntimeScope,
+    expected: Option<&str>,
+) -> bool {
+    let Some(expected) = normalized_filter(expected) else {
+        return true;
+    };
+    scope
+        .owning_org_unit_id
+        .as_deref()
+        .map(|unit_id| {
+            normalize_filter_value(unit_id) == expected
+                || normalize_filter_value(unit_id.rsplit('/').next().unwrap_or(unit_id)) == expected
+        })
+        .unwrap_or(false)
+}
+
+fn owner_filter_matches(
+    scope: &crate::stateful_runtime::StatefulRuntimeScope,
+    owner_id: Option<&str>,
+    owner_kind: Option<&str>,
+) -> bool {
+    let id_matches = option_filter_matches(
+        owner_id,
+        scope
+            .owner_principal
+            .as_ref()
+            .map(|principal| principal.id.as_str()),
+    );
+    let kind_matches = option_serialized_filter_matches(
+        owner_kind,
+        scope.owner_principal.as_ref().map(|p| &p.kind),
+    );
+    id_matches && kind_matches
+}
+
+fn resource_scope_filter_matches(
+    scope: Option<&ResourceScope>,
+    resource_kind: Option<&str>,
+    resource_id: Option<&str>,
+) -> bool {
+    let kind_matches = option_serialized_filter_matches(
+        resource_kind,
+        scope.map(|scope| &scope.root.resource_kind),
+    );
+    let id_matches = option_filter_matches(
+        resource_id,
+        scope.map(|scope| scope.root.resource_id.as_str()),
+    );
+    kind_matches && id_matches
+}
+
+fn data_class_filter_matches(
+    run: &StatefulWorkflowRunRecord,
+    expected: Option<&str>,
+    catalog: &EnterpriseScopeCatalog,
+) -> bool {
+    let Some(expected) = normalized_filter(expected) else {
+        return true;
+    };
+    run.scope
+        .data_classes
+        .iter()
+        .any(|data_class| serialized_key(data_class) == expected)
+        || visible_source_bindings_for_scope(catalog, &run.scope)
+            .iter()
+            .any(|binding| serialized_key(&binding.data_class) == expected)
+}
+
+fn delegation_grant_filter_matches(
+    scope: &crate::stateful_runtime::StatefulRuntimeScope,
+    expected: Option<&str>,
+) -> bool {
+    let Some(expected) = normalized_filter(expected) else {
+        return true;
+    };
+    scope
+        .delegation_grant_ids
+        .iter()
+        .any(|grant_id| normalize_filter_value(grant_id) == expected)
+}
+
+fn source_binding_filter_matches(
+    scope: &crate::stateful_runtime::StatefulRuntimeScope,
+    expected: Option<&str>,
+    catalog: &EnterpriseScopeCatalog,
+) -> bool {
+    let Some(expected) = normalized_filter(expected) else {
+        return true;
+    };
+    visible_source_bindings_for_scope(catalog, scope)
+        .iter()
+        .any(|binding| normalize_filter_value(&binding.binding_id) == expected)
+}
+
 fn trigger_filter_matches(run: &StatefulWorkflowRunRecord, expected: Option<&str>) -> bool {
     let Some(expected) = normalized_filter(expected) else {
         return true;
@@ -447,6 +824,18 @@ fn option_filter_matches(expected: Option<&str>, actual: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
+fn option_serialized_filter_matches<T: Serialize>(
+    expected: Option<&str>,
+    actual: Option<&T>,
+) -> bool {
+    let Some(expected) = normalized_filter(expected) else {
+        return true;
+    };
+    actual
+        .map(|value| serialized_key(value) == expected)
+        .unwrap_or(false)
+}
+
 fn string_filter_matches(expected: Option<&str>, actual: &str) -> bool {
     let Some(expected) = normalized_filter(expected) else {
         return true;
@@ -477,12 +866,18 @@ fn serialized_key<T: Serialize>(value: &T) -> String {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use tandem_types::{PrincipalKind, PrincipalRef, TenantContext};
+    use tandem_types::{
+        AccessPermission, DataClass, OrganizationUnit, OrganizationUnitAccessGrant,
+        OrganizationUnitKind, PrincipalKind, PrincipalRef, ResourceKind, ResourceRef,
+        ResourceScope, SourceBinding, TenantContext, ToolRiskTier,
+    };
     use uuid::Uuid;
 
     use super::*;
     use crate::automation_v2::types::{
-        AutomationRunCheckpoint, AutomationRunStatus, AutomationV2RunRecord,
+        AutomationExecutionPolicy, AutomationFlowSpec, AutomationRunCheckpoint,
+        AutomationRunStatus, AutomationV2RunRecord, AutomationV2Schedule, AutomationV2ScheduleType,
+        AutomationV2Spec, AutomationV2Status,
     };
     use crate::stateful_runtime::{
         append_stateful_run_event, phase_state_from_status, upsert_stateful_wait,
@@ -493,6 +888,52 @@ mod tests {
 
     fn tenant(org: &str, workspace: &str) -> TenantContext {
         TenantContext::explicit_user_workspace(org, workspace, None, "user-a")
+    }
+
+    fn automation_snapshot_with_enterprise_scope(
+        tenant_context: &TenantContext,
+        resource_scope: ResourceScope,
+    ) -> AutomationV2Spec {
+        let mut snapshot = AutomationV2Spec {
+            automation_id: "automation-a".to_string(),
+            name: "Scoped webhook".to_string(),
+            description: None,
+            status: AutomationV2Status::Active,
+            schedule: AutomationV2Schedule {
+                schedule_type: AutomationV2ScheduleType::Manual,
+                cron_expression: None,
+                interval_seconds: None,
+                timezone: "UTC".to_string(),
+                misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
+            },
+            knowledge: Default::default(),
+            agents: Vec::new(),
+            flow: AutomationFlowSpec { nodes: Vec::new() },
+            execution: AutomationExecutionPolicy::default(),
+            output_targets: Vec::new(),
+            created_at_ms: 1,
+            updated_at_ms: 2,
+            creator_id: "user-a".to_string(),
+            workspace_root: None,
+            metadata: Some(json!({
+                "automation_webhook": {
+                    "owner_principal": PrincipalRef::new(PrincipalKind::Automation, "automation-a"),
+                    "owning_org_unit_id": "finance",
+                    "resource_scope": resource_scope,
+                    "data_class": DataClass::FinancialRecord,
+                    "risk_tier": ToolRiskTier::FinancialRecordAccess,
+                    "policy_version_id": "policy-2026-06",
+                    "delegation_grant_ids": ["delegation-a"]
+                }
+            })),
+            next_fire_at_ms: None,
+            last_fired_at_ms: None,
+            scope_policy: None,
+            watch_conditions: Vec::new(),
+            handoff_config: None,
+        };
+        snapshot.set_tenant_context(tenant_context);
+        snapshot
     }
 
     fn event(seq: u64, run_id: &str, tenant_context: TenantContext) -> StatefulRunEventRecord {
@@ -854,5 +1295,131 @@ mod tests {
                 .unwrap_or_else(|| std::path::Path::new(".")),
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn run_list_exposes_and_filters_enterprise_scope_summary() {
+        let state = stateful_test_state().await;
+        let tenant_a = tenant("org-a", "workspace-a");
+        let resource = ResourceRef::new("org-a", "workspace-a", ResourceKind::Repository, "repo-a");
+        let resource_scope = ResourceScope::root(resource.clone());
+        let org_unit = OrganizationUnit::active(
+            "finance",
+            tenant_a.clone(),
+            "Finance Ops",
+            OrganizationUnitKind::Department,
+            PrincipalRef::human_user("user-a"),
+            1,
+        );
+        let grant = OrganizationUnitAccessGrant::active(
+            "grant-finance-repo",
+            tenant_a.clone(),
+            org_unit.principal_ref(),
+            resource.clone(),
+            1,
+        )
+        .with_permissions(vec![AccessPermission::Read])
+        .with_data_classes(vec![DataClass::FinancialRecord]);
+        let mut binding = SourceBinding::enabled(
+            "binding-repo",
+            tenant_a.clone(),
+            "github",
+            "github",
+            "repo-a",
+            resource,
+            DataClass::FinancialRecord,
+            PrincipalRef::human_user("user-a"),
+            1,
+        );
+        binding.source_root_label = Some("Finance repo".to_string());
+        state
+            .enterprise
+            .org_units
+            .write()
+            .await
+            .insert("finance".to_string(), org_unit);
+        state
+            .enterprise
+            .org_unit_access_grants
+            .write()
+            .await
+            .insert("grant-finance-repo".to_string(), grant);
+        state
+            .enterprise
+            .source_bindings
+            .write()
+            .await
+            .insert("binding-repo".to_string(), binding);
+        let mut run = automation_run(
+            "run-a",
+            tenant_a.clone(),
+            AutomationRunStatus::Running,
+            4_000,
+        );
+        run.automation_snapshot = Some(automation_snapshot_with_enterprise_scope(
+            &tenant_a,
+            resource_scope,
+        ));
+        state
+            .automation_v2_runs
+            .write()
+            .await
+            .insert("run-a".to_string(), run);
+
+        let Json(body) = list_stateful_runs(
+            State(state.clone()),
+            Extension(tenant_a),
+            Query(StatefulRunsQuery {
+                org_unit_id: Some("finance".to_string()),
+                owner_id: Some("automation-a".to_string()),
+                owner_kind: Some("automation".to_string()),
+                resource_kind: Some("repository".to_string()),
+                resource_id: Some("repo-a".to_string()),
+                policy_version_id: Some("policy-2026-06".to_string()),
+                data_class: Some("financial_record".to_string()),
+                risk_tier: Some("financial_record_access".to_string()),
+                delegation_grant_id: Some("delegation-a".to_string()),
+                source_binding_id: Some("binding-repo".to_string()),
+                limit: Some(25),
+                ..Default::default()
+            }),
+        )
+        .await;
+
+        assert_eq!(body.get("count").and_then(Value::as_u64), Some(1));
+        assert_eq!(
+            body.pointer("/filters/source_binding_id")
+                .and_then(Value::as_str),
+            Some("binding-repo")
+        );
+        let row = body
+            .get("runs")
+            .and_then(Value::as_array)
+            .and_then(|runs| runs.first())
+            .expect("run row");
+        assert_eq!(
+            row.pointer("/run/run_id").and_then(Value::as_str),
+            Some("run-a")
+        );
+        assert_eq!(
+            row.pointer("/enterprise_scope/owning_org_unit/display_name")
+                .and_then(Value::as_str),
+            Some("Finance Ops")
+        );
+        assert_eq!(
+            row.pointer("/enterprise_scope/summary/resource")
+                .and_then(Value::as_str),
+            Some("repository:repo-a")
+        );
+        assert_eq!(
+            row.pointer("/enterprise_scope/visible_knowledge_sources/0/binding_id")
+                .and_then(Value::as_str),
+            Some("binding-repo")
+        );
+        assert_eq!(
+            row.pointer("/enterprise_scope/org_unit_grants/0/grant_id")
+                .and_then(Value::as_str),
+            Some("grant-finance-repo")
+        );
     }
 }

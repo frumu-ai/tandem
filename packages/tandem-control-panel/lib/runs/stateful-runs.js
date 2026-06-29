@@ -20,6 +20,11 @@ const DEFAULT_STATEFUL_RUN_FILTERS = {
   source: "all",
   tenant: "",
   workspace: "",
+  orgUnit: "",
+  resource: "",
+  policy: "",
+  dataClass: "",
+  knowledge: "",
   wait: "",
 };
 
@@ -140,6 +145,89 @@ function workspaceOf(row) {
     if (workspace) return workspace;
   }
   return "";
+}
+
+function uniqueCompact(values) {
+  return Array.from(new Set(compact(values)));
+}
+
+function resourceLabel(kind, id) {
+  const resourceKind = stringValue(kind);
+  const resourceId = stringValue(id);
+  if (!resourceKind && !resourceId) return "";
+  if (!resourceKind) return resourceId;
+  if (!resourceId) return titleCase(resourceKind);
+  return `${titleCase(resourceKind)} ${resourceId}`;
+}
+
+function principalLabel(principal) {
+  if (!principal || typeof principal !== "object") return stringValue(principal);
+  return compact([principal.kind, principal.id]).join(":");
+}
+
+function enterpriseScopeOf(row) {
+  const enterprise = row?.enterprise_scope || row?.enterpriseScope || {};
+  const scope = row?.scope || {};
+  const orgUnit = enterprise.owning_org_unit || enterprise.owningOrgUnit || {};
+  const resourceScope =
+    enterprise.resource_scope || enterprise.resourceScope || scope.resource_scope || scope.resourceScope || {};
+  const root = resourceScope.root || enterprise.root_resource || enterprise.rootResource || {};
+  const sources = toArray(
+    enterprise.visible_knowledge_sources || enterprise.visibleKnowledgeSources || enterprise.knowledge_sources,
+    "sources"
+  );
+  const orgUnitId = stringValue(
+    enterprise.owning_org_unit_id || enterprise.owningOrgUnitId || scope.owning_org_unit_id || scope.owningOrgUnitId
+  );
+  const orgUnitName = stringValue(orgUnit.display_name || orgUnit.displayName || orgUnit.name);
+  const resourceKind = stringValue(enterprise.resource_kind || enterprise.resourceKind || root.resource_kind || root.resourceKind);
+  const resourceId = stringValue(enterprise.resource_id || enterprise.resourceId || root.resource_id || root.resourceId);
+  const policyVersion = stringValue(
+    enterprise.policy_version_id || enterprise.policyVersionId || scope.policy_version_id || scope.policyVersionId
+  );
+  const dataClasses = uniqueCompact([
+    ...toArray(enterprise.data_classes || enterprise.dataClasses || scope.data_classes || scope.dataClasses, "data_classes"),
+    ...sources.map((source) => source?.data_class || source?.dataClass),
+  ]);
+  const knowledgeSourceIds = uniqueCompact(
+    sources.map((source) => source?.binding_id || source?.bindingId || source?.source_binding_id || source?.sourceBindingId)
+  );
+  const knowledgeSourceLabels = uniqueCompact(
+    sources.map((source) =>
+      source?.source_root_label ||
+      source?.sourceRootLabel ||
+      source?.source_type ||
+      source?.sourceType ||
+      source?.binding_id ||
+      source?.bindingId
+    )
+  );
+  const delegationGrantIds = uniqueCompact(
+    toArray(enterprise.delegation_grant_ids || enterprise.delegationGrantIds || scope.delegation_grant_ids, "grants")
+  );
+  const ownerPrincipal = principalLabel(enterprise.owner_principal || enterprise.ownerPrincipal || scope.owner_principal);
+  const scopeSummary =
+    compact([
+      orgUnitName || orgUnitId,
+      resourceLabel(resourceKind, resourceId),
+      policyVersion ? `Policy ${policyVersion}` : "",
+    ]).join(" · ") || "Tenant scoped";
+
+  return {
+    orgUnitId,
+    orgUnitName,
+    resourceKind,
+    resourceId,
+    resourceLabel: resourceLabel(resourceKind, resourceId),
+    policyVersion,
+    dataClasses,
+    delegationGrantIds,
+    ownerPrincipal,
+    knowledgeSourceIds,
+    knowledgeSourceLabels,
+    knowledgeSourceCount: Number(enterprise.summary?.knowledge_source_count ?? enterprise.summary?.knowledgeSourceCount) || sources.length,
+    scopeSummary,
+  };
 }
 
 function statusGroup(status, waitKind) {
@@ -356,6 +444,7 @@ function projectRun(row, source) {
   const updatedAtMs = updatedAtOf(row);
   const createdAtMs = firstTimestamp([row?.created_at_ms, row?.createdAtMs, row?.created_at, row?.createdAt]);
   const retry = retryStateOf(row);
+  const enterprise = enterpriseScopeOf(row);
 
   return {
     id,
@@ -375,6 +464,19 @@ function projectRun(row, source) {
     tenantDeployment: tenant.deploymentId,
     tenantActor: tenant.actorId,
     workspace: workspaceOf(row),
+    orgUnitId: enterprise.orgUnitId,
+    orgUnitName: enterprise.orgUnitName,
+    resourceKind: enterprise.resourceKind,
+    resourceId: enterprise.resourceId,
+    resourceLabel: enterprise.resourceLabel,
+    policyVersion: enterprise.policyVersion,
+    dataClasses: enterprise.dataClasses,
+    delegationGrantIds: enterprise.delegationGrantIds,
+    ownerPrincipal: enterprise.ownerPrincipal,
+    knowledgeSourceIds: enterprise.knowledgeSourceIds,
+    knowledgeSourceLabels: enterprise.knowledgeSourceLabels,
+    knowledgeSourceCount: enterprise.knowledgeSourceCount,
+    scopeSummary: enterprise.scopeSummary,
     waitKind: wait.kind,
     currentWait: wait.label,
     waitDetail: wait.detail,
@@ -408,6 +510,7 @@ function projectCanonicalRun(row) {
       latest_event: row?.latest_event || row?.latestEvent,
       latest_snapshot: row?.latest_snapshot || row?.latestSnapshot,
       replay_boundaries: row?.replay_boundaries || row?.replayBoundaries,
+      enterprise_scope: row?.enterprise_scope || row?.enterpriseScope,
     },
     source
   );
@@ -426,8 +529,29 @@ function mergeRows(existing, candidate) {
       primary.lastEventDetail = secondary.lastEventDetail;
     }
   }
-  for (const key of ["workspace", "currentWait", "waitDetail", "retryDetail", "tenantActor", "tenantDeployment"]) {
+  for (const key of [
+    "workspace",
+    "currentWait",
+    "waitDetail",
+    "retryDetail",
+    "tenantActor",
+    "tenantDeployment",
+    "orgUnitId",
+    "orgUnitName",
+    "resourceKind",
+    "resourceId",
+    "resourceLabel",
+    "policyVersion",
+    "ownerPrincipal",
+    "scopeSummary",
+  ]) {
     if (!primary[key] && secondary[key]) primary[key] = secondary[key];
+  }
+  for (const key of ["dataClasses", "delegationGrantIds", "knowledgeSourceIds", "knowledgeSourceLabels"]) {
+    if (!primary[key]?.length && secondary[key]?.length) primary[key] = secondary[key];
+  }
+  if (!primary.knowledgeSourceCount && secondary.knowledgeSourceCount) {
+    primary.knowledgeSourceCount = secondary.knowledgeSourceCount;
   }
   if (primary.tenantOrg === "local" && secondary.tenantOrg !== "local") primary.tenantOrg = secondary.tenantOrg;
   if (primary.tenantWorkspace === "local" && secondary.tenantWorkspace !== "local") {
@@ -471,6 +595,11 @@ function normalizeStatefulRunFilters(filters = {}) {
     source,
     tenant: stringValue(input.tenant),
     workspace: stringValue(input.workspace),
+    orgUnit: stringValue(input.orgUnit || input.org_unit),
+    resource: stringValue(input.resource),
+    policy: stringValue(input.policy || input.policyVersion || input.policy_version),
+    dataClass: stringValue(input.dataClass || input.data_class),
+    knowledge: stringValue(input.knowledge || input.sourceBinding || input.source_binding),
     wait: stringValue(input.wait),
   };
 }
@@ -488,6 +617,18 @@ function rowSearchText(row) {
     row.tenantDeployment,
     row.tenantActor,
     row.workspace,
+    row.orgUnitId,
+    row.orgUnitName,
+    row.resourceKind,
+    row.resourceId,
+    row.resourceLabel,
+    row.policyVersion,
+    row.dataClasses,
+    row.delegationGrantIds,
+    row.ownerPrincipal,
+    row.knowledgeSourceIds,
+    row.knowledgeSourceLabels,
+    row.scopeSummary,
     row.currentWait,
     row.waitDetail,
     row.retryState,
@@ -504,6 +645,11 @@ function filterStatefulRunRows(rows, filters = DEFAULT_STATEFUL_RUN_FILTERS) {
   const query = normalized.query.toLowerCase();
   const tenant = normalized.tenant.toLowerCase();
   const workspace = normalized.workspace.toLowerCase();
+  const orgUnit = normalized.orgUnit.toLowerCase();
+  const resource = normalized.resource.toLowerCase();
+  const policy = normalized.policy.toLowerCase();
+  const dataClass = normalized.dataClass.toLowerCase();
+  const knowledge = normalized.knowledge.toLowerCase();
   const wait = normalized.wait.toLowerCase();
   return (Array.isArray(rows) ? rows : []).filter((row) => {
     const text = rowSearchText(row);
@@ -520,6 +666,35 @@ function filterStatefulRunRows(rows, filters = DEFAULT_STATEFUL_RUN_FILTERS) {
       return false;
     }
     if (workspace && !stringValue(row.workspace).toLowerCase().includes(workspace)) return false;
+    if (
+      orgUnit &&
+      !compact([row.orgUnitId, row.orgUnitName, row.ownerPrincipal])
+        .join(" ")
+        .toLowerCase()
+        .includes(orgUnit)
+    ) {
+      return false;
+    }
+    if (
+      resource &&
+      !compact([row.resourceKind, row.resourceId, row.resourceLabel, row.scopeSummary])
+        .join(" ")
+        .toLowerCase()
+        .includes(resource)
+    ) {
+      return false;
+    }
+    if (policy && !stringValue(row.policyVersion).toLowerCase().includes(policy)) return false;
+    if (dataClass && !compact(row.dataClasses || []).join(" ").toLowerCase().includes(dataClass)) return false;
+    if (
+      knowledge &&
+      !compact([row.knowledgeSourceIds, row.knowledgeSourceLabels])
+        .join(" ")
+        .toLowerCase()
+        .includes(knowledge)
+    ) {
+      return false;
+    }
     if (
       wait &&
       !compact([row.phase, row.currentWait, row.waitDetail, row.retryState, row.retryDetail])
@@ -543,9 +718,15 @@ function summarizeStatefulRuns(rows) {
     completed: 0,
     tenants: 0,
     workspaces: 0,
+    orgUnits: 0,
+    policyVersions: 0,
+    knowledgeSources: 0,
   };
   const tenants = new Set();
   const workspaces = new Set();
+  const orgUnits = new Set();
+  const policyVersions = new Set();
+  const knowledgeSources = new Set();
   for (const row of Array.isArray(rows) ? rows : []) {
     summary.total += 1;
     if (Object.prototype.hasOwnProperty.call(summary, row.statusGroup)) {
@@ -553,9 +734,17 @@ function summarizeStatefulRuns(rows) {
     }
     tenants.add(`${row.tenantOrg}/${row.tenantWorkspace}`);
     if (row.workspace) workspaces.add(row.workspace);
+    if (row.orgUnitId || row.orgUnitName) orgUnits.add(row.orgUnitId || row.orgUnitName);
+    if (row.policyVersion) policyVersions.add(row.policyVersion);
+    for (const source of [...(row.knowledgeSourceIds || []), ...(row.knowledgeSourceLabels || [])]) {
+      if (source) knowledgeSources.add(source);
+    }
   }
   summary.tenants = tenants.size;
   summary.workspaces = workspaces.size;
+  summary.orgUnits = orgUnits.size;
+  summary.policyVersions = policyVersions.size;
+  summary.knowledgeSources = knowledgeSources.size;
   return summary;
 }
 

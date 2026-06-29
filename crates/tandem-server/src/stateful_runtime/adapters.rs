@@ -1,4 +1,6 @@
-use serde_json::json;
+use serde::de::DeserializeOwned;
+use serde_json::{json, Value};
+use tandem_types::{DataClass, PrincipalRef, ResourceScope, ToolRiskTier};
 
 use crate::automation_v2::types::{AutomationRunStatus, AutomationV2RunRecord};
 use tandem_workflows::{WorkflowRunRecord, WorkflowRunStatus};
@@ -36,7 +38,7 @@ pub fn stateful_run_from_automation_v2(run: &AutomationV2RunRecord) -> StatefulW
         workflow_id: None,
         automation_id: Some(run.automation_id.clone()),
         automation_run_id: Some(run.run_id.clone()),
-        scope: StatefulRuntimeScope::from_tenant_context(run.tenant_context.clone()),
+        scope: stateful_scope_from_automation_v2(run),
         status,
         phase: phase_state.phase,
         phase_history: phase_state.phase_history,
@@ -64,6 +66,64 @@ pub fn stateful_run_from_automation_v2(run: &AutomationV2RunRecord) -> StatefulW
             "consumed_handoff_id": &run.consumed_handoff_id
         })),
     }
+}
+
+fn stateful_scope_from_automation_v2(run: &AutomationV2RunRecord) -> StatefulRuntimeScope {
+    let mut scope = StatefulRuntimeScope::from_tenant_context(run.tenant_context.clone());
+    if let Some(metadata) = automation_webhook_metadata(run) {
+        merge_enterprise_scope_metadata(&mut scope, metadata);
+    }
+    scope
+}
+
+fn automation_webhook_metadata(run: &AutomationV2RunRecord) -> Option<&Value> {
+    run.automation_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.metadata.as_ref())
+        .and_then(|metadata| metadata.get("automation_webhook"))
+}
+
+fn merge_enterprise_scope_metadata(scope: &mut StatefulRuntimeScope, metadata: &Value) {
+    if scope.owner_principal.is_none() {
+        scope.owner_principal = json_field(metadata, "owner_principal");
+    }
+    if scope.owning_org_unit_id.is_none() {
+        scope.owning_org_unit_id = metadata
+            .get("owning_org_unit_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+    }
+    if scope.resource_scope.is_none() {
+        scope.resource_scope = json_field::<ResourceScope>(metadata, "resource_scope");
+    }
+    if scope.data_classes.is_empty() {
+        if let Some(data_classes) = json_field::<Vec<DataClass>>(metadata, "data_classes") {
+            scope.data_classes = data_classes;
+        } else if let Some(data_class) = json_field::<DataClass>(metadata, "data_class") {
+            scope.data_classes = vec![data_class];
+        }
+    }
+    if scope.risk_tier.is_none() {
+        scope.risk_tier = json_field::<ToolRiskTier>(metadata, "risk_tier");
+    }
+    if scope.policy_version_id.is_none() {
+        scope.policy_version_id = metadata
+            .get("policy_version_id")
+            .or_else(|| metadata.get("policy_version"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+    }
+    if scope.delegation_grant_ids.is_empty() {
+        scope.delegation_grant_ids =
+            json_field::<Vec<String>>(metadata, "delegation_grant_ids").unwrap_or_default();
+    }
+}
+
+fn json_field<T: DeserializeOwned>(metadata: &Value, key: &str) -> Option<T> {
+    metadata
+        .get(key)
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
 }
 
 pub fn stateful_run_from_workflow(run: &WorkflowRunRecord) -> StatefulWorkflowRunRecord {
@@ -147,7 +207,10 @@ mod tests {
     };
     use crate::stateful_runtime::StatefulWorkflowPhase;
     use serde_json::json;
-    use tandem_types::TenantContext;
+    use tandem_types::{
+        DataClass, PrincipalKind, PrincipalRef, ResourceKind, ResourceRef, ResourceScope,
+        TenantContext, ToolRiskTier,
+    };
     use tandem_workflows::{WorkflowRunRecord, WorkflowRunStatus};
 
     use super::*;
@@ -285,6 +348,77 @@ mod tests {
             stateful.workflow_definition_snapshot_hash.as_deref(),
             Some(expected_hash.as_str())
         );
+    }
+
+    #[test]
+    fn automation_adapter_preserves_webhook_enterprise_scope_metadata() {
+        let checkpoint = AutomationRunCheckpoint {
+            completed_nodes: Vec::new(),
+            pending_nodes: Vec::new(),
+            node_outputs: Default::default(),
+            node_attempts: Default::default(),
+            node_attempt_verdicts: Default::default(),
+            blocked_nodes: Vec::new(),
+            awaiting_gate: None,
+            gate_history: Vec::new(),
+            lifecycle_history: Vec::new(),
+            last_failure: None,
+        };
+        let mut snapshot = automation_snapshot("automation-a");
+        let resource_scope = ResourceScope::root(ResourceRef::new(
+            "org-a",
+            "workspace-a",
+            ResourceKind::Repository,
+            "repo-a",
+        ));
+        snapshot.metadata = Some(json!({
+            "automation_webhook": {
+                "owner_principal": PrincipalRef::new(PrincipalKind::Automation, "automation-a"),
+                "owning_org_unit_id": "finance",
+                "resource_scope": resource_scope,
+                "data_class": DataClass::FinancialRecord,
+                "risk_tier": ToolRiskTier::FinancialRecordAccess,
+                "policy_version_id": "policy-2026-06",
+                "delegation_grant_ids": ["delegation-a"]
+            }
+        }));
+        let record = automation_run(Some(snapshot), checkpoint);
+
+        let stateful = stateful_run_from_automation_v2(&record);
+
+        assert_eq!(
+            stateful
+                .scope
+                .owner_principal
+                .as_ref()
+                .map(|principal| principal.id.as_str()),
+            Some("automation-a")
+        );
+        assert_eq!(
+            stateful.scope.owning_org_unit_id.as_deref(),
+            Some("finance")
+        );
+        assert_eq!(
+            stateful
+                .scope
+                .resource_scope
+                .as_ref()
+                .map(|scope| scope.root.resource_id.as_str()),
+            Some("repo-a")
+        );
+        assert_eq!(
+            stateful.scope.data_classes,
+            vec![DataClass::FinancialRecord]
+        );
+        assert_eq!(
+            stateful.scope.risk_tier,
+            Some(ToolRiskTier::FinancialRecordAccess)
+        );
+        assert_eq!(
+            stateful.scope.policy_version_id.as_deref(),
+            Some("policy-2026-06")
+        );
+        assert_eq!(stateful.scope.delegation_grant_ids, vec!["delegation-a"]);
     }
 
     #[test]

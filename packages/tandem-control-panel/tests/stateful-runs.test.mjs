@@ -125,12 +125,15 @@ test("stateful run helpers classify waits, retries, and summary buckets", () => 
     active: 0,
     waiting: 1,
     queued: 1,
-    failed: 1,
-    completed: 0,
-    tenants: 1,
-    workspaces: 0,
-  });
-});
+	    failed: 1,
+	    completed: 0,
+	    tenants: 1,
+	    workspaces: 0,
+	    orgUnits: 0,
+	    policyVersions: 0,
+	    knowledgeSources: 0,
+	  });
+	});
 
 test("stateful run helpers project canonical stateful runtime API rows", () => {
   const rows = buildStatefulRunRows({
@@ -164,13 +167,36 @@ test("stateful run helpers project canonical stateful runtime API rows", () => {
           occurred_at_ms: 7100,
           phase_id: "phase-a",
         },
-        latest_snapshot: {
-          snapshot_id: "snapshot-a",
-          seq: 3,
-        },
-      },
-    ],
-  });
+	        latest_snapshot: {
+	          snapshot_id: "snapshot-a",
+	          seq: 3,
+	        },
+	        enterprise_scope: {
+	          owning_org_unit_id: "finance",
+	          owning_org_unit: {
+	            display_name: "Finance Ops",
+	          },
+	          owner_principal: {
+	            kind: "automation",
+	            id: "automation-a",
+	          },
+	          resource_kind: "repository",
+	          resource_id: "repo-a",
+	          data_classes: ["financial_record"],
+	          policy_version_id: "policy-2026-06",
+	          delegation_grant_ids: ["delegation-a"],
+	          visible_knowledge_sources: [
+	            {
+	              binding_id: "binding-repo",
+	              source_type: "github",
+	              source_root_label: "Finance repo",
+	              data_class: "financial_record",
+	            },
+	          ],
+	        },
+	      },
+	    ],
+	  });
 
   assert.equal(rows.length, 1);
   assert.equal(rows[0].id, "run-stateful");
@@ -179,10 +205,15 @@ test("stateful run helpers project canonical stateful runtime API rows", () => {
   assert.equal(rows[0].phase, "Waiting Webhook");
   assert.equal(rows[0].currentWait, "wait for provider callback");
   assert.equal(rows[0].waitDetail, "wait-a · waiting");
-  assert.equal(rows[0].tenantOrg, "org-a");
-  assert.equal(rows[0].tenantWorkspace, "workspace-a");
-  assert.equal(rows[0].lastEventLabel, "Stateful Runtime Wait Webhook Registered");
-});
+	  assert.equal(rows[0].tenantOrg, "org-a");
+	  assert.equal(rows[0].tenantWorkspace, "workspace-a");
+	  assert.equal(rows[0].lastEventLabel, "Stateful Runtime Wait Webhook Registered");
+	  assert.equal(rows[0].orgUnitName, "Finance Ops");
+	  assert.equal(rows[0].resourceLabel, "Repository repo-a");
+	  assert.equal(rows[0].policyVersion, "policy-2026-06");
+	  assert.deepEqual(rows[0].dataClasses, ["financial_record"]);
+	  assert.deepEqual(rows[0].knowledgeSourceIds, ["binding-repo"]);
+	});
 
 test("stateful run helpers filter by status source tenant workspace and phase wait text", () => {
   const rows = buildStatefulRunRows({
@@ -192,10 +223,19 @@ test("stateful run helpers filter by status source tenant workspace and phase wa
         automation_id: "a",
         status: "awaiting_approval",
         updated_at_ms: 1000,
-        tenant_context: { org_id: "org-a", workspace_id: "hr" },
-        checkpoint: { awaiting_gate: { node_id: "legal", title: "Legal review", requested_at_ms: 1 } },
-        automation_snapshot: { name: "Hire packet", workspace_root: "/work/hr" },
-      },
+	        tenant_context: { org_id: "org-a", workspace_id: "hr" },
+	        enterprise_scope: {
+	          owning_org_unit_id: "legal",
+	          owning_org_unit: { display_name: "Legal Ops" },
+	          resource_kind: "repository",
+	          resource_id: "repo-hr",
+	          policy_version_id: "policy-hr",
+	          data_classes: ["confidential"],
+	          visible_knowledge_sources: [{ binding_id: "source-hr", source_root_label: "HR Handbook" }],
+	        },
+	        checkpoint: { awaiting_gate: { node_id: "legal", title: "Legal review", requested_at_ms: 1 } },
+	        automation_snapshot: { name: "Hire packet", workspace_root: "/work/hr" },
+	      },
     ],
     contextRuns: [
       {
@@ -218,12 +258,19 @@ test("stateful run helpers filter by status source tenant workspace and phase wa
     "ctx-b",
   ]);
   assert.deepEqual(filterStatefulRunRows(rows, { workspace: "hr" }).map((row) => row.id), ["run-a"]);
-  assert.deepEqual(filterStatefulRunRows(rows, { workspace: "finance" }).map((row) => row.id), [
-    "ctx-b",
-  ]);
-  assert.deepEqual(filterStatefulRunRows(rows, { wait: "legal" }).map((row) => row.id), ["run-a"]);
-  assert.deepEqual(filterStatefulRunRows(rows, { query: "hire" }).map((row) => row.id), ["run-a"]);
-});
+	  assert.deepEqual(filterStatefulRunRows(rows, { workspace: "finance" }).map((row) => row.id), [
+	    "ctx-b",
+	  ]);
+	  assert.deepEqual(filterStatefulRunRows(rows, { orgUnit: "legal" }).map((row) => row.id), ["run-a"]);
+	  assert.deepEqual(filterStatefulRunRows(rows, { resource: "repo-hr" }).map((row) => row.id), ["run-a"]);
+	  assert.deepEqual(filterStatefulRunRows(rows, { policy: "policy-hr" }).map((row) => row.id), ["run-a"]);
+	  assert.deepEqual(filterStatefulRunRows(rows, { dataClass: "confidential" }).map((row) => row.id), [
+	    "run-a",
+	  ]);
+	  assert.deepEqual(filterStatefulRunRows(rows, { knowledge: "handbook" }).map((row) => row.id), ["run-a"]);
+	  assert.deepEqual(filterStatefulRunRows(rows, { wait: "legal" }).map((row) => row.id), ["run-a"]);
+	  assert.deepEqual(filterStatefulRunRows(rows, { query: "hire" }).map((row) => row.id), ["run-a"]);
+	});
 
 test("stateful run helpers normalize filters and format timestamps", () => {
   assert.deepEqual(normalizeStatefulRunFilters({ status: "bogus", source: "bad", query: "  run " }), {

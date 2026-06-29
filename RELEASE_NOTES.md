@@ -46,6 +46,12 @@ Stateful runtime run list and detail endpoints now provide canonical
 tenant-filtered run records with current wait, latest event, latest snapshot,
 and replay-boundary metadata, and the control-panel run list prefers those
 endpoints while retaining the legacy fan-out fallback.
+Canonical stateful runtime run responses now also include enterprise scope
+summaries with resolved organization units, active org-unit grants, visible
+knowledge source bindings, and filters for org unit, owner, resource, policy,
+data class, risk tier, delegation grant, and source binding. The Control Panel
+run dashboard surfaces those fields as scope metrics, filters, and per-run scope
+cards.
 
 ## v0.6.4 (2026-06-28)
 

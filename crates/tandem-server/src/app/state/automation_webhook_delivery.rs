@@ -54,6 +54,7 @@ pub(crate) fn automation_webhook_run_metadata(
         "preview": delivery.sanitized_preview,
         "data_class": trigger.default_data_class,
         "risk_tier": trigger.default_risk_tier,
+        "owner_principal": trigger.owner_principal,
         "owning_org_unit_id": trigger.owning_org_unit_id,
         "resource_scope": trigger.resource_scope,
         "trust": "untrusted_external_webhook",

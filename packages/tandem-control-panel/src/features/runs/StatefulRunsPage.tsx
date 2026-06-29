@@ -86,6 +86,8 @@ function metricItems(summary: any) {
     { key: "queued", label: "Queued", value: summary.queued },
     { key: "failed", label: "Failed", value: summary.failed },
     { key: "tenants", label: "Tenants", value: summary.tenants },
+    { key: "orgUnits", label: "Org Units", value: summary.orgUnits },
+    { key: "knowledgeSources", label: "Knowledge", value: summary.knowledgeSources },
   ];
 }
 
@@ -153,7 +155,7 @@ export function StatefulRunsPage({ api, client, navigate }: RunsProps) {
         }
       >
         <div className="grid gap-4">
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8">
             {metricItems(summary).map((item) => (
               <div
                 key={item.key}
@@ -167,7 +169,7 @@ export function StatefulRunsPage({ api, client, navigate }: RunsProps) {
             ))}
           </div>
 
-          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-[1.4fr_0.9fr_0.9fr_1fr_1fr_1fr_auto]">
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-[1.4fr_repeat(5,minmax(0,1fr))_auto]">
             <label className="grid min-w-0 gap-1 text-xs text-tcp-text-muted">
               <span>Search</span>
               <input
@@ -226,6 +228,51 @@ export function StatefulRunsPage({ api, client, navigate }: RunsProps) {
               />
             </label>
             <label className="grid min-w-0 gap-1 text-xs text-tcp-text-muted">
+              <span>Org Unit</span>
+              <input
+                className="tcp-input h-9 text-sm"
+                value={filters.orgUnit}
+                onChange={(event) => setFilters((current) => setFilter(current, "orgUnit", event.currentTarget.value))}
+                placeholder="Unit or owner"
+              />
+            </label>
+            <label className="grid min-w-0 gap-1 text-xs text-tcp-text-muted">
+              <span>Resource</span>
+              <input
+                className="tcp-input h-9 text-sm"
+                value={filters.resource}
+                onChange={(event) => setFilters((current) => setFilter(current, "resource", event.currentTarget.value))}
+                placeholder="Kind or ID"
+              />
+            </label>
+            <label className="grid min-w-0 gap-1 text-xs text-tcp-text-muted">
+              <span>Policy</span>
+              <input
+                className="tcp-input h-9 text-sm"
+                value={filters.policy}
+                onChange={(event) => setFilters((current) => setFilter(current, "policy", event.currentTarget.value))}
+                placeholder="Version"
+              />
+            </label>
+            <label className="grid min-w-0 gap-1 text-xs text-tcp-text-muted">
+              <span>Data</span>
+              <input
+                className="tcp-input h-9 text-sm"
+                value={filters.dataClass}
+                onChange={(event) => setFilters((current) => setFilter(current, "dataClass", event.currentTarget.value))}
+                placeholder="Class"
+              />
+            </label>
+            <label className="grid min-w-0 gap-1 text-xs text-tcp-text-muted">
+              <span>Knowledge</span>
+              <input
+                className="tcp-input h-9 text-sm"
+                value={filters.knowledge}
+                onChange={(event) => setFilters((current) => setFilter(current, "knowledge", event.currentTarget.value))}
+                placeholder="Source"
+              />
+            </label>
+            <label className="grid min-w-0 gap-1 text-xs text-tcp-text-muted">
               <span>Phase</span>
               <input
                 className="tcp-input h-9 text-sm"
@@ -264,7 +311,7 @@ export function StatefulRunsPage({ api, client, navigate }: RunsProps) {
           <LoadingState title="Loading runs" />
         ) : filteredRows.length ? (
           <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-white/10">
-            <table className="w-full min-w-[1120px] table-fixed text-left text-xs">
+            <table className="w-full min-w-[1340px] table-fixed text-left text-xs">
               <thead className="sticky top-0 z-10 bg-black/80 text-[11px] uppercase text-tcp-text-muted backdrop-blur">
                 <tr>
                   <th className="w-[20rem] px-3 py-2 font-medium">Run</th>
@@ -272,6 +319,7 @@ export function StatefulRunsPage({ api, client, navigate }: RunsProps) {
                   <th className="w-[10rem] px-3 py-2 font-medium">Phase</th>
                   <th className="w-[9rem] px-3 py-2 font-medium">Trigger</th>
                   <th className="w-[13rem] px-3 py-2 font-medium">Tenant</th>
+                  <th className="w-[17rem] px-3 py-2 font-medium">Scope</th>
                   <th className="w-[15rem] px-3 py-2 font-medium">Workspace</th>
                   <th className="w-[14rem] px-3 py-2 font-medium">Wait</th>
                   <th className="w-[12rem] px-3 py-2 font-medium">Retry</th>
@@ -299,6 +347,36 @@ export function StatefulRunsPage({ api, client, navigate }: RunsProps) {
                     <td className="px-3 py-3">
                       <div className="truncate text-tcp-text-secondary">{row.tenantOrg}</div>
                       <div className="truncate text-[11px] text-tcp-text-muted">{row.tenantWorkspace}</div>
+                    </td>
+                    <td className="px-3 py-3">
+                      <div className="min-h-[4.25rem] rounded-md border border-white/10 bg-white/[0.025] px-2.5 py-2">
+                        <div className="truncate text-tcp-text-secondary">
+                          {row.orgUnitName || row.orgUnitId || "Tenant scoped"}
+                        </div>
+                        <div className="mt-1 truncate font-mono text-[11px] text-tcp-text-muted">
+                          {row.resourceLabel || row.resourceId || "n/a"}
+                        </div>
+                        <div className="mt-1 flex min-w-0 flex-wrap gap-1">
+                          {row.policyVersion ? (
+                            <span className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-tcp-text-muted">
+                              {row.policyVersion}
+                            </span>
+                          ) : null}
+                          {row.dataClasses?.slice(0, 2).map((dataClass: string) => (
+                            <span
+                              key={dataClass}
+                              className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-tcp-text-muted"
+                            >
+                              {dataClass}
+                            </span>
+                          ))}
+                          {row.knowledgeSourceCount ? (
+                            <span className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-tcp-text-muted">
+                              {row.knowledgeSourceCount} src
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
                     </td>
                     <td className="px-3 py-3">
                       <div className="truncate font-mono text-[11px] text-tcp-text-secondary">

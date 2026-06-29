@@ -26,6 +26,13 @@ instead of deriving scope from process-global state. Future memory, knowledge,
 connector, and webhook integrations should enrich `StatefulRuntimeScope` rather
 than adding parallel ad hoc fields to each subsystem.
 
+The canonical stateful runtime run list and detail endpoints expose a top-level
+`enterprise_scope` summary beside each `run`. The summary keeps the durable scope
+fields visible and resolves matching organization units, active org-unit grants,
+and enabled knowledge source bindings within the same tenant/resource boundary.
+List callers can filter by organization unit, owner principal, root resource,
+policy version, data class, risk tier, delegation grant, and source binding.
+
 Knowledge reads and writes performed during a resumed run should evaluate the
 saved `resource_scope`, `data_classes`, `policy_version_id`, and
 `delegation_grant_ids` from the durable run scope. This keeps replayed work from
