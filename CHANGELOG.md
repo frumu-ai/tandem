@@ -14,6 +14,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added stateful runtime definition identity helpers so snapshot-backed
   automation runs expose durable workflow definition versions and `sha256:`
   snapshot hashes for future replay and resume checks.
+- Added a shared retry policy schema and decision record for Automation V2
+  nodes, preserving legacy `max_attempts` behavior while recording retry
+  failure class, attempt, terminal behavior, and next retry timing for future
+  durable queue/outbox paths.
+- Added persisted Automation V2 execution claim metadata with claim ids,
+  claimant ids, lease expiry, and claim epochs so resumed runs can distinguish
+  the active executor from abandoned launch claims.
+- Added tenant-scoped idempotency key persistence for long-running automation
+  operations, keyed by org/workspace/deployment plus operation and request
+  fingerprint so retries, duplicate deliveries, and conflicts survive restarts.
+- Added Automation V2 webhook dedupe metadata on delivery records and SDK
+  models, including idempotency record references, dedupe result/reason codes,
+  and original delivery/run correlation for duplicate provider events.
 - Added an explicit stateful workflow phase model with guarded transitions,
   phase transition event records, status compatibility mapping, and serialized
   allowed-next-phase exposure on durable runtime records.
@@ -35,9 +48,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Running Automation V2 runs interrupted by a server restart are now queued for
   resume when their persisted checkpoint can be safely rehydrated; in-progress
   nodes receive repair markers, while corrupt records still fail closed.
+- Automation V2 supervisors now reclaim expired execution claims that have no
+  active session or agent handles, requeueing those runs for a single safe
+  claimant instead of leaving them stuck as `Running`.
+- Automation V2 webhook queueing now reserves idempotency records before
+  creating runs, treats same provider event IDs with different payloads as
+  conflicts, and treats same body digests as duplicates without crossing tenant
+  boundaries.
 
 ### Fixed
 
+- Persisted Automation V2 webhook dedupe outcomes so provider retries after a
+  server restart can return the original delivery/run correlation instead of
+  creating a second run.
 - Legacy stateful runtime snapshots that predate explicit phase fields now
   derive phase, phase history, and allowed next phases from their stored status
   when read.

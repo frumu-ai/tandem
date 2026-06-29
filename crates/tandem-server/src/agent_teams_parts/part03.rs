@@ -747,6 +747,8 @@ mod fintech_policy_tests {
             },
             runtime_context: None,
             automation_snapshot: Some(automation),
+            execution_claim: None,
+            execution_claim_epoch: 0,
             pause_reason: None,
             resume_reason: None,
             detail: None,
