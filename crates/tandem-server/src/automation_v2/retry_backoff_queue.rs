@@ -299,6 +299,7 @@ mod tests {
             terminal_behavior: tandem_automation::RetryTerminalBehavior::default(),
             manual_override_allowed: true,
         };
+        let expected_epoch = run.execution_claim_epoch;
 
         let metadata = queue_run_for_retry_backoff(
             &mut run,
@@ -307,7 +308,7 @@ mod tests {
             3,
             &decision,
             "provider timeout",
-            run.execution_claim_epoch,
+            expected_epoch,
             1_000,
         )
         .expect("metadata");
@@ -348,6 +349,7 @@ mod tests {
             terminal_behavior: tandem_automation::RetryTerminalBehavior::default(),
             manual_override_allowed: true,
         };
+        let expected_epoch = run.execution_claim_epoch;
 
         assert_eq!(
             queue_run_for_retry_backoff(
@@ -357,7 +359,7 @@ mod tests {
                 3,
                 &decision,
                 "provider timeout",
-                run.execution_claim_epoch,
+                expected_epoch,
                 1_000,
             ),
             None
