@@ -35,7 +35,7 @@ import {
   CreateWizard as CreateWizardExternal,
 } from "../features/automations/create/CreateWizard";
 import { AutomationComposerPanel } from "../features/automations/create/AutomationComposerPanel";
-import { describeScheduleValue } from "../features/automations/scheduleBuilder";
+import { describeScheduleValue } from "../features/automations/scheduleValue";
 import { AdvancedMissionBuilderPanel } from "./AdvancedMissionBuilderPanel";
 import { PageCard, formatJson } from "./ui";
 import type { AppPageProps } from "./pageTypes";

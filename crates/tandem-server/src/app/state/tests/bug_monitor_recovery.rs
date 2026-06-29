@@ -26,6 +26,12 @@ async fn ready_bug_monitor_recovery_state(name: &str) -> crate::app::state::AppS
     state
 }
 
+fn portable_bug_monitor_recovery_workspace_root() -> String {
+    let root = std::env::temp_dir().join("tandem-bug-monitor-recovery");
+    std::fs::create_dir_all(root.join("logs")).expect("portable bug monitor recovery workspace");
+    root.display().to_string()
+}
+
 fn timed_out_draft(draft_id: &str, triage_run_id: &str) -> BugMonitorDraftRecord {
     BugMonitorDraftRecord {
         draft_id: draft_id.to_string(),
@@ -53,7 +59,7 @@ fn incident_for_draft(
         event_type: "automation_v2.run.failed".to_string(),
         status: "triage_timed_out".to_string(),
         repo: "frumu-ai/tandem".to_string(),
-        workspace_root: "/tmp/tandem".to_string(),
+        workspace_root: portable_bug_monitor_recovery_workspace_root(),
         title: "Failure detected in automation_v2.run.failed".to_string(),
         occurrence_count: 1,
         created_at_ms: 1,
@@ -146,7 +152,7 @@ async fn recovery_publish_honors_source_approval_policy() {
                 project_id: "payments".to_string(),
                 name: "Payments".to_string(),
                 repo: "frumu-ai/tandem".to_string(),
-                workspace_root: "/tmp/tandem".to_string(),
+                workspace_root: portable_bug_monitor_recovery_workspace_root(),
                 log_sources: vec![BugMonitorLogSource {
                     source_id: "ci".to_string(),
                     path: "logs/ci.jsonl".to_string(),
