@@ -79,6 +79,9 @@ async def test_automation_v2_webhook_trigger_management_routes() -> None:
                         "automation_id": "automation-1",
                         "provider_event_id": "evt-1",
                         "status": "accepted",
+                        "verification_scheme": "hmac_sha256_v1",
+                        "verification_provider": "github",
+                        "verification_reason_code": "verified",
                         "queued_run_id": "run-1",
                         "sanitized_preview": {"action": "opened"},
                     }
@@ -100,6 +103,9 @@ async def test_automation_v2_webhook_trigger_management_routes() -> None:
                     "automationID": "automation-1",
                     "providerEventID": "evt-1",
                     "status": "accepted",
+                    "verificationScheme": "hmac_sha256_v1",
+                    "verificationProvider": "github",
+                    "verificationReasonCode": "verified",
                     "queuedRunID": "run-1",
                     "sanitizedPreview": {"action": "opened"},
                 }
@@ -122,6 +128,7 @@ async def test_automation_v2_webhook_trigger_management_routes() -> None:
                 "provider": "github",
                 "provider_event_kind": "issues.assigned",
                 "providerEventKind": "issues.opened",
+                "signatureScheme": "github_hmac_sha256",
                 "defaultDataClass": "customer_data",
                 "defaultRiskTier": "internal_write",
                 "owningOrgUnitId": "support",
@@ -134,6 +141,7 @@ async def test_automation_v2_webhook_trigger_management_routes() -> None:
             "trigger-1",
             AutomationWebhookTriggerUpdateInput(
                 providerEventKind=None,
+                signatureScheme="shared_secret_header_v1",
                 defaultDataClass="internal",
                 defaultRiskTier=None,
             ),
@@ -170,8 +178,12 @@ async def test_automation_v2_webhook_trigger_management_routes() -> None:
     assert rotated.new_secret == "whsec_rotated"
     assert deliveries.limit == 10
     assert deliveries.deliveries[0].provider_event_id == "evt-1"
+    assert deliveries.deliveries[0].verification_scheme == "hmac_sha256_v1"
+    assert deliveries.deliveries[0].verification_provider == "github"
+    assert deliveries.deliveries[0].verification_reason_code == "verified"
     assert delivery.delivery.delivery_id == "delivery-1"
     assert delivery.delivery.queued_run_id == "run-1"
+    assert delivery.delivery.verification_reason_code == "verified"
     assert deleted.ok is True
     assert deleted.trigger_id == "trigger-1"
 
@@ -179,6 +191,7 @@ async def test_automation_v2_webhook_trigger_management_routes() -> None:
     assert create_body == {
         "provider": "github",
         "provider_event_kind": "issues.assigned",
+        "signature_scheme": "github_hmac_sha256",
         "default_data_class": "customer_data",
         "default_risk_tier": "internal_write",
         "owning_org_unit_id": "support",
@@ -188,6 +201,7 @@ async def test_automation_v2_webhook_trigger_management_routes() -> None:
     update_body = json.loads(update_route.calls[0].request.content.decode("utf-8"))
     assert update_body == {
         "provider_event_kind": None,
+        "signature_scheme": "shared_secret_header_v1",
         "default_data_class": "internal",
         "default_risk_tier": None,
     }

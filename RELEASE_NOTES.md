@@ -14,6 +14,9 @@ fail closed. Automation V2 retry handling now also has a shared policy schema
 and structured retry decision record so node failures can explain retryability,
 attempt budget, terminal behavior, and next retry timing while preserving legacy
 `max_attempts` compatibility.
+Automation webhooks now use a provider-aware signature verification registry
+with queryable delivery verification metadata, keeping Tandem HMAC compatibility
+while preparing GitHub-style and shared-secret provider schemes.
 Durable wait foundations now persist timer/webhook/approval wait metadata,
 tenant-boundary identity, wake times, timeout policy, and wake claim state for
 future sleep/resume scheduling.
