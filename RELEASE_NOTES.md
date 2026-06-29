@@ -65,7 +65,9 @@ destination failure chain for easier operator diagnosis.
 Bug Monitor/Incident Monitor routing also supports signed webhook destinations
 with env-backed HMAC secrets, default SSRF blocking for private/internal URLs,
 bounded payloads and response excerpts, capped retry attempts, and durable
-per-delivery receipts.
+per-delivery receipts. URL validation classifies parsed IPv4/IPv6 literals
+before DNS lookup so IPv4-mapped private IPv6 webhook hosts fail closed
+consistently across platforms.
 Linear duplicate handling preserves matched-issue status on repeated publishes
 and suppresses retrying an ambiguous failed Linear `create_issue` response that
 may already have created an external issue.

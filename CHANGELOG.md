@@ -91,6 +91,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Linear issue destination duplicate handling now preserves matched-issue draft
   status and suppresses repeat `create_issue` attempts after an ambiguous
   failed Linear create response.
+- Signed webhook destination validation now classifies parsed IPv4/IPv6 URL
+  literals before DNS lookup so IPv4-mapped private IPv6 hosts fail closed
+  consistently across platforms.
 
 ## [0.6.4] - 2026-06-28
 

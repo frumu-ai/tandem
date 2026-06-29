@@ -290,7 +290,8 @@ async fn bug_monitor_webhook_destination_blocks_private_url_by_default() {
         publish_payload
             .get("detail")
             .and_then(Value::as_str)
-            .is_some_and(|detail| detail.contains("localhost/private network")),
+            .is_some_and(|detail| detail.contains("localhost/private network")
+                || detail.contains("private or internal address")),
         "private URL should be blocked: {publish_payload:?}"
     );
     assert_eq!(requests.read().await.len(), 0);

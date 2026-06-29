@@ -8,6 +8,7 @@ use futures::StreamExt;
 use reqwest::{redirect::Policy as RedirectPolicy, StatusCode, Url};
 use serde_json::{json, Map, Value};
 use tandem_types::EngineEvent;
+use url::Host;
 
 use crate::{
     app::state::automation_webhook_signature_header, now_ms, sha256_hex, truncate_text, AppState,
@@ -749,23 +750,35 @@ async fn validate_webhook_url(
     policy: &WebhookPolicy,
 ) -> anyhow::Result<WebhookResolvedTarget> {
     validate_webhook_url_syntax(url, policy)?;
-    let host = url
+    let host = url.host();
+    let host_str = url
         .host_str()
         .ok_or_else(|| anyhow::anyhow!("Webhook URL host is missing"))?;
     if policy.allow_private_networks {
         return Ok(WebhookResolvedTarget::default());
     }
-    if let Some(reason) = obvious_private_host_reason(Some(host)) {
-        anyhow::bail!("{reason}");
-    }
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        if !ip_is_publicly_routable(ip) {
-            anyhow::bail!("Webhook URL resolves to a private or internal address");
+    match host {
+        Some(Host::Ipv4(ip)) => {
+            if !ipv4_is_publicly_routable(ip) {
+                anyhow::bail!("Webhook URL resolves to a private or internal address");
+            }
+            return Ok(WebhookResolvedTarget::default());
         }
-        return Ok(WebhookResolvedTarget::default());
+        Some(Host::Ipv6(ip)) => {
+            if !ipv6_is_publicly_routable(ip) {
+                anyhow::bail!("Webhook URL resolves to a private or internal address");
+            }
+            return Ok(WebhookResolvedTarget::default());
+        }
+        Some(Host::Domain(host)) => {
+            if let Some(reason) = obvious_private_host_reason(Some(host)) {
+                anyhow::bail!("{reason}");
+            }
+        }
+        None => anyhow::bail!("Webhook URL host is missing"),
     }
     let port = url.port_or_known_default().unwrap_or(443);
-    let addrs = tokio::net::lookup_host((host, port))
+    let addrs = tokio::net::lookup_host((host_str, port))
         .await
         .with_context(|| "resolve webhook destination host")?
         .collect::<Vec<_>>();
@@ -776,7 +789,7 @@ async fn validate_webhook_url(
         anyhow::bail!("Webhook URL resolves to a private or internal address");
     }
     Ok(WebhookResolvedTarget {
-        dns_override_host: Some(host.to_string()),
+        dns_override_host: Some(host_str.to_string()),
         dns_override_addrs: addrs,
     })
 }
