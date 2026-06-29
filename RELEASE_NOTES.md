@@ -52,6 +52,13 @@ knowledge source bindings, and filters for org unit, owner, resource, policy,
 data class, risk tier, delegation grant, and source binding. The Control Panel
 run dashboard surfaces those fields as scope metrics, filters, and per-run scope
 cards.
+Bug Monitor/Incident Monitor routing now supports Linear issue destinations
+with MCP readiness checks, duplicate issue matching, destination-aware receipts,
+and external-action records, and publish/recheck errors include the underlying
+destination failure chain for easier operator diagnosis.
+Linear duplicate handling preserves matched-issue status on repeated publishes
+and suppresses retrying an ambiguous failed Linear `create_issue` response that
+may already have created an external issue.
 
 ## v0.6.4 (2026-06-28)
 

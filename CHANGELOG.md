@@ -53,6 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   data-class, delegation, and knowledge-source visibility.
 - Added enterprise-aware scope metrics, filters, and per-run scope cards to the
   Control Panel stateful runs dashboard.
+- Added Linear issue destinations for Bug Monitor/Incident Monitor routing,
+  including Linear MCP readiness checks, issue creation, duplicate matching,
+  destination-aware receipts, and external-action mirrors.
 
 ### Changed
 
@@ -75,6 +78,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Legacy stateful runtime snapshots that predate explicit phase fields now
   derive phase, phase history, and allowed next phases from their stored status
   when read.
+- Bug Monitor publish and recheck failures now return the full error chain in
+  API response details so destination adapter failures expose the underlying
+  MCP/provider cause.
+- Linear issue destination duplicate handling now preserves matched-issue draft
+  status and suppresses repeat `create_issue` attempts after an ambiguous
+  failed Linear create response.
 
 ## [0.6.4] - 2026-06-28
 
@@ -88,7 +97,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   creating, reading, updating, disabling, deleting, rotating secrets, and
   inspecting sanitized delivery history within the owning tenant and automation.
 - Added a Control Panel webhook management section to the `Edit workflow
-  automation` modal with callback URL copy, one-time secret reveal on
+automation` modal with callback URL copy, one-time secret reveal on
   create/rotate, trigger status badges, and sanitized recent delivery rows that
   link to queued Automation V2 runs.
 - Added a public Automation V2 webhook intake route with a dedicated auth bypass

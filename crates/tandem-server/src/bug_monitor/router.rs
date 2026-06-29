@@ -3,11 +3,11 @@ use std::collections::BTreeSet;
 use anyhow::Context;
 
 use crate::{
-    bug_monitor_github, now_ms, AppState, BugMonitorApprovalPolicy, BugMonitorConfig,
-    BugMonitorDestinationConfig, BugMonitorDestinationKind, BugMonitorDestinationReadiness,
-    BugMonitorDraftRecord, BugMonitorIncidentRecord, BugMonitorPostRecord, BugMonitorRouteConfig,
-    BugMonitorRoutePreviewMatch, BugMonitorRoutePreviewResponse, BugMonitorSubmission,
-    BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID,
+    bug_monitor_github, bug_monitor_linear, now_ms, AppState, BugMonitorApprovalPolicy,
+    BugMonitorConfig, BugMonitorDestinationConfig, BugMonitorDestinationKind,
+    BugMonitorDestinationReadiness, BugMonitorDraftRecord, BugMonitorIncidentRecord,
+    BugMonitorPostRecord, BugMonitorRouteConfig, BugMonitorRoutePreviewMatch,
+    BugMonitorRoutePreviewResponse, BugMonitorSubmission, BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -293,7 +293,7 @@ pub async fn publish_draft(
         route_publish_approval_required(&status.config, &preview, &context, &status.destinations);
 
     validate_publish_plan(&status.config, &preview, request.mode)?;
-    let github_destination = github_destination_context(&preview)?;
+    let selected_destination = selected_publish_destination(&preview)?;
     if request.mode != bug_monitor_github::PublishMode::RecheckOnly
         && router_approval_required
         && !draft.status.eq_ignore_ascii_case("denied")
@@ -309,14 +309,33 @@ pub async fn publish_draft(
         });
     }
 
-    bug_monitor_github::publish_draft(
-        state,
-        &request.draft_id,
-        request.incident_id.as_deref(),
-        request.mode,
-        github_destination,
-    )
-    .await
+    match &selected_destination.kind {
+        BugMonitorDestinationKind::GithubIssue => {
+            bug_monitor_github::publish_draft(
+                state,
+                &request.draft_id,
+                request.incident_id.as_deref(),
+                request.mode,
+                github_destination_context(&preview)?,
+            )
+            .await
+        }
+        BugMonitorDestinationKind::LinearIssue => {
+            bug_monitor_linear::publish_draft(
+                state,
+                &request.draft_id,
+                request.incident_id.as_deref(),
+                request.mode,
+                linear_destination_context(&preview)?,
+            )
+            .await
+        }
+        _ => anyhow::bail!(
+            "Destination `{}` uses {:?}, which is not available in this phase",
+            selected_destination.destination_id,
+            selected_destination.kind
+        ),
+    }
     .context("publish Bug Monitor draft through destination router")
 }
 
@@ -361,14 +380,17 @@ fn validate_publish_plan(
     }
     if preview.destinations.len() != 1 {
         anyhow::bail!(
-            "Bug Monitor destination router supports one GitHub destination per publish in this phase"
+            "Bug Monitor destination router supports one issue destination per publish in this phase"
         );
     }
     let destination = &preview.destinations[0];
     if !destination.enabled {
         anyhow::bail!("Destination `{}` is disabled", destination.destination_id);
     }
-    if destination.kind != BugMonitorDestinationKind::GithubIssue {
+    if !matches!(
+        destination.kind,
+        BugMonitorDestinationKind::GithubIssue | BugMonitorDestinationKind::LinearIssue
+    ) {
         anyhow::bail!(
             "Destination `{}` uses {:?}, which is not available in this phase",
             destination.destination_id,
@@ -382,6 +404,15 @@ fn validate_publish_plan(
         anyhow::bail!("{}", preview.blocked_reasons.join("; "));
     }
     Ok(())
+}
+
+fn selected_publish_destination(
+    preview: &BugMonitorRoutePreviewResponse,
+) -> anyhow::Result<&BugMonitorDestinationConfig> {
+    preview
+        .destinations
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("Bug Monitor destination router found no destination"))
 }
 
 fn github_destination_context(
@@ -405,6 +436,28 @@ fn github_destination_context(
             .or_else(|| Some("destination_router".to_string())),
         repo: destination.repo.clone(),
         mcp_server: destination.mcp_server.clone(),
+    })
+}
+
+fn linear_destination_context(
+    preview: &BugMonitorRoutePreviewResponse,
+) -> anyhow::Result<bug_monitor_linear::LinearDestinationContext> {
+    let destination = selected_publish_destination(preview)?;
+    let preview_match = preview.matches.iter().find(|preview_match| {
+        preview_match
+            .destination_ids
+            .iter()
+            .any(|destination_id| destination_id == &destination.destination_id)
+    });
+    Ok(bug_monitor_linear::LinearDestinationContext {
+        destination_id: destination.destination_id.clone(),
+        route_id: preview_match.and_then(|row| row.route_id.clone()),
+        route_match_reason: preview_match
+            .and_then(|row| row.reason.clone())
+            .or_else(|| Some("destination_router".to_string())),
+        mcp_server: destination.mcp_server.clone(),
+        linear_team: destination.linear_team.clone(),
+        linear_project: destination.linear_project.clone(),
     })
 }
 
