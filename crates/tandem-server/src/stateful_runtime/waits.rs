@@ -1,0 +1,617 @@
+use std::path::{Path, PathBuf};
+
+use anyhow::Context;
+use tandem_types::TenantContext;
+use tokio::io::AsyncWriteExt;
+
+use super::types::{
+    StatefulRuntimeScope, StatefulWaitKind, StatefulWaitRecord, StatefulWaitStatus,
+    StatefulWaitTimeoutAction, StatefulWaitTimeoutPolicy,
+};
+
+static STATEFUL_WAIT_STORE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[derive(Debug, Clone, Default)]
+pub struct StatefulWaitQuery<'a> {
+    pub run_id: Option<&'a str>,
+    pub wait_kind: Option<StatefulWaitKind>,
+    pub status: Option<StatefulWaitStatus>,
+    pub limit: Option<usize>,
+}
+
+pub fn load_stateful_waits(path: &Path) -> Vec<StatefulWaitRecord> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut rows = match serde_json::from_str::<Vec<StatefulWaitRecord>>(&content) {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %error,
+                "skipping invalid stateful wait store"
+            );
+            Vec::new()
+        }
+    };
+    sort_waits(&mut rows);
+    rows
+}
+
+pub fn list_stateful_waits(
+    path: &Path,
+    tenant: &TenantContext,
+    query: StatefulWaitQuery<'_>,
+) -> Vec<StatefulWaitRecord> {
+    let mut rows = load_stateful_waits(path)
+        .into_iter()
+        .filter(|wait| wait.visible_to_tenant(tenant))
+        .filter(|wait| {
+            query
+                .run_id
+                .map(|run_id| wait.run_id == run_id)
+                .unwrap_or(true)
+        })
+        .filter(|wait| {
+            query
+                .wait_kind
+                .as_ref()
+                .map(|kind| wait.wait_kind == *kind)
+                .unwrap_or(true)
+        })
+        .filter(|wait| {
+            query
+                .status
+                .as_ref()
+                .map(|status| wait.status == *status)
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+    apply_limit(&mut rows, query.limit);
+    rows
+}
+
+pub fn due_stateful_waits(
+    path: &Path,
+    tenant: &TenantContext,
+    now_ms: u64,
+    limit: Option<usize>,
+) -> Vec<StatefulWaitRecord> {
+    let mut rows = load_stateful_waits(path)
+        .into_iter()
+        .filter(|wait| wait.visible_to_tenant(tenant))
+        .filter(|wait| wait_is_claimable(wait, now_ms))
+        .collect::<Vec<_>>();
+    sort_waits(&mut rows);
+    apply_limit(&mut rows, limit);
+    rows
+}
+
+pub async fn upsert_stateful_wait(
+    path: &Path,
+    wait: StatefulWaitRecord,
+) -> anyhow::Result<StatefulWaitRecord> {
+    let _guard = STATEFUL_WAIT_STORE_LOCK.lock().await;
+    let mut waits = load_stateful_waits(path);
+    match waits
+        .iter_mut()
+        .find(|existing| wait_identity_matches(existing, &wait))
+    {
+        Some(existing) => *existing = wait.clone(),
+        None => waits.push(wait.clone()),
+    }
+    write_stateful_waits_unlocked(path, &waits).await?;
+    Ok(wait)
+}
+
+pub async fn claim_due_stateful_wait(
+    path: &Path,
+    tenant: &TenantContext,
+    run_id: &str,
+    wait_id: &str,
+    claimant_id: &str,
+    now_ms: u64,
+    lease_ms: u64,
+) -> anyhow::Result<Option<StatefulWaitRecord>> {
+    let _guard = STATEFUL_WAIT_STORE_LOCK.lock().await;
+    let mut waits = load_stateful_waits(path);
+    let Some(wait) = waits.iter_mut().find(|wait| {
+        wait.run_id == run_id && wait.wait_id == wait_id && wait.visible_to_tenant(tenant)
+    }) else {
+        return Ok(None);
+    };
+    if !wait_is_claimable(wait, now_ms) {
+        return Ok(None);
+    }
+
+    wait.status = StatefulWaitStatus::Claimed;
+    wait.claimed_by = Some(claimant_id.to_string());
+    wait.claimed_at_ms = Some(now_ms);
+    wait.claim_expires_at_ms = Some(now_ms.saturating_add(lease_ms.max(1)));
+    wait.updated_at_ms = now_ms;
+    let claimed = wait.clone();
+    write_stateful_waits_unlocked(path, &waits).await?;
+    Ok(Some(claimed))
+}
+
+pub async fn mark_stateful_wait_woken(
+    path: &Path,
+    tenant: &TenantContext,
+    run_id: &str,
+    wait_id: &str,
+    wake_idempotency_key: &str,
+    event_seq: u64,
+    now_ms: u64,
+) -> anyhow::Result<Option<StatefulWaitRecord>> {
+    let _guard = STATEFUL_WAIT_STORE_LOCK.lock().await;
+    let mut waits = load_stateful_waits(path);
+    let Some(wait) = waits.iter_mut().find(|wait| {
+        wait.run_id == run_id && wait.wait_id == wait_id && wait.visible_to_tenant(tenant)
+    }) else {
+        return Ok(None);
+    };
+    if wait.status == StatefulWaitStatus::Woken {
+        return Ok(
+            (wait.wake_idempotency_key.as_deref() == Some(wake_idempotency_key))
+                .then(|| wait.clone()),
+        );
+    }
+    if wait.status.is_terminal() {
+        return Ok(None);
+    }
+
+    wait.status = StatefulWaitStatus::Woken;
+    wait.wake_idempotency_key = Some(wake_idempotency_key.to_string());
+    wait.event_seq = Some(event_seq);
+    wait.completed_at_ms = Some(now_ms);
+    wait.updated_at_ms = now_ms;
+    wait.claim_expires_at_ms = None;
+    let woken = wait.clone();
+    write_stateful_waits_unlocked(path, &waits).await?;
+    Ok(Some(woken))
+}
+
+fn wait_is_claimable(wait: &StatefulWaitRecord, now_ms: u64) -> bool {
+    if wait.status == StatefulWaitStatus::Waiting {
+        return wait.is_due_at(now_ms);
+    }
+    wait.status == StatefulWaitStatus::Claimed
+        && !wait.claim_is_active_at(now_ms)
+        && wait
+            .wake_at_ms
+            .map(|wake_at_ms| wake_at_ms <= now_ms)
+            .unwrap_or(false)
+}
+
+fn wait_identity_matches(left: &StatefulWaitRecord, right: &StatefulWaitRecord) -> bool {
+    left.wait_id == right.wait_id
+        && left.run_id == right.run_id
+        && same_tenant_boundary(&left.scope, &right.scope)
+}
+
+fn same_tenant_boundary(left: &StatefulRuntimeScope, right: &StatefulRuntimeScope) -> bool {
+    left.tenant_context.org_id == right.tenant_context.org_id
+        && left.tenant_context.workspace_id == right.tenant_context.workspace_id
+        && left.tenant_context.deployment_id == right.tenant_context.deployment_id
+}
+
+fn apply_limit(rows: &mut Vec<StatefulWaitRecord>, limit: Option<usize>) {
+    if let Some(limit) = limit.filter(|limit| *limit > 0) {
+        if rows.len() > limit {
+            rows.truncate(limit);
+        }
+    }
+}
+
+fn sort_waits(rows: &mut [StatefulWaitRecord]) {
+    rows.sort_by(|left, right| {
+        left.wake_at_ms
+            .unwrap_or(u64::MAX)
+            .cmp(&right.wake_at_ms.unwrap_or(u64::MAX))
+            .then_with(|| left.created_at_ms.cmp(&right.created_at_ms))
+            .then_with(|| left.wait_id.cmp(&right.wait_id))
+    });
+}
+
+async fn write_stateful_waits_unlocked(
+    path: &Path,
+    waits: &[StatefulWaitRecord],
+) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await.with_context(|| {
+            format!(
+                "failed to create stateful wait store directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    let mut sorted = waits.to_vec();
+    sort_waits(&mut sorted);
+    let tmp_path = tmp_path_for(path);
+    let mut file = tokio::fs::File::create(&tmp_path).await.with_context(|| {
+        format!(
+            "failed to create stateful wait store {}",
+            tmp_path.display()
+        )
+    })?;
+    let content = serde_json::to_vec_pretty(&sorted)?;
+    file.write_all(&content)
+        .await
+        .with_context(|| format!("failed to write stateful wait store {}", tmp_path.display()))?;
+    file.flush()
+        .await
+        .with_context(|| format!("failed to flush stateful wait store {}", tmp_path.display()))?;
+    drop(file);
+    tokio::fs::rename(&tmp_path, path)
+        .await
+        .with_context(|| format!("failed to publish stateful wait store {}", path.display()))?;
+    Ok(())
+}
+
+fn tmp_path_for(path: &Path) -> PathBuf {
+    let mut tmp = path.to_path_buf();
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| format!("{value}.tmp"))
+        .unwrap_or_else(|| "tmp".to_string());
+    tmp.set_extension(extension);
+    tmp
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use tandem_types::TenantContext;
+    use uuid::Uuid;
+
+    use super::*;
+
+    fn tenant(org: &str, workspace: &str) -> TenantContext {
+        TenantContext::explicit_user_workspace(org, workspace, None, "user-a")
+    }
+
+    fn timer_wait(
+        wait_id: &str,
+        run_id: &str,
+        tenant_context: TenantContext,
+        wake_at_ms: u64,
+    ) -> StatefulWaitRecord {
+        StatefulWaitRecord {
+            schema_version: 1,
+            wait_id: wait_id.to_string(),
+            run_id: run_id.to_string(),
+            wait_kind: StatefulWaitKind::Timer,
+            status: StatefulWaitStatus::Waiting,
+            scope: StatefulRuntimeScope::from_tenant_context(tenant_context),
+            phase_id: Some("phase-a".to_string()),
+            reason: Some("sleep until downstream system is ready".to_string()),
+            created_at_ms: wake_at_ms.saturating_sub(100),
+            updated_at_ms: wake_at_ms.saturating_sub(100),
+            wake_at_ms: Some(wake_at_ms),
+            timeout_policy: None,
+            event_seq: None,
+            wake_idempotency_key: None,
+            claimed_by: None,
+            claimed_at_ms: None,
+            claim_expires_at_ms: None,
+            completed_at_ms: None,
+            metadata: Some(json!({ "source": "test" })),
+        }
+    }
+
+    fn temp_wait_store(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("{name}-{}.json", Uuid::new_v4()))
+    }
+
+    #[tokio::test]
+    async fn wait_store_round_trips_and_filters_by_tenant() {
+        let path = temp_wait_store("stateful-waits-filtered");
+        let tenant_a = tenant("org-a", "workspace-a");
+        let tenant_b = tenant("org-b", "workspace-b");
+        upsert_stateful_wait(
+            &path,
+            timer_wait("wait-a", "run-a", tenant_a.clone(), 1_000),
+        )
+        .await
+        .expect("insert wait-a");
+        upsert_stateful_wait(&path, timer_wait("wait-b", "run-a", tenant_b.clone(), 900))
+            .await
+            .expect("insert wait-b");
+
+        let visible = list_stateful_waits(
+            &path,
+            &tenant_a,
+            StatefulWaitQuery {
+                run_id: Some("run-a"),
+                ..StatefulWaitQuery::default()
+            },
+        );
+
+        assert_eq!(
+            visible
+                .iter()
+                .map(|wait| wait.wait_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["wait-a"]
+        );
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn duplicate_wait_ids_are_scoped_by_tenant_boundary() {
+        let path = temp_wait_store("stateful-waits-tenant-boundary");
+        let tenant_a = tenant("org-a", "workspace-a");
+        let tenant_b = tenant("org-b", "workspace-b");
+        upsert_stateful_wait(
+            &path,
+            timer_wait("shared-wait", "run-a", tenant_b.clone(), 900),
+        )
+        .await
+        .expect("insert tenant-b wait");
+        upsert_stateful_wait(
+            &path,
+            timer_wait("shared-wait", "run-a", tenant_a.clone(), 1_000),
+        )
+        .await
+        .expect("insert tenant-a wait");
+
+        let all_waits = load_stateful_waits(&path);
+        assert_eq!(all_waits.len(), 2);
+        let tenant_a_due = due_stateful_waits(&path, &tenant_a, 1_500, None);
+        assert_eq!(tenant_a_due.len(), 1);
+        assert_eq!(tenant_a_due[0].scope.organization_id(), "org-a");
+
+        let claimed = claim_due_stateful_wait(
+            &path,
+            &tenant_a,
+            "run-a",
+            "shared-wait",
+            "scheduler-a",
+            1_500,
+            500,
+        )
+        .await
+        .expect("tenant-a claim")
+        .expect("tenant-a wait");
+        assert_eq!(claimed.scope.organization_id(), "org-a");
+        let tenant_b_waits = list_stateful_waits(
+            &path,
+            &tenant_b,
+            StatefulWaitQuery {
+                status: Some(StatefulWaitStatus::Waiting),
+                ..StatefulWaitQuery::default()
+            },
+        );
+        assert_eq!(tenant_b_waits.len(), 1);
+        assert_eq!(tenant_b_waits[0].scope.organization_id(), "org-b");
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn duplicate_wait_ids_are_claimed_by_run_identity() {
+        let path = temp_wait_store("stateful-waits-run-boundary");
+        let tenant_a = tenant("org-a", "workspace-a");
+        upsert_stateful_wait(
+            &path,
+            timer_wait("shared-wait", "run-a", tenant_a.clone(), 1_000),
+        )
+        .await
+        .expect("insert run-a wait");
+        upsert_stateful_wait(
+            &path,
+            timer_wait("shared-wait", "run-b", tenant_a.clone(), 1_100),
+        )
+        .await
+        .expect("insert run-b wait");
+
+        let run_a = claim_due_stateful_wait(
+            &path,
+            &tenant_a,
+            "run-a",
+            "shared-wait",
+            "worker-a",
+            1_500,
+            500,
+        )
+        .await
+        .expect("claim run-a")
+        .expect("run-a wait");
+        assert_eq!(run_a.run_id, "run-a");
+
+        let run_b = claim_due_stateful_wait(
+            &path,
+            &tenant_a,
+            "run-b",
+            "shared-wait",
+            "worker-b",
+            1_600,
+            500,
+        )
+        .await
+        .expect("claim run-b")
+        .expect("run-b wait");
+        assert_eq!(run_b.run_id, "run-b");
+        let missing = claim_due_stateful_wait(
+            &path,
+            &tenant_a,
+            "run-c",
+            "shared-wait",
+            "worker-c",
+            1_700,
+            500,
+        )
+        .await
+        .expect("claim missing run");
+        assert!(missing.is_none());
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn due_waits_select_missed_timer_wakeups_in_order() {
+        let path = temp_wait_store("stateful-waits-due");
+        let tenant_a = tenant("org-a", "workspace-a");
+        for (wait_id, wake_at_ms) in [("future", 2_000), ("oldest", 500), ("due", 1_000)] {
+            upsert_stateful_wait(
+                &path,
+                timer_wait(wait_id, "run-a", tenant_a.clone(), wake_at_ms),
+            )
+            .await
+            .expect("insert wait");
+        }
+
+        let due = due_stateful_waits(&path, &tenant_a, 1_500, Some(10));
+
+        assert_eq!(
+            due.iter()
+                .map(|wait| wait.wait_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["oldest", "due"]
+        );
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn due_wait_claim_is_single_claimant_until_lease_expires() {
+        let path = temp_wait_store("stateful-waits-claim");
+        let tenant_a = tenant("org-a", "workspace-a");
+        let tenant_b = tenant("org-b", "workspace-b");
+        upsert_stateful_wait(
+            &path,
+            timer_wait("wait-a", "run-a", tenant_a.clone(), 1_000),
+        )
+        .await
+        .expect("insert wait");
+
+        assert!(claim_due_stateful_wait(
+            &path,
+            &tenant_b,
+            "run-a",
+            "wait-a",
+            "scheduler-b",
+            1_500,
+            500
+        )
+        .await
+        .expect("cross-tenant claim")
+        .is_none());
+        let claimed = claim_due_stateful_wait(
+            &path,
+            &tenant_a,
+            "run-a",
+            "wait-a",
+            "scheduler-a",
+            1_500,
+            500,
+        )
+        .await
+        .expect("first claim")
+        .expect("claim record");
+        assert_eq!(claimed.claimed_by.as_deref(), Some("scheduler-a"));
+        assert!(claim_due_stateful_wait(
+            &path,
+            &tenant_a,
+            "run-a",
+            "wait-a",
+            "scheduler-b",
+            1_600,
+            500
+        )
+        .await
+        .expect("second claim")
+        .is_none());
+        assert!(due_stateful_waits(&path, &tenant_a, 1_600, None).is_empty());
+
+        let expired_claims = due_stateful_waits(&path, &tenant_a, 2_100, None);
+        assert_eq!(
+            expired_claims
+                .iter()
+                .map(|wait| wait.wait_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["wait-a"]
+        );
+
+        let reclaimed = claim_due_stateful_wait(
+            &path,
+            &tenant_a,
+            "run-a",
+            "wait-a",
+            "scheduler-b",
+            2_100,
+            500,
+        )
+        .await
+        .expect("reclaim")
+        .expect("reclaimed record");
+        assert_eq!(reclaimed.claimed_by.as_deref(), Some("scheduler-b"));
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn wake_completion_is_idempotent_and_terminal() {
+        let path = temp_wait_store("stateful-waits-woken");
+        let tenant_a = tenant("org-a", "workspace-a");
+        upsert_stateful_wait(
+            &path,
+            timer_wait("wait-a", "run-a", tenant_a.clone(), 1_000),
+        )
+        .await
+        .expect("insert wait");
+        claim_due_stateful_wait(
+            &path,
+            &tenant_a,
+            "run-a",
+            "wait-a",
+            "scheduler-a",
+            1_500,
+            500,
+        )
+        .await
+        .expect("claim wait");
+
+        let woken =
+            mark_stateful_wait_woken(&path, &tenant_a, "run-a", "wait-a", "wake-key", 42, 1_600)
+                .await
+                .expect("mark woken")
+                .expect("woken record");
+        assert_eq!(woken.status, StatefulWaitStatus::Woken);
+        assert_eq!(woken.event_seq, Some(42));
+
+        let duplicate =
+            mark_stateful_wait_woken(&path, &tenant_a, "run-a", "wait-a", "wake-key", 42, 1_700)
+                .await
+                .expect("duplicate wake")
+                .expect("duplicate record");
+        assert_eq!(duplicate.completed_at_ms, Some(1_600));
+        assert!(mark_stateful_wait_woken(
+            &path,
+            &tenant_a,
+            "run-a",
+            "wait-a",
+            "other-key",
+            43,
+            1_800
+        )
+        .await
+        .expect("conflicting wake")
+        .is_none());
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[test]
+    fn timeout_policy_serializes_timeout_action_metadata() {
+        let policy = StatefulWaitTimeoutPolicy {
+            timeout_at_ms: 2_000,
+            on_timeout: StatefulWaitTimeoutAction::Escalate,
+            escalate_to: Some("ops-oncall".to_string()),
+            remind_every_ms: Some(300),
+            metadata: Some(json!({ "channel": "pager" })),
+        };
+
+        let serialized = serde_json::to_value(&policy).expect("serialize policy");
+
+        assert_eq!(serialized["on_timeout"], "escalate");
+        assert_eq!(serialized["escalate_to"], "ops-oncall");
+        assert_eq!(serialized["remind_every_ms"], 300);
+    }
+}

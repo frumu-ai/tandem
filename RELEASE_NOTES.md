@@ -13,6 +13,11 @@ persisted checkpoint is recoverable while corrupt in-flight records continue to
 fail closed. Bug Monitor source-bound routing also now keeps raw reports from
 inheriting configured source route fields or approval downgrades, and scopes
 same-fingerprint log incidents to the originating project/source binding.
+Durable wait foundations now persist timer/webhook/approval wait metadata,
+tenant-boundary identity, wake times, timeout policy, and wake claim state for
+future sleep/resume scheduling.
+Stateful runtime event and snapshot read endpoints are now available for
+tenant-filtered replay/debug and future control-panel views.
 
 ## v0.6.4 (2026-06-28)
 
