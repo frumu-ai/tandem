@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added stateful runtime definition identity helpers so snapshot-backed
   automation runs expose durable workflow definition versions and `sha256:`
   snapshot hashes for future replay and resume checks.
+- Added stateful runtime durable wait records and a tenant-filtered wait store
+  with tenant-boundary wait identity, due timer selection, missed-wakeup
+  recovery queries, timeout policy metadata, and idempotent wake claiming
+  foundations.
 - Added tenant-filtered stateful runtime event and snapshot read endpoints for
   replay and control-panel consumers.
 
