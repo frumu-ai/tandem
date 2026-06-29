@@ -16,6 +16,9 @@ and allowed next phases so future long-running automation APIs can resume,
 pause, and inspect runs through a guarded state machine instead of ad hoc
 status strings. Legacy stateful runtime snapshots that predate those phase
 fields derive a compatible phase state from their stored status when read.
+Automation webhooks now use a provider-aware signature verification registry
+with queryable delivery verification metadata, keeping Tandem HMAC compatibility
+while preparing GitHub-style and shared-secret provider schemes.
 Durable wait foundations now persist timer/webhook/approval wait metadata,
 tenant-boundary identity, wake times, timeout policy, and wake claim state for
 future sleep/resume scheduling.

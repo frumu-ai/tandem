@@ -85,6 +85,7 @@ pub mod approval_message_map;
 mod automation_v2_run_store;
 mod automation_v2_startup_recovery;
 mod automation_webhook_store;
+mod automation_webhook_verification;
 pub mod channel_user_capabilities;
 pub mod enterprise_state;
 mod oauth_state;
@@ -94,6 +95,7 @@ mod prompt_memory_context;
 
 pub(crate) use automation_v2_run_store::*;
 pub(crate) use automation_webhook_store::*;
+pub(crate) use automation_webhook_verification::*;
 pub use enterprise_state::EnterpriseState;
 pub use oauth_state::OAuthState;
 use prompt_context_hook::*;
