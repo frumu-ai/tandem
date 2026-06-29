@@ -1,6 +1,12 @@
 // Source binding tests split from part02.rs for the file-size gate (same module
 // via include!).
 
+fn portable_bug_monitor_workspace_root() -> String {
+    let root = std::env::temp_dir().join("tandem-bug-monitor-acme");
+    std::fs::create_dir_all(root.join("logs")).expect("portable bug monitor workspace");
+    root.display().to_string()
+}
+
 #[tokio::test]
 #[serial_test::serial(bug_monitor_http)]
 async fn bug_monitor_route_preview_uses_configured_source_binding_and_blocks_disallowed_destination()
@@ -142,7 +148,7 @@ async fn bug_monitor_route_preview_blocks_disjoint_source_allowlist_intersection
         .put_bug_monitor_config(crate::BugMonitorConfig {
             enabled: true,
             repo: Some("acme/platform".to_string()),
-            workspace_root: Some("/tmp/acme".to_string()),
+            workspace_root: Some(portable_bug_monitor_workspace_root()),
             destinations: vec![
                 crate::BugMonitorDestinationConfig {
                     destination_id: crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string(),
@@ -164,7 +170,7 @@ async fn bug_monitor_route_preview_blocks_disjoint_source_allowlist_intersection
                 project_id: "payments".to_string(),
                 name: "Payments".to_string(),
                 repo: "acme/platform".to_string(),
-                workspace_root: "/tmp/acme".to_string(),
+                workspace_root: portable_bug_monitor_workspace_root(),
                 allowed_destination_ids: vec!["linear-prod".to_string()],
                 log_sources: vec![crate::BugMonitorLogSource {
                     source_id: "ci".to_string(),
@@ -246,7 +252,7 @@ async fn bug_monitor_route_preview_blocks_disjoint_project_and_log_source_allowl
         .put_bug_monitor_config(crate::BugMonitorConfig {
             enabled: true,
             repo: Some("acme/platform".to_string()),
-            workspace_root: Some("/tmp/acme".to_string()),
+            workspace_root: Some(portable_bug_monitor_workspace_root()),
             destinations: vec![
                 crate::BugMonitorDestinationConfig {
                     destination_id: crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string(),
@@ -268,7 +274,7 @@ async fn bug_monitor_route_preview_blocks_disjoint_project_and_log_source_allowl
                 project_id: "payments".to_string(),
                 name: "Payments".to_string(),
                 repo: "acme/platform".to_string(),
-                workspace_root: "/tmp/acme".to_string(),
+                workspace_root: portable_bug_monitor_workspace_root(),
                 allowed_destination_ids: vec!["linear-prod".to_string()],
                 log_sources: vec![crate::BugMonitorLogSource {
                     source_id: "ci".to_string(),
@@ -330,13 +336,13 @@ async fn bug_monitor_publish_uses_configured_source_binding_for_approval() {
         .put_bug_monitor_config(crate::BugMonitorConfig {
             enabled: true,
             repo: Some("acme/platform".to_string()),
-            workspace_root: Some("/tmp/acme".to_string()),
+            workspace_root: Some(portable_bug_monitor_workspace_root()),
             require_approval_for_new_issues: false,
             monitored_projects: vec![crate::BugMonitorMonitoredProject {
                 project_id: "payments".to_string(),
                 name: "Payments".to_string(),
                 repo: "acme/platform".to_string(),
-                workspace_root: "/tmp/acme".to_string(),
+                workspace_root: portable_bug_monitor_workspace_root(),
                 log_sources: vec![crate::BugMonitorLogSource {
                     source_id: "ci".to_string(),
                     path: "logs/ci.jsonl".to_string(),
@@ -407,7 +413,7 @@ async fn bug_monitor_raw_report_cannot_supply_untrusted_never_source_policy() {
         .put_bug_monitor_config(crate::BugMonitorConfig {
             enabled: true,
             repo: Some("acme/platform".to_string()),
-            workspace_root: Some("/tmp/acme".to_string()),
+            workspace_root: Some(portable_bug_monitor_workspace_root()),
             require_approval_for_new_issues: false,
             destinations: vec![crate::BugMonitorDestinationConfig {
                 destination_id: crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string(),
@@ -582,13 +588,13 @@ async fn bug_monitor_raw_report_cannot_inherit_configured_never_source_policy() 
         .put_bug_monitor_config(crate::BugMonitorConfig {
             enabled: true,
             repo: Some("acme/platform".to_string()),
-            workspace_root: Some("/tmp/acme".to_string()),
+            workspace_root: Some(portable_bug_monitor_workspace_root()),
             require_approval_for_new_issues: true,
             monitored_projects: vec![crate::BugMonitorMonitoredProject {
                 project_id: "payments".to_string(),
                 name: "Payments".to_string(),
                 repo: "acme/platform".to_string(),
-                workspace_root: "/tmp/acme".to_string(),
+                workspace_root: portable_bug_monitor_workspace_root(),
                 log_sources: vec![crate::BugMonitorLogSource {
                     source_id: "ci".to_string(),
                     path: "logs/ci.jsonl".to_string(),
@@ -656,13 +662,13 @@ async fn bug_monitor_raw_report_cannot_downgrade_global_approval_with_configured
         .put_bug_monitor_config(crate::BugMonitorConfig {
             enabled: true,
             repo: Some("acme/platform".to_string()),
-            workspace_root: Some("/tmp/acme".to_string()),
+            workspace_root: Some(portable_bug_monitor_workspace_root()),
             require_approval_for_new_issues: true,
             monitored_projects: vec![crate::BugMonitorMonitoredProject {
                 project_id: "payments".to_string(),
                 name: "Payments".to_string(),
                 repo: "acme/platform".to_string(),
-                workspace_root: "/tmp/acme".to_string(),
+                workspace_root: portable_bug_monitor_workspace_root(),
                 log_sources: vec![crate::BugMonitorLogSource {
                     source_id: "ci".to_string(),
                     path: "logs/ci.jsonl".to_string(),
@@ -749,7 +755,7 @@ async fn bug_monitor_raw_report_clears_untrusted_source_routing_fields() {
         .put_bug_monitor_config(crate::BugMonitorConfig {
             enabled: true,
             repo: Some("acme/platform".to_string()),
-            workspace_root: Some("/tmp/acme".to_string()),
+            workspace_root: Some(portable_bug_monitor_workspace_root()),
             require_approval_for_new_issues: true,
             routes: vec![crate::BugMonitorRouteConfig {
                 route_id: "forged-relaxed-route".to_string(),
@@ -767,7 +773,7 @@ async fn bug_monitor_raw_report_clears_untrusted_source_routing_fields() {
                 project_id: "payments".to_string(),
                 name: "Payments".to_string(),
                 repo: "acme/platform".to_string(),
-                workspace_root: "/tmp/acme".to_string(),
+                workspace_root: portable_bug_monitor_workspace_root(),
                 source_kind: crate::BugMonitorSourceKind::ExternalApp,
                 default_route_tags: vec!["trusted-payments".to_string()],
                 tenant_id: Some("trusted-tenant".to_string()),
@@ -881,7 +887,7 @@ async fn bug_monitor_dedupe_keeps_distinct_source_bound_drafts() {
         .put_bug_monitor_config(crate::BugMonitorConfig {
             enabled: true,
             repo: Some("acme/platform".to_string()),
-            workspace_root: Some("/tmp/acme".to_string()),
+            workspace_root: Some(portable_bug_monitor_workspace_root()),
             ..Default::default()
         })
         .await

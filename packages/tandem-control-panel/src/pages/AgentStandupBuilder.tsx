@@ -5,7 +5,7 @@ import { renderIcons } from "../app/icons.js";
 import { EmptyState } from "./ui";
 import { ProviderModelSelector } from "../components/ProviderModelSelector";
 import { ScheduleBuilder } from "../features/automations/ScheduleBuilder";
-import type { ScheduleValue } from "../features/automations/scheduleBuilder";
+import type { ScheduleValue } from "../features/automations/scheduleValue";
 import { buildPlannerProviderOptions } from "../features/planner/plannerShared";
 import { TimezoneField } from "../features/automations/TimezoneField";
 import { isValidTimezone } from "../features/automations/timezone";

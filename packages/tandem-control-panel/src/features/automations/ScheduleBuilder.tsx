@@ -6,7 +6,7 @@ import {
   setFriendlyScheduleMode,
   type FriendlyScheduleMode,
   type ScheduleValue,
-} from "./scheduleBuilder";
+} from "./scheduleValue";
 
 type ScheduleBuilderProps = {
   value: ScheduleValue;

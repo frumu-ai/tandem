@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { describeScheduleValue } from "../scheduleBuilder";
+import { describeScheduleValue } from "../scheduleValue";
 import { renderMarkdownSafe } from "../../../lib/markdown";
 import { buildKnowledgeRolloutGuidance } from "../../planner/plannerShared";
 import {
