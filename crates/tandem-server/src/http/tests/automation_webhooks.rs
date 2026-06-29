@@ -1,5 +1,9 @@
 use super::*;
-use crate::app::state::{automation_webhook_signature_header, AutomationWebhookTriggerCreateInput};
+use crate::app::state::{
+    automation_webhook_signature_header, github_automation_webhook_signature_header,
+    AutomationWebhookTriggerCreateInput,
+};
+use crate::automation_v2::types::AutomationWebhookSignatureScheme;
 use tandem_types::{DataClass, TenantContext, ToolRiskTier};
 
 fn tenant(org: &str, workspace: &str) -> TenantContext {
@@ -55,6 +59,7 @@ fn create_input(
         name: Some("Generic webhook".to_string()),
         provider: "generic".to_string(),
         provider_event_kind: Some("event.created".to_string()),
+        signature_scheme: None,
         enabled: true,
     }
 }
@@ -165,6 +170,15 @@ async fn public_automation_webhook_accepts_signed_request_without_transport_auth
         .await;
     assert_eq!(deliveries.len(), 1);
     let delivery = &deliveries[0];
+    assert_eq!(
+        delivery.verification_scheme,
+        Some(AutomationWebhookSignatureScheme::HmacSha256V1)
+    );
+    assert_eq!(delivery.verification_provider.as_deref(), Some("generic"));
+    assert_eq!(
+        delivery.verification_reason_code.as_deref(),
+        Some("verified")
+    );
     let run_id = delivery.queued_run_id.as_deref().expect("queued run id");
     let run = state
         .get_automation_v2_run(run_id)
@@ -238,6 +252,14 @@ async fn public_automation_webhook_rejects_unsigned_request_without_creating_run
     assert_eq!(deliveries.len(), 1);
     assert_eq!(
         deliveries[0].rejection_reason_code.as_deref(),
+        Some("missing_signature")
+    );
+    assert_eq!(
+        deliveries[0].verification_scheme,
+        Some(AutomationWebhookSignatureScheme::HmacSha256V1)
+    );
+    assert_eq!(
+        deliveries[0].verification_reason_code.as_deref(),
         Some("missing_signature")
     );
 }
@@ -333,6 +355,81 @@ async fn public_automation_webhook_prefers_provider_specific_event_id_header() {
     assert_eq!(
         deliveries[0].provider_event_id.as_deref(),
         Some("github-delivery-1")
+    );
+}
+
+#[tokio::test]
+async fn public_automation_webhook_uses_trigger_signature_scheme_registry() {
+    let state = test_state().await;
+    let tenant_context = tenant("org-a", "workspace-a");
+    state
+        .put_automation_v2(minimal_automation(
+            "automation-webhook-github-signature",
+            &tenant_context,
+        ))
+        .await
+        .expect("put automation");
+    let mut input = create_input(
+        "automation-webhook-github-signature",
+        tenant_context.clone(),
+    );
+    input.provider = "github".to_string();
+    input.signature_scheme = Some(AutomationWebhookSignatureScheme::GithubHmacSha256);
+    let created = state
+        .create_automation_webhook_trigger(input)
+        .await
+        .expect("create github trigger");
+    assert_eq!(
+        created.trigger.signature_scheme,
+        AutomationWebhookSignatureScheme::GithubHmacSha256
+    );
+    state.set_api_token(Some("tk_test".to_string())).await;
+
+    let app = app_router(state.clone());
+    let body = br#"{"action":"opened"}"#;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/webhooks/automations/{}",
+                    created.trigger.public_path_token
+                ))
+                .header("content-type", "application/json")
+                .header("x-github-delivery", "github-delivery-2")
+                .header(
+                    "x-hub-signature-256",
+                    github_automation_webhook_signature_header(&created.secret, body),
+                )
+                .body(Body::from(body.as_slice()))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+    let deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+        )
+        .await;
+    assert_eq!(deliveries.len(), 1);
+    assert_eq!(
+        deliveries[0].provider_event_id.as_deref(),
+        Some("github-delivery-2")
+    );
+    assert_eq!(
+        deliveries[0].verification_scheme,
+        Some(AutomationWebhookSignatureScheme::GithubHmacSha256)
+    );
+    assert_eq!(
+        deliveries[0].verification_provider.as_deref(),
+        Some("github")
+    );
+    assert_eq!(
+        deliveries[0].verification_reason_code.as_deref(),
+        Some("verified")
     );
 }
 
