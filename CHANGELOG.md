@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added stateful runtime definition identity helpers so snapshot-backed
   automation runs expose durable workflow definition versions and `sha256:`
   snapshot hashes for future replay and resume checks.
+- Added a shared retry policy schema and decision record for Automation V2
+  nodes, preserving legacy `max_attempts` behavior while recording retry
+  failure class, attempt, terminal behavior, and next retry timing for future
+  durable queue/outbox paths.
 - Added persisted Automation V2 execution claim metadata with claim ids,
   claimant ids, lease expiry, and claim epochs so resumed runs can distinguish
   the active executor from abandoned launch claims.
