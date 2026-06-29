@@ -8,6 +8,35 @@ use tokio::io::AsyncWriteExt;
 use super::phases::phase_state_from_status;
 use super::types::{StatefulRunEventRecord, StatefulRunSnapshotRecord};
 
+static STATEFUL_RUN_EVENT_APPEND_ONCE_LOCK: tokio::sync::Mutex<()> =
+    tokio::sync::Mutex::const_new(());
+
+#[derive(Debug, Clone)]
+pub struct StatefulRuntimeStoragePaths {
+    pub run_events_path: PathBuf,
+    pub snapshots_root: PathBuf,
+}
+
+impl StatefulRuntimeStoragePaths {
+    pub fn new(run_events_path: PathBuf, snapshots_root: PathBuf) -> Self {
+        Self {
+            run_events_path,
+            snapshots_root,
+        }
+    }
+
+    pub fn from_runtime_events_path(runtime_events_path: &Path) -> Self {
+        let runtime_root = runtime_events_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        Self {
+            run_events_path: runtime_root.join("stateful_events.jsonl"),
+            snapshots_root: runtime_root.join("stateful_snapshots"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct StatefulRunEventQuery<'a> {
     pub run_id: &'a str,
@@ -43,6 +72,24 @@ pub async fn append_stateful_run_event(
         .await
         .with_context(|| format!("failed to flush stateful run event log {}", path.display()))?;
     Ok(())
+}
+
+pub async fn append_stateful_run_event_once(
+    path: &Path,
+    record: &StatefulRunEventRecord,
+) -> anyhow::Result<bool> {
+    let _guard = STATEFUL_RUN_EVENT_APPEND_ONCE_LOCK.lock().await;
+    if stateful_run_event_exists(path, record) {
+        return Ok(false);
+    }
+    append_stateful_run_event(path, record).await?;
+    Ok(true)
+}
+
+fn stateful_run_event_exists(path: &Path, record: &StatefulRunEventRecord) -> bool {
+    load_stateful_run_events(path)
+        .into_iter()
+        .any(|existing| existing.run_id == record.run_id && existing.event_id == record.event_id)
 }
 
 pub fn load_stateful_run_events(path: &Path) -> Vec<StatefulRunEventRecord> {
@@ -124,6 +171,44 @@ pub async fn write_stateful_run_snapshot(
     Ok(path)
 }
 
+pub fn list_stateful_run_snapshots(
+    root: &Path,
+    tenant: &TenantContext,
+    run_id: &str,
+    limit: Option<usize>,
+) -> Vec<StatefulRunSnapshotRecord> {
+    let dir = root.join(safe_path_segment(run_id));
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut snapshots = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
+        .filter_map(|path| match read_stateful_run_snapshot(&path) {
+            Ok(snapshot) => Some(snapshot),
+            Err(error) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %error,
+                    "skipping invalid stateful run snapshot"
+                );
+                None
+            }
+        })
+        .filter(|snapshot| snapshot.run_id == run_id)
+        .filter(|snapshot| snapshot.visible_to_tenant(tenant))
+        .collect::<Vec<_>>();
+    snapshots.sort_by_key(|snapshot| snapshot.seq);
+    if let Some(limit) = limit.filter(|limit| *limit > 0) {
+        if snapshots.len() > limit {
+            let remove_count = snapshots.len() - limit;
+            snapshots.drain(0..remove_count);
+        }
+    }
+    snapshots
+}
+
 pub fn read_stateful_run_snapshot(path: &Path) -> anyhow::Result<StatefulRunSnapshotRecord> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read stateful snapshot {}", path.display()))?;
@@ -169,6 +254,31 @@ fn hydrate_legacy_snapshot_phase_fields(
     if !has_allowed_next_phases {
         snapshot.allowed_next_phases = snapshot.phase.allowed_next_phases().to_vec();
     }
+}
+
+pub fn read_stateful_run_snapshot_for_run(
+    root: &Path,
+    tenant: &TenantContext,
+    run_id: &str,
+    snapshot_id: &str,
+) -> anyhow::Result<Option<StatefulRunSnapshotRecord>> {
+    let path = stateful_run_snapshot_path(root, run_id, snapshot_id);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let snapshot = read_stateful_run_snapshot(&path)?;
+    if snapshot.run_id != run_id || snapshot.snapshot_id != snapshot_id {
+        return Ok(None);
+    }
+    if !snapshot.visible_to_tenant(tenant) {
+        return Ok(None);
+    }
+    Ok(Some(snapshot))
+}
+
+pub fn stateful_run_snapshot_path(root: &Path, run_id: &str, snapshot_id: &str) -> PathBuf {
+    root.join(safe_path_segment(run_id))
+        .join(format!("{}.json", safe_path_segment(snapshot_id)))
 }
 
 fn tmp_path_for(path: &Path) -> PathBuf {
@@ -265,6 +375,51 @@ mod tests {
         );
 
         assert_eq!(rows.iter().map(|row| row.seq).collect::<Vec<_>>(), vec![4]);
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn append_once_uses_event_id_as_idempotency_key() {
+        let path = std::env::temp_dir().join(format!(
+            "stateful-runtime-events-once-{}.jsonl",
+            Uuid::new_v4()
+        ));
+        let tenant = tenant("org-a", "workspace-a");
+        let record = event(1, "run-a", tenant);
+
+        assert!(append_stateful_run_event_once(&path, &record)
+            .await
+            .expect("first append"));
+        assert!(!append_stateful_run_event_once(&path, &record)
+            .await
+            .expect("duplicate append"));
+
+        let rows = load_stateful_run_events(&path);
+        assert_eq!(rows.len(), 1);
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn append_once_serializes_concurrent_duplicate_writes() {
+        let path = std::env::temp_dir().join(format!(
+            "stateful-runtime-events-once-concurrent-{}.jsonl",
+            Uuid::new_v4()
+        ));
+        let tenant = tenant("org-a", "workspace-a");
+        let record = event(1, "run-a", tenant);
+
+        let (first, second) = tokio::join!(
+            append_stateful_run_event_once(&path, &record),
+            append_stateful_run_event_once(&path, &record)
+        );
+        let appended = [first.expect("first append"), second.expect("second append")]
+            .into_iter()
+            .filter(|value| *value)
+            .count();
+
+        assert_eq!(appended, 1);
+        let rows = load_stateful_run_events(&path);
+        assert_eq!(rows.len(), 1);
         let _ = tokio::fs::remove_file(path).await;
     }
 
@@ -391,6 +546,70 @@ mod tests {
                 Some("_.json")
             );
         }
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn snapshot_listing_and_fetch_are_tenant_filtered() {
+        let root = std::env::temp_dir().join(format!(
+            "stateful-runtime-snapshots-filtered-{}",
+            Uuid::new_v4()
+        ));
+        let tenant_a = tenant("org-a", "workspace-a");
+        let tenant_b = tenant("org-b", "workspace-b");
+        for (seq, tenant_context) in [
+            (1, tenant_a.clone()),
+            (2, tenant_b.clone()),
+            (3, tenant_a.clone()),
+        ] {
+            let status = StatefulWorkflowRunStatus::Running;
+            let phase_state = phase_state_from_status("run-a", &status, seq * 100, None);
+            let snapshot = StatefulRunSnapshotRecord {
+                schema_version: 1,
+                snapshot_id: format!("snapshot-{seq}"),
+                run_id: "run-a".to_string(),
+                seq,
+                created_at_ms: seq * 100,
+                scope: StatefulRuntimeScope::from_tenant_context(tenant_context),
+                status,
+                phase: phase_state.phase,
+                phase_history: phase_state.phase_history,
+                allowed_next_phases: phase_state.allowed_next_phases,
+                phase_id: None,
+                source_record_kind: None,
+                checkpoint: None,
+                payload_digest: None,
+                workflow_definition_version: None,
+                workflow_definition_snapshot_hash: None,
+                metadata: None,
+            };
+            write_stateful_run_snapshot(&root, &snapshot)
+                .await
+                .expect("write snapshot");
+        }
+
+        let snapshots = list_stateful_run_snapshots(&root, &tenant_a, "run-a", None);
+        assert_eq!(
+            snapshots
+                .iter()
+                .map(|snapshot| snapshot.seq)
+                .collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+        let visible = read_stateful_run_snapshot_for_run(&root, &tenant_a, "run-a", "snapshot-3")
+            .expect("read visible snapshot");
+        assert_eq!(visible.map(|snapshot| snapshot.seq), Some(3));
+        let hidden = read_stateful_run_snapshot_for_run(&root, &tenant_a, "run-a", "snapshot-2")
+            .expect("read hidden snapshot");
+        assert!(hidden.is_none());
+        let latest = list_stateful_run_snapshots(&root, &tenant_a, "run-a", Some(1));
+        assert_eq!(
+            latest
+                .iter()
+                .map(|snapshot| snapshot.seq)
+                .collect::<Vec<_>>(),
+            vec![3]
+        );
         let _ = tokio::fs::remove_dir_all(root).await;
     }
 }

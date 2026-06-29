@@ -16,6 +16,11 @@ and allowed next phases so future long-running automation APIs can resume,
 pause, and inspect runs through a guarded state machine instead of ad hoc
 status strings. Legacy stateful runtime snapshots that predate those phase
 fields derive a compatible phase state from their stored status when read.
+Durable wait foundations now persist timer/webhook/approval wait metadata,
+tenant-boundary identity, wake times, timeout policy, and wake claim state for
+future sleep/resume scheduling.
+Stateful runtime event and snapshot read endpoints are now available for
+tenant-filtered replay/debug and future control-panel views.
 
 ## v0.6.4 (2026-06-28)
 
