@@ -70,8 +70,8 @@ pub fn build_route_context(
         draft.and_then(|row| row.source_approval_policy.as_ref()),
         incident.and_then(|row| row.source_approval_policy.as_ref()),
     ]);
-    let has_persisted_context = report.is_some() || draft.is_some() || incident.is_some();
-    let source_binding_trusted = source_approval_policy.is_some() || !has_persisted_context;
+    let has_only_unpersisted_report = report.is_some() && draft.is_none() && incident.is_none();
+    let source_binding_trusted = source_approval_policy.is_some() || !has_only_unpersisted_report;
 
     let allowed_destination_ids = first_non_empty_destination_ids(&[
         report.map(|row| row.allowed_destination_ids.as_slice()),
@@ -959,6 +959,45 @@ mod tests {
         assert!(enriched.allowed_destination_ids.is_empty());
         assert!(enriched.default_destination_ids.is_empty());
         assert!(!enriched.source_approval_policy_trusted);
+    }
+
+    #[test]
+    fn legacy_persisted_draft_source_ids_inherit_fail_closed_source_binding() {
+        let mut config = source_bound_config();
+        config.monitored_projects[0].log_sources[0].approval_policy =
+            BugMonitorApprovalPolicy::Always;
+        let draft = BugMonitorDraftRecord {
+            project_id: Some("payments".to_string()),
+            log_source_id: Some("ci".to_string()),
+            source_approval_policy: None,
+            ..BugMonitorDraftRecord::default()
+        };
+
+        let context = build_route_context(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            None,
+            Some(&draft),
+            None,
+        );
+        let enriched = enrich_route_context_from_sources(&config, &context);
+
+        assert_eq!(enriched.project_id.as_deref(), Some("payments"));
+        assert_eq!(enriched.log_source_id.as_deref(), Some("ci"));
+        assert_eq!(enriched.source_kind.as_deref(), Some("ci"));
+        assert_eq!(enriched.default_destination_ids, vec!["pager"]);
+        assert_eq!(
+            enriched.source_approval_policy,
+            Some(BugMonitorApprovalPolicy::Always)
+        );
+        assert!(enriched.source_approval_policy_trusted);
     }
 
     #[test]

@@ -176,6 +176,8 @@ fn recover_corrupt_automation_v2_run_entry(
         },
         runtime_context: None,
         automation_snapshot,
+        execution_claim: None,
+        execution_claim_epoch: 0,
         pause_reason: None,
         resume_reason: None,
         detail: Some(detail.clone()),

@@ -179,6 +179,23 @@ async fn bug_monitor_route_preview_blocks_disjoint_source_allowlist_intersection
         })
         .await
         .expect("config");
+    let draft = crate::BugMonitorDraftRecord {
+        draft_id: "failure-draft-source-allowlist-intersection".to_string(),
+        fingerprint: "source-allowlist-intersection".to_string(),
+        repo: "acme/platform".to_string(),
+        project_id: Some("payments".to_string()),
+        log_source_id: Some("ci".to_string()),
+        status: "draft_ready".to_string(),
+        created_at_ms: crate::now_ms(),
+        allowed_destination_ids: vec![crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()],
+        risk_level: Some("medium".to_string()),
+        confidence: Some("medium".to_string()),
+        ..Default::default()
+    };
+    state
+        .put_bug_monitor_draft(draft.clone())
+        .await
+        .expect("draft");
 
     let app = app_router(state.clone());
     let preview_req = Request::builder()
@@ -187,15 +204,7 @@ async fn bug_monitor_route_preview_blocks_disjoint_source_allowlist_intersection
         .header("content-type", "application/json")
         .body(Body::from(
             json!({
-                "report": {
-                    "project_id": "payments",
-                    "log_source_id": "ci",
-                    "allowed_destination_ids": [
-                        crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID
-                    ],
-                    "risk_level": "medium",
-                    "confidence": "medium"
-                }
+                "draft_id": draft.draft_id,
             })
             .to_string(),
         ))

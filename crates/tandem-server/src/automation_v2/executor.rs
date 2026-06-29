@@ -10,6 +10,7 @@ use crate::util::time::now_ms;
 
 include!("executor_helpers.rs");
 include!("executor_recovery.rs");
+include!("executor_retry_policy.rs");
 
 fn normalized_output_contract_value(
     node: &crate::automation_v2::types::AutomationFlowNode,
@@ -198,121 +199,6 @@ pub(crate) fn publish_automation_v2_failure_event(
         "automation_v2.run.failed",
         payload,
     ));
-}
-
-fn execution_error_blocker_category(detail: &str) -> &'static str {
-    let lowered = detail.trim().to_ascii_lowercase();
-    if lowered.contains("failed to reach provider")
-        || lowered.contains("error sending request")
-        || lowered.contains("request error")
-        || lowered.contains("connect timeout")
-        || lowered.contains("connection refused")
-        || lowered.contains("dns error")
-        || lowered.contains("timed out")
-    {
-        "provider_connect_timeout"
-    } else if lowered.contains("provider returned error")
-        || lowered.contains("provider stream chunk error")
-        || lowered.contains("provider_server_error")
-        || lowered.contains("server error")
-    {
-        "provider_server_error"
-    } else if lowered.contains("authentication") || lowered.contains("unauthorized") {
-        "provider_auth"
-    } else {
-        "execution_error"
-    }
-}
-
-fn normalize_execution_error_detail(detail: &str) -> String {
-    let trimmed = detail.trim();
-    if trimmed.is_empty() {
-        return "node execution failed before producing a final response".to_string();
-    }
-    if trimmed.eq_ignore_ascii_case("Provider returned error") {
-        return "provider returned error before any node response was recorded".to_string();
-    }
-    trimmed.to_string()
-}
-
-fn execution_error_retry_floor(detail: &str, blocker_category: &str) -> Option<u32> {
-    if matches!(
-        blocker_category,
-        "provider_connect_timeout" | "provider_server_error"
-    ) {
-        return Some(3);
-    }
-    let lowered = detail.trim().to_ascii_lowercase();
-    if lowered.contains("required output") && lowered.contains("was not created") {
-        return Some(3);
-    }
-    if lowered.contains("truncated source identity")
-        || lowered.contains("read the full upstream artifact")
-    {
-        return Some(3);
-    }
-    if lowered.contains("connector source artifact only materialized the truncated preview rows")
-        || lowered.contains("connector_truncated_preview_only")
-    {
-        return Some(3);
-    }
-    None
-}
-
-fn automation_node_execution_error_max_attempts(
-    node: &crate::automation_v2::types::AutomationFlowNode,
-    detail: &str,
-    blocker_category: &str,
-) -> u32 {
-    let configured = crate::app::state::automation_node_max_attempts(node);
-    execution_error_retry_floor(detail, blocker_category)
-        .map(|floor| configured.max(floor))
-        .unwrap_or(configured)
-}
-
-fn automation_node_max_attempts_for_recorded_output(
-    node: &crate::automation_v2::types::AutomationFlowNode,
-    output: Option<&Value>,
-) -> u32 {
-    let Some(output) = output else {
-        return crate::app::state::automation_node_max_attempts(node);
-    };
-    let detail = output
-        .get("blocked_reason")
-        .or_else(|| output.get("summary"))
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let blocker_category = output
-        .get("blocker_category")
-        .and_then(Value::as_str)
-        .unwrap_or_else(|| execution_error_blocker_category(detail));
-    automation_node_execution_error_max_attempts(node, detail, blocker_category)
-}
-
-fn automation_node_recorded_attempts_exhausted(
-    run: &crate::automation_v2::types::AutomationV2RunRecord,
-    node_id: &str,
-    node: &crate::automation_v2::types::AutomationFlowNode,
-) -> bool {
-    let attempts = run
-        .checkpoint
-        .node_attempts
-        .get(node_id)
-        .copied()
-        .unwrap_or(0);
-    let output = run.checkpoint.node_outputs.get(node_id);
-    attempts >= automation_node_max_attempts_for_recorded_output(node, output)
-}
-
-fn transient_provider_retry_backoff_ms(detail: &str, attempts: u32) -> Option<u64> {
-    match execution_error_blocker_category(detail) {
-        "provider_connect_timeout" | "provider_server_error" => Some(match attempts {
-            0 | 1 => 2_000,
-            2 => 5_000,
-            _ => 8_000,
-        }),
-        _ => None,
-    }
 }
 
 fn execution_error_validator_kind(
@@ -2164,7 +2050,18 @@ pub async fn run_automation_v2_run(
                         &detail,
                         blocker_category,
                     );
-                    let terminal = attempts >= max_attempts;
+                    let failure_class = retry_failure_class_from_blocker_category(blocker_category);
+                    let retry_decision = automation_node_retry_decision(
+                        &node,
+                        &detail,
+                        attempts,
+                        max_attempts,
+                        failure_class,
+                        now_ms(),
+                    );
+                    let retry_decision_value =
+                        serde_json::to_value(&retry_decision).unwrap_or(Value::Null);
+                    let terminal = retry_decision.terminal;
 
                     let artifact_recovered = if let Some(output_path) =
                         crate::app::state::automation::automation_node_required_output_path(&node)
@@ -2228,14 +2125,6 @@ pub async fn run_automation_v2_run(
                         terminal,
                         blocker_category,
                     );
-                    let failure_class = match blocker_category {
-                        "provider_connect_timeout" | "provider_server_error" => {
-                            "provider_transient"
-                        }
-                        "provider_auth" => "provider_terminal",
-                        "tool_resolution_failed" => "tool_resolution",
-                        _ => "contract_miss",
-                    };
                     let required_next_actions = failure_output
                         .pointer("/artifact_validation/required_next_tool_actions")
                         .and_then(Value::as_array)
@@ -2311,6 +2200,7 @@ pub async fn run_automation_v2_run(
                                 "status": if terminal { "failed" } else { "needs_repair" },
                                 "blocker_category": blocker_category,
                                 "blocked_reason": detail,
+                                "retry_decision": retry_decision_value.clone(),
                             }),
                             unmet_requirements: Vec::new(),
                             required_next_actions,
@@ -2322,6 +2212,7 @@ pub async fn run_automation_v2_run(
                     );
                     if let Some(object) = failure_output.as_object_mut() {
                         object.insert("attempt_verdict".to_string(), attempt_verdict.clone());
+                        object.insert("retry_decision".to_string(), retry_decision_value.clone());
                     }
                     if artifact_recovered {
                         if let Some(obj) = failure_output.as_object_mut() {
@@ -2365,6 +2256,7 @@ pub async fn run_automation_v2_run(
                                     "max_attempts": max_attempts,
                                     "reason": detail,
                                     "terminal": terminal,
+                                    "retry_decision": retry_decision_value.clone(),
                                     "artifact_recovered_from_session": artifact_recovered,
                                     "attempt_verdict": attempt_verdict,
                                 })),
@@ -2398,8 +2290,7 @@ pub async fn run_automation_v2_run(
                             ));
                         })
                         .await;
-                    if let Some(backoff_ms) = transient_provider_retry_backoff_ms(&detail, attempts)
-                    {
+                    if let Some(backoff_ms) = retry_decision.backoff_ms {
                         let _ = state
                             .update_automation_v2_run(&run_id, |row| {
                                 row.detail = Some(format!(

@@ -1278,6 +1278,21 @@ pub struct AutomationRunCheckpoint {
     pub last_failure: Option<AutomationFailureRecord>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutomationRunExecutionClaim {
+    pub claim_id: String,
+    pub claimant_id: String,
+    pub claimed_at_ms: u64,
+    pub lease_expires_at_ms: u64,
+    pub lease_epoch: u64,
+}
+
+impl AutomationRunExecutionClaim {
+    pub fn is_expired(&self, now_ms: u64) -> bool {
+        self.lease_expires_at_ms <= now_ms
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutomationV2RunRecord {
     pub run_id: String,
@@ -1303,6 +1318,10 @@ pub struct AutomationV2RunRecord {
     pub runtime_context: Option<AutomationRuntimeContextMaterialization>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automation_snapshot: Option<AutomationV2Spec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_claim: Option<AutomationRunExecutionClaim>,
+    #[serde(default)]
+    pub execution_claim_epoch: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pause_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

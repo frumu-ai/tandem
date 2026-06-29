@@ -1,7 +1,7 @@
 use super::*;
 use crate::app::state::automation_webhook_body_digest;
 use crate::automation_v2::types::{
-    AutomationWebhookDeliveryRecord, AutomationWebhookDeliveryStatus,
+    AutomationWebhookDedupeResult, AutomationWebhookDeliveryRecord, AutomationWebhookDeliveryStatus,
 };
 
 async fn response_json(response: axum::response::Response) -> Value {
@@ -241,6 +241,12 @@ async fn webhook_management_routes_redact_secrets_and_delivery_payloads() {
             body_digest: automation_webhook_body_digest(br#"{"ok":true}"#),
             status: AutomationWebhookDeliveryStatus::Accepted,
             rejection_reason_code: None,
+            idempotency_key: Some("trigger:trigger-a:provider_event:evt-a".to_string()),
+            idempotency_record_id: Some("idem-a".to_string()),
+            dedupe_result: Some(AutomationWebhookDedupeResult::Accepted),
+            dedupe_reason_code: Some("accepted_provider_event_id".to_string()),
+            duplicate_of_delivery_id: None,
+            duplicate_of_run_id: None,
             verification_scheme: None,
             verification_provider: None,
             verification_reason_code: None,
@@ -294,6 +300,24 @@ async fn webhook_management_routes_redact_secrets_and_delivery_payloads() {
             .pointer("/deliveries/0/queued_run_id")
             .and_then(Value::as_str),
         Some("automation-v2-run-webhook-a")
+    );
+    assert_eq!(
+        deliveries_payload
+            .pointer("/deliveries/0/idempotency_key")
+            .and_then(Value::as_str),
+        Some("trigger:trigger-a:provider_event:evt-a")
+    );
+    assert_eq!(
+        deliveries_payload
+            .pointer("/deliveries/0/idempotencyRecordID")
+            .and_then(Value::as_str),
+        Some("idem-a")
+    );
+    assert_eq!(
+        deliveries_payload
+            .pointer("/deliveries/0/dedupe_result")
+            .and_then(Value::as_str),
+        Some("accepted")
     );
 
     let rotate_req = tenant_request(

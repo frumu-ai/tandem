@@ -22,6 +22,7 @@ mod brief_validation;
 mod integration;
 mod prompting;
 mod replay_suite;
+mod retry_policy;
 mod runtime_paths;
 mod structured_handoff;
 mod telemetry;
