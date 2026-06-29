@@ -22,12 +22,18 @@ async fn mcp_run_as_interactive_call_uses_current_actor_connection() {
         .expect("refresh alice tools");
     let alice_connection_id = state.mcp.connection_id_for_tenant("notion", &alice);
 
-    let result = crate::http::mcp::call_mcp_tool_for_tenant_with_audit(
+    let verified = verified_mcp_execute_context(
+        &alice,
+        tandem_types::PrincipalRef::human_user("alice").with_tenant_actor_id("alice"),
+        "assertion-alice-mcp-run-as",
+    );
+    let result = crate::http::mcp::call_mcp_tool_for_tenant_with_verified_context(
         &state,
         "notion",
         "alice_search",
         json!({ "query": "roadmap" }),
         &alice,
+        Some(&verified),
     )
     .await
     .expect("interactive MCP call should use current actor connection");
@@ -60,6 +66,43 @@ async fn mcp_run_as_interactive_call_uses_current_actor_connection() {
 }
 
 #[tokio::test]
+async fn mcp_run_as_denies_explicit_tenant_without_context_assertion() {
+    let state = test_state().await;
+    let alice =
+        tandem_types::TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "alice");
+
+    let err = crate::http::mcp::call_mcp_tool_for_tenant_with_audit(
+        &state,
+        "notion",
+        "alice_search",
+        json!({ "query": "roadmap" }),
+        &alice,
+    )
+    .await
+    .expect_err("explicit tenant MCP calls must require verified context");
+
+    assert!(err.contains("ToolDenied { reason: ContextAssertion }"));
+    assert!(err.contains("verified tenant context assertion is required"));
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .expect("protected audit file");
+    assert!(audit.contains("\"event_type\":\"mcp.context_assertion_denied\""));
+    assert!(audit.contains("missing_verified_tenant_context"));
+    let decisions = state
+        .list_policy_decisions_for_run(&alice, "missing-run", 100)
+        .await;
+    assert!(decisions.is_empty());
+    assert!(state
+        .list_policy_decisions(&alice, 100)
+        .await
+        .iter()
+        .any(
+            |decision| decision.policy_id.as_deref() == Some("mcp_context_assertion_preflight")
+                && decision.reason_code == "missing_verified_tenant_context"
+        ));
+}
+
+#[tokio::test]
 async fn mcp_run_as_scheduled_automation_uses_tenant_service_principal_connection() {
     let state = test_state().await;
     let (endpoint, server) = spawn_fake_notion_oauth_mcp_server().await;
@@ -82,12 +125,21 @@ async fn mcp_run_as_scheduled_automation_uses_tenant_service_principal_connectio
         .mcp
         .connection_id_for_tenant("notion", &scheduled_tenant);
 
-    let result = crate::http::mcp::call_mcp_tool_for_tenant_with_audit(
+    let verified = verified_mcp_execute_context(
+        &scheduled_tenant,
+        tandem_types::PrincipalRef::new(
+            tandem_types::PrincipalKind::ServiceAccount,
+            "scheduled-automation",
+        ),
+        "assertion-scheduled-mcp-run-as",
+    );
+    let result = crate::http::mcp::call_mcp_tool_for_tenant_with_verified_context(
         &state,
         "notion",
         "alice_search",
         json!({ "query": "roadmap" }),
         &scheduled_tenant,
+        Some(&verified),
     )
     .await
     .expect("scheduled automation MCP call should use service-principal connection");

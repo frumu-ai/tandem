@@ -123,6 +123,107 @@ fn strict_context_with_grant(
     .with_data_boundary(tandem_types::DataBoundary::allow(data_classes))
 }
 
+fn strict_mcp_execute_context(
+    tenant_context: &tandem_types::TenantContext,
+    principal: tandem_types::PrincipalRef,
+    assertion_id: &str,
+) -> tandem_types::StrictTenantContext {
+    let root = tandem_types::ResourceRef::new(
+        tenant_context.org_id.clone(),
+        "*",
+        tandem_types::ResourceKind::Organization,
+        tenant_context.org_id.clone(),
+    );
+    let grant = tandem_types::ScopedGrant::new(
+        format!("grant-{assertion_id}-mcp-execute"),
+        principal.clone(),
+        root.clone(),
+        tandem_types::GrantSource::Direct,
+    )
+    .with_permissions(vec![
+        tandem_types::AccessPermission::View,
+        tandem_types::AccessPermission::Read,
+        tandem_types::AccessPermission::Execute,
+    ])
+    .with_data_classes(vec![tandem_types::DataClass::Internal]);
+    let request = tenant_context
+        .actor_id
+        .as_ref()
+        .map(|actor_id| tandem_types::RequestPrincipal::authenticated_user(actor_id, "test"))
+        .unwrap_or_else(tandem_types::RequestPrincipal::anonymous);
+    tandem_types::StrictTenantContext::new(
+        tenant_context.clone(),
+        principal,
+        tandem_types::AuthorityChain::from_request(request),
+        tandem_types::ResourceScope::root(root),
+        tandem_types::AssertionMetadata::new(
+            "test",
+            "tandem-runtime",
+            1_000,
+            9_999_999_999_999,
+            assertion_id,
+        ),
+    )
+    .with_grants(vec![grant])
+    .with_data_boundary(tandem_types::DataBoundary::allow(vec![
+        tandem_types::DataClass::Internal,
+    ]))
+}
+
+fn verified_mcp_execute_context(
+    tenant_context: &tandem_types::TenantContext,
+    principal: tandem_types::PrincipalRef,
+    assertion_id: &str,
+) -> tandem_types::VerifiedTenantContext {
+    let human_actor_id = tenant_context
+        .actor_id
+        .clone()
+        .unwrap_or_else(|| principal.id.clone());
+    let strict_projection = strict_mcp_execute_context(tenant_context, principal, assertion_id);
+    tandem_types::VerifiedTenantContext {
+        tenant_context: tenant_context.clone(),
+        human_actor: tandem_types::HumanActor::tandem_user(human_actor_id),
+        authority_chain: strict_projection.authority_chain.clone(),
+        roles: Vec::new(),
+        org_units: Vec::new(),
+        capabilities: Vec::new(),
+        policy_version: None,
+        strict_projection: Some(strict_projection),
+        issuer: "test".to_string(),
+        audience: "tandem-runtime".to_string(),
+        issued_at_ms: 1_000,
+        expires_at_ms: 9_999_999_999_999,
+        assertion_id: assertion_id.to_string(),
+        assertion_key_id: None,
+    }
+}
+
+fn verified_context_from_strict(
+    strict_projection: tandem_types::StrictTenantContext,
+) -> tandem_types::VerifiedTenantContext {
+    let human_actor_id = strict_projection
+        .tenant_context
+        .actor_id
+        .clone()
+        .unwrap_or_else(|| strict_projection.principal.id.clone());
+    tandem_types::VerifiedTenantContext {
+        tenant_context: strict_projection.tenant_context.clone(),
+        human_actor: tandem_types::HumanActor::tandem_user(human_actor_id),
+        authority_chain: strict_projection.authority_chain.clone(),
+        roles: Vec::new(),
+        org_units: Vec::new(),
+        capabilities: Vec::new(),
+        policy_version: None,
+        issuer: strict_projection.assertion.issuer.clone(),
+        audience: strict_projection.assertion.audience.clone(),
+        issued_at_ms: strict_projection.assertion.issued_at_ms,
+        expires_at_ms: strict_projection.assertion.expires_at_ms,
+        assertion_id: strict_projection.assertion.assertion_id.clone(),
+        assertion_key_id: strict_projection.assertion.key_id.clone(),
+        strict_projection: Some(strict_projection),
+    }
+}
+
 fn tenant_request(
     method: &str,
     uri: impl AsRef<str>,
@@ -293,12 +394,18 @@ async fn mcp_secret_tenant_mismatch_writes_sanitized_protected_audit() {
         )
         .await;
 
-    let err = crate::http::mcp::call_mcp_tool_for_tenant_with_audit(
+    let verified = verified_mcp_execute_context(
+        &tenant_b,
+        tandem_types::PrincipalRef::human_user("user-b").with_tenant_actor_id("user-b"),
+        "assertion-tenant-secret-mismatch",
+    );
+    let err = crate::http::mcp::call_mcp_tool_for_tenant_with_verified_context(
         &state,
         "tenant-server",
         "get_me",
         json!({}),
         &tenant_b,
+        Some(&verified),
     )
     .await
     .expect_err("tenant B cannot use tenant A's store-backed secret");
@@ -363,12 +470,18 @@ async fn disabled_mcp_server_with_foreign_secret_does_not_emit_mismatch_audit() 
         )
         .await;
 
-    let err = crate::http::mcp::call_mcp_tool_for_tenant_with_audit(
+    let verified = verified_mcp_execute_context(
+        &tenant_b,
+        tandem_types::PrincipalRef::human_user("user-b").with_tenant_actor_id("user-b"),
+        "assertion-disabled-tenant-secret",
+    );
+    let err = crate::http::mcp::call_mcp_tool_for_tenant_with_verified_context(
         &state,
         "disabled-tenant-server",
         "get_me",
         json!({}),
         &tenant_b,
+        Some(&verified),
     )
     .await
     .expect_err("disabled server should fail before tenant secret validation");
@@ -768,14 +881,16 @@ async fn mcp_list_redacts_execute_tools_without_strict_grant() {
             tandem_types::DataClass::SourceCode,
         ],
     );
+    let tenant_context = strict_context.tenant_context.clone();
+    let verified_context = verified_context_from_strict(strict_context);
 
     let output = state
         .tool_dispatcher
-        .dispatch_local(
+        .dispatch(
             "mcp_list",
-            json!({
-                "__strict_tenant_context": strict_context
-            }),
+            json!({}),
+            tandem_tools::ToolDispatchContext::for_tenant("test", tenant_context)
+                .with_verified_tenant_context(verified_context),
         )
         .await
         .expect("execute mcp_list");

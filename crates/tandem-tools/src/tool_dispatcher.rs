@@ -277,7 +277,7 @@ impl GovernedToolDispatcher {
     pub async fn dispatch_with_cancel_and_progress(
         &self,
         name: &str,
-        args: Value,
+        mut args: Value,
         context: ToolDispatchContext,
         cancel: CancellationToken,
         progress: Option<SharedToolProgressSink>,
@@ -364,6 +364,16 @@ impl GovernedToolDispatcher {
             )
             .await;
             return Err(anyhow!("ToolDenied {{ reason: Policy }}: {reason}"));
+        }
+
+        if let Value::Object(object) = &mut args {
+            object.remove("__strict_tenant_context");
+            object.remove("__verified_tenant_context");
+            if let Some(verified) = context.verified_tenant_context.as_ref() {
+                object
+                    .entry("__verified_tenant_context")
+                    .or_insert_with(|| serde_json::to_value(verified).unwrap_or(Value::Null));
+            }
         }
 
         let result = self

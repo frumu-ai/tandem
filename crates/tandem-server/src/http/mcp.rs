@@ -12,7 +12,9 @@ use tandem_runtime::{McpAuthChallenge, McpPrincipalRef};
 use tandem_types::{RequestPrincipal, StrictTenantContext, TenantContext, VerifiedTenantContext};
 use uuid::Uuid;
 
-pub(crate) use super::mcp_run_as::call_mcp_tool_for_tenant_with_audit;
+pub(crate) use super::mcp_run_as::{
+    call_mcp_tool_for_tenant_with_audit, call_mcp_tool_for_tenant_with_verified_context,
+};
 
 mod mcp_base_url;
 pub(super) use mcp_base_url::{mcp_public_base_url_from_config, mcp_public_base_url_from_env};
@@ -413,15 +415,10 @@ impl Tool for McpBridgeTool {
 }
 
 fn strict_context_from_tool_args(args: &Value) -> Option<StrictTenantContext> {
-    args.get("__strict_tenant_context")
+    args.get("__verified_tenant_context")
         .cloned()
-        .and_then(|value| serde_json::from_value::<StrictTenantContext>(value).ok())
-        .or_else(|| {
-            args.get("__verified_tenant_context")
-                .cloned()
-                .and_then(|value| serde_json::from_value::<VerifiedTenantContext>(value).ok())
-                .and_then(|verified| verified.strict_projection)
-        })
+        .and_then(|value| serde_json::from_value::<VerifiedTenantContext>(value).ok())
+        .and_then(|verified| verified.strict_projection)
 }
 
 pub(super) async fn add_mcp(

@@ -30,12 +30,12 @@ impl EngineLoop {
         progress: Option<SharedToolProgressSink>,
     ) -> anyhow::Result<tandem_types::ToolResult> {
         let timeout_ms = tool_exec_timeout_ms() as u64;
-        let tenant_context = self
-            .storage
-            .get_session(session_id)
-            .await
-            .map(|session| session.tenant_context)
+        let session = self.storage.get_session(session_id).await;
+        let tenant_context = session
+            .as_ref()
+            .map(|session| session.tenant_context.clone())
             .unwrap_or_else(TenantContext::local_implicit);
+        let verified_tenant_context = session.and_then(|session| session.verified_tenant_context);
         let scope_allowlist = self
             .session_allowed_tools
             .read()
@@ -43,7 +43,7 @@ impl EngineLoop {
             .get(session_id)
             .cloned()
             .unwrap_or_default();
-        let dispatch_context = ToolDispatchContext::for_tenant("engine_loop", tenant_context)
+        let mut dispatch_context = ToolDispatchContext::for_tenant("engine_loop", tenant_context)
             .with_source(
                 ToolDispatchSource::new("engine_loop")
                     .session(session_id)
@@ -53,6 +53,10 @@ impl EngineLoop {
             .with_ledger(std::sync::Arc::new(EngineToolDispatchLedger {
                 event_bus: self.event_bus.clone(),
             }));
+        if let Some(verified_tenant_context) = verified_tenant_context {
+            dispatch_context =
+                dispatch_context.with_verified_tenant_context(verified_tenant_context);
+        }
         let timeout_dispatch_context = dispatch_context.clone();
         match tokio::time::timeout(
             Duration::from_millis(timeout_ms),

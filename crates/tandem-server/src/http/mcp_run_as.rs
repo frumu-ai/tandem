@@ -1,6 +1,10 @@
 use serde_json::{json, Value};
 use tandem_runtime::McpPrincipalRef;
-use tandem_types::{TenantContext, ToolResult};
+use tandem_types::{
+    AccessDecision, AccessPermission, DataClass, GrantEvaluation, PolicyDecisionEffect,
+    PolicyDecisionRecord, PrincipalRef, ResourceKind, ResourcePathSegment, ResourceRef,
+    StrictTenantContext, TenantContext, ToolResult, VerifiedTenantContext,
+};
 
 use crate::{now_ms, AppState};
 
@@ -10,6 +14,8 @@ const MCP_RUN_AS_ARG: &str = "__mcp_run_as";
 const MCP_RUN_AS_CAMEL_ARG: &str = "__mcpRunAs";
 const MCP_PRINCIPAL_ARG: &str = "__mcp_principal";
 const MCP_PRINCIPAL_CAMEL_ARG: &str = "__mcpPrincipal";
+const STRICT_TENANT_CONTEXT_ARG: &str = "__strict_tenant_context";
+const VERIFIED_TENANT_CONTEXT_ARG: &str = "__verified_tenant_context";
 
 #[derive(Debug, Clone)]
 struct McpRunAsRequest {
@@ -29,6 +35,15 @@ struct McpRunAsResolution {
     requested_connection_id: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct McpContextAssertionPreflight {
+    decision_id: Option<String>,
+    assertion_id: Option<String>,
+    grant_id: Option<String>,
+    resource: ResourceRef,
+    evaluation_reason: String,
+}
+
 pub(crate) async fn call_mcp_tool_for_tenant_with_audit(
     state: &AppState,
     server_name: &str,
@@ -36,7 +51,56 @@ pub(crate) async fn call_mcp_tool_for_tenant_with_audit(
     args: Value,
     tenant_context: &TenantContext,
 ) -> Result<ToolResult, String> {
+    let verified_context = verified_context_from_tool_args(&args);
+    call_mcp_tool_for_tenant_with_trusted_context(
+        state,
+        server_name,
+        tool_name,
+        args,
+        tenant_context,
+        verified_context
+            .as_ref()
+            .and_then(|context| context.strict_projection.as_ref()),
+    )
+    .await
+}
+
+pub(crate) async fn call_mcp_tool_for_tenant_with_verified_context(
+    state: &AppState,
+    server_name: &str,
+    tool_name: &str,
+    args: Value,
+    tenant_context: &TenantContext,
+    verified_context: Option<&VerifiedTenantContext>,
+) -> Result<ToolResult, String> {
+    call_mcp_tool_for_tenant_with_trusted_context(
+        state,
+        server_name,
+        tool_name,
+        args,
+        tenant_context,
+        verified_context.and_then(|context| context.strict_projection.as_ref()),
+    )
+    .await
+}
+
+async fn call_mcp_tool_for_tenant_with_trusted_context(
+    state: &AppState,
+    server_name: &str,
+    tool_name: &str,
+    args: Value,
+    tenant_context: &TenantContext,
+    strict_context: Option<&StrictTenantContext>,
+) -> Result<ToolResult, String> {
     let run_as = resolve_mcp_run_as(state, server_name, tool_name, args, tenant_context).await?;
+    let context_preflight = enforce_mcp_context_assertion_preflight(
+        state,
+        server_name,
+        tool_name,
+        &run_as.effective_tenant_context,
+        strict_context,
+    )
+    .await?;
     let result = state
         .mcp
         .call_tool_for_tenant(
@@ -60,13 +124,32 @@ pub(crate) async fn call_mcp_tool_for_tenant_with_audit(
         .await;
     }
 
-    append_mcp_tool_execution_audit_event(state, server_name, tool_name, &run_as, &result).await;
+    append_mcp_tool_execution_audit_event(
+        state,
+        server_name,
+        tool_name,
+        &run_as,
+        context_preflight.as_ref(),
+        &result,
+    )
+    .await;
     result.map(|mut result| {
         let run_as_payload = run_as.audit_payload();
         if let Some(metadata) = result.metadata.as_object_mut() {
             metadata.insert("mcpRunAs".to_string(), run_as_payload);
+            if let Some(preflight) = context_preflight.as_ref() {
+                metadata.insert(
+                    "contextAssertionPreflight".to_string(),
+                    preflight.audit_payload(),
+                );
+            }
         } else {
-            result.metadata = json!({ "mcpRunAs": run_as_payload });
+            result.metadata = json!({
+                "mcpRunAs": run_as_payload,
+                "contextAssertionPreflight": context_preflight
+                    .as_ref()
+                    .map(McpContextAssertionPreflight::audit_payload),
+            });
         }
         result
     })
@@ -326,6 +409,12 @@ fn parse_mcp_principal_ref(value: &Value) -> Option<McpPrincipalRef> {
     serde_json::from_value::<McpPrincipalRef>(value.clone()).ok()
 }
 
+fn verified_context_from_tool_args(args: &Value) -> Option<VerifiedTenantContext> {
+    args.get(VERIFIED_TENANT_CONTEXT_ARG)
+        .cloned()
+        .and_then(|value| serde_json::from_value::<VerifiedTenantContext>(value).ok())
+}
+
 fn strip_mcp_run_as_args(args: Value) -> Value {
     let Value::Object(mut object) = args else {
         return args;
@@ -337,10 +426,269 @@ fn strip_mcp_run_as_args(args: Value) -> Value {
         MCP_RUN_AS_CAMEL_ARG,
         MCP_PRINCIPAL_ARG,
         MCP_PRINCIPAL_CAMEL_ARG,
+        STRICT_TENANT_CONTEXT_ARG,
+        VERIFIED_TENANT_CONTEXT_ARG,
     ] {
         object.remove(key);
     }
     Value::Object(object)
+}
+
+async fn enforce_mcp_context_assertion_preflight(
+    state: &AppState,
+    server_name: &str,
+    tool_name: &str,
+    effective_tenant_context: &TenantContext,
+    strict_context: Option<&StrictTenantContext>,
+) -> Result<Option<McpContextAssertionPreflight>, String> {
+    if effective_tenant_context.is_local_implicit() && strict_context.is_none() {
+        return Ok(None);
+    }
+
+    let resource = mcp_tool_resource_ref(effective_tenant_context, server_name, tool_name);
+    let Some(strict_context) = strict_context else {
+        let reason = "missing_verified_tenant_context";
+        let decision_id = record_mcp_context_assertion_decision(
+            state,
+            effective_tenant_context,
+            server_name,
+            tool_name,
+            &resource,
+            None,
+            None,
+            PolicyDecisionEffect::Deny,
+            reason,
+            None,
+        )
+        .await;
+        append_mcp_context_assertion_denial_audit_event(
+            state,
+            effective_tenant_context,
+            server_name,
+            tool_name,
+            &resource,
+            decision_id.as_deref(),
+            reason,
+            None,
+            None,
+        )
+        .await;
+        return Err(format!(
+            "ToolDenied {{ reason: ContextAssertion }}: blocked MCP tool `{server_name}.{tool_name}` because a verified tenant context assertion is required."
+        ));
+    };
+
+    if !tenant_context_matches(&strict_context.tenant_context, effective_tenant_context) {
+        let reason = "verified_tenant_context_mismatch";
+        let decision_id = record_mcp_context_assertion_decision(
+            state,
+            effective_tenant_context,
+            server_name,
+            tool_name,
+            &resource,
+            Some(strict_context),
+            None,
+            PolicyDecisionEffect::Deny,
+            reason,
+            None,
+        )
+        .await;
+        append_mcp_context_assertion_denial_audit_event(
+            state,
+            effective_tenant_context,
+            server_name,
+            tool_name,
+            &resource,
+            decision_id.as_deref(),
+            reason,
+            Some(strict_context),
+            None,
+        )
+        .await;
+        return Err(format!(
+            "ToolDenied {{ reason: ContextAssertion }}: blocked MCP tool `{server_name}.{tool_name}` because the verified tenant context does not match the effective tenant."
+        ));
+    }
+
+    let evaluation = strict_context.evaluate_access(
+        &resource,
+        AccessPermission::Execute,
+        DataClass::Internal,
+        now_ms(),
+    );
+    let effect = if evaluation.decision == AccessDecision::Allow {
+        PolicyDecisionEffect::Allow
+    } else {
+        PolicyDecisionEffect::Deny
+    };
+    let decision_id = record_mcp_context_assertion_decision(
+        state,
+        effective_tenant_context,
+        server_name,
+        tool_name,
+        &resource,
+        Some(strict_context),
+        Some(&evaluation),
+        effect,
+        &evaluation.reason,
+        evaluation.grant_id.clone(),
+    )
+    .await;
+
+    if evaluation.decision != AccessDecision::Allow {
+        append_mcp_context_assertion_denial_audit_event(
+            state,
+            effective_tenant_context,
+            server_name,
+            tool_name,
+            &resource,
+            decision_id.as_deref(),
+            &evaluation.reason,
+            Some(strict_context),
+            evaluation.grant_id.as_deref(),
+        )
+        .await;
+        return Err(format!(
+            "ToolDenied {{ reason: ContextAssertion }}: blocked MCP tool `{server_name}.{tool_name}` because context assertion evaluation returned `{}`.",
+            evaluation.reason
+        ));
+    }
+
+    Ok(Some(McpContextAssertionPreflight {
+        decision_id,
+        assertion_id: Some(strict_context.assertion.assertion_id.clone()),
+        grant_id: evaluation.grant_id,
+        resource,
+        evaluation_reason: evaluation.reason,
+    }))
+}
+
+fn tenant_context_matches(left: &TenantContext, right: &TenantContext) -> bool {
+    left.org_id == right.org_id
+        && left.workspace_id == right.workspace_id
+        && left.deployment_id == right.deployment_id
+        && left.actor_id == right.actor_id
+}
+
+fn mcp_tool_resource_ref(
+    tenant_context: &TenantContext,
+    server_name: &str,
+    tool_name: &str,
+) -> ResourceRef {
+    ResourceRef::new(
+        tenant_context.org_id.clone(),
+        tenant_context.workspace_id.clone(),
+        ResourceKind::McpTool,
+        format!(
+            "mcp.{}.{}",
+            super::mcp::mcp_namespace_segment(server_name),
+            super::mcp::mcp_namespace_segment(tool_name)
+        ),
+    )
+    .with_parent_path(vec![ResourcePathSegment::new(
+        ResourceKind::McpServer,
+        server_name.to_string(),
+    )])
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn record_mcp_context_assertion_decision(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    server_name: &str,
+    tool_name: &str,
+    resource: &ResourceRef,
+    strict_context: Option<&StrictTenantContext>,
+    evaluation: Option<&GrantEvaluation>,
+    effect: PolicyDecisionEffect,
+    reason: &str,
+    grant_id: Option<String>,
+) -> Option<String> {
+    let decision_id = format!("policy_decision_{}", uuid::Uuid::new_v4().simple());
+    let actor_id = strict_context
+        .and_then(|context| context.principal.tenant_actor_id.clone())
+        .or_else(|| tenant_context.actor_id.clone())
+        .or_else(|| strict_context.map(|context| context.principal.id.clone()));
+    let record = PolicyDecisionRecord {
+        decision_id: decision_id.clone(),
+        tenant_context: tenant_context.clone(),
+        actor_id,
+        session_id: None,
+        message_id: None,
+        run_id: None,
+        automation_id: None,
+        node_id: None,
+        tool: Some(format!("mcp.{server_name}.{tool_name}")),
+        resource: Some(resource.clone()),
+        data_classes: vec![DataClass::Internal],
+        risk_tier: None,
+        decision: effect,
+        reason_code: reason.to_string(),
+        reason: format!("MCP context assertion preflight: {reason}"),
+        policy_id: Some("mcp_context_assertion_preflight".to_string()),
+        grant_id,
+        approval_id: None,
+        audit_event_id: None,
+        created_at_ms: now_ms(),
+        metadata: json!({
+            "context_assertion": strict_context.map(|context| {
+                json!({
+                    "assertion_id": context.assertion.assertion_id,
+                    "issuer": context.assertion.issuer,
+                    "audience": context.assertion.audience,
+                    "expires_at_ms": context.assertion.expires_at_ms,
+                    "principal": context.principal,
+                })
+            }),
+            "evaluation": evaluation,
+            "permission": AccessPermission::Execute,
+            "data_class": DataClass::Internal,
+            "server_name": server_name,
+            "tool_name": tool_name,
+        }),
+    };
+    match state.record_policy_decision(record).await {
+        Ok(record) => Some(record.decision_id),
+        Err(error) => {
+            tracing::warn!("failed to record MCP context assertion decision: {error:?}");
+            None
+        }
+    }
+}
+
+async fn append_mcp_context_assertion_denial_audit_event(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    server_name: &str,
+    tool_name: &str,
+    resource: &ResourceRef,
+    decision_id: Option<&str>,
+    reason: &str,
+    strict_context: Option<&StrictTenantContext>,
+    grant_id: Option<&str>,
+) {
+    let actor_id = strict_context
+        .and_then(|context| context.principal.tenant_actor_id.clone())
+        .or_else(|| tenant_context.actor_id.clone())
+        .or_else(|| strict_context.map(|context| context.principal.id.clone()));
+    let _ = crate::audit::append_protected_audit_event(
+        state,
+        "mcp.context_assertion_denied",
+        tenant_context,
+        actor_id,
+        json!({
+            "decision_id": decision_id,
+            "reason": reason,
+            "server_name": server_name,
+            "tool_name": tool_name,
+            "resource": resource,
+            "assertion_id": strict_context.map(|context| context.assertion.assertion_id.as_str()),
+            "grant_id": grant_id,
+            "tenant_context": tenant_context,
+            "created_at_ms": now_ms(),
+        }),
+    )
+    .await;
 }
 
 async fn append_mcp_run_as_denial_audit_event(
@@ -377,6 +725,7 @@ async fn append_mcp_tool_execution_audit_event(
     server_name: &str,
     tool_name: &str,
     run_as: &McpRunAsResolution,
+    context_preflight: Option<&McpContextAssertionPreflight>,
     result: &Result<ToolResult, String>,
 ) {
     let _ = crate::audit::append_protected_audit_event(
@@ -395,6 +744,7 @@ async fn append_mcp_tool_execution_audit_event(
             "upstream_account": run_as.upstream_account,
             "requested_tenant_context": run_as.requested_tenant_context,
             "effective_tenant_context": run_as.effective_tenant_context,
+            "context_assertion_preflight": context_preflight.map(McpContextAssertionPreflight::audit_payload),
             "error": result.as_ref().err().map(|error| error.as_str()),
         }),
     )
@@ -411,6 +761,20 @@ impl McpRunAsResolution {
             "upstreamAccount": self.upstream_account,
             "requestedTenantContext": self.requested_tenant_context,
             "effectiveTenantContext": self.effective_tenant_context,
+        })
+    }
+}
+
+impl McpContextAssertionPreflight {
+    fn audit_payload(&self) -> Value {
+        json!({
+            "policyDecisionId": self.decision_id,
+            "assertionId": self.assertion_id,
+            "grantId": self.grant_id,
+            "resource": self.resource,
+            "permission": AccessPermission::Execute,
+            "dataClass": DataClass::Internal,
+            "reason": self.evaluation_reason,
         })
     }
 }

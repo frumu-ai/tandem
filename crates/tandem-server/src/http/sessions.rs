@@ -1099,7 +1099,6 @@ pub(super) fn spawn_run_task(
         .await;
     });
 }
-
 pub(super) async fn execute_run(
     state: AppState,
     session_id: String,
@@ -1111,7 +1110,9 @@ pub(super) async fn execute_run(
 ) -> anyhow::Result<()> {
     let kb_grounding_policy = derive_session_kb_grounding_policy(&state, &req).await;
     let strict_kb_model_override = req.model.clone();
-    let mut direct_kb_outcome: Option<super::session_kb_grounding::StrictKbGroundingOutcome> = None;
+    let mut direct_kb_outcome = None;
+    let session = state.storage.get_session(&session_id).await;
+    let verified_tenant_context = session.and_then(|session| session.verified_tenant_context);
     if let Some(policy) = kb_grounding_policy.as_ref() {
         let kb_tool_allowlist = tool_allowlist_for_kb_grounding(&policy);
         state
@@ -1141,12 +1142,13 @@ pub(super) async fn execute_run(
                     "max_documents": 3,
                 });
                 for server_name in &policy.server_names {
-                    match super::mcp::call_mcp_tool_for_tenant_with_audit(
+                    match super::mcp::call_mcp_tool_for_tenant_with_verified_context(
                         &state,
                         server_name,
                         &tool_name,
                         args.clone(),
                         &tenant_context,
+                        verified_tenant_context.as_ref(),
                     )
                     .await
                     {

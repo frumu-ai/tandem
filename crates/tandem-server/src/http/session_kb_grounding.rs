@@ -5,7 +5,9 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tandem_providers::{ChatMessage, StreamChunk};
-use tandem_types::{MessagePart, MessageRole, ModelSpec, TenantContext, ToolMode};
+use tandem_types::{
+    MessagePart, MessageRole, ModelSpec, TenantContext, ToolMode, VerifiedTenantContext,
+};
 use tokio_util::sync::CancellationToken;
 
 use super::{sessions::truncate_text, AppState};
@@ -114,6 +116,7 @@ pub(super) async fn apply_strict_kb_grounding_after_run(
         &session.messages[user_idx],
         policy,
         &session.tenant_context,
+        session.verified_tenant_context.as_ref(),
     )
     .await;
     let evidence = evidence_bundle.items;
@@ -341,12 +344,15 @@ async fn collect_kb_evidence(
     message: &tandem_types::Message,
     policy: &tandem_core::KnowledgebaseGroundingPolicy,
     tenant_context: &TenantContext,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
 ) -> KbEvidenceBundle {
     let mut bundle = KbEvidenceBundle::default();
     let document_refs = collect_kb_document_refs(message, policy);
     bundle.document_refs_found = !document_refs.is_empty();
     for document_ref in document_refs.iter().take(MAX_FULL_DOCUMENT_FETCHES) {
-        match fetch_kb_full_document(state, document_ref, tenant_context).await {
+        match fetch_kb_full_document(state, document_ref, tenant_context, verified_tenant_context)
+            .await
+        {
             Some(items) if !items.is_empty() => {
                 bundle.full_documents_fetched += 1;
                 for item in items {
@@ -498,6 +504,7 @@ async fn fetch_kb_full_document(
     state: &AppState,
     document_ref: &KbDocumentRef,
     tenant_context: &TenantContext,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
 ) -> Option<Vec<KbEvidenceItem>> {
     let mut args = json!({ "doc_id": document_ref.doc_id });
     if let Some(collection_id) = document_ref
@@ -511,12 +518,13 @@ async fn fetch_kb_full_document(
     let mut last_error = None;
     let mut result = None;
     for server_name in mcp_server_name_candidates(&document_ref.server_name) {
-        match super::mcp::call_mcp_tool_for_tenant_with_audit(
+        match super::mcp::call_mcp_tool_for_tenant_with_verified_context(
             state,
             &server_name,
             "get_document",
             args.clone(),
             tenant_context,
+            verified_tenant_context,
         )
         .await
         {
