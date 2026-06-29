@@ -8,7 +8,8 @@ use serde_json::{json, Value};
 
 use crate::app::state::{
     automation_webhook_body_digest, sanitize_automation_webhook_preview,
-    AutomationWebhookQueueResult, AutomationWebhookVerificationError,
+    AutomationWebhookQueueResult, AutomationWebhookSignatureHeaders,
+    AutomationWebhookVerificationDecision, AutomationWebhookVerificationError,
 };
 use crate::automation_v2::types::automation_webhook_provider_event_id_headers;
 use crate::{AppState, AutomationWebhookDeliveryStatus};
@@ -17,6 +18,8 @@ const AUTOMATION_WEBHOOK_MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
 const AUTOMATION_WEBHOOK_SIGNATURE_TOLERANCE_MS: u64 = 5 * 60 * 1000;
 const AUTOMATION_WEBHOOK_SIGNATURE_HEADER: &str = "x-tandem-webhook-signature";
 const AUTOMATION_WEBHOOK_LEGACY_SIGNATURE_HEADER: &str = "x-tandem-signature";
+const AUTOMATION_WEBHOOK_GITHUB_SIGNATURE_HEADER: &str = "x-hub-signature-256";
+const AUTOMATION_WEBHOOK_SHARED_SECRET_HEADER: &str = "x-tandem-webhook-secret";
 
 pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
     router
@@ -47,12 +50,11 @@ async fn automation_webhook_intake(
     let advisory_provider_event_id =
         advisory_provider_event_id(&state, &public_path_token, &headers).await;
     let body_digest = automation_webhook_body_digest(body.as_ref());
-    let signature_header = header_str(&headers, AUTOMATION_WEBHOOK_SIGNATURE_HEADER)
-        .or_else(|| header_str(&headers, AUTOMATION_WEBHOOK_LEGACY_SIGNATURE_HEADER));
+    let signature_headers = signature_headers_from_request(&headers);
     let verified = match state
-        .verify_automation_webhook_request(
+        .verify_automation_webhook_request_with_headers(
             &public_path_token,
-            signature_header,
+            signature_headers,
             body.as_ref(),
             advisory_provider_event_id.clone(),
             received_at_ms,
@@ -89,6 +91,7 @@ async fn automation_webhook_intake(
                     "invalid_json",
                     verified.received_at_ms,
                     json!({ "body_digest": body_digest }),
+                    Some(verified.verification),
                 )
                 .await;
             return webhook_public_response(StatusCode::BAD_REQUEST, "rejected");
@@ -132,6 +135,15 @@ fn is_json_content_type(headers: &HeaderMap) -> bool {
         .split(';')
         .next()
         .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"))
+}
+
+fn signature_headers_from_request(headers: &HeaderMap) -> AutomationWebhookSignatureHeaders {
+    AutomationWebhookSignatureHeaders::from_headers(
+        header_str(headers, AUTOMATION_WEBHOOK_SIGNATURE_HEADER),
+        header_str(headers, AUTOMATION_WEBHOOK_LEGACY_SIGNATURE_HEADER),
+        header_str(headers, AUTOMATION_WEBHOOK_GITHUB_SIGNATURE_HEADER),
+        header_str(headers, AUTOMATION_WEBHOOK_SHARED_SECRET_HEADER),
+    )
 }
 
 async fn advisory_provider_event_id(
@@ -188,6 +200,10 @@ async fn record_verification_rejection(
     else {
         return;
     };
+    let verification = Some(AutomationWebhookVerificationDecision::rejected_for_trigger(
+        &trigger,
+        reason_code,
+    ));
     let _ = state
         .record_automation_webhook_rejection(
             &trigger,
@@ -197,6 +213,7 @@ async fn record_verification_rejection(
             reason_code,
             received_at_ms,
             sanitized_preview,
+            verification,
         )
         .await;
 }

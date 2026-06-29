@@ -14,6 +14,9 @@ fail closed. The Control Panel now has a dedicated stateful run list for
 scanning workflow, automation, and context runs by status, phase, trigger,
 tenant/workspace, active wait, retry state, and last event without opening the
 full automation debugger first.
+Automation webhooks now use a provider-aware signature verification registry
+with queryable delivery verification metadata, keeping Tandem HMAC compatibility
+while preparing GitHub-style and shared-secret provider schemes.
 Durable wait foundations now persist timer/webhook/approval wait metadata,
 tenant-boundary identity, wake times, timeout policy, and wake claim state for
 future sleep/resume scheduling.
