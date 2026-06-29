@@ -57,6 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runtime event log, with idempotent per-run lifecycle event IDs, monotonic
   sequences, summary snapshots, checkpoint digests, and definition version/hash
   metadata at durable execution boundaries.
+- Added first-class Automation V2 run definition version/hash fields with
+  snapshot-derived load-time backfill and SDK typings for replay/resume
+  consumers.
 - Added Linear issue destinations for Bug Monitor/Incident Monitor routing,
   including Linear MCP readiness checks, issue creation, duplicate matching,
   destination-aware receipts, and external-action mirrors.
@@ -66,6 +69,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Running Automation V2 runs interrupted by a server restart are now queued for
   resume when their persisted checkpoint can be safely rehydrated; in-progress
   nodes receive repair markers, while corrupt records still fail closed.
+- Restart recovery now fails closed when a run's recorded definition snapshot
+  hash does not match the available snapshot/current definition, preventing
+  unsafe resume against mutated workflow definitions.
 - Automation V2 supervisors now reclaim expired execution claims that have no
   active session or agent handles, requeueing those runs for a single safe
   claimant instead of leaving them stuck as `Running`.

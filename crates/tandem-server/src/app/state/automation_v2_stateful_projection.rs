@@ -404,6 +404,8 @@ mod tests {
             },
             runtime_context: None,
             automation_snapshot: Some(automation_snapshot("automation-a")),
+            workflow_definition_version: None,
+            workflow_definition_snapshot_hash: None,
             execution_claim: None,
             execution_claim_epoch: 1,
             pause_reason: None,

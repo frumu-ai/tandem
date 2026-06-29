@@ -1319,6 +1319,10 @@ pub struct AutomationV2RunRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automation_snapshot: Option<AutomationV2Spec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_definition_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_definition_snapshot_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_claim: Option<AutomationRunExecutionClaim>,
     #[serde(default)]
     pub execution_claim_epoch: u64,

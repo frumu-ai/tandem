@@ -208,7 +208,7 @@ impl AppState {
             .iter()
             .map(|n| n.node_id.clone())
             .collect::<Vec<_>>();
-        let run = AutomationV2RunRecord {
+        let mut run = AutomationV2RunRecord {
             run_id: format!("automation-v2-run-{}", uuid::Uuid::new_v4()),
             automation_id: automation.automation_id.clone(),
             tenant_context: automation.tenant_context(),
@@ -235,6 +235,8 @@ impl AppState {
             },
             runtime_context,
             automation_snapshot: Some(automation.clone()),
+            workflow_definition_version: None,
+            workflow_definition_snapshot_hash: None,
             execution_claim: None,
             execution_claim_epoch: 0,
             pause_reason: None,
@@ -254,6 +256,7 @@ impl AppState {
                 crate::automation_v2::execution_profile::ExecutionProfile::Strict,
             requested_execution_profile: None,
         };
+        crate::stateful_runtime::ensure_automation_run_definition_metadata(&mut run);
         self.automation_v2_runs
             .write()
             .await

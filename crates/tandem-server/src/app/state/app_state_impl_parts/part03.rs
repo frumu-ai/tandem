@@ -1118,7 +1118,7 @@ impl AppState {
         // run-level override without needing the run record itself.
         let mut snapshot = automation.clone();
         snapshot.execution.profile = Some(effective_execution_profile);
-        let run = AutomationV2RunRecord {
+        let mut run = AutomationV2RunRecord {
             run_id: format!("automation-v2-run-{}", uuid::Uuid::new_v4()),
             automation_id: automation.automation_id.clone(),
             tenant_context: automation.tenant_context(),
@@ -1145,6 +1145,8 @@ impl AppState {
             },
             runtime_context,
             automation_snapshot: Some(snapshot),
+            workflow_definition_version: None,
+            workflow_definition_snapshot_hash: None,
             execution_claim: None,
             execution_claim_epoch: 0,
             pause_reason: None,
@@ -1163,6 +1165,7 @@ impl AppState {
             effective_execution_profile,
             requested_execution_profile,
         };
+        crate::stateful_runtime::ensure_automation_run_definition_metadata(&mut run);
         self.automation_v2_runs
             .write()
             .await
@@ -1209,7 +1212,7 @@ impl AppState {
         // create_automation_v2_run_with_profile for rationale.
         let mut snapshot = automation.clone();
         snapshot.execution.profile = Some(effective_execution_profile);
-        let run = AutomationV2RunRecord {
+        let mut run = AutomationV2RunRecord {
             run_id: format!("automation-v2-run-{}", uuid::Uuid::new_v4()),
             automation_id: automation.automation_id.clone(),
             tenant_context: automation.tenant_context(),
@@ -1236,6 +1239,8 @@ impl AppState {
             },
             runtime_context,
             automation_snapshot: Some(snapshot),
+            workflow_definition_version: None,
+            workflow_definition_snapshot_hash: None,
             execution_claim: None,
             execution_claim_epoch: 0,
             pause_reason: None,
@@ -1254,6 +1259,7 @@ impl AppState {
             effective_execution_profile,
             requested_execution_profile,
         };
+        crate::stateful_runtime::ensure_automation_run_definition_metadata(&mut run);
         self.automation_v2_runs
             .write()
             .await

@@ -289,6 +289,8 @@ mod tests {
             },
             runtime_context: Some(test_runtime_context()),
             automation_snapshot: None,
+            workflow_definition_version: None,
+            workflow_definition_snapshot_hash: None,
             execution_claim: None,
             execution_claim_epoch: 0,
             pause_reason: None,

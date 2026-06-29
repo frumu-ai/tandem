@@ -2344,6 +2344,8 @@ export interface AutomationV2RunRecord {
   checkpoint?: JsonObject;
   activeSessionIds?: string[];
   activeInstanceIds?: string[];
+  workflowDefinitionVersion?: string;
+  workflowDefinitionSnapshotHash?: string;
   /** Resolved execution profile for this run (snake_case from server). */
   effective_execution_profile?: ExecutionProfile;
   /** Caller-supplied profile override at run-now time, if any. */

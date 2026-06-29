@@ -41,10 +41,37 @@ impl AppState {
     async fn automation_definition_for_restart_recovery(
         &self,
         run: &AutomationV2RunRecord,
-    ) -> Option<AutomationV2Spec> {
+    ) -> Result<AutomationV2Spec, Value> {
+        if let Some((recorded, actual)) =
+            crate::stateful_runtime::automation_run_definition_snapshot_hash_mismatch(run)
+        {
+            return Err(json!({
+                "reason": "definition_snapshot_hash_mismatch",
+                "recorded_snapshot_hash": recorded,
+                "actual_snapshot_hash": actual,
+                "definition_source": "automation_snapshot",
+            }));
+        }
         match run.automation_snapshot.clone() {
-            Some(snapshot) => Some(snapshot),
-            None => self.get_automation_v2(&run.automation_id).await,
+            Some(snapshot) => Ok(snapshot),
+            None => {
+                let Some(automation) = self.get_automation_v2(&run.automation_id).await else {
+                    return Err(json!({ "reason": "missing_automation_snapshot" }));
+                };
+                if let Some(recorded) = run.workflow_definition_snapshot_hash.as_ref() {
+                    let actual =
+                        crate::stateful_runtime::automation_definition_snapshot_hash(&automation);
+                    if recorded != &actual {
+                        return Err(json!({
+                            "reason": "definition_snapshot_hash_mismatch",
+                            "recorded_snapshot_hash": recorded,
+                            "actual_snapshot_hash": actual,
+                            "definition_source": "current_automation_definition",
+                        }));
+                    }
+                }
+                Ok(automation)
+            }
         }
     }
 
@@ -119,7 +146,7 @@ impl AppState {
                         if has_settled_gate_decision {
                             let automation =
                                 self.automation_definition_for_restart_recovery(&run).await;
-                            if let Some(automation) = automation {
+                            if let Ok(automation) = automation {
                                 if let Some(updated_run) = self
                                     .update_automation_v2_run(&run.run_id, |row| {
                                         crate::app::state::recover_settled_automation_gate_decision(
@@ -180,15 +207,21 @@ impl AppState {
     async fn recover_running_run_after_restart(&self, run: &AutomationV2RunRecord) -> bool {
         self.forget_interrupted_run_handles(run).await;
         let automation = self.automation_definition_for_restart_recovery(run).await;
-        let Some(automation) = automation else {
-            let detail = "automation run interrupted by server restart".to_string();
-            return self
-                .fail_running_run_after_restart(
-                    run,
-                    detail,
-                    json!({ "reason": "missing_automation_snapshot" }),
-                )
-                .await;
+        let automation = match automation {
+            Ok(automation) => automation,
+            Err(metadata) => {
+                let detail = if metadata.get("reason").and_then(Value::as_str)
+                    == Some("definition_snapshot_hash_mismatch")
+                {
+                    "automation run interrupted by server restart; definition snapshot hash mismatch"
+                        .to_string()
+                } else {
+                    "automation run interrupted by server restart".to_string()
+                };
+                return self
+                    .fail_running_run_after_restart(run, detail, metadata)
+                    .await;
+            }
         };
 
         let in_progress_node_ids = automation::lifecycle::automation_in_progress_node_ids(run);

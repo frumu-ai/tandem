@@ -210,6 +210,8 @@ mod stale_auto_resume_window_tests {
             active_instance_ids: Vec::new(),
             runtime_context: None,
             automation_snapshot: None,
+            workflow_definition_version: None,
+            workflow_definition_snapshot_hash: None,
             execution_claim: None,
             execution_claim_epoch: 0,
             pause_reason: None,

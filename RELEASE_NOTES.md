@@ -58,6 +58,10 @@ boundary gets an idempotent stateful event, monotonic per-run sequence, summary
 snapshot, checkpoint digest, and workflow definition version/hash metadata so
 future replay and resume paths can inspect durable run history without reading
 only the hot embedded checkpoint.
+Automation V2 run records now also persist first-class workflow definition
+version and snapshot hash fields, backfill them from existing run snapshots on
+load, expose them through SDK types, and fail restart recovery closed if the
+recorded snapshot hash no longer matches the available definition.
 Bug Monitor/Incident Monitor routing now supports Linear issue destinations
 with MCP readiness checks, duplicate issue matching, destination-aware receipts,
 and external-action records, and publish/recheck errors include the underlying

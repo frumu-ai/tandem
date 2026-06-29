@@ -17,5 +17,6 @@ include!("integration_parts/helpers.rs");
 include!("integration_parts/research_and_validation.rs");
 include!("integration_parts/delivery_and_code_loop.rs");
 include!("integration_parts/retries_and_recovery.rs");
+include!("integration_parts/definition_resume.rs");
 include!("integration_parts/run_claim_leases.rs");
 include!("integration_parts/approval_failure_injection.rs");

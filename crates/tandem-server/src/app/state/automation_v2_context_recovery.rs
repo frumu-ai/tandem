@@ -135,7 +135,7 @@ async fn load_recovered_automation_v2_context_run(
         updated_at_ms,
     );
 
-    Some(AutomationV2RunRecord {
+    let mut run = AutomationV2RunRecord {
         run_id,
         automation_id,
         tenant_context,
@@ -151,6 +151,8 @@ async fn load_recovered_automation_v2_context_run(
         checkpoint,
         runtime_context: None,
         automation_snapshot: Some(automation_snapshot),
+        workflow_definition_version: None,
+        workflow_definition_snapshot_hash: None,
         execution_claim: None,
         execution_claim_epoch: 0,
         pause_reason: None,
@@ -174,7 +176,9 @@ async fn load_recovered_automation_v2_context_run(
         effective_execution_profile:
             crate::automation_v2::execution_profile::ExecutionProfile::Strict,
         requested_execution_profile: None,
-    })
+    };
+    crate::stateful_runtime::ensure_automation_run_definition_metadata(&mut run);
+    Some(run)
 }
 
 fn recovered_checkpoint_from_context_run(value: &Value) -> AutomationRunCheckpoint {

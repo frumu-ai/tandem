@@ -5,7 +5,10 @@ use tandem_types::{DataClass, PrincipalRef, ResourceScope, ToolRiskTier};
 use crate::automation_v2::types::{AutomationRunStatus, AutomationV2RunRecord};
 use tandem_workflows::{WorkflowRunRecord, WorkflowRunStatus};
 
-use super::definition::{automation_definition_snapshot_hash, automation_definition_version};
+use super::definition::{
+    automation_definition_snapshot_hash, automation_definition_version,
+    automation_run_definition_fields,
+};
 use super::phases::phase_state_from_status;
 use super::types::{
     StatefulRuntimeScope, StatefulWaitKind, StatefulWorkflowRunKind, StatefulWorkflowRunRecord,
@@ -22,15 +25,8 @@ pub fn stateful_run_from_automation_v2(run: &AutomationV2RunRecord) -> StatefulW
         run.updated_at_ms,
         current_phase_id.as_deref(),
     );
-    let (workflow_definition_version, workflow_definition_snapshot_hash) = run
-        .automation_snapshot
-        .as_ref()
-        .map(|snapshot| {
-            let snapshot_hash = automation_definition_snapshot_hash(snapshot);
-            let version = automation_definition_version(snapshot, &snapshot_hash);
-            (Some(version), Some(snapshot_hash))
-        })
-        .unwrap_or((None, None));
+    let (workflow_definition_version, workflow_definition_snapshot_hash) =
+        automation_run_definition_fields(run);
     StatefulWorkflowRunRecord {
         schema_version: STATEFUL_RUNTIME_SCHEMA_VERSION,
         run_id: run.run_id.clone(),
@@ -270,6 +266,8 @@ mod tests {
             checkpoint,
             runtime_context: None,
             automation_snapshot,
+            workflow_definition_version: None,
+            workflow_definition_snapshot_hash: None,
             execution_claim: None,
             execution_claim_epoch: 0,
             pause_reason: None,

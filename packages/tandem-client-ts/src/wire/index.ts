@@ -1705,6 +1705,8 @@ export interface AutomationV2RunRecord {
   checkpoint?: JsonObject;
   active_session_ids?: string[];
   active_instance_ids?: string[];
+  workflow_definition_version?: string;
+  workflow_definition_snapshot_hash?: string;
   [key: string]: unknown;
 }
 

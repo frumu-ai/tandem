@@ -8,6 +8,7 @@ use tandem_types::TenantContext;
 use tokio::fs;
 
 use crate::automation_v2::types::*;
+use crate::stateful_runtime::ensure_automation_run_definition_metadata;
 use crate::util::time::now_ms;
 
 use super::{sanitize_path_id, write_string_atomic};
@@ -44,7 +45,7 @@ pub(crate) fn parse_automation_v2_runs_file(
     let value: Value =
         serde_json::from_str(raw).context("failed to parse automation_v2_runs.json")?;
     let Some(version_value) = value.get("schema_version") else {
-        let runs = parse_automation_v2_runs_map(value)
+        let (runs, _backfilled_definition_metadata) = parse_automation_v2_runs_map(value)
             .context("failed to parse legacy automation_v2_runs.json v0 map")?;
         return Ok((upgrade_automation_v2_runs_file(0, runs)?, true));
     };
@@ -64,9 +65,10 @@ pub(crate) fn parse_automation_v2_runs_file(
         .get("runs")
         .cloned()
         .context("versioned automation_v2_runs.json missing runs object")?;
-    let runs = parse_automation_v2_runs_map(runs_value)
+    let (runs, backfilled_definition_metadata) = parse_automation_v2_runs_map(runs_value)
         .context("failed to parse versioned automation_v2_runs.json runs")?;
-    let upgraded = schema_version_for_upgrade < AUTOMATION_V2_RUNS_SCHEMA_VERSION;
+    let upgraded = schema_version_for_upgrade < AUTOMATION_V2_RUNS_SCHEMA_VERSION
+        || backfilled_definition_metadata;
     Ok((
         upgrade_automation_v2_runs_file(schema_version_for_upgrade, runs)?,
         upgraded,
@@ -75,24 +77,33 @@ pub(crate) fn parse_automation_v2_runs_file(
 
 fn parse_automation_v2_runs_map(
     value: Value,
-) -> anyhow::Result<std::collections::HashMap<String, AutomationV2RunRecord>> {
+) -> anyhow::Result<(
+    std::collections::HashMap<String, AutomationV2RunRecord>,
+    bool,
+)> {
     let object = value
         .as_object()
         .context("automation_v2_runs entries must be a JSON object")?;
     let mut runs = std::collections::HashMap::new();
+    let mut backfilled_definition_metadata = false;
     for (run_id, run_value) in object {
-        let run = parse_automation_v2_run_entry(run_id, run_value.clone())?;
+        let (run, backfilled) = parse_automation_v2_run_entry(run_id, run_value.clone())?;
+        backfilled_definition_metadata |= backfilled;
         runs.insert(run.run_id.clone(), run);
     }
-    Ok(runs)
+    Ok((runs, backfilled_definition_metadata))
 }
 
 fn parse_automation_v2_run_entry(
     run_id_key: &str,
     value: Value,
-) -> anyhow::Result<AutomationV2RunRecord> {
+) -> anyhow::Result<(AutomationV2RunRecord, bool)> {
     match serde_json::from_value::<AutomationV2RunRecord>(value.clone()) {
-        Ok(run) => Ok(run),
+        Ok(mut run) => {
+            let backfilled = automation_run_definition_metadata_missing(&run);
+            ensure_automation_run_definition_metadata(&mut run);
+            Ok((run, backfilled))
+        }
         Err(error) => recover_corrupt_automation_v2_run_entry(run_id_key, value, error.to_string()),
     }
 }
@@ -101,7 +112,7 @@ fn recover_corrupt_automation_v2_run_entry(
     run_id_key: &str,
     value: Value,
     parse_error: String,
-) -> anyhow::Result<AutomationV2RunRecord> {
+) -> anyhow::Result<(AutomationV2RunRecord, bool)> {
     let object = value
         .as_object()
         .context("corrupt automation v2 run entry is not recoverable")?;
@@ -136,7 +147,7 @@ fn recover_corrupt_automation_v2_run_entry(
     let detail =
         format!("automation run checkpoint could not be parsed during startup: {parse_error}");
 
-    Ok(AutomationV2RunRecord {
+    let mut run = AutomationV2RunRecord {
         run_id,
         automation_id,
         tenant_context,
@@ -199,7 +210,21 @@ fn recover_corrupt_automation_v2_run_entry(
             .and_then(|value| serde_json::from_value(value).ok()),
         effective_execution_profile,
         requested_execution_profile,
-    })
+        workflow_definition_version: json_string_field(object, "workflow_definition_version"),
+        workflow_definition_snapshot_hash: json_string_field(
+            object,
+            "workflow_definition_snapshot_hash",
+        ),
+    };
+    let backfilled = automation_run_definition_metadata_missing(&run);
+    ensure_automation_run_definition_metadata(&mut run);
+    Ok((run, backfilled))
+}
+
+fn automation_run_definition_metadata_missing(run: &AutomationV2RunRecord) -> bool {
+    run.automation_snapshot.is_some()
+        && (run.workflow_definition_version.is_none()
+            || run.workflow_definition_snapshot_hash.is_none())
 }
 
 fn json_string_field(object: &serde_json::Map<String, Value>, field: &str) -> Option<String> {

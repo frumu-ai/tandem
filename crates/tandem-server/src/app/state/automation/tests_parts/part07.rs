@@ -260,6 +260,8 @@ fn connector_row_filter_materializer_builds_full_leads_from_upstream_source() {
         },
         runtime_context: None,
         automation_snapshot: None,
+        workflow_definition_version: None,
+        workflow_definition_snapshot_hash: None,
         execution_claim: None,
         execution_claim_epoch: 0,
         pause_reason: None,
