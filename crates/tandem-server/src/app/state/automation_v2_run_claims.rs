@@ -236,6 +236,8 @@ impl AppState {
             self.sync_automation_scheduler_for_run_transition(previous_status, &claimed)
                 .await;
             let _ = self.persist_automation_v2_runs().await;
+            self.project_automation_v2_stateful_boundaries_or_warn(&claimed)
+                .await;
             return None;
         }
 
@@ -274,6 +276,8 @@ impl AppState {
                 self.sync_automation_scheduler_for_run_transition(previous_status, &held)
                     .await;
                 let _ = self.persist_automation_v2_runs().await;
+                self.project_automation_v2_stateful_boundaries_or_warn(&held)
+                    .await;
                 return None;
             }
         }
@@ -317,6 +321,8 @@ impl AppState {
         self.sync_automation_scheduler_for_run_transition(previous_status, &claimed)
             .await;
         let _ = self.persist_automation_v2_runs().await;
+        self.project_automation_v2_stateful_boundaries_or_warn(&claimed)
+            .await;
         Some(claimed)
     }
 }

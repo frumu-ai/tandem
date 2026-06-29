@@ -12,34 +12,38 @@ impl AppState {
     pub(crate) async fn project_automation_v2_stateful_boundaries(
         &self,
         run: &AutomationV2RunRecord,
-        previous_lifecycle_len: usize,
     ) -> anyhow::Result<usize> {
         let paths =
             StatefulRuntimeStoragePaths::from_runtime_events_path(&self.runtime_events_path);
-        project_automation_v2_stateful_boundaries_to_paths(&paths, run, previous_lifecycle_len)
-            .await
+        project_automation_v2_stateful_boundaries_to_paths(&paths, run).await
+    }
+
+    pub(crate) async fn project_automation_v2_stateful_boundaries_or_warn(
+        &self,
+        run: &AutomationV2RunRecord,
+    ) {
+        if let Err(error) = self.project_automation_v2_stateful_boundaries(run).await {
+            tracing::warn!(
+                run_id = %run.run_id,
+                error = %error,
+                "failed to project automation v2 lifecycle boundary to stateful runtime log"
+            );
+        }
     }
 }
 
 pub(crate) async fn project_automation_v2_stateful_boundaries_to_paths(
     paths: &StatefulRuntimeStoragePaths,
     run: &AutomationV2RunRecord,
-    previous_lifecycle_len: usize,
 ) -> anyhow::Result<usize> {
-    if previous_lifecycle_len >= run.checkpoint.lifecycle_history.len() {
+    if run.checkpoint.lifecycle_history.is_empty() {
         return Ok(0);
     }
 
     let stateful_run = stateful_run_from_automation_v2(run);
     let scope = stateful_run.scope.clone();
     let mut projected = 0usize;
-    for (index, lifecycle) in run
-        .checkpoint
-        .lifecycle_history
-        .iter()
-        .enumerate()
-        .skip(previous_lifecycle_len)
-    {
+    for (index, lifecycle) in run.checkpoint.lifecycle_history.iter().enumerate() {
         let event_id = automation_lifecycle_stateful_event_id(run, index, lifecycle);
         let phase_id = lifecycle_phase_id(run, lifecycle);
         let wait_kind = lifecycle_wait_kind(run, lifecycle);
@@ -431,11 +435,11 @@ mod tests {
         );
         let run = run_with_lifecycle();
 
-        let projected = project_automation_v2_stateful_boundaries_to_paths(&paths, &run, 1)
+        let projected = project_automation_v2_stateful_boundaries_to_paths(&paths, &run)
             .await
             .expect("project lifecycle");
 
-        assert_eq!(projected, 1);
+        assert_eq!(projected, 2);
         let events = query_stateful_run_events(
             &paths.run_events_path,
             &run.tenant_context,
@@ -447,13 +451,17 @@ mod tests {
                 tail: false,
             },
         );
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         assert_eq!(
             events[0].event_type,
+            "stateful_runtime.automation_v2.run_execution_claimed"
+        );
+        assert_eq!(
+            events[1].event_type,
             "stateful_runtime.automation_v2.node_completed"
         );
-        assert_eq!(events[0].phase_id.as_deref(), Some("node-a"));
-        assert_eq!(events[0].causation_id.as_deref(), Some("session-a"));
+        assert_eq!(events[1].phase_id.as_deref(), Some("node-a"));
+        assert_eq!(events[1].causation_id.as_deref(), Some("session-a"));
 
         let snapshots = list_stateful_run_snapshots(
             &paths.snapshots_root,
@@ -461,16 +469,16 @@ mod tests {
             &run.run_id,
             None,
         );
-        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots.len(), 2);
         assert_eq!(
-            snapshots[0].workflow_definition_version.as_deref(),
+            snapshots[1].workflow_definition_version.as_deref(),
             Some("release-9")
         );
-        assert!(snapshots[0]
+        assert!(snapshots[1]
             .workflow_definition_snapshot_hash
             .as_deref()
             .is_some_and(|hash| hash.starts_with("sha256:")));
-        let checkpoint = snapshots[0].checkpoint.as_ref().expect("checkpoint");
+        let checkpoint = snapshots[1].checkpoint.as_ref().expect("checkpoint");
         assert_eq!(checkpoint["node_output_ids"], json!(["node-a"]));
         assert!(checkpoint["node_outputs"].is_null());
 
@@ -490,10 +498,10 @@ mod tests {
         );
         let run = run_with_lifecycle();
 
-        project_automation_v2_stateful_boundaries_to_paths(&paths, &run, 1)
+        project_automation_v2_stateful_boundaries_to_paths(&paths, &run)
             .await
             .expect("first projection");
-        project_automation_v2_stateful_boundaries_to_paths(&paths, &run, 1)
+        project_automation_v2_stateful_boundaries_to_paths(&paths, &run)
             .await
             .expect("second projection");
 
@@ -508,14 +516,14 @@ mod tests {
                 tail: false,
             },
         );
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         let snapshots = list_stateful_run_snapshots(
             &paths.snapshots_root,
             &run.tenant_context,
             &run.run_id,
             None,
         );
-        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots.len(), 2);
 
         let _ = tokio::fs::remove_dir_all(root).await;
     }

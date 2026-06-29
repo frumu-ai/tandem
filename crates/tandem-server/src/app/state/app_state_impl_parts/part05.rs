@@ -1005,7 +1005,6 @@ impl AppState {
         }
         let run = guard.get_mut(run_id)?;
         let previous_status = run.status.clone();
-        let previous_lifecycle_len = run.checkpoint.lifecycle_history.len();
         update(run);
         refresh_stale_running_detail(run);
         if run.status != AutomationRunStatus::Queued {
@@ -1030,16 +1029,8 @@ impl AppState {
             .await;
         let _ = self.persist_automation_v2_runs().await;
         let _ = self.persist_automation_v2_run_status_json(&out).await;
-        if let Err(error) = self
-            .project_automation_v2_stateful_boundaries(&out, previous_lifecycle_len)
-            .await
-        {
-            tracing::warn!(
-                run_id = %out.run_id,
-                error = %error,
-                "failed to project automation v2 lifecycle boundary to stateful runtime log"
-            );
-        }
+        self.project_automation_v2_stateful_boundaries_or_warn(&out)
+            .await;
         if matches!(
             out.status,
             AutomationRunStatus::Completed
