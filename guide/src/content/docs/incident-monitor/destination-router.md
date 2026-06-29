@@ -48,6 +48,10 @@ Legacy Bug Monitor configs synthesize:
 
 Configured GitHub destinations use the same publisher adapter but carry their configured destination ID in posts, receipts, route metadata, and external-action mirrors.
 
+## Webhook destinations
+
+Signed webhook destinations publish bounded JSON incident payloads to configured HTTP endpoints. They require an env-backed `webhook_secret_ref`, sign requests with Tandem HMAC SHA-256 headers, block localhost/private/internal URL ranges by default, support optional host allowlists, and record per-delivery receipts with status code, attempt count, delivery ID, route metadata, and evidence digest.
+
 ## Agent guidance
 
 - Prefer route preview before changing publish behavior.

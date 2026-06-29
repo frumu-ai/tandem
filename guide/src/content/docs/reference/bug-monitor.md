@@ -28,7 +28,7 @@ Use it when a workflow failure, recurring runtime error, manual report, or opera
 
 Bug Monitor is intentionally not "report everything immediately to GitHub". It keeps intake, triage, and approval separate so the system can add evidence before anything leaves Tandem.
 
-Incident Monitor is the destination-router evolution of this pipeline. GitHub remains the current production destination, but Incident Monitor separates source identity, routing, destination readiness, approval, and receipts so future Linear, webhook, telemetry/database, MCP tool, and internal memory destinations can use the same governed flow. See [Incident Monitor Overview](../incident-monitor/overview/) and [Destination Router](../incident-monitor/destination-router/).
+Incident Monitor is the destination-router evolution of this pipeline. GitHub, Linear, and signed webhook destinations use the governed router today, and the same source identity, routing, destination readiness, approval, and receipt model is available for future telemetry/database, MCP tool, and internal memory destinations. See [Incident Monitor Overview](../incident-monitor/overview/) and [Destination Router](../incident-monitor/destination-router/).
 
 ## External Project Log Intake
 
@@ -39,6 +39,20 @@ Use this path when CI, ACA, or another local service writes failures to JSON-lin
 On hosted installs, Coder and Bug Monitor share repositories under `/workspace/repos`. Sync the repo from the Coder page first, then set Bug Monitor's local directory to `/workspace/repos/<repo-name>` so triage can inspect the source tree. `/workspace/tandem-data` is runtime state, not source code.
 
 For setup steps, examples, and agent-facing guidance, see [Bug Monitor External Log Intake](../bug-monitor-external-log-intake/).
+
+## Signed Webhook Destinations
+
+Use a `webhook` destination when an incident should be delivered to a customer-owned HTTP endpoint instead of GitHub or Linear.
+
+Webhook destinations require:
+
+- `webhook_url`: an HTTPS URL by default.
+- `webhook_secret_ref`: an env-backed reference such as `env:TANDEM_WEBHOOK_SECRET`.
+- Optional `config.allowed_hosts` when the destination should be restricted to specific hostnames.
+
+Tandem signs each delivery with `x-tandem-signature: t=<timestamp_ms>,v1=<hmac_sha256>` over `<timestamp_ms>.<raw_json_body>` and includes `x-tandem-signature-scheme: tandem_hmac_sha256_v1`, `x-tandem-delivery-id`, `x-tandem-event`, and `idempotency-key` headers.
+
+Private, localhost, link-local, and otherwise internal URL ranges are blocked by default. Development and test-only destinations can opt into `allow_private_networks` and `allow_insecure_http`, but production webhook destinations should use HTTPS, a public endpoint, and a host allowlist. Payloads and response excerpts are bounded, retry attempts are capped, and every delivery records a destination-specific Bug Monitor post receipt with status, attempt count, status code, delivery ID, route metadata, and evidence digest.
 
 ## TypeScript
 

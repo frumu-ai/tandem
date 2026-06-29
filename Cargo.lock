@@ -8157,6 +8157,7 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "url",
  "urlencoding",
  "uuid",
  "zip 2.4.2",

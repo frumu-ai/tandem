@@ -23,15 +23,15 @@ Legacy configs use the synthesized `legacy-github` destination. Explicit GitHub 
 
 ## Linear issue destination
 
-Status: planned.
+Status: implemented.
 
-Linear should create or reuse issues through configured Linear capability resolution. It should map incident severity and risk to Linear priority, include evidence references and triage context, and record Linear issue IDs/URLs in destination-neutral post receipts.
+Linear creates or reuses issues through configured Linear MCP capabilities. It includes evidence references and triage context, performs duplicate matching, and records Linear issue IDs/URLs in destination-neutral post receipts.
 
 ## Signed webhook destination
 
-Status: planned.
+Status: implemented.
 
-Webhook publishing should validate URLs, enforce allowlists, sign payloads with HMAC, bound payload size, retry safely, and record durable receipts. It should never be selectable by report-only intake credentials.
+Webhook publishing validates URLs, enforces optional host allowlists, signs payloads with Tandem HMAC SHA-256 headers, bounds payload and response sizes, caps retry attempts, and records durable receipts with delivery ID, status code, attempt metadata, route metadata, and evidence digest. Report-only intake credentials cannot mutate routes or destinations.
 
 ## Telemetry/database destination
 
