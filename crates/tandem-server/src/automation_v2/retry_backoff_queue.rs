@@ -104,11 +104,32 @@ pub(crate) fn queue_run_for_retry_backoff(
     }
     let metadata =
         retry_backoff_scheduler_metadata(run, node_id, attempts, retry_decision, detail, now_ms)?;
+    apply_retry_backoff_queue(
+        run,
+        &metadata,
+        node_id,
+        attempts,
+        max_attempts,
+        retry_decision,
+        detail,
+    );
+    Some(metadata)
+}
+
+fn apply_retry_backoff_queue(
+    run: &mut AutomationV2RunRecord,
+    metadata: &SchedulerMetadata,
+    node_id: &str,
+    attempts: u32,
+    max_attempts: u32,
+    retry_decision: &tandem_automation::RetryDecision,
+    detail: &str,
+) {
     let backoff_ms = metadata.retry_backoff_ms.unwrap_or_default();
-    let retry_after_ms = metadata.retry_after_ms.unwrap_or(now_ms);
+    let retry_after_ms = metadata.retry_after_ms.unwrap_or(metadata.queued_at_ms);
     let next_attempt = attempts.saturating_add(1);
     run.status = AutomationRunStatus::Queued;
-    run.scheduler = Some(metadata.clone());
+    run.scheduler = Some(metadata.to_owned());
     run.finished_at_ms = None;
     run.stop_kind = None;
     run.stop_reason = None;
@@ -137,7 +158,6 @@ pub(crate) fn queue_run_for_retry_backoff(
             "retry_decision": retry_decision,
         })),
     );
-    Some(metadata)
 }
 
 pub(crate) async fn queue_pending_retry_backoff(
