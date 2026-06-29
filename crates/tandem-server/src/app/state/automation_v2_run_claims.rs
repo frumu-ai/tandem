@@ -31,9 +31,11 @@ fn automation_run_claimant_id() -> String {
 
 fn claimable_queued_run_id(
     runs: &std::collections::HashMap<String, AutomationV2RunRecord>,
+    now: u64,
 ) -> Option<String> {
     runs.values()
         .filter(|row| row.status == AutomationRunStatus::Queued)
+        .filter(|row| crate::automation_v2::retry_backoff_queue::retry_backoff_is_due(row, now))
         .min_by(|a, b| a.created_at_ms.cmp(&b.created_at_ms))
         .map(|row| row.run_id.clone())
 }
@@ -150,9 +152,10 @@ impl AppState {
     }
 
     pub async fn claim_next_queued_automation_v2_run(&self) -> Option<AutomationV2RunRecord> {
+        let now = now_ms();
         let run_id = {
             let guard = self.automation_v2_runs.read().await;
-            claimable_queued_run_id(&guard)
+            claimable_queued_run_id(&guard, now)
         };
         let run_id = match run_id {
             Some(run_id) => run_id,
@@ -160,8 +163,9 @@ impl AppState {
                 if self.reclaim_abandoned_automation_v2_run_leases().await == 0 {
                     return None;
                 }
+                let now = now_ms();
                 let guard = self.automation_v2_runs.read().await;
-                claimable_queued_run_id(&guard)?
+                claimable_queued_run_id(&guard, now)?
             }
         };
         self.claim_specific_automation_v2_run(&run_id).await
@@ -179,6 +183,9 @@ impl AppState {
             let mut guard = self.automation_v2_runs.write().await;
             let run = guard.get_mut(run_id)?;
             if run.status != AutomationRunStatus::Queued {
+                return None;
+            }
+            if !crate::automation_v2::retry_backoff_queue::retry_backoff_is_due(run, now_ms()) {
                 return None;
             }
             (
@@ -324,5 +331,114 @@ impl AppState {
         self.project_automation_v2_stateful_boundaries_or_warn(&claimed)
             .await;
         Some(claimed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    fn queued_run(run_id: &str, created_at_ms: u64) -> AutomationV2RunRecord {
+        AutomationV2RunRecord {
+            run_id: run_id.to_string(),
+            automation_id: "automation-claims".to_string(),
+            tenant_context: tandem_types::TenantContext::local_implicit(),
+            trigger_type: "manual".to_string(),
+            status: AutomationRunStatus::Queued,
+            created_at_ms,
+            updated_at_ms: created_at_ms,
+            started_at_ms: None,
+            finished_at_ms: None,
+            active_session_ids: Vec::new(),
+            latest_session_id: None,
+            active_instance_ids: Vec::new(),
+            checkpoint: tandem_automation::AutomationRunCheckpoint {
+                completed_nodes: Vec::new(),
+                pending_nodes: vec!["node-a".to_string()],
+                node_outputs: Default::default(),
+                node_attempts: Default::default(),
+                node_attempt_verdicts: Default::default(),
+                blocked_nodes: Vec::new(),
+                awaiting_gate: None,
+                gate_history: Vec::new(),
+                lifecycle_history: Vec::new(),
+                last_failure: None,
+            },
+            runtime_context: None,
+            automation_snapshot: None,
+            workflow_definition_version: None,
+            workflow_definition_snapshot_hash: None,
+            execution_claim: None,
+            execution_claim_epoch: 0,
+            pause_reason: None,
+            resume_reason: None,
+            detail: None,
+            stop_kind: None,
+            stop_reason: None,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            estimated_cost_usd: 0.0,
+            scheduler: None,
+            trigger_reason: None,
+            consumed_handoff_id: None,
+            learning_summary: None,
+            effective_execution_profile: tandem_automation::ExecutionProfile::Strict,
+            requested_execution_profile: None,
+        }
+    }
+
+    fn with_retry_backoff(
+        mut run: AutomationV2RunRecord,
+        retry_after_ms: u64,
+    ) -> AutomationV2RunRecord {
+        run.scheduler = Some(crate::app::state::automation::SchedulerMetadata {
+            tenant_context: tandem_types::TenantContext::local_implicit(),
+            queue_reason: Some(crate::app::state::automation::QueueReason::RetryBackoff),
+            resource_key: Some(format!(
+                "automation://{}/runs/{}/nodes/node-a",
+                run.automation_id, run.run_id
+            )),
+            rate_limited_provider: None,
+            queued_at_ms: 100,
+            retry_node_id: Some("node-a".to_string()),
+            retry_attempt: Some(2),
+            retry_backoff_ms: Some(500),
+            retry_after_ms: Some(retry_after_ms),
+            retry_reason: Some("provider timeout".to_string()),
+        });
+        run
+    }
+
+    #[test]
+    fn claimable_queued_run_skips_retry_backoff_before_due_time() {
+        let mut runs = HashMap::new();
+        runs.insert(
+            "run-backoff".to_string(),
+            with_retry_backoff(queued_run("run-backoff", 10), 1_500),
+        );
+
+        assert_eq!(claimable_queued_run_id(&runs, 1_499), None);
+        assert_eq!(
+            claimable_queued_run_id(&runs, 1_500).as_deref(),
+            Some("run-backoff")
+        );
+    }
+
+    #[test]
+    fn claimable_queued_run_can_skip_backoff_and_pick_ready_run() {
+        let mut runs = HashMap::new();
+        runs.insert(
+            "run-backoff".to_string(),
+            with_retry_backoff(queued_run("run-backoff", 10), 1_500),
+        );
+        runs.insert("run-ready".to_string(), queued_run("run-ready", 20));
+
+        assert_eq!(
+            claimable_queued_run_id(&runs, 1_000).as_deref(),
+            Some("run-ready")
+        );
     }
 }

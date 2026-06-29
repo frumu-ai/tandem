@@ -141,6 +141,11 @@ impl AutomationScheduler {
                     resource_key: None,
                     rate_limited_provider: Some(provider.clone()),
                     queued_at_ms: self.get_queued_at(run_id),
+                    retry_node_id: None,
+                    retry_attempt: None,
+                    retry_backoff_ms: None,
+                    retry_after_ms: None,
+                    retry_reason: None,
                 });
             }
         }
@@ -154,6 +159,11 @@ impl AutomationScheduler {
                     resource_key: Some(root.to_string()),
                     rate_limited_provider: None,
                     queued_at_ms: self.get_queued_at(run_id),
+                    retry_node_id: None,
+                    retry_attempt: None,
+                    retry_backoff_ms: None,
+                    retry_after_ms: None,
+                    retry_reason: None,
                 });
             }
         }
@@ -166,6 +176,11 @@ impl AutomationScheduler {
                 resource_key: None,
                 rate_limited_provider: None,
                 queued_at_ms: self.get_queued_at(run_id),
+                retry_node_id: None,
+                retry_attempt: None,
+                retry_backoff_ms: None,
+                retry_after_ms: None,
+                retry_reason: None,
             });
         }
 
@@ -400,6 +415,11 @@ mod tests {
                 resource_key: None,
                 rate_limited_provider: None,
                 queued_at_ms: crate::util::time::now_ms(),
+                retry_node_id: None,
+                retry_attempt: None,
+                retry_backoff_ms: None,
+                retry_after_ms: None,
+                retry_reason: None,
             },
         );
         scheduler.admit_run("run-a", Some("/work/repo-a"));

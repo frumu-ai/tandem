@@ -1048,6 +1048,7 @@ pub async fn run_automation_v2_run(
     run: crate::automation_v2::types::AutomationV2RunRecord,
 ) {
     let run_id = run.run_id.clone();
+    let run_claim_epoch = run.execution_claim_epoch;
     let automation = state
         .get_automation_v2(&run.automation_id)
         .await
@@ -1478,6 +1479,7 @@ pub async fn run_automation_v2_run(
         let outcomes = join_all(tasks).await;
 
         let mut terminal_failure = None::<String>;
+        let mut pending_retry_backoff = None;
         let run_started_at_ms = state
             .get_automation_v2_run(&run_id)
             .await
@@ -2291,19 +2293,15 @@ pub async fn run_automation_v2_run(
                         })
                         .await;
                     if let Some(backoff_ms) = retry_decision.backoff_ms {
-                        let _ = state
-                            .update_automation_v2_run(&run_id, |row| {
-                                row.detail = Some(format!(
-                                    "retrying node `{}` after transient provider failure; waiting {} ms before attempt {}/{}: {}",
-                                    node_id,
-                                    backoff_ms,
-                                    attempts + 1,
-                                    max_attempts,
-                                    detail
-                                ));
-                            })
-                            .await;
-                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                        crate::automation_v2::retry_backoff_queue::record_pending_retry_backoff(
+                            &mut pending_retry_backoff,
+                            &node_id,
+                            attempts,
+                            max_attempts,
+                            &retry_decision,
+                            &detail,
+                            backoff_ms,
+                        );
                     }
                 }
             }
@@ -2316,6 +2314,16 @@ pub async fn run_automation_v2_run(
                 })
                 .await;
             break;
+        }
+        if crate::automation_v2::retry_backoff_queue::queue_pending_retry_backoff(
+            &state,
+            &run_id,
+            run_claim_epoch,
+            pending_retry_backoff,
+        )
+        .await
+        {
+            return;
         }
     }
     let final_run = state.get_automation_v2_run(&run_id).await;
