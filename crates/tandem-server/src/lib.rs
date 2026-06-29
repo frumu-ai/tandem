@@ -66,6 +66,7 @@ pub mod benchmarking;
 pub mod browser;
 pub mod bug_monitor;
 pub mod bug_monitor_github;
+pub mod bug_monitor_linear;
 pub mod capability_resolver;
 pub mod config;
 pub mod eval_support;

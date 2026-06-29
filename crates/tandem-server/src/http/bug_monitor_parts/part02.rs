@@ -119,7 +119,7 @@ pub(super) async fn publish_bug_monitor_draft(
             (
                 StatusCode::BAD_REQUEST,
                 Json(json!({
-                    "error": "Failed to publish Bug Monitor draft to GitHub",
+                    "error": "Failed to publish Bug Monitor draft to destination",
                     "code": "BUG_MONITOR_DRAFT_PUBLISH_FAILED",
                     "draft_id": id,
                     "draft": draft,
@@ -130,7 +130,7 @@ pub(super) async fn publish_bug_monitor_draft(
                     "triage_summary_artifact": triage_summary_artifact,
                     "issue_draft_artifact": issue_draft_artifact,
                     "duplicate_matches_artifact": duplicate_matches_artifact,
-                    "detail": error.to_string(),
+                    "detail": format!("{error:#}"),
                 })),
             )
                 .into_response()
@@ -277,7 +277,7 @@ pub(super) async fn recheck_bug_monitor_draft_match(
             (
                 StatusCode::BAD_REQUEST,
                 Json(json!({
-                    "error": "Failed to recheck Bug Monitor draft against GitHub",
+                    "error": "Failed to recheck Bug Monitor draft against destination",
                     "code": "BUG_MONITOR_DRAFT_RECHECK_FAILED",
                     "draft_id": id,
                     "draft": draft,
@@ -288,7 +288,7 @@ pub(super) async fn recheck_bug_monitor_draft_match(
                     "triage_summary_artifact": triage_summary_artifact,
                     "issue_draft_artifact": issue_draft_artifact,
                     "duplicate_matches_artifact": duplicate_matches_artifact,
-                    "detail": error.to_string(),
+                    "detail": format!("{error:#}"),
                 })),
             )
                 .into_response()
