@@ -312,6 +312,49 @@ async fn bug_monitor_webhook_destination_blocks_private_url_by_default() {
 #[tokio::test]
 #[serial_test::serial]
 #[serial_test::serial(bug_monitor_http)]
+async fn bug_monitor_webhook_destination_blocks_ipv4_mapped_private_ipv6_url() {
+    let (endpoint, requests, server) = spawn_fake_bug_monitor_webhook_server(vec![202], 0).await;
+    let port = reqwest::Url::parse(&endpoint)
+        .expect("parse fake webhook endpoint")
+        .port()
+        .expect("fake webhook port");
+    let mapped_endpoint = format!("http://[::ffff:127.0.0.1]:{port}/incident");
+    let state = test_state().await;
+    configure_webhook_bug_monitor_destination(
+        &state,
+        mapped_endpoint,
+        json!({
+            "allow_insecure_http": true,
+            "max_attempts": 1
+        }),
+    )
+    .await;
+
+    let app = app_router(state.clone());
+    let draft_id = create_ready_linear_bug_monitor_draft(
+        app.clone(),
+        "fingerprint-webhook-ipv4-mapped-private",
+    )
+    .await;
+
+    let (publish_status, publish_payload) =
+        publish_bug_monitor_webhook_draft(app.clone(), &draft_id).await;
+    assert_eq!(publish_status, StatusCode::BAD_REQUEST);
+    assert!(
+        publish_payload
+            .get("detail")
+            .and_then(Value::as_str)
+            .is_some_and(|detail| detail.contains("private or internal address")),
+        "IPv4-mapped private IPv6 URL should be blocked: {publish_payload:?}"
+    );
+    assert_eq!(requests.read().await.len(), 0);
+
+    server.abort();
+}
+
+#[tokio::test]
+#[serial_test::serial]
+#[serial_test::serial(bug_monitor_http)]
 async fn bug_monitor_webhook_destination_retries_retryable_failure() {
     let (endpoint, requests, server) =
         spawn_fake_bug_monitor_webhook_server(vec![500, 202], 0).await;

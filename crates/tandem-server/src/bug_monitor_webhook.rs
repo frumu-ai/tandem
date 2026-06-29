@@ -1,5 +1,5 @@
 use std::{
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     time::Duration,
 };
 
@@ -140,6 +140,12 @@ struct WebhookSendSuccess {
 struct WebhookSendFailure {
     detail: String,
     attempts: Vec<WebhookSendAttempt>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct WebhookResolvedTarget {
+    dns_override_host: Option<String>,
+    dns_override_addrs: Vec<SocketAddr>,
 }
 
 pub(crate) fn webhook_destination_readiness(
@@ -495,22 +501,25 @@ async fn publish_claimed_webhook(
         return Err((anyhow::anyhow!(detail), post));
     }
 
-    if let Err(error) = validate_webhook_url(parsed_url, policy).await {
-        let detail = error.to_string();
-        let post = record_claim_failure(
-            state,
-            claim,
-            destination,
-            target_ref,
-            delivery_id,
-            "blocked",
-            &detail,
-            Vec::new(),
-            Some(body.len()),
-        )
-        .await;
-        return Err((error, post));
-    }
+    let resolved_target = match validate_webhook_url(parsed_url, policy).await {
+        Ok(resolved_target) => resolved_target,
+        Err(error) => {
+            let detail = error.to_string();
+            let post = record_claim_failure(
+                state,
+                claim,
+                destination,
+                target_ref,
+                delivery_id,
+                "blocked",
+                &detail,
+                Vec::new(),
+                Some(body.len()),
+            )
+            .await;
+            return Err((error, post));
+        }
+    };
 
     let secret = match resolve_webhook_secret(destination.secret_ref().unwrap_or_default()) {
         Ok(secret) => secret,
@@ -534,6 +543,7 @@ async fn publish_claimed_webhook(
 
     let send_result = send_webhook(
         parsed_url,
+        &resolved_target,
         policy,
         &secret,
         delivery_id,
@@ -603,20 +613,23 @@ async fn publish_claimed_webhook(
 
 async fn send_webhook(
     url: &Url,
+    resolved_target: &WebhookResolvedTarget,
     policy: &WebhookPolicy,
     secret: &str,
     delivery_id: &str,
     idempotency_key: &str,
     body: &[u8],
 ) -> Result<WebhookSendSuccess, WebhookSendFailure> {
-    let client = reqwest::Client::builder()
+    let mut builder = reqwest::Client::builder()
         .redirect(RedirectPolicy::none())
-        .timeout(Duration::from_millis(policy.timeout_ms))
-        .build()
-        .map_err(|error| WebhookSendFailure {
-            detail: format!("build webhook HTTP client: {error}"),
-            attempts: Vec::new(),
-        })?;
+        .timeout(Duration::from_millis(policy.timeout_ms));
+    if let Some(host) = resolved_target.dns_override_host.as_deref() {
+        builder = builder.resolve_to_addrs(host, &resolved_target.dns_override_addrs);
+    }
+    let client = builder.build().map_err(|error| WebhookSendFailure {
+        detail: format!("build webhook HTTP client: {error}"),
+        attempts: Vec::new(),
+    })?;
     let mut attempts = Vec::new();
 
     for attempt_no in 1..=policy.max_attempts {
@@ -731,14 +744,17 @@ async fn read_response_excerpt(
     })
 }
 
-async fn validate_webhook_url(url: &Url, policy: &WebhookPolicy) -> anyhow::Result<()> {
+async fn validate_webhook_url(
+    url: &Url,
+    policy: &WebhookPolicy,
+) -> anyhow::Result<WebhookResolvedTarget> {
     validate_webhook_url_syntax(url, policy)?;
-    if policy.allow_private_networks {
-        return Ok(());
-    }
     let host = url
         .host_str()
         .ok_or_else(|| anyhow::anyhow!("Webhook URL host is missing"))?;
+    if policy.allow_private_networks {
+        return Ok(WebhookResolvedTarget::default());
+    }
     if let Some(reason) = obvious_private_host_reason(Some(host)) {
         anyhow::bail!("{reason}");
     }
@@ -746,7 +762,7 @@ async fn validate_webhook_url(url: &Url, policy: &WebhookPolicy) -> anyhow::Resu
         if !ip_is_publicly_routable(ip) {
             anyhow::bail!("Webhook URL resolves to a private or internal address");
         }
-        return Ok(());
+        return Ok(WebhookResolvedTarget::default());
     }
     let port = url.port_or_known_default().unwrap_or(443);
     let addrs = tokio::net::lookup_host((host, port))
@@ -759,7 +775,10 @@ async fn validate_webhook_url(url: &Url, policy: &WebhookPolicy) -> anyhow::Resu
     if addrs.iter().any(|addr| !ip_is_publicly_routable(addr.ip())) {
         anyhow::bail!("Webhook URL resolves to a private or internal address");
     }
-    Ok(())
+    Ok(WebhookResolvedTarget {
+        dns_override_host: Some(host.to_string()),
+        dns_override_addrs: addrs,
+    })
 }
 
 fn validate_webhook_url_syntax(url: &Url, policy: &WebhookPolicy) -> anyhow::Result<()> {
@@ -827,6 +846,9 @@ fn ipv4_is_publicly_routable(ip: Ipv4Addr) -> bool {
 }
 
 fn ipv6_is_publicly_routable(ip: Ipv6Addr) -> bool {
+    if let Some(mapped) = ip.to_ipv4_mapped() {
+        return ipv4_is_publicly_routable(mapped);
+    }
     !(ip.is_loopback()
         || ip.is_unspecified()
         || ip.is_multicast()
