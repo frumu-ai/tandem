@@ -14,6 +14,9 @@ fail closed. The Control Loop view also has a reusable runtime event timeline
 that renders canonical persisted run events alongside live run stream updates
 with latest-tail loading, backward pagination, dedupe, ordering,
 actor/source/phase/sequence metadata, and tenant scope labels.
+Automation webhooks now use a provider-aware signature verification registry
+with queryable delivery verification metadata, keeping Tandem HMAC compatibility
+while preparing GitHub-style and shared-secret provider schemes.
 Durable wait foundations now persist timer/webhook/approval wait metadata,
 tenant-boundary identity, wake times, timeout policy, and wake claim state for
 future sleep/resume scheduling.
