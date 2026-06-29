@@ -431,8 +431,9 @@ fn stateful_enterprise_scope_summary(
         .into_iter()
         .map(org_unit_grant_summary)
         .collect::<Vec<_>>();
-    let visible_sources = visible_source_bindings_for_scope(catalog, scope)
+    let visible_sources = source_bindings_for_scope(catalog, scope)
         .into_iter()
+        .take(MAX_SCOPE_SOURCE_BINDINGS)
         .map(source_binding_summary)
         .collect::<Vec<_>>();
     let source_count = visible_sources.len();
@@ -539,7 +540,7 @@ fn org_unit_grant_summary(grant: &OrganizationUnitAccessGrant) -> Value {
     })
 }
 
-fn visible_source_bindings_for_scope<'a>(
+fn source_bindings_for_scope<'a>(
     catalog: &'a EnterpriseScopeCatalog,
     scope: &crate::stateful_runtime::StatefulRuntimeScope,
 ) -> Vec<&'a SourceBinding> {
@@ -560,7 +561,6 @@ fn visible_source_bindings_for_scope<'a>(
         })
         .collect::<Vec<_>>();
     bindings.sort_by(|left, right| left.binding_id.cmp(&right.binding_id));
-    bindings.truncate(MAX_SCOPE_SOURCE_BINDINGS);
     bindings
 }
 
@@ -756,7 +756,7 @@ fn data_class_filter_matches(
         .data_classes
         .iter()
         .any(|data_class| serialized_key(data_class) == expected)
-        || visible_source_bindings_for_scope(catalog, &run.scope)
+        || source_bindings_for_scope(catalog, &run.scope)
             .iter()
             .any(|binding| serialized_key(&binding.data_class) == expected)
 }
@@ -782,7 +782,7 @@ fn source_binding_filter_matches(
     let Some(expected) = normalized_filter(expected) else {
         return true;
     };
-    visible_source_bindings_for_scope(catalog, scope)
+    source_bindings_for_scope(catalog, scope)
         .iter()
         .any(|binding| normalize_filter_value(&binding.binding_id) == expected)
 }
@@ -1320,18 +1320,6 @@ mod tests {
         )
         .with_permissions(vec![AccessPermission::Read])
         .with_data_classes(vec![DataClass::FinancialRecord]);
-        let mut binding = SourceBinding::enabled(
-            "binding-repo",
-            tenant_a.clone(),
-            "github",
-            "github",
-            "repo-a",
-            resource,
-            DataClass::FinancialRecord,
-            PrincipalRef::human_user("user-a"),
-            1,
-        );
-        binding.source_root_label = Some("Finance repo".to_string());
         state
             .enterprise
             .org_units
@@ -1344,12 +1332,25 @@ mod tests {
             .write()
             .await
             .insert("grant-finance-repo".to_string(), grant);
-        state
-            .enterprise
-            .source_bindings
-            .write()
-            .await
-            .insert("binding-repo".to_string(), binding);
+        {
+            let mut source_bindings = state.enterprise.source_bindings.write().await;
+            for index in 0..13 {
+                let binding_id = format!("binding-repo-{index:02}");
+                let mut binding = SourceBinding::enabled(
+                    binding_id.clone(),
+                    tenant_a.clone(),
+                    "github",
+                    "github",
+                    format!("repo-a-{index:02}"),
+                    resource.clone(),
+                    DataClass::FinancialRecord,
+                    PrincipalRef::human_user("user-a"),
+                    1,
+                );
+                binding.source_root_label = Some(format!("Finance repo {index:02}"));
+                source_bindings.insert(binding_id, binding);
+            }
+        }
         let mut run = automation_run(
             "run-a",
             tenant_a.clone(),
@@ -1379,7 +1380,7 @@ mod tests {
                 data_class: Some("financial_record".to_string()),
                 risk_tier: Some("financial_record_access".to_string()),
                 delegation_grant_id: Some("delegation-a".to_string()),
-                source_binding_id: Some("binding-repo".to_string()),
+                source_binding_id: Some("binding-repo-12".to_string()),
                 limit: Some(25),
                 ..Default::default()
             }),
@@ -1390,7 +1391,7 @@ mod tests {
         assert_eq!(
             body.pointer("/filters/source_binding_id")
                 .and_then(Value::as_str),
-            Some("binding-repo")
+            Some("binding-repo-12")
         );
         let row = body
             .get("runs")
@@ -1414,7 +1415,12 @@ mod tests {
         assert_eq!(
             row.pointer("/enterprise_scope/visible_knowledge_sources/0/binding_id")
                 .and_then(Value::as_str),
-            Some("binding-repo")
+            Some("binding-repo-00")
+        );
+        assert_eq!(
+            row.pointer("/enterprise_scope/summary/knowledge_source_count")
+                .and_then(Value::as_u64),
+            Some(12)
         );
         assert_eq!(
             row.pointer("/enterprise_scope/org_unit_grants/0/grant_id")
