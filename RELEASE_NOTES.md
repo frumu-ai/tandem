@@ -13,6 +13,14 @@ persisted checkpoint is recoverable while corrupt in-flight records continue to
 fail closed. Automation V2 and workflow approval gates now share stable
 approval wait/request IDs across pending approval APIs and persisted gate
 decision records, laying the common approval primitive for durable waits.
+Durable stateful runs now carry explicit workflow phases, transition history,
+and allowed next phases so future long-running automation APIs can resume,
+pause, and inspect runs through a guarded state machine instead of ad hoc
+status strings. Legacy stateful runtime snapshots that predate those phase
+fields derive a compatible phase state from their stored status when read.
+Automation webhooks now persist tenant-scoped raw inbox events with raw payload
+pointers, body/header digests, redacted header previews, and delivery/run
+correlation for accepted, rejected, and duplicate intake paths.
 Automation webhooks now use a provider-aware signature verification registry
 with queryable delivery verification metadata, keeping Tandem HMAC compatibility
 while preparing GitHub-style and shared-secret provider schemes.
