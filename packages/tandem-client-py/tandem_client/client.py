@@ -2063,6 +2063,7 @@ class _Automations:
 
 _WEBHOOK_TRIGGER_PAYLOAD_ALIASES = {
     "providerEventKind": "provider_event_kind",
+    "signatureScheme": "signature_scheme",
     "owningOrgUnitId": "owning_org_unit_id",
     "resourceScope": "resource_scope",
     "defaultDataClass": "default_data_class",
