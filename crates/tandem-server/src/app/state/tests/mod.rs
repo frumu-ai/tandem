@@ -375,6 +375,10 @@ pub(crate) async fn ready_test_state() -> AppState {
         .join("data")
         .join("automation_webhooks")
         .join("secrets.json");
+    state.idempotency_keys_path = tandem_home
+        .join("data")
+        .join("runtime")
+        .join("idempotency_keys.json");
     state.memory_db_path = tandem_home.join("memory.sqlite");
     state
         .mark_ready(crate::RuntimeState {
