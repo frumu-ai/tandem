@@ -448,6 +448,13 @@ pub struct MemorySearchRequest {
     pub authority_job_context: Option<MemoryAuthorityJobContext>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retrieval_gateway: Option<MemoryRetrievalGatewayRequest>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "workflowPhase",
+        alias = "workflow_phase"
+    )]
+    pub workflow_phase: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

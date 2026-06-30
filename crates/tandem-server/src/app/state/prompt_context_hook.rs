@@ -229,6 +229,22 @@ impl ServerPromptContextHook {
         run_client_id: Option<&str>,
         now_ms: u64,
     ) -> PromptMemoryAccess {
+        Self::resolve_prompt_memory_access_with_workflow_phase(
+            runtime_auth_mode,
+            session,
+            run_client_id,
+            now_ms,
+            None,
+        )
+    }
+
+    pub(super) fn resolve_prompt_memory_access_with_workflow_phase(
+        runtime_auth_mode: RuntimeAuthMode,
+        session: Option<&Session>,
+        run_client_id: Option<&str>,
+        now_ms: u64,
+        workflow_phase: Option<&str>,
+    ) -> PromptMemoryAccess {
         let Some(session) = session else {
             return if runtime_auth_mode == RuntimeAuthMode::LocalSingleTenant {
                 let resolution = local_memory_subject(run_client_id);
@@ -323,10 +339,17 @@ impl ServerPromptContextHook {
                 };
             }
         };
+        let mut access_filter = MemoryAccessFilter::strict(strict_projection, now_ms);
+        if let Some(workflow_phase) = workflow_phase
+            .map(str::trim)
+            .filter(|workflow_phase| !workflow_phase.is_empty())
+        {
+            access_filter = access_filter.with_workflow_phase(workflow_phase.to_string());
+        }
         PromptMemoryAccess::Governed {
             tenant_context: verified.tenant_context.clone(),
             subject: resolution.subject,
-            access_filter: MemoryAccessFilter::strict(strict_projection, now_ms),
+            access_filter,
             audit: resolution.audit,
         }
     }
@@ -718,11 +741,12 @@ impl PromptContextHook for ServerPromptContextHook {
             let started = now_ms();
             let runtime_auth_mode =
                 crate::memory::policy_status::resolve_memory_context_runtime_auth_mode();
-            let memory_access = Self::resolve_prompt_memory_access(
+            let memory_access = Self::resolve_prompt_memory_access_with_workflow_phase(
                 runtime_auth_mode,
                 session.as_ref(),
                 run_client_id.as_deref(),
                 started,
+                run.workflow_phase.as_deref(),
             );
             if let PromptMemoryAccess::Blocked {
                 reason,

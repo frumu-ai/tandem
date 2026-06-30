@@ -744,6 +744,49 @@ fn prompt_memory_access_uses_strict_agent_tenant_actor_and_audits_delegate() {
     }
 }
 
+#[test]
+fn prompt_memory_access_propagates_workflow_phase_to_knowledge_scope_filter() {
+    let mut session = Session::new(Some("enterprise".to_string()), Some(".".to_string()));
+    let verified = test_verified_context("org-a", "workspace-a", "user-a", "project-a", true);
+    session.tenant_context = verified.tenant_context.clone();
+    session.verified_tenant_context = Some(verified);
+    let mut record = prompt_memory_record("verified", "draft-phase scoped knowledge");
+    record.metadata = Some(json!({
+        "knowledge_scope_registry": {
+            "registry_id": "registry-draft",
+            "resource_ref": {
+                "organization_id": "org-a",
+                "workspace_id": "workspace-a",
+                "resource_kind": "project",
+                "resource_id": "project-a"
+            },
+            "data_class": "internal",
+            "allowed_workflow_phases": ["draft"]
+        }
+    }));
+    let visible_with_phase = |workflow_phase: Option<&str>| {
+        match ServerPromptContextHook::resolve_prompt_memory_access_with_workflow_phase(
+            RuntimeAuthMode::LocalSingleTenant,
+            Some(&session),
+            Some("user-a"),
+            2_000,
+            workflow_phase,
+        ) {
+            PromptMemoryAccess::Governed { access_filter, .. } => {
+                ServerPromptContextHook::governed_memory_visible_with_access_filter(
+                    &record,
+                    &access_filter,
+                )
+            }
+            other => panic!("expected governed prompt memory access, got {other:?}"),
+        }
+    };
+
+    assert!(!visible_with_phase(None));
+    assert!(!visible_with_phase(Some("review")));
+    assert!(visible_with_phase(Some("draft")));
+}
+
 #[tokio::test]
 async fn prompt_hook_enterprise_memory_is_tenant_and_verified_actor_scoped() {
     let project_id = "project-a";

@@ -115,11 +115,12 @@ impl WorkflowKnowledgeScopeGrant {
         {
             return WorkflowKnowledgeScopeDecision::deny("knowledge_scope_project_mismatch");
         }
-        if self.workspace_id.is_some()
-            && self.workspace_id != envelope.scope.workspace_id
-            && self.workspace_id != candidate.scope.workspace_id
-        {
-            return WorkflowKnowledgeScopeDecision::deny("knowledge_scope_workspace_mismatch");
+        if let Some(workspace_id) = self.workspace_id.as_ref() {
+            if envelope.scope.workspace_id.as_ref() != Some(workspace_id)
+                || candidate.scope.workspace_id.as_ref() != Some(workspace_id)
+            {
+                return WorkflowKnowledgeScopeDecision::deny("knowledge_scope_workspace_mismatch");
+            }
         }
         if self
             .expires_at_unix_ms

@@ -40,6 +40,13 @@ pub(crate) fn automation_node_research_stage(node: &AutomationFlowNode) -> Optio
         .filter(|value| !value.is_empty())
 }
 
+pub(crate) fn automation_node_workflow_phase(node: &AutomationFlowNode) -> String {
+    automation_node_builder_metadata(node, "phase_id")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| node.node_id.clone())
+}
+
 pub(crate) fn automation_node_is_research_finalize(node: &AutomationFlowNode) -> bool {
     automation_node_research_stage(node).as_deref() == Some("research_finalize")
 }

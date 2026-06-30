@@ -74,13 +74,20 @@ impl KnowledgeScopePolicy {
         if self.allowed_workflow_phases.is_empty() {
             return None;
         }
+        if self
+            .allowed_workflow_phases
+            .iter()
+            .any(|allowed| allowed == "*")
+        {
+            return None;
+        }
         let Some(workflow_phase) = workflow_phase else {
             return Some("knowledge_scope_missing_workflow_phase".to_string());
         };
         if self
             .allowed_workflow_phases
             .iter()
-            .any(|allowed| allowed == "*" || allowed == workflow_phase)
+            .any(|allowed| allowed == workflow_phase)
         {
             None
         } else {
@@ -265,6 +272,15 @@ mod tests {
         .expect("project decision");
         assert!(!project.allowed);
         assert_eq!(project.reason_code, "knowledge_write_tier_denied_by_scope");
+    }
+
+    #[test]
+    fn wildcard_workflow_phase_does_not_require_concrete_phase() {
+        let mut policy = policy();
+        policy.allowed_workflow_phases = vec!["*".to_string()];
+
+        assert_eq!(policy.read_denial_reason(None, 1_000), None);
+        assert_eq!(policy.read_denial_reason(Some("review"), 1_000), None);
     }
 
     #[test]

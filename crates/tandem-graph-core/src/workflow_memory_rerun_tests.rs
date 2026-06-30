@@ -191,6 +191,39 @@ fn workflow_memory_registry_allows_registered_phase_memory() {
 }
 
 #[test]
+fn workflow_memory_registry_requires_candidate_workspace_match() {
+    let graph = workflow_graph();
+    let mut envelope = envelope();
+    envelope.scope.workspace_id = Some("workspace-a".to_string());
+    envelope.allowed_memory_tiers = vec!["private".to_string()];
+    let mut grant = knowledge_grant("collection-private", vec!["notification"]);
+    grant.workspace_id = Some("workspace-a".to_string());
+    let registry = WorkflowKnowledgeScopeRegistry::strict(vec![grant]);
+    let mut candidate = memory("other-workspace", "private", "policy:external-send");
+    candidate.scope.workspace_id = Some("workspace-b".to_string());
+
+    let output = graph.workflow_memory_bundle_with_knowledge_scope_registry(
+        &envelope,
+        WorkflowMemoryQuery {
+            step_id: "publish".to_string(),
+            step_kind: Some("notification".to_string()),
+            now_unix_ms: Some(200),
+            include_stale: false,
+        },
+        &[candidate],
+        &registry,
+    );
+
+    assert!(output.value.memories.is_empty());
+    assert!(!output.value.fallback_to_semantic_search);
+    assert!(output
+        .audit
+        .denied_reasons
+        .iter()
+        .any(|reason| reason == "knowledge_scope_workspace_mismatch"));
+}
+
+#[test]
 fn workflow_rerun_plan_marks_failed_step_and_downstream_dirty() {
     let graph = workflow_graph();
     let output = graph.workflow_rerun_plan(

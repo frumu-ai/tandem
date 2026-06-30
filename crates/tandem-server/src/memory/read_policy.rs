@@ -26,16 +26,41 @@ pub fn governed_memory_read_filter(
     has_grant_backed_access: bool,
     now_ms: u64,
 ) -> Option<MemoryAccessFilter> {
+    governed_memory_read_filter_with_workflow_phase(
+        runtime_auth_mode,
+        verified_tenant_context,
+        has_grant_backed_access,
+        now_ms,
+        None,
+    )
+}
+
+pub fn governed_memory_read_filter_with_workflow_phase(
+    runtime_auth_mode: RuntimeAuthMode,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
+    has_grant_backed_access: bool,
+    now_ms: u64,
+    workflow_phase: Option<&str>,
+) -> Option<MemoryAccessFilter> {
     match governed_memory_read_mode(
         runtime_auth_mode,
         verified_tenant_context,
         has_grant_backed_access,
     ) {
         GovernedReadMode::LocalNoop => None,
-        GovernedReadMode::GovernedStrict => Some(MemoryAccessFilter::governed(
-            verified_tenant_context.and_then(|context| context.strict_projection.clone()),
-            now_ms,
-        )),
+        GovernedReadMode::GovernedStrict => {
+            let mut filter = MemoryAccessFilter::governed(
+                verified_tenant_context.and_then(|context| context.strict_projection.clone()),
+                now_ms,
+            );
+            if let Some(workflow_phase) = workflow_phase
+                .map(str::trim)
+                .filter(|workflow_phase| !workflow_phase.is_empty())
+            {
+                filter = filter.with_workflow_phase(workflow_phase.to_string());
+            }
+            Some(filter)
+        }
     }
 }
 
@@ -62,6 +87,20 @@ mod tests {
 
         assert_eq!(filter.mode, GovernedReadMode::GovernedStrict);
         assert!(filter.strict_context.is_none());
+    }
+
+    #[test]
+    fn governed_filter_carries_workflow_phase() {
+        let filter = governed_memory_read_filter_with_workflow_phase(
+            RuntimeAuthMode::EnterpriseRequired,
+            None,
+            false,
+            2_000,
+            Some(" draft "),
+        )
+        .expect("enterprise reads are governed");
+
+        assert_eq!(filter.workflow_phase.as_deref(), Some("draft"));
     }
 
     #[test]

@@ -723,11 +723,13 @@ pub(super) async fn memory_search(
     } else {
         limit
     };
-    let source_access_filter = crate::memory::read_policy::governed_memory_read_filter(
+    let source_access_filter =
+        crate::memory::read_policy::governed_memory_read_filter_with_workflow_phase(
         crate::config::env::resolve_runtime_auth_mode(),
         verified_tenant_context.as_deref(),
         request.retrieval_gateway.is_some(),
         crate::now_ms(),
+        request.workflow_phase.as_deref(),
     );
     let strict_source_projection_active = source_access_filter.is_some();
     let (hits, gateway_budget_exhausted) = if scopes_used.is_empty() {
