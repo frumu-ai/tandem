@@ -1150,6 +1150,39 @@ impl AppState {
         updated
     }
 
+    pub async fn add_automation_v2_node_session(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        session_id: &str,
+    ) -> Option<AutomationV2RunRecord> {
+        let updated = self.add_automation_v2_session(run_id, session_id).await;
+        self.automation_v2_session_nodes
+            .write()
+            .await
+            .insert(session_id.to_string(), node_id.to_string());
+        updated
+    }
+
+    pub async fn automation_v2_session_run_and_node(
+        &self,
+        session_id: &str,
+    ) -> Option<(String, Option<String>)> {
+        let run_id = self
+            .automation_v2_session_runs
+            .read()
+            .await
+            .get(session_id)
+            .cloned()?;
+        let node_id = self
+            .automation_v2_session_nodes
+            .read()
+            .await
+            .get(session_id)
+            .cloned();
+        Some((run_id, node_id))
+    }
+
     pub async fn set_automation_v2_session_mcp_servers(
         &self,
         session_id: &str,
@@ -1184,6 +1217,10 @@ impl AppState {
             .write()
             .await
             .remove(session_id);
+        self.automation_v2_session_nodes
+            .write()
+            .await
+            .remove(session_id);
         self.update_automation_v2_run(run_id, |row| {
             row.active_session_ids.retain(|id| id != session_id);
         })
@@ -1194,6 +1231,10 @@ impl AppState {
         let mut guard = self.automation_v2_session_runs.write().await;
         for session_id in session_ids {
             guard.remove(session_id);
+        }
+        let mut node_guard = self.automation_v2_session_nodes.write().await;
+        for session_id in session_ids {
+            node_guard.remove(session_id);
         }
         let mut mcp_guard = self.automation_v2_session_mcp_servers.write().await;
         for session_id in session_ids {

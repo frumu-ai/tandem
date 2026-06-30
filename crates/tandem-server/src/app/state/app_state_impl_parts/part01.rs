@@ -313,6 +313,7 @@ impl AppState {
             workflow_dispatch_seen: Arc::new(RwLock::new(std::collections::HashMap::new())),
             routine_session_policies: Arc::new(RwLock::new(std::collections::HashMap::new())),
             automation_v2_session_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            automation_v2_session_nodes: Arc::new(RwLock::new(std::collections::HashMap::new())),
             automation_v2_session_mcp_servers: Arc::new(RwLock::new(
                 std::collections::HashMap::new(),
             )),

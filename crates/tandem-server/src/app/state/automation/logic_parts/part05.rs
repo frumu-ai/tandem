@@ -1753,7 +1753,9 @@ pub(crate) async fn execute_automation_v2_node(
     session.workspace_root = Some(workspace_root.clone());
     state.storage.save_session(session).await?;
 
-    state.add_automation_v2_session(run_id, &session_id).await;
+    state
+        .add_automation_v2_node_session(run_id, &node.node_id, &session_id)
+        .await;
 
     let mut allowlist = merge_automation_agent_allowlist(agent, template.as_ref());
     if let Some(mcp_tools) = agent.mcp_policy.allowed_tools.as_ref() {

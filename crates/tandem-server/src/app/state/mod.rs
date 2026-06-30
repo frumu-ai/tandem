@@ -229,6 +229,7 @@ pub struct AppState {
     pub routine_session_policies:
         Arc<RwLock<std::collections::HashMap<String, RoutineSessionPolicy>>>,
     pub automation_v2_session_runs: Arc<RwLock<std::collections::HashMap<String, String>>>,
+    pub automation_v2_session_nodes: Arc<RwLock<std::collections::HashMap<String, String>>>,
     pub automation_v2_session_mcp_servers:
         Arc<RwLock<std::collections::HashMap<String, Vec<String>>>>,
     pub token_cost_per_1k_usd: f64,

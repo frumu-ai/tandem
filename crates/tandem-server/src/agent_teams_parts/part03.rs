@@ -1170,4 +1170,220 @@ mod fintech_policy_tests {
             .expect("policy decision");
         assert!(decision.allowed, "{:?}", decision.reason);
     }
+
+    fn phase_tool_test_automation() -> crate::AutomationV2Spec {
+        let node = crate::AutomationFlowNode {
+            node_id: "phase-research".to_string(),
+            agent_id: "phase-agent".to_string(),
+            objective: "Collect approved evidence".to_string(),
+            knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+            depends_on: Vec::new(),
+            input_refs: Vec::new(),
+            output_contract: None,
+            tool_policy: None,
+            mcp_policy: None,
+            retry_policy: None,
+            timeout_ms: None,
+            max_tool_calls: None,
+            stage_kind: Some(crate::AutomationNodeStageKind::Workstream),
+            gate: None,
+            metadata: Some(json!({ "phase": "research" })),
+        };
+        crate::AutomationV2Spec {
+            automation_id: "automation-phase-tools".to_string(),
+            name: "Phase Tool Authority".to_string(),
+            description: None,
+            status: crate::AutomationV2Status::Active,
+            schedule: crate::AutomationV2Schedule {
+                schedule_type: crate::AutomationV2ScheduleType::Manual,
+                cron_expression: None,
+                interval_seconds: None,
+                timezone: "UTC".to_string(),
+                misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
+            },
+            knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+            agents: Vec::new(),
+            flow: crate::AutomationFlowSpec { nodes: vec![node] },
+            execution: crate::AutomationExecutionPolicy {
+                profile: Some(crate::automation_v2::execution_profile::ExecutionProfile::Strict),
+                max_parallel_agents: Some(1),
+                max_total_runtime_ms: None,
+                max_total_tool_calls: None,
+                max_total_tokens: None,
+                max_total_cost_usd: None,
+            },
+            output_targets: Vec::new(),
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            creator_id: "test".to_string(),
+            workspace_root: Some(".".to_string()),
+            metadata: None,
+            next_fire_at_ms: None,
+            last_fired_at_ms: None,
+            scope_policy: None,
+            watch_conditions: Vec::new(),
+            handoff_config: None,
+        }
+    }
+
+    fn phase_tool_test_run(automation: crate::AutomationV2Spec) -> crate::AutomationV2RunRecord {
+        let tenant = TenantContext::explicit(
+            "acme-org",
+            "acme-workspace",
+            Some("phase-actor".to_string()),
+        );
+        crate::AutomationV2RunRecord {
+            run_id: "automation-v2-run-phase-tools".to_string(),
+            automation_id: automation.automation_id.clone(),
+            tenant_context: tenant,
+            trigger_type: "manual".to_string(),
+            status: crate::AutomationRunStatus::Running,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            started_at_ms: Some(1),
+            finished_at_ms: None,
+            active_session_ids: vec!["session-phase-tools".to_string()],
+            latest_session_id: Some("session-phase-tools".to_string()),
+            active_instance_ids: Vec::new(),
+            checkpoint: crate::AutomationRunCheckpoint {
+                completed_nodes: Vec::new(),
+                pending_nodes: vec!["phase-research".to_string()],
+                node_outputs: HashMap::new(),
+                node_attempts: HashMap::new(),
+                node_attempt_verdicts: HashMap::new(),
+                blocked_nodes: Vec::new(),
+                awaiting_gate: None,
+                gate_history: Vec::new(),
+                lifecycle_history: Vec::new(),
+                last_failure: None,
+            },
+            runtime_context: None,
+            automation_snapshot: Some(automation),
+            workflow_definition_version: None,
+            workflow_definition_snapshot_hash: None,
+            execution_claim: None,
+            execution_claim_epoch: 0,
+            pause_reason: None,
+            resume_reason: None,
+            detail: None,
+            stop_kind: None,
+            stop_reason: None,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            estimated_cost_usd: 0.0,
+            scheduler: None,
+            trigger_reason: None,
+            consumed_handoff_id: None,
+            learning_summary: None,
+            effective_execution_profile:
+                crate::automation_v2::execution_profile::ExecutionProfile::Strict,
+            requested_execution_profile: None,
+        }
+    }
+
+    async fn phase_tool_policy_state() -> AppState {
+        let state = crate::test_support::test_state().await;
+        let automation = phase_tool_test_automation();
+        let run = phase_tool_test_run(automation);
+        state
+            .automation_v2_runs
+            .write()
+            .await
+            .insert(run.run_id.clone(), run);
+        state
+            .add_automation_v2_node_session(
+                "automation-v2-run-phase-tools",
+                "phase-research",
+                "session-phase-tools",
+            )
+            .await;
+        state
+    }
+
+    #[tokio::test]
+    async fn phase_tool_policy_denies_forbidden_tool_and_records_evidence() {
+        let state = phase_tool_policy_state().await;
+        state
+            .engine_loop
+            .set_session_allowed_tools("session-phase-tools", vec!["read".to_string()])
+            .await;
+        let hook = ServerToolPolicyHook::new(state.clone());
+
+        let decision = hook
+            .evaluate_tool(ToolPolicyContext {
+                session_id: "session-phase-tools".to_string(),
+                message_id: "message-phase-tools".to_string(),
+                tenant_context: Some(TenantContext::explicit(
+                    "acme-org",
+                    "acme-workspace",
+                    Some("phase-actor".to_string()),
+                )),
+                verified_tenant_context: None,
+                tool: "write".to_string(),
+                args: json!({ "path": "out.md" }),
+            })
+            .await
+            .expect("phase tool policy decision");
+
+        assert!(!decision.allowed);
+        assert!(decision
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("workflow phase `research`"));
+        let decision_id = decision
+            .policy_decision_id
+            .as_deref()
+            .expect("policy decision id");
+        let stored = state
+            .get_policy_decision(decision_id)
+            .await
+            .expect("stored policy decision");
+        assert_eq!(stored.policy_id.as_deref(), Some("workflow_phase_tool_authority"));
+        assert_eq!(stored.reason_code, "phase_tool_not_allowed");
+        assert_eq!(stored.decision, PolicyDecisionEffect::Deny);
+        assert_eq!(stored.run_id.as_deref(), Some("automation-v2-run-phase-tools"));
+        assert_eq!(stored.node_id.as_deref(), Some("phase-research"));
+        assert_eq!(stored.metadata["phase_tool_authority"]["phase"], "research");
+
+        let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+            .await
+            .expect("protected audit file");
+        assert!(audit.contains("automation.phase_tool.denied"));
+        assert!(audit.contains("phase_tool_not_allowed"));
+        assert!(audit.contains("phase-research"));
+    }
+
+    #[tokio::test]
+    async fn phase_tool_policy_allows_tool_in_phase_allowlist() {
+        let state = phase_tool_policy_state().await;
+        state
+            .engine_loop
+            .set_session_allowed_tools(
+                "session-phase-tools",
+                vec!["read".to_string(), "write".to_string()],
+            )
+            .await;
+        let hook = ServerToolPolicyHook::new(state);
+
+        let decision = hook
+            .evaluate_tool(ToolPolicyContext {
+                session_id: "session-phase-tools".to_string(),
+                message_id: "message-phase-tools".to_string(),
+                tenant_context: Some(TenantContext::explicit(
+                    "acme-org",
+                    "acme-workspace",
+                    Some("phase-actor".to_string()),
+                )),
+                verified_tenant_context: None,
+                tool: "write".to_string(),
+                args: json!({ "path": "out.md" }),
+            })
+            .await
+            .expect("phase tool policy decision");
+
+        assert!(decision.allowed, "{:?}", decision.reason);
+    }
+
 }

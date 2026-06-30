@@ -896,6 +896,11 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                     }
                 }
             }
+            if let Some(decision) = evaluate_automation_phase_tool_policy(&state, &ctx, &tool).await
+            {
+                return Ok(decision);
+            }
+
             if let Some(policy) = state.routine_session_policy(&ctx.session_id).await {
                 let allowed_patterns = policy
                     .allowed_tools

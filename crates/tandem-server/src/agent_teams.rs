@@ -19,6 +19,7 @@ use tandem_types::{
 };
 
 include!("agent_teams_parts/egress_preflight.rs");
+include!("agent_teams_parts/phase_tool_policy.rs");
 include!("agent_teams_parts/part01.rs");
 include!("agent_teams_parts/part03.rs");
 include!("agent_teams_parts/part02.rs");

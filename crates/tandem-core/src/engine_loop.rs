@@ -559,34 +559,6 @@ impl EngineLoop {
                 return Ok(Some(message));
             }
         };
-        if let Some(allowed_tools) = self
-            .session_allowed_tools
-            .read()
-            .await
-            .get(session_id)
-            .cloned()
-        {
-            if !allowed_tools.is_empty() && !any_policy_matches(&allowed_tools, &tool) {
-                let reason = format!("Tool `{tool}` is not allowed for this run.");
-                let blocked_output = json!({
-                    "status": "skipped",
-                    "tool": tool,
-                    "reason": reason,
-                    "recoverable": true
-                })
-                .to_string();
-                publish_tool_effect(
-                    None,
-                    ToolEffectLedgerPhase::Outcome,
-                    ToolEffectLedgerStatus::Blocked,
-                    &args,
-                    None,
-                    None,
-                    Some(&blocked_output),
-                );
-                return Ok(Some(blocked_output));
-            }
-        }
         if let Some(hook) = self.tool_policy_hook.read().await.clone() {
             let session_context = self
                 .storage
@@ -645,6 +617,34 @@ impl EngineLoop {
                     return Err(anyhow::anyhow!(reason));
                 }
                 return Ok(Some(reason));
+            }
+        }
+        if let Some(allowed_tools) = self
+            .session_allowed_tools
+            .read()
+            .await
+            .get(session_id)
+            .cloned()
+        {
+            if !allowed_tools.is_empty() && !any_policy_matches(&allowed_tools, &tool) {
+                let reason = format!("Tool `{tool}` is not allowed for this run.");
+                let blocked_output = json!({
+                    "status": "skipped",
+                    "tool": tool,
+                    "reason": reason,
+                    "recoverable": true
+                })
+                .to_string();
+                publish_tool_effect(
+                    None,
+                    ToolEffectLedgerPhase::Outcome,
+                    ToolEffectLedgerStatus::Blocked,
+                    &args,
+                    None,
+                    None,
+                    Some(&blocked_output),
+                );
+                return Ok(Some(blocked_output));
             }
         }
         let mut tool_call_id: Option<String> = initial_tool_call_id;
