@@ -170,6 +170,14 @@ fn webhook_trigger_not_found() -> (StatusCode, Json<Value>) {
     )
 }
 
+fn webhook_event_not_found() -> (StatusCode, Json<Value>) {
+    error_response(
+        StatusCode::NOT_FOUND,
+        "AUTOMATION_WEBHOOK_EVENT_NOT_FOUND",
+        "Webhook event not found",
+    )
+}
+
 fn access_denied() -> (StatusCode, Json<Value>) {
     error_response(
         StatusCode::FORBIDDEN,
@@ -444,6 +452,27 @@ async fn load_trigger_for_mutation(
         return Err(access_denied());
     }
     Ok(trigger)
+}
+
+async fn require_webhook_event_read(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+    event: &AutomationWebhookRawEventRecord,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    load_automation_for_read(state, tenant_context, verified, &event.automation_id)
+        .await
+        .map_err(|_| webhook_event_not_found())?;
+    load_trigger_for_read(
+        state,
+        tenant_context,
+        verified,
+        &event.automation_id,
+        &event.trigger_id,
+    )
+    .await
+    .map_err(|_| webhook_event_not_found())?;
+    Ok(())
 }
 
 fn trigger_display_name(trigger: &AutomationWebhookTriggerRecord) -> String {
@@ -1215,8 +1244,10 @@ async fn get_webhook_delivery(
 async fn list_webhook_events(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Query(query): Query<WebhookEventListQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let verified = verified_tenant_context.as_ref().map(|context| &context.0);
     let status = match query.status.as_deref() {
         Some(status) => Some(webhook_status_from_key(status).ok_or_else(|| {
             error_response(
@@ -1228,18 +1259,27 @@ async fn list_webhook_events(
         None => None,
     };
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
-    let rows = state
+    let events = state
         .list_automation_webhook_raw_events(
             &tenant_context,
             query.trigger_id.as_deref(),
             query.automation_id.as_deref(),
             status,
-            limit,
+            200,
         )
-        .await
-        .iter()
-        .map(|event| raw_event_value(event, None))
-        .collect::<Vec<_>>();
+        .await;
+    let mut rows = Vec::new();
+    for event in events {
+        if rows.len() >= limit {
+            break;
+        }
+        if require_webhook_event_read(&state, &tenant_context, verified, &event)
+            .await
+            .is_ok()
+        {
+            rows.push(raw_event_value(&event, None));
+        }
+    }
     Ok(Json(json!({
         "events": rows,
         "count": rows.len(),
@@ -1250,9 +1290,11 @@ async fn list_webhook_events(
 async fn get_webhook_event(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(event_id): Path<String>,
     Query(query): Query<WebhookEventDetailQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let verified = verified_tenant_context.as_ref().map(|context| &context.0);
     let event = state
         .get_automation_webhook_raw_event(&tenant_context, &event_id)
         .await
@@ -1270,6 +1312,7 @@ async fn get_webhook_event(
                 "Webhook event not found",
             )
         })?;
+    require_webhook_event_read(&state, &tenant_context, verified, &event).await?;
     let payload_available = event
         .retention_policy
         .delete_after_ms
@@ -1301,9 +1344,11 @@ async fn get_webhook_event(
 async fn list_webhook_events_for_run(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(run_id): Path<String>,
     Query(query): Query<DeliveryListQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let verified = verified_tenant_context.as_ref().map(|context| &context.0);
     let run = state.get_automation_v2_run(&run_id).await.ok_or_else(|| {
         error_response(
             StatusCode::NOT_FOUND,
@@ -1321,13 +1366,28 @@ async fn list_webhook_events_for_run(
             "Automation run not found",
         ));
     }
-    let limit = query.limit.unwrap_or(50).clamp(1, 200);
-    let rows = state
-        .list_automation_webhook_raw_events_for_run(&tenant_context, &run_id, limit)
+    load_automation_for_read(&state, &tenant_context, verified, &run.automation_id)
         .await
-        .iter()
-        .map(|event| raw_event_value(event, None))
-        .collect::<Vec<_>>();
+        .map_err(|_| {
+            error_response(
+                StatusCode::NOT_FOUND,
+                "AUTOMATION_V2_RUN_NOT_FOUND",
+                "Automation run not found",
+            )
+        })?;
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let events = state
+        .list_automation_webhook_raw_events_for_run(&tenant_context, &run_id, limit)
+        .await;
+    let mut rows = Vec::new();
+    for event in events {
+        if require_webhook_event_read(&state, &tenant_context, verified, &event)
+            .await
+            .is_ok()
+        {
+            rows.push(raw_event_value(&event, None));
+        }
+    }
     Ok(Json(json!({
         "run_id": run_id,
         "runID": run_id,
@@ -1338,119 +1398,5 @@ async fn list_webhook_events_for_run(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use tandem_types::{
-        AssertionMetadata, AuthorityChain, DataBoundary, GrantSource, HumanActor, ResourceKind,
-        ResourceRef, ScopedGrant, StrictTenantContext,
-    };
-
-    fn verified_with_strict_grant(
-        permissions: Vec<AccessPermission>,
-        data_classes: Vec<DataClass>,
-    ) -> (VerifiedTenantContext, ResourceScope) {
-        let tenant_context =
-            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "actor-a");
-        let principal = PrincipalRef::human_user("actor-a");
-        let request_principal = RequestPrincipal::authenticated_user("actor-a", "tandem-web");
-        let authority_chain = AuthorityChain::from_request(request_principal);
-        let resource = ResourceRef::new(
-            "org-a",
-            "workspace-a",
-            ResourceKind::Project,
-            "automation-project",
-        );
-        let scope = ResourceScope::root(resource.clone());
-        let grant = ScopedGrant::new(
-            "grant-webhook-scope",
-            principal.clone(),
-            resource,
-            GrantSource::Delegation,
-        )
-        .with_permissions(permissions)
-        .with_data_classes(data_classes.clone());
-        let strict_projection = StrictTenantContext::new(
-            tenant_context.clone(),
-            principal,
-            authority_chain.clone(),
-            scope.clone(),
-            AssertionMetadata::new(
-                "tandem-web",
-                "tandem-runtime",
-                1_000,
-                9_999_999_999_999,
-                "assertion-webhook-scope",
-            ),
-        )
-        .with_grants(vec![grant])
-        .with_data_boundary(DataBoundary::allow(data_classes));
-        let verified = VerifiedTenantContext {
-            tenant_context,
-            human_actor: HumanActor::tandem_user("actor-a"),
-            authority_chain,
-            roles: Vec::new(),
-            org_units: Vec::new(),
-            capabilities: Vec::new(),
-            policy_version: None,
-            strict_projection: Some(strict_projection),
-            issuer: "tandem-web".to_string(),
-            audience: "tandem-runtime".to_string(),
-            issued_at_ms: 1_000,
-            expires_at_ms: 9_999_999_999_999,
-            assertion_id: "assertion-webhook-scope".to_string(),
-            assertion_key_id: None,
-        };
-        (verified, scope)
-    }
-
-    #[test]
-    fn strict_scope_allows_requires_matching_permission_grant() {
-        let (viewer, scope) =
-            verified_with_strict_grant(vec![AccessPermission::View], vec![DataClass::Internal]);
-        assert!(strict_scope_allows(
-            &viewer,
-            &scope,
-            AccessPermission::View,
-            DataClass::Internal,
-        ));
-        assert!(!strict_scope_allows(
-            &viewer,
-            &scope,
-            AccessPermission::Edit,
-            DataClass::Internal,
-        ));
-        assert!(!strict_scope_allows(
-            &viewer,
-            &scope,
-            AccessPermission::Admin,
-            DataClass::Internal,
-        ));
-
-        let (admin, scope) =
-            verified_with_strict_grant(vec![AccessPermission::Admin], vec![DataClass::Internal]);
-        assert!(strict_scope_allows(
-            &admin,
-            &scope,
-            AccessPermission::Edit,
-            DataClass::Internal,
-        ));
-        assert!(strict_scope_allows(
-            &admin,
-            &scope,
-            AccessPermission::Admin,
-            DataClass::Internal,
-        ));
-    }
-
-    #[test]
-    fn strict_scope_allows_requires_matching_data_class() {
-        let (verified, scope) =
-            verified_with_strict_grant(vec![AccessPermission::Admin], vec![DataClass::Internal]);
-        assert!(!strict_scope_allows(
-            &verified,
-            &scope,
-            AccessPermission::Admin,
-            DataClass::Confidential,
-        ));
-    }
-}
+#[path = "routes_automation_webhook_management_tests.rs"]
+mod tests;
