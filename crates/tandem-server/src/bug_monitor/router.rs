@@ -17,6 +17,7 @@ pub struct BugMonitorRouteContext {
     pub source: Option<String>,
     pub component: Option<String>,
     pub risk_level: Option<String>,
+    pub risk_category: Option<String>,
     pub confidence: Option<String>,
     pub expected_destination: Option<String>,
     pub project_id: Option<String>,
@@ -47,6 +48,7 @@ pub fn build_route_context(
     source: Option<&str>,
     component: Option<&str>,
     risk_level: Option<&str>,
+    risk_category: Option<&str>,
     confidence: Option<&str>,
     expected_destination: Option<&str>,
     project_id: Option<&str>,
@@ -101,6 +103,12 @@ pub fn build_route_context(
             report.and_then(|row| row.risk_level.as_deref()),
             draft.and_then(|row| row.risk_level.as_deref()),
             incident.and_then(|row| row.risk_level.as_deref()),
+        ]),
+        risk_category: first_route_value(&[
+            risk_category,
+            report.and_then(|row| row.risk_category.as_deref()),
+            draft.and_then(|row| row.risk_category.as_deref()),
+            incident.and_then(|row| row.risk_category.as_deref()),
         ]),
         confidence: first_route_value(&[
             confidence,
@@ -268,6 +276,7 @@ pub async fn publish_draft(
     };
     let status = state.bug_monitor_status_snapshot().await;
     let context = build_route_context(
+        None,
         None,
         None,
         None,
@@ -840,6 +849,10 @@ fn route_matches(route: &BugMonitorRouteConfig, context: &BugMonitorRouteContext
         && route_value_matches(&route.match_sources, context.source.as_deref())
         && route_value_matches(&route.match_components, context.component.as_deref())
         && route_value_matches(&route.match_risk_levels, context.risk_level.as_deref())
+        && route_value_matches(
+            &route.match_risk_categories,
+            context.risk_category.as_deref(),
+        )
         && route_value_matches(&route.match_confidence, context.confidence.as_deref())
         && route_value_matches(
             &route.match_expected_destinations,
@@ -893,6 +906,9 @@ fn route_match_reason(route: &BugMonitorRouteConfig) -> String {
     }
     if !route.match_risk_levels.is_empty() {
         parts.push("risk_level");
+    }
+    if !route.match_risk_categories.is_empty() {
+        parts.push("risk_category");
     }
     if !route.match_confidence.is_empty() {
         parts.push("confidence");
@@ -1113,6 +1129,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &[],
             Some(&report),
             None,
@@ -1145,6 +1162,7 @@ mod tests {
         };
 
         let context = build_route_context(
+            None,
             None,
             None,
             None,
@@ -1196,6 +1214,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &[],
             Some(&report),
             None,
@@ -1217,5 +1236,55 @@ mod tests {
             Some(BugMonitorApprovalPolicy::Never)
         );
         assert!(enriched.source_approval_policy_trusted);
+    }
+
+    #[test]
+    fn route_preview_matches_risk_category() {
+        let config = BugMonitorConfig {
+            destinations: vec![BugMonitorDestinationConfig {
+                destination_id: "security-linear".to_string(),
+                name: "Security Linear".to_string(),
+                kind: BugMonitorDestinationKind::LinearIssue,
+                ..BugMonitorDestinationConfig::default()
+            }],
+            routes: vec![BugMonitorRouteConfig {
+                route_id: "security-risk".to_string(),
+                name: "Security Risk".to_string(),
+                destination_ids: vec!["security-linear".to_string()],
+                match_risk_categories: vec!["data_exfiltration".to_string()],
+                ..BugMonitorRouteConfig::default()
+            }],
+            default_destination_ids: vec!["legacy-github".to_string()],
+            ..BugMonitorConfig::default()
+        };
+        let context = build_route_context(
+            None,
+            None,
+            None,
+            None,
+            Some("data_exfiltration"),
+            None,
+            None,
+            None,
+            None,
+            &[],
+            None,
+            None,
+            None,
+        );
+        let destinations = config.effective_destinations();
+        let preview = build_route_preview(&config, &destinations, &[], &context, &[]);
+
+        assert_eq!(
+            preview.effective_destination_ids,
+            vec!["security-linear".to_string()]
+        );
+        assert_eq!(
+            preview
+                .matches
+                .first()
+                .and_then(|row| row.reason.as_deref()),
+            Some("matched_risk_category")
+        );
     }
 }

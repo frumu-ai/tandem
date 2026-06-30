@@ -74,6 +74,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gated by explicit `allow_publish` configuration and payload mappings, with
   route-preview readiness checks, duplicate suppression, redacted receipts, and
   failed-call post records.
+- Added AI-agent safety and risk context fields for Bug Monitor/Incident
+  Monitor drafts and incidents, including redacted actor/model/tool/action
+  metadata, policy and approval state, risk category, blast radius, external
+  correlation ids, SDK exposure, destination payload support, and route-preview
+  matching by risk category.
 
 ### Changed
 

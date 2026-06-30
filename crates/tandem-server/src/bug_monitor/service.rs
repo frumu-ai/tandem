@@ -874,6 +874,10 @@ pub async fn process_event(
         if row.risk_level.is_none() {
             row.risk_level = submission.risk_level.clone();
         }
+        crate::bug_monitor::safety_context::apply_submission_safety_context_to_incident(
+            &mut row,
+            &submission,
+        );
         if row.expected_destination.is_none() {
             row.expected_destination = submission.expected_destination.clone();
         }
@@ -923,7 +927,7 @@ pub async fn process_event(
             duplicate_summary: None,
             duplicate_matches: None,
             event_payload: Some(event.properties.clone()),
-            ..BugMonitorIncidentRecord::default()
+            ..crate::bug_monitor::safety_context::incident_defaults_from_submission(&submission)
         }
     };
     state.put_bug_monitor_incident(incident.clone()).await?;
@@ -1404,6 +1408,8 @@ pub async fn build_bug_monitor_submission_from_event(
     let risk_level = first_string_deep(&event.properties, &["risk_level", "riskLevel", "risk"])
         .map(|value| truncate_text(&value, 80))
         .or_else(|| Some("medium".to_string()));
+    let safety_context =
+        crate::bug_monitor::safety_context::extract_from_event_properties(&event.properties);
     let expected_destination = first_string_deep(
         &event.properties,
         &["expected_destination", "expectedDestination"],
@@ -1499,6 +1505,22 @@ pub async fn build_bug_monitor_submission_from_event(
         format!("retry_exhausted: {retry_exhausted}"),
         field_line("confidence", confidence.clone()),
         field_line("risk_level", risk_level.clone()),
+        field_line("risk_category", safety_context.risk_category.clone()),
+        field_line("actor", safety_context.actor.clone()),
+        field_line("model", safety_context.model.clone()),
+        field_line("tool_name", safety_context.tool_name.clone()),
+        field_line("action", safety_context.action.clone()),
+        field_line("policy", safety_context.policy.clone()),
+        field_line("approval_state", safety_context.approval_state.clone()),
+        field_line("blast_radius", safety_context.blast_radius.clone()),
+        field_line(
+            "external_correlation_ids",
+            if safety_context.external_correlation_ids.is_empty() {
+                None
+            } else {
+                Some(safety_context.external_correlation_ids.join(", "))
+            },
+        ),
         field_line("expected_destination", expected_destination.clone()),
         field_line("error_kind", error_kind.clone()),
         field_line("reason", reason.clone()),
@@ -1509,7 +1531,7 @@ pub async fn build_bug_monitor_submission_from_event(
         "actual_output:".to_string(),
         actual_output.unwrap_or_default(),
         String::new(),
-        field_line("tool", tool_name.clone()),
+        field_line("tool", safety_context.tool_name.clone()),
         "tool_args_summary:".to_string(),
         tool_args_summary.unwrap_or_default(),
         "tool_result_excerpt:".to_string(),
@@ -1610,7 +1632,7 @@ pub async fn build_bug_monitor_submission_from_event(
         risk_level,
         expected_destination,
         evidence_refs,
-        ..BugMonitorSubmission::default()
+        ..crate::bug_monitor::safety_context::submission_defaults_from_extracted(&safety_context)
     })
 }
 

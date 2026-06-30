@@ -45,6 +45,7 @@ pub(super) async fn preview_bug_monitor_route(
         input.source.as_deref(),
         input.component.as_deref(),
         input.risk_level.as_deref(),
+        input.risk_category.as_deref(),
         input.confidence.as_deref(),
         input.expected_destination.as_deref(),
         input.project_id.as_deref(),
