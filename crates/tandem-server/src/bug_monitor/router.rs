@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
 use anyhow::Context;
+use serde_json::{json, Value};
+use tandem_types::{EngineEvent, TenantContext};
 
 use crate::{
     bug_monitor_github, bug_monitor_linear, bug_monitor_local, bug_monitor_mcp,
@@ -302,7 +304,41 @@ pub async fn publish_draft(
     let router_approval_required =
         route_publish_approval_required(&status.config, &preview, &context, &status.destinations);
 
-    validate_publish_plan(&status.config, &preview, request.mode)?;
+    let audit_payload = publish_audit_payload(
+        &request,
+        &draft,
+        incident.as_ref(),
+        &context,
+        &preview,
+        None,
+        None,
+        router_approval_required,
+    );
+    emit_publish_audit_event(
+        state,
+        "bug_monitor.publish.attempted",
+        audit_payload.clone(),
+    )
+    .await;
+
+    if let Err(error) = validate_publish_plan(&status.config, &preview, request.mode) {
+        emit_publish_audit_event(
+            state,
+            "bug_monitor.publish.failed",
+            publish_audit_payload(
+                &request,
+                &draft,
+                incident.as_ref(),
+                &context,
+                &preview,
+                Some("validation_failed"),
+                Some(&crate::truncate_text(&error.to_string(), 500)),
+                router_approval_required,
+            ),
+        )
+        .await;
+        return Err(error);
+    }
     let selected_destination = selected_publish_destination(&preview)?;
     if request.mode != bug_monitor_github::PublishMode::RecheckOnly
         && router_approval_required
@@ -312,6 +348,21 @@ pub async fn publish_draft(
         draft.status = "approval_required".to_string();
         draft.github_status = Some("approval_required".to_string());
         let draft = state.put_bug_monitor_draft(draft).await?;
+        emit_publish_audit_event(
+            state,
+            "bug_monitor.publish.completed",
+            publish_audit_payload(
+                &request,
+                &draft,
+                incident.as_ref(),
+                &context,
+                &preview,
+                Some("approval_required"),
+                None,
+                router_approval_required,
+            ),
+        )
+        .await;
         return Ok(bug_monitor_github::PublishOutcome {
             action: "approval_required".to_string(),
             draft,
@@ -319,7 +370,7 @@ pub async fn publish_draft(
         });
     }
 
-    match &selected_destination.kind {
+    let outcome = match &selected_destination.kind {
         BugMonitorDestinationKind::GithubIssue => {
             bug_monitor_github::publish_draft(
                 state,
@@ -370,8 +421,46 @@ pub async fn publish_draft(
             )
             .await
         }
+    };
+
+    match outcome {
+        Ok(outcome) => {
+            emit_publish_audit_event(
+                state,
+                "bug_monitor.publish.completed",
+                publish_audit_payload(
+                    &request,
+                    &outcome.draft,
+                    incident.as_ref(),
+                    &context,
+                    &preview,
+                    Some(outcome.action.as_str()),
+                    None,
+                    router_approval_required,
+                ),
+            )
+            .await;
+            Ok(outcome)
+        }
+        Err(error) => {
+            emit_publish_audit_event(
+                state,
+                "bug_monitor.publish.failed",
+                publish_audit_payload(
+                    &request,
+                    &draft,
+                    incident.as_ref(),
+                    &context,
+                    &preview,
+                    Some("adapter_failed"),
+                    Some(&crate::truncate_text(&format!("{error:#}"), 500)),
+                    router_approval_required,
+                ),
+            )
+            .await;
+            Err(error).context("publish Bug Monitor draft through destination router")
+        }
     }
-    .context("publish Bug Monitor draft through destination router")
 }
 
 pub async fn record_publish_failure(
@@ -453,6 +542,66 @@ fn selected_publish_destination(
         .destinations
         .first()
         .ok_or_else(|| anyhow::anyhow!("Bug Monitor destination router found no destination"))
+}
+
+fn publish_audit_payload(
+    request: &BugMonitorPublishRequest,
+    draft: &BugMonitorDraftRecord,
+    incident: Option<&BugMonitorIncidentRecord>,
+    context: &BugMonitorRouteContext,
+    preview: &BugMonitorRoutePreviewResponse,
+    action: Option<&str>,
+    detail: Option<&str>,
+    approval_required: bool,
+) -> Value {
+    let selected_destination = preview.destinations.first();
+    json!({
+        "draft_id": request.draft_id.as_str(),
+        "incident_id": request.incident_id.as_deref().or_else(|| incident.map(|row| row.incident_id.as_str())),
+        "mode": format!("{:?}", &request.mode),
+        "requested_destination_ids": &request.destination_ids,
+        "effective_destination_ids": &preview.effective_destination_ids,
+        "selected_destination_id": selected_destination.map(|row| row.destination_id.as_str()),
+        "selected_destination_kind": selected_destination.map(|row| format!("{:?}", &row.kind)),
+        "route_ids": preview.matches.iter().filter_map(|row| row.route_id.clone()).collect::<Vec<_>>(),
+        "blocked": preview.blocked,
+        "blocked_reasons": &preview.blocked_reasons,
+        "approval_required": approval_required,
+        "action": action,
+        "detail": detail,
+        "repo": draft.repo.as_str(),
+        "fingerprint": draft.fingerprint.as_str(),
+        "status": draft.status.as_str(),
+        "risk_level": context.risk_level.as_deref().or(draft.risk_level.as_deref()),
+        "risk_category": context.risk_category.as_deref().or(draft.risk_category.as_deref()),
+        "confidence": context.confidence.as_deref().or(draft.confidence.as_deref()),
+        "project_id": context.project_id.as_deref().or(draft.project_id.as_deref()),
+        "log_source_id": context.log_source_id.as_deref().or(draft.log_source_id.as_deref()),
+        "source_kind": context.source_kind.as_deref().or_else(|| {
+            draft
+                .source_kind
+                .as_ref()
+                .map(|source_kind| source_kind.as_str())
+        }),
+        "tenant_id": context.tenant_id.as_deref().or(draft.tenant_id.as_deref()),
+        "workspace_id": context.workspace_id.as_deref().or(draft.workspace_id.as_deref()),
+        "event_schema_version": context.event_schema_version.as_deref().or(draft.event_schema_version.as_deref()),
+        "source_allowlist_enforced": context.destination_allowlist_enforced,
+    })
+}
+
+async fn emit_publish_audit_event(state: &AppState, event_type: &'static str, payload: Value) {
+    state
+        .event_bus
+        .publish(EngineEvent::new(event_type, payload.clone()));
+    let _ = crate::audit::append_protected_audit_event(
+        state,
+        event_type,
+        &TenantContext::local_implicit(),
+        None,
+        payload,
+    )
+    .await;
 }
 
 fn github_destination_context(

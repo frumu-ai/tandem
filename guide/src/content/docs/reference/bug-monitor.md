@@ -41,7 +41,7 @@ The setup panel is organized around:
 - Routing: default destinations, ordered routes, match rules, route tags, source bindings, and route preview.
 - Safety Defaults: approval, redaction, unready destination blocking, and retention defaults.
 
-Legacy GitHub setup remains compatible: if no explicit router destination is configured, Tandem still treats the existing GitHub posting settings as the default Bug Monitor destination. New destinations and routes are admin/full-token config mutations; scoped intake keys are report-only and cannot change routes, destinations, or published issues.
+Legacy GitHub setup remains compatible: if no explicit router destination is configured, Tandem still treats the existing GitHub posting settings as the default Bug Monitor destination. New destinations and routes are admin/full-token config mutations; scoped intake keys are report-only and cannot change routes, preview destination details, call tools, or publish issues.
 
 ## External Project Log Intake
 
@@ -168,9 +168,12 @@ async with TandemClient(base_url="http://localhost:39731", token="...") as clien
 
 - A report creates intake, not an automatic GitHub mutation.
 - Drafts remain reviewable until approval or publish is explicitly requested.
-- Scoped intake keys can report only for their configured project/scope.
+- Scoped intake keys can report only for their configured project/scope and cannot use config, route-preview, normal report, publish, or intake-key management routes.
 - Destination and route mutations require the full engine API token.
+- Destination/route config changes, intake-key lifecycle changes, and destination-router publish attempts/outcomes emit redacted audit events and protected audit-ledger rows.
 - Webhook destinations should use HTTPS, host allowlists, and env-backed secrets.
+- Secret redaction is enabled by default for Incident Monitor safety defaults. Report-level `redaction_profile` and source bindings can add stricter profiles for specific projects or sources.
+- `retention_days` is unset by default, so deployments should configure retention/export policy for reports, receipts, and protected audit evidence before production use. Source bindings can attach `retention_profile` labels for downstream policy.
 - Reset/replay log-source actions require the full engine API token.
 - Status can be blocked by missing config, missing repo access, or missing runtime capabilities.
 - Missing fields should be handled defensively; Bug Monitor records are intentionally flexible.

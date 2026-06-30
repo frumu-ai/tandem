@@ -96,6 +96,12 @@ destination readiness badges, filter post receipts by destination, and use
 TypeScript/Python SDK helpers for destination and route CRUD plus
 destination-targeted draft publishing. Legacy GitHub Bug Monitor setup remains
 compatible when no explicit router destination is configured.
+Incident Monitor security readiness now records redacted protected audit events
+for destination/route config changes, scoped intake-key lifecycle changes, and
+destination-router publish attempts, completions, approval-required outcomes,
+and failures. Scoped intake keys remain report-only under full API-token auth
+and cannot use route preview, publish, normal report, or intake-key management
+routes.
 The SDK destination removal helpers now also drop routes that would otherwise
 be left with no explicit destinations, preventing accidental fallback to the
 default destination set.

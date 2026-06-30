@@ -82,6 +82,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added an Incident Monitor setup surface in Settings for sources,
   destinations, routing, safety defaults, route preview, destination readiness,
   destination-filtered posts, and SDK destination/route helpers.
+- Added Incident Monitor security-readiness audit coverage for redacted
+  destination/route config mutations, scoped intake-key lifecycle changes, and
+  destination-router publish attempts/outcomes, with adversarial regression
+  tests for scoped intake keys trying to call privileged routes.
 
 ### Changed
 
@@ -101,6 +105,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Control Panel settings now label the Bug Monitor router setup as Incident
   Monitor while keeping the legacy Bug Monitor operational page and GitHub
   compatibility path intact.
+- Incident Monitor security docs now call out the default secret-redaction and
+  retention posture for reports, receipts, and protected audit evidence.
 
 ### Fixed
 
