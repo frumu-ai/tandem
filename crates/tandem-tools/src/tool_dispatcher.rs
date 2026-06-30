@@ -654,7 +654,10 @@ mod tests {
                     .run("run-phase")
                     .node("node-phase"),
             )
-            .with_scope_allowlist(vec!["mcp.notion.alice_search".to_string()]);
+            .with_scope_allowlist(vec![
+                "echo_test".to_string(),
+                "mcp.notion.alice_search".to_string(),
+            ]);
 
         let result = dispatcher
             .dispatch(
@@ -671,12 +674,16 @@ mod tests {
             .expect("tool should run with trusted dispatch authority");
         let payload: Value = serde_json::from_str(&result.output).expect("echoed json");
 
-        assert_eq!(
-            payload
-                .pointer("/__phase_tool_authority/allowed_tools/0")
-                .and_then(Value::as_str),
-            Some("mcp.notion.alice_search")
-        );
+        let allowed_tools = payload
+            .pointer("/__phase_tool_authority/allowed_tools")
+            .and_then(Value::as_array)
+            .expect("trusted allowed tools");
+        assert!(allowed_tools
+            .iter()
+            .any(|tool| tool.as_str() == Some("mcp.notion.alice_search")));
+        assert!(!allowed_tools
+            .iter()
+            .any(|tool| tool.as_str() == Some("mcp.notion.spoofed")));
         assert_eq!(
             payload
                 .pointer("/__phase_tool_authority/run_id")
