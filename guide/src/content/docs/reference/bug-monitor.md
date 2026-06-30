@@ -30,9 +30,22 @@ Bug Monitor is intentionally not "report everything immediately to GitHub". It k
 
 Incident Monitor is the destination-router evolution of this pipeline. GitHub, Linear, and signed webhook destinations use the governed router today, and the same source identity, routing, destination readiness, approval, and receipt model is available for future telemetry/database, MCP tool, and internal memory destinations. See [Incident Monitor Overview](../incident-monitor/overview/) and [Destination Router](../incident-monitor/destination-router/).
 
+## Control Panel Setup
+
+Configure the destination-router surface from `Settings -> Incident Monitor`.
+
+The setup panel is organized around:
+
+- Sources: local directory, target repo, monitored external projects, log sources, and scoped intake keys.
+- Destinations: GitHub-compatible legacy settings plus explicit GitHub, Linear, webhook, local telemetry, memory, and MCP destination rows.
+- Routing: default destinations, ordered routes, match rules, route tags, source bindings, and route preview.
+- Safety Defaults: approval, redaction, unready destination blocking, and retention defaults.
+
+Legacy GitHub setup remains compatible: if no explicit router destination is configured, Tandem still treats the existing GitHub posting settings as the default Bug Monitor destination. New destinations and routes are admin/full-token config mutations; scoped intake keys are report-only and cannot change routes, destinations, or published issues.
+
 ## External Project Log Intake
 
-Bug Monitor can also watch local logs for projects outside a Tandem workflow. Configure `monitored_projects` in `Settings -> Bug Monitor`, then use the external-project panel to inspect source health, create scoped intake keys, reset offsets, and replay the latest log candidate.
+Bug Monitor can also watch local logs for projects outside a Tandem workflow. Configure `monitored_projects` in `Settings -> Incident Monitor`, then use the external-project panel to inspect source health, create scoped intake keys, reset offsets, and replay the latest log candidate.
 
 Use this path when CI, ACA, or another local service writes failures to JSON-lines or plaintext logs and should produce governed Bug Monitor incidents.
 
@@ -71,9 +84,14 @@ if (status.status?.readiness?.enabled === false) {
 
 const incidents = await client.bugMonitor.listIncidents({ limit: 20 });
 const drafts = await client.bugMonitor.listDrafts({ limit: 20 });
+const destinations = await client.bugMonitor.listDestinations();
 
 if (drafts.drafts[0]) {
   await client.bugMonitor.createTriageRun(drafts.drafts[0].draft_id);
+  await client.bugMonitor.publishDraftToDestinations(
+    drafts.drafts[0].draft_id,
+    destinations.map((destination) => destination.destination_id)
+  );
 }
 
 await client.bugMonitor.report({
@@ -94,9 +112,14 @@ async with TandemClient(base_url="http://localhost:39731", token="...") as clien
     status = await client.bug_monitor.get_status()
     incidents = await client.bug_monitor.list_incidents(limit=20)
     drafts = await client.bug_monitor.list_drafts(limit=20)
+    destinations = await client.bug_monitor.list_destinations()
 
     if drafts.drafts:
         await client.bug_monitor.create_triage_run(drafts.drafts[0].draft_id)
+        await client.bug_monitor.publish_draft_to_destinations(
+            drafts.drafts[0].draft_id,
+            [destination.destination_id for destination in destinations],
+        )
 
     await client.bug_monitor.report({
         "title": "Workflow failed while establishing GitHub context",
@@ -126,7 +149,15 @@ async with TandemClient(base_url="http://localhost:39731", token="...") as clien
 - `createIssueDraft()` / `create_issue_draft()`
 - `publishDraft()` / `publish_draft()`
 - `recheckMatch()` / `recheck_match()`
-- `listPosts()` / `list_posts()`
+- `listPosts({ destinationId })` / `list_posts(destination_id=...)`
+- `previewRoute()` / `preview_route()`
+- `listDestinations()` / `list_destinations()`
+- `upsertDestination()` / `upsert_destination()`
+- `removeDestination()` / `remove_destination()`
+- `listRoutes()` / `list_routes()`
+- `upsertRoute()` / `upsert_route()`
+- `removeRoute()` / `remove_route()`
+- `publishDraftToDestinations()` / `publish_draft_to_destinations()`
 - `listIntakeKeys()`
 - `createIntakeKey()`
 - `disableIntakeKey()`
@@ -138,6 +169,8 @@ async with TandemClient(base_url="http://localhost:39731", token="...") as clien
 - A report creates intake, not an automatic GitHub mutation.
 - Drafts remain reviewable until approval or publish is explicitly requested.
 - Scoped intake keys can report only for their configured project/scope.
+- Destination and route mutations require the full engine API token.
+- Webhook destinations should use HTTPS, host allowlists, and env-backed secrets.
 - Reset/replay log-source actions require the full engine API token.
 - Status can be blocked by missing config, missing repo access, or missing runtime capabilities.
 - Missing fields should be handled defensively; Bug Monitor records are intentionally flexible.

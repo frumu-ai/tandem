@@ -352,6 +352,10 @@ type BugMonitorConfigRow = {
   auto_comment_on_matched_open_issues?: boolean;
   label_mode?: string | null;
   monitored_projects?: BugMonitorMonitoredProjectDraft[];
+  destinations?: Array<Record<string, any>>;
+  routes?: Array<Record<string, any>>;
+  default_destination_ids?: string[];
+  safety_defaults?: Record<string, any> | null;
 };
 
 type BugMonitorStatusRow = {
@@ -382,6 +386,8 @@ type BugMonitorStatusRow = {
     aliases?: string[];
     matched?: boolean;
   }>;
+  destinations?: Array<Record<string, any>>;
+  destination_readiness?: Array<Record<string, any>>;
   binding_source_version?: string | null;
   bindings_last_merged_at_ms?: number | null;
   selected_model?: {
@@ -1273,6 +1279,18 @@ export function useSettingsPageController({
   const [bugMonitorAutoComment, setBugMonitorAutoComment] = useState(true);
   const [bugMonitorMonitoredProjectsJson, setBugMonitorMonitoredProjectsJson] = useState("[]");
   const [bugMonitorMonitoredProjectsError, setBugMonitorMonitoredProjectsError] = useState("");
+  const [bugMonitorDestinationsJson, setBugMonitorDestinationsJson] = useState("[]");
+  const [bugMonitorRoutesJson, setBugMonitorRoutesJson] = useState("[]");
+  const [bugMonitorDefaultDestinationsText, setBugMonitorDefaultDestinationsText] = useState("");
+  const [bugMonitorSafetyDefaultsJson, setBugMonitorSafetyDefaultsJson] = useState("{}");
+  const [bugMonitorRoutingConfigError, setBugMonitorRoutingConfigError] = useState("");
+  const [bugMonitorRoutePreviewJson, setBugMonitorRoutePreviewJson] = useState(
+    JSON.stringify({ source: "manual", risk_level: "medium" }, null, 2)
+  );
+  const [bugMonitorRoutePreviewError, setBugMonitorRoutePreviewError] = useState("");
+  const [bugMonitorRoutePreviewResult, setBugMonitorRoutePreviewResult] = useState<any | null>(
+    null
+  );
   const [bugMonitorCreatedIntakeKey, setBugMonitorCreatedIntakeKey] = useState("");
   const [bugMonitorDisablingIntakeKeyId, setBugMonitorDisablingIntakeKeyId] = useState("");
   const [bugMonitorResettingSourceKey, setBugMonitorResettingSourceKey] = useState("");
@@ -1788,6 +1806,9 @@ export function useSettingsPageController({
   const saveBugMonitorMutation = useMutation({
     mutationFn: async () => {
       let monitoredProjects: BugMonitorMonitoredProjectDraft[] = [];
+      let destinations: Array<Record<string, any>> = [];
+      let routes: Array<Record<string, any>> = [];
+      let safetyDefaults: Record<string, any> = {};
       try {
         const parsed = JSON.parse(bugMonitorMonitoredProjectsJson || "[]");
         if (!Array.isArray(parsed)) {
@@ -1801,6 +1822,39 @@ export function useSettingsPageController({
         setBugMonitorMonitoredProjectsError(message);
         throw new Error(message);
       }
+      try {
+        const parsedDestinations = JSON.parse(bugMonitorDestinationsJson || "[]");
+        if (!Array.isArray(parsedDestinations)) {
+          throw new Error("destinations must be a JSON array");
+        }
+        destinations = parsedDestinations as Array<Record<string, any>>;
+
+        const parsedRoutes = JSON.parse(bugMonitorRoutesJson || "[]");
+        if (!Array.isArray(parsedRoutes)) {
+          throw new Error("routes must be a JSON array");
+        }
+        routes = parsedRoutes as Array<Record<string, any>>;
+
+        const parsedSafetyDefaults = JSON.parse(bugMonitorSafetyDefaultsJson || "{}");
+        if (
+          !parsedSafetyDefaults ||
+          typeof parsedSafetyDefaults !== "object" ||
+          Array.isArray(parsedSafetyDefaults)
+        ) {
+          throw new Error("safety_defaults must be a JSON object");
+        }
+        safetyDefaults = parsedSafetyDefaults as Record<string, any>;
+        setBugMonitorRoutingConfigError("");
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Incident Monitor router JSON is invalid";
+        setBugMonitorRoutingConfigError(message);
+        throw new Error(message);
+      }
+      const defaultDestinationIds = String(bugMonitorDefaultDestinationsText || "")
+        .split(/[\s,]+/)
+        .map((value) => value.trim())
+        .filter(Boolean);
       return api("/api/engine/config/bug-monitor", {
         method: "PATCH",
         body: JSON.stringify({
@@ -1825,6 +1879,10 @@ export function useSettingsPageController({
             auto_comment_on_matched_open_issues: bugMonitorAutoComment,
             label_mode: "reporter_only",
             monitored_projects: monitoredProjects,
+            destinations,
+            routes,
+            default_destination_ids: defaultDestinationIds,
+            safety_defaults: safetyDefaults,
           },
         }),
       });
@@ -1836,6 +1894,35 @@ export function useSettingsPageController({
     onError: (error: any) => {
       const detail =
         error instanceof Error ? error.message : String(error?.detail || error?.error || error);
+      toast("err", detail);
+    },
+  });
+  const bugMonitorRoutePreviewMutation = useMutation({
+    mutationFn: async () => {
+      try {
+        const parsed = JSON.parse(bugMonitorRoutePreviewJson || "{}");
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error("Route preview input must be a JSON object");
+        }
+        setBugMonitorRoutePreviewError("");
+        return api("/api/engine/bug-monitor/route-preview", {
+          method: "POST",
+          body: JSON.stringify(parsed),
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Route preview JSON is invalid";
+        setBugMonitorRoutePreviewError(message);
+        throw new Error(message);
+      }
+    },
+    onSuccess: (payload) => {
+      setBugMonitorRoutePreviewResult(payload);
+      toast("ok", "Incident Monitor route preview updated.");
+    },
+    onError: (error: any) => {
+      const detail =
+        error instanceof Error ? error.message : String(error?.detail || error?.error || error);
+      setBugMonitorRoutePreviewError(detail);
       toast("err", detail);
     },
   });
@@ -2998,6 +3085,38 @@ export function useSettingsPageController({
       ? bugMonitorStatus.config.monitored_projects
       : [];
   }, [bugMonitorMonitoredProjectsJson, bugMonitorStatus.config?.monitored_projects]);
+  const bugMonitorDestinations = useMemo(() => {
+    try {
+      const parsed = JSON.parse(bugMonitorDestinationsJson || "[]");
+      if (Array.isArray(parsed)) return parsed as Array<Record<string, any>>;
+    } catch {
+      // The inline editor shows the parse error; keep rendering the last saved config.
+    }
+    if (Array.isArray(bugMonitorStatus.destinations)) return bugMonitorStatus.destinations;
+    return Array.isArray(bugMonitorStatus.config?.destinations)
+      ? bugMonitorStatus.config.destinations
+      : [];
+  }, [
+    bugMonitorDestinationsJson,
+    bugMonitorStatus.config?.destinations,
+    bugMonitorStatus.destinations,
+  ]);
+  const bugMonitorRoutes = useMemo(() => {
+    try {
+      const parsed = JSON.parse(bugMonitorRoutesJson || "[]");
+      if (Array.isArray(parsed)) return parsed as Array<Record<string, any>>;
+    } catch {
+      // The inline editor shows the parse error; keep rendering the last saved config.
+    }
+    return Array.isArray(bugMonitorStatus.config?.routes) ? bugMonitorStatus.config.routes : [];
+  }, [bugMonitorRoutesJson, bugMonitorStatus.config?.routes]);
+  const bugMonitorDestinationReadiness = useMemo(
+    () =>
+      Array.isArray(bugMonitorStatus.destination_readiness)
+        ? bugMonitorStatus.destination_readiness
+        : [],
+    [bugMonitorStatus.destination_readiness]
+  );
   const bugMonitorLogWatcher = useMemo(
     () => (bugMonitorStatus.log_watcher || {}) as BugMonitorLogWatcherStatusDraft,
     [bugMonitorStatus.log_watcher]
@@ -3126,6 +3245,11 @@ export function useSettingsPageController({
       : [];
     setBugMonitorMonitoredProjectsJson(JSON.stringify(monitoredProjects, null, 2));
     setBugMonitorMonitoredProjectsError("");
+    setBugMonitorDestinationsJson(JSON.stringify(config.destinations || [], null, 2));
+    setBugMonitorRoutesJson(JSON.stringify(config.routes || [], null, 2));
+    setBugMonitorDefaultDestinationsText((config.default_destination_ids || []).join(", "));
+    setBugMonitorSafetyDefaultsJson(JSON.stringify(config.safety_defaults || {}, null, 2));
+    setBugMonitorRoutingConfigError("");
   }, [bugMonitorConfigQuery.data]);
 
   useEffect(() => {
@@ -3334,7 +3458,7 @@ export function useSettingsPageController({
     { id: "theme", label: "Themes", icon: "paint-bucket" },
     { id: "channels", label: "Channels", icon: "message-circle" },
     { id: "mcp", label: "MCP", icon: "plug-zap" },
-    { id: "bug_monitor", label: "Bug Monitor", icon: "bug-play" },
+    { id: "bug_monitor", label: "Incident Monitor", icon: "bug-play" },
     { id: "browser", label: "Browser", icon: "monitor-cog" },
     { id: "maintenance", label: "Maintenance", icon: "wrench" },
   ];
@@ -3453,6 +3577,10 @@ export function useSettingsPageController({
     bugMonitorConfigQuery: bugMonitorConfigQuery,
     bugMonitorCreatedIntakeKey: bugMonitorCreatedIntakeKey,
     bugMonitorCurrentBrowseDir: bugMonitorCurrentBrowseDir,
+    bugMonitorDefaultDestinationsText: bugMonitorDefaultDestinationsText,
+    bugMonitorDestinationReadiness: bugMonitorDestinationReadiness,
+    bugMonitorDestinations: bugMonitorDestinations,
+    bugMonitorDestinationsJson: bugMonitorDestinationsJson,
     bugMonitorDisablingIntakeKeyId: bugMonitorDisablingIntakeKeyId,
     bugMonitorDraftDecisionMutation: bugMonitorDraftDecisionMutation,
     bugMonitorDrafts: bugMonitorDrafts,
@@ -3483,6 +3611,14 @@ export function useSettingsPageController({
     bugMonitorRepo: bugMonitorRepo,
     bugMonitorRequireApproval: bugMonitorRequireApproval,
     bugMonitorResettingSourceKey: bugMonitorResettingSourceKey,
+    bugMonitorRoutePreviewError: bugMonitorRoutePreviewError,
+    bugMonitorRoutePreviewJson: bugMonitorRoutePreviewJson,
+    bugMonitorRoutePreviewMutation: bugMonitorRoutePreviewMutation,
+    bugMonitorRoutePreviewResult: bugMonitorRoutePreviewResult,
+    bugMonitorRoutes: bugMonitorRoutes,
+    bugMonitorRoutesJson: bugMonitorRoutesJson,
+    bugMonitorRoutingConfigError: bugMonitorRoutingConfigError,
+    bugMonitorSafetyDefaultsJson: bugMonitorSafetyDefaultsJson,
     bugMonitorStatus: bugMonitorStatus,
     bugMonitorStatusQuery: bugMonitorStatusQuery,
     bugMonitorSuggestedWorkspaceRoot: bugMonitorSuggestedWorkspaceRoot,
@@ -3627,6 +3763,8 @@ export function useSettingsPageController({
     setBugMonitorAutoComment: setBugMonitorAutoComment,
     setBugMonitorAutoCreateIssues: setBugMonitorAutoCreateIssues,
     setBugMonitorCreatedIntakeKey: setBugMonitorCreatedIntakeKey,
+    setBugMonitorDefaultDestinationsText: setBugMonitorDefaultDestinationsText,
+    setBugMonitorDestinationsJson: setBugMonitorDestinationsJson,
     setBugMonitorDisablingIntakeKeyId: setBugMonitorDisablingIntakeKeyId,
     setBugMonitorEnabled: setBugMonitorEnabled,
     setBugMonitorLogSourceActionResult: setBugMonitorLogSourceActionResult,
@@ -3641,6 +3779,11 @@ export function useSettingsPageController({
     setBugMonitorRepo: setBugMonitorRepo,
     setBugMonitorRequireApproval: setBugMonitorRequireApproval,
     setBugMonitorResettingSourceKey: setBugMonitorResettingSourceKey,
+    setBugMonitorRoutePreviewError: setBugMonitorRoutePreviewError,
+    setBugMonitorRoutePreviewJson: setBugMonitorRoutePreviewJson,
+    setBugMonitorRoutingConfigError: setBugMonitorRoutingConfigError,
+    setBugMonitorRoutesJson: setBugMonitorRoutesJson,
+    setBugMonitorSafetyDefaultsJson: setBugMonitorSafetyDefaultsJson,
     setBugMonitorWorkspaceBrowserDir: setBugMonitorWorkspaceBrowserDir,
     setBugMonitorWorkspaceBrowserOpen: setBugMonitorWorkspaceBrowserOpen,
     setBugMonitorWorkspaceBrowserSearch: setBugMonitorWorkspaceBrowserSearch,

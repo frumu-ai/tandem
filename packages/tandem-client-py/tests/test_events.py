@@ -279,6 +279,102 @@ async def test_high_value_sdk_parity_routes() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_bug_monitor_destination_router_sdk_helpers() -> None:
+    base_config = {
+        "bug_monitor": {
+            "enabled": True,
+            "destinations": [
+                {
+                    "destination_id": "legacy-github",
+                    "name": "GitHub",
+                    "kind": "github_issue",
+                    "enabled": True,
+                },
+                {
+                    "destination_id": "linear-primary",
+                    "name": "Linear",
+                    "kind": "linear_issue",
+                    "enabled": True,
+                }
+            ],
+            "routes": [
+                {
+                    "route_id": "default",
+                    "name": "Default",
+                    "destination_ids": ["legacy-github"],
+                },
+                {
+                    "route_id": "high-risk",
+                    "name": "High risk",
+                    "destination_ids": ["linear-primary"],
+                    "match_risk_levels": ["high"],
+                }
+            ],
+            "default_destination_ids": ["legacy-github"],
+        }
+    }
+    get_config_route = respx.get("http://localhost:39731/config/bug-monitor").mock(
+        return_value=httpx.Response(200, json=base_config)
+    )
+    patch_config_route = respx.patch("http://localhost:39731/config/bug-monitor").mock(
+        return_value=httpx.Response(200, json=base_config)
+    )
+    publish_route = respx.post("http://localhost:39731/bug-monitor/drafts/draft-1/publish").mock(
+        return_value=httpx.Response(200, json={"ok": True})
+    )
+
+    async with TandemClient(base_url="http://localhost:39731", token="token") as client:
+        destinations = await client.bug_monitor.list_destinations()
+        await client.bug_monitor.upsert_destination(
+            {
+                "destination_id": "linear-primary",
+                "name": "Linear",
+                "kind": "linear_issue",
+                "enabled": True,
+            }
+        )
+        await client.bug_monitor.upsert_route(
+            {
+                "route_id": "high-risk",
+                "name": "High risk",
+                "destination_ids": ["linear-primary"],
+                "match_risk_levels": ["high"],
+            }
+        )
+        await client.bug_monitor.remove_destination("linear-primary")
+        await client.bug_monitor.publish_draft_to_destinations(
+            "draft-1",
+            ["legacy-github"],
+            {"reason": "ship it"},
+        )
+
+    assert destinations[0].destination_id == "legacy-github"
+    assert get_config_route.call_count == 4
+    assert patch_config_route.call_count == 3
+    upsert_destination_payload = json.loads(
+        patch_config_route.calls[0].request.content.decode("utf-8")
+    )
+    assert (
+        upsert_destination_payload["bug_monitor"]["destinations"][1]["destination_id"]
+        == "linear-primary"
+    )
+    upsert_route_payload = json.loads(patch_config_route.calls[1].request.content.decode("utf-8"))
+    assert upsert_route_payload["bug_monitor"]["routes"][1]["route_id"] == "high-risk"
+    remove_destination_payload = json.loads(
+        patch_config_route.calls[2].request.content.decode("utf-8")
+    )
+    remove_routes = remove_destination_payload["bug_monitor"]["routes"]
+    assert [route["route_id"] for route in remove_routes] == ["default"]
+    assert remove_routes[0]["destination_ids"] == ["legacy-github"]
+    publish_payload = json.loads(publish_route.calls[0].request.content.decode("utf-8"))
+    assert publish_payload == {
+        "reason": "ship it",
+        "destination_ids": ["legacy-github"],
+    }
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_workflow_plans_namespace_routes() -> None:
     preview_route = respx.post("http://localhost:39731/workflow-plans/preview").mock(
         return_value=httpx.Response(

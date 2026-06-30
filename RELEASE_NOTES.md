@@ -89,6 +89,16 @@ redacted actor, model, tool, action, policy, approval state, risk category,
 blast radius, and external correlation ids; SDK models and destination payloads
 expose the context, and route preview can match risk categories for targeted
 safety routing.
+Incident Monitor setup is now available from Control Panel Settings. Operators
+can edit source, destination, route, default destination, and safety-default
+configuration in one place, run route previews before publishing, inspect
+destination readiness badges, filter post receipts by destination, and use
+TypeScript/Python SDK helpers for destination and route CRUD plus
+destination-targeted draft publishing. Legacy GitHub Bug Monitor setup remains
+compatible when no explicit router destination is configured.
+The SDK destination removal helpers now also drop routes that would otherwise
+be left with no explicit destinations, preventing accidental fallback to the
+default destination set.
 Linear duplicate handling preserves matched-issue status on repeated publishes
 and suppresses retrying an ambiguous failed Linear `create_issue` response that
 may already have created an external issue.

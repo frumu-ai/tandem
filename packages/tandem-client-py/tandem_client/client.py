@@ -34,12 +34,14 @@ from .types import (
     BrowserInstallResponse,
     BrowserSmokeTestResponse,
     BrowserStatusResponse,
+    BugMonitorDestinationConfig,
     BugMonitorConfigResponse,
     BugMonitorDraftListResponse,
     BugMonitorDraftRecord,
     BugMonitorIncidentListResponse,
     BugMonitorIncidentRecord,
     BugMonitorPostListResponse,
+    BugMonitorRouteConfig,
     BugMonitorRoutePreviewResponse,
     CoderGithubProjectInboxResponse,
     CoderGithubProjectIntakeResponse,
@@ -432,6 +434,115 @@ class _BugMonitor:
         res.raise_for_status()
         return BugMonitorConfigResponse.model_validate(res.json())
 
+    async def _update_config(self, mutate: Any) -> BugMonitorConfigResponse:
+        current = await self.get_config()
+        config = current.bug_monitor.model_dump(mode="json")
+        next_config = mutate(config)
+        return await self.patch_config({"bug_monitor": next_config})
+
+    async def list_destinations(self) -> list[BugMonitorDestinationConfig]:
+        current = await self.get_config()
+        return current.bug_monitor.destinations
+
+    async def upsert_destination(
+        self, destination: BugMonitorDestinationConfig | dict[str, Any]
+    ) -> BugMonitorConfigResponse:
+        destination_payload = (
+            destination.model_dump(mode="json")
+            if isinstance(destination, BugMonitorDestinationConfig)
+            else dict(destination)
+        )
+        destination_id = str(destination_payload.get("destination_id") or "").strip()
+        if not destination_id:
+            raise ValueError("destination.destination_id is required")
+
+        def mutate(config: dict[str, Any]) -> dict[str, Any]:
+            destinations = [
+                row
+                for row in config.get("destinations", [])
+                if str(row.get("destination_id") or "").strip() != destination_id
+            ]
+            config["destinations"] = [*destinations, destination_payload]
+            return config
+
+        return await self._update_config(mutate)
+
+    async def remove_destination(self, destination_id: str) -> BugMonitorConfigResponse:
+        normalized_destination_id = str(destination_id or "").strip()
+        if not normalized_destination_id:
+            raise ValueError("destination_id is required")
+
+        def mutate(config: dict[str, Any]) -> dict[str, Any]:
+            config["destinations"] = [
+                row
+                for row in config.get("destinations", [])
+                if str(row.get("destination_id") or "").strip() != normalized_destination_id
+            ]
+            config["default_destination_ids"] = [
+                row
+                for row in config.get("default_destination_ids", [])
+                if row != normalized_destination_id
+            ]
+            routes = []
+            for row in config.get("routes", []):
+                destination_ids = row.get("destination_ids")
+                if not isinstance(destination_ids, list) or len(destination_ids) == 0:
+                    routes.append(row)
+                    continue
+                next_destination_ids = [
+                    route_destination_id
+                    for route_destination_id in destination_ids
+                    if route_destination_id != normalized_destination_id
+                ]
+                if next_destination_ids:
+                    routes.append({**row, "destination_ids": next_destination_ids})
+            config["routes"] = routes
+            return config
+
+        return await self._update_config(mutate)
+
+    async def list_routes(self) -> list[BugMonitorRouteConfig]:
+        current = await self.get_config()
+        return current.bug_monitor.routes
+
+    async def upsert_route(
+        self, route: BugMonitorRouteConfig | dict[str, Any]
+    ) -> BugMonitorConfigResponse:
+        route_payload = (
+            route.model_dump(mode="json")
+            if isinstance(route, BugMonitorRouteConfig)
+            else dict(route)
+        )
+        route_id = str(route_payload.get("route_id") or "").strip()
+        if not route_id:
+            raise ValueError("route.route_id is required")
+
+        def mutate(config: dict[str, Any]) -> dict[str, Any]:
+            routes = [
+                row
+                for row in config.get("routes", [])
+                if str(row.get("route_id") or "").strip() != route_id
+            ]
+            config["routes"] = [*routes, route_payload]
+            return config
+
+        return await self._update_config(mutate)
+
+    async def remove_route(self, route_id: str) -> BugMonitorConfigResponse:
+        normalized_route_id = str(route_id or "").strip()
+        if not normalized_route_id:
+            raise ValueError("route_id is required")
+
+        def mutate(config: dict[str, Any]) -> dict[str, Any]:
+            config["routes"] = [
+                row
+                for row in config.get("routes", [])
+                if str(row.get("route_id") or "").strip() != normalized_route_id
+            ]
+            return config
+
+        return await self._update_config(mutate)
+
     async def get_status(self) -> BugMonitorStatusResponse:
         res = await self._http.get("/bug-monitor/status")
         res.raise_for_status()
@@ -535,6 +646,16 @@ class _BugMonitor:
         res = await self._http.post(f"/bug-monitor/drafts/{quote(draft_id)}/publish", json=payload or {})
         res.raise_for_status()
         return res.json()  # type: ignore[no-any-return]
+
+    async def publish_draft_to_destinations(
+        self,
+        draft_id: str,
+        destination_ids: list[str],
+        payload: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        body = dict(payload or {})
+        body["destination_ids"] = destination_ids
+        return await self.publish_draft(draft_id, body)
 
     async def recheck_match(self, draft_id: str, payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         res = await self._http.post(f"/bug-monitor/drafts/{quote(draft_id)}/recheck-match", json=payload or {})
