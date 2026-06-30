@@ -339,13 +339,18 @@ impl ServerPromptContextHook {
                 };
             }
         };
-        let mut access_filter = MemoryAccessFilter::strict(strict_projection, now_ms);
-        if let Some(workflow_phase) = workflow_phase
+        let access_filter = if let Some(workflow_phase) = workflow_phase
             .map(str::trim)
             .filter(|workflow_phase| !workflow_phase.is_empty())
         {
-            access_filter = access_filter.with_workflow_phase(workflow_phase.to_string());
-        }
+            MemoryAccessFilter::strict_with_workflow_phase(
+                strict_projection,
+                now_ms,
+                workflow_phase.to_string(),
+            )
+        } else {
+            MemoryAccessFilter::strict(strict_projection, now_ms)
+        };
         PromptMemoryAccess::Governed {
             tenant_context: verified.tenant_context.clone(),
             subject: resolution.subject,

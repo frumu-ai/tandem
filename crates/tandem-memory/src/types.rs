@@ -183,6 +183,14 @@ impl MemoryAccessFilter {
         Self::governed(Some(strict_context), now_ms)
     }
 
+    pub fn strict_with_workflow_phase(
+        strict_context: StrictTenantContext,
+        now_ms: u64,
+        workflow_phase: impl Into<String>,
+    ) -> Self {
+        Self::strict(strict_context, now_ms).with_workflow_phase(workflow_phase)
+    }
+
     pub fn governed(strict_context: Option<StrictTenantContext>, now_ms: u64) -> Self {
         Self {
             strict_context,
@@ -190,6 +198,14 @@ impl MemoryAccessFilter {
             mode: GovernedReadMode::GovernedStrict,
             workflow_phase: None,
         }
+    }
+
+    pub fn governed_with_workflow_phase(
+        strict_context: Option<StrictTenantContext>,
+        now_ms: u64,
+        workflow_phase: impl Into<String>,
+    ) -> Self {
+        Self::governed(strict_context, now_ms).with_workflow_phase(workflow_phase)
     }
 
     pub fn local_noop(now_ms: u64) -> Self {

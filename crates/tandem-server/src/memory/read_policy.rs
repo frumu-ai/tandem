@@ -49,17 +49,19 @@ pub fn governed_memory_read_filter_with_workflow_phase(
     ) {
         GovernedReadMode::LocalNoop => None,
         GovernedReadMode::GovernedStrict => {
-            let mut filter = MemoryAccessFilter::governed(
-                verified_tenant_context.and_then(|context| context.strict_projection.clone()),
-                now_ms,
-            );
+            let strict_context =
+                verified_tenant_context.and_then(|context| context.strict_projection.clone());
             if let Some(workflow_phase) = workflow_phase
                 .map(str::trim)
                 .filter(|workflow_phase| !workflow_phase.is_empty())
             {
-                filter = filter.with_workflow_phase(workflow_phase.to_string());
+                return Some(MemoryAccessFilter::governed_with_workflow_phase(
+                    strict_context,
+                    now_ms,
+                    workflow_phase.to_string(),
+                ));
             }
-            Some(filter)
+            Some(MemoryAccessFilter::governed(strict_context, now_ms))
         }
     }
 }
