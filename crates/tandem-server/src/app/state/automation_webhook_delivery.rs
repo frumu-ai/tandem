@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use tandem_types::ResourceScope;
 use uuid::Uuid;
 
 use crate::automation_v2::types::*;
@@ -83,12 +84,23 @@ pub(crate) fn automation_webhook_scope_denial_reason(
     ) {
         (Some(_), None) => Some("webhook_missing_resource_scope"),
         (Some(automation_scope), Some(trigger_scope))
-            if !automation_scope.contains(&trigger_scope.root) =>
+            if !automation_scope_contains_trigger_scope(automation_scope, trigger_scope) =>
         {
             Some("webhook_resource_scope_mismatch")
         }
         _ => None,
     }
+}
+
+fn automation_scope_contains_trigger_scope(
+    automation_scope: &ResourceScope,
+    trigger_scope: &ResourceScope,
+) -> bool {
+    automation_scope.contains(&trigger_scope.root)
+        && trigger_scope
+            .allowed_resources
+            .iter()
+            .all(|resource| automation_scope.contains(resource))
 }
 
 pub(crate) fn automation_webhook_accepted_delivery(

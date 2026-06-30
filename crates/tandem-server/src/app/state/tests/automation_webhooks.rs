@@ -649,12 +649,19 @@ async fn webhook_queue_rejects_trigger_outside_automation_resource_scope() {
 
     let mut input = create_input("automation-scoped", tenant_a.clone());
     input.owning_org_unit_id = Some("dept-a".to_string());
-    input.resource_scope = Some(ResourceScope::root(ResourceRef::new(
+    let mut trigger_scope = ResourceScope::root(ResourceRef::new(
+        "org-a",
+        "workspace-a",
+        ResourceKind::SourceBinding,
+        "github-primary",
+    ));
+    trigger_scope.allowed_resources.push(ResourceRef::new(
         "org-a",
         "workspace-a",
         ResourceKind::SourceBinding,
         "github-other",
-    )));
+    ));
+    input.resource_scope = Some(trigger_scope);
     let created = state
         .create_automation_webhook_trigger(input)
         .await
