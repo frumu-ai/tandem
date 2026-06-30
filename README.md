@@ -21,15 +21,17 @@
   <a href="https://tandem.ac/agents?utm_source=github&utm_medium=readme&utm_campaign=hosted_waitlist&utm_content=top_banner">Join the waitlist</a>
 </p>
 
-<h1 align="center">Policy-enforced runtime for AI agents</h1>
+<h1 align="center">Tandem</h1>
 
-**Tandem is a runtime and control plane for AI agents.** It sits between agents and the tools, data, memory, workflows, and actions they use.
+**Tandem enforces policy between AI agents and the tools, data, memory, and actions they use.**
 
-Agents can reason, draft, and propose work. Tandem decides what they are authorized to see, which tools they can call, which actions must pause for approval, and what evidence gets recorded.
+Agents can reason, draft, and propose work. Tandem decides what they are authorized to see, which tools they can call, which actions must pause for approval, what memory/context they can access, and what evidence gets recorded.
 
-That makes Tandem useful when agents touch real company systems: files, repositories, email, MCP tools, customer data, internal docs, production workflows, and long-running automations.
+This makes Tandem useful when agents touch real company systems: files, repositories, email, MCP tools, customer data, internal docs, production workflows, and long-running automations.
 
-**The model proposes. The runtime enforces.**
+For platform and security teams, Tandem acts as a runtime control plane for agentic systems: scoped tool access, approval gates, permissioned memory, tenant/resource boundaries, and audit evidence.
+
+**The model proposes. Tandem enforces.**
 
 ## What Tandem Does
 
@@ -56,9 +58,9 @@ Tandem can expose the draft tool, hide or block the send tool, pause at an appro
 | Flat RAG system          | Runtime-scoped memory and source-bound retrieval                        |
 | Prompt-only safety layer | Enforcement happens outside the model                                   |
 
-Tandem calls this **runtime authority**: authorization, execution control, approval, memory scope, and audit enforced below the model. Entrypoints such as the desktop app, TUI, web control panel, channels, and SDKs are clients of the same engine runtime.
+Tandem calls this **runtime authority**: authorization, execution control, approval, scoped memory, and audit enforced outside the model. Entrypoints such as the desktop app, TUI, web control panel, channels, and SDKs are clients of the same engine runtime.
 
-- **Runtime-owned controls:** Runs, sessions, memory, context, provider secrets, MCP tools, approvals, artifacts, and audit records live below the model.
+- **Runtime-owned controls:** Runs, sessions, memory, context, provider secrets, MCP tools, approvals, artifacts, and audit records live outside the model.
 - **Governed tool execution:** Built-in tools and MCP connectors can be scoped per workflow step, with approval gates for consequential actions.
 - **Tenant-aware runtime:** Hosted and enterprise modes carry tenant/principal context through sessions, runs, context runs, memory, provider credentials, MCP secrets, and events.
 - **Deployable where the data lives:** Tandem can run locally, headlessly, hosted, or inside customer infrastructure.
@@ -72,7 +74,7 @@ Tandem calls this **runtime authority**: authorization, execution control, appro
 
 Agents are becoming workers. They read company context, call tools, open pull requests, draft customer communication, operate project boards, and prepare decisions that used to stay inside human-only systems.
 
-Prompts are not permissions. A system prompt can ask a model to avoid a tool, skip a folder, or wait for approval, but the model should not be the security boundary. Tandem puts those controls in a runtime that can project authority into an agent's work and deny actions outside that authority.
+Prompts are not permissions. A system prompt can ask a model to avoid a tool, skip a folder, or wait for approval, but the model should not be the security boundary. Tandem puts those controls in the runtime, so a workflow can grant the agent only the tools, memory, and actions needed for the current step — and deny anything outside that scope.
 
 Companies also need central AI context without flat access. A permissioned company memory should know what the company knows, but an agent acting for one team, tenant, project, or user should only retrieve the slice it is allowed to use.
 
