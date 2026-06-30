@@ -73,6 +73,34 @@ async fn evaluate_automation_phase_tool_policy(
     })
 }
 
+async fn session_allowlist_would_deny_non_automation_tool(
+    state: &AppState,
+    ctx: &ToolPolicyContext,
+    tool: &str,
+) -> bool {
+    if state
+        .automation_v2_session_run_and_node(&ctx.session_id)
+        .await
+        .is_some()
+    {
+        return false;
+    }
+
+    let allowed_tools = state
+        .engine_loop
+        .get_session_allowed_tools(&ctx.session_id)
+        .await;
+    if allowed_tools.is_empty() {
+        return false;
+    }
+
+    let allowed_patterns = allowed_tools
+        .iter()
+        .map(|name| normalize_tool_name(name))
+        .collect::<Vec<_>>();
+    !any_policy_matches(&allowed_patterns, tool)
+}
+
 fn phase_policy_single_active_node_id(
     run: &crate::automation_v2::types::AutomationV2RunRecord,
 ) -> Option<String> {

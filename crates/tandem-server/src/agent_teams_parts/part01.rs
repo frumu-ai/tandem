@@ -836,6 +836,16 @@ impl ToolPolicyHook for ServerToolPolicyHook {
         let state = self.state.clone();
         Box::pin(async move {
             let tool = normalize_tool_name(&ctx.tool);
+            if session_allowlist_would_deny_non_automation_tool(&state, &ctx, &tool).await {
+                // Let the core engine's session allowlist produce its side-effect-free denial
+                // for ordinary scoped runs. Automation-v2 sessions stay in this hook so the
+                // phase policy can record policy/audit evidence for denied tool calls.
+                return Ok(ToolPolicyDecision {
+                    allowed: true,
+                    reason: None,
+                    policy_decision_id: None,
+                });
+            }
             // EAA-02 (TAN-27): discovery filtering hides unauthorized MCP
             // tools from the offered list, but a hand-crafted or
             // model-generated invocation can still name them. Re-check the

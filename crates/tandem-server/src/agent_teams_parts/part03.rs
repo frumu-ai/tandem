@@ -1386,4 +1386,30 @@ mod fintech_policy_tests {
         assert!(decision.allowed, "{:?}", decision.reason);
     }
 
+    #[tokio::test]
+    async fn session_allowlist_denial_bypasses_hook_for_non_automation_scope() {
+        let state = crate::test_support::test_state().await;
+        state
+            .engine_loop
+            .set_session_allowed_tools("session-generic-allowlist", vec!["read".to_string()])
+            .await;
+        let hook = ServerToolPolicyHook::new(state.clone());
+
+        let decision = hook
+            .evaluate_tool(ToolPolicyContext {
+                session_id: "session-generic-allowlist".to_string(),
+                message_id: "message-generic-allowlist".to_string(),
+                tenant_context: None,
+                verified_tenant_context: None,
+                tool: "write".to_string(),
+                args: json!({ "path": "out.md" }),
+            })
+            .await
+            .expect("policy decision");
+
+        assert!(decision.allowed, "core allowlist should handle the denial");
+        assert!(decision.reason.is_none());
+        assert!(decision.policy_decision_id.is_none());
+        assert!(state.policy_decisions.read().await.is_empty());
+    }
 }
