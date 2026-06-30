@@ -577,6 +577,108 @@ async fn gate_decide_recovers_missing_awaiting_gate_from_pending_node() {
 }
 
 #[tokio::test]
+async fn recovered_pending_gate_ignores_guard_denial_history() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let automation = create_test_automation_v2(&state, "auto-v2-guard-denied-recovered").await;
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("run");
+    let expected_request_id = format!("automation_v2:{}:approval", run.run_id);
+    let expected_transition_id = format!("{expected_request_id}:decision");
+
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = crate::AutomationRunStatus::AwaitingApproval;
+            row.detail = Some("awaiting approval for gate `approval`".to_string());
+            row.checkpoint.completed_nodes = vec!["draft".to_string(), "review".to_string()];
+            row.checkpoint.pending_nodes = vec!["approval".to_string()];
+            row.checkpoint.awaiting_gate = None;
+            row.checkpoint
+                .gate_history
+                .push(crate::AutomationGateDecisionRecord {
+                    node_id: "approval".to_string(),
+                    decision: "guard_denied".to_string(),
+                    reason: Some("stale approval request".to_string()),
+                    decided_at_ms: crate::now_ms(),
+                    decided_by: None,
+                    metadata: Some(json!({
+                        "transition_guard_denial": {
+                            "expected_approval_request_id": expected_request_id.clone(),
+                            "expected_transition_id": expected_transition_id.clone(),
+                        }
+                    })),
+                });
+        })
+        .await
+        .expect("updated run");
+
+    let pending_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/approvals/pending")
+                .body(Body::empty())
+                .expect("pending request"),
+        )
+        .await
+        .expect("pending response");
+    assert_eq!(pending_resp.status(), 200);
+    let pending_body = to_bytes(pending_resp.into_body(), 1_000_000)
+        .await
+        .expect("pending body");
+    let pending_payload: Value = serde_json::from_slice(&pending_body).expect("pending json");
+    let approvals = pending_payload
+        .get("approvals")
+        .and_then(Value::as_array)
+        .expect("approvals array");
+    assert!(
+        approvals.iter().any(|approval| {
+            approval.get("run_id").and_then(Value::as_str) == Some(run.run_id.as_str())
+                && approval.get("node_id").and_then(Value::as_str) == Some("approval")
+        }),
+        "guard_denied must not hide recovered pending approval"
+    );
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/automations/v2/runs/{}/gate", run.run_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "decision": "approve",
+                        "approval_request_id": expected_request_id,
+                        "transition_id": expected_transition_id,
+                    })
+                    .to_string(),
+                ))
+                .expect("decision request"),
+        )
+        .await
+        .expect("decision response");
+    assert_eq!(resp.status(), 200);
+
+    let updated = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("updated run");
+    assert_eq!(updated.status, crate::AutomationRunStatus::Queued);
+    assert_eq!(
+        updated
+            .checkpoint
+            .gate_history
+            .iter()
+            .map(|record| record.decision.as_str())
+            .collect::<Vec<_>>(),
+        vec!["guard_denied", "approve"]
+    );
+}
+
+#[tokio::test]
 async fn approvals_pending_endpoint_returns_empty_when_no_gates_pending() {
     let state = test_state().await;
     let app = app_router(state.clone());

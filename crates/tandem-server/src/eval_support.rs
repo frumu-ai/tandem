@@ -127,6 +127,8 @@ pub async fn automations_v2_run_gate_decide_inner(
         crate::http::routines_automations::AutomationV2GateDecisionInput {
             decision: input.decision,
             reason: input.reason,
+            approval_request_id: None,
+            transition_id: None,
         },
         decider,
     )

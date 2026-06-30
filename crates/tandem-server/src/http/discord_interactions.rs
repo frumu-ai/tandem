@@ -417,6 +417,8 @@ async fn dispatch_decision(
     let input = crate::http::routines_automations::AutomationV2GateDecisionInput {
         decision: parsed.action.clone(),
         reason,
+        approval_request_id: None,
+        transition_id: None,
     };
     let tenant_context = state
         .get_automation_v2_run(&parsed.run_id)

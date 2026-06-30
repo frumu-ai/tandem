@@ -255,6 +255,8 @@ pub(crate) async fn slack_interactions(
     let input = crate::http::routines_automations::AutomationV2GateDecisionInput {
         decision: decision.to_string(),
         reason: None,
+        approval_request_id: None,
+        transition_id: None,
     };
 
     let tenant_context = state

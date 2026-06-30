@@ -10,10 +10,22 @@ use crate::{
 };
 
 const DEFAULT_APPROVAL_GATE_EXPIRES_AFTER_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+const APPROVAL_WAIT_METADATA_KEY: &str = "approval_wait";
+const TRANSITION_GUARD_METADATA_KEY: &str = "transition_guard";
+const TRANSITION_GUARD_KIND: &str = "automation_v2_approval_transition";
+const TRANSITION_GUARD_DENIED_DECISION: &str = "guard_denied";
 
+#[derive(Debug)]
 pub(crate) enum AutomationGateDecisionOutcome {
     Applied,
     AlreadyDecided(Option<AutomationGateDecisionRecord>),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AutomationGateTransitionGuardDenial {
+    pub code: &'static str,
+    pub detail: String,
+    pub metadata: Value,
 }
 
 pub(crate) fn effective_automation_gate_expiry_policy(
@@ -97,9 +109,10 @@ fn default_approval_gate_expiry_action() -> AutomationGateExpiryAction {
 
 pub(crate) fn pause_automation_run_for_gate(
     run: &mut AutomationV2RunRecord,
-    gate: AutomationPendingGate,
+    mut gate: AutomationPendingGate,
     blocked_nodes: Vec<String>,
 ) {
+    bind_gate_transition_guard_metadata(run, &mut gate);
     run.status = AutomationRunStatus::AwaitingApproval;
     run.detail = Some(format!("awaiting approval for gate `{}`", gate.node_id));
     run.checkpoint.awaiting_gate = Some(gate);
@@ -114,35 +127,87 @@ pub(crate) fn apply_automation_gate_decision(
     reason: Option<String>,
     decided_by: Option<crate::automation_v2::governance::GovernanceActorRef>,
 ) -> AutomationGateDecisionOutcome {
+    apply_automation_gate_decision_inner(run, automation, gate, decision, reason, decided_by, None)
+}
+
+pub(crate) fn automation_gate_has_settled_decision(
+    run: &AutomationV2RunRecord,
+    gate_node_id: &str,
+) -> bool {
+    settled_gate_decision(run, gate_node_id).is_some()
+}
+
+pub(crate) fn automation_gate_decision_settles_wait(decision: &str) -> bool {
+    decision != "rework" && decision != TRANSITION_GUARD_DENIED_DECISION
+}
+
+pub(crate) fn apply_automation_gate_decision_with_transition_guard(
+    run: &mut AutomationV2RunRecord,
+    automation: &AutomationV2Spec,
+    gate: &AutomationPendingGate,
+    decision: &str,
+    reason: Option<String>,
+    decided_by: Option<crate::automation_v2::governance::GovernanceActorRef>,
+    requested_approval_request_id: Option<&str>,
+    requested_transition_id: Option<&str>,
+) -> Result<AutomationGateDecisionOutcome, AutomationGateTransitionGuardDenial> {
+    if let Some(winner) = settled_gate_decision(run, &gate.node_id) {
+        return Ok(AutomationGateDecisionOutcome::AlreadyDecided(Some(
+            winner.clone(),
+        )));
+    }
+
+    if !gate_is_still_pending(run, gate) {
+        return Ok(AutomationGateDecisionOutcome::AlreadyDecided(
+            run.checkpoint.gate_history.last().cloned(),
+        ));
+    }
+
+    let approval_wait =
+        ApprovalWaitRef::for_gate(ApprovalSourceKind::AutomationV2, &run.run_id, &gate.node_id);
+    if let Err(denial) = validate_automation_gate_transition_guard(
+        run,
+        gate,
+        &approval_wait,
+        requested_approval_request_id,
+        requested_transition_id,
+    ) {
+        record_transition_guard_denial(run, gate, &denial, decided_by);
+        return Err(denial);
+    }
+    Ok(apply_automation_gate_decision_inner(
+        run,
+        automation,
+        gate,
+        decision,
+        reason,
+        decided_by,
+        Some(approval_wait),
+    ))
+}
+
+fn apply_automation_gate_decision_inner(
+    run: &mut AutomationV2RunRecord,
+    automation: &AutomationV2Spec,
+    gate: &AutomationPendingGate,
+    decision: &str,
+    reason: Option<String>,
+    decided_by: Option<crate::automation_v2::governance::GovernanceActorRef>,
+    approval_wait: Option<ApprovalWaitRef>,
+) -> AutomationGateDecisionOutcome {
     if let Some(winner) = settled_gate_decision(run, &gate.node_id) {
         return AutomationGateDecisionOutcome::AlreadyDecided(Some(winner.clone()));
     }
 
-    let gate_still_pending = run.status == AutomationRunStatus::AwaitingApproval
-        && run
-            .checkpoint
-            .awaiting_gate
-            .as_ref()
-            .map(|pending| pending.node_id == gate.node_id)
-            .unwrap_or_else(|| {
-                run.checkpoint
-                    .pending_nodes
-                    .iter()
-                    .any(|node_id| node_id == &gate.node_id)
-                    && !run
-                        .checkpoint
-                        .gate_history
-                        .iter()
-                        .any(|record| record.node_id == gate.node_id)
-            });
-    if !gate_still_pending {
+    if !gate_is_still_pending(run, gate) {
         return AutomationGateDecisionOutcome::AlreadyDecided(
             run.checkpoint.gate_history.last().cloned(),
         );
     }
 
-    let approval_wait =
-        ApprovalWaitRef::for_gate(ApprovalSourceKind::AutomationV2, &run.run_id, &gate.node_id);
+    let approval_wait = approval_wait.unwrap_or_else(|| {
+        ApprovalWaitRef::for_gate(ApprovalSourceKind::AutomationV2, &run.run_id, &gate.node_id)
+    });
     run.checkpoint
         .gate_history
         .push(AutomationGateDecisionRecord {
@@ -154,6 +219,7 @@ pub(crate) fn apply_automation_gate_decision(
             metadata: gate_decision_metadata_with_approval_wait(
                 gate.metadata.clone(),
                 &approval_wait,
+                Some(run),
             ),
         });
     run.checkpoint.awaiting_gate = None;
@@ -204,7 +270,8 @@ pub(crate) fn apply_automation_gate_expiry(
                 ),
             ),
             metadata: Some(json!({
-                "approval_wait": approval_wait,
+                "approval_wait": approval_wait.clone(),
+                "transition_guard": transition_guard_metadata(&approval_wait, Some(run)),
                 "expiry_policy": policy,
                 "expires_at_ms": expires_at_ms,
                 "expired_at_ms": expired_at_ms,
@@ -284,18 +351,23 @@ pub(crate) fn recover_settled_automation_gate_decision(
 fn gate_decision_metadata_with_approval_wait(
     metadata: Option<Value>,
     approval_wait: &ApprovalWaitRef,
+    run: Option<&AutomationV2RunRecord>,
 ) -> Option<Value> {
+    let transition_guard = transition_guard_metadata(approval_wait, run);
     match metadata {
         Some(Value::Object(mut object)) => {
-            object.insert("approval_wait".to_string(), json!(approval_wait));
+            object.insert(APPROVAL_WAIT_METADATA_KEY.to_string(), json!(approval_wait));
+            object.insert(TRANSITION_GUARD_METADATA_KEY.to_string(), transition_guard);
             Some(Value::Object(object))
         }
         Some(gate_metadata) => Some(json!({
             "approval_wait": approval_wait,
+            "transition_guard": transition_guard,
             "gate_metadata": gate_metadata,
         })),
         None => Some(json!({
             "approval_wait": approval_wait,
+            "transition_guard": transition_guard,
         })),
     }
 }
@@ -312,11 +384,7 @@ fn gate_is_still_pending(run: &AutomationV2RunRecord, gate: &AutomationPendingGa
                     .pending_nodes
                     .iter()
                     .any(|node_id| node_id == &gate.node_id)
-                    && !run
-                        .checkpoint
-                        .gate_history
-                        .iter()
-                        .any(|record| record.node_id == gate.node_id)
+                    && settled_gate_decision(run, &gate.node_id).is_none()
             })
 }
 
@@ -330,11 +398,260 @@ fn settled_gate_decision<'a>(
         .iter()
         .rev()
         .find(|record| record.node_id == gate_node_id)?;
-    if latest.decision == "rework" {
-        None
-    } else {
+    if automation_gate_decision_settles_wait(&latest.decision) {
         Some(latest)
+    } else {
+        None
     }
+}
+
+fn bind_gate_transition_guard_metadata(
+    run: &AutomationV2RunRecord,
+    gate: &mut AutomationPendingGate,
+) {
+    let approval_wait =
+        ApprovalWaitRef::for_gate(ApprovalSourceKind::AutomationV2, &run.run_id, &gate.node_id);
+    gate.metadata =
+        gate_decision_metadata_with_approval_wait(gate.metadata.take(), &approval_wait, Some(run));
+}
+
+fn transition_guard_metadata(
+    approval_wait: &ApprovalWaitRef,
+    run: Option<&AutomationV2RunRecord>,
+) -> Value {
+    let tenant = run.map(|run| {
+        json!({
+            "org_id": run.tenant_context.org_id.clone(),
+            "workspace_id": run.tenant_context.workspace_id.clone(),
+            "actor_id": run.tenant_context.actor_id.clone(),
+        })
+    });
+    json!({
+        "kind": TRANSITION_GUARD_KIND,
+        "source": approval_wait.source.as_str(),
+        "approval_request_id": approval_wait.approval_request_id.clone(),
+        "wait_id": approval_wait.wait_id.clone(),
+        "transition_id": approval_wait.transition_id.clone(),
+        "run_id": approval_wait.run_id.clone(),
+        "node_id": approval_wait.node_id.clone(),
+        "tenant": tenant,
+    })
+}
+
+fn validate_automation_gate_transition_guard(
+    run: &AutomationV2RunRecord,
+    gate: &AutomationPendingGate,
+    expected: &ApprovalWaitRef,
+    requested_approval_request_id: Option<&str>,
+    requested_transition_id: Option<&str>,
+) -> Result<(), AutomationGateTransitionGuardDenial> {
+    if let Some(actual) = normalized_guard_value(requested_approval_request_id) {
+        if actual != expected.approval_request_id {
+            return Err(transition_guard_denial(
+                run,
+                gate,
+                expected,
+                "approval_request_id_mismatch",
+                format!(
+                    "approval request `{actual}` cannot unlock gate `{}` for run `{}`",
+                    gate.node_id, run.run_id
+                ),
+                Some(json!({ "approval_request_id": actual })),
+            ));
+        }
+    }
+    if let Some(actual) = normalized_guard_value(requested_transition_id) {
+        if Some(actual.as_str()) != expected.transition_id.as_deref() {
+            return Err(transition_guard_denial(
+                run,
+                gate,
+                expected,
+                "transition_id_mismatch",
+                format!(
+                    "transition `{actual}` cannot unlock gate `{}` for run `{}`",
+                    gate.node_id, run.run_id
+                ),
+                Some(json!({ "transition_id": actual })),
+            ));
+        }
+    }
+    if let Some(pending) = run
+        .checkpoint
+        .awaiting_gate
+        .as_ref()
+        .filter(|pending| pending.node_id == gate.node_id)
+    {
+        validate_gate_metadata_transition_guard(
+            run,
+            gate,
+            expected,
+            "pending_gate",
+            pending.metadata.as_ref(),
+        )?;
+    }
+    validate_gate_metadata_transition_guard(
+        run,
+        gate,
+        expected,
+        "submitted_gate",
+        gate.metadata.as_ref(),
+    )
+}
+
+fn validate_gate_metadata_transition_guard(
+    run: &AutomationV2RunRecord,
+    gate: &AutomationPendingGate,
+    expected: &ApprovalWaitRef,
+    metadata_scope: &str,
+    metadata: Option<&Value>,
+) -> Result<(), AutomationGateTransitionGuardDenial> {
+    let Some(metadata) = metadata else {
+        return Ok(());
+    };
+    if let Some(wait_value) = metadata.get(APPROVAL_WAIT_METADATA_KEY) {
+        let wait = serde_json::from_value::<ApprovalWaitRef>(wait_value.clone()).map_err(|_| {
+            transition_guard_denial(
+                run,
+                gate,
+                expected,
+                "approval_wait_invalid",
+                format!("approval wait metadata on {metadata_scope} is invalid"),
+                Some(json!({ "metadata_scope": metadata_scope })),
+            )
+        })?;
+        if wait.approval_request_id != expected.approval_request_id
+            || wait.run_id != expected.run_id
+            || wait.node_id.as_deref() != expected.node_id.as_deref()
+            || wait.transition_id.as_deref() != expected.transition_id.as_deref()
+            || wait.source != expected.source
+        {
+            return Err(transition_guard_denial(
+                run,
+                gate,
+                expected,
+                "approval_wait_mismatch",
+                format!("approval wait metadata on {metadata_scope} belongs to another transition"),
+                Some(json!({
+                    "metadata_scope": metadata_scope,
+                    "approval_wait": wait,
+                })),
+            ));
+        }
+    }
+    let Some(guard) = metadata
+        .get(TRANSITION_GUARD_METADATA_KEY)
+        .and_then(Value::as_object)
+    else {
+        return Ok(());
+    };
+    let source = guard.get("source").and_then(Value::as_str);
+    let approval_request_id = guard.get("approval_request_id").and_then(Value::as_str);
+    let wait_id = guard.get("wait_id").and_then(Value::as_str);
+    let transition_id = guard.get("transition_id").and_then(Value::as_str);
+    let run_id = guard.get("run_id").and_then(Value::as_str);
+    let node_id = guard.get("node_id").and_then(Value::as_str);
+    let kind = guard.get("kind").and_then(Value::as_str);
+    let matches_expected = kind == Some(TRANSITION_GUARD_KIND)
+        && source == Some(expected.source.as_str())
+        && approval_request_id == Some(expected.approval_request_id.as_str())
+        && wait_id == Some(expected.wait_id.as_str())
+        && transition_id == expected.transition_id.as_deref()
+        && run_id == Some(expected.run_id.as_str())
+        && node_id == expected.node_id.as_deref()
+        && guard_tenant_matches(run, guard.get("tenant"));
+    if matches_expected {
+        return Ok(());
+    }
+    Err(transition_guard_denial(
+        run,
+        gate,
+        expected,
+        "transition_guard_metadata_mismatch",
+        format!("transition guard metadata on {metadata_scope} belongs to another transition"),
+        Some(json!({
+            "metadata_scope": metadata_scope,
+            "transition_guard": guard,
+        })),
+    ))
+}
+
+fn guard_tenant_matches(run: &AutomationV2RunRecord, tenant: Option<&Value>) -> bool {
+    let Some(tenant) = tenant else {
+        return true;
+    };
+    if tenant.is_null() {
+        return true;
+    }
+    tenant.get("org_id").and_then(Value::as_str) == Some(run.tenant_context.org_id.as_str())
+        && tenant.get("workspace_id").and_then(Value::as_str)
+            == Some(run.tenant_context.workspace_id.as_str())
+        && tenant.get("actor_id").and_then(Value::as_str) == run.tenant_context.actor_id.as_deref()
+}
+
+fn normalized_guard_value(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn transition_guard_denial(
+    run: &AutomationV2RunRecord,
+    gate: &AutomationPendingGate,
+    expected: &ApprovalWaitRef,
+    reason_code: &'static str,
+    detail: String,
+    evidence: Option<Value>,
+) -> AutomationGateTransitionGuardDenial {
+    AutomationGateTransitionGuardDenial {
+        code: "AUTOMATION_V2_GATE_TRANSITION_GUARD_DENIED",
+        detail,
+        metadata: json!({
+            "reason_code": reason_code,
+            "run_id": run.run_id.clone(),
+            "automation_id": run.automation_id.clone(),
+            "node_id": gate.node_id.clone(),
+            "expected_approval_request_id": expected.approval_request_id.clone(),
+            "expected_transition_id": expected.transition_id.clone(),
+            "tenant": {
+                "org_id": run.tenant_context.org_id.clone(),
+                "workspace_id": run.tenant_context.workspace_id.clone(),
+                "actor_id": run.tenant_context.actor_id.clone(),
+            },
+            "evidence": evidence,
+        }),
+    }
+}
+
+fn record_transition_guard_denial(
+    run: &mut AutomationV2RunRecord,
+    gate: &AutomationPendingGate,
+    denial: &AutomationGateTransitionGuardDenial,
+    decided_by: Option<crate::automation_v2::governance::GovernanceActorRef>,
+) {
+    run.detail = Some(format!(
+        "approval transition guard denied for gate `{}`: {}",
+        gate.node_id, denial.detail
+    ));
+    run.checkpoint
+        .gate_history
+        .push(AutomationGateDecisionRecord {
+            node_id: gate.node_id.clone(),
+            decision: TRANSITION_GUARD_DENIED_DECISION.to_string(),
+            reason: Some(denial.detail.clone()),
+            decided_at_ms: crate::now_ms(),
+            decided_by,
+            metadata: Some(json!({
+                "transition_guard_denial": denial.metadata.clone(),
+            })),
+        });
+    crate::record_automation_lifecycle_event_with_metadata(
+        run,
+        "approval_gate_transition_guard_denied",
+        Some(denial.detail.clone()),
+        None,
+        Some(denial.metadata.clone()),
+    );
 }
 
 fn apply_gate_approval(

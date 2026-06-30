@@ -38,3 +38,4 @@ include!("automations_parts/part06.rs");
 include!("automations_parts/part05.rs");
 include!("automations_parts/part03.rs");
 include!("automations_parts/part07.rs");
+include!("automations_parts/part08.rs");

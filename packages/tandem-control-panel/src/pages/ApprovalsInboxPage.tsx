@@ -29,6 +29,10 @@ type DecisionKind = "approve" | "rework" | "cancel";
 
 type ApprovalRequest = {
   request_id: string;
+  approval_wait?: {
+    approval_request_id?: string;
+    transition_id?: string | null;
+  } | null;
   source: string;
   tenant: { org_id: string; workspace_id: string; user_id?: string };
   run_id: string;
@@ -144,9 +148,21 @@ async function postDecision(
     throw new Error(`No decide endpoint known for source=${request.source}`);
   }
   try {
+    const approvalRequestId =
+      request.approval_wait?.approval_request_id ??
+      (request.surface_payload as any)?.approval_request_id ??
+      request.request_id;
+    const transitionId =
+      request.approval_wait?.transition_id ??
+      (request.surface_payload as any)?.transition_id;
     await api(endpoint, {
       method: "POST",
-      body: JSON.stringify({ decision, reason: reason || undefined }),
+      body: JSON.stringify({
+        decision,
+        reason: reason || undefined,
+        approval_request_id: approvalRequestId,
+        transition_id: transitionId || undefined,
+      }),
     });
     const resumeEndpoint = (request.surface_payload as any)?.resume_endpoint;
     if (decision === "approve" && typeof resumeEndpoint === "string" && resumeEndpoint.startsWith("/")) {

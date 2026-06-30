@@ -142,7 +142,11 @@ impl AppState {
                                     .rev()
                                     .find(|record| record.node_id == gate.node_id)
                             })
-                            .is_some_and(|record| record.decision != "rework");
+                            .is_some_and(|record| {
+                                crate::app::state::automation_gate_decision_settles_wait(
+                                    &record.decision,
+                                )
+                            });
                         if has_settled_gate_decision {
                             let automation =
                                 self.automation_definition_for_restart_recovery(&run).await;

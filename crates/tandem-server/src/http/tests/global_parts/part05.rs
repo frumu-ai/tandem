@@ -232,6 +232,8 @@ async fn governed_gate_rejects_requester_self_approval_and_audits() {
         crate::http::routines_automations::AutomationV2GateDecisionInput {
             decision: "approve".to_string(),
             reason: None,
+            approval_request_id: None,
+            transition_id: None,
         },
         reviewer_decider("requester"),
     )
@@ -255,6 +257,96 @@ async fn governed_gate_rejects_requester_self_approval_and_audits() {
     assert!(audit.contains("\"event_type\":\"automation.governance.gate_decision_denied\""));
     assert!(audit.contains("AUTOMATION_V2_GATE_SELF_APPROVAL_FORBIDDEN"));
     assert!(audit.contains("auto-v2-self-approval"));
+}
+
+#[tokio::test]
+async fn gate_decision_rejects_cross_run_approval_request_and_records_evidence() {
+    let state = test_state().await;
+    let tenant = explicit_tenant("reviewer");
+    let run = arrange_governed_awaiting_publish_gate(
+        &state,
+        "auto-v2-transition-guard-http",
+        tenant.clone(),
+        "requester",
+        serde_json::json!({}),
+    )
+    .await;
+
+    let result = crate::http::routines_automations::automations_v2_run_gate_decide_inner(
+        state.clone(),
+        tenant.clone(),
+        None,
+        run.run_id.clone(),
+        crate::http::routines_automations::AutomationV2GateDecisionInput {
+            decision: "approve".to_string(),
+            reason: Some("stale card".to_string()),
+            approval_request_id: Some("automation_v2:other-run:publish".to_string()),
+            transition_id: None,
+        },
+        reviewer_decider("reviewer"),
+    )
+    .await;
+
+    let (status, body) = result.expect_err("cross-run approval rejected");
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        body.0.get("code").and_then(serde_json::Value::as_str),
+        Some("AUTOMATION_V2_GATE_TRANSITION_GUARD_DENIED")
+    );
+    let after = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("run after rejected transition");
+    assert_eq!(after.status, crate::AutomationRunStatus::AwaitingApproval);
+    assert_eq!(
+        after
+            .checkpoint
+            .gate_history
+            .last()
+            .map(|record| record.decision.as_str()),
+        Some("guard_denied")
+    );
+    let decisions = state.list_policy_decisions(&tenant, 50).await;
+    assert!(decisions.iter().any(|decision| {
+        decision.policy_id.as_deref() == Some("automation_v2_transition_guard")
+            && decision.run_id.as_deref() == Some(run.run_id.as_str())
+            && decision.decision == tandem_types::PolicyDecisionEffect::Deny
+    }));
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .expect("protected audit");
+    assert!(audit.contains("AUTOMATION_V2_GATE_TRANSITION_GUARD_DENIED"));
+
+    let expected_request_id = format!("automation_v2:{}:publish", run.run_id);
+    let expected_transition_id = format!("{expected_request_id}:decision");
+    crate::http::routines_automations::automations_v2_run_gate_decide_inner(
+        state.clone(),
+        tenant,
+        None,
+        run.run_id.clone(),
+        crate::http::routines_automations::AutomationV2GateDecisionInput {
+            decision: "approve".to_string(),
+            reason: Some("current card".to_string()),
+            approval_request_id: Some(expected_request_id),
+            transition_id: Some(expected_transition_id),
+        },
+        reviewer_decider("reviewer"),
+    )
+    .await
+    .expect("matching approval request applies after denial");
+    let approved = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("run after approved transition");
+    assert_eq!(approved.status, crate::AutomationRunStatus::Queued);
+    assert_eq!(
+        approved
+            .checkpoint
+            .gate_history
+            .last()
+            .map(|record| record.decision.as_str()),
+        Some("approve")
+    );
 }
 
 #[tokio::test]
@@ -284,6 +376,8 @@ async fn governed_gate_normalizes_channel_identity_for_self_approval() {
         crate::http::routines_automations::AutomationV2GateDecisionInput {
             decision: "approve".to_string(),
             reason: None,
+            approval_request_id: None,
+            transition_id: None,
         },
         reviewer_decider_from_source("U123", "slack"),
     )
@@ -325,6 +419,8 @@ async fn governed_gate_rejects_elevated_reviewer_without_matching_authority() {
         crate::http::routines_automations::AutomationV2GateDecisionInput {
             decision: "approve".to_string(),
             reason: None,
+            approval_request_id: None,
+            transition_id: None,
         },
         reviewer_decider("reviewer"),
     )
@@ -366,6 +462,8 @@ async fn governed_gate_allows_channel_verified_elevated_reviewer() {
         crate::http::routines_automations::AutomationV2GateDecisionInput {
             decision: "approve".to_string(),
             reason: Some("channel approve-tier reviewer".to_string()),
+            approval_request_id: None,
+            transition_id: None,
         },
         reviewer_decider_from_source("U999", "slack"),
     )
@@ -417,6 +515,8 @@ async fn governed_gate_allows_elevated_reviewer_with_matching_authority() {
         crate::http::routines_automations::AutomationV2GateDecisionInput {
             decision: "approve".to_string(),
             reason: Some("eligible reviewer".to_string()),
+            approval_request_id: None,
+            transition_id: None,
         },
         reviewer_decider("reviewer"),
     )

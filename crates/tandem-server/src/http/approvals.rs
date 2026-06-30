@@ -200,11 +200,7 @@ fn recover_automation_v2_pending_gate(
         .iter()
         .find(|node| {
             pending_nodes.contains(&node.node_id)
-                && !run
-                    .checkpoint
-                    .gate_history
-                    .iter()
-                    .any(|record| record.node_id == node.node_id)
+                && !crate::app::state::automation_gate_has_settled_decision(run, &node.node_id)
                 && crate::app::state::is_automation_approval_node(node)
         })
         .and_then(crate::app::state::build_automation_pending_gate)

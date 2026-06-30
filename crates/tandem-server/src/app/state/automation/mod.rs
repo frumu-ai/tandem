@@ -12,10 +12,12 @@ pub(crate) use extraction::{
     extract_recoverable_json_artifact_prefer_standup, extract_session_text_output,
 };
 pub(crate) use gates::{
-    apply_automation_gate_decision, apply_automation_gate_expiry, automation_gate_expires_at_ms,
+    apply_automation_gate_decision, apply_automation_gate_decision_with_transition_guard,
+    apply_automation_gate_expiry, automation_gate_decision_settles_wait,
+    automation_gate_expires_at_ms, automation_gate_has_settled_decision,
     automation_gate_rejects_late_human_decision, effective_automation_gate_expiry_policy,
     pause_automation_run_for_gate, recover_settled_automation_gate_decision,
-    AutomationGateDecisionOutcome,
+    AutomationGateDecisionOutcome, AutomationGateTransitionGuardDenial,
 };
 pub(crate) mod legacy_defaults;
 pub(crate) mod lifecycle;

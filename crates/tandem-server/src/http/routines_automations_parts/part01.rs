@@ -711,6 +711,10 @@ pub(crate) struct AutomationV2GateDecisionInput {
     pub decision: String,
     #[serde(default)]
     pub reason: Option<String>,
+    #[serde(default, alias = "request_id")]
+    pub approval_request_id: Option<String>,
+    #[serde(default)]
+    pub transition_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]

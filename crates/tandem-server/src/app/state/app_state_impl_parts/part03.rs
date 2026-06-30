@@ -1290,11 +1290,10 @@ impl AppState {
                     .is_some_and(|gate| {
                         !Self::automation_run_is_terminal(&hot.status)
                             && hot.checkpoint.awaiting_gate.is_none()
-                            && !hot
-                                .checkpoint
-                                .gate_history
-                                .iter()
-                                .any(|record| record.node_id == gate.node_id)
+                            && !crate::app::state::automation_gate_has_settled_decision(
+                                &hot,
+                                &gate.node_id,
+                            )
                     });
                 let history_has_more_detail = history.checkpoint.node_outputs.len()
                     > hot.checkpoint.node_outputs.len()

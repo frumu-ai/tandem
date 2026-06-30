@@ -592,6 +592,12 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
     input: AutomationV2GateDecisionInput,
     decider: crate::automation_v2::governance::GovernanceActorRef,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let AutomationV2GateDecisionInput {
+        decision: input_decision,
+        reason: input_reason,
+        approval_request_id: requested_approval_request_id,
+        transition_id: requested_transition_id,
+    } = input;
     let Some(current) = state.get_automation_v2_run(&run_id).await else {
         return Err(automation_v2_run_not_found(&run_id));
     };
@@ -675,11 +681,10 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
             .iter()
             .find(|node| {
                 pending_nodes.contains(&node.node_id)
-                    && !current
-                        .checkpoint
-                        .gate_history
-                        .iter()
-                        .any(|record| record.node_id == node.node_id)
+                    && !crate::app::state::automation_gate_has_settled_decision(
+                        &current,
+                        &node.node_id,
+                    )
                     && crate::app::state::is_automation_approval_node(node)
             })
             .and_then(crate::app::state::build_automation_pending_gate)
@@ -701,7 +706,7 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
             ),
         ));
     };
-    let decision = input.decision.trim().to_ascii_lowercase();
+    let decision = input_decision.trim().to_ascii_lowercase();
     if !["approve", "rework", "cancel"].contains(&decision.as_str()) {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -724,8 +729,7 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
             ),
         ));
     };
-    let reason = input
-        .reason
+    let reason = input_reason
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     let now_ms = crate::now_ms();
@@ -776,21 +780,27 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
     }
     let mut winning_decision = None;
     let mut decision_applied = false;
+    let mut transition_guard_denial = None;
     let updated = state
         .update_automation_v2_run(&run_id, |run| {
-            match crate::app::state::apply_automation_gate_decision(
+            match crate::app::state::apply_automation_gate_decision_with_transition_guard(
                 run,
                 &automation,
                 &gate,
                 &decision,
                 reason.clone(),
                 Some(decider.clone()),
+                requested_approval_request_id.as_deref(),
+                requested_transition_id.as_deref(),
             ) {
-                crate::app::state::AutomationGateDecisionOutcome::Applied => {
+                Ok(crate::app::state::AutomationGateDecisionOutcome::Applied) => {
                     decision_applied = true;
                 }
-                crate::app::state::AutomationGateDecisionOutcome::AlreadyDecided(winner) => {
+                Ok(crate::app::state::AutomationGateDecisionOutcome::AlreadyDecided(winner)) => {
                     winning_decision = winner;
+                }
+                Err(denial) => {
+                    transition_guard_denial = Some(denial);
                 }
             }
         })
@@ -803,6 +813,30 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
                 ),
             )
         })?;
+    if let Some(denial) = transition_guard_denial {
+        record_transition_guard_policy_decision(&state, &automation, &updated, &gate, &decider, &denial)
+            .await;
+        audit_gate_decision_denial(
+            &state,
+            &updated,
+            Some(&gate),
+            &decider,
+            denial.code,
+            &denial.detail,
+        )
+        .await;
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": denial.detail,
+                "code": denial.code,
+                "runID": run_id,
+                "automationID": automation.automation_id,
+                "nodeID": gate.node_id,
+                "transitionGuard": denial.metadata,
+            })),
+        ));
+    }
     if !decision_applied {
         let winner_payload = winning_decision.map(|record| {
             json!({
@@ -1122,6 +1156,46 @@ fn automation_gate_resource_ref(
         tandem_types::ResourceKind::Approval,
         format!("{}:{}", automation.automation_id, gate.node_id),
     )
+}
+
+async fn record_transition_guard_policy_decision(
+    state: &AppState,
+    automation: &AutomationV2Spec,
+    run: &crate::automation_v2::types::AutomationV2RunRecord,
+    gate: &crate::AutomationPendingGate,
+    actor: &crate::automation_v2::governance::GovernanceActorRef,
+    denial: &crate::app::state::AutomationGateTransitionGuardDenial,
+) {
+    let decision = tandem_types::PolicyDecisionRecord {
+        decision_id: format!("policy_decision_{}", uuid::Uuid::new_v4().simple()),
+        tenant_context: run.tenant_context.clone(),
+        actor_id: actor.actor_id.clone().or_else(|| actor.source.clone()),
+        session_id: None,
+        message_id: None,
+        run_id: Some(run.run_id.clone()),
+        automation_id: Some(run.automation_id.clone()),
+        node_id: Some(gate.node_id.clone()),
+        tool: None,
+        resource: Some(automation_gate_resource_ref(automation, gate)),
+        data_classes: Vec::new(),
+        risk_tier: None,
+        decision: tandem_types::PolicyDecisionEffect::Deny,
+        reason_code: denial.code.to_string(),
+        reason: denial.detail.clone(),
+        policy_id: Some("automation_v2_transition_guard".to_string()),
+        grant_id: None,
+        approval_id: denial
+            .metadata
+            .get("expected_approval_request_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        audit_event_id: None,
+        created_at_ms: crate::now_ms(),
+        metadata: denial.metadata.clone(),
+    };
+    if let Err(error) = state.record_policy_decision(decision).await {
+        tracing::warn!("failed to record transition guard policy decision: {error:?}");
+    }
 }
 
 async fn audit_gate_decision_denial(
