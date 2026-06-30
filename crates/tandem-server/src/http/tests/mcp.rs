@@ -5,6 +5,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 mod inventory;
 mod oauth_cleanup;
 mod run_as;
+mod scoped_authority;
 
 fn mcp_env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
