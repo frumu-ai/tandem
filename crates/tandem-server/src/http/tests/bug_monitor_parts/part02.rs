@@ -254,7 +254,7 @@ async fn bug_monitor_route_preview_matches_ordered_route_and_blocks_unready_dest
 
 #[tokio::test]
 #[serial_test::serial(bug_monitor_http)]
-async fn bug_monitor_router_blocks_manual_publish_to_unsupported_destination_override() {
+async fn bug_monitor_router_blocks_manual_publish_to_mcp_destination_without_explicit_allow() {
     let state = test_state().await;
     state
         .put_bug_monitor_config(crate::BugMonitorConfig {
@@ -266,7 +266,14 @@ async fn bug_monitor_router_blocks_manual_publish_to_unsupported_destination_ove
                 name: "MCP tool production".to_string(),
                 kind: crate::BugMonitorDestinationKind::McpTool,
                 enabled: true,
+                mcp_server: Some("incident-router".to_string()),
                 mcp_tool: Some("incident.create".to_string()),
+                config: Some(json!({
+                    "payload": {
+                        "title": "$draft.title",
+                        "fingerprint": "$draft.fingerprint"
+                    }
+                })),
                 ..Default::default()
             }],
             ..Default::default()
@@ -276,8 +283,8 @@ async fn bug_monitor_router_blocks_manual_publish_to_unsupported_destination_ove
     let draft = state
         .submit_bug_monitor_draft(crate::BugMonitorSubmission {
             source: Some("manual".to_string()),
-            title: Some("Unsupported destination publish".to_string()),
-            detail: Some("A report that should not leave through telemetry yet".to_string()),
+            title: Some("Blocked MCP destination publish".to_string()),
+            detail: Some("A report that should not call an MCP tool by default".to_string()),
             risk_level: Some("medium".to_string()),
             confidence: Some("medium".to_string()),
             ..Default::default()
@@ -306,8 +313,8 @@ async fn bug_monitor_router_blocks_manual_publish_to_unsupported_destination_ove
         publish_payload
             .get("detail")
             .and_then(Value::as_str)
-            .is_some_and(|detail| detail.contains("not available in this phase")),
-        "publish should explain unsupported destination: {publish_payload:?}"
+            .is_some_and(|detail| detail.contains("MCP publish is not explicitly allowed")),
+        "publish should explain missing MCP allow flag: {publish_payload:?}"
     );
     assert!(state.list_bug_monitor_posts(10).await.is_empty());
 }

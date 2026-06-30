@@ -77,6 +77,12 @@ internal memory destinations. Telemetry publishes durable destination-aware post
 receipts that can be filtered by destination id, while internal memory
 destinations store bounded, redacted summaries with category-specific record
 refs and duplicate suppression.
+Generic MCP tool destinations can now be configured for Bug Monitor/Incident
+Monitor routing. These destinations fail closed unless an admin-configured
+destination names the MCP server/tool, sets `allow_publish`, and provides an
+explicit payload mapping. Route preview reports server/tool/mapping readiness
+without executing tools, and publish attempts record destination, route, tool,
+redacted receipt, duplicate-suppression, and failure details.
 Linear duplicate handling preserves matched-issue status on repeated publishes
 and suppresses retrying an ambiguous failed Linear `create_issue` response that
 may already have created an external issue.

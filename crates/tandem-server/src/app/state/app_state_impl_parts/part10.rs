@@ -155,6 +155,18 @@ fn bug_monitor_destination_readiness(
                             .as_deref()
                             .is_some_and(|value| value.trim().is_empty())
                 }
+                BugMonitorDestinationKind::McpTool => {
+                    let (mcp_ready, mcp_missing, mcp_detail) =
+                        crate::bug_monitor_mcp::mcp_tool_destination_readiness(
+                            config,
+                            destination,
+                            servers,
+                        );
+                    missing.extend(mcp_missing);
+                    detail = mcp_detail;
+
+                    config.enabled && !config.paused && destination.enabled && mcp_ready
+                }
                 BugMonitorDestinationKind::InternalMemory => {
                     let category = destination
                         .memory_category

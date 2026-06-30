@@ -3,10 +3,10 @@ use std::collections::BTreeSet;
 use anyhow::Context;
 
 use crate::{
-    bug_monitor_github, bug_monitor_linear, bug_monitor_local, bug_monitor_webhook, now_ms,
-    AppState, BugMonitorApprovalPolicy, BugMonitorConfig, BugMonitorDestinationConfig,
-    BugMonitorDestinationKind, BugMonitorDestinationReadiness, BugMonitorDraftRecord,
-    BugMonitorIncidentRecord, BugMonitorPostRecord, BugMonitorRouteConfig,
+    bug_monitor_github, bug_monitor_linear, bug_monitor_local, bug_monitor_mcp,
+    bug_monitor_webhook, now_ms, AppState, BugMonitorApprovalPolicy, BugMonitorConfig,
+    BugMonitorDestinationConfig, BugMonitorDestinationKind, BugMonitorDestinationReadiness,
+    BugMonitorDraftRecord, BugMonitorIncidentRecord, BugMonitorPostRecord, BugMonitorRouteConfig,
     BugMonitorRoutePreviewMatch, BugMonitorRoutePreviewResponse, BugMonitorSubmission,
     BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID,
 };
@@ -351,11 +351,16 @@ pub async fn publish_draft(
             )
             .await
         }
-        _ => anyhow::bail!(
-            "Destination `{}` uses {:?}, which is not available in this phase",
-            selected_destination.destination_id,
-            selected_destination.kind
-        ),
+        BugMonitorDestinationKind::McpTool => {
+            bug_monitor_mcp::publish_draft(
+                state,
+                &request.draft_id,
+                request.incident_id.as_deref(),
+                request.mode,
+                mcp_tool_destination_context(&preview)?,
+            )
+            .await
+        }
     }
     .context("publish Bug Monitor draft through destination router")
 }
@@ -414,6 +419,7 @@ fn validate_publish_plan(
             | BugMonitorDestinationKind::LinearIssue
             | BugMonitorDestinationKind::Webhook
             | BugMonitorDestinationKind::Telemetry
+            | BugMonitorDestinationKind::McpTool
             | BugMonitorDestinationKind::InternalMemory
     ) {
         anyhow::bail!(
@@ -527,6 +533,28 @@ fn local_destination_context(
         kind: destination.kind.clone(),
         telemetry_path: destination.telemetry_path.clone(),
         memory_category: destination.memory_category.clone(),
+        config: destination.config.clone(),
+    })
+}
+
+fn mcp_tool_destination_context(
+    preview: &BugMonitorRoutePreviewResponse,
+) -> anyhow::Result<bug_monitor_mcp::McpToolDestinationContext> {
+    let destination = selected_publish_destination(preview)?;
+    let preview_match = preview.matches.iter().find(|preview_match| {
+        preview_match
+            .destination_ids
+            .iter()
+            .any(|destination_id| destination_id == &destination.destination_id)
+    });
+    Ok(bug_monitor_mcp::McpToolDestinationContext {
+        destination_id: destination.destination_id.clone(),
+        route_id: preview_match.and_then(|row| row.route_id.clone()),
+        route_match_reason: preview_match
+            .and_then(|row| row.reason.clone())
+            .or_else(|| Some("destination_router".to_string())),
+        mcp_server: destination.mcp_server.clone(),
+        mcp_tool: destination.mcp_tool.clone(),
         config: destination.config.clone(),
     })
 }

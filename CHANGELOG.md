@@ -70,6 +70,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Monitor/Incident Monitor routing, including durable destination-aware post
   receipts, destination-id filtering, duplicate suppression, bounded redacted
   memory summaries, and category-specific memory refs.
+- Added generic MCP tool destinations for Bug Monitor/Incident Monitor routing,
+  gated by explicit `allow_publish` configuration and payload mappings, with
+  route-preview readiness checks, duplicate suppression, redacted receipts, and
+  failed-call post records.
 
 ### Changed
 

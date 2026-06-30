@@ -68,6 +68,7 @@ pub mod bug_monitor;
 pub mod bug_monitor_github;
 pub mod bug_monitor_linear;
 pub mod bug_monitor_local;
+pub mod bug_monitor_mcp;
 pub mod bug_monitor_webhook;
 pub mod capability_resolver;
 pub mod config;
