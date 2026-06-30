@@ -1,6 +1,28 @@
+#[derive(Clone, Copy)]
+enum FakeMcpToolCallMode {
+    Success,
+    Failure,
+    AuthRequired,
+}
+
 async fn spawn_fake_bug_monitor_mcp_tool_server(
     tool_name: &str,
     fail_call: bool,
+) -> (String, Arc<RwLock<Vec<Value>>>, tokio::task::JoinHandle<()>) {
+    spawn_fake_bug_monitor_mcp_tool_server_with_mode(
+        tool_name,
+        if fail_call {
+            FakeMcpToolCallMode::Failure
+        } else {
+            FakeMcpToolCallMode::Success
+        },
+    )
+    .await
+}
+
+async fn spawn_fake_bug_monitor_mcp_tool_server_with_mode(
+    tool_name: &str,
+    mode: FakeMcpToolCallMode,
 ) -> (String, Arc<RwLock<Vec<Value>>>, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -17,6 +39,7 @@ async fn spawn_fake_bug_monitor_mcp_tool_server(
             move |axum::Json(request): axum::Json<Value>| {
                 let calls = calls.clone();
                 let tool_name = tool_name.clone();
+                let mode = mode;
                 async move {
                     let id = request.get("id").cloned().unwrap_or(Value::Null);
                     let method = request
@@ -63,15 +86,30 @@ async fn spawn_fake_bug_monitor_mcp_tool_server(
                                 "name": name,
                                 "arguments": arguments,
                             }));
-                            if fail_call {
-                                return axum::Json(json!({
-                                    "jsonrpc": "2.0",
-                                    "id": id,
-                                    "error": {
-                                        "code": -32000,
-                                        "message": "remote tool exploded token=SECRET_TOKEN_123"
-                                    }
-                                }));
+                            match mode {
+                                FakeMcpToolCallMode::Failure => {
+                                    return axum::Json(json!({
+                                        "jsonrpc": "2.0",
+                                        "id": id,
+                                        "error": {
+                                            "code": -32000,
+                                            "message": "remote tool exploded token=SECRET_TOKEN_123"
+                                        }
+                                    }));
+                                }
+                                FakeMcpToolCallMode::AuthRequired => {
+                                    return axum::Json(json!({
+                                        "jsonrpc": "2.0",
+                                        "id": id,
+                                        "result": {
+                                            "structuredContent": {
+                                                "authorizationUrl": "https://auth.example.test/authorize",
+                                                "message": "Authorize this MCP connector first"
+                                            }
+                                        }
+                                    }));
+                                }
+                                FakeMcpToolCallMode::Success => {}
                             }
                             json!({
                                 "content": [{
@@ -430,6 +468,76 @@ async fn bug_monitor_mcp_tool_destination_blocks_malformed_mapping_before_execut
 #[tokio::test]
 #[serial_test::serial]
 #[serial_test::serial(bug_monitor_http)]
+async fn bug_monitor_mcp_tool_destination_records_mapping_render_failure_after_claim() {
+    let (endpoint, calls, server) =
+        spawn_fake_bug_monitor_mcp_tool_server("incident_publish", false).await;
+    let state = test_state().await;
+    configure_mcp_tool_bug_monitor_destination(
+        &state,
+        endpoint,
+        "incident_publish",
+        json!({
+            "allow_publish": true,
+            "payload": {
+                "title": "$draft.title",
+                "unsupported": "$draft.url"
+            }
+        }),
+    )
+    .await;
+
+    let app = app_router(state.clone());
+    let draft_id =
+        create_ready_secret_bug_monitor_draft(app.clone(), "fingerprint-mcp-tool-placeholder")
+            .await;
+    let (publish_status, publish_payload) =
+        publish_bug_monitor_mcp_draft(app.clone(), &draft_id).await;
+    assert_eq!(publish_status, StatusCode::BAD_REQUEST);
+    assert!(
+        publish_payload
+            .get("detail")
+            .and_then(Value::as_str)
+            .is_some_and(|detail| detail.contains("Unsupported MCP payload mapping placeholder")),
+        "publish should explain unsupported placeholder: {publish_payload:?}"
+    );
+    assert!(calls.read().await.is_empty());
+    let posts = state
+        .list_bug_monitor_posts_by_destination(10, "mcp-primary")
+        .await;
+    assert_eq!(posts.len(), 1);
+    assert_eq!(posts[0].status, "failed");
+    assert!(
+        posts[0]
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("$draft.url")),
+        "{posts:?}"
+    );
+
+    let (second_status, second_payload) =
+        publish_bug_monitor_mcp_draft(app.clone(), &draft_id).await;
+    assert_eq!(second_status, StatusCode::BAD_REQUEST);
+    assert!(
+        !second_payload
+            .get("action")
+            .and_then(Value::as_str)
+            .is_some_and(|action| action == "publish_in_progress"),
+        "mapping failures must not leave a pending claim: {second_payload:?}"
+    );
+    assert_eq!(
+        state
+            .list_bug_monitor_posts_by_destination(10, "mcp-primary")
+            .await
+            .len(),
+        2
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+#[serial_test::serial]
+#[serial_test::serial(bug_monitor_http)]
 async fn bug_monitor_mcp_tool_destination_records_tool_failure_without_leaking_arguments() {
     let (endpoint, calls, server) =
         spawn_fake_bug_monitor_mcp_tool_server("incident_publish", true).await;
@@ -482,6 +590,76 @@ async fn bug_monitor_mcp_tool_destination_records_tool_failure_without_leaking_a
     );
     let post_text = serde_json::to_string(post).expect("post json");
     assert!(!post_text.contains("SECRET_TOKEN_123"), "{post_text}");
+
+    server.abort();
+}
+
+#[tokio::test]
+#[serial_test::serial]
+#[serial_test::serial(bug_monitor_http)]
+async fn bug_monitor_mcp_tool_destination_blocks_auth_required_without_posting() {
+    let (endpoint, calls, server) = spawn_fake_bug_monitor_mcp_tool_server_with_mode(
+        "incident_publish",
+        FakeMcpToolCallMode::AuthRequired,
+    )
+    .await;
+    let state = test_state().await;
+    configure_mcp_tool_bug_monitor_destination(
+        &state,
+        endpoint,
+        "incident_publish",
+        mcp_tool_destination_config(),
+    )
+    .await;
+
+    let app = app_router(state.clone());
+    let draft_id =
+        create_ready_secret_bug_monitor_draft(app.clone(), "fingerprint-mcp-tool-auth").await;
+    let (publish_status, publish_payload) =
+        publish_bug_monitor_mcp_draft(app.clone(), &draft_id).await;
+    assert_eq!(publish_status, StatusCode::BAD_REQUEST);
+    assert!(
+        publish_payload
+            .get("detail")
+            .and_then(Value::as_str)
+            .is_some_and(|detail| detail.contains("MCP authorization required")),
+        "publish should explain MCP auth requirement: {publish_payload:?}"
+    );
+    assert_eq!(calls.read().await.len(), 1);
+
+    let posts = state
+        .list_bug_monitor_posts_by_destination(10, "mcp-primary")
+        .await;
+    assert_eq!(posts.len(), 1);
+    let post = &posts[0];
+    assert_eq!(post.status, "blocked");
+    assert_eq!(
+        post.receipt
+            .as_ref()
+            .and_then(|row| row.get("mcp_auth_required"))
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(post
+        .error
+        .as_deref()
+        .is_some_and(|error| error.contains("MCP authorization required")));
+
+    let (second_status, second_payload) =
+        publish_bug_monitor_mcp_draft(app.clone(), &draft_id).await;
+    assert_eq!(second_status, StatusCode::BAD_REQUEST);
+    assert!(
+        !second_payload
+            .get("action")
+            .and_then(Value::as_str)
+            .is_some_and(|action| action == "skip_duplicate"),
+        "auth-required results must not be treated as posted duplicates: {second_payload:?}"
+    );
+    assert!(state
+        .list_bug_monitor_posts_by_destination(10, "mcp-primary")
+        .await
+        .iter()
+        .all(|row| row.status != "posted"));
 
     server.abort();
 }

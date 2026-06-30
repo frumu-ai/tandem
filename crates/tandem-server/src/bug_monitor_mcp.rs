@@ -278,7 +278,7 @@ pub async fn publish_draft(
     }
 
     let mapping = payload_mapping(destination.config.as_ref()).map_err(anyhow::Error::msg)?;
-    let args = render_payload_mapping(
+    let args = match render_payload_mapping(
         mapping,
         &MappingContext {
             draft: &draft,
@@ -290,7 +290,28 @@ pub async fn publish_draft(
             idempotency_key: &idempotency_key,
         },
     )
-    .context("render MCP tool destination payload mapping")?;
+    .context("render MCP tool destination payload mapping")
+    {
+        Ok(args) => args,
+        Err(error) => {
+            let error_text = truncate_text(&safe_result_excerpt(&format!("{error:#}")), 500);
+            let failed = failed_mcp_tool_post(
+                existing_claim,
+                &destination,
+                &resolved,
+                &target_ref,
+                &record_id,
+                &Value::Object(Map::new()),
+                &error_text,
+            );
+            let _ = state.put_bug_monitor_post(failed).await;
+            draft.status = "mcp_tool_failed".to_string();
+            draft.github_status = Some("mcp_tool_failed".to_string());
+            draft.last_post_error = Some(error_text.clone());
+            let _ = state.put_bug_monitor_draft(draft).await;
+            return Err(anyhow::anyhow!(error_text));
+        }
+    };
 
     let call_result = state
         .mcp
@@ -302,6 +323,27 @@ pub async fn publish_draft(
         .await;
     match call_result {
         Ok(result) => {
+            if mcp_auth_required(&result) {
+                let error_text =
+                    "MCP authorization required before Bug Monitor MCP tool can execute"
+                        .to_string();
+                let blocked = blocked_mcp_tool_post(
+                    existing_claim,
+                    &destination,
+                    &resolved,
+                    &target_ref,
+                    &record_id,
+                    &args,
+                    &result,
+                    &error_text,
+                );
+                let _ = state.put_bug_monitor_post(blocked).await;
+                draft.status = "mcp_tool_auth_required".to_string();
+                draft.github_status = Some("mcp_tool_auth_required".to_string());
+                draft.last_post_error = Some(error_text.clone());
+                let _ = state.put_bug_monitor_draft(draft).await;
+                return Err(anyhow::anyhow!(error_text));
+            }
             let post = posted_mcp_tool_post(
                 existing_claim,
                 &destination,
@@ -518,15 +560,51 @@ fn posted_mcp_tool_post(
             "arguments_redacted": true,
             "result_excerpt": excerpt,
             "result_metadata_keys": metadata_keys(&result.metadata),
-            "mcp_auth_required": result
-                .metadata
-                .get("mcpAuth")
-                .and_then(|row| row.get("required"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
+            "mcp_auth_required": false,
         })),
         response_excerpt: excerpt,
         error: None,
+        updated_at_ms: now_ms(),
+        ..claim
+    }
+}
+
+fn blocked_mcp_tool_post(
+    claim: BugMonitorPostRecord,
+    destination: &McpToolDestinationContext,
+    resolved: &ResolvedMcpToolDestination,
+    target_ref: &str,
+    record_id: &str,
+    args: &Value,
+    result: &ToolResult,
+    error: &str,
+) -> BugMonitorPostRecord {
+    BugMonitorPostRecord {
+        status: "blocked".to_string(),
+        external_id: Some(record_id.to_string()),
+        external_title: Some(resolved.tool.namespaced_name.clone()),
+        receipt: Some(json!({
+            "provider": "mcp_tool",
+            "destination_id": destination.destination_id,
+            "operation": MCP_TOOL_OPERATION,
+            "status": "blocked",
+            "server": resolved.server_name,
+            "tool": resolved.tool.tool_name,
+            "namespaced_tool": resolved.tool.namespaced_name,
+            "tool_schema_hash": resolved.tool.schema_hash,
+            "target_ref": target_ref,
+            "argument_keys": argument_keys(args),
+            "arguments_redacted": true,
+            "mcp_auth_required": true,
+            "mcp_auth_status": result
+                .metadata
+                .get("mcpAuth")
+                .and_then(|row| row.get("status"))
+                .and_then(Value::as_str),
+            "error": error,
+        })),
+        response_excerpt: None,
+        error: Some(error.to_string()),
         updated_at_ms: now_ms(),
         ..claim
     }
@@ -564,6 +642,15 @@ fn failed_mcp_tool_post(
         updated_at_ms: now_ms(),
         ..claim
     }
+}
+
+fn mcp_auth_required(result: &ToolResult) -> bool {
+    result
+        .metadata
+        .get("mcpAuth")
+        .and_then(|row| row.get("required"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 async fn successful_post_by_idempotency(
