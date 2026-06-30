@@ -16,3 +16,4 @@ include!("bug_monitor_parts/part06.rs");
 include!("bug_monitor_parts/part07.rs");
 include!("bug_monitor_parts/part08.rs");
 include!("bug_monitor_parts/part09.rs");
+include!("bug_monitor_parts/part10.rs");
