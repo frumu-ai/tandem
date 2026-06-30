@@ -33,6 +33,8 @@ For platform and security teams, Tandem acts as a runtime control plane for agen
 
 **The model proposes. Tandem enforces.**
 
+In governance terms, Tandem manages delegated authority for AI agents at runtime.
+
 ## What Tandem Does
 
 - Runs AI workflows with durable state instead of transcript-only execution.
@@ -50,13 +52,14 @@ Tandem can expose the draft tool, hide or block the send tool, pause at an appro
 
 ## What Tandem Is Not
 
-| Not this                 | Instead                                                                 |
-| ------------------------ | ----------------------------------------------------------------------- |
-| Chatbot wrapper          | Runtime underneath agents and workflows                                 |
-| Agent framework only     | Control plane for tool policy, execution state, approvals, and audit    |
-| LLM gateway only         | Governs workflow state, tools, memory, approvals, artifacts, and events |
-| Flat RAG system          | Runtime-scoped memory and source-bound retrieval                        |
-| Prompt-only safety layer | Enforcement happens outside the model                                   |
+| Not this                 | Instead                                                                |
+| ------------------------ | ---------------------------------------------------------------------- |
+| Chatbot wrapper          | Runtime layer underneath agents and workflows                          |
+| Agent framework only     | Policy layer that controls what agent workflows can see and do         |
+| Approval UI only         | Runtime enforcement with approvals as one controlled gate              |
+| LLM gateway only         | Governs workflow state, tools, memory, approvals, artifacts, and audit |
+| Flat RAG system          | Runtime-scoped memory and source-bound retrieval                       |
+| Prompt-only safety layer | Enforcement happens outside the model                                  |
 
 Tandem calls this **runtime authority**: authorization, execution control, approval, scoped memory, and audit enforced outside the model. Entrypoints such as the desktop app, TUI, web control panel, channels, and SDKs are clients of the same engine runtime.
 
@@ -105,7 +108,7 @@ Tandem is designed for teams that need to run AI work under real operational con
 
 - **Runtime authority, not prompt authority:** The model can request context or a tool call; the runtime decides what is visible and executable.
 - **Tenant-aware records:** Sessions, automation runs, context runs, event streams, provider credentials, MCP secrets, and memory paths carry tenant context in hosted/shared modes.
-- **Resource and grant model:** The enterprise contract includes `ResourceRef`, `ResourceKind`, `ResourceScope`, `AccessPermission`, `DataClass`, `PrincipalRef`, `ScopedGrant`, `StrictTenantContext`, and `DataBoundary`.
+- **Resource and grant model:** Tandem models resources, principals, grants, data classes, and data boundaries so access decisions can be enforced by the runtime.
 - **Permissioned memory:** Memory and knowledge paths carry tenant boundaries so company knowledge can become useful without becoming globally flat.
 - **Deployable runtime:** The same runtime can run on a laptop, as a headless engine, hosted, or inside customer infrastructure as the enterprise layer matures.
 - **Auditability:** Approval decisions, policy denials, provider secret changes, MCP activity, tool ledger events, artifacts, and protected audit records can be inspected outside chat transcripts.
