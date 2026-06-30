@@ -702,6 +702,7 @@ impl AppState {
         &self,
         decision: PolicyDecisionRecord,
     ) -> anyhow::Result<PolicyDecisionRecord> {
+        let decision = decision.with_effective_policy_defaults();
         {
             let mut guard = self.policy_decisions.write().await;
             guard.insert(decision.decision_id.clone(), decision.clone());
