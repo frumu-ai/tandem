@@ -174,6 +174,8 @@ pub struct BugMonitorRouteConfig {
     #[serde(default)]
     pub match_risk_levels: Vec<String>,
     #[serde(default)]
+    pub match_risk_categories: Vec<String>,
+    #[serde(default)]
     pub match_confidence: Vec<String>,
     #[serde(default)]
     pub match_expected_destinations: Vec<String>,
@@ -206,6 +208,7 @@ impl Default for BugMonitorRouteConfig {
             match_sources: Vec::new(),
             match_components: Vec::new(),
             match_risk_levels: Vec::new(),
+            match_risk_categories: Vec::new(),
             match_confidence: Vec::new(),
             match_expected_destinations: Vec::new(),
             match_project_ids: Vec::new(),
@@ -726,6 +729,24 @@ pub struct BugMonitorLogCandidate {
     pub fingerprint: String,
     pub confidence: String,
     pub risk_level: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk_category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blast_radius: Option<String>,
+    #[serde(default)]
+    pub external_correlation_ids: Vec<String>,
     pub expected_destination: String,
     pub evidence_refs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -853,6 +874,24 @@ pub struct BugMonitorDraftRecord {
     pub confidence: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub risk_level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk_category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blast_radius: Option<String>,
+    #[serde(default)]
+    pub external_correlation_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_destination: Option<String>,
     #[serde(default)]
@@ -986,6 +1025,24 @@ pub struct BugMonitorIncidentRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub risk_level: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk_category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blast_radius: Option<String>,
+    #[serde(default)]
+    pub external_correlation_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_destination: Option<String>,
     #[serde(default)]
     pub route_tags: Vec<String>,
@@ -1105,6 +1162,24 @@ pub struct BugMonitorSubmission {
     pub confidence: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub risk_level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk_category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blast_radius: Option<String>,
+    #[serde(default)]
+    pub external_correlation_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_destination: Option<String>,
     #[serde(default)]
@@ -1276,6 +1351,53 @@ mod tests {
 
         assert_eq!(config.effective_destinations().len(), 1);
         assert!(config.effective_default_destination_ids().is_empty());
+    }
+
+    #[test]
+    fn safety_context_fields_are_additive_for_legacy_records() {
+        let incident: BugMonitorIncidentRecord = serde_json::from_value(json!({
+            "incident_id": "incident-1",
+            "fingerprint": "fingerprint-1",
+            "event_type": "automation.failed",
+            "status": "queued",
+            "repo": "acme/platform",
+            "workspace_root": "/tmp/platform",
+            "title": "Workflow failed",
+            "occurrence_count": 1,
+            "created_at_ms": 1,
+            "updated_at_ms": 1
+        }))
+        .expect("legacy incident record should deserialize");
+        assert!(incident.actor.is_none());
+        assert!(incident.risk_category.is_none());
+        assert!(incident.external_correlation_ids.is_empty());
+
+        let submission: BugMonitorSubmission = serde_json::from_value(json!({
+            "actor": "agent:release",
+            "model": "gpt-5",
+            "tool_name": "slack.post_message",
+            "action": "send_message",
+            "policy": "approval.high_risk",
+            "approval_state": "denied",
+            "risk_category": "data_exfiltration",
+            "blast_radius": "customer-visible channel",
+            "external_correlation_ids": ["case-123"]
+        }))
+        .expect("submission safety context should deserialize");
+        assert_eq!(submission.actor.as_deref(), Some("agent:release"));
+        assert_eq!(
+            submission.risk_category.as_deref(),
+            Some("data_exfiltration")
+        );
+        assert_eq!(submission.external_correlation_ids, vec!["case-123"]);
+
+        let route: BugMonitorRouteConfig = serde_json::from_value(json!({
+            "route_id": "route-security",
+            "name": "Security",
+            "match_risk_categories": ["data_exfiltration"]
+        }))
+        .expect("route risk category matcher should deserialize");
+        assert_eq!(route.match_risk_categories, vec!["data_exfiltration"]);
     }
 
     #[test]

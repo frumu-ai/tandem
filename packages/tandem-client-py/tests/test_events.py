@@ -8,6 +8,8 @@ from pydantic import TypeAdapter
 from tandem_client import TandemClient
 from tandem_client.types import (
     BugMonitorConfigResponse,
+    BugMonitorDraftRecord,
+    BugMonitorIncidentRecord,
     BugMonitorPostRecord,
     BugMonitorRoutePreviewResponse,
     EngineEvent,
@@ -79,6 +81,7 @@ def test_bug_monitor_destination_router_types_accept_payloads() -> None:
                         "destination_ids": ["legacy-github"],
                         "approval_policy": "inherit",
                         "match_source_kinds": ["ci"],
+                        "match_risk_categories": ["data_exfiltration"],
                         "match_route_tags": ["payments"],
                     }
                 ],
@@ -133,12 +136,37 @@ def test_bug_monitor_destination_router_types_accept_payloads() -> None:
             "receipt": {"provider": "github", "issue_number": 42},
         }
     )
+    incident = BugMonitorIncidentRecord.model_validate(
+        {
+            "incident_id": "incident-1",
+            "risk_category": "data_exfiltration",
+            "actor": "agent-release",
+            "model": "gpt-5",
+            "tool_name": "slack.post_message",
+            "action": "send_message",
+            "policy": "approval.high_risk",
+            "approval_state": "denied",
+            "blast_radius": "customer channel",
+            "external_correlation_ids": ["case-123"],
+        }
+    )
+    draft = BugMonitorDraftRecord.model_validate(
+        {
+            "draft_id": "draft-1",
+            "risk_category": "data_exfiltration",
+            "actor": "agent-release",
+            "external_correlation_ids": ["case-123"],
+        }
+    )
 
     assert config.bug_monitor.destinations[0].destination_id == "legacy-github"
+    assert config.bug_monitor.routes[0].match_risk_categories == ["data_exfiltration"]
     assert config.bug_monitor.monitored_projects[0].source_kind == "external_app"
     assert config.bug_monitor.monitored_projects[0].log_sources[0].source_kind == "ci"
     assert preview.effective_destination_ids == ["legacy-github"]
     assert post.receipt["issue_number"] == 42
+    assert incident.risk_category == "data_exfiltration"
+    assert draft.external_correlation_ids == ["case-123"]
 
 
 @pytest.mark.asyncio

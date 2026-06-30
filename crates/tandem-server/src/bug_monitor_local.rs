@@ -443,6 +443,15 @@ async fn build_receipt(
             "evidence_digest": evidence_digest,
             "confidence": draft.confidence,
             "risk_level": draft.risk_level,
+            "risk_category": draft.risk_category,
+            "actor": draft.actor,
+            "model": draft.model,
+            "tool_name": draft.tool_name,
+            "action": draft.action,
+            "policy": draft.policy,
+            "approval_state": draft.approval_state,
+            "blast_radius": draft.blast_radius,
+            "external_correlation_ids": draft.external_correlation_ids,
             "expected_destination": draft.expected_destination,
             "route_id": destination.route_id,
             "route_match_reason": destination.route_match_reason(),
@@ -479,6 +488,15 @@ async fn build_receipt(
                 "evidence_digest": evidence_digest,
                 "confidence": draft.confidence,
                 "risk_level": draft.risk_level,
+                "risk_category": draft.risk_category,
+                "actor": draft.actor,
+                "model": draft.model,
+                "tool_name": draft.tool_name,
+                "action": draft.action,
+                "policy": draft.policy,
+                "approval_state": draft.approval_state,
+                "blast_radius": draft.blast_radius,
+                "external_correlation_ids": draft.external_correlation_ids,
                 "expected_destination": draft.expected_destination,
                 "route_id": destination.route_id,
                 "route_match_reason": destination.route_match_reason(),
@@ -535,11 +553,12 @@ fn build_memory_summary(
         .map(safe_summary_text)
         .unwrap_or_else(|| "Bug Monitor failure".to_string());
     let risk = draft.risk_level.as_deref().unwrap_or("unknown");
+    let risk_category = draft.risk_category.as_deref().unwrap_or("uncategorized");
     let confidence = draft.confidence.as_deref().unwrap_or("unknown");
     truncate_text(
         &format!(
-            "{category}: {title}. fingerprint={} repo={} risk={} confidence={} recurrence_count={}",
-            draft.fingerprint, draft.repo, risk, confidence, recurrence_count
+            "{category}: {title}. fingerprint={} repo={} risk={} risk_category={} confidence={} recurrence_count={}",
+            draft.fingerprint, draft.repo, risk, risk_category, confidence, recurrence_count
         ),
         800,
     )

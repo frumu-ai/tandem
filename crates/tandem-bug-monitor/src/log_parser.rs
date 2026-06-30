@@ -24,6 +24,19 @@ struct ParsedLine {
     offset_end: u64,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ParsedSafetyContext {
+    actor: Option<String>,
+    model: Option<String>,
+    tool_name: Option<String>,
+    action: Option<String>,
+    policy: Option<String>,
+    approval_state: Option<String>,
+    risk_category: Option<String>,
+    blast_radius: Option<String>,
+    external_correlation_ids: Vec<String>,
+}
+
 pub fn parse_log_candidates(
     project: &BugMonitorMonitoredProject,
     source: &BugMonitorLogSource,
@@ -154,6 +167,7 @@ fn parse_json_lines(
                 component,
                 process,
                 excerpt,
+                safety_context_from_json(&value),
             ))
         })
         .collect()
@@ -210,6 +224,7 @@ fn parse_plaintext(
             None,
             None,
             excerpt,
+            ParsedSafetyContext::default(),
         ));
         index = end.max(index + 1);
     }
@@ -228,6 +243,7 @@ fn candidate_from_block(
     component: Option<String>,
     process: Option<String>,
     excerpt: Vec<String>,
+    safety: ParsedSafetyContext,
 ) -> BugMonitorLogCandidate {
     let binding = project.source_binding(Some(source));
     let raw_excerpt_redacted = excerpt
@@ -270,6 +286,15 @@ fn candidate_from_block(
         fingerprint,
         confidence: "high".to_string(),
         risk_level: "medium".to_string(),
+        actor: safety.actor,
+        model: safety.model,
+        tool_name: safety.tool_name,
+        action: safety.action,
+        policy: safety.policy,
+        approval_state: safety.approval_state,
+        risk_category: safety.risk_category,
+        blast_radius: safety.blast_radius,
+        external_correlation_ids: safety.external_correlation_ids,
         expected_destination: "bug_monitor_issue_draft".to_string(),
         evidence_refs: vec![format!(
             "tandem://bug-monitor/{}/logs/{}#offset={}-{}",
@@ -288,6 +313,129 @@ fn candidate_from_block(
     }
 }
 
+fn safety_context_from_json(value: &Value) -> ParsedSafetyContext {
+    let mut external_correlation_ids = first_json_string_list(
+        value,
+        &[
+            "external_correlation_ids",
+            "externalCorrelationIds",
+            "external_ids",
+            "externalIds",
+            "external.correlation_ids",
+            "external.correlationIds",
+        ],
+        20,
+        160,
+    );
+    if let Some(external_correlation_id) = first_json_safety_string(
+        value,
+        &[
+            "external_correlation_id",
+            "externalCorrelationId",
+            "external_id",
+            "externalId",
+            "external.correlation_id",
+        ],
+        160,
+    ) {
+        if !external_correlation_ids
+            .iter()
+            .any(|row| row == &external_correlation_id)
+        {
+            external_correlation_ids.push(external_correlation_id);
+        }
+    }
+
+    ParsedSafetyContext {
+        actor: first_json_safety_string(
+            value,
+            &[
+                "actor",
+                "actor_id",
+                "actorID",
+                "principal",
+                "principal_id",
+                "agent",
+                "agent_id",
+                "agentID",
+                "user_id",
+                "userID",
+            ],
+            160,
+        ),
+        model: first_json_safety_string(
+            value,
+            &["model", "model_id", "modelID", "model.name", "llm.model"],
+            160,
+        ),
+        tool_name: first_json_safety_string(
+            value,
+            &[
+                "tool",
+                "tool_name",
+                "toolName",
+                "mcp_tool",
+                "mcpTool",
+                "action.tool",
+            ],
+            160,
+        ),
+        action: first_json_safety_string(
+            value,
+            &["action", "operation", "tool_action", "toolAction", "intent"],
+            160,
+        ),
+        policy: first_json_safety_string(
+            value,
+            &[
+                "policy",
+                "policy_id",
+                "policyID",
+                "policy.name",
+                "approval_policy",
+                "approvalPolicy",
+                "approval.policy",
+            ],
+            160,
+        ),
+        approval_state: first_json_safety_string(
+            value,
+            &[
+                "approval_state",
+                "approvalState",
+                "approval_status",
+                "approvalStatus",
+                "approval.status",
+            ],
+            120,
+        ),
+        risk_category: first_json_safety_string(
+            value,
+            &[
+                "risk_category",
+                "riskCategory",
+                "risk_type",
+                "riskType",
+                "risk.category",
+                "category",
+            ],
+            120,
+        ),
+        blast_radius: first_json_safety_string(
+            value,
+            &[
+                "blast_radius",
+                "blastRadius",
+                "blast.radius",
+                "impact",
+                "scope",
+            ],
+            240,
+        ),
+        external_correlation_ids,
+    }
+}
+
 fn first_json_string(value: &Value, keys: &[&str]) -> Option<String> {
     keys.iter().find_map(|key| {
         let mut current = value;
@@ -300,6 +448,62 @@ fn first_json_string(value: &Value, keys: &[&str]) -> Option<String> {
             .filter(|s| !s.is_empty())
             .map(ToString::to_string)
     })
+}
+
+fn first_json_safety_string(value: &Value, keys: &[&str], max_len: usize) -> Option<String> {
+    first_json_string(value, keys)
+        .map(|value| truncate_redacted_text(&redact_text(&value), max_len))
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn first_json_string_list(
+    value: &Value,
+    keys: &[&str],
+    max_items: usize,
+    max_len: usize,
+) -> Vec<String> {
+    let Some(row) = keys.iter().find_map(|key| {
+        let mut current = value;
+        for part in key.split('.') {
+            current = current.get(part)?;
+        }
+        Some(current)
+    }) else {
+        return Vec::new();
+    };
+    let values = match row {
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|item| item.as_str().map(ToString::to_string))
+            .collect::<Vec<_>>(),
+        Value::String(text) => text
+            .split(',')
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    };
+    let mut out = Vec::new();
+    for value in values {
+        let value = truncate_redacted_text(&redact_text(&value), max_len);
+        if value.trim().is_empty() || out.iter().any(|row| row == &value) {
+            continue;
+        }
+        out.push(value);
+        if out.len() >= max_items {
+            break;
+        }
+    }
+    out
+}
+
+fn truncate_redacted_text(value: &str, max_len: usize) -> String {
+    if value.len() <= max_len {
+        value.to_string()
+    } else {
+        format!("{}...", &value[..max_len])
+    }
 }
 
 fn detect_level(text: &str) -> Option<String> {
@@ -357,20 +561,20 @@ fn redact_text(text: &str) -> String {
     static KEY_VALUE_SECRET_RE: OnceLock<Regex> = OnceLock::new();
     static BEARER_SECRET_RE: OnceLock<Regex> = OnceLock::new();
     let key_value = KEY_VALUE_SECRET_RE.get_or_init(|| {
-        Regex::new(r"(?i)\b(api[_-]?key|token|password|secret)\s*=\s*\S+")
-            .expect("valid bug monitor secret regex")
+        Regex::new(
+            r"(?i)\b(api[_-]?key|token|password|secret|credential|authorization)\s*[:=]\s*\S+",
+        )
+        .expect("valid bug monitor secret regex")
     });
     let bearer = BEARER_SECRET_RE.get_or_init(|| {
-        Regex::new(r"(?i)\bauthorization\s*:\s*bearer\s+\S+")
+        Regex::new(r"(?i)(authorization\s*:\s*)?bearer\s+\S+")
             .expect("valid bug monitor bearer regex")
     });
 
     let out = key_value.replace_all(text, |caps: &regex::Captures<'_>| {
         format!("{}=[redacted]", &caps[1])
     });
-    bearer
-        .replace_all(&out, "Authorization: Bearer [redacted]")
-        .to_string()
+    bearer.replace_all(&out, "Bearer [redacted]").to_string()
 }
 
 fn build_fingerprint(
@@ -459,6 +663,37 @@ mod tests {
             .iter()
             .any(|line| line.contains("upload failed")));
         assert!(candidate.fingerprint.contains("customer-api:api-log"));
+    }
+
+    #[test]
+    fn json_error_line_extracts_safety_context_with_redaction() {
+        let line = br#"{"level":"error","message":"blocked egress","event":"agent.risk","actor_id":"agent-release","model":"gpt-5","tool_name":"slack.post_message","action":"send_message","approval_state":"denied","risk_category":"data_exfiltration","blast_radius":"customer channel","external_correlation_ids":["case-123","token=SECRET_TOKEN_123"]}"#;
+        let parsed = parse_log_candidates(
+            &project(),
+            &source(BugMonitorLogFormat::Json),
+            Path::new("/tmp/customer-api/logs/app.log"),
+            Some("1".to_string()),
+            10,
+            &[line.as_slice(), b"\n"].concat(),
+            None,
+            None,
+        );
+
+        assert_eq!(parsed.candidates.len(), 1);
+        let candidate = &parsed.candidates[0];
+        assert_eq!(candidate.actor.as_deref(), Some("agent-release"));
+        assert_eq!(candidate.model.as_deref(), Some("gpt-5"));
+        assert_eq!(candidate.tool_name.as_deref(), Some("slack.post_message"));
+        assert_eq!(
+            candidate.risk_category.as_deref(),
+            Some("data_exfiltration")
+        );
+        assert_eq!(candidate.approval_state.as_deref(), Some("denied"));
+        assert_eq!(candidate.blast_radius.as_deref(), Some("customer channel"));
+        assert_eq!(
+            candidate.external_correlation_ids,
+            vec!["case-123".to_string(), "token=[redacted]".to_string()]
+        );
     }
 
     #[test]

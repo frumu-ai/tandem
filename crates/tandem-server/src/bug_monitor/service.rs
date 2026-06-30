@@ -874,6 +874,34 @@ pub async fn process_event(
         if row.risk_level.is_none() {
             row.risk_level = submission.risk_level.clone();
         }
+        if row.actor.is_none() {
+            row.actor = submission.actor.clone();
+        }
+        if row.model.is_none() {
+            row.model = submission.model.clone();
+        }
+        if row.tool_name.is_none() {
+            row.tool_name = submission.tool_name.clone();
+        }
+        if row.action.is_none() {
+            row.action = submission.action.clone();
+        }
+        if row.policy.is_none() {
+            row.policy = submission.policy.clone();
+        }
+        if row.approval_state.is_none() {
+            row.approval_state = submission.approval_state.clone();
+        }
+        if row.risk_category.is_none() {
+            row.risk_category = submission.risk_category.clone();
+        }
+        if row.blast_radius.is_none() {
+            row.blast_radius = submission.blast_radius.clone();
+        }
+        merge_string_values(
+            &mut row.external_correlation_ids,
+            &submission.external_correlation_ids,
+        );
         if row.expected_destination.is_none() {
             row.expected_destination = submission.expected_destination.clone();
         }
@@ -917,6 +945,15 @@ pub async fn process_event(
             last_error: None,
             confidence: submission.confidence.clone(),
             risk_level: submission.risk_level.clone(),
+            actor: submission.actor.clone(),
+            model: submission.model.clone(),
+            tool_name: submission.tool_name.clone(),
+            action: submission.action.clone(),
+            policy: submission.policy.clone(),
+            approval_state: submission.approval_state.clone(),
+            risk_category: submission.risk_category.clone(),
+            blast_radius: submission.blast_radius.clone(),
+            external_correlation_ids: submission.external_correlation_ids.clone(),
             expected_destination: submission.expected_destination.clone(),
             evidence_refs: submission.evidence_refs.clone(),
             quality_gate: Some(quality_gate.clone()),
@@ -1175,6 +1212,14 @@ fn strings_from_value(value: Option<&Value>, max_items: usize) -> Vec<String> {
     rows
 }
 
+fn merge_string_values(existing: &mut Vec<String>, incoming: &[String]) {
+    for value in incoming {
+        if !existing.iter().any(|row| row == value) {
+            existing.push(value.clone());
+        }
+    }
+}
+
 fn redacted_key(key: &str) -> bool {
     let normalized = key.to_ascii_lowercase();
     normalized.contains("token")
@@ -1404,6 +1449,17 @@ pub async fn build_bug_monitor_submission_from_event(
     let risk_level = first_string_deep(&event.properties, &["risk_level", "riskLevel", "risk"])
         .map(|value| truncate_text(&value, 80))
         .or_else(|| Some("medium".to_string()));
+    let safety_context =
+        crate::bug_monitor::safety_context::extract_from_event_properties(&event.properties);
+    let actor = safety_context.actor;
+    let model = safety_context.model;
+    let tool_name = safety_context.tool_name;
+    let action = safety_context.action;
+    let policy = safety_context.policy;
+    let approval_state = safety_context.approval_state;
+    let risk_category = safety_context.risk_category;
+    let blast_radius = safety_context.blast_radius;
+    let external_correlation_ids = safety_context.external_correlation_ids;
     let expected_destination = first_string_deep(
         &event.properties,
         &["expected_destination", "expectedDestination"],
@@ -1499,6 +1555,22 @@ pub async fn build_bug_monitor_submission_from_event(
         format!("retry_exhausted: {retry_exhausted}"),
         field_line("confidence", confidence.clone()),
         field_line("risk_level", risk_level.clone()),
+        field_line("risk_category", risk_category.clone()),
+        field_line("actor", actor.clone()),
+        field_line("model", model.clone()),
+        field_line("tool_name", tool_name.clone()),
+        field_line("action", action.clone()),
+        field_line("policy", policy.clone()),
+        field_line("approval_state", approval_state.clone()),
+        field_line("blast_radius", blast_radius.clone()),
+        field_line(
+            "external_correlation_ids",
+            if external_correlation_ids.is_empty() {
+                None
+            } else {
+                Some(external_correlation_ids.join(", "))
+            },
+        ),
         field_line("expected_destination", expected_destination.clone()),
         field_line("error_kind", error_kind.clone()),
         field_line("reason", reason.clone()),
@@ -1608,6 +1680,15 @@ pub async fn build_bug_monitor_submission_from_event(
         fingerprint: Some(fingerprint),
         confidence,
         risk_level,
+        actor,
+        model,
+        tool_name,
+        action,
+        policy,
+        approval_state,
+        risk_category,
+        blast_radius,
+        external_correlation_ids,
         expected_destination,
         evidence_refs,
         ..BugMonitorSubmission::default()
