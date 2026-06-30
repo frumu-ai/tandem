@@ -253,6 +253,8 @@ async fn webhook_management_routes_redact_secrets_and_delivery_payloads() {
             queued_run_id: Some("automation-v2-run-webhook-a".to_string()),
             woken_run_id: None,
             woken_wait_id: None,
+            feedback_loop: None,
+            correlation: None,
             received_at_ms: 2_000,
             accepted_at_ms: Some(2_001),
             rejected_at_ms: None,

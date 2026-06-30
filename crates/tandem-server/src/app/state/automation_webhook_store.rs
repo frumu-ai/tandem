@@ -22,12 +22,13 @@ use crate::stateful_runtime::{
 use crate::util::time::now_ms;
 
 use super::{
-    automation_webhook_delivery_matches_key, automation_webhook_rejection_delivery,
-    automation_webhook_run_metadata, idempotency_outcome_ref, new_automation_webhook_delivery_id,
+    automation_webhook_delivery_correlation, automation_webhook_delivery_matches_key,
+    automation_webhook_rejection_delivery, automation_webhook_run_metadata,
+    idempotency_outcome_ref, new_automation_webhook_delivery_id,
     verify_automation_webhook_signature, AppState, AutomationWebhookDedupeDecision,
-    AutomationWebhookReservedClaim, AutomationWebhookSignatureHeaders,
-    AutomationWebhookSignatureVerificationContext, AutomationWebhookVerificationDecision,
-    AutomationWebhookVerificationError,
+    AutomationWebhookFeedbackLoopCandidate, AutomationWebhookReservedClaim,
+    AutomationWebhookSignatureHeaders, AutomationWebhookSignatureVerificationContext,
+    AutomationWebhookVerificationDecision, AutomationWebhookVerificationError,
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -136,6 +137,9 @@ pub(crate) enum AutomationWebhookQueueResult {
     Woken {
         delivery: AutomationWebhookDeliveryRecord,
         wait: StatefulWaitRecord,
+    },
+    Suppressed {
+        delivery: AutomationWebhookDeliveryRecord,
     },
     Rejected {
         delivery: AutomationWebhookDeliveryRecord,
@@ -970,6 +974,7 @@ impl AppState {
                 }
                 AutomationWebhookDeliveryStatus::Rejected
                 | AutomationWebhookDeliveryStatus::Duplicate
+                | AutomationWebhookDeliveryStatus::Suppressed
                 | AutomationWebhookDeliveryStatus::Disabled
                 | AutomationWebhookDeliveryStatus::Failed => {
                     let rejected_at_ms = delivery.rejected_at_ms.unwrap_or(now);
@@ -983,6 +988,9 @@ impl AppState {
         };
         delivery.sanitized_preview =
             sanitize_automation_webhook_preview(&delivery.sanitized_preview);
+        if delivery.correlation.is_none() {
+            delivery.correlation = Some(automation_webhook_delivery_correlation(&delivery, None));
+        }
         self.automation_webhook_deliveries
             .write()
             .await
@@ -1021,6 +1029,7 @@ impl AppState {
                 }
             }
             delivery.queued_run_id = Some(run_id.to_string());
+            delivery.correlation = Some(automation_webhook_delivery_correlation(delivery, None));
             delivery.clone()
         };
         self.persist_automation_webhook_deliveries_locked().await?;
@@ -1069,6 +1078,7 @@ impl AppState {
         sanitized_preview: Value,
         verification: AutomationWebhookVerificationDecision,
         primary_idempotency: Option<AutomationWebhookReservedClaim>,
+        feedback_loop: Option<AutomationWebhookFeedbackLoopDecision>,
     ) -> anyhow::Result<Option<AutomationWebhookStatefulWakeResult>> {
         let paths =
             StatefulRuntimeStoragePaths::from_runtime_events_path(&self.runtime_events_path);
@@ -1211,6 +1221,8 @@ impl AppState {
             queued_run_id: None,
             woken_run_id: Some(woken_wait.run_id.clone()),
             woken_wait_id: Some(woken_wait.wait_id.clone()),
+            feedback_loop,
+            correlation: None,
             received_at_ms,
             accepted_at_ms: Some(received_at_ms),
             rejected_at_ms: None,
@@ -1241,6 +1253,20 @@ impl AppState {
         &self,
         verified: VerifiedAutomationWebhookRequest,
         sanitized_preview: Value,
+    ) -> anyhow::Result<AutomationWebhookQueueResult> {
+        self.queue_automation_v2_run_from_webhook_delivery_with_feedback_loop(
+            verified,
+            sanitized_preview,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn queue_automation_v2_run_from_webhook_delivery_with_feedback_loop(
+        &self,
+        verified: VerifiedAutomationWebhookRequest,
+        sanitized_preview: Value,
+        feedback_loop_candidate: Option<AutomationWebhookFeedbackLoopCandidate>,
     ) -> anyhow::Result<AutomationWebhookQueueResult> {
         let trigger = verified.trigger;
         let verification = verified.verification.clone();
@@ -1305,6 +1331,9 @@ impl AppState {
                 reason_code: "automation_inactive".to_string(),
             });
         }
+        let feedback_loop = self
+            .classify_automation_webhook_feedback_loop(&trigger, feedback_loop_candidate.as_ref())
+            .await;
 
         let accepted_idempotency_records: Vec<AutomationWebhookReservedClaim>;
         let delivery = {
@@ -1499,6 +1528,42 @@ impl AppState {
             }
             let primary = reserved_records.first();
             accepted_idempotency_records = reserved_records.clone();
+            if let Some(feedback_loop) = feedback_loop.as_ref().filter(|decision| {
+                matches!(
+                    decision.outcome,
+                    AutomationWebhookFeedbackLoopOutcome::Suppressed
+                )
+            }) {
+                let mut delivery = automation_webhook_rejection_delivery(
+                    &trigger,
+                    provider_event_id,
+                    body_digest,
+                    AutomationWebhookDeliveryStatus::Suppressed,
+                    feedback_loop.reason_code.clone(),
+                    received_at_ms,
+                    sanitized_preview,
+                    Some(verification.clone()),
+                );
+                if let Some(primary) = primary {
+                    delivery.idempotency_key = Some(primary.claim.key.clone());
+                    delivery.idempotency_record_id = Some(primary.record.record_id.clone());
+                    delivery.dedupe_reason_code =
+                        Some(format!("suppressed_{}", primary.claim.key_kind));
+                }
+                delivery.dedupe_result = Some(AutomationWebhookDedupeResult::IgnoredFeedbackLoop);
+                delivery.feedback_loop = Some(feedback_loop.clone());
+                let delivery = self
+                    .record_automation_webhook_delivery_locked(delivery)
+                    .await?;
+                self.complete_automation_webhook_idempotency_records(
+                    &accepted_idempotency_records,
+                    &delivery,
+                    "suppressed",
+                    received_at_ms,
+                )
+                .await?;
+                return Ok(AutomationWebhookQueueResult::Suppressed { delivery });
+            }
             if let Some(woken) = self
                 .wake_matching_stateful_webhook_wait_locked(
                     &trigger,
@@ -1508,6 +1573,7 @@ impl AppState {
                     sanitized_preview.clone(),
                     verification.clone(),
                     primary.cloned(),
+                    feedback_loop.clone(),
                 )
                 .await?
             {
@@ -1546,6 +1612,8 @@ impl AppState {
                 queued_run_id: None,
                 woken_run_id: None,
                 woken_wait_id: None,
+                feedback_loop: feedback_loop.clone(),
+                correlation: None,
                 received_at_ms,
                 accepted_at_ms: Some(received_at_ms),
                 rejected_at_ms: None,

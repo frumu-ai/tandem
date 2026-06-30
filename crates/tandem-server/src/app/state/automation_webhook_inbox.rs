@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::automation_v2::types::*;
 
-use super::AppState;
+use super::{automation_webhook_delivery_correlation, AppState};
 
 const AUTOMATION_WEBHOOK_EVENT_SCHEMA_VERSION: u32 = 1;
 
@@ -137,13 +137,15 @@ impl AppState {
         write_raw_payload_atomically(&payload_path, &input.payload).await?;
 
         let mut events = load_automation_webhook_events(&events_path).await?;
+        let trigger_id = input.trigger.trigger_id.clone();
+        let automation_id = input.trigger.automation_id.clone();
         let delete_after_ms = input
             .received_at_ms
             .checked_add(AutomationWebhookEventRetentionPolicy::default().raw_payload_retention_ms);
         let record = AutomationWebhookRawEventRecord {
             event_id: event_id.clone(),
-            trigger_id: input.trigger.trigger_id,
-            automation_id: input.trigger.automation_id,
+            trigger_id: trigger_id.clone(),
+            automation_id: automation_id.clone(),
             tenant_context: input.trigger.tenant_context,
             provider: input.trigger.provider,
             provider_event_kind: input.trigger.provider_event_kind,
@@ -160,6 +162,30 @@ impl AppState {
             delivery_id: None,
             queued_run_id: None,
             rejection_reason_code: None,
+            idempotency_key: None,
+            idempotency_record_id: None,
+            dedupe_result: None,
+            dedupe_reason_code: None,
+            duplicate_of_delivery_id: None,
+            duplicate_of_run_id: None,
+            woken_run_id: None,
+            woken_wait_id: None,
+            feedback_loop: None,
+            correlation: Some(AutomationWebhookCorrelationRecord {
+                outcome: AutomationWebhookCorrelationOutcome::Received,
+                event_id: Some(event_id.clone()),
+                delivery_id: None,
+                trigger_id: Some(trigger_id),
+                automation_id: Some(automation_id),
+                queued_run_id: None,
+                woken_run_id: None,
+                woken_wait_id: None,
+                duplicate_of_delivery_id: None,
+                duplicate_of_run_id: None,
+                idempotency_key: None,
+                idempotency_record_id: None,
+                reason_code: None,
+            }),
             retention_policy: AutomationWebhookEventRetentionPolicy {
                 delete_after_ms,
                 ..AutomationWebhookEventRetentionPolicy::default()
@@ -174,10 +200,7 @@ impl AppState {
         &self,
         tenant_context: &TenantContext,
         event_id: &str,
-        status: AutomationWebhookDeliveryStatus,
-        delivery_id: Option<String>,
-        queued_run_id: Option<String>,
-        rejection_reason_code: Option<String>,
+        delivery: &AutomationWebhookDeliveryRecord,
         updated_at_ms: u64,
     ) -> anyhow::Result<Option<AutomationWebhookRawEventRecord>> {
         let _guard = self.automation_webhook_persistence.lock().await;
@@ -189,14 +212,86 @@ impl AppState {
         else {
             return Ok(None);
         };
-        record.status = status;
-        record.delivery_id = delivery_id;
-        record.queued_run_id = queued_run_id;
-        record.rejection_reason_code = rejection_reason_code;
+        record.status = delivery.status.clone();
+        record.delivery_id = Some(delivery.delivery_id.clone());
+        record.queued_run_id = delivery.queued_run_id.clone();
+        record.rejection_reason_code = delivery.rejection_reason_code.clone();
+        record.idempotency_key = delivery.idempotency_key.clone();
+        record.idempotency_record_id = delivery.idempotency_record_id.clone();
+        record.dedupe_result = delivery.dedupe_result.clone();
+        record.dedupe_reason_code = delivery.dedupe_reason_code.clone();
+        record.duplicate_of_delivery_id = delivery.duplicate_of_delivery_id.clone();
+        record.duplicate_of_run_id = delivery.duplicate_of_run_id.clone();
+        record.woken_run_id = delivery.woken_run_id.clone();
+        record.woken_wait_id = delivery.woken_wait_id.clone();
+        record.feedback_loop = delivery.feedback_loop.clone();
+        record.correlation = Some(automation_webhook_delivery_correlation(
+            delivery,
+            Some(record.event_id.clone()),
+        ));
         record.updated_at_ms = updated_at_ms;
         let updated = record.clone();
         persist_automation_webhook_events(&events_path, events).await?;
         Ok(Some(updated))
+    }
+
+    pub(crate) async fn list_automation_webhook_raw_events(
+        &self,
+        tenant_context: &TenantContext,
+        trigger_id: Option<&str>,
+        automation_id: Option<&str>,
+        status: Option<AutomationWebhookDeliveryStatus>,
+        limit: usize,
+    ) -> Vec<AutomationWebhookRawEventRecord> {
+        let events_path = automation_webhook_events_path(&self.automation_webhook_deliveries_path);
+        let mut events = load_automation_webhook_events(&events_path)
+            .await
+            .unwrap_or_default()
+            .into_values()
+            .filter(|event| event.tenant_matches(tenant_context))
+            .filter(|event| trigger_id.is_none_or(|id| event.trigger_id == id))
+            .filter(|event| automation_id.is_none_or(|id| event.automation_id == id))
+            .filter(|event| status.as_ref().is_none_or(|status| event.status == *status))
+            .collect::<Vec<_>>();
+        events.sort_by(|left, right| right.received_at_ms.cmp(&left.received_at_ms));
+        events.truncate(limit.clamp(1, 200));
+        events
+    }
+
+    pub(crate) async fn get_automation_webhook_raw_event(
+        &self,
+        tenant_context: &TenantContext,
+        event_id: &str,
+    ) -> anyhow::Result<Option<AutomationWebhookRawEventRecord>> {
+        let events_path = automation_webhook_events_path(&self.automation_webhook_deliveries_path);
+        let events = load_automation_webhook_events(&events_path).await?;
+        Ok(events
+            .get(event_id)
+            .filter(|event| event.tenant_matches(tenant_context))
+            .cloned())
+    }
+
+    pub(crate) async fn list_automation_webhook_raw_events_for_run(
+        &self,
+        tenant_context: &TenantContext,
+        run_id: &str,
+        limit: usize,
+    ) -> Vec<AutomationWebhookRawEventRecord> {
+        let events_path = automation_webhook_events_path(&self.automation_webhook_deliveries_path);
+        let mut events = load_automation_webhook_events(&events_path)
+            .await
+            .unwrap_or_default()
+            .into_values()
+            .filter(|event| event.tenant_matches(tenant_context))
+            .filter(|event| {
+                event.queued_run_id.as_deref() == Some(run_id)
+                    || event.woken_run_id.as_deref() == Some(run_id)
+                    || event.duplicate_of_run_id.as_deref() == Some(run_id)
+            })
+            .collect::<Vec<_>>();
+        events.sort_by(|left, right| right.received_at_ms.cmp(&left.received_at_ms));
+        events.truncate(limit.clamp(1, 200));
+        events
     }
 
     pub(crate) async fn list_automation_webhook_raw_events_for_trigger(

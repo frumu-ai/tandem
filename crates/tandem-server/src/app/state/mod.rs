@@ -88,6 +88,7 @@ mod automation_v2_stale_reaper;
 mod automation_v2_startup_recovery;
 mod automation_v2_stateful_projection;
 mod automation_webhook_delivery;
+mod automation_webhook_feedback;
 mod automation_webhook_idempotency;
 mod automation_webhook_inbox;
 mod automation_webhook_store;
@@ -102,6 +103,7 @@ mod prompt_memory_context;
 
 pub(crate) use automation_v2_run_store::*;
 pub(crate) use automation_webhook_delivery::*;
+pub(crate) use automation_webhook_feedback::*;
 pub(crate) use automation_webhook_idempotency::*;
 pub(crate) use automation_webhook_inbox::*;
 pub(crate) use automation_webhook_store::*;
