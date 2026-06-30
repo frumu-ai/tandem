@@ -179,3 +179,72 @@ async fn memory_promote_blocks_rejected_source_outcome() {
         Some(0)
     );
 }
+
+#[tokio::test]
+async fn memory_put_blocks_project_write_denied_by_knowledge_scope() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let capability = json!({
+        "run_id": "run-knowledge-scope-write",
+        "subject": "agent-user",
+        "org_id": "org-1",
+        "workspace_id": "ws-1",
+        "project_id": "proj-1",
+        "memory": {
+            "read_tiers": ["session", "project"],
+            "write_tiers": ["session", "project"],
+            "promote_targets": ["project"],
+            "require_review_for_promote": false,
+            "allow_auto_use_tiers": ["curated"]
+        },
+        "expires_at": 9999999999999u64
+    });
+
+    let put_req = Request::builder()
+        .method("POST")
+        .uri("/memory/put")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "run_id": "run-knowledge-scope-write",
+                "partition": {
+                    "org_id": "org-1",
+                    "workspace_id": "ws-1",
+                    "project_id": "proj-1",
+                    "tier": "project"
+                },
+                "kind": "fact",
+                "content": "project write must carry explicit knowledge scope policy",
+                "artifact_refs": ["artifact://run-knowledge-scope-write/output.json"],
+                "classification": "internal",
+                "metadata": {
+                    "knowledge_scope_registry": {
+                        "registry_id": "registry-session-only",
+                        "resource_ref": {
+                            "organization_id": "org-1",
+                            "workspace_id": "ws-1",
+                            "project_id": "proj-1",
+                            "resource_kind": "knowledge_space",
+                            "resource_id": "space-session"
+                        },
+                        "data_class": "confidential",
+                        "collection_id": "collection-session",
+                        "owner_org_unit_id": "ou-1",
+                        "risk_tier": "confidential",
+                        "allowed_workflow_phases": ["draft"],
+                        "allowed_write_tiers": ["session"],
+                        "allowed_promotion_tiers": ["project"],
+                        "retention_expires_at_ms": 9999999999999u64,
+                        "promotion_requires_approval": true
+                    }
+                },
+                "capability": capability
+            })
+            .to_string(),
+        ))
+        .expect("put request");
+
+    let put_resp = app.oneshot(put_req).await.expect("put response");
+    assert_eq!(put_resp.status(), StatusCode::FORBIDDEN);
+}

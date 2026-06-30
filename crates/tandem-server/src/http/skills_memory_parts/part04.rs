@@ -164,6 +164,88 @@ async fn memory_promote_impl_with_verified(
         request.to_tier
     );
     let source_outcome = promotion_source_outcome_value(&request, &source);
+    let scope_decision = tandem_memory::memory_promotion_scope_decision(
+        &request.partition,
+        request.to_tier,
+        &request.review,
+        source.metadata.as_ref(),
+        now,
+    )
+    .map_err(|error| {
+        tracing::warn!("invalid knowledge scope metadata on memory promotion: {error}");
+        StatusCode::FORBIDDEN
+    })?;
+    if !scope_decision.allowed {
+        let policy_decision_id = record_memory_promotion_policy_decision(
+            state,
+            tenant_context,
+            &request,
+            &capability.subject,
+            Some(&source),
+            &scrub_report,
+            &audit_id,
+            tandem_types::PolicyDecisionEffect::Deny,
+            &scope_decision.reason_code,
+            "knowledge scope promotion denied",
+            Some(&source_outcome),
+        )
+        .await;
+        let linkage = memory_linkage(&source);
+        append_memory_audit(
+            &state,
+            tenant_context,
+            crate::MemoryAuditEvent {
+                audit_id: audit_id.clone(),
+                action: "memory_promote".to_string(),
+                run_id: request.run_id.clone(),
+                tenant_context: tenant_context.clone(),
+                memory_id: None,
+                source_memory_id: Some(source_memory_id.clone()),
+                to_tier: Some(request.to_tier),
+                partition_key: partition_key.clone(),
+                actor: capability.subject,
+                status: "blocked".to_string(),
+                detail: Some(format!(
+                    "{} policy_decision_id={}{}",
+                    scope_decision.reason_code,
+                    policy_decision_id.clone().unwrap_or_default(),
+                    memory_linkage_detail(&linkage)
+                )),
+                created_at_ms: now,
+            },
+        )
+        .await?;
+        publish_tenant_event(
+            state,
+            tenant_context,
+            "memory.promote",
+            json!({
+                "runID": request.run_id.clone(),
+                "sourceMemoryID": source_memory_id,
+                "toTier": request.to_tier,
+                "partitionKey": partition_key,
+                "status": "blocked",
+                "kind": memory_kind_label(&source.source_type),
+                "classification": memory_classification_label(source.metadata.as_ref()),
+                "artifactRefs": memory_artifact_refs(source.metadata.as_ref()),
+                "visibility": source.visibility,
+                "scrubStatus": scrub_report.status,
+                "sourceOutcome": source_outcome,
+                "policyDecisionID": policy_decision_id,
+                "linkage": linkage,
+                "detail": scope_decision.reason_code,
+                "auditID": audit_id,
+            }),
+        );
+        return Ok(MemoryPromoteResponse {
+            promoted: false,
+            new_memory_id: None,
+            to_tier: request.to_tier,
+            scrub_report,
+            audit_id,
+            policy_decision_id,
+        });
+    }
     if let Some(reason) = promotion_outcome_block_reason(&request, &source) {
         let policy_decision_id = record_memory_promotion_policy_decision(
             state,

@@ -1,6 +1,7 @@
 // Memory Context Types
 // Type definitions and error types for the memory system
 
+use crate::knowledge_scope::KnowledgeScopePolicy;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tandem_enterprise_contract::{
@@ -174,6 +175,7 @@ pub struct MemoryAccessFilter {
     pub strict_context: Option<StrictTenantContext>,
     pub now_ms: u64,
     pub mode: GovernedReadMode,
+    pub workflow_phase: Option<String>,
 }
 
 impl MemoryAccessFilter {
@@ -186,6 +188,7 @@ impl MemoryAccessFilter {
             strict_context,
             now_ms,
             mode: GovernedReadMode::GovernedStrict,
+            workflow_phase: None,
         }
     }
 
@@ -194,7 +197,13 @@ impl MemoryAccessFilter {
             strict_context: None,
             now_ms,
             mode: GovernedReadMode::LocalNoop,
+            workflow_phase: None,
         }
+    }
+
+    pub fn with_workflow_phase(mut self, workflow_phase: impl Into<String>) -> Self {
+        self.workflow_phase = Some(workflow_phase.into());
+        self
     }
 
     pub fn allows_chunk(&self, chunk: &MemoryChunk) -> bool {
@@ -210,6 +219,10 @@ impl MemoryAccessFilter {
     }
 
     pub fn decision_for_chunk(&self, chunk: &MemoryChunk) -> GovernedReadDecision {
+        if let Some(decision) = self.decision_for_knowledge_scope_metadata(chunk.metadata.as_ref())
+        {
+            return decision;
+        }
         match governed_read_target_from_chunk(chunk) {
             Ok(target) => self.decision_for_target(&target),
             Err(reason) => self.decision_for_missing_target(reason),
@@ -217,10 +230,34 @@ impl MemoryAccessFilter {
     }
 
     pub fn decision_for_global_record(&self, record: &GlobalMemoryRecord) -> GovernedReadDecision {
+        if let Some(decision) = self.decision_for_knowledge_scope_metadata(record.metadata.as_ref())
+        {
+            return decision;
+        }
         match governed_read_target_from_global_record(record, self.strict_context.as_ref()) {
             Ok(target) => self.decision_for_target(&target),
             Err(reason) => self.decision_for_missing_target(reason),
         }
+    }
+
+    fn decision_for_knowledge_scope_metadata(
+        &self,
+        metadata: Option<&serde_json::Value>,
+    ) -> Option<GovernedReadDecision> {
+        let policy = match KnowledgeScopePolicy::from_metadata(metadata) {
+            Ok(Some(policy)) => policy,
+            Ok(None) => return None,
+            Err(reason) => return Some(self.decision_for_missing_target_owned(reason)),
+        };
+
+        if self.mode == GovernedReadMode::LocalNoop {
+            return Some(GovernedReadDecision::allow("local_noop"));
+        }
+        if let Some(reason) = policy.read_denial_reason(self.workflow_phase.as_deref(), self.now_ms)
+        {
+            return Some(GovernedReadDecision::deny(reason));
+        }
+        Some(self.decision_for_target(&policy.governed_read_target()))
     }
 
     pub fn decision_for_source_target(
@@ -237,6 +274,10 @@ impl MemoryAccessFilter {
     }
 
     fn decision_for_missing_target(&self, reason: &'static str) -> GovernedReadDecision {
+        self.decision_for_missing_target_owned(reason.to_string())
+    }
+
+    fn decision_for_missing_target_owned(&self, reason: String) -> GovernedReadDecision {
         if self.mode == GovernedReadMode::LocalNoop {
             GovernedReadDecision::allow("local_noop")
         } else {

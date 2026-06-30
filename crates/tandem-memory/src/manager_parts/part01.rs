@@ -1613,7 +1613,9 @@ fn memory_chunk_visible_to_access_filter(
     chunk: &MemoryChunk,
     access_filter: Option<&crate::types::MemoryAccessFilter>,
 ) -> bool {
-    if crate::types::MemorySourceAccessTarget::from_chunk(chunk).is_none() {
+    if crate::types::MemorySourceAccessTarget::from_chunk(chunk).is_none()
+        && !crate::knowledge_scope::metadata_has_knowledge_scope(chunk.metadata.as_ref())
+    {
         return true;
     }
     access_filter

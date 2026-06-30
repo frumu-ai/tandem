@@ -29,6 +29,152 @@ pub struct WorkflowMemoryCandidate {
     pub score: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowKnowledgeScopeRegistry {
+    pub require_registered: bool,
+    pub grants: Vec<WorkflowKnowledgeScopeGrant>,
+}
+
+impl WorkflowKnowledgeScopeRegistry {
+    pub fn strict(grants: Vec<WorkflowKnowledgeScopeGrant>) -> Self {
+        Self {
+            require_registered: true,
+            grants,
+        }
+    }
+
+    fn decision_for(
+        &self,
+        candidate: &WorkflowMemoryCandidate,
+        envelope: &GraphQueryEnvelope,
+        query: &WorkflowMemoryQuery,
+    ) -> WorkflowKnowledgeScopeDecision {
+        let Some(grant) = self
+            .grants
+            .iter()
+            .find(|grant| grant.matches_candidate(candidate))
+        else {
+            return if self.require_registered {
+                WorkflowKnowledgeScopeDecision::deny("knowledge_scope_registry_missing")
+            } else {
+                WorkflowKnowledgeScopeDecision::allow("knowledge_scope_registry_not_required")
+            };
+        };
+
+        grant.decision_for(candidate, envelope, query)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowKnowledgeScopeGrant {
+    pub registry_id: String,
+    pub tenant_id: String,
+    pub project_id: String,
+    pub workspace_id: Option<String>,
+    pub memory_ids: Vec<String>,
+    pub collection_id: Option<String>,
+    pub policy_scope: Option<String>,
+    pub data_class: String,
+    pub risk_tier: Option<String>,
+    pub owner_org_unit_id: Option<String>,
+    pub resource_scope: Option<String>,
+    pub allowed_workflow_phases: Vec<String>,
+    pub allowed_memory_tiers: Vec<String>,
+    pub expires_at_unix_ms: Option<u64>,
+}
+
+impl WorkflowKnowledgeScopeGrant {
+    fn matches_candidate(&self, candidate: &WorkflowMemoryCandidate) -> bool {
+        self.memory_ids
+            .iter()
+            .any(|memory_id| memory_id == &candidate.memory_id)
+            || self
+                .collection_id
+                .as_ref()
+                .is_some_and(|collection_id| collection_id == &candidate.collection_id)
+            || self.policy_scope.as_ref().is_some_and(|scope| {
+                candidate
+                    .policy_scope
+                    .as_ref()
+                    .is_some_and(|candidate_scope| candidate_scope == scope)
+            })
+    }
+
+    fn decision_for(
+        &self,
+        candidate: &WorkflowMemoryCandidate,
+        envelope: &GraphQueryEnvelope,
+        query: &WorkflowMemoryQuery,
+    ) -> WorkflowKnowledgeScopeDecision {
+        if self.tenant_id != envelope.scope.tenant_id || self.tenant_id != candidate.scope.tenant_id
+        {
+            return WorkflowKnowledgeScopeDecision::deny("knowledge_scope_tenant_mismatch");
+        }
+        if self.project_id != envelope.scope.project_id
+            || self.project_id != candidate.scope.project_id
+        {
+            return WorkflowKnowledgeScopeDecision::deny("knowledge_scope_project_mismatch");
+        }
+        if self.workspace_id.is_some()
+            && self.workspace_id != envelope.scope.workspace_id
+            && self.workspace_id != candidate.scope.workspace_id
+        {
+            return WorkflowKnowledgeScopeDecision::deny("knowledge_scope_workspace_mismatch");
+        }
+        if self
+            .expires_at_unix_ms
+            .zip(query.now_unix_ms)
+            .is_some_and(|(expires_at, now)| expires_at <= now)
+        {
+            return WorkflowKnowledgeScopeDecision::deny("knowledge_scope_registry_expired");
+        }
+        if !self.allowed_memory_tiers.is_empty()
+            && !self
+                .allowed_memory_tiers
+                .iter()
+                .any(|tier| tier == &candidate.tier)
+        {
+            return WorkflowKnowledgeScopeDecision::deny("knowledge_scope_tier_denied");
+        }
+        if !self.allowed_workflow_phases.is_empty()
+            && !self.allowed_workflow_phases.iter().any(|phase| {
+                phase == "*"
+                    || phase == &query.step_id
+                    || query
+                        .step_kind
+                        .as_ref()
+                        .is_some_and(|step_kind| phase == step_kind)
+            })
+        {
+            return WorkflowKnowledgeScopeDecision::deny("knowledge_scope_phase_denied");
+        }
+
+        WorkflowKnowledgeScopeDecision::allow("knowledge_scope_registry_allowed")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkflowKnowledgeScopeDecision {
+    allowed: bool,
+    reason: &'static str,
+}
+
+impl WorkflowKnowledgeScopeDecision {
+    fn allow(reason: &'static str) -> Self {
+        Self {
+            allowed: true,
+            reason,
+        }
+    }
+
+    fn deny(reason: &'static str) -> Self {
+        Self {
+            allowed: false,
+            reason,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowMemoryBundle {
     pub step_id: String,
@@ -55,6 +201,21 @@ impl WorkflowGraph {
         envelope: &GraphQueryEnvelope,
         query: WorkflowMemoryQuery,
         candidates: &[WorkflowMemoryCandidate],
+    ) -> GraphQueryOutput<WorkflowMemoryBundle> {
+        self.workflow_memory_bundle_with_knowledge_scope_registry(
+            envelope,
+            query,
+            candidates,
+            &WorkflowKnowledgeScopeRegistry::default(),
+        )
+    }
+
+    pub fn workflow_memory_bundle_with_knowledge_scope_registry(
+        &self,
+        envelope: &GraphQueryEnvelope,
+        query: WorkflowMemoryQuery,
+        candidates: &[WorkflowMemoryCandidate],
+        registry: &WorkflowKnowledgeScopeRegistry,
     ) -> GraphQueryOutput<WorkflowMemoryBundle> {
         let mut audit = GraphQueryAudit::default();
         let mut blockers = self.envelope_blockers(envelope);
@@ -83,6 +244,7 @@ impl WorkflowGraph {
         }
 
         let mut memories = Vec::new();
+        let mut registry_denied_count = 0usize;
         for candidate in candidates {
             if !self.partition.is_visible_to(&candidate.scope) {
                 audit.deny("memory outside the workflow partition scope");
@@ -105,6 +267,12 @@ impl WorkflowGraph {
             }
             if is_stale(candidate, &query) {
                 audit.deny("memory is stale");
+                continue;
+            }
+            let registry_decision = registry.decision_for(candidate, envelope, &query);
+            if !registry_decision.allowed {
+                registry_denied_count += 1;
+                audit.deny(registry_decision.reason);
                 continue;
             }
             let Some(reason) = memory_reason(candidate, summary, &query) else {
@@ -132,7 +300,7 @@ impl WorkflowGraph {
         GraphQueryOutput::new(
             WorkflowMemoryBundle {
                 step_id: query.step_id,
-                fallback_to_semantic_search: memories.is_empty(),
+                fallback_to_semantic_search: memories.is_empty() && registry_denied_count == 0,
                 memories,
                 blockers,
             },

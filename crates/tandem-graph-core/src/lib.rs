@@ -72,7 +72,8 @@ pub use workflow_impact_types::{
     WorkflowImpactRiskHint, WorkflowImpactStep, WorkflowImpactWorkflow,
 };
 pub use workflow_memory::{
-    WorkflowMemoryBundle, WorkflowMemoryCandidate, WorkflowMemoryMatch, WorkflowMemoryQuery,
+    WorkflowKnowledgeScopeGrant, WorkflowKnowledgeScopeRegistry, WorkflowMemoryBundle,
+    WorkflowMemoryCandidate, WorkflowMemoryMatch, WorkflowMemoryQuery,
 };
 pub use workflow_rerun::{
     WorkflowRerunChange, WorkflowRerunPlan, WorkflowRerunStep, WorkflowStepCacheKey,
