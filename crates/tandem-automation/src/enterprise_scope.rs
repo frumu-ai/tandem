@@ -86,7 +86,7 @@ impl AutomationEnterpriseScope {
         if overwrite || self.risk_tier.is_none() {
             self.risk_tier = json_field(value, "risk_tier")
                 .or_else(|| json_field(value, "riskTier"))
-                .or_else(|| self.risk_tier.clone());
+                .or(self.risk_tier);
         }
         if overwrite || self.policy_version_id.is_none() {
             self.policy_version_id = json_string_field(value, "policy_version_id")
