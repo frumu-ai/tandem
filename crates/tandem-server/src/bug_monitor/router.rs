@@ -303,6 +303,7 @@ pub async fn publish_draft(
     );
     let router_approval_required =
         route_publish_approval_required(&status.config, &preview, &context, &status.destinations);
+    let audit_tenant_context = publish_audit_tenant_context(&context, &draft);
 
     let audit_payload = publish_audit_payload(
         &request,
@@ -318,6 +319,7 @@ pub async fn publish_draft(
         state,
         "bug_monitor.publish.attempted",
         audit_payload.clone(),
+        &audit_tenant_context,
     )
     .await;
 
@@ -335,6 +337,7 @@ pub async fn publish_draft(
                 Some(&crate::truncate_text(&error.to_string(), 500)),
                 router_approval_required,
             ),
+            &audit_tenant_context,
         )
         .await;
         return Err(error);
@@ -361,6 +364,7 @@ pub async fn publish_draft(
                 None,
                 router_approval_required,
             ),
+            &audit_tenant_context,
         )
         .await;
         return Ok(bug_monitor_github::PublishOutcome {
@@ -438,6 +442,7 @@ pub async fn publish_draft(
                     None,
                     router_approval_required,
                 ),
+                &audit_tenant_context,
             )
             .await;
             Ok(outcome)
@@ -456,6 +461,7 @@ pub async fn publish_draft(
                     Some(&crate::truncate_text(&format!("{error:#}"), 500)),
                     router_approval_required,
                 ),
+                &audit_tenant_context,
             )
             .await;
             Err(error).context("publish Bug Monitor draft through destination router")
@@ -590,14 +596,43 @@ fn publish_audit_payload(
     })
 }
 
-async fn emit_publish_audit_event(state: &AppState, event_type: &'static str, payload: Value) {
+fn publish_audit_tenant_context(
+    context: &BugMonitorRouteContext,
+    draft: &BugMonitorDraftRecord,
+) -> TenantContext {
+    let tenant_id = context
+        .tenant_id
+        .as_deref()
+        .or(draft.tenant_id.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let workspace_id = context
+        .workspace_id
+        .as_deref()
+        .or(draft.workspace_id.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match (tenant_id, workspace_id) {
+        (Some(tenant_id), Some(workspace_id)) => {
+            TenantContext::explicit(tenant_id, workspace_id, None)
+        }
+        _ => TenantContext::local_implicit(),
+    }
+}
+
+async fn emit_publish_audit_event(
+    state: &AppState,
+    event_type: &'static str,
+    payload: Value,
+    tenant_context: &TenantContext,
+) {
     state
         .event_bus
         .publish(EngineEvent::new(event_type, payload.clone()));
     let _ = crate::audit::append_protected_audit_event(
         state,
         event_type,
-        &TenantContext::local_implicit(),
+        tenant_context,
         None,
         payload,
     )
@@ -1385,6 +1420,40 @@ mod tests {
             Some(BugMonitorApprovalPolicy::Never)
         );
         assert!(enriched.source_approval_policy_trusted);
+    }
+
+    #[test]
+    fn publish_audit_tenant_context_uses_source_bound_draft_scope() {
+        let draft = BugMonitorDraftRecord {
+            tenant_id: Some("tenant-draft".to_string()),
+            workspace_id: Some("workspace-draft".to_string()),
+            ..BugMonitorDraftRecord::default()
+        };
+        let context = BugMonitorRouteContext {
+            tenant_id: Some("tenant-ci".to_string()),
+            workspace_id: Some("workspace-ci".to_string()),
+            ..BugMonitorRouteContext::default()
+        };
+
+        let tenant_context = publish_audit_tenant_context(&context, &draft);
+
+        assert_eq!(tenant_context.org_id, "tenant-ci");
+        assert_eq!(tenant_context.workspace_id, "workspace-ci");
+        assert_eq!(tenant_context.actor_id, None);
+        assert_eq!(tenant_context.source, tandem_types::TenantSource::Explicit);
+    }
+
+    #[test]
+    fn publish_audit_tenant_context_falls_back_to_local_without_complete_scope() {
+        let draft = BugMonitorDraftRecord {
+            tenant_id: Some("tenant-draft".to_string()),
+            ..BugMonitorDraftRecord::default()
+        };
+        let context = BugMonitorRouteContext::default();
+
+        let tenant_context = publish_audit_tenant_context(&context, &draft);
+
+        assert!(tenant_context.is_local_implicit());
     }
 
     #[test]
