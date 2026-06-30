@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tenant_scope_tests {
     use super::*;
+    use crate::types::DEFAULT_EMBEDDING_DIMENSION;
     use tempfile::TempDir;
 
     async fn setup_test_manager() -> (MemoryManager, TempDir) {
@@ -10,12 +11,67 @@ mod tenant_scope_tests {
         (manager, temp_dir)
     }
 
+    async fn setup_deterministic_test_manager() -> (MemoryManager, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_memory.db");
+        let manager = MemoryManager::new_with_embedding_service(
+            &db_path,
+            crate::embeddings::EmbeddingService::deterministic_for_tests(
+                DEFAULT_EMBEDDING_DIMENSION,
+            ),
+        )
+        .await
+        .unwrap();
+        (manager, temp_dir)
+    }
+
     fn tenant_scope(org_id: &str, workspace_id: &str) -> MemoryTenantScope {
         MemoryTenantScope {
             org_id: org_id.to_string(),
             workspace_id: workspace_id.to_string(),
             deployment_id: Some("deployment-1".to_string()),
         }
+    }
+
+    fn strict_context_for_resource(
+        tenant_scope: &MemoryTenantScope,
+        resource: tandem_enterprise_contract::ResourceRef,
+        data_class: tandem_enterprise_contract::DataClass,
+    ) -> tandem_enterprise_contract::StrictTenantContext {
+        let tenant_context = tandem_enterprise_contract::TenantContext::explicit_user_workspace(
+            tenant_scope.org_id.clone(),
+            tenant_scope.workspace_id.clone(),
+            tenant_scope.deployment_id.clone(),
+            "user-a",
+        );
+        let principal = tandem_enterprise_contract::PrincipalRef::human_user("user-a");
+        let request_principal =
+            tandem_enterprise_contract::RequestPrincipal::authenticated_user("user-a", "test");
+        let grant = tandem_enterprise_contract::ScopedGrant::new(
+            "grant-read",
+            principal.clone(),
+            resource.clone(),
+            tandem_enterprise_contract::GrantSource::Direct,
+        )
+        .with_permissions(vec![tandem_enterprise_contract::AccessPermission::Read])
+        .with_data_classes(vec![data_class]);
+        tandem_enterprise_contract::StrictTenantContext::new(
+            tenant_context,
+            principal,
+            tandem_enterprise_contract::AuthorityChain::from_request(request_principal),
+            tandem_enterprise_contract::ResourceScope::root(resource),
+            tandem_enterprise_contract::AssertionMetadata::new(
+                "test",
+                "tandem-runtime",
+                1,
+                u64::MAX,
+                "assertion-test",
+            ),
+        )
+        .with_grants(vec![grant])
+        .with_data_boundary(tandem_enterprise_contract::DataBoundary::allow(vec![
+            data_class,
+        ]))
     }
 
     #[tokio::test]
@@ -115,5 +171,123 @@ mod tenant_scope_tests {
             .await
             .unwrap()
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn retrieve_context_enforces_knowledge_scope_phase_before_prompt_assembly() {
+        let (manager, _temp) = setup_deterministic_test_manager().await;
+        let tenant_scope = tenant_scope("acme", "hq");
+        let resource = tandem_enterprise_contract::ResourceRef::new(
+            "acme",
+            "hq",
+            tandem_enterprise_contract::ResourceKind::KnowledgeSpace,
+            "knowledge-space-ops",
+        )
+        .with_project_id("project-ops");
+        let policy = crate::KnowledgeScopePolicy {
+            registry_id: "registry-ops".to_string(),
+            resource_ref: resource.clone(),
+            data_class: tandem_enterprise_contract::DataClass::Confidential,
+            collection_id: Some("collection-ops".to_string()),
+            source_binding_id: Some("binding-ops".to_string()),
+            source_object_id: Some("source-ops".to_string()),
+            owner_org_unit_id: Some("ou-ops".to_string()),
+            risk_tier: Some("confidential".to_string()),
+            allowed_workflow_phases: vec!["draft".to_string()],
+            allowed_write_tiers: vec![crate::GovernedMemoryTier::Session],
+            allowed_promotion_tiers: vec![crate::GovernedMemoryTier::Project],
+            retention_expires_at_ms: Some(u64::MAX),
+            required_trust_label: Some(crate::MemoryTrustLabel::HumanApproved),
+            promotion_requires_approval: true,
+        };
+        let embedding = crate::embeddings::EmbeddingService::deterministic_for_tests(
+            DEFAULT_EMBEDDING_DIMENSION,
+        )
+        .embed("scoped operational memory")
+        .await
+        .unwrap();
+        let scoped_chunk = MemoryChunk {
+            id: "scoped-ops-memory".to_string(),
+            content: "scoped operational memory for draft phase only".to_string(),
+            tier: MemoryTier::Session,
+            session_id: Some("session-ops".to_string()),
+            project_id: Some("project-ops".to_string()),
+            source: "workflow_memory".to_string(),
+            source_path: None,
+            source_mtime: None,
+            source_size: None,
+            source_hash: None,
+            tenant_scope: tenant_scope.clone(),
+            created_at: chrono::Utc::now(),
+            token_count: 7,
+            metadata: Some(policy.metadata_value()),
+        };
+        manager
+            .db()
+            .store_chunk(&scoped_chunk, &embedding)
+            .await
+            .unwrap();
+
+        let (unfiltered_context, _) = manager
+            .retrieve_context_with_meta_for_tenant(
+                "scoped operational memory",
+                Some("project-ops"),
+                Some("session-ops"),
+                &tenant_scope,
+                None,
+            )
+            .await
+            .expect("unfiltered context retrieval");
+        assert!(!unfiltered_context
+            .format_for_injection()
+            .contains("scoped operational memory"));
+
+        let wrong_phase_filter = crate::types::MemoryAccessFilter::strict(
+            strict_context_for_resource(
+                &tenant_scope,
+                resource.clone(),
+                tandem_enterprise_contract::DataClass::Confidential,
+            ),
+            chrono::Utc::now().timestamp_millis() as u64,
+        )
+        .with_workflow_phase("review");
+        let (wrong_phase_context, _) = manager
+            .retrieve_context_with_meta_for_tenant_with_access_filter(
+                "scoped operational memory",
+                Some("project-ops"),
+                Some("session-ops"),
+                &tenant_scope,
+                None,
+                Some(&wrong_phase_filter),
+            )
+            .await
+            .expect("wrong phase context retrieval");
+        assert!(!wrong_phase_context
+            .format_for_injection()
+            .contains("scoped operational memory"));
+
+        let draft_filter = crate::types::MemoryAccessFilter::strict(
+            strict_context_for_resource(
+                &tenant_scope,
+                resource,
+                tandem_enterprise_contract::DataClass::Confidential,
+            ),
+            chrono::Utc::now().timestamp_millis() as u64,
+        )
+        .with_workflow_phase("draft");
+        let (draft_context, _) = manager
+            .retrieve_context_with_meta_for_tenant_with_access_filter(
+                "scoped operational memory",
+                Some("project-ops"),
+                Some("session-ops"),
+                &tenant_scope,
+                None,
+                Some(&draft_filter),
+            )
+            .await
+            .expect("draft context retrieval");
+        assert!(draft_context
+            .format_for_injection()
+            .contains("scoped operational memory"));
     }
 }

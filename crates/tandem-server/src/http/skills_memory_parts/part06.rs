@@ -424,10 +424,30 @@ pub(super) async fn memory_put_impl_with_verified(
         .await?;
         return Err(StatusCode::FORBIDDEN);
     }
+    let now = crate::now_ms();
+    let scope_decision = tandem_memory::memory_write_scope_decision(
+        &request.partition,
+        request.metadata.as_ref(),
+        now,
+    )
+    .map_err(|error| {
+        tracing::warn!("invalid knowledge scope metadata on memory put: {error}");
+        StatusCode::FORBIDDEN
+    })?;
+    if !scope_decision.allowed {
+        emit_blocked_memory_put_guardrail(
+            state,
+            tenant_context,
+            &request,
+            capability.subject.clone(),
+            &scope_decision.reason_code,
+        )
+        .await?;
+        return Err(StatusCode::FORBIDDEN);
+    }
     let id = Uuid::new_v4().to_string();
     let partition_key = request.partition.key();
     let kind = memory_kind_for_request(request.kind.clone());
-    let now = crate::now_ms();
     let audit_id = Uuid::new_v4().to_string();
     let db = open_global_memory_db_for_state(state)
         .await

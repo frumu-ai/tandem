@@ -1346,12 +1346,13 @@ where
     let mut event_rx = state.event_bus.subscribe();
     if let Err(active_run) = state
         .run_registry
-        .acquire(
+        .acquire_with_workflow_phase(
             session_id,
             run_id.to_string(),
             None,
             Some(node.agent_id.clone()),
             None,
+            Some(automation_node_workflow_phase(node)),
         )
         .await
     {

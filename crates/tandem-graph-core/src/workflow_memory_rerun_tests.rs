@@ -1,8 +1,8 @@
 use crate::{
     Freshness, FreshnessSource, GraphQueryEnvelope, GraphScope, Provenance, WorkflowGraph,
-    WorkflowGraphSpec, WorkflowMemoryCandidate, WorkflowMemoryQuery, WorkflowRerunChange,
-    WorkflowStepCacheKey, WorkflowStepGraphNode, WorkflowTemplateGraphNode,
-    WorkflowVersionGraphNode,
+    WorkflowGraphSpec, WorkflowKnowledgeScopeGrant, WorkflowKnowledgeScopeRegistry,
+    WorkflowMemoryCandidate, WorkflowMemoryQuery, WorkflowRerunChange, WorkflowStepCacheKey,
+    WorkflowStepGraphNode, WorkflowTemplateGraphNode, WorkflowVersionGraphNode,
 };
 
 #[test]
@@ -123,6 +123,104 @@ fn workflow_memory_bundle_preserves_memory_tier_governance() {
     assert!(output.value.memories.is_empty());
     assert!(output.value.fallback_to_semantic_search);
     assert!(output.audit.denied_count > 0);
+}
+
+#[test]
+fn workflow_memory_registry_denial_suppresses_semantic_fallback() {
+    let graph = workflow_graph();
+    let mut envelope = envelope();
+    envelope.allowed_memory_tiers = vec!["private".to_string()];
+    let registry = WorkflowKnowledgeScopeRegistry::strict(vec![knowledge_grant(
+        "collection-private",
+        vec!["research"],
+    )]);
+
+    let output = graph.workflow_memory_bundle_with_knowledge_scope_registry(
+        &envelope,
+        WorkflowMemoryQuery {
+            step_id: "publish".to_string(),
+            step_kind: Some("notification".to_string()),
+            now_unix_ms: Some(200),
+            include_stale: false,
+        },
+        &[memory("phase-denied", "private", "policy:external-send").without_graph_links()],
+        &registry,
+    );
+
+    assert!(output.value.memories.is_empty());
+    assert!(!output.value.fallback_to_semantic_search);
+    assert!(output
+        .audit
+        .denied_reasons
+        .iter()
+        .any(|reason| reason == "knowledge_scope_phase_denied"));
+}
+
+#[test]
+fn workflow_memory_registry_allows_registered_phase_memory() {
+    let graph = workflow_graph();
+    let mut envelope = envelope();
+    envelope.allowed_memory_tiers = vec!["private".to_string()];
+    let registry = WorkflowKnowledgeScopeRegistry::strict(vec![knowledge_grant(
+        "collection-private",
+        vec!["notification"],
+    )]);
+
+    let output = graph.workflow_memory_bundle_with_knowledge_scope_registry(
+        &envelope,
+        WorkflowMemoryQuery {
+            step_id: "publish".to_string(),
+            step_kind: Some("notification".to_string()),
+            now_unix_ms: Some(200),
+            include_stale: false,
+        },
+        &[memory("registered", "private", "policy:external-send")],
+        &registry,
+    );
+
+    assert_eq!(
+        output
+            .value
+            .memories
+            .iter()
+            .map(|memory| memory.memory_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["registered"]
+    );
+    assert!(output.value.blockers.is_empty());
+}
+
+#[test]
+fn workflow_memory_registry_requires_candidate_workspace_match() {
+    let graph = workflow_graph();
+    let mut envelope = envelope();
+    envelope.scope.workspace_id = Some("workspace-a".to_string());
+    envelope.allowed_memory_tiers = vec!["private".to_string()];
+    let mut grant = knowledge_grant("collection-private", vec!["notification"]);
+    grant.workspace_id = Some("workspace-a".to_string());
+    let registry = WorkflowKnowledgeScopeRegistry::strict(vec![grant]);
+    let mut candidate = memory("other-workspace", "private", "policy:external-send");
+    candidate.scope.workspace_id = Some("workspace-b".to_string());
+
+    let output = graph.workflow_memory_bundle_with_knowledge_scope_registry(
+        &envelope,
+        WorkflowMemoryQuery {
+            step_id: "publish".to_string(),
+            step_kind: Some("notification".to_string()),
+            now_unix_ms: Some(200),
+            include_stale: false,
+        },
+        &[candidate],
+        &registry,
+    );
+
+    assert!(output.value.memories.is_empty());
+    assert!(!output.value.fallback_to_semantic_search);
+    assert!(output
+        .audit
+        .denied_reasons
+        .iter()
+        .any(|reason| reason == "knowledge_scope_workspace_mismatch"));
 }
 
 #[test]
@@ -284,6 +382,31 @@ fn memory(id: &str, tier: &str, policy_scope: &str) -> WorkflowMemoryCandidate {
         provenance: Provenance::Observed,
         freshness: Freshness::from_revision(FreshnessSource::MemorySnapshot, "memory-snapshot"),
         score: Some("0.9".to_string()),
+    }
+}
+
+fn knowledge_grant(
+    collection_id: &str,
+    allowed_workflow_phases: Vec<&str>,
+) -> WorkflowKnowledgeScopeGrant {
+    WorkflowKnowledgeScopeGrant {
+        registry_id: "registry-a".to_string(),
+        tenant_id: "tenant-a".to_string(),
+        project_id: "project-a".to_string(),
+        workspace_id: None,
+        memory_ids: Vec::new(),
+        collection_id: Some(collection_id.to_string()),
+        policy_scope: None,
+        data_class: "confidential".to_string(),
+        risk_tier: Some("internal".to_string()),
+        owner_org_unit_id: Some("ou-a".to_string()),
+        resource_scope: Some("knowledge://project-a/private".to_string()),
+        allowed_workflow_phases: allowed_workflow_phases
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        allowed_memory_tiers: vec!["private".to_string()],
+        expires_at_unix_ms: Some(1_000),
     }
 }
 

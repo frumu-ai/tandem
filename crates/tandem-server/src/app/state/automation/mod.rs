@@ -46,6 +46,7 @@ pub(crate) use legacy_defaults::{
     automation_node_inline_body_only, automation_node_is_outbound_action,
     automation_node_is_research_finalize, automation_node_preserves_full_upstream_inputs,
     automation_node_requires_email_delivery, automation_node_uses_upstream_validation_evidence,
+    automation_node_workflow_phase,
 };
 use lifecycle::*;
 pub use lifecycle::{
