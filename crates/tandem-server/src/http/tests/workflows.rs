@@ -395,236 +395,240 @@ async fn workflows_list_validate_and_manual_run() {
 
 #[tokio::test]
 async fn workflow_dispatch_executes_hooks_and_dedupes() {
-    let state = workflow_test_state().await;
-    let app = app_router(state.clone());
-    let kanban_calls = register_recording_tool(&state, "workflow_test.kanban").await;
-    let slack_calls = register_recording_tool(&state, "workflow_test.slack").await;
-    seed_workflow_test_slack_binding(&state).await;
-    let mut rx = state.event_bus.subscribe();
+    Box::pin(async {
+        let state = workflow_test_state().await;
+        let app = app_router(state.clone());
+        let kanban_calls = register_recording_tool(&state, "workflow_test.kanban").await;
+        let slack_calls = register_recording_tool(&state, "workflow_test.slack").await;
+        seed_workflow_test_slack_binding(&state).await;
+        let mut rx = state.event_bus.subscribe();
 
-    crate::dispatch_workflow_event(
-        &state,
-        &EngineEvent::new(
-            "context.task.created",
-            json!({
-                "event_id": "evt-task-created-1",
-                "task_id": "task-1",
-                "tenantContext": {
-                    "org_id": "acme",
-                    "workspace_id": "north",
-                    "user_id": "user-1"
-                }
-            }),
-        ),
-    )
-    .await;
-    crate::dispatch_workflow_event(
-        &state,
-        &EngineEvent::new(
-            "context.task.created",
-            json!({
-                "event_id": "evt-task-created-1",
-                "task_id": "task-1",
-                "tenantContext": {
-                    "org_id": "acme",
-                    "workspace_id": "north",
-                    "user_id": "user-1"
-                }
-            }),
-        ),
-    )
-    .await;
-    crate::dispatch_workflow_event(
-        &state,
-        &EngineEvent::new(
-            "context.task.completed",
-            json!({
-                "event_id": "evt-task-completed-1",
-                "task_id": "task-1",
-                "tenantContext": {
-                    "org_id": "acme",
-                    "workspace_id": "north",
-                    "user_id": "user-1"
-                }
-            }),
-        ),
-    )
-    .await;
+        crate::dispatch_workflow_event(
+            &state,
+            &EngineEvent::new(
+                "context.task.created",
+                json!({
+                    "event_id": "evt-task-created-1",
+                    "task_id": "task-1",
+                    "tenantContext": {
+                        "org_id": "acme",
+                        "workspace_id": "north",
+                        "user_id": "user-1"
+                    }
+                }),
+            ),
+        )
+        .await;
+        crate::dispatch_workflow_event(
+            &state,
+            &EngineEvent::new(
+                "context.task.created",
+                json!({
+                    "event_id": "evt-task-created-1",
+                    "task_id": "task-1",
+                    "tenantContext": {
+                        "org_id": "acme",
+                        "workspace_id": "north",
+                        "user_id": "user-1"
+                    }
+                }),
+            ),
+        )
+        .await;
+        crate::dispatch_workflow_event(
+            &state,
+            &EngineEvent::new(
+                "context.task.completed",
+                json!({
+                    "event_id": "evt-task-completed-1",
+                    "task_id": "task-1",
+                    "tenantContext": {
+                        "org_id": "acme",
+                        "workspace_id": "north",
+                        "user_id": "user-1"
+                    }
+                }),
+            ),
+        )
+        .await;
 
-    wait_for_call_count(&kanban_calls, 1).await;
-    wait_for_call_count(&slack_calls, 1).await;
-    assert_eq!(kanban_calls.lock().await.len(), 1);
-    assert_eq!(slack_calls.lock().await.len(), 1);
-    assert_eq!(
-        kanban_calls.lock().await[0]["board"].as_str(),
-        Some("roadmap")
-    );
-    assert_eq!(
-        slack_calls.lock().await[0]["channel"].as_str(),
-        Some("engineering")
-    );
+        wait_for_call_count(&kanban_calls, 1).await;
+        wait_for_call_count(&slack_calls, 1).await;
+        assert_eq!(kanban_calls.lock().await.len(), 1);
+        assert_eq!(slack_calls.lock().await.len(), 1);
+        assert_eq!(
+            kanban_calls.lock().await[0]["board"].as_str(),
+            Some("roadmap")
+        );
+        assert_eq!(
+            slack_calls.lock().await[0]["channel"].as_str(),
+            Some("engineering")
+        );
 
-    let runs = state.list_workflow_runs(Some("build_feature"), 10).await;
-    assert_eq!(runs.len(), 2);
-    assert!(runs
-        .iter()
-        .all(|run| run.status == crate::WorkflowRunStatus::Completed));
-    assert!(runs.iter().all(|run| run.automation_id.is_some()));
-    assert!(runs.iter().all(|run| run.automation_run_id.is_some()));
-    assert!(runs
-        .iter()
-        .all(|run| run.task_id.as_deref() == Some("task-1")));
-    assert!(runs.iter().all(|run| {
-        run.actions
+        let runs = state.list_workflow_runs(Some("build_feature"), 10).await;
+        assert_eq!(runs.len(), 2);
+        assert!(runs
             .iter()
-            .all(|action| action.task_id.as_deref() == Some("task-1"))
-    }));
-    let slack_run = runs
-        .iter()
-        .find(|run| {
+            .all(|run| run.status == crate::WorkflowRunStatus::Completed));
+        assert!(runs.iter().all(|run| run.automation_id.is_some()));
+        assert!(runs.iter().all(|run| run.automation_run_id.is_some()));
+        assert!(runs
+            .iter()
+            .all(|run| run.task_id.as_deref() == Some("task-1")));
+        assert!(runs.iter().all(|run| {
             run.actions
                 .iter()
-                .any(|action| action.action == "tool:workflow_test.slack")
-        })
-        .expect("slack workflow run");
-    let slack_action_output = slack_run.actions[0]
-        .output
-        .clone()
-        .expect("slack workflow output");
-    assert_eq!(
-        slack_action_output["external_action"]["capability_id"].as_str(),
-        Some("slack.post_message")
-    );
-    assert_eq!(
-        slack_action_output["external_action"]["source_kind"].as_str(),
-        Some("workflow")
-    );
-    let external_actions_resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/external-actions?limit=10")
-                .body(Body::empty())
-                .expect("external actions request"),
-        )
-        .await
-        .expect("external actions response");
-    assert_eq!(external_actions_resp.status(), StatusCode::OK);
-    let external_actions_body = to_bytes(external_actions_resp.into_body(), usize::MAX)
-        .await
-        .expect("external actions body");
-    let external_actions_payload: Value =
-        serde_json::from_slice(&external_actions_body).expect("external actions json");
-    assert!(external_actions_payload["actions"]
-        .as_array()
-        .map(|rows| rows.iter().any(|row| {
-            row["source_kind"].as_str() == Some("workflow")
-                && row["capability_id"].as_str() == Some("slack.post_message")
-        }))
-        .unwrap_or(false));
-    let slack_context_run_id = crate::http::workflow_context_run_id(&slack_run.run_id);
-    let slack_blackboard_resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(format!("/context/runs/{slack_context_run_id}/blackboard"))
-                .header("x-tandem-org-id", "acme")
-                .header("x-tandem-workspace-id", "north")
-                .header("x-user-id", "user-1")
-                .body(Body::empty())
-                .expect("slack workflow blackboard request"),
-        )
-        .await
-        .expect("slack workflow blackboard response");
-    assert_eq!(slack_blackboard_resp.status(), StatusCode::OK);
-    let slack_blackboard_body = to_bytes(slack_blackboard_resp.into_body(), usize::MAX)
-        .await
-        .expect("slack workflow blackboard body");
-    let slack_blackboard_payload: Value =
-        serde_json::from_slice(&slack_blackboard_body).expect("slack workflow blackboard json");
-    assert!(slack_blackboard_payload["blackboard"]["artifacts"]
-        .as_array()
-        .map(|rows| rows
+                .all(|action| action.task_id.as_deref() == Some("task-1"))
+        }));
+        let slack_run = runs
             .iter()
-            .any(|row| { row["artifact_type"].as_str() == Some("external_action_receipt") }))
-        .unwrap_or(false));
-    let workflow_context_run_id = crate::http::workflow_context_run_id(&runs[0].run_id);
-    let blackboard_resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(format!(
-                    "/context/runs/{workflow_context_run_id}/blackboard"
-                ))
-                .header("x-tandem-org-id", "acme")
-                .header("x-tandem-workspace-id", "north")
-                .header("x-user-id", "user-1")
-                .body(Body::empty())
-                .expect("workflow blackboard request"),
-        )
-        .await
-        .expect("workflow blackboard response");
-    assert_eq!(blackboard_resp.status(), StatusCode::OK);
-    let blackboard_body = to_bytes(blackboard_resp.into_body(), usize::MAX)
-        .await
-        .expect("workflow blackboard body");
-    let blackboard_payload: Value =
-        serde_json::from_slice(&blackboard_body).expect("workflow blackboard json");
-    let blackboard = blackboard_payload
-        .get("blackboard")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    assert!(blackboard["tasks"]
-        .as_array()
-        .map(|rows| rows
-            .iter()
-            .any(|row| row["workflow_id"].as_str() == Some("build_feature")))
-        .unwrap_or(false));
-    assert!(blackboard["artifacts"]
-        .as_array()
-        .map(|rows| rows
-            .iter()
-            .any(|row| row["artifact_type"].as_str() == Some("workflow_action_output")))
-        .unwrap_or(false));
+            .find(|run| {
+                run.actions
+                    .iter()
+                    .any(|action| action.action == "tool:workflow_test.slack")
+            })
+            .expect("slack workflow run");
+        let slack_action_output = slack_run.actions[0]
+            .output
+            .clone()
+            .expect("slack workflow output");
+        assert_eq!(
+            slack_action_output["external_action"]["capability_id"].as_str(),
+            Some("slack.post_message")
+        );
+        assert_eq!(
+            slack_action_output["external_action"]["source_kind"].as_str(),
+            Some("workflow")
+        );
+        let external_actions_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/external-actions?limit=10")
+                    .body(Body::empty())
+                    .expect("external actions request"),
+            )
+            .await
+            .expect("external actions response");
+        assert_eq!(external_actions_resp.status(), StatusCode::OK);
+        let external_actions_body = to_bytes(external_actions_resp.into_body(), usize::MAX)
+            .await
+            .expect("external actions body");
+        let external_actions_payload: Value =
+            serde_json::from_slice(&external_actions_body).expect("external actions json");
+        assert!(external_actions_payload["actions"]
+            .as_array()
+            .map(|rows| rows.iter().any(|row| {
+                row["source_kind"].as_str() == Some("workflow")
+                    && row["capability_id"].as_str() == Some("slack.post_message")
+            }))
+            .unwrap_or(false));
+        let slack_context_run_id = crate::http::workflow_context_run_id(&slack_run.run_id);
+        let slack_blackboard_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/context/runs/{slack_context_run_id}/blackboard"))
+                    .header("x-tandem-org-id", "acme")
+                    .header("x-tandem-workspace-id", "north")
+                    .header("x-user-id", "user-1")
+                    .body(Body::empty())
+                    .expect("slack workflow blackboard request"),
+            )
+            .await
+            .expect("slack workflow blackboard response");
+        assert_eq!(slack_blackboard_resp.status(), StatusCode::OK);
+        let slack_blackboard_body = to_bytes(slack_blackboard_resp.into_body(), usize::MAX)
+            .await
+            .expect("slack workflow blackboard body");
+        let slack_blackboard_payload: Value =
+            serde_json::from_slice(&slack_blackboard_body).expect("slack workflow blackboard json");
+        assert!(slack_blackboard_payload["blackboard"]["artifacts"]
+            .as_array()
+            .map(|rows| rows
+                .iter()
+                .any(|row| { row["artifact_type"].as_str() == Some("external_action_receipt") }))
+            .unwrap_or(false));
+        let workflow_context_run_id = crate::http::workflow_context_run_id(&runs[0].run_id);
+        let blackboard_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/context/runs/{workflow_context_run_id}/blackboard"
+                    ))
+                    .header("x-tandem-org-id", "acme")
+                    .header("x-tandem-workspace-id", "north")
+                    .header("x-user-id", "user-1")
+                    .body(Body::empty())
+                    .expect("workflow blackboard request"),
+            )
+            .await
+            .expect("workflow blackboard response");
+        assert_eq!(blackboard_resp.status(), StatusCode::OK);
+        let blackboard_body = to_bytes(blackboard_resp.into_body(), usize::MAX)
+            .await
+            .expect("workflow blackboard body");
+        let blackboard_payload: Value =
+            serde_json::from_slice(&blackboard_body).expect("workflow blackboard json");
+        let blackboard = blackboard_payload
+            .get("blackboard")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        assert!(blackboard["tasks"]
+            .as_array()
+            .map(|rows| rows
+                .iter()
+                .any(|row| row["workflow_id"].as_str() == Some("build_feature")))
+            .unwrap_or(false));
+        assert!(blackboard["artifacts"]
+            .as_array()
+            .map(|rows| rows
+                .iter()
+                .any(|row| row["artifact_type"].as_str() == Some("workflow_action_output")))
+            .unwrap_or(false));
 
-    let mut saw_action_started = false;
-    let mut saw_run_completed = false;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    while tokio::time::Instant::now() < deadline && (!saw_action_started || !saw_run_completed) {
-        if let Ok(event) = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
-            if let Ok(event) = event {
-                if event.event_type == "workflow.action.started"
-                    && event.properties.get("taskID").and_then(|v| v.as_str()) == Some("task-1")
-                {
-                    assert_eq!(
-                        event
-                            .properties
-                            .get("tenantContext")
-                            .and_then(|tenant| tenant.get("org_id"))
-                            .and_then(Value::as_str),
-                        Some("acme")
-                    );
-                    saw_action_started = true;
-                }
-                if event.event_type == "workflow.run.completed"
-                    && event.properties.get("taskID").and_then(|v| v.as_str()) == Some("task-1")
-                {
-                    saw_run_completed = true;
+        let mut saw_action_started = false;
+        let mut saw_run_completed = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while tokio::time::Instant::now() < deadline && (!saw_action_started || !saw_run_completed)
+        {
+            if let Ok(event) = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+                if let Ok(event) = event {
+                    if event.event_type == "workflow.action.started"
+                        && event.properties.get("taskID").and_then(|v| v.as_str()) == Some("task-1")
+                    {
+                        assert_eq!(
+                            event
+                                .properties
+                                .get("tenantContext")
+                                .and_then(|tenant| tenant.get("org_id"))
+                                .and_then(Value::as_str),
+                            Some("acme")
+                        );
+                        saw_action_started = true;
+                    }
+                    if event.event_type == "workflow.run.completed"
+                        && event.properties.get("taskID").and_then(|v| v.as_str()) == Some("task-1")
+                    {
+                        saw_run_completed = true;
+                    }
                 }
             }
         }
-    }
-    assert!(
-        saw_action_started,
-        "expected workflow.action.started with taskID"
-    );
-    assert!(
-        saw_run_completed,
-        "expected workflow.run.completed with taskID"
-    );
+        assert!(
+            saw_action_started,
+            "expected workflow.action.started with taskID"
+        );
+        assert!(
+            saw_run_completed,
+            "expected workflow.run.completed with taskID"
+        );
+    })
+    .await;
 }
 
 #[tokio::test]

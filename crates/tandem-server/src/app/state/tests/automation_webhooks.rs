@@ -388,27 +388,42 @@ async fn webhook_signature_verification_and_rotation_fail_closed() {
 
 #[tokio::test]
 async fn webhook_signature_and_dedupe_scope_include_tenant_and_trigger() {
-    let state = ready_test_state().await;
-    let tenant_a = tenant("org-a", "workspace-a");
-    let tenant_b = tenant("org-b", "workspace-b");
-    insert_test_automation(&state, "automation-a", &tenant_a).await;
-    insert_test_automation(&state, "automation-b", &tenant_b).await;
-    let trigger_a = state
-        .create_automation_webhook_trigger(create_input("automation-a", tenant_a.clone()))
-        .await
-        .expect("create trigger a");
-    let trigger_b = state
-        .create_automation_webhook_trigger(create_input("automation-b", tenant_b.clone()))
-        .await
-        .expect("create trigger b");
-    let body = br#"{"shared":true}"#;
-    let now = crate::util::time::now_ms();
+    Box::pin(async {
+        let state = ready_test_state().await;
+        let tenant_a = tenant("org-a", "workspace-a");
+        let tenant_b = tenant("org-b", "workspace-b");
+        insert_test_automation(&state, "automation-a", &tenant_a).await;
+        insert_test_automation(&state, "automation-b", &tenant_b).await;
+        let trigger_a = state
+            .create_automation_webhook_trigger(create_input("automation-a", tenant_a.clone()))
+            .await
+            .expect("create trigger a");
+        let trigger_b = state
+            .create_automation_webhook_trigger(create_input("automation-b", tenant_b.clone()))
+            .await
+            .expect("create trigger b");
+        let body = br#"{"shared":true}"#;
+        let now = crate::util::time::now_ms();
 
-    let tenant_a_signature = automation_webhook_signature_header(&trigger_a.secret, now, body);
-    assert_eq!(
-        state
+        let tenant_a_signature = automation_webhook_signature_header(&trigger_a.secret, now, body);
+        assert_eq!(
+            state
+                .verify_automation_webhook_request(
+                    &trigger_b.trigger.public_path_token,
+                    Some(&tenant_a_signature),
+                    body,
+                    Some("evt-shared".to_string()),
+                    now,
+                    300_000,
+                )
+                .await
+                .expect_err("tenant a secret cannot verify tenant b trigger"),
+            AutomationWebhookVerificationError::BadSignature
+        );
+
+        let verified_a = state
             .verify_automation_webhook_request(
-                &trigger_b.trigger.public_path_token,
+                &trigger_a.trigger.public_path_token,
                 Some(&tenant_a_signature),
                 body,
                 Some("evt-shared".to_string()),
@@ -416,152 +431,144 @@ async fn webhook_signature_and_dedupe_scope_include_tenant_and_trigger() {
                 300_000,
             )
             .await
-            .expect_err("tenant a secret cannot verify tenant b trigger"),
-        AutomationWebhookVerificationError::BadSignature
-    );
-
-    let verified_a = state
-        .verify_automation_webhook_request(
-            &trigger_a.trigger.public_path_token,
-            Some(&tenant_a_signature),
-            body,
-            Some("evt-shared".to_string()),
-            now,
-            300_000,
-        )
-        .await
-        .expect("tenant a verifies before legacy delivery record");
-    state
-        .record_automation_webhook_delivery(AutomationWebhookDeliveryRecord {
-            delivery_id: "delivery-replay-a".to_string(),
-            trigger_id: trigger_a.trigger.trigger_id.clone(),
-            automation_id: "automation-a".to_string(),
-            tenant_context: tenant_a.clone(),
-            enterprise_scope: None,
-            provider_event_id: verified_a.provider_event_id.clone(),
-            body_digest: verified_a.body_digest.clone(),
-            status: AutomationWebhookDeliveryStatus::Accepted,
-            rejection_reason_code: None,
-            idempotency_key: None,
-            idempotency_record_id: None,
-            dedupe_result: None,
-            dedupe_reason_code: None,
-            duplicate_of_delivery_id: None,
-            duplicate_of_run_id: None,
-            verification_scheme: Some(verified_a.verification.scheme.clone()),
-            verification_provider: Some(verified_a.verification.provider.clone()),
-            verification_reason_code: Some(verified_a.verification.reason_code.clone()),
-            queued_run_id: None,
-            woken_run_id: None,
-            woken_wait_id: None,
-            feedback_loop: None,
-            correlation: None,
-            received_at_ms: verified_a.received_at_ms,
-            accepted_at_ms: Some(verified_a.received_at_ms),
-            rejected_at_ms: None,
-            sanitized_preview: json!({"safe": true}),
-            audit_event_id: None,
-        })
-        .await
-        .expect("record legacy dedupe baseline");
-
-    let distinct_now = now + 1;
-    let distinct_signature =
-        automation_webhook_signature_header(&trigger_a.secret, distinct_now, body);
-    let distinct = state
-        .verify_automation_webhook_request(
-            &trigger_a.trigger.public_path_token,
-            Some(&distinct_signature),
-            body,
-            Some("evt-distinct".to_string()),
-            distinct_now,
-            300_000,
-        )
-        .await
-        .expect("same body verifies before queue-time dedupe");
-    let distinct_delivery = match state
-        .queue_automation_v2_run_from_webhook_delivery(distinct, json!({"shared": true}))
-        .await
-        .expect("distinct event duplicate outcome")
-    {
-        AutomationWebhookQueueResult::Duplicate { delivery } => delivery,
-        other => panic!("expected body duplicate, got {other:?}"),
-    };
-    assert_eq!(
-        distinct_delivery.dedupe_result,
-        Some(AutomationWebhookDedupeResult::Duplicate)
-    );
-    assert_eq!(
-        distinct_delivery.duplicate_of_delivery_id.as_deref(),
-        Some("delivery-replay-a")
-    );
-
-    let body_fallback_now = now + 2;
-    let body_fallback_signature =
-        automation_webhook_signature_header(&trigger_a.secret, body_fallback_now, body);
-    let body_fallback = state
-        .verify_automation_webhook_request(
-            &trigger_a.trigger.public_path_token,
-            Some(&body_fallback_signature),
-            body,
-            None,
-            body_fallback_now,
-            300_000,
-        )
-        .await
-        .expect("body digest fallback verifies before queue-time dedupe");
-    assert!(matches!(
+            .expect("tenant a verifies before legacy delivery record");
         state
-            .queue_automation_v2_run_from_webhook_delivery(body_fallback, json!({"shared": true}))
+            .record_automation_webhook_delivery(AutomationWebhookDeliveryRecord {
+                delivery_id: "delivery-replay-a".to_string(),
+                trigger_id: trigger_a.trigger.trigger_id.clone(),
+                automation_id: "automation-a".to_string(),
+                tenant_context: tenant_a.clone(),
+                enterprise_scope: None,
+                provider_event_id: verified_a.provider_event_id.clone(),
+                body_digest: verified_a.body_digest.clone(),
+                status: AutomationWebhookDeliveryStatus::Accepted,
+                rejection_reason_code: None,
+                idempotency_key: None,
+                idempotency_record_id: None,
+                dedupe_result: None,
+                dedupe_reason_code: None,
+                duplicate_of_delivery_id: None,
+                duplicate_of_run_id: None,
+                verification_scheme: Some(verified_a.verification.scheme.clone()),
+                verification_provider: Some(verified_a.verification.provider.clone()),
+                verification_reason_code: Some(verified_a.verification.reason_code.clone()),
+                queued_run_id: None,
+                woken_run_id: None,
+                woken_wait_id: None,
+                feedback_loop: None,
+                correlation: None,
+                received_at_ms: verified_a.received_at_ms,
+                accepted_at_ms: Some(verified_a.received_at_ms),
+                rejected_at_ms: None,
+                sanitized_preview: json!({"safe": true}),
+                audit_event_id: None,
+            })
             .await
-            .expect("body fallback duplicate outcome"),
-        AutomationWebhookQueueResult::Duplicate { .. }
-    ));
+            .expect("record legacy dedupe baseline");
 
-    let replay_now = now + 3;
-    let replay_signature = automation_webhook_signature_header(&trigger_a.secret, replay_now, body);
-    let replay = state
-        .verify_automation_webhook_request(
-            &trigger_a.trigger.public_path_token,
-            Some(&replay_signature),
-            body,
-            Some("evt-shared".to_string()),
-            replay_now,
-            300_000,
-        )
-        .await
-        .expect("provider replay verifies before queue-time dedupe");
-    assert!(matches!(
-        state
-            .queue_automation_v2_run_from_webhook_delivery(replay, json!({"shared": true}))
-            .await
-            .expect("provider duplicate outcome"),
-        AutomationWebhookQueueResult::Duplicate { .. }
-    ));
-
-    let tenant_b_signature =
-        automation_webhook_signature_header(&trigger_b.secret, replay_now, body);
-    let tenant_b_verified = state
-        .verify_automation_webhook_request(
-            &trigger_b.trigger.public_path_token,
-            Some(&tenant_b_signature),
-            body,
-            Some("evt-shared".to_string()),
-            replay_now,
-            300_000,
-        )
-        .await
-        .expect("tenant b can use same provider event id independently");
-    assert!(matches!(
-        state
-            .queue_automation_v2_run_from_webhook_delivery(
-                tenant_b_verified,
-                json!({"shared": true})
+        let distinct_now = now + 1;
+        let distinct_signature =
+            automation_webhook_signature_header(&trigger_a.secret, distinct_now, body);
+        let distinct = state
+            .verify_automation_webhook_request(
+                &trigger_a.trigger.public_path_token,
+                Some(&distinct_signature),
+                body,
+                Some("evt-distinct".to_string()),
+                distinct_now,
+                300_000,
             )
             .await
-            .expect("tenant b queue"),
-        AutomationWebhookQueueResult::Accepted { .. }
-    ));
+            .expect("same body verifies before queue-time dedupe");
+        let distinct_delivery = match state
+            .queue_automation_v2_run_from_webhook_delivery(distinct, json!({"shared": true}))
+            .await
+            .expect("distinct event duplicate outcome")
+        {
+            AutomationWebhookQueueResult::Duplicate { delivery } => delivery,
+            other => panic!("expected body duplicate, got {other:?}"),
+        };
+        assert_eq!(
+            distinct_delivery.dedupe_result,
+            Some(AutomationWebhookDedupeResult::Duplicate)
+        );
+        assert_eq!(
+            distinct_delivery.duplicate_of_delivery_id.as_deref(),
+            Some("delivery-replay-a")
+        );
+
+        let body_fallback_now = now + 2;
+        let body_fallback_signature =
+            automation_webhook_signature_header(&trigger_a.secret, body_fallback_now, body);
+        let body_fallback = state
+            .verify_automation_webhook_request(
+                &trigger_a.trigger.public_path_token,
+                Some(&body_fallback_signature),
+                body,
+                None,
+                body_fallback_now,
+                300_000,
+            )
+            .await
+            .expect("body digest fallback verifies before queue-time dedupe");
+        assert!(matches!(
+            state
+                .queue_automation_v2_run_from_webhook_delivery(
+                    body_fallback,
+                    json!({"shared": true})
+                )
+                .await
+                .expect("body fallback duplicate outcome"),
+            AutomationWebhookQueueResult::Duplicate { .. }
+        ));
+
+        let replay_now = now + 3;
+        let replay_signature =
+            automation_webhook_signature_header(&trigger_a.secret, replay_now, body);
+        let replay = state
+            .verify_automation_webhook_request(
+                &trigger_a.trigger.public_path_token,
+                Some(&replay_signature),
+                body,
+                Some("evt-shared".to_string()),
+                replay_now,
+                300_000,
+            )
+            .await
+            .expect("provider replay verifies before queue-time dedupe");
+        assert!(matches!(
+            state
+                .queue_automation_v2_run_from_webhook_delivery(replay, json!({"shared": true}))
+                .await
+                .expect("provider duplicate outcome"),
+            AutomationWebhookQueueResult::Duplicate { .. }
+        ));
+
+        let tenant_b_signature =
+            automation_webhook_signature_header(&trigger_b.secret, replay_now, body);
+        let tenant_b_verified = state
+            .verify_automation_webhook_request(
+                &trigger_b.trigger.public_path_token,
+                Some(&tenant_b_signature),
+                body,
+                Some("evt-shared".to_string()),
+                replay_now,
+                300_000,
+            )
+            .await
+            .expect("tenant b can use same provider event id independently");
+        assert!(matches!(
+            state
+                .queue_automation_v2_run_from_webhook_delivery(
+                    tenant_b_verified,
+                    json!({"shared": true})
+                )
+                .await
+                .expect("tenant b queue"),
+            AutomationWebhookQueueResult::Accepted { .. }
+        ));
+    })
+    .await;
 }
 
 #[tokio::test]
