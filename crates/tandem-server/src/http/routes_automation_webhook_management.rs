@@ -14,7 +14,8 @@ use crate::app::state::{AutomationWebhookTriggerCreateInput, AutomationWebhookTr
 use crate::automation_v2::types::{
     automation_webhook_provider_event_id_headers, normalize_automation_webhook_provider,
     AutomationV2Spec, AutomationWebhookDeliveryRecord, AutomationWebhookDeliveryStatus,
-    AutomationWebhookSignatureScheme, AutomationWebhookTriggerRecord,
+    AutomationWebhookRawEventRecord, AutomationWebhookSignatureScheme,
+    AutomationWebhookTriggerRecord,
 };
 use crate::AppState;
 
@@ -45,6 +46,15 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
         .route(
             "/automations/v2/{id}/webhook-triggers/{trigger_id}/deliveries/{delivery_id}",
             get(get_webhook_delivery),
+        )
+        .route("/automations/v2/webhook-events", get(list_webhook_events))
+        .route(
+            "/automations/v2/webhook-events/{event_id}",
+            get(get_webhook_event),
+        )
+        .route(
+            "/automations/v2/runs/{run_id}/webhook-events",
+            get(list_webhook_events_for_run),
         )
 }
 
@@ -109,6 +119,24 @@ struct DeliveryListQuery {
     limit: Option<usize>,
 }
 
+#[derive(Default, Deserialize)]
+struct WebhookEventListQuery {
+    #[serde(default, alias = "triggerID")]
+    trigger_id: Option<String>,
+    #[serde(default, alias = "automationID")]
+    automation_id: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Default, Deserialize)]
+struct WebhookEventDetailQuery {
+    #[serde(default, alias = "includePayload")]
+    include_payload: Option<bool>,
+}
+
 fn error_response(
     status: StatusCode,
     code: &'static str,
@@ -139,6 +167,14 @@ fn webhook_trigger_not_found() -> (StatusCode, Json<Value>) {
         StatusCode::NOT_FOUND,
         "AUTOMATION_WEBHOOK_TRIGGER_NOT_FOUND",
         "Webhook trigger not found",
+    )
+}
+
+fn webhook_event_not_found() -> (StatusCode, Json<Value>) {
+    error_response(
+        StatusCode::NOT_FOUND,
+        "AUTOMATION_WEBHOOK_EVENT_NOT_FOUND",
+        "Webhook event not found",
     )
 }
 
@@ -418,6 +454,27 @@ async fn load_trigger_for_mutation(
     Ok(trigger)
 }
 
+async fn require_webhook_event_read(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+    event: &AutomationWebhookRawEventRecord,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    load_automation_for_read(state, tenant_context, verified, &event.automation_id)
+        .await
+        .map_err(|_| webhook_event_not_found())?;
+    load_trigger_for_read(
+        state,
+        tenant_context,
+        verified,
+        &event.automation_id,
+        &event.trigger_id,
+    )
+    .await
+    .map_err(|_| webhook_event_not_found())?;
+    Ok(())
+}
+
 fn trigger_display_name(trigger: &AutomationWebhookTriggerRecord) -> String {
     let name = trigger.name.trim();
     if name.is_empty() {
@@ -461,8 +518,22 @@ fn delivery_status_key(status: &AutomationWebhookDeliveryStatus) -> &'static str
         AutomationWebhookDeliveryStatus::Accepted => "accepted",
         AutomationWebhookDeliveryStatus::Rejected => "rejected",
         AutomationWebhookDeliveryStatus::Duplicate => "duplicate",
+        AutomationWebhookDeliveryStatus::Suppressed => "suppressed",
         AutomationWebhookDeliveryStatus::Disabled => "disabled",
         AutomationWebhookDeliveryStatus::Failed => "failed",
+    }
+}
+
+fn webhook_status_from_key(status: &str) -> Option<AutomationWebhookDeliveryStatus> {
+    match status.trim().to_ascii_lowercase().as_str() {
+        "received" => Some(AutomationWebhookDeliveryStatus::Received),
+        "accepted" => Some(AutomationWebhookDeliveryStatus::Accepted),
+        "rejected" => Some(AutomationWebhookDeliveryStatus::Rejected),
+        "duplicate" => Some(AutomationWebhookDeliveryStatus::Duplicate),
+        "suppressed" => Some(AutomationWebhookDeliveryStatus::Suppressed),
+        "disabled" => Some(AutomationWebhookDeliveryStatus::Disabled),
+        "failed" | "dead_letter" | "dead-letter" => Some(AutomationWebhookDeliveryStatus::Failed),
+        _ => None,
     }
 }
 
@@ -471,6 +542,7 @@ fn delivery_counts(deliveries: &[AutomationWebhookDeliveryRecord]) -> Value {
     let mut accepted = 0usize;
     let mut rejected = 0usize;
     let mut duplicate = 0usize;
+    let mut suppressed = 0usize;
     let mut disabled = 0usize;
     let mut failed = 0usize;
     for delivery in deliveries {
@@ -479,6 +551,7 @@ fn delivery_counts(deliveries: &[AutomationWebhookDeliveryRecord]) -> Value {
             AutomationWebhookDeliveryStatus::Accepted => accepted += 1,
             AutomationWebhookDeliveryStatus::Rejected => rejected += 1,
             AutomationWebhookDeliveryStatus::Duplicate => duplicate += 1,
+            AutomationWebhookDeliveryStatus::Suppressed => suppressed += 1,
             AutomationWebhookDeliveryStatus::Disabled => disabled += 1,
             AutomationWebhookDeliveryStatus::Failed => failed += 1,
         }
@@ -489,6 +562,7 @@ fn delivery_counts(deliveries: &[AutomationWebhookDeliveryRecord]) -> Value {
         "accepted": accepted,
         "rejected": rejected,
         "duplicate": duplicate,
+        "suppressed": suppressed,
         "disabled": disabled,
         "failed": failed,
     })
@@ -623,6 +697,9 @@ fn delivery_value(delivery: &AutomationWebhookDeliveryRecord) -> Value {
         "wokenRunID": delivery.woken_run_id,
         "woken_wait_id": delivery.woken_wait_id,
         "wokenWaitID": delivery.woken_wait_id,
+        "feedback_loop": delivery.feedback_loop,
+        "feedbackLoop": delivery.feedback_loop,
+        "correlation": delivery.correlation,
         "received_at_ms": delivery.received_at_ms,
         "receivedAtMs": delivery.received_at_ms,
         "accepted_at_ms": delivery.accepted_at_ms,
@@ -633,6 +710,73 @@ fn delivery_value(delivery: &AutomationWebhookDeliveryRecord) -> Value {
         "sanitizedPreview": delivery.sanitized_preview,
         "audit_event_id": delivery.audit_event_id,
         "auditEventID": delivery.audit_event_id,
+    })
+}
+
+fn raw_event_value(event: &AutomationWebhookRawEventRecord, payload: Option<Value>) -> Value {
+    let payload_available = event
+        .retention_policy
+        .delete_after_ms
+        .is_none_or(|delete_after_ms| crate::now_ms() <= delete_after_ms);
+    json!({
+        "event_id": event.event_id,
+        "eventID": event.event_id,
+        "trigger_id": event.trigger_id,
+        "triggerID": event.trigger_id,
+        "automation_id": event.automation_id,
+        "automationID": event.automation_id,
+        "provider": event.provider,
+        "provider_event_kind": event.provider_event_kind,
+        "providerEventKind": event.provider_event_kind,
+        "provider_event_id": event.provider_event_id,
+        "providerEventID": event.provider_event_id,
+        "body_digest": event.body_digest,
+        "bodyDigest": event.body_digest,
+        "headers_digest": event.headers_digest,
+        "headersDigest": event.headers_digest,
+        "headers_redacted": event.headers_redacted,
+        "headersRedacted": event.headers_redacted,
+        "content_type": event.content_type,
+        "contentType": event.content_type,
+        "payload_ref": event.payload_ref,
+        "payloadRef": event.payload_ref,
+        "payload_bytes": event.payload_bytes,
+        "payloadBytes": event.payload_bytes,
+        "payload_available": payload_available,
+        "payloadAvailable": payload_available,
+        "payload": payload,
+        "status": delivery_status_key(&event.status),
+        "received_at_ms": event.received_at_ms,
+        "receivedAtMs": event.received_at_ms,
+        "updated_at_ms": event.updated_at_ms,
+        "updatedAtMs": event.updated_at_ms,
+        "delivery_id": event.delivery_id,
+        "deliveryID": event.delivery_id,
+        "queued_run_id": event.queued_run_id,
+        "queuedRunID": event.queued_run_id,
+        "rejection_reason_code": event.rejection_reason_code,
+        "rejectionReasonCode": event.rejection_reason_code,
+        "idempotency_key": event.idempotency_key,
+        "idempotencyKey": event.idempotency_key,
+        "idempotency_record_id": event.idempotency_record_id,
+        "idempotencyRecordID": event.idempotency_record_id,
+        "dedupe_result": event.dedupe_result,
+        "dedupeResult": event.dedupe_result,
+        "dedupe_reason_code": event.dedupe_reason_code,
+        "dedupeReasonCode": event.dedupe_reason_code,
+        "duplicate_of_delivery_id": event.duplicate_of_delivery_id,
+        "duplicateOfDeliveryID": event.duplicate_of_delivery_id,
+        "duplicate_of_run_id": event.duplicate_of_run_id,
+        "duplicateOfRunID": event.duplicate_of_run_id,
+        "woken_run_id": event.woken_run_id,
+        "wokenRunID": event.woken_run_id,
+        "woken_wait_id": event.woken_wait_id,
+        "wokenWaitID": event.woken_wait_id,
+        "feedback_loop": event.feedback_loop,
+        "feedbackLoop": event.feedback_loop,
+        "correlation": event.correlation,
+        "retention_policy": event.retention_policy,
+        "retentionPolicy": event.retention_policy,
     })
 }
 
@@ -1097,120 +1241,162 @@ async fn get_webhook_delivery(
     })))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tandem_types::{
-        AssertionMetadata, AuthorityChain, DataBoundary, GrantSource, HumanActor, ResourceKind,
-        ResourceRef, ScopedGrant, StrictTenantContext,
+async fn list_webhook_events(
+    State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    Query(query): Query<WebhookEventListQuery>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let verified = verified_tenant_context.as_ref().map(|context| &context.0);
+    let status = match query.status.as_deref() {
+        Some(status) => Some(webhook_status_from_key(status).ok_or_else(|| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "AUTOMATION_WEBHOOK_EVENT_STATUS_INVALID",
+                "Unknown webhook event status",
+            )
+        })?),
+        None => None,
     };
-
-    fn verified_with_strict_grant(
-        permissions: Vec<AccessPermission>,
-        data_classes: Vec<DataClass>,
-    ) -> (VerifiedTenantContext, ResourceScope) {
-        let tenant_context =
-            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "actor-a");
-        let principal = PrincipalRef::human_user("actor-a");
-        let request_principal = RequestPrincipal::authenticated_user("actor-a", "tandem-web");
-        let authority_chain = AuthorityChain::from_request(request_principal);
-        let resource = ResourceRef::new(
-            "org-a",
-            "workspace-a",
-            ResourceKind::Project,
-            "automation-project",
-        );
-        let scope = ResourceScope::root(resource.clone());
-        let grant = ScopedGrant::new(
-            "grant-webhook-scope",
-            principal.clone(),
-            resource,
-            GrantSource::Delegation,
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let events = state
+        .list_automation_webhook_raw_events(
+            &tenant_context,
+            query.trigger_id.as_deref(),
+            query.automation_id.as_deref(),
+            status,
+            200,
         )
-        .with_permissions(permissions)
-        .with_data_classes(data_classes.clone());
-        let strict_projection = StrictTenantContext::new(
-            tenant_context.clone(),
-            principal,
-            authority_chain.clone(),
-            scope.clone(),
-            AssertionMetadata::new(
-                "tandem-web",
-                "tandem-runtime",
-                1_000,
-                9_999_999_999_999,
-                "assertion-webhook-scope",
-            ),
-        )
-        .with_grants(vec![grant])
-        .with_data_boundary(DataBoundary::allow(data_classes));
-        let verified = VerifiedTenantContext {
-            tenant_context,
-            human_actor: HumanActor::tandem_user("actor-a"),
-            authority_chain,
-            roles: Vec::new(),
-            org_units: Vec::new(),
-            capabilities: Vec::new(),
-            policy_version: None,
-            strict_projection: Some(strict_projection),
-            issuer: "tandem-web".to_string(),
-            audience: "tandem-runtime".to_string(),
-            issued_at_ms: 1_000,
-            expires_at_ms: 9_999_999_999_999,
-            assertion_id: "assertion-webhook-scope".to_string(),
-            assertion_key_id: None,
-        };
-        (verified, scope)
+        .await;
+    let mut rows = Vec::new();
+    for event in events {
+        if rows.len() >= limit {
+            break;
+        }
+        if require_webhook_event_read(&state, &tenant_context, verified, &event)
+            .await
+            .is_ok()
+        {
+            rows.push(raw_event_value(&event, None));
+        }
     }
-
-    #[test]
-    fn strict_scope_allows_requires_matching_permission_grant() {
-        let (viewer, scope) =
-            verified_with_strict_grant(vec![AccessPermission::View], vec![DataClass::Internal]);
-        assert!(strict_scope_allows(
-            &viewer,
-            &scope,
-            AccessPermission::View,
-            DataClass::Internal,
-        ));
-        assert!(!strict_scope_allows(
-            &viewer,
-            &scope,
-            AccessPermission::Edit,
-            DataClass::Internal,
-        ));
-        assert!(!strict_scope_allows(
-            &viewer,
-            &scope,
-            AccessPermission::Admin,
-            DataClass::Internal,
-        ));
-
-        let (admin, scope) =
-            verified_with_strict_grant(vec![AccessPermission::Admin], vec![DataClass::Internal]);
-        assert!(strict_scope_allows(
-            &admin,
-            &scope,
-            AccessPermission::Edit,
-            DataClass::Internal,
-        ));
-        assert!(strict_scope_allows(
-            &admin,
-            &scope,
-            AccessPermission::Admin,
-            DataClass::Internal,
-        ));
-    }
-
-    #[test]
-    fn strict_scope_allows_requires_matching_data_class() {
-        let (verified, scope) =
-            verified_with_strict_grant(vec![AccessPermission::Admin], vec![DataClass::Internal]);
-        assert!(!strict_scope_allows(
-            &verified,
-            &scope,
-            AccessPermission::Admin,
-            DataClass::Confidential,
-        ));
-    }
+    Ok(Json(json!({
+        "events": rows,
+        "count": rows.len(),
+        "limit": limit,
+    })))
 }
+
+async fn get_webhook_event(
+    State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    Path(event_id): Path<String>,
+    Query(query): Query<WebhookEventDetailQuery>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let verified = verified_tenant_context.as_ref().map(|context| &context.0);
+    let event = state
+        .get_automation_webhook_raw_event(&tenant_context, &event_id)
+        .await
+        .map_err(|error| {
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "AUTOMATION_WEBHOOK_EVENT_READ_FAILED",
+                error.to_string(),
+            )
+        })?
+        .ok_or_else(|| {
+            error_response(
+                StatusCode::NOT_FOUND,
+                "AUTOMATION_WEBHOOK_EVENT_NOT_FOUND",
+                "Webhook event not found",
+            )
+        })?;
+    require_webhook_event_read(&state, &tenant_context, verified, &event).await?;
+    let payload_available = event
+        .retention_policy
+        .delete_after_ms
+        .is_none_or(|delete_after_ms| crate::now_ms() <= delete_after_ms);
+    let payload = if query.include_payload.unwrap_or(false) && payload_available {
+        state
+            .read_automation_webhook_raw_event_payload(&tenant_context, &event.event_id)
+            .await
+            .map_err(|error| {
+                error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "AUTOMATION_WEBHOOK_EVENT_PAYLOAD_READ_FAILED",
+                    error.to_string(),
+                )
+            })?
+            .map(|payload| {
+                serde_json::from_slice::<Value>(&payload).unwrap_or_else(|_| {
+                    Value::String(String::from_utf8_lossy(&payload).to_string())
+                })
+            })
+    } else {
+        None
+    };
+    Ok(Json(json!({
+        "event": raw_event_value(&event, payload),
+    })))
+}
+
+async fn list_webhook_events_for_run(
+    State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    Path(run_id): Path<String>,
+    Query(query): Query<DeliveryListQuery>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let verified = verified_tenant_context.as_ref().map(|context| &context.0);
+    let run = state.get_automation_v2_run(&run_id).await.ok_or_else(|| {
+        error_response(
+            StatusCode::NOT_FOUND,
+            "AUTOMATION_V2_RUN_NOT_FOUND",
+            "Automation run not found",
+        )
+    })?;
+    if run.tenant_context.org_id != tenant_context.org_id
+        || run.tenant_context.workspace_id != tenant_context.workspace_id
+        || run.tenant_context.deployment_id != tenant_context.deployment_id
+    {
+        return Err(error_response(
+            StatusCode::NOT_FOUND,
+            "AUTOMATION_V2_RUN_NOT_FOUND",
+            "Automation run not found",
+        ));
+    }
+    load_automation_for_read(&state, &tenant_context, verified, &run.automation_id)
+        .await
+        .map_err(|_| {
+            error_response(
+                StatusCode::NOT_FOUND,
+                "AUTOMATION_V2_RUN_NOT_FOUND",
+                "Automation run not found",
+            )
+        })?;
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let events = state
+        .list_automation_webhook_raw_events_for_run(&tenant_context, &run_id, limit)
+        .await;
+    let mut rows = Vec::new();
+    for event in events {
+        if require_webhook_event_read(&state, &tenant_context, verified, &event)
+            .await
+            .is_ok()
+        {
+            rows.push(raw_event_value(&event, None));
+        }
+    }
+    Ok(Json(json!({
+        "run_id": run_id,
+        "runID": run_id,
+        "events": rows,
+        "count": rows.len(),
+        "limit": limit,
+    })))
+}
+
+#[cfg(test)]
+#[path = "routes_automation_webhook_management_tests.rs"]
+mod tests;

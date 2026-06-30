@@ -116,6 +116,7 @@ pub enum AutomationWebhookDeliveryStatus {
     Accepted,
     Rejected,
     Duplicate,
+    Suppressed,
     Disabled,
     Failed,
 }
@@ -128,6 +129,74 @@ pub enum AutomationWebhookDedupeResult {
     Replay,
     Conflict,
     IgnoredFeedbackLoop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationWebhookFeedbackLoopOutcome {
+    Suppressed,
+    Allowed,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AutomationWebhookFeedbackLoopDecision {
+    pub outcome: AutomationWebhookFeedbackLoopOutcome,
+    pub reason_code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_action_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_idempotency_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_target: Option<String>,
+    #[serde(default)]
+    pub allow_self_feedback: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationWebhookCorrelationOutcome {
+    Received,
+    NewRun,
+    WakeRun,
+    Duplicate,
+    Suppressed,
+    Rejected,
+    DeadLetter,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AutomationWebhookCorrelationRecord {
+    pub outcome: AutomationWebhookCorrelationOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub woken_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub woken_wait_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate_of_delivery_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate_of_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_record_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,6 +314,26 @@ pub struct AutomationWebhookRawEventRecord {
     pub queued_run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rejection_reason_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_record_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedupe_result: Option<AutomationWebhookDedupeResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedupe_reason_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate_of_delivery_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate_of_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub woken_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub woken_wait_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback_loop: Option<AutomationWebhookFeedbackLoopDecision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation: Option<AutomationWebhookCorrelationRecord>,
     #[serde(default)]
     pub retention_policy: AutomationWebhookEventRetentionPolicy,
 }
@@ -294,6 +383,10 @@ pub struct AutomationWebhookDeliveryRecord {
     pub woken_run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub woken_wait_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback_loop: Option<AutomationWebhookFeedbackLoopDecision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation: Option<AutomationWebhookCorrelationRecord>,
     pub received_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accepted_at_ms: Option<u64>,

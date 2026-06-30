@@ -3,7 +3,11 @@ use crate::app::state::{
     automation_webhook_signature_header, github_automation_webhook_signature_header,
     AutomationWebhookTriggerCreateInput,
 };
-use crate::automation_v2::types::AutomationWebhookSignatureScheme;
+use crate::automation_v2::types::{
+    AutomationWebhookDedupeResult, AutomationWebhookDeliveryStatus,
+    AutomationWebhookFeedbackLoopOutcome, AutomationWebhookSignatureScheme,
+};
+use crate::ExternalActionRecord;
 use tandem_types::{DataClass, TenantContext, ToolRiskTier};
 
 fn tenant(org: &str, workspace: &str) -> TenantContext {
@@ -130,6 +134,30 @@ fn webhook_request_at(
         );
     }
     builder.body(Body::from(body)).expect("request")
+}
+
+fn tenant_api_request(uri: impl Into<String>, tenant_context: &TenantContext) -> Request<Body> {
+    Request::builder()
+        .method("GET")
+        .uri(uri.into())
+        .header("x-tandem-org-id", tenant_context.org_id.as_str())
+        .header(
+            "x-tandem-workspace-id",
+            tenant_context.workspace_id.as_str(),
+        )
+        .header("x-tandem-actor-id", "actor-a")
+        .header("authorization", "Bearer tk_test")
+        .body(Body::empty())
+        .expect("request")
+}
+
+async fn response_json(response: axum::response::Response) -> Value {
+    serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body"),
+    )
+    .expect("json")
 }
 
 #[tokio::test]
@@ -548,6 +576,20 @@ async fn public_automation_webhook_duplicate_body_digest_does_not_queue_second_r
         duplicate.duplicate_of_delivery_id.as_deref(),
         Some(accepted.delivery_id.as_str())
     );
+    assert_eq!(
+        accepted
+            .correlation
+            .as_ref()
+            .map(|correlation| &correlation.outcome),
+        Some(&crate::AutomationWebhookCorrelationOutcome::NewRun)
+    );
+    assert_eq!(
+        duplicate
+            .correlation
+            .as_ref()
+            .map(|correlation| &correlation.outcome),
+        Some(&crate::AutomationWebhookCorrelationOutcome::Duplicate)
+    );
     let raw_events = state
         .list_automation_webhook_raw_events_for_trigger(
             &tenant_context,
@@ -563,6 +605,307 @@ async fn public_automation_webhook_duplicate_body_digest_does_not_queue_second_r
         event.status,
         crate::AutomationWebhookDeliveryStatus::Duplicate
     )));
+
+    let api = app_router(state.clone());
+    let events_resp = api
+        .clone()
+        .oneshot(tenant_api_request(
+            format!(
+                "/automations/v2/webhook-events?triggerID={}",
+                created.trigger.trigger_id
+            ),
+            &tenant_context,
+        ))
+        .await
+        .expect("list events");
+    assert_eq!(events_resp.status(), StatusCode::OK);
+    let events_payload = response_json(events_resp).await;
+    assert_eq!(events_payload.get("count").and_then(Value::as_u64), Some(2));
+    assert!(events_payload
+        .get("events")
+        .and_then(Value::as_array)
+        .expect("events")
+        .iter()
+        .any(
+            |event| event.get("status").and_then(Value::as_str) == Some("duplicate")
+                && event
+                    .pointer("/correlation/outcome")
+                    .and_then(Value::as_str)
+                    == Some("duplicate")
+        ));
+
+    let accepted_event = raw_events
+        .iter()
+        .find(|event| matches!(event.status, AutomationWebhookDeliveryStatus::Accepted))
+        .expect("accepted event");
+    let detail_resp = api
+        .clone()
+        .oneshot(tenant_api_request(
+            format!(
+                "/automations/v2/webhook-events/{}?includePayload=true",
+                accepted_event.event_id
+            ),
+            &tenant_context,
+        ))
+        .await
+        .expect("event detail");
+    assert_eq!(detail_resp.status(), StatusCode::OK);
+    let detail_payload = response_json(detail_resp).await;
+    assert_eq!(
+        detail_payload
+            .pointer("/event/payload/ok")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        detail_payload
+            .pointer("/event/correlation/outcome")
+            .and_then(Value::as_str),
+        Some("new_run")
+    );
+
+    let run_events_resp = api
+        .clone()
+        .oneshot(tenant_api_request(
+            format!(
+                "/automations/v2/runs/{}/webhook-events",
+                accepted.queued_run_id.as_deref().expect("run id")
+            ),
+            &tenant_context,
+        ))
+        .await
+        .expect("run events");
+    assert_eq!(run_events_resp.status(), StatusCode::OK);
+    let run_events_payload = response_json(run_events_resp).await;
+    assert_eq!(
+        run_events_payload.get("count").and_then(Value::as_u64),
+        Some(2)
+    );
+    let tenant_b = tenant("org-b", "workspace-b");
+    let cross_tenant_resp = api
+        .oneshot(tenant_api_request(
+            format!(
+                "/automations/v2/webhook-events?triggerID={}",
+                created.trigger.trigger_id
+            ),
+            &tenant_b,
+        ))
+        .await
+        .expect("cross tenant list");
+    assert_eq!(cross_tenant_resp.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(cross_tenant_resp)
+            .await
+            .get("count")
+            .and_then(Value::as_u64),
+        Some(0)
+    );
+}
+
+#[tokio::test]
+async fn public_automation_webhook_suppresses_tandem_origin_feedback_loop() {
+    let state = test_state().await;
+    state.set_api_token(Some("tk_test".to_string())).await;
+    let tenant_context = tenant("org-a", "workspace-a");
+    let created = setup_webhook(&state, "automation-webhook-feedback", &tenant_context).await;
+    let automation = state
+        .get_automation_v2("automation-webhook-feedback")
+        .await
+        .expect("automation");
+    let source_run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("source run");
+    let idempotency_key = "feedback-idempotency-key";
+    state
+        .record_external_action(ExternalActionRecord {
+            action_id: "external-action-feedback".to_string(),
+            operation: "provider.issue.update".to_string(),
+            status: "posted".to_string(),
+            source_kind: Some("automation_v2".to_string()),
+            source_id: Some(format!("{}:node-feedback:1:0", source_run.run_id)),
+            routine_run_id: None,
+            context_run_id: Some(format!("automation-v2-{}", source_run.run_id)),
+            capability_id: Some("provider.issue.update".to_string()),
+            provider: Some("generic".to_string()),
+            target: Some("ticket-123".to_string()),
+            approval_state: Some("executed".to_string()),
+            idempotency_key: Some(idempotency_key.to_string()),
+            receipt: Some(json!({"provider_resource_id": "ticket-123"})),
+            error: None,
+            metadata: Some(json!({
+                "automationRunID": source_run.run_id.clone(),
+                "nodeID": "node-feedback",
+                "tenantContext": tenant_context.clone(),
+            })),
+            created_at_ms: crate::now_ms(),
+            updated_at_ms: crate::now_ms(),
+        })
+        .await
+        .expect("record external action");
+
+    let app = app_router(state.clone());
+    let mismatch_body = json!({
+        "tandem_origin": {
+            "idempotency_key": idempotency_key,
+            "run_id": source_run.run_id.clone(),
+            "node_id": "node-feedback",
+            "resource_id": "ticket-999",
+        },
+        "ticket": "ticket-999",
+    })
+    .to_string()
+    .into_bytes();
+    let body = json!({
+        "tandem_origin": {
+            "idempotency_key": idempotency_key,
+                "run_id": source_run.run_id.clone(),
+                "node_id": "node-feedback",
+                "resource_id": "ticket-123",
+            },
+        "ticket": "ticket-123",
+    })
+    .to_string()
+    .into_bytes();
+    let now = crate::now_ms();
+    let mismatch_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/webhooks/automations/{}",
+                    created.trigger.public_path_token
+                ))
+                .header("content-type", "application/json")
+                .header(
+                    "x-tandem-webhook-event-id",
+                    "evt-feedback-resource-mismatch",
+                )
+                .header(
+                    "x-tandem-webhook-signature",
+                    automation_webhook_signature_header(&created.secret, now, &mismatch_body),
+                )
+                .body(Body::from(mismatch_body))
+                .expect("request"),
+        )
+        .await
+        .expect("mismatch response");
+    assert_eq!(mismatch_resp.status(), StatusCode::ACCEPTED);
+    assert_eq!(state.automation_v2_runs.read().await.len(), 2);
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/webhooks/automations/{}",
+                    created.trigger.public_path_token
+                ))
+                .header("content-type", "application/json")
+                .header("x-tandem-webhook-event-id", "evt-feedback-suppressed")
+                .header(
+                    "x-tandem-webhook-signature",
+                    automation_webhook_signature_header(&created.secret, now, &body),
+                )
+                .body(Body::from(body))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    assert_eq!(state.automation_v2_runs.read().await.len(), 2);
+    let deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+        )
+        .await;
+    assert_eq!(deliveries.len(), 2);
+    let mismatch = deliveries
+        .iter()
+        .find(|delivery| {
+            delivery.provider_event_id.as_deref() == Some("evt-feedback-resource-mismatch")
+        })
+        .expect("mismatch delivery");
+    assert_eq!(mismatch.status, AutomationWebhookDeliveryStatus::Accepted);
+    assert!(mismatch.feedback_loop.is_none());
+    let delivery = deliveries
+        .iter()
+        .find(|delivery| delivery.provider_event_id.as_deref() == Some("evt-feedback-suppressed"))
+        .expect("suppressed delivery");
+    assert_eq!(delivery.status, AutomationWebhookDeliveryStatus::Suppressed);
+    assert_eq!(
+        delivery.dedupe_result,
+        Some(AutomationWebhookDedupeResult::IgnoredFeedbackLoop)
+    );
+    assert_eq!(
+        delivery
+            .feedback_loop
+            .as_ref()
+            .map(|decision| &decision.outcome),
+        Some(&AutomationWebhookFeedbackLoopOutcome::Suppressed)
+    );
+    assert_eq!(
+        delivery
+            .correlation
+            .as_ref()
+            .map(|correlation| &correlation.outcome),
+        Some(&crate::AutomationWebhookCorrelationOutcome::Suppressed)
+    );
+
+    let allowed_body = json!({
+            "tandem_origin": {
+                "idempotency_key": idempotency_key,
+                "run_id": source_run.run_id.clone(),
+                "node_id": "node-feedback",
+                "resource_id": "ticket-123",
+            "allow_self_feedback": true,
+        },
+        "ticket": "ticket-123",
+    })
+    .to_string()
+    .into_bytes();
+    let allowed_resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/webhooks/automations/{}",
+                    created.trigger.public_path_token
+                ))
+                .header("content-type", "application/json")
+                .header("x-tandem-webhook-event-id", "evt-feedback-allowed")
+                .header(
+                    "x-tandem-webhook-signature",
+                    automation_webhook_signature_header(&created.secret, now + 1, &allowed_body),
+                )
+                .body(Body::from(allowed_body))
+                .expect("request"),
+        )
+        .await
+        .expect("allowed response");
+    assert_eq!(allowed_resp.status(), StatusCode::ACCEPTED);
+    assert_eq!(state.automation_v2_runs.read().await.len(), 3);
+    let deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+        )
+        .await;
+    let allowed = deliveries
+        .iter()
+        .find(|delivery| delivery.provider_event_id.as_deref() == Some("evt-feedback-allowed"))
+        .expect("allowed delivery");
+    assert_eq!(allowed.status, AutomationWebhookDeliveryStatus::Accepted);
+    assert_eq!(
+        allowed
+            .feedback_loop
+            .as_ref()
+            .map(|decision| &decision.outcome),
+        Some(&AutomationWebhookFeedbackLoopOutcome::Allowed)
+    );
 }
 
 #[tokio::test]

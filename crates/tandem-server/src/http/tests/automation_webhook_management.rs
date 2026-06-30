@@ -1,5 +1,5 @@
 use super::*;
-use crate::app::state::automation_webhook_body_digest;
+use crate::app::state::{automation_webhook_body_digest, AutomationWebhookRawEventCreateInput};
 use crate::automation_v2::types::{
     AutomationWebhookDedupeResult, AutomationWebhookDeliveryRecord, AutomationWebhookDeliveryStatus,
 };
@@ -63,6 +63,29 @@ fn tenant_request(
                 .unwrap_or_else(Body::empty),
         )
         .expect("request")
+}
+
+fn verified_context(actor: &str) -> tandem_types::VerifiedTenantContext {
+    let tenant_context =
+        tandem_types::TenantContext::explicit_user_workspace("org-a", "workspace-a", None, actor);
+    let request_principal = tandem_types::RequestPrincipal::authenticated_user(actor, "tandem-web");
+    let authority_chain = tandem_types::AuthorityChain::from_request(request_principal);
+    tandem_types::VerifiedTenantContext {
+        tenant_context,
+        human_actor: tandem_types::HumanActor::tandem_user(actor),
+        authority_chain,
+        roles: Vec::new(),
+        org_units: Vec::new(),
+        capabilities: Vec::new(),
+        policy_version: None,
+        strict_projection: None,
+        issuer: "tandem-web".to_string(),
+        audience: "tandem-runtime".to_string(),
+        issued_at_ms: 1_000,
+        expires_at_ms: 9_999_999_999_999,
+        assertion_id: format!("assertion-{actor}"),
+        assertion_key_id: None,
+    }
 }
 
 async fn create_automation(app: &axum::Router, automation_id: &str) {
@@ -253,6 +276,8 @@ async fn webhook_management_routes_redact_secrets_and_delivery_payloads() {
             queued_run_id: Some("automation-v2-run-webhook-a".to_string()),
             woken_run_id: None,
             woken_wait_id: None,
+            feedback_loop: None,
+            correlation: None,
             received_at_ms: 2_000,
             accepted_at_ms: Some(2_001),
             rejected_at_ms: None,
@@ -534,4 +559,258 @@ async fn webhook_management_routes_do_not_expose_cross_tenant_triggers() {
         .await
         .expect("tenant b rotate");
     assert_eq!(rotate_b_resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn webhook_event_routes_enforce_automation_visibility_before_payloads() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    create_automation(&app, "auto-webhook-private").await;
+
+    let create_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "POST",
+            "/automations/v2/auto-webhook-private/webhook-triggers",
+            "org-a",
+            "workspace-a",
+            "actor-a",
+            Some(json!({
+                "name": "Private events",
+                "provider": "generic"
+            })),
+        ))
+        .await
+        .expect("create webhook trigger");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let create_payload = response_json(create_resp).await;
+    let trigger_id = create_payload
+        .pointer("/trigger/trigger_id")
+        .and_then(Value::as_str)
+        .expect("trigger id")
+        .to_string();
+
+    let mut automation = state
+        .get_automation_v2("auto-webhook-private")
+        .await
+        .expect("automation");
+    let mut metadata = automation
+        .metadata
+        .take()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    metadata.insert(
+        "resource_access".to_string(),
+        json!({
+            "visibility": "private",
+            "owner_principal": { "id": "actor-a" }
+        }),
+    );
+    automation.metadata = Some(Value::Object(metadata));
+    state
+        .put_automation_v2(automation)
+        .await
+        .expect("update automation metadata");
+
+    let tenant_context = tandem_types::TenantContext::explicit_user_workspace(
+        "org-a",
+        "workspace-a",
+        None,
+        "actor-a",
+    );
+    let trigger = state
+        .get_automation_webhook_trigger(&tenant_context, &trigger_id)
+        .await
+        .expect("stored trigger");
+    let automation = state
+        .get_automation_v2("auto-webhook-private")
+        .await
+        .expect("stored automation");
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("run");
+    let body = br#"{"secret":true}"#;
+    let received_at_ms = crate::now_ms();
+    let raw_event = state
+        .record_automation_webhook_raw_event(AutomationWebhookRawEventCreateInput {
+            trigger,
+            provider_event_id: Some("evt-private".to_string()),
+            body_digest: automation_webhook_body_digest(body),
+            headers_digest: automation_webhook_body_digest(br#"x-provider: private"#),
+            headers_redacted: json!({ "x-provider": "private" }),
+            content_type: Some("application/json".to_string()),
+            payload: body.to_vec(),
+            received_at_ms,
+        })
+        .await
+        .expect("record raw event");
+    let delivery = AutomationWebhookDeliveryRecord {
+        delivery_id: "delivery-private".to_string(),
+        trigger_id: trigger_id.clone(),
+        automation_id: "auto-webhook-private".to_string(),
+        tenant_context: tenant_context.clone(),
+        provider_event_id: Some("evt-private".to_string()),
+        body_digest: automation_webhook_body_digest(body),
+        status: AutomationWebhookDeliveryStatus::Accepted,
+        rejection_reason_code: None,
+        idempotency_key: Some("trigger:private:provider_event:evt-private".to_string()),
+        idempotency_record_id: Some("idem-private".to_string()),
+        dedupe_result: Some(AutomationWebhookDedupeResult::Accepted),
+        dedupe_reason_code: Some("accepted_provider_event_id".to_string()),
+        duplicate_of_delivery_id: None,
+        duplicate_of_run_id: None,
+        verification_scheme: None,
+        verification_provider: None,
+        verification_reason_code: None,
+        queued_run_id: Some(run.run_id.clone()),
+        woken_run_id: None,
+        woken_wait_id: None,
+        feedback_loop: None,
+        correlation: None,
+        received_at_ms,
+        accepted_at_ms: Some(received_at_ms + 1),
+        rejected_at_ms: None,
+        sanitized_preview: json!({ "secret": "[redacted]" }),
+        audit_event_id: Some("audit-private".to_string()),
+    };
+    state
+        .record_automation_webhook_delivery(delivery.clone())
+        .await
+        .expect("record delivery");
+    state
+        .update_automation_webhook_raw_event_outcome(
+            &tenant_context,
+            &raw_event.event_id,
+            &delivery,
+            received_at_ms + 1,
+        )
+        .await
+        .expect("update raw event");
+
+    let direct_events = state
+        .list_automation_webhook_raw_events(&tenant_context, Some(&trigger_id), None, None, 200)
+        .await;
+    assert_eq!(direct_events.len(), 1);
+
+    let local_list_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "GET",
+            format!("/automations/v2/webhook-events?triggerID={trigger_id}"),
+            "org-a",
+            "workspace-a",
+            "actor-a",
+            None,
+        ))
+        .await
+        .expect("local list events");
+    assert_eq!(local_list_resp.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(local_list_resp)
+            .await
+            .get("count")
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+
+    let owner_app = app_router(state.clone()).layer(axum::Extension(verified_context("actor-a")));
+    let outsider_app =
+        app_router(state.clone()).layer(axum::Extension(verified_context("actor-b")));
+
+    let owner_list_resp = owner_app
+        .clone()
+        .oneshot(tenant_request(
+            "GET",
+            format!("/automations/v2/webhook-events?triggerID={trigger_id}"),
+            "org-a",
+            "workspace-a",
+            "actor-a",
+            None,
+        ))
+        .await
+        .expect("owner list events");
+    assert_eq!(owner_list_resp.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(owner_list_resp)
+            .await
+            .get("count")
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+
+    let owner_detail_resp = owner_app
+        .clone()
+        .oneshot(tenant_request(
+            "GET",
+            format!(
+                "/automations/v2/webhook-events/{}?includePayload=true",
+                raw_event.event_id
+            ),
+            "org-a",
+            "workspace-a",
+            "actor-a",
+            None,
+        ))
+        .await
+        .expect("owner event detail");
+    assert_eq!(owner_detail_resp.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(owner_detail_resp)
+            .await
+            .pointer("/event/payload/secret")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+
+    let outsider_list_resp = outsider_app
+        .clone()
+        .oneshot(tenant_request(
+            "GET",
+            format!("/automations/v2/webhook-events?triggerID={trigger_id}"),
+            "org-a",
+            "workspace-a",
+            "actor-b",
+            None,
+        ))
+        .await
+        .expect("outsider list events");
+    assert_eq!(outsider_list_resp.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(outsider_list_resp)
+            .await
+            .get("count")
+            .and_then(Value::as_u64),
+        Some(0)
+    );
+
+    let outsider_detail_resp = outsider_app
+        .clone()
+        .oneshot(tenant_request(
+            "GET",
+            format!(
+                "/automations/v2/webhook-events/{}?includePayload=true",
+                raw_event.event_id
+            ),
+            "org-a",
+            "workspace-a",
+            "actor-b",
+            None,
+        ))
+        .await
+        .expect("outsider event detail");
+    assert_eq!(outsider_detail_resp.status(), StatusCode::NOT_FOUND);
+
+    let outsider_run_resp = outsider_app
+        .oneshot(tenant_request(
+            "GET",
+            format!("/automations/v2/runs/{}/webhook-events", run.run_id),
+            "org-a",
+            "workspace-a",
+            "actor-b",
+            None,
+        ))
+        .await
+        .expect("outsider run events");
+    assert_eq!(outsider_run_resp.status(), StatusCode::NOT_FOUND);
 }

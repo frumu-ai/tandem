@@ -8,9 +8,9 @@ use serde_json::{json, Value};
 
 use crate::app::state::{
     automation_webhook_body_digest, sanitize_automation_webhook_preview,
-    AutomationWebhookQueueResult, AutomationWebhookRawEventCreateInput,
-    AutomationWebhookSignatureHeaders, AutomationWebhookVerificationDecision,
-    AutomationWebhookVerificationError,
+    AutomationWebhookFeedbackLoopCandidate, AutomationWebhookQueueResult,
+    AutomationWebhookRawEventCreateInput, AutomationWebhookSignatureHeaders,
+    AutomationWebhookVerificationDecision, AutomationWebhookVerificationError,
 };
 use crate::automation_v2::types::automation_webhook_provider_event_id_headers;
 use crate::{
@@ -24,6 +24,12 @@ const AUTOMATION_WEBHOOK_SIGNATURE_HEADER: &str = "x-tandem-webhook-signature";
 const AUTOMATION_WEBHOOK_LEGACY_SIGNATURE_HEADER: &str = "x-tandem-signature";
 const AUTOMATION_WEBHOOK_GITHUB_SIGNATURE_HEADER: &str = "x-hub-signature-256";
 const AUTOMATION_WEBHOOK_SHARED_SECRET_HEADER: &str = "x-tandem-webhook-secret";
+const AUTOMATION_WEBHOOK_ORIGIN_ACTION_HEADER: &str = "x-tandem-origin-action-id";
+const AUTOMATION_WEBHOOK_ORIGIN_RUN_HEADER: &str = "x-tandem-origin-run-id";
+const AUTOMATION_WEBHOOK_ORIGIN_NODE_HEADER: &str = "x-tandem-origin-node-id";
+const AUTOMATION_WEBHOOK_ORIGIN_IDEMPOTENCY_HEADER: &str = "x-tandem-origin-idempotency-key";
+const AUTOMATION_WEBHOOK_ORIGIN_RESOURCE_HEADER: &str = "x-tandem-origin-resource-id";
+const AUTOMATION_WEBHOOK_ALLOW_SELF_FEEDBACK_HEADER: &str = "x-tandem-allow-self-feedback";
 
 pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
     router
@@ -126,9 +132,14 @@ async fn automation_webhook_intake(
         }
     };
     let sanitized_preview = sanitize_automation_webhook_preview(&payload);
+    let feedback_loop_candidate = automation_webhook_feedback_loop_candidate(&headers, &payload);
 
     match state
-        .queue_automation_v2_run_from_webhook_delivery(verified, sanitized_preview)
+        .queue_automation_v2_run_from_webhook_delivery_with_feedback_loop(
+            verified,
+            sanitized_preview,
+            feedback_loop_candidate,
+        )
         .await
     {
         Ok(AutomationWebhookQueueResult::Accepted { delivery, .. }) => {
@@ -140,6 +151,10 @@ async fn automation_webhook_intake(
             webhook_public_response(StatusCode::ACCEPTED, "accepted")
         }
         Ok(AutomationWebhookQueueResult::Woken { delivery, .. }) => {
+            update_raw_event_from_delivery(&state, &raw_event_tenant, &raw_event, &delivery).await;
+            webhook_public_response(StatusCode::ACCEPTED, "accepted")
+        }
+        Ok(AutomationWebhookQueueResult::Suppressed { delivery }) => {
             update_raw_event_from_delivery(&state, &raw_event_tenant, &raw_event, &delivery).await;
             webhook_public_response(StatusCode::ACCEPTED, "accepted")
         }
@@ -199,6 +214,80 @@ async fn advisory_provider_event_id(
         headers,
         automation_webhook_provider_event_id_headers("generic"),
     )
+}
+
+fn truthy_header(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "allow" | "allowed"
+        )
+    })
+}
+
+fn json_path_string(value: &Value, path: &[&str]) -> Option<String> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.chars().take(512).collect::<String>())
+}
+
+fn json_path_bool(value: &Value, path: &[&str]) -> bool {
+    let mut current = value;
+    for key in path {
+        let Some(next) = current.get(*key) else {
+            return false;
+        };
+        current = next;
+    }
+    current.as_bool().unwrap_or(false)
+        || current.as_str().is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "allow" | "allowed"
+            )
+        })
+}
+
+fn automation_webhook_feedback_loop_candidate(
+    headers: &HeaderMap,
+    payload: &Value,
+) -> Option<AutomationWebhookFeedbackLoopCandidate> {
+    let candidate = AutomationWebhookFeedbackLoopCandidate {
+        source_action_id: header_str(headers, AUTOMATION_WEBHOOK_ORIGIN_ACTION_HEADER)
+            .map(str::to_string)
+            .or_else(|| json_path_string(payload, &["tandem_origin", "action_id"]))
+            .or_else(|| json_path_string(payload, &["tandemOrigin", "actionID"])),
+        source_run_id: header_str(headers, AUTOMATION_WEBHOOK_ORIGIN_RUN_HEADER)
+            .map(str::to_string)
+            .or_else(|| json_path_string(payload, &["tandem_origin", "run_id"]))
+            .or_else(|| json_path_string(payload, &["tandemOrigin", "runID"])),
+        source_node_id: header_str(headers, AUTOMATION_WEBHOOK_ORIGIN_NODE_HEADER)
+            .map(str::to_string)
+            .or_else(|| json_path_string(payload, &["tandem_origin", "node_id"]))
+            .or_else(|| json_path_string(payload, &["tandemOrigin", "nodeID"])),
+        source_idempotency_key: header_str(headers, AUTOMATION_WEBHOOK_ORIGIN_IDEMPOTENCY_HEADER)
+            .map(str::to_string)
+            .or_else(|| json_path_string(payload, &["tandem_origin", "idempotency_key"]))
+            .or_else(|| json_path_string(payload, &["tandemOrigin", "idempotencyKey"])),
+        provider_resource_id: header_str(headers, AUTOMATION_WEBHOOK_ORIGIN_RESOURCE_HEADER)
+            .map(str::to_string)
+            .or_else(|| json_path_string(payload, &["tandem_origin", "resource_id"]))
+            .or_else(|| json_path_string(payload, &["tandemOrigin", "resourceID"])),
+        allow_self_feedback: truthy_header(header_str(
+            headers,
+            AUTOMATION_WEBHOOK_ALLOW_SELF_FEEDBACK_HEADER,
+        )) || json_path_bool(
+            payload,
+            &["tandem_origin", "allow_self_feedback"],
+        ) || json_path_bool(payload, &["tandemOrigin", "allowSelfFeedback"]),
+    };
+    (!candidate.is_empty()).then_some(candidate)
 }
 
 fn provider_event_id_from_headers(
@@ -310,10 +399,7 @@ async fn update_raw_event_from_delivery(
         .update_automation_webhook_raw_event_outcome(
             tenant_context,
             &raw_event.event_id,
-            delivery.status.clone(),
-            Some(delivery.delivery_id.clone()),
-            delivery.queued_run_id.clone(),
-            delivery.rejection_reason_code.clone(),
+            delivery,
             crate::now_ms(),
         )
         .await
