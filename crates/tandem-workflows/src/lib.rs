@@ -192,6 +192,8 @@ pub struct WorkflowRunRecord {
     pub source_event_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enterprise_scope: Option<Value>,
     pub status: WorkflowRunStatus,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,

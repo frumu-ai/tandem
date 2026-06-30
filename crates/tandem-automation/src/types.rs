@@ -11,6 +11,7 @@ use tandem_plan_compiler::api::{
 };
 use tandem_types::TenantContext;
 
+use crate::enterprise_scope::{stamp_enterprise_scope_metadata, AutomationEnterpriseScope};
 use crate::routine::RoutineMisfirePolicy;
 
 pub use crate::mcp_policy::{
@@ -896,6 +897,14 @@ impl AutomationV2Spec {
                 self.metadata = Some(Value::Object(map));
             }
         }
+    }
+
+    pub fn enterprise_scope(&self) -> Option<AutomationEnterpriseScope> {
+        AutomationEnterpriseScope::from_metadata(self.metadata.as_ref())
+    }
+
+    pub fn stamp_enterprise_scope_metadata(&mut self) {
+        self.metadata = stamp_enterprise_scope_metadata(self.metadata.take());
     }
 
     /// Returns the effective handoff config, using defaults if none is set.

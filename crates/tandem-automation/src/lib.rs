@@ -1,4 +1,5 @@
 pub mod context_metadata;
+pub mod enterprise_scope;
 pub mod execution_profile;
 pub mod governance;
 pub mod mcp_policy;
@@ -17,6 +18,7 @@ mod retry_policy_tests;
 mod types_tests;
 
 pub use context_metadata::shared_context_pack_ids_from_metadata;
+pub use enterprise_scope::*;
 pub use execution_profile::{
     aggregate_human_dispositions_by_class, augment_output_with_profile_relaxation,
     classify_unmet_requirement, decide_profile_validation, effective_repair_budget,

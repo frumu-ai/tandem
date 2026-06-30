@@ -4,6 +4,8 @@ use tandem_types::{
     DataClass, PrincipalRef, ResourceScope, SecretRef, TenantContext, ToolRiskTier,
 };
 
+use crate::enterprise_scope::AutomationEnterpriseScope;
+
 fn default_tenant_context() -> TenantContext {
     TenantContext::local_implicit()
 }
@@ -259,6 +261,20 @@ impl AutomationWebhookTriggerRecord {
             && self.tenant_context.workspace_id == tenant_context.workspace_id
             && self.tenant_context.deployment_id == tenant_context.deployment_id
     }
+
+    pub fn enterprise_scope(&self) -> Option<AutomationEnterpriseScope> {
+        let scope = AutomationEnterpriseScope {
+            owner_principal: self.owner_principal.clone(),
+            owning_org_unit_id: self.owning_org_unit_id.clone(),
+            resource_scope: self.resource_scope.clone(),
+            data_classes: vec![self.default_data_class],
+            risk_tier: self.default_risk_tier,
+            policy_version_id: None,
+            delegation_grant_ids: Vec::new(),
+        }
+        .normalized();
+        (!scope.is_empty()).then_some(scope)
+    }
 }
 
 fn default_raw_payload_retention_ms() -> u64 {
@@ -292,6 +308,8 @@ pub struct AutomationWebhookRawEventRecord {
     pub automation_id: String,
     #[serde(default = "default_tenant_context")]
     pub tenant_context: TenantContext,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enterprise_scope: Option<AutomationEnterpriseScope>,
     pub provider: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_event_kind: Option<String>,
@@ -353,6 +371,8 @@ pub struct AutomationWebhookDeliveryRecord {
     pub automation_id: String,
     #[serde(default = "default_tenant_context")]
     pub tenant_context: TenantContext,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enterprise_scope: Option<AutomationEnterpriseScope>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_event_id: Option<String>,
     pub body_digest: String,

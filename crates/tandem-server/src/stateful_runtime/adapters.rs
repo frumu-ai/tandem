@@ -1,6 +1,4 @@
-use serde::de::DeserializeOwned;
-use serde_json::{json, Value};
-use tandem_types::{DataClass, PrincipalRef, ResourceScope, ToolRiskTier};
+use serde_json::json;
 
 use crate::automation_v2::types::{AutomationRunStatus, AutomationV2RunRecord};
 use tandem_workflows::{WorkflowRunRecord, WorkflowRunStatus};
@@ -66,60 +64,41 @@ pub fn stateful_run_from_automation_v2(run: &AutomationV2RunRecord) -> StatefulW
 
 fn stateful_scope_from_automation_v2(run: &AutomationV2RunRecord) -> StatefulRuntimeScope {
     let mut scope = StatefulRuntimeScope::from_tenant_context(run.tenant_context.clone());
-    if let Some(metadata) = automation_webhook_metadata(run) {
-        merge_enterprise_scope_metadata(&mut scope, metadata);
+    if let Some(enterprise_scope) = run
+        .automation_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.enterprise_scope())
+    {
+        merge_enterprise_scope(&mut scope, enterprise_scope);
     }
     scope
 }
 
-fn automation_webhook_metadata(run: &AutomationV2RunRecord) -> Option<&Value> {
-    run.automation_snapshot
-        .as_ref()
-        .and_then(|snapshot| snapshot.metadata.as_ref())
-        .and_then(|metadata| metadata.get("automation_webhook"))
-}
-
-fn merge_enterprise_scope_metadata(scope: &mut StatefulRuntimeScope, metadata: &Value) {
+fn merge_enterprise_scope(
+    scope: &mut StatefulRuntimeScope,
+    enterprise_scope: crate::automation_v2::types::AutomationEnterpriseScope,
+) {
     if scope.owner_principal.is_none() {
-        scope.owner_principal = json_field(metadata, "owner_principal");
+        scope.owner_principal = enterprise_scope.owner_principal;
     }
     if scope.owning_org_unit_id.is_none() {
-        scope.owning_org_unit_id = metadata
-            .get("owning_org_unit_id")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned);
+        scope.owning_org_unit_id = enterprise_scope.owning_org_unit_id;
     }
     if scope.resource_scope.is_none() {
-        scope.resource_scope = json_field::<ResourceScope>(metadata, "resource_scope");
+        scope.resource_scope = enterprise_scope.resource_scope;
     }
     if scope.data_classes.is_empty() {
-        if let Some(data_classes) = json_field::<Vec<DataClass>>(metadata, "data_classes") {
-            scope.data_classes = data_classes;
-        } else if let Some(data_class) = json_field::<DataClass>(metadata, "data_class") {
-            scope.data_classes = vec![data_class];
-        }
+        scope.data_classes = enterprise_scope.data_classes;
     }
     if scope.risk_tier.is_none() {
-        scope.risk_tier = json_field::<ToolRiskTier>(metadata, "risk_tier");
+        scope.risk_tier = enterprise_scope.risk_tier;
     }
     if scope.policy_version_id.is_none() {
-        scope.policy_version_id = metadata
-            .get("policy_version_id")
-            .or_else(|| metadata.get("policy_version"))
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned);
+        scope.policy_version_id = enterprise_scope.policy_version_id;
     }
     if scope.delegation_grant_ids.is_empty() {
-        scope.delegation_grant_ids =
-            json_field::<Vec<String>>(metadata, "delegation_grant_ids").unwrap_or_default();
+        scope.delegation_grant_ids = enterprise_scope.delegation_grant_ids;
     }
-}
-
-fn json_field<T: DeserializeOwned>(metadata: &Value, key: &str) -> Option<T> {
-    metadata
-        .get(key)
-        .cloned()
-        .and_then(|value| serde_json::from_value(value).ok())
 }
 
 pub fn stateful_run_from_workflow(run: &WorkflowRunRecord) -> StatefulWorkflowRunRecord {
@@ -132,6 +111,15 @@ pub fn stateful_run_from_workflow(run: &WorkflowRunRecord) -> StatefulWorkflowRu
         run.updated_at_ms,
         current_phase_id.as_deref(),
     );
+    let mut scope = StatefulRuntimeScope::from_tenant_context(run.tenant_context.clone());
+    if let Some(enterprise_scope) = run.enterprise_scope.as_ref().and_then(|value| {
+        serde_json::from_value::<crate::automation_v2::types::AutomationEnterpriseScope>(
+            value.clone(),
+        )
+        .ok()
+    }) {
+        merge_enterprise_scope(&mut scope, enterprise_scope);
+    }
     StatefulWorkflowRunRecord {
         schema_version: STATEFUL_RUNTIME_SCHEMA_VERSION,
         run_id: run.run_id.clone(),
@@ -139,7 +127,7 @@ pub fn stateful_run_from_workflow(run: &WorkflowRunRecord) -> StatefulWorkflowRu
         workflow_id: Some(run.workflow_id.clone()),
         automation_id: run.automation_id.clone(),
         automation_run_id: run.automation_run_id.clone(),
-        scope: StatefulRuntimeScope::from_tenant_context(run.tenant_context.clone()),
+        scope,
         status,
         phase: phase_state.phase,
         phase_history: phase_state.phase_history,
@@ -470,6 +458,11 @@ mod tests {
             trigger_event: Some("repo.pushed".to_string()),
             source_event_id: Some("event-a".to_string()),
             task_id: Some("task-a".to_string()),
+            enterprise_scope: Some(json!({
+                "owning_org_unit_id": "finance",
+                "owner_principal": PrincipalRef::new(PrincipalKind::Automation, "automation-a"),
+                "data_classes": [DataClass::FinancialRecord],
+            })),
             status: WorkflowRunStatus::Running,
             created_at_ms: 10,
             updated_at_ms: 20,
@@ -489,6 +482,14 @@ mod tests {
             Some("automation-run-a")
         );
         assert_eq!(stateful.scope.workspace_id(), "workspace-a");
+        assert_eq!(
+            stateful.scope.owning_org_unit_id.as_deref(),
+            Some("finance")
+        );
+        assert_eq!(
+            stateful.scope.owner_principal,
+            Some(PrincipalRef::new(PrincipalKind::Automation, "automation-a"))
+        );
         assert_eq!(stateful.source_event_id.as_deref(), Some("event-a"));
         assert_eq!(stateful.status, StatefulWorkflowRunStatus::Running);
         assert_eq!(stateful.phase, StatefulWorkflowPhase::RunningPhase);

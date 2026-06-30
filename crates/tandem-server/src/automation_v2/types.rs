@@ -1,1 +1,1 @@
-pub use tandem_automation::{types::*, webhooks::*};
+pub use tandem_automation::{enterprise_scope::*, types::*, webhooks::*};

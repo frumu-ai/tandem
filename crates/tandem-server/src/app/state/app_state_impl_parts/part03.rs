@@ -1118,6 +1118,7 @@ impl AppState {
         // run-level override without needing the run record itself.
         let mut snapshot = automation.clone();
         snapshot.execution.profile = Some(effective_execution_profile);
+        snapshot.stamp_enterprise_scope_metadata();
         let mut run = AutomationV2RunRecord {
             run_id: format!("automation-v2-run-{}", uuid::Uuid::new_v4()),
             automation_id: automation.automation_id.clone(),
@@ -1212,6 +1213,7 @@ impl AppState {
         // create_automation_v2_run_with_profile for rationale.
         let mut snapshot = automation.clone();
         snapshot.execution.profile = Some(effective_execution_profile);
+        snapshot.stamp_enterprise_scope_metadata();
         let mut run = AutomationV2RunRecord {
             run_id: format!("automation-v2-run-{}", uuid::Uuid::new_v4()),
             automation_id: automation.automation_id.clone(),

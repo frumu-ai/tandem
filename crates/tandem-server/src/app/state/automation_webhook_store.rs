@@ -22,8 +22,9 @@ use crate::stateful_runtime::{
 use crate::util::time::now_ms;
 
 use super::{
-    automation_webhook_delivery_correlation, automation_webhook_delivery_matches_key,
-    automation_webhook_rejection_delivery, automation_webhook_run_metadata,
+    automation_webhook_accepted_delivery, automation_webhook_delivery_correlation,
+    automation_webhook_delivery_matches_key, automation_webhook_rejection_delivery,
+    automation_webhook_run_metadata, automation_webhook_scope_denial_reason,
     idempotency_outcome_ref, new_automation_webhook_delivery_id,
     verify_automation_webhook_signature, AppState, AutomationWebhookDedupeDecision,
     AutomationWebhookFeedbackLoopCandidate, AutomationWebhookReservedClaim,
@@ -1194,41 +1195,19 @@ impl AppState {
         };
         write_stateful_run_snapshot(&paths.snapshots_root, &snapshot).await?;
 
-        let delivery = AutomationWebhookDeliveryRecord {
-            delivery_id: delivery_id.clone(),
-            trigger_id: trigger.trigger_id.clone(),
-            automation_id: trigger.automation_id.clone(),
-            tenant_context: trigger.tenant_context.clone(),
+        let delivery = automation_webhook_accepted_delivery(
+            Some(delivery_id.clone()),
+            trigger,
             provider_event_id,
             body_digest,
-            status: AutomationWebhookDeliveryStatus::Accepted,
-            rejection_reason_code: None,
-            idempotency_key: primary_idempotency
-                .as_ref()
-                .map(|record| record.claim.key.clone()),
-            idempotency_record_id: primary_idempotency
-                .as_ref()
-                .map(|record| record.record.record_id.clone()),
-            dedupe_result: Some(AutomationWebhookDedupeResult::Accepted),
-            dedupe_reason_code: primary_idempotency
-                .as_ref()
-                .map(|record| format!("accepted_{}", record.claim.key_kind)),
-            duplicate_of_delivery_id: None,
-            duplicate_of_run_id: None,
-            verification_scheme: Some(verification.scheme.clone()),
-            verification_provider: Some(verification.provider.clone()),
-            verification_reason_code: Some(verification.reason_code.clone()),
-            queued_run_id: None,
-            woken_run_id: Some(woken_wait.run_id.clone()),
-            woken_wait_id: Some(woken_wait.wait_id.clone()),
-            feedback_loop,
-            correlation: None,
             received_at_ms,
-            accepted_at_ms: Some(received_at_ms),
-            rejected_at_ms: None,
             sanitized_preview,
-            audit_event_id: None,
-        };
+            &verification,
+            primary_idempotency.as_ref(),
+            Some(woken_wait.run_id.clone()),
+            Some(woken_wait.wait_id.clone()),
+            feedback_loop,
+        );
         let delivery = self
             .record_automation_webhook_delivery_locked(delivery)
             .await?;
@@ -1329,6 +1308,24 @@ impl AppState {
             return Ok(AutomationWebhookQueueResult::Rejected {
                 delivery,
                 reason_code: "automation_inactive".to_string(),
+            });
+        }
+        if let Some(reason_code) = automation_webhook_scope_denial_reason(&trigger, &automation) {
+            let delivery = self
+                .record_automation_webhook_rejection(
+                    &trigger,
+                    provider_event_id,
+                    body_digest,
+                    AutomationWebhookDeliveryStatus::Rejected,
+                    reason_code,
+                    received_at_ms,
+                    sanitized_preview,
+                    Some(verification.clone()),
+                )
+                .await?;
+            return Ok(AutomationWebhookQueueResult::Rejected {
+                delivery,
+                reason_code: reason_code.to_string(),
             });
         }
         let feedback_loop = self
@@ -1590,36 +1587,19 @@ impl AppState {
                 });
             }
 
-            let delivery = AutomationWebhookDeliveryRecord {
-                delivery_id: new_automation_webhook_delivery_id(),
-                trigger_id: trigger.trigger_id.clone(),
-                automation_id: trigger.automation_id.clone(),
-                tenant_context: trigger.tenant_context.clone(),
+            let delivery = automation_webhook_accepted_delivery(
+                None,
+                &trigger,
                 provider_event_id,
                 body_digest,
-                status: AutomationWebhookDeliveryStatus::Accepted,
-                rejection_reason_code: None,
-                idempotency_key: primary.map(|record| record.claim.key.clone()),
-                idempotency_record_id: primary.map(|record| record.record.record_id.clone()),
-                dedupe_result: Some(AutomationWebhookDedupeResult::Accepted),
-                dedupe_reason_code: primary
-                    .map(|record| format!("accepted_{}", record.claim.key_kind)),
-                duplicate_of_delivery_id: None,
-                duplicate_of_run_id: None,
-                verification_scheme: Some(verification.scheme.clone()),
-                verification_provider: Some(verification.provider.clone()),
-                verification_reason_code: Some(verification.reason_code.clone()),
-                queued_run_id: None,
-                woken_run_id: None,
-                woken_wait_id: None,
-                feedback_loop: feedback_loop.clone(),
-                correlation: None,
                 received_at_ms,
-                accepted_at_ms: Some(received_at_ms),
-                rejected_at_ms: None,
                 sanitized_preview,
-                audit_event_id: None,
-            };
+                &verification,
+                primary,
+                None,
+                None,
+                feedback_loop.clone(),
+            );
             self.record_automation_webhook_delivery_locked(delivery)
                 .await?
         };
@@ -1660,6 +1640,7 @@ impl AppState {
                         "automation_webhook",
                         webhook_metadata.clone(),
                     );
+                    snapshot.stamp_enterprise_scope_metadata();
                 }
             })
             .await

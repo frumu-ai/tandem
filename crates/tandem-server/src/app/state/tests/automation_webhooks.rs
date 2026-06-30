@@ -4,7 +4,8 @@ use crate::app::state::{
     AutomationWebhookQueueResult, AutomationWebhookTriggerCreateInput,
     AutomationWebhookTriggerUpdateInput, AutomationWebhookVerificationError,
 };
-use crate::automation_v2::types::AutomationWebhookSignatureScheme;
+use crate::automation_v2::types::{AutomationEnterpriseScope, AutomationWebhookSignatureScheme};
+use tandem_types::{ResourceKind, ResourceRef, ResourceScope};
 
 fn tenant(org: &str, workspace: &str) -> TenantContext {
     TenantContext::explicit_user_workspace(org, workspace, None, "actor-a")
@@ -111,6 +112,7 @@ async fn webhook_triggers_and_deliveries_are_tenant_scoped() {
         trigger_id: created.trigger.trigger_id.clone(),
         automation_id: "automation-a".to_string(),
         tenant_context: tenant_b.clone(),
+        enterprise_scope: None,
         provider_event_id: Some("evt-b".to_string()),
         body_digest: automation_webhook_body_digest(br#"{"ok":true}"#),
         status: AutomationWebhookDeliveryStatus::Accepted,
@@ -145,6 +147,7 @@ async fn webhook_triggers_and_deliveries_are_tenant_scoped() {
         trigger_id: created.trigger.trigger_id.clone(),
         automation_id: "automation-a".to_string(),
         tenant_context: tenant_a.clone(),
+        enterprise_scope: None,
         provider_event_id: Some("evt-a".to_string()),
         body_digest: automation_webhook_body_digest(br#"{"ok":true}"#),
         status: AutomationWebhookDeliveryStatus::Accepted,
@@ -434,6 +437,7 @@ async fn webhook_signature_and_dedupe_scope_include_tenant_and_trigger() {
             trigger_id: trigger_a.trigger.trigger_id.clone(),
             automation_id: "automation-a".to_string(),
             tenant_context: tenant_a.clone(),
+            enterprise_scope: None,
             provider_event_id: verified_a.provider_event_id.clone(),
             body_digest: verified_a.body_digest.clone(),
             status: AutomationWebhookDeliveryStatus::Accepted,
@@ -617,6 +621,83 @@ async fn webhook_queue_rejects_automation_tenant_mismatch_without_run() {
 }
 
 #[tokio::test]
+async fn webhook_queue_rejects_trigger_outside_automation_resource_scope() {
+    let state = ready_test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a");
+    let automation_scope = ResourceScope::root(ResourceRef::new(
+        "org-a",
+        "workspace-a",
+        ResourceKind::SourceBinding,
+        "github-primary",
+    ));
+    let mut automation = AutomationSpecBuilder::new("automation-scoped").build();
+    automation.set_tenant_context(&tenant_a);
+    automation.metadata = Some(json!({
+        "enterprise_scope": serde_json::to_value(AutomationEnterpriseScope {
+            owning_org_unit_id: Some("dept-a".to_string()),
+            resource_scope: Some(automation_scope),
+            ..AutomationEnterpriseScope::default()
+        })
+        .expect("enterprise scope json")
+    }));
+    automation.set_tenant_context(&tenant_a);
+    state
+        .automations_v2
+        .write()
+        .await
+        .insert("automation-scoped".to_string(), automation);
+
+    let mut input = create_input("automation-scoped", tenant_a.clone());
+    input.owning_org_unit_id = Some("dept-a".to_string());
+    input.resource_scope = Some(ResourceScope::root(ResourceRef::new(
+        "org-a",
+        "workspace-a",
+        ResourceKind::SourceBinding,
+        "github-other",
+    )));
+    let created = state
+        .create_automation_webhook_trigger(input)
+        .await
+        .expect("create webhook trigger");
+    let body = br#"{"ok":true}"#;
+    let now = now_ms();
+    let signature = automation_webhook_signature_header(&created.secret, now, body);
+    let verified = state
+        .verify_automation_webhook_request(
+            &created.trigger.public_path_token,
+            Some(&signature),
+            body,
+            Some("evt-scope-mismatch".to_string()),
+            now,
+            300_000,
+        )
+        .await
+        .expect("verified request");
+
+    let outcome = state
+        .queue_automation_v2_run_from_webhook_delivery(verified, json!({"ok": true}))
+        .await
+        .expect("queue outcome");
+    let delivery = match outcome {
+        AutomationWebhookQueueResult::Rejected {
+            delivery,
+            reason_code,
+        } => {
+            assert_eq!(reason_code, "webhook_resource_scope_mismatch");
+            delivery
+        }
+        other => panic!("expected scope mismatch rejection, got {other:?}"),
+    };
+    assert_eq!(delivery.status, AutomationWebhookDeliveryStatus::Rejected);
+    assert_eq!(
+        delivery.rejection_reason_code.as_deref(),
+        Some("webhook_resource_scope_mismatch")
+    );
+    assert!(delivery.enterprise_scope.is_some());
+    assert!(state.automation_v2_runs.read().await.is_empty());
+}
+
+#[tokio::test]
 async fn webhook_queue_treats_accepted_marker_without_run_as_duplicate() {
     let state = ready_test_state().await;
     let tenant_a = tenant("org-a", "workspace-a");
@@ -646,6 +727,7 @@ async fn webhook_queue_treats_accepted_marker_without_run_as_duplicate() {
             trigger_id: created.trigger.trigger_id.clone(),
             automation_id: "automation-marker".to_string(),
             tenant_context: tenant_a.clone(),
+            enterprise_scope: None,
             provider_event_id: verified.provider_event_id.clone(),
             body_digest: verified.body_digest.clone(),
             status: AutomationWebhookDeliveryStatus::Accepted,

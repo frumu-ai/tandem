@@ -139,6 +139,7 @@ impl AppState {
         let mut events = load_automation_webhook_events(&events_path).await?;
         let trigger_id = input.trigger.trigger_id.clone();
         let automation_id = input.trigger.automation_id.clone();
+        let enterprise_scope = input.trigger.enterprise_scope();
         let delete_after_ms = input
             .received_at_ms
             .checked_add(AutomationWebhookEventRetentionPolicy::default().raw_payload_retention_ms);
@@ -147,6 +148,7 @@ impl AppState {
             trigger_id: trigger_id.clone(),
             automation_id: automation_id.clone(),
             tenant_context: input.trigger.tenant_context,
+            enterprise_scope,
             provider: input.trigger.provider,
             provider_event_kind: input.trigger.provider_event_kind,
             provider_event_id: input.provider_event_id,
@@ -224,6 +226,7 @@ impl AppState {
         record.duplicate_of_run_id = delivery.duplicate_of_run_id.clone();
         record.woken_run_id = delivery.woken_run_id.clone();
         record.woken_wait_id = delivery.woken_wait_id.clone();
+        record.enterprise_scope = delivery.enterprise_scope.clone();
         record.feedback_loop = delivery.feedback_loop.clone();
         record.correlation = Some(automation_webhook_delivery_correlation(
             delivery,

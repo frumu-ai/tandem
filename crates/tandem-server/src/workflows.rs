@@ -148,6 +148,7 @@ pub(crate) fn compile_workflow_spec_to_automation_preview(
         metadata.insert("workflow_source".to_string(), json!(workflow.source));
         metadata.insert("workflow_enabled".to_string(), json!(workflow.enabled));
     }
+    automation.stamp_enterprise_scope_metadata();
     automation
 }
 
@@ -193,13 +194,18 @@ fn compile_workflow_run_automation(
     );
     automation.automation_id = automation_id.clone();
     automation.name = title;
-    automation.metadata = Some(json!({
-        "workflow_id": workflow_id,
-        "binding_id": binding_id,
-        "workflow_source": source,
-        "trigger_event": trigger_event,
-        "origin": "workflow_runtime_mirror",
-    }));
+    let mut metadata = automation
+        .metadata
+        .take()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    metadata.insert("workflow_id".to_string(), json!(workflow_id));
+    metadata.insert("binding_id".to_string(), json!(binding_id));
+    metadata.insert("workflow_source".to_string(), json!(source));
+    metadata.insert("trigger_event".to_string(), json!(trigger_event));
+    metadata.insert("origin".to_string(), json!("workflow_runtime_mirror"));
+    automation.metadata = Some(Value::Object(metadata));
+    automation.stamp_enterprise_scope_metadata();
     automation
 }
 
@@ -761,6 +767,10 @@ async fn execute_actions(
         trigger_event.as_deref(),
     );
     automation.set_tenant_context(&tenant_context);
+    automation.stamp_enterprise_scope_metadata();
+    let enterprise_scope = automation
+        .enterprise_scope()
+        .and_then(|scope| serde_json::to_value(scope).ok());
     let automation = state.put_automation_v2(automation).await?;
     let automation_run = state
         .create_automation_v2_run(&automation, trigger_event.as_deref().unwrap_or("workflow"))
@@ -777,6 +787,7 @@ async fn execute_actions(
         trigger_event: trigger_event.clone(),
         source_event_id: source_event_id.clone(),
         task_id: task_id.clone(),
+        enterprise_scope,
         status: if dry_run {
             WorkflowRunStatus::DryRun
         } else {

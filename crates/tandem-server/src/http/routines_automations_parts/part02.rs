@@ -1126,6 +1126,7 @@ pub(super) async fn automations_v2_create(
         handoff_config: input.handoff_config,
     };
     automation.set_tenant_context(&tenant_context);
+    automation.stamp_enterprise_scope_metadata();
     validate_shared_context_pack_bindings(
         &state,
         automation.workspace_root.as_deref(),
@@ -1287,6 +1288,7 @@ pub(super) async fn automations_v2_patch(
         input.capabilities,
     )?;
     automation.set_tenant_context(&tenant_context);
+    automation.stamp_enterprise_scope_metadata();
     if let Some(scope_policy) = input.scope_policy {
         automation.scope_policy = Some(scope_policy);
     }
@@ -1410,6 +1412,7 @@ pub(super) async fn automations_v2_share(
     )
     .await?;
     apply_automation_v2_share_metadata(&mut automation, input, verified)?;
+    automation.stamp_enterprise_scope_metadata();
     automation.updated_at_ms = crate::now_ms();
     let visibility = automation_v2_access_metadata(&automation)
         .and_then(|access| access.get("visibility").and_then(Value::as_str))

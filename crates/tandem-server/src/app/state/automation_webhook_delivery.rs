@@ -4,7 +4,7 @@ use uuid::Uuid;
 use crate::automation_v2::types::*;
 use crate::ExternalActionRecord;
 
-use super::AutomationWebhookVerificationDecision;
+use super::{AutomationWebhookReservedClaim, AutomationWebhookVerificationDecision};
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AutomationWebhookFeedbackLoopCandidate {
@@ -53,6 +53,88 @@ pub(crate) fn automation_webhook_delivery_matches_key(
     delivery.body_digest == body_digest
         || provider_event_id
             .is_some_and(|event_id| delivery.provider_event_id.as_ref() == Some(event_id))
+}
+
+pub(crate) fn automation_webhook_scope_denial_reason(
+    trigger: &AutomationWebhookTriggerRecord,
+    automation: &AutomationV2Spec,
+) -> Option<&'static str> {
+    let trigger_scope = trigger.enterprise_scope();
+    let automation_scope = automation.enterprise_scope()?;
+
+    match (
+        automation_scope.owning_org_unit_id.as_deref(),
+        trigger_scope
+            .as_ref()
+            .and_then(|scope| scope.owning_org_unit_id.as_deref()),
+    ) {
+        (Some(_), None) => return Some("webhook_missing_org_scope"),
+        (Some(expected), Some(actual)) if expected != actual => {
+            return Some("webhook_org_scope_mismatch")
+        }
+        _ => {}
+    }
+
+    match (
+        automation_scope.resource_scope.as_ref(),
+        trigger_scope
+            .as_ref()
+            .and_then(|scope| scope.resource_scope.as_ref()),
+    ) {
+        (Some(_), None) => Some("webhook_missing_resource_scope"),
+        (Some(automation_scope), Some(trigger_scope))
+            if !automation_scope.contains(&trigger_scope.root) =>
+        {
+            Some("webhook_resource_scope_mismatch")
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn automation_webhook_accepted_delivery(
+    delivery_id: Option<String>,
+    trigger: &AutomationWebhookTriggerRecord,
+    provider_event_id: Option<String>,
+    body_digest: String,
+    received_at_ms: u64,
+    sanitized_preview: Value,
+    verification: &AutomationWebhookVerificationDecision,
+    primary_idempotency: Option<&AutomationWebhookReservedClaim>,
+    woken_run_id: Option<String>,
+    woken_wait_id: Option<String>,
+    feedback_loop: Option<AutomationWebhookFeedbackLoopDecision>,
+) -> AutomationWebhookDeliveryRecord {
+    AutomationWebhookDeliveryRecord {
+        delivery_id: delivery_id.unwrap_or_else(new_automation_webhook_delivery_id),
+        trigger_id: trigger.trigger_id.clone(),
+        automation_id: trigger.automation_id.clone(),
+        tenant_context: trigger.tenant_context.clone(),
+        enterprise_scope: trigger.enterprise_scope(),
+        provider_event_id,
+        body_digest,
+        status: AutomationWebhookDeliveryStatus::Accepted,
+        rejection_reason_code: None,
+        idempotency_key: primary_idempotency.map(|record| record.claim.key.clone()),
+        idempotency_record_id: primary_idempotency.map(|record| record.record.record_id.clone()),
+        dedupe_result: Some(AutomationWebhookDedupeResult::Accepted),
+        dedupe_reason_code: primary_idempotency
+            .map(|record| format!("accepted_{}", record.claim.key_kind)),
+        duplicate_of_delivery_id: None,
+        duplicate_of_run_id: None,
+        verification_scheme: Some(verification.scheme.clone()),
+        verification_provider: Some(verification.provider.clone()),
+        verification_reason_code: Some(verification.reason_code.clone()),
+        queued_run_id: None,
+        woken_run_id,
+        woken_wait_id,
+        feedback_loop,
+        correlation: None,
+        received_at_ms,
+        accepted_at_ms: Some(received_at_ms),
+        rejected_at_ms: None,
+        sanitized_preview,
+        audit_event_id: None,
+    }
 }
 
 fn automation_webhook_correlation_outcome(
@@ -167,6 +249,7 @@ pub(crate) fn automation_webhook_run_metadata(
         "feedback_loop": delivery.feedback_loop,
         "correlation": delivery.correlation,
         "preview": delivery.sanitized_preview,
+        "enterprise_scope": delivery.enterprise_scope,
         "data_class": trigger.default_data_class,
         "risk_tier": trigger.default_risk_tier,
         "owner_principal": trigger.owner_principal,
@@ -198,6 +281,7 @@ pub(crate) fn automation_webhook_rejection_delivery(
         trigger_id: trigger.trigger_id.clone(),
         automation_id: trigger.automation_id.clone(),
         tenant_context: trigger.tenant_context.clone(),
+        enterprise_scope: trigger.enterprise_scope(),
         provider_event_id,
         body_digest,
         status,
