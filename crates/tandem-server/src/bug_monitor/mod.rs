@@ -2,6 +2,7 @@ pub use tandem_bug_monitor::{comment_summary, error_provenance, log_parser, type
 pub mod log_artifacts;
 pub mod log_watcher;
 pub mod router;
+pub mod safety_context;
 pub mod service;
 
 pub(crate) fn source_identity_matches_draft(

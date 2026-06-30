@@ -83,6 +83,12 @@ destination names the MCP server/tool, sets `allow_publish`, and provides an
 explicit payload mapping. Route preview reports server/tool/mapping readiness
 without executing tools, and publish attempts record destination, route, tool,
 redacted receipt, duplicate-suppression, and failure details.
+Bug Monitor/Incident Monitor incidents can now carry AI-agent safety and risk
+context without breaking existing submissions. Drafts and incidents persist
+redacted actor, model, tool, action, policy, approval state, risk category,
+blast radius, and external correlation ids; SDK models and destination payloads
+expose the context, and route preview can match risk categories for targeted
+safety routing.
 Linear duplicate handling preserves matched-issue status on repeated publishes
 and suppresses retrying an ambiguous failed Linear `create_issue` response that
 may already have created an external issue.

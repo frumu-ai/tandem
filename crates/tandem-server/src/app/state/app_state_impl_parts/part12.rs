@@ -36,6 +36,13 @@ fn merge_bug_monitor_missing_submission_values(
     changed
 }
 
+fn apply_draft_safety(
+    draft: &mut BugMonitorDraftRecord,
+    submission: &BugMonitorSubmission,
+) -> bool {
+    crate::bug_monitor::safety_context::apply_submission_safety_context_to_draft(draft, submission)
+}
+
 fn bug_monitor_submission_fingerprint(parts: &[&str]) -> String {
     use std::hash::{Hash, Hasher};
 
@@ -88,6 +95,30 @@ fn bug_monitor_submission_detail(submission: &BugMonitorSubmission) -> Option<St
     if let Some(risk_level) = submission.risk_level.as_ref() {
         detail_lines.push(format!("risk_level: {risk_level}"));
     }
+    if let Some(risk_category) = submission.risk_category.as_ref() {
+        detail_lines.push(format!("risk_category: {risk_category}"));
+    }
+    if let Some(actor) = submission.actor.as_ref() {
+        detail_lines.push(format!("actor: {actor}"));
+    }
+    if let Some(model) = submission.model.as_ref() {
+        detail_lines.push(format!("model: {model}"));
+    }
+    if let Some(tool_name) = submission.tool_name.as_ref() {
+        detail_lines.push(format!("tool_name: {tool_name}"));
+    }
+    if let Some(action) = submission.action.as_ref() {
+        detail_lines.push(format!("action: {action}"));
+    }
+    if let Some(policy) = submission.policy.as_ref() {
+        detail_lines.push(format!("policy: {policy}"));
+    }
+    if let Some(approval_state) = submission.approval_state.as_ref() {
+        detail_lines.push(format!("approval_state: {approval_state}"));
+    }
+    if let Some(blast_radius) = submission.blast_radius.as_ref() {
+        detail_lines.push(format!("blast_radius: {blast_radius}"));
+    }
     if let Some(expected_destination) = submission.expected_destination.as_ref() {
         detail_lines.push(format!("expected_destination: {expected_destination}"));
     }
@@ -111,6 +142,12 @@ fn bug_monitor_submission_detail(submission: &BugMonitorSubmission) -> Option<St
     }
     if let Some(correlation_id) = submission.correlation_id.as_ref() {
         detail_lines.push(format!("correlation_id: {correlation_id}"));
+    }
+    if !submission.external_correlation_ids.is_empty() {
+        detail_lines.push(format!(
+            "external_correlation_ids: {}",
+            submission.external_correlation_ids.join(", ")
+        ));
     }
     if let Some(detail) = submission.detail.as_ref() {
         detail_lines.push(String::new());

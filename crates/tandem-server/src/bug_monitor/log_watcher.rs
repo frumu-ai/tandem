@@ -348,6 +348,15 @@ pub async fn submit_log_candidate(
         last_seen_at_ms: Some(now),
         confidence: Some(candidate.confidence.clone()),
         risk_level: Some(candidate.risk_level.clone()),
+        actor: candidate.actor.clone(),
+        model: candidate.model.clone(),
+        tool_name: candidate.tool_name.clone(),
+        action: candidate.action.clone(),
+        policy: candidate.policy.clone(),
+        approval_state: candidate.approval_state.clone(),
+        risk_category: candidate.risk_category.clone(),
+        blast_radius: candidate.blast_radius.clone(),
+        external_correlation_ids: candidate.external_correlation_ids.clone(),
         expected_destination: Some(candidate.expected_destination.clone()),
         route_tags: candidate.route_tags.clone(),
         allowed_destination_ids: binding.allowed_destination_ids.clone(),
@@ -377,6 +386,34 @@ pub async fn submit_log_candidate(
     incident
         .source_kind
         .get_or_insert_with(|| binding.source_kind.clone());
+    if incident.actor.is_none() {
+        incident.actor = candidate.actor.clone();
+    }
+    if incident.model.is_none() {
+        incident.model = candidate.model.clone();
+    }
+    if incident.tool_name.is_none() {
+        incident.tool_name = candidate.tool_name.clone();
+    }
+    if incident.action.is_none() {
+        incident.action = candidate.action.clone();
+    }
+    if incident.policy.is_none() {
+        incident.policy = candidate.policy.clone();
+    }
+    if incident.approval_state.is_none() {
+        incident.approval_state = candidate.approval_state.clone();
+    }
+    if incident.risk_category.is_none() {
+        incident.risk_category = candidate.risk_category.clone();
+    }
+    if incident.blast_radius.is_none() {
+        incident.blast_radius = candidate.blast_radius.clone();
+    }
+    merge_string_values(
+        &mut incident.external_correlation_ids,
+        &candidate.external_correlation_ids,
+    );
     merge_string_values(&mut incident.route_tags, &candidate.route_tags);
     if incident.allowed_destination_ids.is_empty() {
         incident.allowed_destination_ids = binding.allowed_destination_ids.clone();
@@ -436,6 +473,15 @@ pub async fn submit_log_candidate(
         fingerprint: Some(candidate.fingerprint.clone()),
         confidence: Some(candidate.confidence.clone()),
         risk_level: Some(candidate.risk_level.clone()),
+        actor: candidate.actor.clone(),
+        model: candidate.model.clone(),
+        tool_name: candidate.tool_name.clone(),
+        action: candidate.action.clone(),
+        policy: candidate.policy.clone(),
+        approval_state: candidate.approval_state.clone(),
+        risk_category: candidate.risk_category.clone(),
+        blast_radius: candidate.blast_radius.clone(),
+        external_correlation_ids: candidate.external_correlation_ids.clone(),
         expected_destination: Some(candidate.expected_destination.clone()),
         route_tags: candidate.route_tags.clone(),
         allowed_destination_ids: binding.allowed_destination_ids.clone(),

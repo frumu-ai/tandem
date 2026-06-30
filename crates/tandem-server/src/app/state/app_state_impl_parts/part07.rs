@@ -82,6 +82,34 @@ pub async fn process_bug_monitor_event(
         if row.risk_level.is_none() {
             row.risk_level = submission.risk_level.clone();
         }
+        if row.actor.is_none() {
+            row.actor = submission.actor.clone();
+        }
+        if row.model.is_none() {
+            row.model = submission.model.clone();
+        }
+        if row.tool_name.is_none() {
+            row.tool_name = submission.tool_name.clone();
+        }
+        if row.action.is_none() {
+            row.action = submission.action.clone();
+        }
+        if row.policy.is_none() {
+            row.policy = submission.policy.clone();
+        }
+        if row.approval_state.is_none() {
+            row.approval_state = submission.approval_state.clone();
+        }
+        if row.risk_category.is_none() {
+            row.risk_category = submission.risk_category.clone();
+        }
+        if row.blast_radius.is_none() {
+            row.blast_radius = submission.blast_radius.clone();
+        }
+        merge_bug_monitor_missing_submission_values(
+            &mut row.external_correlation_ids,
+            &submission.external_correlation_ids,
+        );
         if row.expected_destination.is_none() {
             row.expected_destination = submission.expected_destination.clone();
         }
@@ -125,6 +153,15 @@ pub async fn process_bug_monitor_event(
             last_error: None,
             confidence: submission.confidence.clone(),
             risk_level: submission.risk_level.clone(),
+            actor: submission.actor.clone(),
+            model: submission.model.clone(),
+            tool_name: submission.tool_name.clone(),
+            action: submission.action.clone(),
+            policy: submission.policy.clone(),
+            approval_state: submission.approval_state.clone(),
+            risk_category: submission.risk_category.clone(),
+            blast_radius: submission.blast_radius.clone(),
+            external_correlation_ids: submission.external_correlation_ids.clone(),
             expected_destination: submission.expected_destination.clone(),
             evidence_refs: submission.evidence_refs.clone(),
             quality_gate: Some(quality_gate.clone()),

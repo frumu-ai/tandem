@@ -1029,6 +1029,36 @@ fn build_issue_body(
     if let Some(risk_level) = draft.risk_level.as_deref() {
         triage_signal.push(format!("risk_level: {risk_level}"));
     }
+    if let Some(risk_category) = draft.risk_category.as_deref() {
+        triage_signal.push(format!("risk_category: {risk_category}"));
+    }
+    if let Some(actor) = draft.actor.as_deref() {
+        triage_signal.push(format!("actor: {actor}"));
+    }
+    if let Some(model) = draft.model.as_deref() {
+        triage_signal.push(format!("model: {model}"));
+    }
+    if let Some(tool_name) = draft.tool_name.as_deref() {
+        triage_signal.push(format!("tool_name: {tool_name}"));
+    }
+    if let Some(action) = draft.action.as_deref() {
+        triage_signal.push(format!("action: {action}"));
+    }
+    if let Some(policy) = draft.policy.as_deref() {
+        triage_signal.push(format!("policy: {policy}"));
+    }
+    if let Some(approval_state) = draft.approval_state.as_deref() {
+        triage_signal.push(format!("approval_state: {approval_state}"));
+    }
+    if let Some(blast_radius) = draft.blast_radius.as_deref() {
+        triage_signal.push(format!("blast_radius: {blast_radius}"));
+    }
+    if !draft.external_correlation_ids.is_empty() {
+        triage_signal.push(format!(
+            "external_correlation_ids: {}",
+            draft.external_correlation_ids.join(", ")
+        ));
+    }
     if let Some(expected_destination) = draft.expected_destination.as_deref() {
         triage_signal.push(format!("expected_destination: {expected_destination}"));
     }

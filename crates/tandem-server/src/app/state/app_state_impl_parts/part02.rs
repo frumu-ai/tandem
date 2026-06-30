@@ -10,7 +10,8 @@ impl AppState {
         submission.log_source_id =
             normalize_bug_monitor_submission_optional(submission.log_source_id);
         submission.tenant_id = normalize_bug_monitor_submission_optional(submission.tenant_id);
-        submission.workspace_id = normalize_bug_monitor_submission_optional(submission.workspace_id);
+        submission.workspace_id =
+            normalize_bug_monitor_submission_optional(submission.workspace_id);
         submission.event_schema_version =
             normalize_bug_monitor_submission_optional(submission.event_schema_version);
         submission.redaction_profile =
@@ -32,6 +33,7 @@ impl AppState {
         submission.fingerprint = normalize_bug_monitor_submission_optional(submission.fingerprint);
         submission.confidence = normalize_bug_monitor_submission_optional(submission.confidence);
         submission.risk_level = normalize_bug_monitor_submission_optional(submission.risk_level);
+        crate::bug_monitor::safety_context::normalize_submission_safety_context(&mut submission);
         submission.expected_destination =
             normalize_bug_monitor_submission_optional(submission.expected_destination);
         submission.route_tags = normalize_bug_monitor_submission_vec(submission.route_tags, 50);
@@ -128,6 +130,7 @@ impl AppState {
                 existing.risk_level = submission.risk_level.clone();
                 changed = true;
             }
+            changed |= apply_draft_safety(existing, &submission);
             if existing.expected_destination.is_none() && submission.expected_destination.is_some()
             {
                 existing.expected_destination = submission.expected_destination.clone();
@@ -153,8 +156,7 @@ impl AppState {
                 existing.workspace_id = submission.workspace_id.clone();
                 changed = true;
             }
-            if existing.event_schema_version.is_none()
-                && submission.event_schema_version.is_some()
+            if existing.event_schema_version.is_none() && submission.event_schema_version.is_some()
             {
                 existing.event_schema_version = submission.event_schema_version.clone();
                 changed = true;
@@ -258,7 +260,7 @@ impl AppState {
             retention_profile: submission.retention_profile.clone(),
             evidence_refs: submission.evidence_refs.clone(),
             quality_gate: Some(quality_gate),
-            last_post_error: None,
+            ..crate::bug_monitor::safety_context::draft_defaults_from_submission(&submission)
         };
         drafts.insert(draft.draft_id.clone(), draft.clone());
         drop(drafts);

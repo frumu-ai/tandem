@@ -909,6 +909,36 @@ fn build_linear_issue_description(
     if let Some(risk_level) = draft.risk_level.as_deref() {
         lines.push(format!("risk_level: {risk_level}"));
     }
+    if let Some(risk_category) = draft.risk_category.as_deref() {
+        lines.push(format!("risk_category: {risk_category}"));
+    }
+    if let Some(actor) = draft.actor.as_deref() {
+        lines.push(format!("actor: {actor}"));
+    }
+    if let Some(model) = draft.model.as_deref() {
+        lines.push(format!("model: {model}"));
+    }
+    if let Some(tool_name) = draft.tool_name.as_deref() {
+        lines.push(format!("tool_name: {tool_name}"));
+    }
+    if let Some(action) = draft.action.as_deref() {
+        lines.push(format!("action: {action}"));
+    }
+    if let Some(policy) = draft.policy.as_deref() {
+        lines.push(format!("policy: {policy}"));
+    }
+    if let Some(approval_state) = draft.approval_state.as_deref() {
+        lines.push(format!("approval_state: {approval_state}"));
+    }
+    if let Some(blast_radius) = draft.blast_radius.as_deref() {
+        lines.push(format!("blast_radius: {blast_radius}"));
+    }
+    if !draft.external_correlation_ids.is_empty() {
+        lines.push(format!(
+            "external_correlation_ids: {}",
+            draft.external_correlation_ids.join(", ")
+        ));
+    }
     if let Some(expected_destination) = draft.expected_destination.as_deref() {
         lines.push(format!("expected_destination: {expected_destination}"));
     }
@@ -1314,6 +1344,15 @@ async fn mirror_linear_post_as_external_action(
             "evidence_digest": post.evidence_digest,
             "confidence": post.confidence,
             "risk_level": post.risk_level,
+            "risk_category": draft.risk_category,
+            "actor": draft.actor,
+            "model": draft.model,
+            "tool_name": draft.tool_name,
+            "action": draft.action,
+            "policy": draft.policy,
+            "approval_state": draft.approval_state,
+            "blast_radius": draft.blast_radius,
+            "external_correlation_ids": draft.external_correlation_ids,
             "expected_destination": post.expected_destination,
             "evidence_refs": post.evidence_refs,
             "quality_gate": post.quality_gate,
