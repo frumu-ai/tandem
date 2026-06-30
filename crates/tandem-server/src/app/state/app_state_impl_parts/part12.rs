@@ -7,31 +7,10 @@ fn normalize_bug_monitor_submission_optional(value: Option<String>) -> Option<St
         .filter(|v| !v.is_empty())
 }
 
-fn normalize_bug_monitor_safety_context_optional(value: Option<String>) -> Option<String> {
-    normalize_bug_monitor_submission_optional(value)
-        .map(|value| crate::bug_monitor::safety_context::redact_safety_context_text(&value))
-        .filter(|value| !value.is_empty())
-}
-
 fn normalize_bug_monitor_submission_vec(values: Vec<String>, limit: usize) -> Vec<String> {
     let mut out = Vec::new();
     for value in values {
         let value = value.trim().to_string();
-        if value.is_empty() || out.iter().any(|existing| existing == &value) {
-            continue;
-        }
-        out.push(value);
-        if out.len() >= limit {
-            break;
-        }
-    }
-    out
-}
-
-fn normalize_bug_monitor_safety_context_vec(values: Vec<String>, limit: usize) -> Vec<String> {
-    let mut out = Vec::new();
-    for value in values {
-        let value = crate::bug_monitor::safety_context::redact_safety_context_text(&value);
         if value.is_empty() || out.iter().any(|existing| existing == &value) {
             continue;
         }
@@ -55,6 +34,13 @@ fn merge_bug_monitor_missing_submission_values(
         }
     }
     changed
+}
+
+fn apply_draft_safety(
+    draft: &mut BugMonitorDraftRecord,
+    submission: &BugMonitorSubmission,
+) -> bool {
+    crate::bug_monitor::safety_context::apply_submission_safety_context_to_draft(draft, submission)
 }
 
 fn bug_monitor_submission_fingerprint(parts: &[&str]) -> String {

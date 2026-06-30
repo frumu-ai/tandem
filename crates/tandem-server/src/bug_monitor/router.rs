@@ -105,6 +105,7 @@ pub fn build_route_context(
             incident.and_then(|row| row.risk_level.as_deref()),
         ]),
         risk_category: first_route_value(&[
+            risk_category,
             report.and_then(|row| row.risk_category.as_deref()),
             draft.and_then(|row| row.risk_category.as_deref()),
             incident.and_then(|row| row.risk_category.as_deref()),
@@ -1256,22 +1257,18 @@ mod tests {
             default_destination_ids: vec!["legacy-github".to_string()],
             ..BugMonitorConfig::default()
         };
-        let report = BugMonitorSubmission {
-            risk_category: Some("data_exfiltration".to_string()),
-            ..BugMonitorSubmission::default()
-        };
         let context = build_route_context(
             None,
             None,
             None,
             None,
-            None,
+            Some("data_exfiltration"),
             None,
             None,
             None,
             None,
             &[],
-            Some(&report),
+            None,
             None,
             None,
         );

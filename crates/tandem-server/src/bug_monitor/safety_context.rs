@@ -2,6 +2,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 use serde_json::Value;
+use tandem_bug_monitor::{BugMonitorDraftRecord, BugMonitorIncidentRecord, BugMonitorSubmission};
 
 use crate::app::state::truncate_text;
 
@@ -16,6 +17,108 @@ pub(crate) struct ExtractedSafetyContext {
     pub risk_category: Option<String>,
     pub blast_radius: Option<String>,
     pub external_correlation_ids: Vec<String>,
+}
+
+pub(crate) fn normalize_submission_safety_context(submission: &mut BugMonitorSubmission) {
+    submission.actor = normalize_safety_context_optional(submission.actor.take());
+    submission.model = normalize_safety_context_optional(submission.model.take());
+    submission.tool_name = normalize_safety_context_optional(submission.tool_name.take());
+    submission.action = normalize_safety_context_optional(submission.action.take());
+    submission.policy = normalize_safety_context_optional(submission.policy.take());
+    submission.approval_state = normalize_safety_context_optional(submission.approval_state.take());
+    submission.risk_category = normalize_safety_context_optional(submission.risk_category.take());
+    submission.blast_radius = normalize_safety_context_optional(submission.blast_radius.take());
+    submission.external_correlation_ids =
+        normalize_safety_context_vec(std::mem::take(&mut submission.external_correlation_ids), 50);
+}
+
+pub(crate) fn apply_submission_safety_context_to_draft(
+    draft: &mut BugMonitorDraftRecord,
+    submission: &BugMonitorSubmission,
+) -> bool {
+    let mut changed = false;
+    changed |= fill_missing_option(&mut draft.actor, &submission.actor);
+    changed |= fill_missing_option(&mut draft.model, &submission.model);
+    changed |= fill_missing_option(&mut draft.tool_name, &submission.tool_name);
+    changed |= fill_missing_option(&mut draft.action, &submission.action);
+    changed |= fill_missing_option(&mut draft.policy, &submission.policy);
+    changed |= fill_missing_option(&mut draft.approval_state, &submission.approval_state);
+    changed |= fill_missing_option(&mut draft.risk_category, &submission.risk_category);
+    changed |= fill_missing_option(&mut draft.blast_radius, &submission.blast_radius);
+    changed |= merge_missing_values(
+        &mut draft.external_correlation_ids,
+        &submission.external_correlation_ids,
+    );
+    changed
+}
+
+pub(crate) fn apply_submission_safety_context_to_incident(
+    incident: &mut BugMonitorIncidentRecord,
+    submission: &BugMonitorSubmission,
+) {
+    fill_missing_option(&mut incident.actor, &submission.actor);
+    fill_missing_option(&mut incident.model, &submission.model);
+    fill_missing_option(&mut incident.tool_name, &submission.tool_name);
+    fill_missing_option(&mut incident.action, &submission.action);
+    fill_missing_option(&mut incident.policy, &submission.policy);
+    fill_missing_option(&mut incident.approval_state, &submission.approval_state);
+    fill_missing_option(&mut incident.risk_category, &submission.risk_category);
+    fill_missing_option(&mut incident.blast_radius, &submission.blast_radius);
+    merge_missing_values(
+        &mut incident.external_correlation_ids,
+        &submission.external_correlation_ids,
+    );
+}
+
+pub(crate) fn draft_defaults_from_submission(
+    submission: &BugMonitorSubmission,
+) -> BugMonitorDraftRecord {
+    BugMonitorDraftRecord {
+        actor: submission.actor.clone(),
+        model: submission.model.clone(),
+        tool_name: submission.tool_name.clone(),
+        action: submission.action.clone(),
+        policy: submission.policy.clone(),
+        approval_state: submission.approval_state.clone(),
+        risk_category: submission.risk_category.clone(),
+        blast_radius: submission.blast_radius.clone(),
+        external_correlation_ids: submission.external_correlation_ids.clone(),
+        ..BugMonitorDraftRecord::default()
+    }
+}
+
+pub(crate) fn incident_defaults_from_submission(
+    submission: &BugMonitorSubmission,
+) -> BugMonitorIncidentRecord {
+    BugMonitorIncidentRecord {
+        actor: submission.actor.clone(),
+        model: submission.model.clone(),
+        tool_name: submission.tool_name.clone(),
+        action: submission.action.clone(),
+        policy: submission.policy.clone(),
+        approval_state: submission.approval_state.clone(),
+        risk_category: submission.risk_category.clone(),
+        blast_radius: submission.blast_radius.clone(),
+        external_correlation_ids: submission.external_correlation_ids.clone(),
+        ..BugMonitorIncidentRecord::default()
+    }
+}
+
+pub(crate) fn submission_defaults_from_extracted(
+    context: &ExtractedSafetyContext,
+) -> BugMonitorSubmission {
+    BugMonitorSubmission {
+        actor: context.actor.clone(),
+        model: context.model.clone(),
+        tool_name: context.tool_name.clone(),
+        action: context.action.clone(),
+        policy: context.policy.clone(),
+        approval_state: context.approval_state.clone(),
+        risk_category: context.risk_category.clone(),
+        blast_radius: context.blast_radius.clone(),
+        external_correlation_ids: context.external_correlation_ids.clone(),
+        ..BugMonitorSubmission::default()
+    }
 }
 
 pub(crate) fn redact_safety_context_text(value: &str) -> String {
@@ -37,10 +140,53 @@ pub(crate) fn redact_safety_context_text(value: &str) -> String {
             .expect("valid bug monitor bearer redaction regex")
     });
 
-    let out = key_value.replace_all(trimmed, |caps: &regex::Captures<'_>| {
-        format!("{}=[redacted]", &caps[1])
-    });
-    bearer.replace_all(&out, "Bearer [redacted]").to_string()
+    let out = bearer.replace_all(trimmed, "Bearer [redacted]");
+    key_value
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            format!("{}=[redacted]", &caps[1])
+        })
+        .to_string()
+}
+
+fn normalize_safety_context_optional(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| redact_safety_context_text(&value))
+        .filter(|value| !value.is_empty())
+}
+
+fn normalize_safety_context_vec(values: Vec<String>, limit: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for value in values {
+        let value = redact_safety_context_text(&value);
+        if value.is_empty() || out.iter().any(|existing| existing == &value) {
+            continue;
+        }
+        out.push(value);
+        if out.len() >= limit {
+            break;
+        }
+    }
+    out
+}
+
+fn fill_missing_option(target: &mut Option<String>, source: &Option<String>) -> bool {
+    if target.is_none() && source.is_some() {
+        *target = source.clone();
+        true
+    } else {
+        false
+    }
+}
+
+fn merge_missing_values(existing: &mut Vec<String>, incoming: &[String]) -> bool {
+    let mut changed = false;
+    for value in incoming {
+        if !existing.iter().any(|row| row == value) {
+            existing.push(value.clone());
+            changed = true;
+        }
+    }
+    changed
 }
 
 pub(crate) fn extract_from_event_properties(properties: &Value) -> ExtractedSafetyContext {
@@ -263,4 +409,17 @@ fn strings_from_value(value: Option<&Value>, max_items: usize) -> Vec<String> {
     };
     rows.truncate(max_items);
     rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_safety_context_text;
+
+    #[test]
+    fn redacts_authorization_bearer_token_suffix() {
+        let redacted = redact_safety_context_text("Authorization: Bearer SECRET_TOKEN_123");
+
+        assert!(!redacted.contains("SECRET_TOKEN_123"));
+        assert!(redacted.contains("[redacted]"));
+    }
 }

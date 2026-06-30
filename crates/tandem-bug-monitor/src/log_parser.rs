@@ -499,11 +499,7 @@ fn first_json_string_list(
 }
 
 fn truncate_redacted_text(value: &str, max_len: usize) -> String {
-    if value.len() <= max_len {
-        value.to_string()
-    } else {
-        format!("{}...", &value[..max_len])
-    }
+    crate::truncate_text(value, max_len)
 }
 
 fn detect_level(text: &str) -> Option<String> {
@@ -694,6 +690,31 @@ mod tests {
             candidate.external_correlation_ids,
             vec!["case-123".to_string(), "token=[redacted]".to_string()]
         );
+    }
+
+    #[test]
+    fn json_safety_context_truncates_multibyte_values_safely() {
+        let line = serde_json::json!({
+            "level": "error",
+            "message": "blocked egress",
+            "actor_id": "界".repeat(80),
+        })
+        .to_string();
+        let parsed = parse_log_candidates(
+            &project(),
+            &source(BugMonitorLogFormat::Json),
+            Path::new("/tmp/customer-api/logs/app.log"),
+            Some("1".to_string()),
+            10,
+            &[line.as_bytes(), b"\n"].concat(),
+            None,
+            None,
+        );
+
+        assert_eq!(parsed.candidates.len(), 1);
+        let actor = parsed.candidates[0].actor.as_deref().unwrap_or_default();
+        assert!(actor.ends_with("...<truncated>"));
+        assert!(actor.is_char_boundary(actor.len()));
     }
 
     #[test]

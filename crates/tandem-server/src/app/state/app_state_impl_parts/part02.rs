@@ -10,7 +10,8 @@ impl AppState {
         submission.log_source_id =
             normalize_bug_monitor_submission_optional(submission.log_source_id);
         submission.tenant_id = normalize_bug_monitor_submission_optional(submission.tenant_id);
-        submission.workspace_id = normalize_bug_monitor_submission_optional(submission.workspace_id);
+        submission.workspace_id =
+            normalize_bug_monitor_submission_optional(submission.workspace_id);
         submission.event_schema_version =
             normalize_bug_monitor_submission_optional(submission.event_schema_version);
         submission.redaction_profile =
@@ -32,17 +33,7 @@ impl AppState {
         submission.fingerprint = normalize_bug_monitor_submission_optional(submission.fingerprint);
         submission.confidence = normalize_bug_monitor_submission_optional(submission.confidence);
         submission.risk_level = normalize_bug_monitor_submission_optional(submission.risk_level);
-        submission.actor = normalize_bug_monitor_safety_context_optional(submission.actor);
-        submission.model = normalize_bug_monitor_safety_context_optional(submission.model);
-        submission.tool_name = normalize_bug_monitor_safety_context_optional(submission.tool_name);
-        submission.action = normalize_bug_monitor_safety_context_optional(submission.action);
-        submission.policy = normalize_bug_monitor_safety_context_optional(submission.policy);
-        submission.approval_state =
-            normalize_bug_monitor_safety_context_optional(submission.approval_state);
-        submission.risk_category =
-            normalize_bug_monitor_safety_context_optional(submission.risk_category);
-        submission.blast_radius =
-            normalize_bug_monitor_safety_context_optional(submission.blast_radius);
+        crate::bug_monitor::safety_context::normalize_submission_safety_context(&mut submission);
         submission.expected_destination =
             normalize_bug_monitor_submission_optional(submission.expected_destination);
         submission.route_tags = normalize_bug_monitor_submission_vec(submission.route_tags, 50);
@@ -50,8 +41,6 @@ impl AppState {
             normalize_bug_monitor_submission_vec(submission.allowed_destination_ids, 50);
         submission.default_destination_ids =
             normalize_bug_monitor_submission_vec(submission.default_destination_ids, 50);
-        submission.external_correlation_ids =
-            normalize_bug_monitor_safety_context_vec(submission.external_correlation_ids, 50);
         submission.excerpt = submission
             .excerpt
             .into_iter()
@@ -141,38 +130,7 @@ impl AppState {
                 existing.risk_level = submission.risk_level.clone();
                 changed = true;
             }
-            if existing.actor.is_none() && submission.actor.is_some() {
-                existing.actor = submission.actor.clone();
-                changed = true;
-            }
-            if existing.model.is_none() && submission.model.is_some() {
-                existing.model = submission.model.clone();
-                changed = true;
-            }
-            if existing.tool_name.is_none() && submission.tool_name.is_some() {
-                existing.tool_name = submission.tool_name.clone();
-                changed = true;
-            }
-            if existing.action.is_none() && submission.action.is_some() {
-                existing.action = submission.action.clone();
-                changed = true;
-            }
-            if existing.policy.is_none() && submission.policy.is_some() {
-                existing.policy = submission.policy.clone();
-                changed = true;
-            }
-            if existing.approval_state.is_none() && submission.approval_state.is_some() {
-                existing.approval_state = submission.approval_state.clone();
-                changed = true;
-            }
-            if existing.risk_category.is_none() && submission.risk_category.is_some() {
-                existing.risk_category = submission.risk_category.clone();
-                changed = true;
-            }
-            if existing.blast_radius.is_none() && submission.blast_radius.is_some() {
-                existing.blast_radius = submission.blast_radius.clone();
-                changed = true;
-            }
+            changed |= apply_draft_safety(existing, &submission);
             if existing.expected_destination.is_none() && submission.expected_destination.is_some()
             {
                 existing.expected_destination = submission.expected_destination.clone();
@@ -198,8 +156,7 @@ impl AppState {
                 existing.workspace_id = submission.workspace_id.clone();
                 changed = true;
             }
-            if existing.event_schema_version.is_none()
-                && submission.event_schema_version.is_some()
+            if existing.event_schema_version.is_none() && submission.event_schema_version.is_some()
             {
                 existing.event_schema_version = submission.event_schema_version.clone();
                 changed = true;
@@ -221,10 +178,6 @@ impl AppState {
             changed |= merge_bug_monitor_missing_submission_values(
                 &mut existing.route_tags,
                 &submission.route_tags,
-            );
-            changed |= merge_bug_monitor_missing_submission_values(
-                &mut existing.external_correlation_ids,
-                &submission.external_correlation_ids,
             );
             if existing.allowed_destination_ids.is_empty()
                 && !submission.allowed_destination_ids.is_empty()
@@ -295,15 +248,6 @@ impl AppState {
             evidence_digest: None,
             confidence: submission.confidence.clone(),
             risk_level: submission.risk_level.clone(),
-            actor: submission.actor.clone(),
-            model: submission.model.clone(),
-            tool_name: submission.tool_name.clone(),
-            action: submission.action.clone(),
-            policy: submission.policy.clone(),
-            approval_state: submission.approval_state.clone(),
-            risk_category: submission.risk_category.clone(),
-            blast_radius: submission.blast_radius.clone(),
-            external_correlation_ids: submission.external_correlation_ids.clone(),
             expected_destination: submission.expected_destination.clone(),
             route_tags: submission.route_tags.clone(),
             allowed_destination_ids: submission.allowed_destination_ids.clone(),
@@ -316,7 +260,7 @@ impl AppState {
             retention_profile: submission.retention_profile.clone(),
             evidence_refs: submission.evidence_refs.clone(),
             quality_gate: Some(quality_gate),
-            last_post_error: None,
+            ..crate::bug_monitor::safety_context::draft_defaults_from_submission(&submission)
         };
         drafts.insert(draft.draft_id.clone(), draft.clone());
         drop(drafts);
