@@ -289,6 +289,12 @@ async def test_bug_monitor_destination_router_sdk_helpers() -> None:
                     "name": "GitHub",
                     "kind": "github_issue",
                     "enabled": True,
+                },
+                {
+                    "destination_id": "linear-primary",
+                    "name": "Linear",
+                    "kind": "linear_issue",
+                    "enabled": True,
                 }
             ],
             "routes": [
@@ -296,6 +302,12 @@ async def test_bug_monitor_destination_router_sdk_helpers() -> None:
                     "route_id": "default",
                     "name": "Default",
                     "destination_ids": ["legacy-github"],
+                },
+                {
+                    "route_id": "high-risk",
+                    "name": "High risk",
+                    "destination_ids": ["linear-primary"],
+                    "match_risk_levels": ["high"],
                 }
             ],
             "default_destination_ids": ["legacy-github"],
@@ -348,6 +360,12 @@ async def test_bug_monitor_destination_router_sdk_helpers() -> None:
     )
     upsert_route_payload = json.loads(patch_config_route.calls[1].request.content.decode("utf-8"))
     assert upsert_route_payload["bug_monitor"]["routes"][1]["route_id"] == "high-risk"
+    remove_destination_payload = json.loads(
+        patch_config_route.calls[2].request.content.decode("utf-8")
+    )
+    remove_routes = remove_destination_payload["bug_monitor"]["routes"]
+    assert [route["route_id"] for route in remove_routes] == ["default"]
+    assert remove_routes[0]["destination_ids"] == ["legacy-github"]
     publish_payload = json.loads(publish_route.calls[0].request.content.decode("utf-8"))
     assert publish_payload == {
         "reason": "ship it",

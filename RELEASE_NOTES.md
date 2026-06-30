@@ -96,6 +96,9 @@ destination readiness badges, filter post receipts by destination, and use
 TypeScript/Python SDK helpers for destination and route CRUD plus
 destination-targeted draft publishing. Legacy GitHub Bug Monitor setup remains
 compatible when no explicit router destination is configured.
+The SDK destination removal helpers now also drop routes that would otherwise
+be left with no explicit destinations, preventing accidental fallback to the
+default destination set.
 Linear duplicate handling preserves matched-issue status on repeated publishes
 and suppresses retrying an ambiguous failed Linear `create_issue` response that
 may already have created an external issue.

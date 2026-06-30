@@ -483,17 +483,20 @@ class _BugMonitor:
                 for row in config.get("default_destination_ids", [])
                 if row != normalized_destination_id
             ]
-            config["routes"] = [
-                {
-                    **row,
-                    "destination_ids": [
-                        route_destination_id
-                        for route_destination_id in row.get("destination_ids", [])
-                        if route_destination_id != normalized_destination_id
-                    ],
-                }
-                for row in config.get("routes", [])
-            ]
+            routes = []
+            for row in config.get("routes", []):
+                destination_ids = row.get("destination_ids")
+                if not isinstance(destination_ids, list) or len(destination_ids) == 0:
+                    routes.append(row)
+                    continue
+                next_destination_ids = [
+                    route_destination_id
+                    for route_destination_id in destination_ids
+                    if route_destination_id != normalized_destination_id
+                ]
+                if next_destination_ids:
+                    routes.append({**row, "destination_ids": next_destination_ids})
+            config["routes"] = routes
             return config
 
         return await self._update_config(mutate)

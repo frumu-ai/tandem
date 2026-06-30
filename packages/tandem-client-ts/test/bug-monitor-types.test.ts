@@ -299,12 +299,24 @@ describe("Bug Monitor external project public types", () => {
             kind: "github_issue",
             enabled: true,
           },
+          {
+            destination_id: "linear-primary",
+            name: "Linear",
+            kind: "linear_issue",
+            enabled: true,
+          },
         ],
         routes: [
           {
             route_id: "default",
             name: "Default",
             destination_ids: ["legacy-github"],
+          },
+          {
+            route_id: "high-risk",
+            name: "High risk",
+            destination_ids: ["linear-primary"],
+            match_risk_levels: ["high"],
           },
         ],
         default_destination_ids: ["legacy-github"],
@@ -364,6 +376,16 @@ describe("Bug Monitor external project public types", () => {
       const removePayload = JSON.parse(calls[6]?.body || "{}").bug_monitor;
       expect(removePayload.destinations).not.toContainEqual(linearDestination);
       expect(removePayload.default_destination_ids).toEqual(["legacy-github"]);
+      expect(removePayload.routes).toContainEqual({
+        route_id: "default",
+        name: "Default",
+        destination_ids: ["legacy-github"],
+      });
+      expect(removePayload.routes).not.toContainEqual(highRiskRoute);
+      expect(removePayload.routes).not.toContainEqual({
+        ...highRiskRoute,
+        destination_ids: [],
+      });
       expect(calls[7]).toMatchObject({
         url: "http://localhost:39731/bug-monitor/drafts/draft-1/publish",
         method: "POST",

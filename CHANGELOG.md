@@ -119,6 +119,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Signed webhook destination validation now classifies parsed IPv4/IPv6 URL
   literals before DNS lookup so IPv4-mapped private IPv6 hosts fail closed
   consistently across platforms.
+- TypeScript and Python Incident Monitor SDK helpers now remove routes that
+  would otherwise be left with no explicit destinations after deleting a
+  destination, preventing accidental fallback to default destinations.
 
 ## [0.6.4] - 2026-06-28
 

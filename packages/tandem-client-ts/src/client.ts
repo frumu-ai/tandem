@@ -789,12 +789,15 @@ class BugMonitor {
       default_destination_ids: (config.default_destination_ids ?? []).filter(
         (id) => id !== normalizedDestinationId
       ),
-      routes: (config.routes ?? []).map((route) => ({
-        ...route,
-        destination_ids: (route.destination_ids ?? []).filter(
+      routes: (config.routes ?? []).flatMap((route) => {
+        if (!Array.isArray(route.destination_ids) || route.destination_ids.length === 0) {
+          return [route];
+        }
+        const destinationIds = route.destination_ids.filter(
           (id) => id !== normalizedDestinationId
-        ),
-      })),
+        );
+        return destinationIds.length > 0 ? [{ ...route, destination_ids: destinationIds }] : [];
+      }),
     }));
   }
 
