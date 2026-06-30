@@ -74,8 +74,11 @@ import type {
   WorkflowRunListResponse,
   WorkflowHookRecord,
   WorkflowHookListResponse,
+  BugMonitorConfigRow,
   BugMonitorConfigResponse,
   BugMonitorStatusResponse,
+  BugMonitorDestinationConfig,
+  BugMonitorRouteConfig,
   BugMonitorIncidentRecord,
   BugMonitorIncidentListResponse,
   BugMonitorDraftRecord,
@@ -749,6 +752,79 @@ class BugMonitor {
     });
   }
 
+  private async updateConfig(
+    mutate: (config: BugMonitorConfigRow) => BugMonitorConfigRow
+  ): Promise<BugMonitorConfigResponse> {
+    const current = await this.getConfig();
+    const next = mutate({ ...(current.bug_monitor ?? {}) });
+    return this.patchConfig(next as JsonObject);
+  }
+
+  async listDestinations(): Promise<BugMonitorDestinationConfig[]> {
+    const current = await this.getConfig();
+    return current.bug_monitor.destinations ?? [];
+  }
+
+  async upsertDestination(
+    destination: BugMonitorDestinationConfig
+  ): Promise<BugMonitorConfigResponse> {
+    const destinationId = String(destination.destination_id || "").trim();
+    if (!destinationId) throw new Error("destination.destination_id is required");
+    return this.updateConfig((config) => {
+      const destinations = (config.destinations ?? []).filter(
+        (row) => String(row.destination_id || "").trim() !== destinationId
+      );
+      return { ...config, destinations: [...destinations, destination] };
+    });
+  }
+
+  async removeDestination(destinationId: string): Promise<BugMonitorConfigResponse> {
+    const normalizedDestinationId = String(destinationId || "").trim();
+    if (!normalizedDestinationId) throw new Error("destinationId is required");
+    return this.updateConfig((config) => ({
+      ...config,
+      destinations: (config.destinations ?? []).filter(
+        (row) => String(row.destination_id || "").trim() !== normalizedDestinationId
+      ),
+      default_destination_ids: (config.default_destination_ids ?? []).filter(
+        (id) => id !== normalizedDestinationId
+      ),
+      routes: (config.routes ?? []).map((route) => ({
+        ...route,
+        destination_ids: (route.destination_ids ?? []).filter(
+          (id) => id !== normalizedDestinationId
+        ),
+      })),
+    }));
+  }
+
+  async listRoutes(): Promise<BugMonitorRouteConfig[]> {
+    const current = await this.getConfig();
+    return current.bug_monitor.routes ?? [];
+  }
+
+  async upsertRoute(route: BugMonitorRouteConfig): Promise<BugMonitorConfigResponse> {
+    const routeId = String(route.route_id || "").trim();
+    if (!routeId) throw new Error("route.route_id is required");
+    return this.updateConfig((config) => {
+      const routes = (config.routes ?? []).filter(
+        (row) => String(row.route_id || "").trim() !== routeId
+      );
+      return { ...config, routes: [...routes, route] };
+    });
+  }
+
+  async removeRoute(routeId: string): Promise<BugMonitorConfigResponse> {
+    const normalizedRouteId = String(routeId || "").trim();
+    if (!normalizedRouteId) throw new Error("routeId is required");
+    return this.updateConfig((config) => ({
+      ...config,
+      routes: (config.routes ?? []).filter(
+        (row) => String(row.route_id || "").trim() !== normalizedRouteId
+      ),
+    }));
+  }
+
   async getStatus(): Promise<BugMonitorStatusResponse> {
     return this.req<BugMonitorStatusResponse>("/bug-monitor/status");
   }
@@ -964,6 +1040,17 @@ class BugMonitor {
     return this.req<JsonObject>(`/bug-monitor/drafts/${encodeURIComponent(id)}/publish`, {
       method: "POST",
       body: JSON.stringify(payload ?? {}),
+    });
+  }
+
+  async publishDraftToDestinations(
+    id: string,
+    destinationIds: string[],
+    payload?: JsonObject
+  ): Promise<JsonObject> {
+    return this.publishDraft(id, {
+      ...(payload ?? {}),
+      destination_ids: destinationIds,
     });
   }
 

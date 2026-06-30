@@ -79,6 +79,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   metadata, policy and approval state, risk category, blast radius, external
   correlation ids, SDK exposure, destination payload support, and route-preview
   matching by risk category.
+- Added an Incident Monitor setup surface in Settings for sources,
+  destinations, routing, safety defaults, route preview, destination readiness,
+  destination-filtered posts, and SDK destination/route helpers.
 
 ### Changed
 
@@ -95,6 +98,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   creating runs, treats same provider event IDs with different payloads as
   conflicts, and treats same body digests as duplicates without crossing tenant
   boundaries.
+- Control Panel settings now label the Bug Monitor router setup as Incident
+  Monitor while keeping the legacy Bug Monitor operational page and GitHub
+  compatibility path intact.
 
 ### Fixed
 

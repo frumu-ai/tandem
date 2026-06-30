@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { TandemClient } from "../src/client.js";
 import type {
   BugMonitorConfigResponse,
+  BugMonitorDestinationConfig,
   BugMonitorIntakeKeyCreateInput,
   BugMonitorIntakeKeyCreateResponse,
   BugMonitorIntakeKeyDisableResponse,
@@ -9,6 +10,7 @@ import type {
   BugMonitorLogSourceReplayResponse,
   BugMonitorLogSourceResetResponse,
   BugMonitorPostRecord,
+  BugMonitorRouteConfig,
   BugMonitorRoutePreviewResponse,
   BugMonitorStatusResponse,
 } from "../src/public/index.js";
@@ -278,6 +280,100 @@ describe("Bug Monitor external project public types", () => {
         url: "http://localhost:39731/bug-monitor/posts?limit=25&destination_id=legacy-github",
         method: "GET",
       });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("mutates destination router config through convenience helpers", async () => {
+    const client = new TandemClient({ baseUrl: "http://localhost:39731", token: "test-token" });
+    const originalFetch = globalThis.fetch;
+    const calls: Array<{ url: string; method: string; body?: string }> = [];
+    const baseConfig: BugMonitorConfigResponse = {
+      bug_monitor: {
+        enabled: true,
+        destinations: [
+          {
+            destination_id: "legacy-github",
+            name: "GitHub",
+            kind: "github_issue",
+            enabled: true,
+          },
+        ],
+        routes: [
+          {
+            route_id: "default",
+            name: "Default",
+            destination_ids: ["legacy-github"],
+          },
+        ],
+        default_destination_ids: ["legacy-github"],
+      },
+    };
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input);
+      const method = String(init?.method ?? "GET");
+      const body = typeof init?.body === "string" ? init.body : undefined;
+      calls.push({ url, method, body });
+      if (url.endsWith("/bug-monitor/drafts/draft-1/publish")) {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(body || JSON.stringify(baseConfig), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const linearDestination: BugMonitorDestinationConfig = {
+      destination_id: "linear-primary",
+      name: "Linear",
+      kind: "linear_issue",
+      enabled: true,
+    };
+    const highRiskRoute: BugMonitorRouteConfig = {
+      route_id: "high-risk",
+      name: "High risk",
+      destination_ids: ["linear-primary"],
+      match_risk_levels: ["high"],
+    };
+
+    try {
+      await client.bugMonitor.listDestinations();
+      await client.bugMonitor.upsertDestination(linearDestination);
+      await client.bugMonitor.upsertRoute(highRiskRoute);
+      await client.bugMonitor.removeDestination("linear-primary");
+      await client.bugMonitor.publishDraftToDestinations("draft-1", ["legacy-github"], {
+        reason: "ship it",
+      });
+
+      expect(calls[0]).toMatchObject({
+        url: "http://localhost:39731/config/bug-monitor",
+        method: "GET",
+      });
+      expect(calls[2]).toMatchObject({
+        url: "http://localhost:39731/config/bug-monitor",
+        method: "PATCH",
+      });
+      expect(JSON.parse(calls[2]?.body || "{}").bug_monitor.destinations).toContainEqual(
+        linearDestination
+      );
+      expect(JSON.parse(calls[4]?.body || "{}").bug_monitor.routes).toContainEqual(highRiskRoute);
+      const removePayload = JSON.parse(calls[6]?.body || "{}").bug_monitor;
+      expect(removePayload.destinations).not.toContainEqual(linearDestination);
+      expect(removePayload.default_destination_ids).toEqual(["legacy-github"]);
+      expect(calls[7]).toMatchObject({
+        url: "http://localhost:39731/bug-monitor/drafts/draft-1/publish",
+        method: "POST",
+      });
+      expect(calls[7]?.body).toBe(
+        JSON.stringify({
+          reason: "ship it",
+          destination_ids: ["legacy-github"],
+        })
+      );
     } finally {
       globalThis.fetch = originalFetch;
     }

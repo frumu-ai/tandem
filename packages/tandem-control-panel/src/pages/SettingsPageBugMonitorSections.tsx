@@ -10,6 +10,30 @@ type SettingsPageBugMonitorSectionsProps = {
   controller: SettingsPageControllerState;
 };
 
+function recordText(record: Record<string, any> | undefined, keys: string[], fallback = "") {
+  if (!record) return fallback;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+    if (typeof value === "boolean") return value ? "true" : "false";
+  }
+  return fallback;
+}
+
+function recordArrayText(record: Record<string, any> | undefined, key: string) {
+  const value = record?.[key];
+  return Array.isArray(value) ? value.map((item) => String(item)).join(", ") : "";
+}
+
+function formatJson(value: unknown) {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
 export function SettingsPageBugMonitorSections({
   controller,
 }: SettingsPageBugMonitorSectionsProps) {
@@ -18,6 +42,10 @@ export function SettingsPageBugMonitorSections({
     bugMonitorAutoComment,
     bugMonitorAutoCreateIssues,
     bugMonitorCreatedIntakeKey,
+    bugMonitorDefaultDestinationsText,
+    bugMonitorDestinationReadiness,
+    bugMonitorDestinations,
+    bugMonitorDestinationsJson,
     bugMonitorDisablingIntakeKeyId,
     bugMonitorDraftDecisionMutation,
     bugMonitorDrafts,
@@ -47,6 +75,14 @@ export function SettingsPageBugMonitorSections({
     bugMonitorRepo,
     bugMonitorRequireApproval,
     bugMonitorResettingSourceKey,
+    bugMonitorRoutePreviewError,
+    bugMonitorRoutePreviewJson,
+    bugMonitorRoutePreviewMutation,
+    bugMonitorRoutePreviewResult,
+    bugMonitorRoutes,
+    bugMonitorRoutesJson,
+    bugMonitorRoutingConfigError,
+    bugMonitorSafetyDefaultsJson,
     bugMonitorStatus,
     bugMonitorStatusQuery,
     bugMonitorSuggestedWorkspaceRoot,
@@ -69,6 +105,8 @@ export function SettingsPageBugMonitorSections({
     setBugMonitorAutoComment,
     setBugMonitorAutoCreateIssues,
     setBugMonitorCreatedIntakeKey,
+    setBugMonitorDefaultDestinationsText,
+    setBugMonitorDestinationsJson,
     setBugMonitorEnabled,
     setBugMonitorMcpServer,
     setBugMonitorModelId,
@@ -78,6 +116,11 @@ export function SettingsPageBugMonitorSections({
     setBugMonitorProviderPreference,
     setBugMonitorRepo,
     setBugMonitorRequireApproval,
+    setBugMonitorRoutePreviewError,
+    setBugMonitorRoutePreviewJson,
+    setBugMonitorRoutesJson,
+    setBugMonitorRoutingConfigError,
+    setBugMonitorSafetyDefaultsJson,
     setBugMonitorWorkspaceBrowserDir,
     setBugMonitorWorkspaceBrowserOpen,
     setBugMonitorWorkspaceBrowserSearch,
@@ -93,12 +136,33 @@ export function SettingsPageBugMonitorSections({
   const safeBugMonitorIncidents = Array.isArray(bugMonitorIncidents) ? bugMonitorIncidents : [];
   const safeBugMonitorDrafts = Array.isArray(bugMonitorDrafts) ? bugMonitorDrafts : [];
   const safeBugMonitorPosts = Array.isArray(bugMonitorPosts) ? bugMonitorPosts : [];
+  const safeBugMonitorDestinations = Array.isArray(bugMonitorDestinations)
+    ? bugMonitorDestinations
+    : [];
+  const safeBugMonitorRoutes = Array.isArray(bugMonitorRoutes) ? bugMonitorRoutes : [];
+  const safeBugMonitorDestinationReadiness = Array.isArray(bugMonitorDestinationReadiness)
+    ? bugMonitorDestinationReadiness
+    : [];
+  const readinessByDestination = new Map(
+    safeBugMonitorDestinationReadiness.map((row) => [
+      String(row.destination_id || row.destinationId || ""),
+      row,
+    ])
+  );
+  const routePreviewEffectiveDestinations = Array.isArray(
+    bugMonitorRoutePreviewResult?.effective_destination_ids
+  )
+    ? bugMonitorRoutePreviewResult.effective_destination_ids
+    : [];
+  const routePreviewBlockedReasons = Array.isArray(bugMonitorRoutePreviewResult?.blocked_reasons)
+    ? bugMonitorRoutePreviewResult.blocked_reasons
+    : [];
 
   return (
     <>
       {activeSection === "bug_monitor" ? (
         <PanelCard
-          title="Bug monitor"
+          title="Incident Monitor"
           actions={
             <div className="flex flex-wrap items-center justify-end gap-2">
               <Badge
@@ -140,7 +204,7 @@ export function SettingsPageBugMonitorSections({
                     bugMonitorDraftsQuery.refetch(),
                     bugMonitorIncidentsQuery.refetch(),
                     bugMonitorPostsQuery.refetch(),
-                  ]).then(() => toast("ok", "Bug Monitor status refreshed."))
+                  ]).then(() => toast("ok", "Incident Monitor status refreshed."))
                 }
               >
                 <i data-lucide="refresh-cw"></i>
@@ -455,12 +519,234 @@ export function SettingsPageBugMonitorSections({
               </div>
             </div>
 
+            <div className="grid gap-3 md:grid-cols-4">
+              {[
+                ["Sources", `${bugMonitorMonitoredProjects.length} monitored project(s)`],
+                ["Destinations", `${safeBugMonitorDestinations.length} configured`],
+                ["Routing", `${safeBugMonitorRoutes.length} route(s)`],
+                [
+                  "Safety Defaults",
+                  bugMonitorRequireApproval ? "Approval gate active" : "Policy inherits route",
+                ],
+              ].map(([label, value]) => (
+                <div key={label} className="tcp-list-item">
+                  <div className="text-xs uppercase tracking-[0.24em] tcp-subtle">{label}</div>
+                  <div className="mt-1 text-sm font-medium">{value}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="grid gap-3 xl:grid-cols-2">
+              <div className="tcp-list-item">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-medium">Destinations</div>
+                    <div className="tcp-subtle text-xs">
+                      GitHub remains the legacy destination when no router override is configured.
+                    </div>
+                  </div>
+                  <Badge tone={safeBugMonitorDestinations.length ? "info" : "ghost"}>
+                    {safeBugMonitorDestinations.length}
+                  </Badge>
+                </div>
+                <textarea
+                  className="tcp-input mt-3 min-h-48 font-mono text-xs leading-5"
+                  value={bugMonitorDestinationsJson}
+                  onInput={(event) => {
+                    setBugMonitorDestinationsJson((event.target as HTMLTextAreaElement).value);
+                    setBugMonitorRoutingConfigError("");
+                  }}
+                  spellCheck={false}
+                />
+                <div className="mt-3 grid gap-2">
+                  {safeBugMonitorDestinations.length ? (
+                    safeBugMonitorDestinations.map((destination, index) => {
+                      const destinationId = recordText(destination, ["destination_id", "id"]);
+                      const readiness = readinessByDestination.get(destinationId);
+                      const ready =
+                        readiness?.ready === true || readiness?.publish_ready === true;
+                      return (
+                        <div
+                          key={destinationId || `destination-${index}`}
+                          className="rounded-lg border border-slate-700/70 p-2"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="break-all text-sm font-medium">
+                              {recordText(destination, ["name"], destinationId || "Destination")}
+                            </span>
+                            <Badge tone={ready ? "ok" : "warn"}>
+                              {ready ? "Ready" : "Needs setup"}
+                            </Badge>
+                          </div>
+                          <div className="tcp-subtle mt-1 text-xs">
+                            {[
+                              destinationId || "missing id",
+                              recordText(destination, ["kind"], "unknown kind"),
+                              readiness?.detail || "",
+                            ]
+                              .filter(Boolean)
+                              .join(" | ")}
+                          </div>
+                          {Array.isArray(readiness?.missing) && readiness.missing.length ? (
+                            <div className="tcp-subtle mt-1 text-xs">
+                              Missing: {readiness.missing.join(", ")}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="tcp-subtle text-xs">
+                      No explicit destinations saved; legacy GitHub settings are still honored.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="tcp-list-item">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-medium">Routing</div>
+                    <div className="tcp-subtle text-xs">
+                      Routes match source, risk, tags, tenant/workspace, and expected destination.
+                    </div>
+                  </div>
+                  <Badge tone={safeBugMonitorRoutes.length ? "info" : "ghost"}>
+                    {safeBugMonitorRoutes.length}
+                  </Badge>
+                </div>
+                <label className="mt-3 grid gap-2">
+                  <span className="text-xs uppercase tracking-[0.24em] tcp-subtle">
+                    Default destinations
+                  </span>
+                  <input
+                    className="tcp-input"
+                    value={bugMonitorDefaultDestinationsText}
+                    onInput={(event) =>
+                      setBugMonitorDefaultDestinationsText(
+                        (event.target as HTMLInputElement).value
+                      )
+                    }
+                    placeholder="legacy-github, linear-triage"
+                  />
+                </label>
+                <textarea
+                  className="tcp-input mt-3 min-h-48 font-mono text-xs leading-5"
+                  value={bugMonitorRoutesJson}
+                  onInput={(event) => {
+                    setBugMonitorRoutesJson((event.target as HTMLTextAreaElement).value);
+                    setBugMonitorRoutingConfigError("");
+                  }}
+                  spellCheck={false}
+                />
+                {safeBugMonitorRoutes.length ? (
+                  <div className="mt-3 grid gap-2">
+                    {safeBugMonitorRoutes.map((route, index) => (
+                      <div
+                        key={recordText(route, ["route_id", "id"], `route-${index}`)}
+                        className="rounded-lg border border-slate-700/70 p-2"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="break-all text-sm font-medium">
+                            {recordText(route, ["name"], recordText(route, ["route_id"], "Route"))}
+                          </span>
+                          <Badge tone={route.enabled === false ? "ghost" : "ok"}>
+                            {route.enabled === false ? "Disabled" : "Enabled"}
+                          </Badge>
+                        </div>
+                        <div className="tcp-subtle mt-1 text-xs">
+                          destinations: {recordArrayText(route, "destination_ids") || "default"}
+                        </div>
+                        <div className="tcp-subtle mt-1 text-xs">
+                          tags: {recordArrayText(route, "match_route_tags") || "any"}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="tcp-list-item">
+                <div className="text-sm font-medium">Route Preview</div>
+                <textarea
+                  className="tcp-input mt-3 min-h-36 font-mono text-xs leading-5"
+                  value={bugMonitorRoutePreviewJson}
+                  onInput={(event) => {
+                    setBugMonitorRoutePreviewJson((event.target as HTMLTextAreaElement).value);
+                    setBugMonitorRoutePreviewError("");
+                  }}
+                  spellCheck={false}
+                />
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    className="tcp-btn h-8 px-3 text-xs"
+                    disabled={bugMonitorRoutePreviewMutation.isPending}
+                    onClick={() => bugMonitorRoutePreviewMutation.mutate()}
+                  >
+                    <i data-lucide="route"></i>
+                    Preview
+                  </button>
+                  {routePreviewEffectiveDestinations.map((destinationId: string) => (
+                    <Badge key={destinationId} tone="info">
+                      {destinationId}
+                    </Badge>
+                  ))}
+                  {bugMonitorRoutePreviewResult ? (
+                    <Badge tone={bugMonitorRoutePreviewResult.blocked ? "warn" : "ok"}>
+                      {bugMonitorRoutePreviewResult.blocked ? "Blocked" : "Allowed"}
+                    </Badge>
+                  ) : null}
+                </div>
+                {routePreviewBlockedReasons.length ? (
+                  <div className="tcp-subtle mt-2 text-xs">
+                    Blocked: {routePreviewBlockedReasons.join(", ")}
+                  </div>
+                ) : null}
+                {bugMonitorRoutePreviewError ? (
+                  <div className="mt-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">
+                    {bugMonitorRoutePreviewError}
+                  </div>
+                ) : null}
+                {bugMonitorRoutePreviewResult ? (
+                  <pre className="tcp-code mt-3 max-h-52 overflow-auto whitespace-pre-wrap break-words text-xs">
+                    {formatJson(bugMonitorRoutePreviewResult)}
+                  </pre>
+                ) : null}
+              </div>
+
+              <div className="tcp-list-item">
+                <div className="text-sm font-medium">Safety Defaults</div>
+                <div className="tcp-subtle text-xs">
+                  High-risk approval, redaction, unready destination blocking, and retention.
+                </div>
+                <textarea
+                  className="tcp-input mt-3 min-h-36 font-mono text-xs leading-5"
+                  value={bugMonitorSafetyDefaultsJson}
+                  onInput={(event) => {
+                    setBugMonitorSafetyDefaultsJson((event.target as HTMLTextAreaElement).value);
+                    setBugMonitorRoutingConfigError("");
+                  }}
+                  spellCheck={false}
+                />
+                <div className="tcp-subtle mt-2 text-xs">
+                  Scoped intake keys can submit reports only for their configured project and never
+                  mutate destinations, routes, or published issues.
+                </div>
+                {bugMonitorRoutingConfigError ? (
+                  <div className="mt-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">
+                    {bugMonitorRoutingConfigError}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
             <div className="flex flex-wrap gap-2">
               <button
                 className="tcp-btn-primary"
                 disabled={saveBugMonitorMutation.isPending}
-                title="Save Bug Monitor settings"
-                aria-label="Save Bug Monitor settings"
+                title="Save Incident Monitor settings"
+                aria-label="Save Incident Monitor settings"
                 onClick={() => saveBugMonitorMutation.mutate()}
               >
                 <i data-lucide="save"></i>

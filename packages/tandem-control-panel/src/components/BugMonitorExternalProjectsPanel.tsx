@@ -586,7 +586,8 @@ export function BugMonitorExternalProjectsPanel({
           <div>
             <div className="font-medium">Scoped intake keys</div>
             <div className="tcp-subtle text-xs">
-              Create project-limited keys for CI or external reporters. Raw keys are shown once.
+              Create report-only project keys for CI or external reporters. They cannot mutate
+              routes, destinations, or published issues; raw keys are shown once.
             </div>
           </div>
           <Badge tone={intakeKeys.length ? "info" : "warn"}>{intakeKeys.length} keys</Badge>
