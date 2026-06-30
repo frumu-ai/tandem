@@ -22,24 +22,52 @@
   <a href="https://tandem.ac/agents?utm_source=github&utm_medium=readme&utm_campaign=hosted_waitlist&utm_content=top_banner">加入等待名单</a>
 </p>
 
-<h1 align="center">面向 AI-first 公司的受治理运行时</h1>
+<h1 align="center">面向 AI agents 的策略执行运行时</h1>
 
-Tandem 是一个 source-available 的 AI 工作治理运行时。它为独立开发者、创业团队和平台团队提供可部署的权限层：控制 agent 能看到什么、能发现哪些工具、能执行哪些动作、什么时候必须由人审批，以及哪些证据会被保留下来。
+**Tandem 是面向 AI agents 的运行时和控制平面。** 它位于 agents 与它们使用的工具、数据、记忆、工作流和动作之间。
 
-模型不是访问控制边界。Tandem 在模型之下执行权限控制：通过作用域化执行、租户感知状态、权限化记忆、审批门和审计轨迹来约束 agent。Agent 在被投影的权限范围内工作；运行时拥有状态、工具、审批、记忆、产物和证据。
+Agents 可以推理、起草并提出工作。Tandem 决定它们被允许看到什么、可以调用哪些工具、哪些动作必须暂停等待审批，以及哪些证据会被记录下来。
 
-Tandem 不是另一个聊天壳，也不只是一个 agent framework。它是 agent 从“回答问题”走向“代表公司执行工作”时，位于 agent 之下的执行运行时。
+当 agents 触达真实公司系统时，Tandem 就很有用：文件、代码仓库、邮件、MCP tools、客户数据、内部文档、生产工作流和长期自动化。
 
-- **入口只是客户端，不是独立引擎：** Tauri 桌面端、TUI、Web 控制面板、渠道和 SDK 都连接同一个 engine runtime。
-- **运行时拥有权限：** runs、sessions、memory、context、provider secrets、MCP tools、approvals、artifacts 和 audit records 都位于模型之下。
+**模型提出请求。运行时执行控制。**
+
+## Tandem 做什么
+
+- 用持久化状态运行 AI 工作流，而不是只依赖聊天记录。
+- 按工作流步骤限定可见的内置工具和 MCP connectors。
+- 在执行前阻止超出运行时策略的工具调用。
+- 对重要动作暂停并要求人工审批。
+- 控制一次 run 可以检索哪些公司记忆和上下文。
+- 在模型上下文窗口之外记录 artifacts、tool events、approval decisions 和 audit evidence。
+
+## 简单例子
+
+某个 agent 可以被允许起草客户邮件，但不能直接发送。
+
+Tandem 可以暴露 draft tool，隐藏或阻止 send tool，在审批门暂停，只有在人类批准后才继续，并把这次决策记录到 audit trail。
+
+## Tandem 不是什么
+
+| 不是这个                 | 而是这个                                                              |
+| ------------------------ | --------------------------------------------------------------------- |
+| Chatbot wrapper          | 位于 agents 和 workflows 之下的运行时                                 |
+| 只是 agent framework     | 控制 tool policy、execution state、approvals 和 audit 的控制平面      |
+| 只是 LLM gateway         | 治理 workflow state、tools、memory、approvals、artifacts 和 events    |
+| 平面 RAG 系统            | Runtime-scoped memory 和 source-bound retrieval                       |
+| Prompt-only safety layer | 在模型之外执行控制                                                    |
+
+Tandem 把这称为 **runtime authority**：在模型之下执行的授权、执行控制、审批、记忆范围和审计。桌面端、TUI、Web 控制面板、渠道和 SDK 等入口都是同一个 engine runtime 的客户端。
+
+- **运行时拥有控制权：** runs、sessions、memory、context、provider secrets、MCP tools、approvals、artifacts 和 audit records 都位于模型之下。
 - **受治理的工具执行：** 内置工具和 MCP connectors 可以按工作流步骤设定作用域，并为关键动作设置审批门。
 - **租户感知运行时：** Hosted 和 enterprise 模式会把 tenant/principal context 带入 sessions、runs、context runs、memory、provider credentials、MCP secrets 和 events。
 - **部署在数据所在之处：** Tandem 可以本地运行、无头运行、托管运行，也可以部署到客户自己的基础设施中。
 - **模型提供商无绑定：** 支持 OpenRouter、Anthropic、OpenAI、OpenCode Zen 或本地 Ollama endpoint。
 
-`Intent -> Authority Projection -> Scoped Execution -> Approval Gates -> Artifacts -> Audit Trail`
+`Agent intent -> Runtime policy -> Scoped tool/data access -> Approval gates -> Artifacts -> Audit trail`
 
-**-> [AI runtime infrastructure](docs/AI_RUNTIME_INFRASTRUCTURE.md) | [Enterprise readiness](docs/ENTERPRISE_READINESS.md) | [EU AI Act readiness](docs/EU_AI_ACT_COMPLIANCE.md) | [Compliance starter pack](docs/compliance/README.md) | [通过 MCP 连接 agent](https://tandem.ac/docs-mcp)**
+**-> [AI runtime infrastructure](docs/AI_RUNTIME_INFRASTRUCTURE.md) | [Enterprise readiness](docs/ENTERPRISE_READINESS.md) | [Runtime trust boundaries](docs/RUNTIME_TRUST_BOUNDARIES.md) | [EU AI Act readiness](docs/EU_AI_ACT_COMPLIANCE.md) | [Compliance starter pack](docs/compliance/README.md) | [通过 MCP 连接 agent](https://tandem.ac/docs-mcp)**
 
 ## 为什么需要 Tandem
 

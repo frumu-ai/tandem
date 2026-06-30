@@ -21,22 +21,50 @@
   <a href="https://tandem.ac/agents?utm_source=github&utm_medium=readme&utm_campaign=hosted_waitlist&utm_content=top_banner">Join the waitlist</a>
 </p>
 
-<h1 align="center">The governed runtime for AI-first companies</h1>
+<h1 align="center">Policy-enforced runtime for AI agents</h1>
 
-Tandem is the authority layer for AI-first work. It is a source-available governed runtime that gives solo builders, startups, and platform teams a deployable authority layer controlling what agents can see, which tools they can discover, which actions they can execute, when humans must approve, and what evidence survives.
+**Tandem is a runtime and control plane for AI agents.** It sits between agents and the tools, data, memory, workflows, and actions they use.
 
-The model is not the access-control perimeter. Tandem enforces authority below the model through scoped execution, tenant-aware state, permissioned memory, approval gates, and audit trails. Agents work inside projected authority; the runtime owns state, tools, approvals, memory, artifacts, and evidence.
+Agents can reason, draft, and propose work. Tandem decides what they are authorized to see, which tools they can call, which actions must pause for approval, and what evidence gets recorded.
 
-Tandem is not another chat wrapper, and it is not just an agent framework. It is the execution runtime underneath agents as they move from answering questions to acting on company systems.
+That makes Tandem useful when agents touch real company systems: files, repositories, email, MCP tools, customer data, internal docs, production workflows, and long-running automations.
 
-- **Entrypoints are clients, not separate engines:** The Tauri desktop app, TUI, web control panel, channels, and SDKs all talk to the same engine runtime.
-- **Runtime-owned authority:** Runs, sessions, memory, context, provider secrets, MCP tools, approvals, artifacts, and audit records live below the model.
+**The model proposes. The runtime enforces.**
+
+## What Tandem Does
+
+- Runs AI workflows with durable state instead of transcript-only execution.
+- Scopes which built-in tools and MCP connectors are visible at each workflow step.
+- Blocks tool calls that fall outside runtime policy before execution.
+- Pauses consequential actions for human approval.
+- Controls which company memory and context a run can retrieve.
+- Records artifacts, tool events, approval decisions, and audit evidence outside the model context window.
+
+## Simple Example
+
+An agent may be allowed to draft a customer email, but not send it.
+
+Tandem can expose the draft tool, hide or block the send tool, pause at an approval gate, resume only after a human approves, and record the decision in the audit trail.
+
+## What Tandem Is Not
+
+| Not this                 | Instead                                                                 |
+| ------------------------ | ----------------------------------------------------------------------- |
+| Chatbot wrapper          | Runtime underneath agents and workflows                                 |
+| Agent framework only     | Control plane for tool policy, execution state, approvals, and audit    |
+| LLM gateway only         | Governs workflow state, tools, memory, approvals, artifacts, and events |
+| Flat RAG system          | Runtime-scoped memory and source-bound retrieval                        |
+| Prompt-only safety layer | Enforcement happens outside the model                                   |
+
+Tandem calls this **runtime authority**: authorization, execution control, approval, memory scope, and audit enforced below the model. Entrypoints such as the desktop app, TUI, web control panel, channels, and SDKs are clients of the same engine runtime.
+
+- **Runtime-owned controls:** Runs, sessions, memory, context, provider secrets, MCP tools, approvals, artifacts, and audit records live below the model.
 - **Governed tool execution:** Built-in tools and MCP connectors can be scoped per workflow step, with approval gates for consequential actions.
 - **Tenant-aware runtime:** Hosted and enterprise modes carry tenant/principal context through sessions, runs, context runs, memory, provider credentials, MCP secrets, and events.
 - **Deployable where the data lives:** Tandem can run locally, headlessly, hosted, or inside customer infrastructure.
 - **Provider agnostic:** Use OpenRouter, Anthropic, OpenAI, OpenCode Zen, or local Ollama endpoints.
 
-`Intent -> Authority Projection -> Scoped Execution -> Approval Gates -> Artifacts -> Audit Trail`
+`Agent intent -> Runtime policy -> Scoped tool/data access -> Approval gates -> Artifacts -> Audit trail`
 
 **-> [AI runtime infrastructure](docs/AI_RUNTIME_INFRASTRUCTURE.md) | [Enterprise readiness](docs/ENTERPRISE_READINESS.md) | [Runtime trust boundaries](docs/RUNTIME_TRUST_BOUNDARIES.md) | [EU AI Act readiness](docs/EU_AI_ACT_COMPLIANCE.md) | [Compliance starter pack](docs/compliance/README.md) | [Connect an agent via MCP](https://tandem.ac/docs-mcp)**
 
