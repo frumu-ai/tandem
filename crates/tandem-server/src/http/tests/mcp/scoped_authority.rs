@@ -84,6 +84,88 @@ async fn mcp_phase_tool_authority_allows_same_scope_and_records_policy() {
 }
 
 #[tokio::test]
+async fn mcp_bridge_derives_phase_authority_from_dispatch_context() {
+    let state = test_state().await;
+    let (endpoint, server) = spawn_fake_notion_oauth_mcp_server().await;
+    state
+        .mcp
+        .add_or_update("notion".to_string(), endpoint, HashMap::new(), true)
+        .await;
+    let tenant =
+        tandem_types::TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "alice");
+    state
+        .mcp
+        .set_bearer_token_for_tenant("notion", "alice-union-token", &tenant)
+        .await
+        .expect("store tenant token");
+    state
+        .mcp
+        .refresh_for_tenant("notion", &tenant)
+        .await
+        .expect("refresh tenant tools");
+    assert_eq!(
+        crate::http::mcp::sync_mcp_tools_for_server_for_tenant(&state, "notion", &tenant).await,
+        1
+    );
+    let verified = verified_mcp_execute_context(
+        &tenant,
+        tandem_types::PrincipalRef::human_user("alice").with_tenant_actor_id("alice"),
+        "assertion-dispatch-phase-tool",
+    );
+    let context = tandem_tools::ToolDispatchContext::for_tenant("test", tenant.clone())
+        .with_source(
+            tandem_tools::ToolDispatchSource::new("engine_loop")
+                .session("session-dispatch")
+                .message("message-dispatch")
+                .run("run-dispatch")
+                .node("node-dispatch"),
+        )
+        .with_scope_allowlist(vec!["mcp.notion.alice_search".to_string()])
+        .with_verified_tenant_context(verified);
+
+    let result = state
+        .tool_dispatcher
+        .dispatch(
+            "mcp.notion.alice_search",
+            json!({
+                "query": "roadmap",
+                "__phase_tool_authority": {
+                    "allowed_tools": ["mcp.notion.spoofed"]
+                }
+            }),
+            context,
+        )
+        .await
+        .expect("dispatcher-injected phase authority should allow matching MCP tool");
+
+    assert_eq!(
+        result
+            .metadata
+            .pointer("/phaseToolAuthorityPreflight/runId")
+            .and_then(Value::as_str),
+        Some("run-dispatch")
+    );
+    let decisions = state
+        .list_policy_decisions_for_run(&tenant, "run-dispatch", 50)
+        .await;
+    let decision = decisions
+        .iter()
+        .find(|decision| {
+            decision.policy_id.as_deref() == Some("workflow_phase_tool_authority")
+                && decision.reason_code == "phase_tool_allowed"
+        })
+        .expect("phase tool decision from dispatch context");
+    assert_eq!(
+        decision
+            .metadata
+            .pointer("/phase_tool_authority/allowed_tools/0")
+            .and_then(Value::as_str),
+        Some("mcp.notion.alice_search")
+    );
+    drop(server);
+}
+
+#[tokio::test]
 async fn mcp_phase_tool_authority_denies_wrong_phase_tool_with_audit() {
     let state = test_state().await;
     let tenant =

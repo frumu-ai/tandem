@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tandem_types::{
     SharedToolProgressSink, TenantContext, ToolResult, ToolSchema, VerifiedTenantContext,
 };
@@ -369,10 +369,17 @@ impl GovernedToolDispatcher {
         if let Value::Object(object) = &mut args {
             object.remove("__strict_tenant_context");
             object.remove("__verified_tenant_context");
+            object.remove("__phase_tool_authority");
+            object.remove("__phaseToolAuthority");
+            object.remove("__workflow_phase");
+            object.remove("__workflowPhase");
             if let Some(verified) = context.verified_tenant_context.as_ref() {
                 object
                     .entry("__verified_tenant_context")
                     .or_insert_with(|| serde_json::to_value(verified).unwrap_or(Value::Null));
+            }
+            if let Some(authority) = phase_tool_authority_from_dispatch_context(&context) {
+                object.insert("__phase_tool_authority".to_string(), authority);
             }
         }
 
@@ -466,6 +473,27 @@ fn tenant_mismatch_reason(
         return Some("verified actor does not match dispatch actor".to_string());
     }
     None
+}
+
+fn phase_tool_authority_from_dispatch_context(context: &ToolDispatchContext) -> Option<Value> {
+    if context.scope_allowlist.is_empty()
+        && context.source.session_id.is_none()
+        && context.source.message_id.is_none()
+        && context.source.run_id.is_none()
+        && context.source.node_id.is_none()
+    {
+        return None;
+    }
+
+    Some(json!({
+        "allowed_tools": context.scope_allowlist,
+        "session_id": context.source.session_id,
+        "message_id": context.source.message_id,
+        "run_id": context.source.run_id,
+        "node_id": context.source.node_id,
+        "policy_id": "workflow_phase_tool_authority",
+        "source": "tool_dispatch_context",
+    }))
 }
 
 fn scope_allows_tool(patterns: &[String], tool_name: &str) -> bool {
@@ -613,6 +641,54 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].status, ToolDispatchStatus::Succeeded);
         assert_eq!(events[0].policy_decision_id.as_deref(), Some("approval-1"));
+    }
+
+    #[tokio::test]
+    async fn dispatcher_injects_trusted_phase_tool_authority() {
+        let dispatcher = dispatcher_with_echo().await;
+        let context = ToolDispatchContext::local("test")
+            .with_source(
+                ToolDispatchSource::new("engine_loop")
+                    .session("session-phase")
+                    .message("message-phase")
+                    .run("run-phase")
+                    .node("node-phase"),
+            )
+            .with_scope_allowlist(vec!["mcp.notion.alice_search".to_string()]);
+
+        let result = dispatcher
+            .dispatch(
+                "echo_test",
+                json!({
+                    "value": 1,
+                    "__phase_tool_authority": {
+                        "allowed_tools": ["mcp.notion.spoofed"]
+                    }
+                }),
+                context,
+            )
+            .await
+            .expect("tool should run with trusted dispatch authority");
+        let payload: Value = serde_json::from_str(&result.output).expect("echoed json");
+
+        assert_eq!(
+            payload
+                .pointer("/__phase_tool_authority/allowed_tools/0")
+                .and_then(Value::as_str),
+            Some("mcp.notion.alice_search")
+        );
+        assert_eq!(
+            payload
+                .pointer("/__phase_tool_authority/run_id")
+                .and_then(Value::as_str),
+            Some("run-phase")
+        );
+        assert_eq!(
+            payload
+                .pointer("/__phase_tool_authority/source")
+                .and_then(Value::as_str),
+            Some("tool_dispatch_context")
+        );
     }
 
     #[tokio::test]
