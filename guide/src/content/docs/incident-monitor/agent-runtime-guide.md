@@ -61,7 +61,14 @@ Compact TypeScript flow:
 
 ```typescript
 const status = await client.incidentMonitor.getStatus();
-if (status.status?.readiness?.enabled === false) {
+const readiness = status.status?.readiness ?? {};
+if (
+  status.status?.config?.enabled === false ||
+  readiness.config_valid === false ||
+  readiness.ingest_ready === false ||
+  readiness.runtime_ready === false ||
+  readiness.route_preview_ready === false
+) {
   throw new Error("Incident Monitor is not ready");
 }
 
@@ -93,7 +100,15 @@ Compact Python flow:
 
 ```python
 status = await client.incident_monitor.get_status()
-if status.status and status.status.readiness and status.status.readiness.enabled is False:
+status_row = status.status
+readiness = status_row.readiness or {}
+if (
+    status_row.config
+    and status_row.config.enabled is False
+) or any(
+    readiness.get(key) is False
+    for key in ("config_valid", "ingest_ready", "runtime_ready", "route_preview_ready")
+):
     raise RuntimeError("Incident Monitor is not ready")
 
 preview = await client.incident_monitor.preview_route({
@@ -105,12 +120,14 @@ if preview.blocked_reasons:
     raise RuntimeError(f"Route blocked: {', '.join(preview.blocked_reasons)}")
 
 await client.incident_monitor.report({
-    "title": "Agent run failed during Linear sync",
-    "detail": "The workflow could not resolve the Linear MCP capability.",
-    "source": "automation_v2",
-    "event": "automation_v2.run.failed",
-    "level": "error",
-    "route_tags": ["runtime-failure"],
+    "report": {
+        "title": "Agent run failed during Linear sync",
+        "detail": "The workflow could not resolve the Linear MCP capability.",
+        "source": "automation_v2",
+        "event": "automation_v2.run.failed",
+        "level": "error",
+        "route_tags": ["runtime-failure"],
+    },
 })
 
 drafts = await client.incident_monitor.list_drafts(limit=10)
