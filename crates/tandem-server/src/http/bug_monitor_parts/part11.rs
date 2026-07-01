@@ -26,7 +26,7 @@ pub(super) async fn run_bug_monitor_security_assessment_probes(
     headers: HeaderMap,
     Json(input): Json<BugMonitorAssessmentProbeRunInput>,
 ) -> Response {
-    if bug_monitor_intake_key_from_headers(&headers).is_some() {
+    if bug_monitor_assessment_has_scoped_intake_key_header(&headers) {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({
@@ -222,6 +222,14 @@ pub(super) async fn run_bug_monitor_security_assessment_probes(
         "sensitive_values": persisted_payload["authority_inventory"]["sensitive_values"],
     }))
     .into_response()
+}
+
+fn bug_monitor_assessment_has_scoped_intake_key_header(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-tandem-bug-monitor-intake-key")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
 }
 
 fn bug_monitor_assessment_probe_posture_rule(

@@ -131,6 +131,37 @@ async fn bug_monitor_assessment_probes_reject_scoped_intake_key_and_report_scope
 
 #[tokio::test]
 #[serial_test::serial(bug_monitor_http)]
+async fn bug_monitor_assessment_probes_accept_bearer_admin_token() {
+    let state = test_state().await;
+    state.set_api_token(Some("tk_admin".to_string())).await;
+    let app = app_router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bug-monitor/security/assessment-probes")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer tk_admin")
+                .body(Body::from(
+                    json!({"probes": ["destination_readiness_fail_closed"]}).to_string(),
+                ))
+                .expect("assessment bearer admin request"),
+        )
+        .await
+        .expect("assessment bearer admin response");
+    let status = resp.status();
+    let body = to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("assessment bearer admin body");
+
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let payload: Value = serde_json::from_slice(&body).expect("assessment bearer admin json");
+    assert_eq!(payload["scope"]["dry_run"], json!(true));
+}
+
+#[tokio::test]
+#[serial_test::serial(bug_monitor_http)]
 async fn bug_monitor_assessment_probes_detect_destination_readiness_and_webhook_policy() {
     let state = test_state().await;
     state.set_api_token(Some("tk_admin".to_string())).await;
