@@ -81,8 +81,8 @@ Before using Incident Monitor for production governance:
 
 ## Related
 
-- [Incident Monitor Agent Runtime Guide](./agent-runtime-guide/)
-- [Incident Monitor Security Posture Mode](./security-posture/)
-- [Incident Monitor Setup Checklist](./setup-checklist/)
-- [Incident Monitor Reference](../reference/incident-monitor/)
-- [Governance Reference](../reference/governance/)
+- [Incident Monitor Agent Runtime Guide](../agent-runtime-guide/)
+- [Incident Monitor Security Posture Mode](../security-posture/)
+- [Incident Monitor Setup Checklist](../setup-checklist/)
+- [Incident Monitor Reference](../../reference/incident-monitor/)
+- [Governance Reference](../../reference/governance/)

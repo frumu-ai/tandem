@@ -29,7 +29,7 @@ The important shift is that Tandem separates the monitored source from the publi
 - Use route preview before publishing when destination choice matters.
 - Treat source identity, route tags, allowed destinations, tenant/workspace context, approval policy, and readiness as part of the incident state.
 - Do not use scoped intake credentials for publish, route management, destination setup, tool calls, or file inspection.
-- Start with [Agent Runtime Guide](./agent-runtime-guide/) when an MCP-connected agent needs to use Incident Monitor safely.
+- Start with [Agent Runtime Guide](../agent-runtime-guide/) when an MCP-connected agent needs to use Incident Monitor safely.
 
 ## Implemented now vs deployment policy
 
@@ -63,11 +63,11 @@ Deployment-specific policy still matters:
 
 ## Related
 
-- [Destination Router](./destination-router/)
-- [Agent Runtime Guide](./agent-runtime-guide/)
-- [Production Governance](./production-governance/)
-- [External Sources](./external-sources/)
-- [Destinations](./destinations/)
-- [Security Posture Mode](./security-posture/)
-- [Setup Checklist](./setup-checklist/)
-- [Incident Monitor External Log Intake](../incident-monitor-external-log-intake/)
+- [Destination Router](../destination-router/)
+- [Agent Runtime Guide](../agent-runtime-guide/)
+- [Production Governance](../production-governance/)
+- [External Sources](../external-sources/)
+- [Destinations](../destinations/)
+- [Security Posture Mode](../security-posture/)
+- [Setup Checklist](../setup-checklist/)
+- [Incident Monitor External Log Intake](../../incident-monitor-external-log-intake/)

@@ -48,4 +48,4 @@ Use this checklist when setting up Incident Monitor intake, destination routing,
 2. Fill owner, accountable team, intended purpose, data classification, approval protocol, escalation protocol, and review cadence metadata.
 3. Confirm reports, receipts, and protected audit evidence have a customer-owned retention/export policy before production use.
 4. Map posture findings to customer policy and assign owners before enabling high-risk external destinations.
-5. Use [Production Governance](./production-governance/) for the full operating-model checklist.
+5. Use [Production Governance](../production-governance/) for the full operating-model checklist.

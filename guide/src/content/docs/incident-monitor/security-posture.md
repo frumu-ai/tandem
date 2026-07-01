@@ -137,7 +137,7 @@ Security posture mode should be packaged as an enterprise governance capability,
 
 The package boundary should track governance value: who can see authority, who can assess it, who can approve controlled checks, and where reports can be exported.
 
-For production rollout, pair this page with [Production Governance](./production-governance/). That page maps authority inventory, posture checks, probes, assessment reports, deployment cards, receipts, and protected audit evidence to the operator-owned policy decisions needed before external publish routes are trusted.
+For production rollout, pair this page with [Production Governance](../production-governance/). That page maps authority inventory, posture checks, probes, assessment reports, deployment cards, receipts, and protected audit evidence to the operator-owned policy decisions needed before external publish routes are trusted.
 
 ## Comparison
 
@@ -160,6 +160,6 @@ Do not state that Tandem self-monitoring proves Tandem is safe. State that Tande
 
 ## Related
 
-- [Production Governance](./production-governance/)
-- [Agent Runtime Guide](./agent-runtime-guide/)
-- [Setup Checklist](./setup-checklist/)
+- [Production Governance](../production-governance/)
+- [Agent Runtime Guide](../agent-runtime-guide/)
+- [Setup Checklist](../setup-checklist/)
