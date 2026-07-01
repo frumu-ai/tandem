@@ -26,7 +26,7 @@ function fixtureModel() {
       {
         taxonomy_id: "team",
         unit_id: "ap",
-        parent_unit_id: "finance",
+        parent_unit_id: "department/finance",
         display_name: "Accounts Payable",
         kind: "team",
         state: "active",
@@ -43,7 +43,7 @@ function fixtureModel() {
     accessGrants: [
       {
         grant_id: "grant-allow",
-        unit: { kind: "org_unit", id: "finance" },
+        unit: { kind: "org_unit", id: "department/finance" },
         resource: financeResource,
         effect: "allow",
         permissions: ["read", "execute"],
@@ -52,7 +52,7 @@ function fixtureModel() {
       },
       {
         grant_id: "grant-deny",
-        unit: { kind: "org_unit", id: "finance" },
+        unit: { kind: "org_unit", id: "department/finance" },
         resource: { ...financeResource, resource_id: "repo-secret" },
         effect: "deny",
         permissions: ["read"],
@@ -136,6 +136,41 @@ test("enterprise scope explorer builds a selectable org tree", () => {
   assert.equal(model.orgTree.flat[1].label, "Accounts Payable");
   assert.equal(model.orgTree.flat[1].depth, 1);
   assert.ok(model.scopes.find((scope) => scope.id === "org:department/finance"));
+});
+
+test("enterprise scope explorer keeps duplicate unit ids separate by taxonomy", () => {
+  const model = buildEnterpriseScopeExplorerModel({
+    orgUnits: [
+      {
+        taxonomy_id: "department",
+        unit_id: "clinical",
+        display_name: "Clinical Department",
+      },
+      {
+        taxonomy_id: "role_domain",
+        unit_id: "clinical",
+        display_name: "Clinical Role Domain",
+      },
+      {
+        taxonomy_id: "department",
+        unit_id: "triage",
+        parent_unit_id: "clinical",
+        display_name: "Triage",
+      },
+      {
+        taxonomy_id: "role_domain",
+        unit_id: "reviewer",
+        parent_unit_id: "clinical",
+        display_name: "Reviewer",
+      },
+    ],
+  });
+
+  assert.equal(model.orgTree.flat.length, 4);
+  assert.ok(model.orgTree.flat.find((node) => node.qualifiedUnitId === "department/clinical"));
+  assert.ok(model.orgTree.flat.find((node) => node.qualifiedUnitId === "role_domain/clinical"));
+  assert.equal(model.orgTree.flat.find((node) => node.qualifiedUnitId === "department/triage").depth, 1);
+  assert.equal(model.orgTree.flat.find((node) => node.qualifiedUnitId === "role_domain/reviewer").depth, 1);
 });
 
 test("enterprise scope explorer renders ordered policy layers with conflicts", () => {

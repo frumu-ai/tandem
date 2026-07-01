@@ -110,7 +110,7 @@ function runTitle(row = {}) {
 
 function selectedMatchesRun(scope, row) {
   if (!scope) return false;
-  if (scope.kind === "org_unit") return runOrgUnitId(row) === scope.orgUnitId;
+  if (scope.kind === "org_unit") return selectedMatchesOrgUnit(scope, runOrgUnitId(row));
   if (scope.resourceKey) return runResourceKey(row) === scope.resourceKey;
   return false;
 }
@@ -123,15 +123,22 @@ function selectedMatchesResource(scope, resource = {}) {
 
 function selectedMatchesOrgUnit(scope, unitId) {
   if (!scope || !unitId) return false;
-  return scope.kind === "org_unit" && scope.orgUnitId === unitId;
+  return (
+    scope.kind === "org_unit" &&
+    (scope.orgUnitId === unitId || scope.qualifiedOrgUnitId === unitId || unitId.endsWith(`/${scope.orgUnitId}`))
+  );
 }
 
 function buildOrgTree(orgUnits = []) {
   const byId = new Map();
   for (const unit of orgUnits) {
-    byId.set(read(unit, ["unit_id", "unitId"]), {
+    const taxonomyId = read(unit, ["taxonomy_id", "taxonomyId"], "organization_unit");
+    const unitId = read(unit, ["unit_id", "unitId"]);
+    byId.set(orgUnitKey(unit), {
       id: orgUnitKey(unit),
-      unitId: read(unit, ["unit_id", "unitId"]),
+      taxonomyId,
+      unitId,
+      qualifiedUnitId: orgUnitKey(unit),
       parentUnitId: read(unit, ["parent_unit_id", "parentUnitId"]),
       label: read(unit, ["display_name", "displayName", "unit_id", "unitId"], "Org unit"),
       kind: read(unit, ["kind"], "custom"),
@@ -142,10 +149,22 @@ function buildOrgTree(orgUnits = []) {
     });
   }
   for (const node of byId.values()) {
-    const parent = byId.get(node.parentUnitId);
+    const parentKey = node.parentUnitId?.includes("/")
+      ? node.parentUnitId
+      : node.parentUnitId
+        ? `${node.taxonomyId}/${node.parentUnitId}`
+        : "";
+    const parent = byId.get(parentKey);
     if (parent) parent.children.push(node);
   }
-  const roots = [...byId.values()].filter((node) => !node.parentUnitId || !byId.has(node.parentUnitId));
+  const roots = [...byId.values()].filter((node) => {
+    const parentKey = node.parentUnitId?.includes("/")
+      ? node.parentUnitId
+      : node.parentUnitId
+        ? `${node.taxonomyId}/${node.parentUnitId}`
+        : "";
+    return !parentKey || !byId.has(parentKey);
+  });
   const flat = [];
   const visit = (node, depth) => {
     node.depth = depth;
@@ -160,11 +179,13 @@ function buildOrgTree(orgUnits = []) {
 
 function scopeFromOrgUnit(unit) {
   const unitId = read(unit, ["unit_id", "unitId"]);
+  const qualifiedOrgUnitId = orgUnitKey(unit);
   return {
-    id: `org:${orgUnitKey(unit)}`,
+    id: `org:${qualifiedOrgUnitId}`,
     kind: "org_unit",
     label: read(unit, ["display_name", "displayName"], unitId),
     orgUnitId: unitId,
+    qualifiedOrgUnitId,
     resourceKey: "",
     resourceLabel: "All resources",
     state: read(unit, ["state"], "active"),

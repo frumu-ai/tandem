@@ -288,8 +288,8 @@ export function EnterpriseScopeExplorer({
   }, [model.scopes, selectedScopeId]);
 
   const openRun = (runId: string) => {
-    replaceRunSelectionHash(runId);
     navigate("runs");
+    replaceRunSelectionHash(runId);
   };
 
   return (
