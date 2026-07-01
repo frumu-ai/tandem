@@ -192,10 +192,9 @@ async fn bug_monitor_deployment_cards_payload(
         ));
     }
 
-    let markdown_export = input
-        .include_markdown
-        .unwrap_or(true)
-        .then(|| bug_monitor_deployment_cards_markdown(generated_at_ms, &tenant_context, &cards, &findings));
+    let markdown_export = input.include_markdown.unwrap_or(true).then(|| {
+        bug_monitor_deployment_cards_markdown(generated_at_ms, &tenant_context, &cards, &findings)
+    });
 
     json!({
         "schema_version": BUG_MONITOR_DEPLOYMENT_CARDS_SCHEMA_VERSION,
@@ -338,7 +337,9 @@ fn bug_monitor_deployment_card_seed_for_automation(
     for agent in bug_monitor_posture_array(automation, &["agents"]) {
         bug_monitor_deployment_card_extend_text_set(
             &mut tools,
-            agent.pointer("/tool_policy/allowlist").and_then(Value::as_array),
+            agent
+                .pointer("/tool_policy/allowlist")
+                .and_then(Value::as_array),
         );
         bug_monitor_deployment_card_extend_text_set(
             &mut mcp_servers,
@@ -356,7 +357,8 @@ fn bug_monitor_deployment_card_seed_for_automation(
     for node in bug_monitor_posture_array(automation, &["nodes"]) {
         bug_monitor_deployment_card_extend_text_set(
             &mut tools,
-            node.pointer("/tool_policy/allowlist").and_then(Value::as_array),
+            node.pointer("/tool_policy/allowlist")
+                .and_then(Value::as_array),
         );
         bug_monitor_deployment_card_extend_text_set(
             &mut mcp_servers,
@@ -415,8 +417,8 @@ fn bug_monitor_deployment_card_seed_for_automation(
 fn bug_monitor_deployment_card_seed_for_workflow(workflow: &Value) -> BugMonitorDeploymentCardSeed {
     let workflow_id = bug_monitor_deployment_card_value_text(workflow, "workflow_id")
         .unwrap_or_else(|| "unknown_workflow".to_string());
-    let target_name =
-        bug_monitor_deployment_card_value_text(workflow, "name").unwrap_or_else(|| workflow_id.clone());
+    let target_name = bug_monitor_deployment_card_value_text(workflow, "name")
+        .unwrap_or_else(|| workflow_id.clone());
     let mut actions = std::collections::BTreeSet::new();
     for step in bug_monitor_posture_array(workflow, &["steps"]) {
         if let Some(action) = bug_monitor_deployment_card_value_text(step, "action") {
@@ -443,7 +445,10 @@ fn bug_monitor_deployment_card_seed_for_workflow(workflow: &Value) -> BugMonitor
         allowed_actions: if actions.is_empty() {
             vec!["Run configured workflow steps".to_string()]
         } else {
-            actions.iter().map(|action| format!("Run workflow action `{action}`")).collect()
+            actions
+                .iter()
+                .map(|action| format!("Run workflow action `{action}`"))
+                .collect()
         },
         prohibited_actions: vec![
             "Execute workflow actions outside configured step or hook definitions".to_string(),
@@ -471,16 +476,20 @@ fn bug_monitor_deployment_card_seed_for_source(source: &Value) -> BugMonitorDepl
     let source_ref = bug_monitor_deployment_card_source_ref(source)
         .unwrap_or_else(|| "monitored_source:unknown".to_string());
     let source_kind = bug_monitor_deployment_card_value_text(source, "source_kind");
-    let name =
-        bug_monitor_deployment_card_value_text(source, "name").unwrap_or_else(|| source_ref.clone());
+    let name = bug_monitor_deployment_card_value_text(source, "name")
+        .unwrap_or_else(|| source_ref.clone());
     let project_id = bug_monitor_deployment_card_value_text(source, "project_id");
     let source_id = bug_monitor_deployment_card_value_text(source, "source_id");
-    let destinations = bug_monitor_deployment_card_value_string_array(source, "allowed_destination_ids")
-        .into_iter()
-        .chain(bug_monitor_deployment_card_value_string_array(source, "default_destination_ids"))
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
+    let destinations =
+        bug_monitor_deployment_card_value_string_array(source, "allowed_destination_ids")
+            .into_iter()
+            .chain(bug_monitor_deployment_card_value_string_array(
+                source,
+                "default_destination_ids",
+            ))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
     BugMonitorDeploymentCardSeed {
         card_id: source_ref.clone(),
         card_kind: "monitored_source".to_string(),
@@ -495,7 +504,8 @@ fn bug_monitor_deployment_card_seed_for_source(source: &Value) -> BugMonitorDepl
             "Route source evidence only to configured destinations".to_string(),
         ],
         prohibited_actions: vec![
-            "Use source data outside tenant/workspace, redaction, retention, or route policy".to_string(),
+            "Use source data outside tenant/workspace, redaction, retention, or route policy"
+                .to_string(),
         ],
         tools: Vec::new(),
         mcp_servers: bug_monitor_deployment_card_value_text(source, "mcp_server")
@@ -581,6 +591,7 @@ fn bug_monitor_deployment_card_from_seed(
     let next_reassessment_at_ms = metadata
         .and_then(|metadata| metadata.next_reassessment_at_ms)
         .or(input.defaults.next_reassessment_at_ms);
+    let posture_link_ids = bug_monitor_deployment_card_posture_link_ids(&seed);
     bug_monitor_deployment_card_missing_findings(
         &seed,
         &purpose,
@@ -626,7 +637,7 @@ fn bug_monitor_deployment_card_from_seed(
         Vec::new(),
     );
     let posture_finding_refs =
-        bug_monitor_deployment_card_linked_posture_findings(&seed.target_id, posture_findings);
+        bug_monitor_deployment_card_linked_posture_findings(&posture_link_ids, posture_findings);
 
     json!({
         "card_id": seed.card_id,
@@ -730,13 +741,54 @@ fn bug_monitor_deployment_card_missing_findings(
     }
 }
 
+fn bug_monitor_deployment_card_posture_link_ids(
+    seed: &BugMonitorDeploymentCardSeed,
+) -> Vec<String> {
+    let mut ids = std::collections::BTreeSet::new();
+    bug_monitor_deployment_card_insert_link_id(&mut ids, &seed.target_id);
+
+    if seed.target_kind == "monitored_source" {
+        if let Some(project_id) =
+            bug_monitor_deployment_card_value_text(&seed.tenant_scope, "project_id")
+        {
+            bug_monitor_deployment_card_insert_link_id(&mut ids, &project_id);
+        }
+        if let Some(source_id) =
+            bug_monitor_deployment_card_value_text(&seed.tenant_scope, "source_id")
+        {
+            bug_monitor_deployment_card_insert_link_id(&mut ids, &source_id);
+        }
+        if let Some(source_ref) = seed.target_id.strip_prefix("monitored_source:") {
+            for part in source_ref.split(':') {
+                bug_monitor_deployment_card_insert_link_id(&mut ids, part);
+            }
+        }
+    }
+
+    ids.into_iter().collect()
+}
+
+fn bug_monitor_deployment_card_insert_link_id(
+    ids: &mut std::collections::BTreeSet<String>,
+    value: &str,
+) {
+    let value = value.trim();
+    if !value.is_empty() {
+        ids.insert(value.to_string());
+    }
+}
+
 fn bug_monitor_deployment_card_linked_posture_findings(
-    target_id: &str,
+    target_ids: &[String],
     posture_findings: &[Value],
 ) -> Vec<String> {
     posture_findings
         .iter()
-        .filter(|finding| bug_monitor_deployment_card_value_contains_text(finding, target_id))
+        .filter(|finding| {
+            target_ids.iter().any(|target_id| {
+                bug_monitor_deployment_card_value_contains_text(finding, target_id)
+            })
+        })
         .filter_map(|finding| bug_monitor_deployment_card_value_text(finding, "finding_id"))
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
@@ -843,7 +895,11 @@ fn bug_monitor_deployment_card_extend_text_set(
 ) {
     if let Some(values) = values {
         for value in values {
-            if let Some(text) = value.as_str().map(str::trim).filter(|text| !text.is_empty()) {
+            if let Some(text) = value
+                .as_str()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+            {
                 set.insert(text.to_string());
             }
         }

@@ -94,7 +94,9 @@ agents, workflows, monitored sources, and Tandem self-monitoring. The read-only
 endpoint combines authority inventory with operator-supplied purpose, owner,
 accountability, approval, escalation, data-classification, and review metadata,
 exports JSON/Markdown cards, and returns structured posture findings when
-required production-governance fields are missing.
+required production-governance fields are missing. Monitored-source cards now
+link source posture evidence by source/project identifiers as well as canonical
+source refs.
 Incident Monitor setup is now available from Control Panel Settings. Operators
 can edit source, destination, route, default destination, and safety-default
 configuration in one place, run route previews before publishing, inspect

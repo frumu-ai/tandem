@@ -15,7 +15,10 @@ async fn bug_monitor_deployment_cards_empty_inventory_returns_self_monitoring_ca
 
     let cards = payload["cards"].as_array().expect("deployment cards");
     assert_eq!(cards.len(), 1);
-    assert_eq!(cards[0]["card_id"], json!("tandem:self_monitoring:bug_monitor"));
+    assert_eq!(
+        cards[0]["card_id"],
+        json!("tandem:self_monitoring:bug_monitor")
+    );
     assert_eq!(cards[0]["system_boundary"], json!("tandem_self_monitoring"));
     assert!(payload["findings"]
         .as_array()
@@ -76,11 +79,12 @@ async fn bug_monitor_deployment_cards_generate_inventory_cards_and_markdown() {
                 repo: "acme/payments".to_string(),
                 workspace_root: workspace.path().display().to_string(),
                 source_kind: crate::BugMonitorSourceKind::ExternalApp,
+                enabled: true,
                 allowed_destination_ids: vec!["audit-webhook".to_string()],
                 default_destination_ids: vec!["audit-webhook".to_string()],
                 default_route_tags: vec!["payments".to_string()],
-                tenant_id: Some("org-cards".to_string()),
-                workspace_id: Some("workspace-cards".to_string()),
+                tenant_id: None,
+                workspace_id: None,
                 event_schema_version: Some("payments.v1".to_string()),
                 redaction_profile: Some("standard".to_string()),
                 retention_profile: Some("90d".to_string()),
@@ -129,15 +133,37 @@ async fn bug_monitor_deployment_cards_generate_inventory_cards_and_markdown() {
             && card["business_owner"].as_str() == Some("Security Ops")
             && card["linked_evidence"]["operator_refs"]
                 .as_array()
-                .is_some_and(|refs| refs.iter().any(|value| value.as_str()
-                    == Some("runbook:payments-incident-response")))
+                .is_some_and(|refs| {
+                    refs.iter()
+                        .any(|value| value.as_str() == Some("runbook:payments-incident-response"))
+                })
     }));
-    assert!(cards.iter().any(|card| {
-        card["card_id"].as_str() == Some("monitored_source:payments:project")
-            && card["system_boundary"].as_str() == Some("customer_owned_system")
-            && card["authority"]["inventory"]["redaction_profile_present"].as_bool() == Some(true)
-            && card["authority"]["inventory"]["retention_profile_present"].as_bool() == Some(true)
-    }));
+    let source_card = cards
+        .iter()
+        .find(|card| card["card_id"].as_str() == Some("monitored_source:payments:project"))
+        .expect("monitored source deployment card");
+    assert_eq!(
+        source_card["system_boundary"].as_str(),
+        Some("customer_owned_system")
+    );
+    assert_eq!(
+        source_card["authority"]["inventory"]["redaction_profile_present"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        source_card["authority"]["inventory"]["retention_profile_present"].as_bool(),
+        Some(true)
+    );
+    assert!(source_card["linked_evidence"]["posture_finding_refs"]
+        .as_array()
+        .expect("source posture finding refs")
+        .iter()
+        .any(|value| value
+            .as_str()
+            .is_some_and(|value| value.starts_with("bpf_"))));
+    assert!(payload["counts"]["posture_findings_linked"]
+        .as_u64()
+        .is_some_and(|count| count > 0));
     assert!(payload["findings"].as_array().expect("findings").is_empty());
     let payload_string = serde_json::to_string(&payload).expect("deployment card json");
     assert!(payload_string.contains("Incident Monitor Deployment Cards"));
@@ -145,7 +171,10 @@ async fn bug_monitor_deployment_cards_generate_inventory_cards_and_markdown() {
     assert!(!payload_string.contains("BUG_MONITOR_CARD_SECRET"));
     assert!(!payload_string.contains("metadata-must-not-leak"));
     assert_eq!(payload["scope"]["raw_inventory_included"], json!(false));
-    assert_eq!(payload["scope"]["raw_inventory_request_ignored"], json!(true));
+    assert_eq!(
+        payload["scope"]["raw_inventory_request_ignored"],
+        json!(true)
+    );
 }
 
 #[tokio::test]
@@ -200,11 +229,6 @@ async fn post_bug_monitor_deployment_cards(
     let body = to_bytes(resp.into_body(), usize::MAX)
         .await
         .expect("deployment cards body");
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "{}",
-        String::from_utf8_lossy(&body)
-    );
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
     serde_json::from_slice(&body).expect("deployment cards json")
 }
