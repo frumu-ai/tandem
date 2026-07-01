@@ -133,6 +133,7 @@ mod setup_understanding;
 mod skills_memory;
 mod slack_interactions;
 mod stateful_runtime_api;
+mod stateful_runtime_observability;
 mod stateful_runtime_reliability;
 mod system_api;
 mod task_intake;
