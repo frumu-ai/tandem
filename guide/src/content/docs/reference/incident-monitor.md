@@ -98,6 +98,17 @@ The report includes JSON sections plus a Markdown summary:
 
 Reports do not embed raw protected-audit payloads, scoped intake keys, auth headers, webhook secret values, or destination receipt payloads by default. High-assurance deployments should export protected audit evidence to a customer-owned system of record such as SIEM, database, object storage, Linear, GitHub, webhook, telemetry, or an approved MCP destination. Tandem can show what it observed and enforced; it does not independently prove itself safe.
 
+## Production Governance
+
+Use [Incident Monitor Production Governance](../incident-monitor/production-governance/) to map authority inventory, posture checks, controlled probes, assessment reports, deployment cards, route previews, publish receipts, and protected audit evidence to production readiness controls.
+
+The map separates:
+
+- shipped Tandem evidence surfaces
+- deployment policy that Tandem cannot infer
+- customer-owned retention and external evidence custody
+- incident response and governance drift review responsibilities
+
 ## TypeScript
 
 ```typescript
@@ -249,3 +260,4 @@ async with TandemClient(base_url="http://localhost:39731", token="...") as clien
 - [Control Panel](../control-panel/)
 - [Incident Monitor Overview](../incident-monitor/overview/)
 - [Incident Monitor Agent Runtime Guide](../incident-monitor/agent-runtime-guide/)
+- [Incident Monitor Production Governance](../incident-monitor/production-governance/)

@@ -31,11 +31,11 @@ The EU AI Act assigns obligations differently to providers (who place AI systems
 put them into service), deployers (who use AI systems under their own authority), and component
 suppliers. Tandem's role varies by deployment model:
 
-| Deployment model | Tandem role | Primary obligation holder |
-|---|---|---|
-| Tandem as managed hosted service (SaaS) | **Provider** of the AI system, deployer of the runtime | Tandem for Article 11/12/15 controls; customer as deployer for Article 26 |
-| Self-hosted enterprise installation | **Component supplier / runtime** | Customer as deployer; Tandem provides technical controls and documentation |
-| Embedded in a customer's regulated product | **AI component supplier** | Customer (product provider) is the AI Act provider; Tandem supplies runtime controls |
+| Deployment model                           | Tandem role                                            | Primary obligation holder                                                            |
+| ------------------------------------------ | ------------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| Tandem as managed hosted service (SaaS)    | **Provider** of the AI system, deployer of the runtime | Tandem for Article 11/12/15 controls; customer as deployer for Article 26            |
+| Self-hosted enterprise installation        | **Component supplier / runtime**                       | Customer as deployer; Tandem provides technical controls and documentation           |
+| Embedded in a customer's regulated product | **AI component supplier**                              | Customer (product provider) is the AI Act provider; Tandem supplies runtime controls |
 
 **For the first regulated deployment (self-hosted enterprise, regulated financial services):**
 Tandem is operating as an AI component supplier / governed runtime. The customer is the deployer
@@ -65,15 +65,15 @@ legal or similarly significant effects, and is used as a narrow procedural tool.
 
 The first regulated deployment targets **regulated financial services**, using Tandem for:
 
-| Workflow | Annex III category | Materially influences natural persons? | Classification |
-|---|---|---|---|
-| Credit model change review packet | Annex III §5(b) — AI in creditworthiness or credit scoring | Indirect: review aid for human analyst, not the credit decision itself | **Conditional** — see note |
-| AI-assisted credit policy exception investigation | Annex III §5(b) | Indirect: evidence gathering; human makes exception decision | **Conditional** |
-| Regulatory change impact brief | None directly | No | **Low-risk** |
-| Vendor / model monitoring evidence packet | None directly | No | **Low-risk** |
-| Risk-rating recommendation with approval gate | Annex III §5(b) or §5(d) depending on scope | Yes if the recommendation is acted on without meaningful human review | **Conditional / High-risk** |
-| Customer communication draft with approval before delivery | Annex III §4 (education/employment) possible; §6 (essential services) where applicable | Potentially yes | **Conditional** |
-| Incident triage workflow (evidence only, no filing) | None if output is internal evidence only | No | **Low-risk** |
+| Workflow                                                   | Annex III category                                                                     | Materially influences natural persons?                                 | Classification              |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | --------------------------- |
+| Credit model change review packet                          | Annex III §5(b) — AI in creditworthiness or credit scoring                             | Indirect: review aid for human analyst, not the credit decision itself | **Conditional** — see note  |
+| AI-assisted credit policy exception investigation          | Annex III §5(b)                                                                        | Indirect: evidence gathering; human makes exception decision           | **Conditional**             |
+| Regulatory change impact brief                             | None directly                                                                          | No                                                                     | **Low-risk**                |
+| Vendor / model monitoring evidence packet                  | None directly                                                                          | No                                                                     | **Low-risk**                |
+| Risk-rating recommendation with approval gate              | Annex III §5(b) or §5(d) depending on scope                                            | Yes if the recommendation is acted on without meaningful human review  | **Conditional / High-risk** |
+| Customer communication draft with approval before delivery | Annex III §4 (education/employment) possible; §6 (essential services) where applicable | Potentially yes                                                        | **Conditional**             |
+| Incident triage workflow (evidence only, no filing)        | None if output is internal evidence only                                               | No                                                                     | **Low-risk**                |
 
 **Conditional** means the classification depends on whether the human reviewer exercises
 genuine independent judgment or merely ratifies the AI output. A workflow that materially
@@ -101,6 +101,7 @@ persons must be operated as if they are high-risk:
 ## 4. Material Influence on Natural Persons
 
 A workflow materially influences a decision about a natural person when its output:
+
 - Directly generates or modifies a credit score, risk rating, or eligibility determination.
 - Prepares a customer communication, adverse-action notice, or regulatory filing.
 - Produces content that is used in a decision about employment, credit, insurance, or access to
@@ -128,13 +129,13 @@ categories. Every workflow that can produce an output of the above kind must be 
 
 For financial services deployers, the following overlap with AI Act obligations:
 
-| Regulation | Overlap | Tandem relevance |
-|---|---|---|
-| EBA/ESMA AI governance guidelines | Model inventory, performance monitoring, governance | Tandem's model/provider inventory and audit trail support evidence gathering |
-| GDPR | Data minimization, retention, access controls on personal data in logs | Tandem logs may contain personal data; deployer must configure retention and access |
-| DORA (Regulation 2022/2554) | ICT risk management, incident reporting, third-party ICT provider oversight | Tandem is an ICT provider; deployer must include Tandem in DORA ICT risk assessment |
-| MiFID II / MAR | Record-keeping of decisions and communications in scope | Approval receipts and audit envelopes support record-keeping; deployer must evaluate scope |
-| Sector AI guidelines (EBA 2025) | Data governance, explainability, human oversight, model risk | Tandem's approval gates and audit trail are relevant controls |
+| Regulation                        | Overlap                                                                     | Tandem relevance                                                                           |
+| --------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| EBA/ESMA AI governance guidelines | Model inventory, performance monitoring, governance                         | Tandem's model/provider inventory and audit trail support evidence gathering               |
+| GDPR                              | Data minimization, retention, access controls on personal data in logs      | Tandem logs may contain personal data; deployer must configure retention and access        |
+| DORA (Regulation 2022/2554)       | ICT risk management, incident reporting, third-party ICT provider oversight | Tandem is an ICT provider; deployer must include Tandem in DORA ICT risk assessment        |
+| MiFID II / MAR                    | Record-keeping of decisions and communications in scope                     | Approval receipts and audit envelopes support record-keeping; deployer must evaluate scope |
+| Sector AI guidelines (EBA 2025)   | Data governance, explainability, human oversight, model risk                | Tandem's approval gates and audit trail are relevant controls                              |
 
 > **Confirmation required:** The deployer must identify which of these regulations apply to their
 > specific business and assess Tandem's controls against each applicable standard with qualified
@@ -160,25 +161,25 @@ The table below records the baseline taxonomy. The deployer must review and exte
 their specific use case. Changes to the taxonomy require sign-off from product, security, and
 legal/compliance reviewers.
 
-| Action class | Category | Rationale |
-|---|---|---|
-| Read and summarize documents, data room content, news | Allowed | Evidence gathering; no external mutation |
-| Search and retrieve internal knowledge base | Allowed | Evidence gathering |
-| Generate evidence briefs, investigation summaries, draft reports | Allowed | Drafts only; human reviews before any use |
-| Create internal workflow artifacts and handoff packets | Allowed | Internal; not system-of-record mutations |
-| Execute code in a sandboxed analysis environment | Allowed with policy check | Sandboxed; no external mutation |
-| Call external data APIs (read-only, rate-limited) | Allowed with policy check | No mutation; must be scoped to approved endpoints |
-| Draft a customer communication for human review | Approval-gated | Will be sent to a natural person; requires qualified reviewer |
-| Update a risk rating or model output in a system of record | Approval-gated | Materially influences a natural person or downstream decision |
-| File a regulatory report or adverse-action notice | Approval-gated | Legal and financial consequences; dual-control recommended |
-| Move money, authorize payment, release funds | Approval-gated (dual-control recommended) | Irreversible financial mutation; highest protection tier |
-| Create, modify, or delete account or identity records | Approval-gated | Direct access control or identity consequence |
-| Send an email or message on behalf of the organization | Approval-gated | External communication; disclosure/liability risk |
-| Override a compliance or risk control | Prohibited | Must not be executable by AI-initiated flow |
-| Self-approve a gated action (workflow approves its own gate) | Prohibited | Defeats the oversight model |
-| Produce a legally binding agreement or notice without human authorship | Prohibited | Legal enforceability requires human origination |
-| Access or exfiltrate authentication credentials or private keys | Prohibited | Security boundary |
-| Access personal data not in scope for the specific workflow | Prohibited | Data minimization and need-to-know |
+| Action class                                                           | Category                                  | Rationale                                                     |
+| ---------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------- |
+| Read and summarize documents, data room content, news                  | Allowed                                   | Evidence gathering; no external mutation                      |
+| Search and retrieve internal knowledge base                            | Allowed                                   | Evidence gathering                                            |
+| Generate evidence briefs, investigation summaries, draft reports       | Allowed                                   | Drafts only; human reviews before any use                     |
+| Create internal workflow artifacts and handoff packets                 | Allowed                                   | Internal; not system-of-record mutations                      |
+| Execute code in a sandboxed analysis environment                       | Allowed with policy check                 | Sandboxed; no external mutation                               |
+| Call external data APIs (read-only, rate-limited)                      | Allowed with policy check                 | No mutation; must be scoped to approved endpoints             |
+| Draft a customer communication for human review                        | Approval-gated                            | Will be sent to a natural person; requires qualified reviewer |
+| Update a risk rating or model output in a system of record             | Approval-gated                            | Materially influences a natural person or downstream decision |
+| File a regulatory report or adverse-action notice                      | Approval-gated                            | Legal and financial consequences; dual-control recommended    |
+| Move money, authorize payment, release funds                           | Approval-gated (dual-control recommended) | Irreversible financial mutation; highest protection tier      |
+| Create, modify, or delete account or identity records                  | Approval-gated                            | Direct access control or identity consequence                 |
+| Send an email or message on behalf of the organization                 | Approval-gated                            | External communication; disclosure/liability risk             |
+| Override a compliance or risk control                                  | Prohibited                                | Must not be executable by AI-initiated flow                   |
+| Self-approve a gated action (workflow approves its own gate)           | Prohibited                                | Defeats the oversight model                                   |
+| Produce a legally binding agreement or notice without human authorship | Prohibited                                | Legal enforceability requires human origination               |
+| Access or exfiltrate authentication credentials or private keys        | Prohibited                                | Security boundary                                             |
+| Access personal data not in scope for the specific workflow            | Prohibited                                | Data minimization and need-to-know                            |
 
 > **Review required:** This taxonomy is a starting baseline. The deployer must extend it for their
 > protected actions, confirm the dual-control list, confirm the prohibited-action list, and obtain
@@ -190,14 +191,14 @@ legal/compliance reviewers.
 
 ### Data Categories That May Enter Tandem
 
-| Category | Examples | Handling requirement |
-|---|---|---|
-| Public data | Public news, published reports, regulatory texts | No restriction beyond standard security posture |
-| Internal data | Internal memos, policy documents, model documentation | Tenant-scoped; encrypted at rest; audit-logged on access |
-| Personal data (non-sensitive) | Names, roles, contact info in workflow context | GDPR Article 5 principles; log minimization; deployer-controlled retention |
-| Special-category personal data | Health, financial, biometric, political | Requires explicit legal basis; minimize logging; restricted access; deployer must assess |
-| Regulated financial data | Credit scores, account balances, transaction history | Sector-specific retention and access controls; audit required by MiFID/EBA where applicable |
-| Credentials and secrets | API keys, auth tokens | Must not be logged; must be handled via Tandem's secret-reference model (ConnectorCredentialRef) |
+| Category                       | Examples                                              | Handling requirement                                                                             |
+| ------------------------------ | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Public data                    | Public news, published reports, regulatory texts      | No restriction beyond standard security posture                                                  |
+| Internal data                  | Internal memos, policy documents, model documentation | Tenant-scoped; encrypted at rest; audit-logged on access                                         |
+| Personal data (non-sensitive)  | Names, roles, contact info in workflow context        | GDPR Article 5 principles; log minimization; deployer-controlled retention                       |
+| Special-category personal data | Health, financial, biometric, political               | Requires explicit legal basis; minimize logging; restricted access; deployer must assess         |
+| Regulated financial data       | Credit scores, account balances, transaction history  | Sector-specific retention and access controls; audit required by MiFID/EBA where applicable      |
+| Credentials and secrets        | API keys, auth tokens                                 | Must not be logged; must be handled via Tandem's secret-reference model (ConnectorCredentialRef) |
 
 ### GDPR Constraints
 
@@ -213,12 +214,12 @@ legal/compliance reviewers.
 
 For regulated financial services, as a conservative starting position:
 
-| Record type | Minimum retention | Authority |
-|---|---|---|
-| Automation receipts (approval decisions, tool calls) | 7 years | MiFID II Article 25; EBA ICT guidelines |
-| Protected audit envelopes | 7 years | Same |
-| Workflow artifacts and handoff packets | Duration of the underlying regulatory obligation | Deployer-specific |
-| Personal data not required for audit | Minimize; delete when no longer needed | GDPR Article 5(1)(e) |
+| Record type                                          | Minimum retention                                | Authority                               |
+| ---------------------------------------------------- | ------------------------------------------------ | --------------------------------------- |
+| Automation receipts (approval decisions, tool calls) | 7 years                                          | MiFID II Article 25; EBA ICT guidelines |
+| Protected audit envelopes                            | 7 years                                          | Same                                    |
+| Workflow artifacts and handoff packets               | Duration of the underlying regulatory obligation | Deployer-specific                       |
+| Personal data not required for audit                 | Minimize; delete when no longer needed           | GDPR Article 5(1)(e)                    |
 
 > **Confirmation required:** The specific retention requirements depend on the exact workflows,
 > data subjects, and applicable sector regulation. The deployer's legal/compliance team must
@@ -228,17 +229,17 @@ For regulated financial services, as a conservative starting position:
 
 ## 8. Tandem vs Deployer Responsibility Split
 
-| Area | Tandem provides | Deployer must provide |
-|---|---|---|
-| Workflow execution | Durable runs, state, artifacts, approval gates, audit records | Workflow design appropriate to the use case; oversight process |
-| Protected-action enforcement | Fintech strict-mode classification; fail-closed at execution; approval-receipt checks | Confirm protected-action taxonomy; operate identity and approver assignment |
-| Human oversight | Approval gates; approve / rework / cancel paths; gate history | Assign qualified reviewers; define policy; provide training |
-| Audit logging | Receipts, protected audit envelopes, audit stream | Configure retention; export; access controls; long-term storage |
-| Article 11 documentation | Architecture docs; compliance starter pack; Annex IV template | Complete deployment-specific documentation; intended-purpose statement |
-| Article 50 labeling | Runtime provenance for generated content; planned UI badges (EUAI-04) | Until EUAI-04 ships: deployer-level disclosure that content is AI-generated |
-| Incident response | Suspend/cancel run endpoints; audit trail | Detect incidents; report where required; operate incident response |
-| Identity and access | Enterprise auth hooks (planned EUAI-14); current API-token auth | Operate identity, SSO, RBAC; assign roles; revoke access |
-| Conformity assessment | Controls, evidence, and documentation support | Perform conformity assessment; maintain technical file; register where required |
+| Area                         | Tandem provides                                                                              | Deployer must provide                                                           |
+| ---------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Workflow execution           | Durable runs, state, artifacts, approval gates, audit records                                | Workflow design appropriate to the use case; oversight process                  |
+| Protected-action enforcement | Fintech strict-mode classification; fail-closed at execution; approval-receipt checks        | Confirm protected-action taxonomy; operate identity and approver assignment     |
+| Human oversight              | Approval gates; approve / rework / cancel paths; gate history                                | Assign qualified reviewers; define policy; provide training                     |
+| Audit logging                | Receipts, protected audit envelopes, audit stream, protected audit ledger/export foundations | Configure retention; export; access controls; long-term storage                 |
+| Article 11 documentation     | Architecture docs; compliance starter pack; Annex IV template                                | Complete deployment-specific documentation; intended-purpose statement          |
+| Article 50 labeling          | Runtime provenance for generated content; planned UI badges (EUAI-04)                        | Until EUAI-04 ships: deployer-level disclosure that content is AI-generated     |
+| Incident response            | Suspend/cancel run endpoints; audit trail                                                    | Detect incidents; report where required; operate incident response              |
+| Identity and access          | Enterprise auth hooks (planned EUAI-14); current API-token auth                              | Operate identity, SSO, RBAC; assign roles; revoke access                        |
+| Conformity assessment        | Controls, evidence, and documentation support                                                | Perform conformity assessment; maintain technical file; register where required |
 
 ---
 
@@ -305,21 +306,21 @@ Tandem's controls support the deployer's compliance posture but do not replace i
 
 The following EUAI issues are linked as follow-ups to address identified gaps:
 
-| Issue | Gap |
-|---|---|
-| TAN-247 (EUAI-06) | Hash-chained audit ledgers — tamper-evident logging not yet implemented |
-| TAN-245 (EUAI-04) | Article 50 AI-generated labels — not yet systematic across UI surfaces |
-| TAN-251 (EUAI-10) | Role-based approval assignment — not yet implemented |
-| TAN-252 (EUAI-11) | Dual-control approval policies — not yet implemented |
-| TAN-248 (EUAI-07) | Immutable storage and SIEM export — not yet implemented |
-| TAN-249 (EUAI-08) | Retention and redaction controls — not yet implemented |
-| TAN-254 (EUAI-13) | Tenant emergency stop — not yet implemented |
-| TAN-255 (EUAI-14) | Enterprise identity / RBAC / OIDC — not yet implemented |
-| TAN-242 (EUAI-01) | Annex IV technical documentation dossier — in progress |
+| Issue                         | Gap                                                                            |
+| ----------------------------- | ------------------------------------------------------------------------------ |
+| TAN-247 (EUAI-06)             | Follow-up hardening for signed/immutable audit evidence custody                |
+| TAN-245 (EUAI-04)             | Article 50 AI-generated labels — not yet systematic across UI surfaces         |
+| TAN-251 (EUAI-10)             | Role-based approval assignment — not yet implemented                           |
+| TAN-252 (EUAI-11)             | Dual-control approval policies — not yet implemented                           |
+| TAN-248 (EUAI-07)             | Immutable storage and turnkey SIEM connector integrations not yet implemented  |
+| TAN-249 (EUAI-08)             | Retention and redaction controls — not yet implemented                         |
+| TAN-254 (EUAI-13)             | Tenant emergency stop — not yet implemented                                    |
+| TAN-255 (EUAI-14)             | Enterprise identity / RBAC / OIDC — not yet implemented                        |
+| TAN-242 (EUAI-01)             | Annex IV technical documentation dossier — in progress                         |
 | Residual legal questions (§9) | Must be resolved with legal/compliance counsel before regulated production use |
 
 ---
 
-*This document was produced as part of EUAI-00 / TAN-241. It requires review and explicit sign-off
+_This document was produced as part of EUAI-00 / TAN-241. It requires review and explicit sign-off
 from product, security, and legal/compliance reviewers before it is used to guide a regulated
-deployment.*
+deployment._

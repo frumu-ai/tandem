@@ -202,6 +202,8 @@ Use these surfaces when an operator, auditor, or follow-on agent needs proof of 
 
 Reports intentionally omit raw credentials, intake-key material, webhook secrets, auth headers, arbitrary destination config values, and raw protected-audit payloads by default.
 
+For production readiness, use [Production Governance](./production-governance/) to map these evidence surfaces to deployment-card ownership, data readiness, destination policy, audit export, retention, incident response, and drift review decisions.
+
 ## Failure Handling
 
 | Symptom                              | Agent response                                                                                   |
@@ -219,6 +221,7 @@ Reports intentionally omit raw credentials, intake-key material, webhook secrets
 
 - [Incident Monitor Reference](../reference/incident-monitor/)
 - [Incident Monitor Setup Checklist](./setup-checklist/)
+- [Incident Monitor Production Governance](./production-governance/)
 - [Destination Router](./destination-router/)
 - [External Sources](./external-sources/)
 - [Destinations](./destinations/)

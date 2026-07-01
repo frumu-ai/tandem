@@ -1,9 +1,9 @@
 ---
 title: Incident Monitor Setup Checklist
-description: Configure current Incident Monitor behavior and prepare for destination-router Incident Monitor concepts.
+description: Configure Incident Monitor intake, routing, destinations, security posture, and production governance evidence.
 ---
 
-Use this checklist when setting up current Incident Monitor or preparing for destination-router Incident Monitor work.
+Use this checklist when setting up Incident Monitor intake, destination routing, security posture, and production governance evidence.
 
 ## Current GitHub setup
 
@@ -31,8 +31,9 @@ Use this checklist when setting up current Incident Monitor or preparing for des
 1. Define destinations explicitly when moving beyond the legacy fallback.
 2. Add routes only when default destinations are insufficient.
 3. Use route preview to confirm matches, readiness, approval, and blocked reasons.
-4. Keep non-GitHub destinations disabled until their adapters are implemented.
-5. Preserve `legacy-github` behavior for old configs.
+4. Enable Linear, webhook, telemetry, memory, and MCP destinations only after their readiness and receipt behavior match deployment policy.
+5. Treat generic MCP destinations as high risk until `allow_publish`, server/tool allowlists, payload mapping, approval policy, and redaction are reviewed.
+6. Preserve `legacy-github` behavior for old configs.
 
 ## Security posture preparation
 
@@ -40,3 +41,11 @@ Use this checklist when setting up current Incident Monitor or preparing for des
 2. Add deterministic checks before adding controlled probes.
 3. Make probes authorized, bounded, and dry-run or sandboxed where possible.
 4. Export evidence to a customer-owned audit destination when assessing Tandem itself.
+
+## Production governance preparation
+
+1. Generate deployment cards for Tandem self-monitoring, monitored sources, high-authority agents, and externally mutating workflows.
+2. Fill owner, accountable team, intended purpose, data classification, approval protocol, escalation protocol, and review cadence metadata.
+3. Confirm reports, receipts, and protected audit evidence have a customer-owned retention/export policy before production use.
+4. Map posture findings to customer policy and assign owners before enabling high-risk external destinations.
+5. Use [Production Governance](./production-governance/) for the full operating-model checklist.
