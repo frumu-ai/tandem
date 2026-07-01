@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added enterprise-aware stateful runtime kernel types, adapters, and JSONL
   persistence helpers for durable run events and snapshots.
+- Added the `tandem-data-boundary` crate with serializable secure data-boundary
+  contract types for policy, provider boundary class, sensitive data class,
+  input metadata, findings, decisions, and audit-safe events.
 - Added stateful runtime definition identity helpers so snapshot-backed
   automation runs expose durable workflow definition versions and `sha256:`
   snapshot hashes for future replay and resume checks.

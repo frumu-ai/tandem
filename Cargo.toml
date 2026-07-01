@@ -6,6 +6,7 @@ members = [
     "crates/tandem-types",
     "crates/tandem-wire",
     "crates/tandem-core",
+    "crates/tandem-data-boundary",
     "crates/tandem-document",
     "crates/tandem-incident-monitor",
     "crates/tandem-eval",

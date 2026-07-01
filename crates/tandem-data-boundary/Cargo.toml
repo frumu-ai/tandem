@@ -1,0 +1,13 @@
+[package]
+name = "tandem-data-boundary"
+version = "0.6.4"
+description = "Secure data boundary policy and evidence contract types for Tandem"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/frumu-ai/tandem"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

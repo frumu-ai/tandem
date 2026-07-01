@@ -7857,6 +7857,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tandem-data-boundary"
+version = "0.6.4"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "tandem-document"
 version = "0.6.4"
 dependencies = [

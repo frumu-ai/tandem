@@ -14,6 +14,12 @@ fail closed. Automation V2 retry handling now also has a shared policy schema
 and structured retry decision record so node failures can explain retryability,
 attempt budget, terminal behavior, and next retry timing while preserving legacy
 `max_attempts` compatibility.
+The new `tandem-data-boundary` crate establishes the secure data-boundary
+foundation for future provider-routing and context-governance work. It defines
+serializable policy, input, finding, decision, and event contract types that
+carry provider/model metadata, tenant/workspace/deployment refs, payload hashes,
+policy fingerprints, reason codes, action tags, and finding counts without
+embedding raw prompts, tool results, secrets, customer data, or model outputs.
 fail closed. Automation V2 run claims are now persisted with lease metadata, and
 expired launch claims without active session or agent handles are reclaimed back
 to the queue so only one executor can safely resume the run.
