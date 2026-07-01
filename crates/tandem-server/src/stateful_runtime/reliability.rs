@@ -461,20 +461,23 @@ pub async fn record_external_action_reliability_bridge(
     outbox.effect_id = Some(effect.effect_id.clone());
     outbox.receipt_id = Some(effect.effect_id.clone());
 
-    if let Some(compensation) = compensation_from_action_metadata(&scope, action, &effect, &outbox)
-    {
-        effect.compensation_id = Some(compensation.compensation_id.clone());
-        outbox.compensation_id = Some(compensation.compensation_id.clone());
-        upsert_by(&mut store.compensations, compensation, |row| {
-            &row.compensation_id
-        });
-    }
     if effect.status.is_failure() {
+        if let Some(compensation) =
+            compensation_from_action_metadata(&scope, action, &effect, &outbox)
+        {
+            effect.compensation_id = Some(compensation.compensation_id.clone());
+            outbox.compensation_id = Some(compensation.compensation_id.clone());
+            upsert_by(&mut store.compensations, compensation, |row| {
+                &row.compensation_id
+            });
+        }
         let dead_letter = dead_letter_from_tool_effect(&effect, action);
         outbox.dead_letter_id = Some(dead_letter.dead_letter_id.clone());
         upsert_by(&mut store.dead_letters, dead_letter, |row| {
             &row.dead_letter_id
         });
+    } else {
+        clear_stale_failure_rows_for_effect(&mut store, &effect, &outbox);
     }
 
     upsert_by(&mut store.outbox, outbox, |row| &row.outbox_id);
@@ -483,6 +486,25 @@ pub async fn record_external_action_reliability_bridge(
     });
     write_stateful_reliability_unlocked(path, &store).await?;
     Ok(effect)
+}
+
+fn clear_stale_failure_rows_for_effect(
+    store: &mut StatefulReliabilityStoreFile,
+    effect: &StatefulToolEffectRecord,
+    outbox: &StatefulOutboxRecord,
+) {
+    store.dead_letters.retain(|row| {
+        !(row.scope == effect.scope
+            && row.run_id == effect.run_id
+            && row.source_type == "tool_effect"
+            && row.source_id == effect.effect_id)
+    });
+    store.compensations.retain(|row| {
+        !(row.scope == effect.scope
+            && row.run_id == effect.run_id
+            && (row.target_effect_id.as_deref() == Some(effect.effect_id.as_str())
+                || row.outbox_id.as_deref() == Some(outbox.outbox_id.as_str())))
+    });
 }
 
 pub async fn mark_dead_letter_disposition(
@@ -813,16 +835,24 @@ fn tool_effect_status_from_action(action: &ExternalActionRecord) -> StatefulTool
 }
 
 fn outbox_id_for_action(action: &ExternalActionRecord) -> String {
-    action
-        .idempotency_key
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .map(|key| format!("outbox-{}", short_hash(&crate::sha256_hex(&[key]))))
+    idempotency_suffix(action)
+        .map(|suffix| format!("outbox-{suffix}"))
         .unwrap_or_else(|| format!("outbox-{}", action.action_id))
 }
 
 fn effect_id_for_action(action: &ExternalActionRecord) -> String {
-    format!("effect-{}", action.action_id)
+    idempotency_suffix(action)
+        .map(|suffix| format!("effect-{suffix}"))
+        .unwrap_or_else(|| format!("effect-{}", action.action_id))
+}
+
+fn idempotency_suffix(action: &ExternalActionRecord) -> Option<String> {
+    action
+        .idempotency_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|key| short_hash(&crate::sha256_hex(&[key])))
 }
 
 fn external_action_run_id(action: &ExternalActionRecord) -> Option<String> {
@@ -1036,7 +1066,7 @@ pub fn operator_principal(actor_id: Option<&str>) -> PrincipalRef {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{json, Value};
     use uuid::Uuid;
 
     use super::*;
@@ -1142,6 +1172,119 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn external_action_bridge_dedupes_effects_by_idempotency_key() {
+        let path = std::env::temp_dir().join(format!(
+            "tandem-stateful-reliability-{}.json",
+            Uuid::new_v4()
+        ));
+        let scope = StatefulRuntimeScope::from_tenant_context(tenant("org-a", "workspace-a"));
+        let mut first = action("action-replay-first", "posted", None);
+        first.idempotency_key = Some("idem-run-a-node-a-send".to_string());
+        let mut replay = action("action-replay-second", "posted", None);
+        replay.idempotency_key = first.idempotency_key.clone();
+        replay.updated_at_ms = 3_000;
+        replay.receipt = Some(json!({
+            "result": {"status": "already_sent"},
+            "secret": "must be redacted"
+        }));
+
+        let first_effect = record_external_action_reliability_bridge(&path, scope.clone(), &first)
+            .await
+            .expect("first bridge");
+        let replay_effect = record_external_action_reliability_bridge(&path, scope, &replay)
+            .await
+            .expect("replay bridge");
+
+        assert_eq!(first_effect.effect_id, replay_effect.effect_id);
+        let store = load_stateful_reliability(&path);
+        assert_eq!(store.outbox.len(), 1);
+        assert_eq!(store.tool_effects.len(), 1);
+        assert_eq!(store.dead_letters.len(), 0);
+        assert_eq!(
+            store.outbox[0].effect_id.as_deref(),
+            Some(replay_effect.effect_id.as_str())
+        );
+        assert_eq!(
+            store.tool_effects[0].action_id.as_deref(),
+            Some("action-replay-second")
+        );
+        assert_eq!(
+            store.tool_effects[0]
+                .receipt_payload_redacted
+                .as_ref()
+                .and_then(|receipt| receipt.get("secret"))
+                .and_then(Value::as_str),
+            Some("[redacted]")
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn external_action_success_replay_clears_stale_failure_recovery_rows() {
+        let path = std::env::temp_dir().join(format!(
+            "tandem-stateful-reliability-{}.json",
+            Uuid::new_v4()
+        ));
+        let scope = StatefulRuntimeScope::from_tenant_context(tenant("org-a", "workspace-a"));
+        let mut failed = action("action-replay-failed", "failed", Some("provider timeout"));
+        failed.idempotency_key = Some("idem-run-a-node-a-send".to_string());
+        failed.metadata = Some(json!({
+            "automationRunID": "run-a",
+            "nodeID": "node-a",
+            "attempt": 1,
+            "compensation": {
+                "type": "operator_review",
+                "approval_required": true,
+                "rollback_instruction": "remove the posted message"
+            }
+        }));
+        let mut succeeded = action("action-replay-succeeded", "posted", None);
+        succeeded.idempotency_key = failed.idempotency_key.clone();
+        succeeded.metadata = Some(json!({
+            "automationRunID": "run-a",
+            "nodeID": "node-a",
+            "attempt": 2,
+            "compensation": {
+                "type": "operator_review",
+                "approval_required": true,
+                "rollback_instruction": "remove the posted message"
+            }
+        }));
+        succeeded.updated_at_ms = 3_000;
+        succeeded.receipt = Some(json!({
+            "result": {"status": "posted"}
+        }));
+
+        record_external_action_reliability_bridge(&path, scope.clone(), &failed)
+            .await
+            .expect("failed bridge");
+        let failed_store = load_stateful_reliability(&path);
+        assert_eq!(failed_store.tool_effects.len(), 1);
+        assert_eq!(failed_store.dead_letters.len(), 1);
+        assert_eq!(failed_store.compensations.len(), 1);
+
+        let replay_effect = record_external_action_reliability_bridge(&path, scope, &succeeded)
+            .await
+            .expect("success bridge");
+
+        assert_eq!(replay_effect.status, StatefulToolEffectStatus::Succeeded);
+        assert!(replay_effect.compensation_id.is_none());
+        let store = load_stateful_reliability(&path);
+        assert_eq!(store.outbox.len(), 1);
+        assert_eq!(store.tool_effects.len(), 1);
+        assert_eq!(store.dead_letters.len(), 0);
+        assert_eq!(store.compensations.len(), 0);
+        assert_eq!(store.outbox[0].status, StatefulOutboxStatus::Sent);
+        assert!(store.outbox[0].dead_letter_id.is_none());
+        assert!(store.outbox[0].compensation_id.is_none());
+        assert_eq!(
+            store.tool_effects[0].action_id.as_deref(),
+            Some("action-replay-succeeded")
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn failed_external_action_bridge_creates_tenant_filtered_dead_letter() {
         let path = std::env::temp_dir().join(format!(
             "tandem-stateful-reliability-{}.json",
@@ -1217,6 +1360,103 @@ mod tests {
         assert_eq!(
             store.dead_letters[0].compensation_id.as_deref(),
             Some(store.compensations[0].compensation_id.as_str())
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn operator_recovery_updates_are_tenant_scoped() {
+        let path = std::env::temp_dir().join(format!(
+            "tandem-stateful-reliability-{}.json",
+            Uuid::new_v4()
+        ));
+        let tenant_a = tenant("org-a", "workspace-a");
+        let tenant_b = tenant("org-b", "workspace-b");
+        let scope = StatefulRuntimeScope::from_tenant_context(tenant_a.clone());
+        let mut record = action(
+            "action-tenant-compensation",
+            "failed",
+            Some("provider timeout"),
+        );
+        record.metadata = Some(json!({
+            "automationRunID": "run-a",
+            "nodeID": "node-a",
+            "attempt": 2,
+            "tool": "SendMessage",
+            "input": {"message": "hello"},
+            "compensation": {
+                "type": "operator_review",
+                "approval_required": true,
+                "rollback_instruction": "remove the posted message"
+            }
+        }));
+        record_external_action_reliability_bridge(&path, scope, &record)
+            .await
+            .expect("bridge");
+        let store = load_stateful_reliability(&path);
+        let compensation_id = store.compensations[0].compensation_id.clone();
+        let dead_letter_id = store.dead_letters[0].dead_letter_id.clone();
+
+        let wrong_compensation = mark_compensation_status(
+            &path,
+            &tenant_b,
+            &compensation_id,
+            StatefulCompensationStatus::Completed,
+            3_000,
+        )
+        .await
+        .expect("wrong tenant compensation update");
+        assert!(wrong_compensation.is_none());
+
+        let updated_compensation = mark_compensation_status(
+            &path,
+            &tenant_a,
+            &compensation_id,
+            StatefulCompensationStatus::Completed,
+            4_000,
+        )
+        .await
+        .expect("tenant compensation update")
+        .expect("updated compensation");
+        assert_eq!(
+            updated_compensation.status,
+            StatefulCompensationStatus::Completed
+        );
+
+        let wrong_dead_letter = mark_dead_letter_disposition(
+            &path,
+            &tenant_b,
+            &dead_letter_id,
+            StatefulDeadLetterStatus::LinkedToCompensation,
+            "linked_to_compensation",
+            Some("wrong tenant".to_string()),
+            operator_principal(Some("operator-b")),
+            5_000,
+        )
+        .await
+        .expect("wrong tenant dead letter update");
+        assert!(wrong_dead_letter.is_none());
+
+        let updated_dead_letter = mark_dead_letter_disposition(
+            &path,
+            &tenant_a,
+            &dead_letter_id,
+            StatefulDeadLetterStatus::LinkedToCompensation,
+            "linked_to_compensation",
+            Some("compensation completed".to_string()),
+            operator_principal(Some("operator-a")),
+            6_000,
+        )
+        .await
+        .expect("tenant dead letter update")
+        .expect("updated dead letter");
+        assert_eq!(
+            updated_dead_letter.status,
+            StatefulDeadLetterStatus::LinkedToCompensation
+        );
+        assert_eq!(
+            updated_dead_letter.operator_disposition.as_deref(),
+            Some("linked_to_compensation")
         );
         let _ = std::fs::remove_file(path);
     }
