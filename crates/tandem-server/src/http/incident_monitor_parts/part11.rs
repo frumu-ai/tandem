@@ -517,13 +517,8 @@ fn incident_monitor_assessment_probe_scoped_intake(
         let key_id = incident_monitor_posture_str(key, "key_id").unwrap_or("unknown_intake_key");
         let project_id = incident_monitor_posture_str(key, "project_id").unwrap_or("unknown_project");
         let scopes = incident_monitor_posture_string_array(key, &["scopes"]);
-        let report_only = !scopes.is_empty()
-            && scopes
-                .iter()
-                .all(|scope| scope == "incident_monitor:report" || scope == "incident_monitor:report")
-            && scopes
-                .iter()
-                .any(|scope| scope == "incident_monitor:report" || scope == "incident_monitor:report");
+        let report_only =
+            !scopes.is_empty() && scopes.iter().all(|scope| scope == "incident_monitor:report");
         results.push(incident_monitor_assessment_result(
             "scoped_intake_restriction",
             json!({

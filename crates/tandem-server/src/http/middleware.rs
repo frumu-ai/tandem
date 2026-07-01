@@ -50,7 +50,7 @@ pub(super) async fn auth_gate(
         return next.run(request).await;
     }
     let runtime_auth_mode = resolve_memory_context_runtime_auth_mode();
-    if path == "/incident-monitor/intake/report" || path == "/incident-monitor/intake/report" {
+    if path == "/incident-monitor/intake/report" {
         if !runtime_auth_mode_requires_transport_token(runtime_auth_mode)
             && !attach_enterprise_request_context_for_mode(&state, &mut request, runtime_auth_mode)
                 .await
