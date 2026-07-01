@@ -208,18 +208,27 @@ fn bug_monitor_posture_check_automation_authority(
             );
         }
 
-        for agent in bug_monitor_posture_array(automation, &["agents"]) {
+        let agents = bug_monitor_posture_array(automation, &["agents"]);
+        let nodes = bug_monitor_posture_array(automation, &["nodes"]);
+        let mut agent_allowlists = std::collections::BTreeMap::<String, Vec<String>>::new();
+        let mut agent_has_approval_policy = std::collections::BTreeMap::<String, bool>::new();
+        let mut agent_names = std::collections::BTreeMap::<String, String>::new();
+
+        for agent in agents {
             let agent_id = bug_monitor_posture_str(agent, "agent_id").unwrap_or("unknown_agent");
             let agent_name = bug_monitor_posture_str(agent, "display_name").unwrap_or(agent_id);
-            let agent_has_approval = bug_monitor_posture_has_non_empty(agent.get("approval_policy"))
-                || bug_monitor_posture_agent_has_required_gate(automation, agent_id);
             let allowlist = bug_monitor_posture_string_array(agent, &["tool_policy", "allowlist"]);
-            let mutating_tools = allowlist
-                .iter()
-                .filter(|tool| bug_monitor_posture_tool_is_mutating(tool))
-                .cloned()
-                .collect::<Vec<_>>();
-            if !mutating_tools.is_empty() && !agent_has_approval {
+            let approval_required_tools =
+                bug_monitor_posture_approval_required_tools(allowlist.as_slice());
+            let has_approval_policy =
+                bug_monitor_posture_has_non_empty(agent.get("approval_policy"));
+            agent_allowlists.insert(agent_id.to_string(), allowlist);
+            agent_has_approval_policy.insert(agent_id.to_string(), has_approval_policy);
+            agent_names.insert(agent_id.to_string(), agent_name.to_string());
+            if !approval_required_tools.is_empty()
+                && !has_approval_policy
+                && !bug_monitor_posture_agent_has_nodes(nodes, agent_id)
+            {
                 bug_monitor_posture_push_finding(
                     findings,
                     seen,
@@ -227,9 +236,9 @@ fn bug_monitor_posture_check_automation_authority(
                     "high_risk_tool_without_approval",
                     "missing_approval",
                     "high",
-                    format!("Agent `{agent_name}` can use mutating tools without approval"),
+                    format!("Agent `{agent_name}` can use approval-required tools without approval"),
                     format!(
-                        "Agent `{agent_id}` allows mutating tools but has no approval policy or required approval gate."
+                        "Agent `{agent_id}` allows approval-required tools but has no approval policy or required approval gate."
                     ),
                     vec![json!({
                         "kind": "automation_agent",
@@ -278,7 +287,7 @@ fn bug_monitor_posture_check_automation_authority(
             }
         }
 
-        for node in bug_monitor_posture_array(automation, &["nodes"]) {
+        for node in nodes {
             let node_id = bug_monitor_posture_str(node, "node_id").unwrap_or("unknown_node");
             let node_agent_id = bug_monitor_posture_str(node, "agent_id").unwrap_or_default();
             let node_gate_required = node
@@ -286,13 +295,40 @@ fn bug_monitor_posture_check_automation_authority(
                 .and_then(|gate| gate.get("required"))
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            let node_allowlist = bug_monitor_posture_string_array(node, &["tool_policy", "allowlist"]);
-            let node_mutating_tools = node_allowlist
-                .iter()
-                .filter(|tool| bug_monitor_posture_tool_is_mutating(tool))
-                .cloned()
-                .collect::<Vec<_>>();
-            if !node_mutating_tools.is_empty() && !node_gate_required {
+            let node_has_explicit_tool_policy = node
+                .get("tool_policy")
+                .is_some_and(|value| !value.is_null());
+            let effective_allowlist = if node_has_explicit_tool_policy {
+                bug_monitor_posture_string_array(node, &["tool_policy", "allowlist"])
+            } else {
+                agent_allowlists
+                    .get(node_agent_id)
+                    .cloned()
+                    .unwrap_or_default()
+            };
+            let node_approval_required_tools =
+                bug_monitor_posture_approval_required_tools(effective_allowlist.as_slice());
+            let agent_approval_policy = agent_has_approval_policy
+                .get(node_agent_id)
+                .copied()
+                .unwrap_or(false);
+            if !node_approval_required_tools.is_empty()
+                && !node_gate_required
+                && !agent_approval_policy
+            {
+                let tool_policy_evidence_path = if node_has_explicit_tool_policy {
+                    format!(
+                        "inventory.automation_specs[{automation_id}].nodes[{node_id}].tool_policy.allowlist"
+                    )
+                } else {
+                    format!(
+                        "inventory.automation_specs[{automation_id}].agents[{node_agent_id}].tool_policy.allowlist"
+                    )
+                };
+                let node_agent_name = agent_names
+                    .get(node_agent_id)
+                    .map(String::as_str)
+                    .unwrap_or(node_agent_id);
                 bug_monitor_posture_push_finding(
                     findings,
                     seen,
@@ -300,9 +336,9 @@ fn bug_monitor_posture_check_automation_authority(
                     "high_risk_tool_without_approval",
                     "missing_approval",
                     "high",
-                    format!("Automation node `{node_id}` can call mutating tools without a required gate"),
+                    format!("Automation node `{node_id}` can call approval-required tools without a required gate"),
                     format!(
-                        "Node `{node_id}` allows mutating tools and does not declare a required approval gate."
+                        "Node `{node_id}` for agent `{node_agent_name}` can use approval-required tools and does not declare a required approval gate."
                     ),
                     vec![json!({
                         "kind": "automation_node",
@@ -311,9 +347,7 @@ fn bug_monitor_posture_check_automation_authority(
                         "agent_id": node_agent_id,
                     })],
                     vec![
-                        bug_monitor_posture_evidence_ref(format!(
-                            "inventory.automation_specs[{automation_id}].nodes[{node_id}].tool_policy.allowlist"
-                        )),
+                        bug_monitor_posture_evidence_ref(tool_policy_evidence_path),
                         bug_monitor_posture_evidence_ref(format!(
                             "inventory.automation_specs[{automation_id}].nodes[{node_id}].gate.required"
                         )),
@@ -794,16 +828,26 @@ fn bug_monitor_posture_has_non_empty(value: Option<&Value>) -> bool {
     }
 }
 
-fn bug_monitor_posture_agent_has_required_gate(automation: &Value, agent_id: &str) -> bool {
-    bug_monitor_posture_array(automation, &["nodes"])
+fn bug_monitor_posture_agent_has_nodes(nodes: &[Value], agent_id: &str) -> bool {
+    nodes
         .iter()
-        .filter(|node| bug_monitor_posture_str(node, "agent_id") == Some(agent_id))
-        .any(|node| {
-            node.get("gate")
-                .and_then(|gate| gate.get("required"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
+        .any(|node| bug_monitor_posture_str(node, "agent_id") == Some(agent_id))
+}
+
+fn bug_monitor_posture_approval_required_tools(allowlist: &[String]) -> Vec<String> {
+    if tandem_tools::approval_classifier::allowlist_is_wildcard(allowlist) {
+        return allowlist.to_vec();
+    }
+    allowlist
+        .iter()
+        .filter(|tool| {
+            matches!(
+                tandem_tools::approval_classifier::classify(tool),
+                tandem_tools::approval_classifier::ApprovalClassification::RequiresApproval
+            )
         })
+        .cloned()
+        .collect()
 }
 
 fn bug_monitor_posture_tenant_context_gap(value: Option<&Value>) -> bool {
@@ -838,31 +882,6 @@ fn bug_monitor_posture_option_gap(value: Option<&Value>) -> bool {
         }
         _ => true,
     }
-}
-
-fn bug_monitor_posture_tool_is_mutating(tool: &str) -> bool {
-    let tool = tool.trim().to_ascii_lowercase();
-    if tool.is_empty()
-        || tool == "read"
-        || tool.ends_with(".read")
-        || tool == "list"
-        || tool.ends_with(".list")
-        || tool.starts_with("list_")
-    {
-        return false;
-    }
-    tool == "*"
-        || tool == "write"
-        || tool == "shell"
-        || tool.contains("write")
-        || tool.contains("create")
-        || tool.contains("update")
-        || tool.contains("delete")
-        || tool.contains("publish")
-        || tool.contains("execute")
-        || tool.contains("merge")
-        || tool.contains("deploy")
-        || tool.contains("post")
 }
 
 fn bug_monitor_posture_destination_is_external(destination: &Value) -> bool {

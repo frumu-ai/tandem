@@ -61,6 +61,107 @@ async fn bug_monitor_posture_checks_detects_unapproved_write_tool_and_mcp_gap() 
 
 #[tokio::test]
 #[serial_test::serial(bug_monitor_http)]
+async fn bug_monitor_posture_checks_uses_shared_approval_classifier_for_tools() {
+    let state = test_state().await;
+    let workspace = tempfile::tempdir().expect("posture classifier workspace");
+    let mut automation =
+        sample_authority_inventory_automation(workspace.path().display().to_string());
+    automation.automation_id = "auto-posture-classifier".to_string();
+    automation.set_tenant_context(&tandem_types::TenantContext::explicit_user_workspace(
+        "org-posture",
+        "workspace-posture",
+        None,
+        "security-admin",
+    ));
+    automation.agents[0].approval_policy = None;
+    automation.agents[0].tool_policy.allowlist = vec![
+        "read".to_string(),
+        "bash".to_string(),
+        "edit".to_string(),
+        "patch".to_string(),
+        "git_push".to_string(),
+    ];
+    automation.flow.nodes[0].gate = None;
+    automation.flow.nodes[0].tool_policy = None;
+    state
+        .put_automation_v2(automation)
+        .await
+        .expect("classifier automation");
+    let app = app_router(state);
+
+    let payload = get_bug_monitor_posture_checks_for_tenant(
+        app,
+        "/bug-monitor/security/posture-checks?rules=high_risk_tool_without_approval",
+        "org-posture",
+        "workspace-posture",
+        "security-admin",
+    )
+    .await;
+    let findings = payload["findings"].as_array().expect("findings");
+
+    assert!(findings.iter().any(|finding| {
+        finding["rule_id"].as_str() == Some("high_risk_tool_without_approval")
+            && finding["affected_objects"][0]["id"].as_str() == Some("publish")
+    }));
+}
+
+#[tokio::test]
+#[serial_test::serial(bug_monitor_http)]
+async fn bug_monitor_posture_checks_scopes_inherited_agent_allowlist_to_each_node() {
+    let state = test_state().await;
+    let workspace = tempfile::tempdir().expect("posture scoped node workspace");
+    let mut automation =
+        sample_authority_inventory_automation(workspace.path().display().to_string());
+    automation.automation_id = "auto-posture-node-scope".to_string();
+    automation.set_tenant_context(&tandem_types::TenantContext::explicit_user_workspace(
+        "org-posture",
+        "workspace-posture",
+        None,
+        "security-admin",
+    ));
+    automation.agents[0].approval_policy = None;
+    automation.agents[0].tool_policy.allowlist = vec!["bash".to_string()];
+    automation.flow.nodes[0].node_id = "approved".to_string();
+    automation.flow.nodes[0].tool_policy = None;
+    automation.flow.nodes[0].gate = Some(crate::AutomationApprovalGate {
+        required: true,
+        decisions: vec!["approve".to_string(), "reject".to_string()],
+        rework_targets: vec!["approved".to_string()],
+        instructions: Some("Review before running shell".to_string()),
+        expiry_policy: None,
+    });
+    let mut ungated = automation.flow.nodes[0].clone();
+    ungated.node_id = "ungated".to_string();
+    ungated.gate = None;
+    automation.flow.nodes.push(ungated);
+    state
+        .put_automation_v2(automation)
+        .await
+        .expect("node scope automation");
+    let app = app_router(state);
+
+    let payload = get_bug_monitor_posture_checks_for_tenant(
+        app,
+        "/bug-monitor/security/posture-checks?rules=high_risk_tool_without_approval",
+        "org-posture",
+        "workspace-posture",
+        "security-admin",
+    )
+    .await;
+    let findings = payload["findings"].as_array().expect("findings");
+
+    assert!(findings.iter().any(|finding| {
+        finding["rule_id"].as_str() == Some("high_risk_tool_without_approval")
+            && finding["affected_objects"][0]["id"].as_str() == Some("ungated")
+    }));
+    assert!(!findings.iter().any(|finding| {
+        finding["rule_id"].as_str() == Some("high_risk_tool_without_approval")
+            && finding["affected_objects"][0]["id"].as_str() == Some("approved")
+    }));
+}
+
+#[tokio::test]
+#[serial_test::serial(bug_monitor_http)]
 async fn bug_monitor_posture_checks_detects_broad_source_and_missing_tenant_context() {
     let state = test_state().await;
     let workspace = tempfile::tempdir().expect("posture source workspace");
