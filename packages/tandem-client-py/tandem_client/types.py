@@ -1018,6 +1018,20 @@ class BugMonitorAssessmentReportResponse(BaseModel):
     sensitive_values: Optional[dict[str, Any]] = None
 
 
+class BugMonitorDeploymentCardsResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    schema_version: int
+    generated_at_ms: Optional[int] = None
+    scope: Optional[dict[str, Any]] = None
+    card_policy: Optional[dict[str, Any]] = None
+    counts: Optional[dict[str, Any]] = None
+    cards: list[dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
+    markdown_export: Optional[str] = None
+    authority_inventory: Optional[dict[str, Any]] = None
+    sensitive_values: Optional[dict[str, Any]] = None
+
+
 class BugMonitorIncidentRecord(BaseModel):
     model_config = ConfigDict(extra="allow")
     incident_id: str

@@ -5,6 +5,7 @@ import type {
   BugMonitorAssessmentReportResponse,
   BugMonitorAssessmentProbeRunResponse,
   BugMonitorConfigResponse,
+  BugMonitorDeploymentCardsResponse,
   BugMonitorDestinationConfig,
   BugMonitorIntakeKeyCreateInput,
   BugMonitorIntakeKeyCreateResponse,
@@ -535,6 +536,82 @@ describe("Bug Monitor external project public types", () => {
         persist_artifact: true,
         route_destination_ids: ["audit-webhook"],
         include_raw_payloads: true,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("generates deployment cards through the SDK helper", async () => {
+    const client = new TandemClient({ baseUrl: "http://localhost:39731", token: "test-token" });
+    const originalFetch = globalThis.fetch;
+    const calls: Array<{ url: string; method: string; body?: string }> = [];
+    const response: BugMonitorDeploymentCardsResponse = {
+      schema_version: 1,
+      scope: {
+        source: "bug_monitor_deployment_cards",
+        read_only: true,
+      },
+      cards: [
+        {
+          card_id: "automation:auto-1",
+          card_kind: "automation",
+          business_owner: "Security Ops",
+          linked_evidence: {
+            operator_refs: ["runbook:auto-1"],
+          },
+        },
+      ],
+      findings: [],
+      markdown_export: "# Incident Monitor Deployment Cards",
+    };
+
+    globalThis.fetch = (async (input, init) => {
+      calls.push({
+        url: String(input),
+        method: String(init?.method ?? "GET"),
+        body: String(init?.body ?? ""),
+      });
+      return new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const cards = await client.bugMonitor.generateDeploymentCards({
+        includeMarkdown: true,
+        includeRawInventory: true,
+        defaults: {
+          business_owner: "Security Ops",
+          review_cadence_days: 30,
+        },
+        metadata: {
+          "automation:auto-1": {
+            intended_purpose: "Govern payment incident follow-up",
+            evidence_refs: ["runbook:auto-1"],
+          },
+        },
+      });
+      expect(cards.cards[0]?.card_id).toBe("automation:auto-1");
+      expect(cards.markdown_export).toContain("Deployment Cards");
+      expect(calls[0]).toMatchObject({
+        url: "http://localhost:39731/bug-monitor/security/deployment-cards",
+        method: "POST",
+      });
+      expect(JSON.parse(calls[0]?.body ?? "{}")).toEqual({
+        include_markdown: true,
+        include_raw_inventory: true,
+        defaults: {
+          business_owner: "Security Ops",
+          review_cadence_days: 30,
+        },
+        metadata: {
+          "automation:auto-1": {
+            intended_purpose: "Govern payment incident follow-up",
+            evidence_refs: ["runbook:auto-1"],
+          },
+        },
       });
     } finally {
       globalThis.fetch = originalFetch;
