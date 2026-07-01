@@ -89,6 +89,12 @@ redacted actor, model, tool, action, policy, approval state, risk category,
 blast radius, and external correlation ids; SDK models and destination payloads
 expose the context, and route preview can match risk categories for targeted
 safety routing.
+Incident Monitor can now generate production deployment cards for governed
+agents, workflows, monitored sources, and Tandem self-monitoring. The read-only
+endpoint combines authority inventory with operator-supplied purpose, owner,
+accountability, approval, escalation, data-classification, and review metadata,
+exports JSON/Markdown cards, and returns structured posture findings when
+required production-governance fields are missing.
 Incident Monitor setup is now available from Control Panel Settings. Operators
 can edit source, destination, route, default destination, and safety-default
 configuration in one place, run route previews before publishing, inspect

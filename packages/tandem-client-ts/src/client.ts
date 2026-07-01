@@ -82,6 +82,8 @@ import type {
   BugMonitorAssessmentReportResponse,
   BugMonitorAssessmentProbeRunInput,
   BugMonitorAssessmentProbeRunResponse,
+  BugMonitorDeploymentCardsInput,
+  BugMonitorDeploymentCardsResponse,
   BugMonitorPostureChecksOptions,
   BugMonitorPostureChecksResponse,
   BugMonitorDestinationConfig,
@@ -910,6 +912,27 @@ class BugMonitor {
     delete body.includeRawPayloads;
     return this.req<BugMonitorAssessmentReportResponse>(
       "/bug-monitor/security/assessment-report",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      }
+    );
+  }
+
+  async generateDeploymentCards(
+    input?: BugMonitorDeploymentCardsInput
+  ): Promise<BugMonitorDeploymentCardsResponse> {
+    const body = { ...(input ?? {}) };
+    if (body.include_markdown === undefined && body.includeMarkdown !== undefined) {
+      body.include_markdown = body.includeMarkdown;
+    }
+    if (body.include_raw_inventory === undefined && body.includeRawInventory !== undefined) {
+      body.include_raw_inventory = body.includeRawInventory;
+    }
+    delete body.includeMarkdown;
+    delete body.includeRawInventory;
+    return this.req<BugMonitorDeploymentCardsResponse>(
+      "/bug-monitor/security/deployment-cards",
       {
         method: "POST",
         body: JSON.stringify(body),

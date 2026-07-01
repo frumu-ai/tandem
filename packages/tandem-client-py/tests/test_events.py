@@ -11,6 +11,7 @@ from tandem_client.types import (
     BugMonitorAssessmentReportResponse,
     BugMonitorAssessmentProbeRunResponse,
     BugMonitorConfigResponse,
+    BugMonitorDeploymentCardsResponse,
     BugMonitorDraftRecord,
     BugMonitorIncidentRecord,
     BugMonitorPostRecord,
@@ -589,6 +590,65 @@ async def test_bug_monitor_assessment_report_sdk_helper() -> None:
     assert report.markdown_summary is not None
     assert "Security Gap Assessment" in report.markdown_summary
     assert report_route.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_bug_monitor_deployment_cards_sdk_helper() -> None:
+    cards_payload = {
+        "schema_version": 1,
+        "scope": {
+            "source": "bug_monitor_deployment_cards",
+            "read_only": True,
+        },
+        "cards": [
+            {
+                "card_id": "automation:auto-1",
+                "card_kind": "automation",
+                "business_owner": "Security Ops",
+                "linked_evidence": {"operator_refs": ["runbook:auto-1"]},
+            }
+        ],
+        "findings": [],
+        "markdown_export": "# Incident Monitor Deployment Cards",
+    }
+    cards_route = respx.post(
+        "http://localhost:39731/bug-monitor/security/deployment-cards",
+        json={
+            "defaults": {
+                "business_owner": "Security Ops",
+                "review_cadence_days": 30,
+            },
+            "metadata": {
+                "automation:auto-1": {
+                    "intended_purpose": "Govern payment incident follow-up",
+                    "evidence_refs": ["runbook:auto-1"],
+                }
+            },
+            "include_markdown": True,
+            "include_raw_inventory": True,
+        },
+    ).mock(return_value=httpx.Response(200, json=cards_payload))
+
+    async with TandemClient(base_url="http://localhost:39731", token="token") as client:
+        cards = await client.bug_monitor.generate_deployment_cards(
+            defaults={"business_owner": "Security Ops", "review_cadence_days": 30},
+            metadata={
+                "automation:auto-1": {
+                    "intended_purpose": "Govern payment incident follow-up",
+                    "evidence_refs": ["runbook:auto-1"],
+                }
+            },
+            include_markdown=True,
+            include_raw_inventory=True,
+        )
+
+    typed_cards = BugMonitorDeploymentCardsResponse.model_validate(cards_payload)
+    assert cards.schema_version == typed_cards.schema_version
+    assert cards.cards[0]["card_id"] == "automation:auto-1"
+    assert cards.markdown_export is not None
+    assert "Deployment Cards" in cards.markdown_export
+    assert cards_route.called
 
 
 @pytest.mark.asyncio

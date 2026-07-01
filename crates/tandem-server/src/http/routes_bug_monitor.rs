@@ -62,6 +62,14 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
             post(generate_bug_monitor_security_assessment_report),
         )
         .route(
+            "/bug-monitor/security/deployment-cards",
+            post(generate_bug_monitor_deployment_cards),
+        )
+        .route(
+            "/failure-reporter/security/deployment-cards",
+            post(generate_bug_monitor_deployment_cards),
+        )
+        .route(
             "/bug-monitor/route-preview",
             post(preview_bug_monitor_route),
         )

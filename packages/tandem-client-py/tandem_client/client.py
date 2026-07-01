@@ -37,6 +37,7 @@ from .types import (
     BugMonitorAuthorityInventoryResponse,
     BugMonitorAssessmentReportResponse,
     BugMonitorAssessmentProbeRunResponse,
+    BugMonitorDeploymentCardsResponse,
     BugMonitorDestinationConfig,
     BugMonitorConfigResponse,
     BugMonitorDraftListResponse,
@@ -643,6 +644,30 @@ class _BugMonitor:
         )
         res.raise_for_status()
         return BugMonitorAssessmentReportResponse.model_validate(res.json())
+
+    async def generate_deployment_cards(
+        self,
+        *,
+        defaults: Optional[dict[str, Any]] = None,
+        metadata: Optional[dict[str, dict[str, Any]]] = None,
+        include_markdown: Optional[bool] = None,
+        include_raw_inventory: Optional[bool] = None,
+    ) -> BugMonitorDeploymentCardsResponse:
+        payload: dict[str, Any] = {}
+        if defaults:
+            payload["defaults"] = defaults
+        if metadata:
+            payload["metadata"] = metadata
+        if include_markdown is not None:
+            payload["include_markdown"] = include_markdown
+        if include_raw_inventory is not None:
+            payload["include_raw_inventory"] = include_raw_inventory
+        res = await self._http.post(
+            "/bug-monitor/security/deployment-cards",
+            json=payload,
+        )
+        res.raise_for_status()
+        return BugMonitorDeploymentCardsResponse.model_validate(res.json())
 
     async def recompute_status(self) -> BugMonitorStatusResponse:
         res = await self._http.post("/bug-monitor/status/recompute")

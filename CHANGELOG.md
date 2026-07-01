@@ -79,6 +79,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   metadata, policy and approval state, risk category, blast radius, external
   correlation ids, SDK exposure, destination payload support, and route-preview
   matching by risk category.
+- Added Incident Monitor deployment-card generation for production authority
+  governance, with read-only JSON/Markdown exports from authority inventory,
+  operator metadata overlays, required-field posture findings, self-monitoring
+  boundaries, evidence refs, SDK helpers, and redaction coverage.
 - Added an Incident Monitor setup surface in Settings for sources,
   destinations, routing, safety defaults, route preview, destination readiness,
   destination-filtered posts, and SDK destination/route helpers.

@@ -1359,6 +1359,71 @@ export interface BugMonitorAssessmentReportResponse {
   [key: string]: unknown;
 }
 
+export interface BugMonitorDeploymentCardMetadata {
+  intended_purpose?: string;
+  purpose?: string;
+  business_owner?: string;
+  accountable_team?: string;
+  autonomy_level?: string;
+  allowed_actions?: string[];
+  prohibited_actions?: string[];
+  data_classification?: string;
+  approval_protocol?: string;
+  escalation_protocol?: string;
+  known_limitations?: string[];
+  residual_risks?: string[];
+  review_cadence_days?: number;
+  next_reassessment_at_ms?: number;
+  evidence_refs?: string[];
+  [key: string]: unknown;
+}
+
+export interface BugMonitorDeploymentCardsInput {
+  defaults?: BugMonitorDeploymentCardMetadata;
+  metadata?: Record<string, BugMonitorDeploymentCardMetadata>;
+  include_markdown?: boolean;
+  includeMarkdown?: boolean;
+  include_raw_inventory?: boolean;
+  includeRawInventory?: boolean;
+  [key: string]: unknown;
+}
+
+export interface BugMonitorDeploymentCardRecord {
+  card_id: string;
+  card_kind: string;
+  target?: JsonObject;
+  system_boundary?: string;
+  source_kind?: BugMonitorSourceKind | string | null;
+  intended_purpose?: string | null;
+  business_owner?: string | null;
+  accountable_team?: string | null;
+  autonomy_level?: string | null;
+  allowed_actions?: string[];
+  prohibited_actions?: string[];
+  authority?: JsonObject;
+  data?: JsonObject;
+  approval_and_escalation?: JsonObject;
+  known_limitations?: string[];
+  residual_risks?: string[];
+  review?: JsonObject;
+  linked_evidence?: JsonObject;
+  [key: string]: unknown;
+}
+
+export interface BugMonitorDeploymentCardsResponse {
+  schema_version: number;
+  generated_at_ms?: number;
+  scope?: JsonObject;
+  card_policy?: JsonObject;
+  counts?: JsonObject;
+  cards: BugMonitorDeploymentCardRecord[];
+  findings: JsonObject[];
+  markdown_export?: string | null;
+  authority_inventory?: JsonObject;
+  sensitive_values?: JsonObject;
+  [key: string]: unknown;
+}
+
 export interface BugMonitorIncidentRecord {
   incident_id: string;
   fingerprint?: string;

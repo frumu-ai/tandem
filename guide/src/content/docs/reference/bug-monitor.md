@@ -160,6 +160,22 @@ async with TandemClient(base_url="http://localhost:39731", token="...") as clien
         source_kind="tandem_monitor",
         route_destination_ids=[destination.destination_id for destination in destinations],
     )
+    cards = await client.bug_monitor.generate_deployment_cards(
+        defaults={
+            "business_owner": "Security Ops",
+            "accountable_team": "AI Governance",
+            "autonomy_level": "supervised",
+            "data_classification": "internal",
+            "approval_protocol": "Human approval before high-risk publish",
+            "escalation_protocol": "Escalate regulatory/legal risk to security lead",
+            "review_cadence_days": 30,
+        },
+        metadata={
+            "tandem:self_monitoring:bug_monitor": {
+                "intended_purpose": "Route governed incident evidence",
+            }
+        },
+    )
 
     await client.bug_monitor.report({
         "title": "Workflow failed while establishing GitHub context",
@@ -175,6 +191,7 @@ async with TandemClient(base_url="http://localhost:39731", token="...") as clien
 - `getStatus()` / `get_status()`
 - `getAuthorityInventory()` / `get_authority_inventory()`
 - `generateAssessmentReport()` / `generate_assessment_report()`
+- `generateDeploymentCards()` / `generate_deployment_cards()`
 - `recomputeStatus()` / `recompute_status()`
 - `pause()` / `pause()`
 - `resume()` / `resume()`
@@ -214,6 +231,7 @@ async with TandemClient(base_url="http://localhost:39731", token="...") as clien
 - Destination and route mutations require the full engine API token.
 - Destination/route config changes, intake-key lifecycle changes, and destination-router publish attempts/outcomes emit redacted audit events and protected audit-ledger rows.
 - Authority inventory is read-only and returns summarized evidence; it must not expose raw credentials, intake-key material, action receipts, or secret-backed destination values.
+- Deployment cards are read-only production-governance artifacts generated from authority inventory plus operator metadata. Missing required owner, accountability, escalation, data classification, or review fields return posture findings instead of silently passing.
 - Webhook destinations should use HTTPS, host allowlists, and env-backed secrets.
 - Secret redaction is enabled by default for Incident Monitor safety defaults. Report-level `redaction_profile` and source bindings can add stricter profiles for specific projects or sources.
 - `retention_days` is unset by default, so deployments should configure retention/export policy for reports, receipts, and protected audit evidence before production use. Source bindings can attach `retention_profile` labels for downstream policy.
