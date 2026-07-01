@@ -9,6 +9,7 @@ import {
   StaggerGroup,
   Toolbar,
 } from "../ui/index.tsx";
+import { EnterpriseScopeExplorer } from "../features/enterprise/EnterpriseScopeExplorer";
 import {
   useCreateEnterpriseConnector,
   useCreateEnterpriseConnectorCredentialRef,
@@ -2172,7 +2173,7 @@ function IngestionQuarantinesPanel({
   );
 }
 
-export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
+export function EnterpriseAdminPage({ api, navigate, toast }: AppPageProps) {
   const orgUnits = useEnterpriseOrgUnits();
   const orgUnitMemberships = useEnterpriseOrgUnitMemberships();
   const orgUnitAccessGrants = useEnterpriseOrgUnitAccessGrants();
@@ -2300,6 +2301,20 @@ export function EnterpriseAdminPage({ navigate, toast }: AppPageProps) {
           orgUnitsPayload={orgUnits.data}
           connectorsPayload={connectors.data}
           sourceBindingsPayload={sourceBindings.data}
+        />
+
+        <EnterpriseScopeExplorer
+          api={api}
+          navigate={navigate}
+          orgUnits={orgRows}
+          memberships={membershipRows}
+          accessGrants={accessGrantRows}
+          effectiveGrants={effectiveGrantRows}
+          connectors={connectorRows}
+          sourceBindings={bindingRows}
+          sourceObjects={objectRows}
+          loading={orgUnits.isLoading || orgUnitAccessGrants.isLoading || sourceBindings.isLoading}
+          error={orgUnits.error || orgUnitAccessGrants.error || sourceBindings.error}
         />
 
         <div className="grid gap-4 xl:grid-cols-3">
