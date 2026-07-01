@@ -959,6 +959,104 @@ export interface BugMonitorStatusResponse {
   status: BugMonitorStatusRow;
 }
 
+export interface BugMonitorAuthorityInventoryResponse {
+  schema_version: number;
+  generated_at_ms?: number;
+  scope?: JsonObject;
+  inventory: BugMonitorAuthorityInventory;
+  counts?: Record<string, number>;
+  sensitive_values?: JsonObject;
+  [key: string]: unknown;
+}
+
+export interface BugMonitorAuthorityInventory {
+  workflows?: BugMonitorAuthorityWorkflow[];
+  automation_specs?: BugMonitorAuthorityAutomationSpec[];
+  mcp?: JsonObject;
+  bug_monitor?: JsonObject;
+  destinations?: BugMonitorAuthorityDestination[];
+  routes?: BugMonitorAuthorityRoute[];
+  monitored_sources?: BugMonitorAuthorityMonitoredSource[];
+  scoped_intake_keys?: BugMonitorAuthorityIntakeKey[];
+  approval_rules?: JsonObject[];
+  pending_approvals?: JsonObject[];
+  governance_approval_requests?: JsonObject[];
+  policy_decisions?: JsonObject[];
+  external_publish_surfaces?: JsonObject;
+  [key: string]: unknown;
+}
+
+export interface BugMonitorAuthorityWorkflow {
+  workflow_id?: string;
+  name?: string;
+  enabled?: boolean;
+  source?: string | null;
+  steps?: JsonObject[];
+  hooks?: JsonObject[];
+  [key: string]: unknown;
+}
+
+export interface BugMonitorAuthorityAutomationSpec {
+  automation_id?: string;
+  name?: string;
+  status?: string;
+  creator_id?: string | null;
+  workspace_root?: string | null;
+  tenant_context?: JsonObject;
+  agents?: JsonObject[];
+  nodes?: JsonObject[];
+  [key: string]: unknown;
+}
+
+export interface BugMonitorAuthorityDestination {
+  destination_id?: string;
+  name?: string;
+  kind?: BugMonitorDestinationKind | string | null;
+  enabled?: boolean;
+  require_approval?: boolean;
+  allow_publish?: boolean | null;
+  custom_config_keys?: string[];
+  [key: string]: unknown;
+}
+
+export interface BugMonitorAuthorityRoute {
+  route_id?: string;
+  name?: string;
+  enabled?: boolean;
+  priority?: number;
+  destination_ids?: string[];
+  approval_policy?: BugMonitorApprovalPolicy | string | null;
+  match?: JsonObject;
+  [key: string]: unknown;
+}
+
+export interface BugMonitorAuthorityMonitoredSource {
+  project_id?: string;
+  source_id?: string | null;
+  name?: string;
+  enabled?: boolean;
+  paused?: boolean;
+  source_kind?: BugMonitorSourceKind | string | null;
+  allowed_destination_ids?: string[];
+  default_destination_ids?: string[];
+  tenant_id?: string | null;
+  workspace_id?: string | null;
+  approval_policy?: BugMonitorApprovalPolicy | string | null;
+  [key: string]: unknown;
+}
+
+export interface BugMonitorAuthorityIntakeKey {
+  key_id?: string;
+  project_id?: string;
+  name?: string;
+  enabled?: boolean;
+  scopes?: string[];
+  key_hash_present?: boolean;
+  created_at_ms?: number;
+  last_used_at_ms?: number | null;
+  [key: string]: unknown;
+}
+
 export interface BugMonitorIncidentRecord {
   incident_id: string;
   fingerprint?: string;

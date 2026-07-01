@@ -102,6 +102,16 @@ destination-router publish attempts, completions, approval-required outcomes,
 and failures. Scoped intake keys remain report-only under full API-token auth
 and cannot use route preview, publish, normal report, or intake-key management
 routes.
+Incident Monitor now exposes a read-only authority inventory for security
+posture assessment. The inventory summarizes workflows, Automation V2 specs,
+agents, tool/MCP policy, destinations, routes, monitored sources, scoped intake
+keys, approvals, policy decisions, and external publish surfaces while omitting
+raw credentials, intake-key material, secret-backed destination values, action
+receipts, and arbitrary metadata values. TypeScript and Python clients include
+helpers for the endpoint, and the docs now define AI Agent Security Posture
+positioning, packaging, demo narrative, report outline, self-monitoring
+boundaries, and comparisons with SAST, DAST, SIEM, CSPM, EDR, and traditional
+workflow automation without overclaiming full vulnerability scanning.
 The SDK destination removal helpers now also drop routes that would otherwise
 be left with no explicit destinations, preventing accidental fallback to the
 default destination set.

@@ -410,6 +410,18 @@ async fn bug_monitor_scoped_intake_key_cannot_call_privileged_routes() {
             .body(Body::empty())
             .expect("config request"),
         Request::builder()
+            .method("GET")
+            .uri("/bug-monitor/security/authority-inventory")
+            .header("x-tandem-bug-monitor-intake-key", raw_key)
+            .body(Body::empty())
+            .expect("authority inventory request"),
+        Request::builder()
+            .method("GET")
+            .uri("/failure-reporter/security/authority-inventory")
+            .header("x-tandem-bug-monitor-intake-key", raw_key)
+            .body(Body::empty())
+            .expect("failure reporter authority inventory request"),
+        Request::builder()
             .method("POST")
             .uri("/bug-monitor/route-preview")
             .header("content-type", "application/json")

@@ -77,6 +77,7 @@ import type {
   BugMonitorConfigRow,
   BugMonitorConfigResponse,
   BugMonitorStatusResponse,
+  BugMonitorAuthorityInventoryResponse,
   BugMonitorDestinationConfig,
   BugMonitorRouteConfig,
   BugMonitorIncidentRecord,
@@ -830,6 +831,12 @@ class BugMonitor {
 
   async getStatus(): Promise<BugMonitorStatusResponse> {
     return this.req<BugMonitorStatusResponse>("/bug-monitor/status");
+  }
+
+  async getAuthorityInventory(): Promise<BugMonitorAuthorityInventoryResponse> {
+    return this.req<BugMonitorAuthorityInventoryResponse>(
+      "/bug-monitor/security/authority-inventory"
+    );
   }
 
   async recomputeStatus(): Promise<BugMonitorStatusResponse> {

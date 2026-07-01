@@ -1,0 +1,579 @@
+use axum::extract::Extension;
+use tandem_types::{ApprovalListFilter, TenantContext};
+
+const BUG_MONITOR_AUTHORITY_INVENTORY_SCHEMA_VERSION: u64 = 1;
+const BUG_MONITOR_AUTHORITY_INVENTORY_LIMIT: usize = 100;
+
+pub(super) async fn get_bug_monitor_authority_inventory(
+    State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+) -> Response {
+    let config = state.bug_monitor_config().await;
+    let destinations = config.effective_destinations();
+    let routes = config.routes.clone();
+    let workflows = state.list_workflows().await;
+    let workflow_hooks = state.list_workflow_hooks(None).await;
+    let automations = state.list_automations_v2().await;
+    let intake_keys = state.list_bug_monitor_intake_keys().await;
+    let governance_approvals = state
+        .list_approval_requests_for_tenant(None, None, &tenant_context)
+        .await;
+    let pending_approvals = crate::http::approvals::list_pending_approvals(
+        &state,
+        &ApprovalListFilter {
+            org_id: Some(tenant_context.org_id.clone()),
+            workspace_id: Some(tenant_context.workspace_id.clone()),
+            source: None,
+            limit: Some(BUG_MONITOR_AUTHORITY_INVENTORY_LIMIT as u32),
+        },
+    )
+    .await;
+    let policy_decisions = state
+        .list_policy_decisions(&tenant_context, BUG_MONITOR_AUTHORITY_INVENTORY_LIMIT)
+        .await;
+    let external_actions = state
+        .list_external_actions(BUG_MONITOR_AUTHORITY_INVENTORY_LIMIT)
+        .await;
+    let mcp_snapshot = crate::http::mcp_inventory::mcp_inventory_snapshot(&state).await;
+    let mcp_inventory = authority_mcp_inventory(mcp_snapshot);
+
+    let monitored_sources = bug_monitor_monitored_sources_inventory(&config);
+    let destination_inventory = destinations
+        .iter()
+        .map(bug_monitor_destination_inventory)
+        .collect::<Vec<_>>();
+    let route_inventory = routes
+        .iter()
+        .map(bug_monitor_route_inventory)
+        .collect::<Vec<_>>();
+    let automation_inventory = automations
+        .iter()
+        .map(bug_monitor_automation_inventory)
+        .collect::<Vec<_>>();
+    let workflow_inventory = workflows
+        .iter()
+        .map(|workflow| bug_monitor_workflow_inventory(workflow, &workflow_hooks))
+        .collect::<Vec<_>>();
+
+    Json(json!({
+        "schema_version": BUG_MONITOR_AUTHORITY_INVENTORY_SCHEMA_VERSION,
+        "generated_at_ms": crate::now_ms(),
+        "scope": {
+            "tenant_context": tenant_context,
+            "source": "bug_monitor_authority_inventory",
+            "read_only": true,
+        },
+        "inventory": {
+            "workflows": workflow_inventory,
+            "automation_specs": automation_inventory,
+            "mcp": mcp_inventory,
+            "bug_monitor": {
+                "enabled": config.enabled,
+                "paused": config.paused,
+                "repo": config.repo,
+                "workspace_root": config.workspace_root,
+                "default_destination_ids": config.default_destination_ids,
+                "model_policy_present": config.model_policy.is_some(),
+                "provider_preference": config.provider_preference,
+                "auto_create_new_issues": config.auto_create_new_issues,
+                "require_approval_for_new_issues": config.require_approval_for_new_issues,
+                "auto_comment_on_matched_open_issues": config.auto_comment_on_matched_open_issues,
+                "safety_defaults": config.safety_defaults,
+                "updated_at_ms": config.updated_at_ms,
+            },
+            "destinations": destination_inventory,
+            "routes": route_inventory,
+            "monitored_sources": monitored_sources,
+            "scoped_intake_keys": intake_keys.iter().map(bug_monitor_intake_key_inventory).collect::<Vec<_>>(),
+            "approval_rules": bug_monitor_approval_rules_inventory(&automations, &destinations, &routes, &config),
+            "pending_approvals": pending_approvals.iter().map(bug_monitor_pending_approval_inventory).collect::<Vec<_>>(),
+            "governance_approval_requests": governance_approvals.iter().map(bug_monitor_governance_approval_inventory).collect::<Vec<_>>(),
+            "policy_decisions": policy_decisions.iter().map(bug_monitor_policy_decision_inventory).collect::<Vec<_>>(),
+            "external_publish_surfaces": {
+                "configured_destinations": destinations.iter().map(bug_monitor_external_publish_surface).collect::<Vec<_>>(),
+                "recent_actions": external_actions.iter().map(bug_monitor_external_action_inventory).collect::<Vec<_>>(),
+            },
+        },
+        "counts": {
+            "workflows": workflows.len(),
+            "automation_specs": automations.len(),
+            "mcp_servers": mcp_inventory.get("servers").and_then(Value::as_array).map(|rows| rows.len()).unwrap_or(0),
+            "destinations": destinations.len(),
+            "routes": routes.len(),
+            "monitored_sources": monitored_sources.len(),
+            "scoped_intake_keys": intake_keys.len(),
+            "pending_approvals": pending_approvals.len(),
+            "governance_approval_requests": governance_approvals.len(),
+            "policy_decisions": policy_decisions.len(),
+            "external_actions": external_actions.len(),
+        },
+        "sensitive_values": {
+            "policy": "redacted_or_summarized",
+            "omitted_fields": [
+                "bug_monitor_intake_key.key_hash",
+                "bug_monitor_intake_key.raw_key",
+                "destination.webhook_secret_ref_value",
+                "destination.config_values",
+                "workflow.action.with_values",
+                "automation.model_policy_values",
+                "automation.node.metadata_values",
+                "external_action.receipt",
+                "external_action.metadata",
+                "mcp.secret_refs",
+                "mcp.credential_binding",
+                "mcp.last_auth_challenge"
+            ],
+        },
+    }))
+    .into_response()
+}
+
+fn authority_mcp_inventory(snapshot: Value) -> Value {
+    let mut compact = crate::http::mcp_inventory::compact_mcp_inventory_for_tool_output(&snapshot);
+    strip_sensitive_mcp_inventory_keys(&mut compact);
+    compact
+}
+
+fn strip_sensitive_mcp_inventory_keys(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            map.remove("last_auth_challenge");
+            map.remove("credential_binding");
+            map.remove("secret_refs");
+            for child in map.values_mut() {
+                strip_sensitive_mcp_inventory_keys(child);
+            }
+        }
+        Value::Array(rows) => {
+            for child in rows {
+                strip_sensitive_mcp_inventory_keys(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn bug_monitor_destination_inventory(destination: &BugMonitorDestinationConfig) -> Value {
+    json!({
+        "destination_id": destination.destination_id,
+        "name": destination.name,
+        "kind": destination.kind,
+        "enabled": destination.enabled,
+        "require_approval": destination.require_approval,
+        "repo": destination.repo,
+        "mcp_server": destination.mcp_server,
+        "linear_team": destination.linear_team,
+        "linear_project": destination.linear_project,
+        "webhook_url_present": destination.webhook_url.as_ref().is_some_and(|value| !value.trim().is_empty()),
+        "webhook_secret_ref_present": destination.webhook_secret_ref.as_ref().is_some_and(|value| !value.trim().is_empty()),
+        "telemetry_path": destination.telemetry_path,
+        "mcp_tool": destination.mcp_tool,
+        "memory_category": destination.memory_category,
+        "route_tags": destination.route_tags,
+        "custom_config_keys": sorted_object_keys(destination.config.as_ref()),
+        "allow_publish": destination.config.as_ref().and_then(|value| value.get("allow_publish")).and_then(Value::as_bool),
+    })
+}
+
+fn bug_monitor_route_inventory(route: &BugMonitorRouteConfig) -> Value {
+    json!({
+        "route_id": route.route_id,
+        "name": route.name,
+        "enabled": route.enabled,
+        "priority": route.priority,
+        "destination_ids": route.destination_ids,
+        "approval_policy": route.approval_policy,
+        "match": {
+            "event_types": route.match_event_types,
+            "sources": route.match_sources,
+            "components": route.match_components,
+            "risk_levels": route.match_risk_levels,
+            "risk_categories": route.match_risk_categories,
+            "confidence": route.match_confidence,
+            "expected_destinations": route.match_expected_destinations,
+            "project_ids": route.match_project_ids,
+            "log_source_ids": route.match_log_source_ids,
+            "route_tags": route.match_route_tags,
+            "source_kinds": route.match_source_kinds,
+            "tenant_ids": route.match_tenant_ids,
+            "workspace_ids": route.match_workspace_ids,
+            "event_schema_versions": route.match_event_schema_versions,
+        },
+    })
+}
+
+fn bug_monitor_monitored_sources_inventory(config: &BugMonitorConfig) -> Vec<Value> {
+    let mut sources = Vec::new();
+    for project in &config.monitored_projects {
+        sources.push(json!({
+            "project_id": project.project_id,
+            "source_id": Value::Null,
+            "name": project.name,
+            "enabled": project.enabled,
+            "paused": project.paused,
+            "repo": project.repo,
+            "workspace_root": project.workspace_root,
+            "source_kind": project.source_kind,
+            "mcp_server": project.mcp_server,
+            "allowed_destination_ids": project.allowed_destination_ids,
+            "default_destination_ids": project.default_destination_ids,
+            "default_route_tags": project.default_route_tags,
+            "tenant_id": project.tenant_id,
+            "workspace_id": project.workspace_id,
+            "event_schema_version": project.event_schema_version,
+            "approval_policy": project.approval_policy,
+            "redaction_profile": project.redaction_profile,
+            "retention_profile": project.retention_profile,
+            "auto_create_new_issues": project.auto_create_new_issues,
+            "require_approval_for_new_issues": project.require_approval_for_new_issues,
+            "auto_comment_on_matched_open_issues": project.auto_comment_on_matched_open_issues,
+            "log_source_count": project.log_sources.len(),
+        }));
+        for source in &project.log_sources {
+            let binding = project.source_binding(Some(source));
+            sources.push(json!({
+                "project_id": project.project_id,
+                "source_id": source.source_id,
+                "name": project.name,
+                "enabled": source.enabled && project.enabled,
+                "paused": source.paused || project.paused,
+                "path": source.path,
+                "source_kind": source.source_kind.as_ref().unwrap_or(&project.source_kind),
+                "format": source.format,
+                "minimum_level": source.minimum_level,
+                "start_position": source.start_position,
+                "watch_interval_seconds": source.watch_interval_seconds,
+                "max_bytes_per_poll": source.max_bytes_per_poll,
+                "max_candidates_per_poll": source.max_candidates_per_poll,
+                "fingerprint_cooldown_ms": source.fingerprint_cooldown_ms,
+                "allowed_destination_ids": binding.allowed_destination_ids,
+                "default_destination_ids": binding.default_destination_ids,
+                "default_route_tags": binding.default_route_tags,
+                "tenant_id": binding.tenant_id,
+                "workspace_id": binding.workspace_id,
+                "event_schema_version": binding.event_schema_version,
+                "approval_policy": binding.approval_policy,
+                "redaction_profile": binding.redaction_profile,
+                "retention_profile": binding.retention_profile,
+            }));
+        }
+    }
+    sources
+}
+
+fn bug_monitor_intake_key_inventory(key: &crate::BugMonitorProjectIntakeKey) -> Value {
+    json!({
+        "key_id": key.key_id,
+        "project_id": key.project_id,
+        "name": key.name,
+        "enabled": key.enabled,
+        "scopes": key.scopes,
+        "created_at_ms": key.created_at_ms,
+        "last_used_at_ms": key.last_used_at_ms,
+        "key_hash_present": !key.key_hash.trim().is_empty(),
+    })
+}
+
+fn bug_monitor_workflow_inventory(
+    workflow: &tandem_workflows::WorkflowSpec,
+    hooks: &[tandem_workflows::WorkflowHookBinding],
+) -> Value {
+    let workflow_hooks = hooks
+        .iter()
+        .filter(|hook| hook.workflow_id == workflow.workflow_id)
+        .chain(workflow.hooks.iter())
+        .map(|hook| {
+            json!({
+                "binding_id": hook.binding_id,
+                "event": hook.event,
+                "enabled": hook.enabled,
+                "action_count": hook.actions.len(),
+                "actions": hook.actions.iter().map(|action| {
+                    json!({
+                        "action": action.action,
+                        "has_parameters": action.with.is_some(),
+                        "parameter_keys": sorted_object_keys(action.with.as_ref()),
+                    })
+                }).collect::<Vec<_>>(),
+                "source": hook.source,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "workflow_id": workflow.workflow_id,
+        "name": workflow.name,
+        "description": workflow.description,
+        "enabled": workflow.enabled,
+        "source": workflow.source,
+        "steps": workflow.steps.iter().map(|step| {
+            json!({
+                "step_id": step.step_id,
+                "action": step.action,
+                "has_parameters": step.with.is_some(),
+                "parameter_keys": sorted_object_keys(step.with.as_ref()),
+            })
+        }).collect::<Vec<_>>(),
+        "hooks": workflow_hooks,
+    })
+}
+
+fn bug_monitor_automation_inventory(automation: &crate::AutomationV2Spec) -> Value {
+    json!({
+        "automation_id": automation.automation_id,
+        "name": automation.name,
+        "description": automation.description,
+        "status": automation.status,
+        "creator_id": automation.creator_id,
+        "workspace_root": automation.workspace_root,
+        "schedule": automation.schedule,
+        "output_targets": automation.output_targets,
+        "scope_policy_present": automation.scope_policy.is_some(),
+        "watch_condition_count": automation.watch_conditions.len(),
+        "execution": automation.execution,
+        "tenant_context": automation.tenant_context(),
+        "agents": automation.agents.iter().map(bug_monitor_agent_inventory).collect::<Vec<_>>(),
+        "nodes": automation.flow.nodes.iter().map(bug_monitor_automation_node_inventory).collect::<Vec<_>>(),
+        "created_at_ms": automation.created_at_ms,
+        "updated_at_ms": automation.updated_at_ms,
+    })
+}
+
+fn bug_monitor_agent_inventory(agent: &crate::AutomationAgentProfile) -> Value {
+    json!({
+        "agent_id": agent.agent_id,
+        "template_id": agent.template_id,
+        "display_name": agent.display_name,
+        "model_policy_present": agent.model_policy.is_some(),
+        "skills": agent.skills,
+        "tool_policy": {
+            "allowlist": agent.tool_policy.allowlist,
+            "denylist": agent.tool_policy.denylist,
+        },
+        "mcp_policy": bug_monitor_mcp_policy_inventory(&agent.mcp_policy),
+        "approval_policy": agent.approval_policy,
+    })
+}
+
+fn bug_monitor_automation_node_inventory(node: &crate::AutomationFlowNode) -> Value {
+    json!({
+        "node_id": node.node_id,
+        "agent_id": node.agent_id,
+        "depends_on": node.depends_on,
+        "input_ref_count": node.input_refs.len(),
+        "output_contract_kind": node.output_contract.as_ref().map(|contract| contract.kind.clone()),
+        "tool_policy": node.tool_policy.as_ref().map(|policy| json!({
+            "allowlist": policy.allowlist,
+            "denylist": policy.denylist,
+        })),
+        "mcp_policy": node.mcp_policy.as_ref().map(bug_monitor_mcp_policy_inventory),
+        "timeout_ms": node.timeout_ms,
+        "max_tool_calls": node.max_tool_calls,
+        "stage_kind": node.stage_kind,
+        "gate": node.gate.as_ref().map(|gate| json!({
+            "required": gate.required,
+            "decisions": gate.decisions,
+            "rework_targets": gate.rework_targets,
+            "instructions_present": gate.instructions.is_some(),
+            "expiry_policy": gate.expiry_policy,
+        })),
+        "metadata_keys": sorted_object_keys(node.metadata.as_ref()),
+    })
+}
+
+fn bug_monitor_mcp_policy_inventory(policy: &crate::AutomationAgentMcpPolicy) -> Value {
+    json!({
+        "allowed_servers": policy.allowed_servers,
+        "effective_allowed_servers": policy.effective_allowed_servers(),
+        "allowed_tools": policy.allowed_tools,
+        "allowed_connection_grants": policy.allowed_connections.iter().map(|grant| {
+            json!({
+                "server": grant.server,
+                "connection_id_present": grant.connection_id.as_ref().is_some_and(|value| !value.trim().is_empty()),
+                "run_as": grant.run_as.as_ref().map(|run_as| match run_as {
+                    crate::AutomationMcpRunAs::CurrentActor => "current_actor",
+                    crate::AutomationMcpRunAs::ServicePrincipal { .. } => "service_principal",
+                    crate::AutomationMcpRunAs::AutomationPrincipal { .. } => "automation_principal",
+                    crate::AutomationMcpRunAs::SharedConnection { .. } => "shared_connection",
+                }),
+            })
+        }).collect::<Vec<_>>(),
+    })
+}
+
+fn bug_monitor_approval_rules_inventory(
+    automations: &[crate::AutomationV2Spec],
+    destinations: &[BugMonitorDestinationConfig],
+    routes: &[BugMonitorRouteConfig],
+    config: &BugMonitorConfig,
+) -> Vec<Value> {
+    let mut rules = Vec::new();
+    rules.push(json!({
+        "source": "bug_monitor_config",
+        "rule_id": "bug_monitor.high_risk",
+        "requires_approval": config.safety_defaults.require_approval_for_high_risk,
+        "policy": "require_approval_for_high_risk",
+    }));
+    if config.require_approval_for_new_issues {
+        rules.push(json!({
+            "source": "bug_monitor_config",
+            "rule_id": "bug_monitor.new_issues",
+            "requires_approval": true,
+            "policy": "require_approval_for_new_issues",
+        }));
+    }
+    for destination in destinations {
+        rules.push(json!({
+            "source": "bug_monitor_destination",
+            "rule_id": format!("destination:{}", destination.destination_id),
+            "destination_id": destination.destination_id,
+            "requires_approval": destination.require_approval,
+            "policy": "destination.require_approval",
+        }));
+    }
+    for route in routes {
+        rules.push(json!({
+            "source": "bug_monitor_route",
+            "rule_id": format!("route:{}", route.route_id),
+            "route_id": route.route_id,
+            "destination_ids": route.destination_ids,
+            "approval_policy": route.approval_policy,
+        }));
+    }
+    for automation in automations {
+        for agent in &automation.agents {
+            if let Some(policy) = agent.approval_policy.as_ref() {
+                rules.push(json!({
+                    "source": "automation_agent",
+                    "rule_id": format!("automation:{}:agent:{}", automation.automation_id, agent.agent_id),
+                    "automation_id": automation.automation_id,
+                    "agent_id": agent.agent_id,
+                    "approval_policy": policy,
+                }));
+            }
+        }
+        for node in &automation.flow.nodes {
+            if let Some(gate) = node.gate.as_ref() {
+                rules.push(json!({
+                    "source": "automation_node_gate",
+                    "rule_id": format!("automation:{}:node:{}", automation.automation_id, node.node_id),
+                    "automation_id": automation.automation_id,
+                    "node_id": node.node_id,
+                    "required": gate.required,
+                    "decisions": gate.decisions,
+                    "rework_targets": gate.rework_targets,
+                    "expiry_policy": gate.expiry_policy,
+                }));
+            }
+        }
+    }
+    rules
+}
+
+fn bug_monitor_pending_approval_inventory(approval: &tandem_types::ApprovalRequest) -> Value {
+    json!({
+        "request_id": approval.request_id,
+        "source": approval.source,
+        "tenant": approval.tenant,
+        "run_id": approval.run_id,
+        "node_id": approval.node_id,
+        "workflow_name": approval.workflow_name,
+        "action_kind": approval.action_kind,
+        "requested_at_ms": approval.requested_at_ms,
+        "expires_at_ms": approval.expires_at_ms,
+        "decisions": approval.decisions,
+        "rework_targets": approval.rework_targets,
+        "instructions_present": approval.instructions.is_some(),
+        "approval_wait": approval.approval_wait,
+    })
+}
+
+fn bug_monitor_governance_approval_inventory(
+    approval: &crate::automation_v2::governance::GovernanceApprovalRequest,
+) -> Value {
+    json!({
+        "approval_id": approval.approval_id,
+        "request_type": approval.request_type,
+        "target_resource": approval.target_resource,
+        "status": approval.status,
+        "expires_at_ms": approval.expires_at_ms,
+        "created_at_ms": approval.created_at_ms,
+        "updated_at_ms": approval.updated_at_ms,
+        "reviewed_at_ms": approval.reviewed_at_ms,
+    })
+}
+
+fn bug_monitor_policy_decision_inventory(decision: &tandem_types::PolicyDecisionRecord) -> Value {
+    json!({
+        "decision_id": decision.decision_id,
+        "tenant_context": decision.tenant_context,
+        "actor_id": decision.actor_id,
+        "session_id": decision.session_id,
+        "run_id": decision.run_id,
+        "automation_id": decision.automation_id,
+        "node_id": decision.node_id,
+        "tool": decision.tool,
+        "resource": decision.resource,
+        "data_classes": decision.data_classes,
+        "risk_tier": decision.risk_tier,
+        "decision": decision.decision,
+        "reason_code": decision.reason_code,
+        "policy_id": decision.policy_id,
+        "grant_id": decision.grant_id,
+        "approval_id": decision.approval_id,
+        "created_at_ms": decision.created_at_ms,
+        "metadata_keys": sorted_object_keys(Some(&decision.metadata)),
+    })
+}
+
+fn bug_monitor_external_publish_surface(destination: &BugMonitorDestinationConfig) -> Value {
+    json!({
+        "source": "bug_monitor_destination",
+        "surface_id": destination.destination_id,
+        "name": destination.name,
+        "kind": destination.kind,
+        "enabled": destination.enabled,
+        "require_approval": destination.require_approval,
+        "target": {
+            "repo": destination.repo,
+            "linear_team": destination.linear_team,
+            "linear_project": destination.linear_project,
+            "webhook_url_present": destination.webhook_url.as_ref().is_some_and(|value| !value.trim().is_empty()),
+            "telemetry_path": destination.telemetry_path,
+            "mcp_server": destination.mcp_server,
+            "mcp_tool": destination.mcp_tool,
+            "memory_category": destination.memory_category,
+        },
+        "config_keys": sorted_object_keys(destination.config.as_ref()),
+    })
+}
+
+fn bug_monitor_external_action_inventory(action: &crate::ExternalActionRecord) -> Value {
+    json!({
+        "action_id": action.action_id,
+        "operation": action.operation,
+        "status": action.status,
+        "source_kind": action.source_kind,
+        "source_id": action.source_id,
+        "routine_run_id": action.routine_run_id,
+        "context_run_id": action.context_run_id,
+        "capability_id": action.capability_id,
+        "provider": action.provider,
+        "target": action.target,
+        "approval_state": action.approval_state,
+        "idempotency_key_present": action.idempotency_key.as_ref().is_some_and(|value| !value.trim().is_empty()),
+        "receipt_present": action.receipt.is_some(),
+        "error": action.error,
+        "metadata_keys": sorted_object_keys(action.metadata.as_ref()),
+        "created_at_ms": action.created_at_ms,
+        "updated_at_ms": action.updated_at_ms,
+    })
+}
+
+fn sorted_object_keys(value: Option<&Value>) -> Vec<String> {
+    let Some(Value::Object(map)) = value else {
+        return Vec::new();
+    };
+    let mut keys = map.keys().cloned().collect::<Vec<_>>();
+    keys.sort();
+    keys
+}

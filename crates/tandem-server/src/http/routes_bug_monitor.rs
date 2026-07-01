@@ -30,6 +30,14 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
         .route("/bug-monitor/debug", get(get_bug_monitor_debug))
         .route("/failure-reporter/debug", get(get_bug_monitor_debug))
         .route(
+            "/bug-monitor/security/authority-inventory",
+            get(get_bug_monitor_authority_inventory),
+        )
+        .route(
+            "/failure-reporter/security/authority-inventory",
+            get(get_bug_monitor_authority_inventory),
+        )
+        .route(
             "/bug-monitor/route-preview",
             post(preview_bug_monitor_route),
         )
