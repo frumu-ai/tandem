@@ -4616,9 +4616,9 @@ impl SidecarManager {
 
     pub async fn bug_monitor_get_config(&self) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
-        let url = format!("{}/config/bug-monitor", self.base_url().await?);
+        let url = format!("{}/config/incident-monitor", self.base_url().await?);
         let response = self.http_client.get(&url).send().await.map_err(|e| {
-            TandemError::Sidecar(format!("Failed to load Bug Monitor config: {}", e))
+            TandemError::Sidecar(format!("Failed to load Incident Monitor config: {}", e))
         })?;
         self.handle_response(response).await
     }
@@ -4628,9 +4628,9 @@ impl SidecarManager {
         config: serde_json::Value,
     ) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
-        let url = format!("{}/config/bug-monitor", self.base_url().await?);
+        let url = format!("{}/config/incident-monitor", self.base_url().await?);
         let body = serde_json::json!({
-            "bug_monitor": config,
+            "incident_monitor": config,
         });
         let response = self
             .http_client
@@ -4639,7 +4639,7 @@ impl SidecarManager {
             .send()
             .await
             .map_err(|e| {
-                TandemError::Sidecar(format!("Failed to save Bug Monitor config: {}", e))
+                TandemError::Sidecar(format!("Failed to save Incident Monitor config: {}", e))
             })?;
         self.handle_response(response).await
     }

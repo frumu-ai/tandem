@@ -1205,7 +1205,11 @@ export function useSettingsPageController({
   const [activeSection, setActiveSection] = useState<SettingsSection>(
     () =>
       settingsSectionFromHash() ||
-      (providerStatus?.needsOnboarding ? "providers" : navigation?.acaMode ? "navigation" : "install")
+      (providerStatus?.needsOnboarding
+        ? "providers"
+        : navigation?.acaMode
+          ? "navigation"
+          : "install")
   );
   const [navigationVisibilityDraft, setNavigationVisibilityDraft] = useState<NavigationVisibility>(
     () => navigation?.routeVisibility || getDefaultNavigationVisibility(!!navigation?.acaMode)
@@ -1635,8 +1639,8 @@ export function useSettingsPageController({
   const bugMonitorConfigQuery = useQuery({
     queryKey: ["settings", "bug-monitor", "config"],
     queryFn: () =>
-      api("/api/engine/config/bug-monitor", { method: "GET" }).catch(() => ({
-        bug_monitor: {},
+      api("/api/engine/config/incident-monitor", { method: "GET" }).catch(() => ({
+        incident_monitor: {},
       })),
   });
   const bugMonitorStatusQuery = useQuery({
@@ -1855,10 +1859,10 @@ export function useSettingsPageController({
         .split(/[\s,]+/)
         .map((value) => value.trim())
         .filter(Boolean);
-      return api("/api/engine/config/bug-monitor", {
+      return api("/api/engine/config/incident-monitor", {
         method: "PATCH",
         body: JSON.stringify({
-          bug_monitor: {
+          incident_monitor: {
             enabled: bugMonitorEnabled,
             paused: bugMonitorPaused,
             workspace_root: String(bugMonitorWorkspaceRoot || "").trim() || null,
@@ -1951,7 +1955,7 @@ export function useSettingsPageController({
         body: JSON.stringify({
           project_id: input.project_id,
           name: input.name,
-          scopes: ["bug_monitor:report"],
+          scopes: ["incident_monitor:report"],
         }),
       }),
     onSuccess: async (payload: any) => {
@@ -3224,11 +3228,13 @@ export function useSettingsPageController({
   );
 
   useEffect(() => {
+    const configPayload = bugMonitorConfigQuery.data as any;
     const config =
-      (bugMonitorConfigQuery.data as any)?.bug_monitor &&
-      typeof (bugMonitorConfigQuery.data as any)?.bug_monitor === "object"
-        ? ((bugMonitorConfigQuery.data as any).bug_monitor as BugMonitorConfigRow)
-        : {};
+      configPayload?.incident_monitor && typeof configPayload.incident_monitor === "object"
+        ? (configPayload.incident_monitor as BugMonitorConfigRow)
+        : configPayload?.bug_monitor && typeof configPayload.bug_monitor === "object"
+          ? (configPayload.bug_monitor as BugMonitorConfigRow)
+          : {};
     setBugMonitorEnabled(!!config.enabled);
     setBugMonitorPaused(!!config.paused);
     setBugMonitorWorkspaceRoot(String(config.workspace_root || "").trim());
