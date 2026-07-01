@@ -1,6 +1,6 @@
 const INCIDENT_MONITOR_SECURITY_POSTURE_SCHEMA_VERSION: u64 = 1;
 
-const INCIDENT_MONITOR_POSTURE_RULES: [(&str, &str, &str); 8] = [
+const INCIDENT_MONITOR_POSTURE_RULES: [(&str, &str, &str); 9] = [
     (
         "high_risk_tool_without_approval",
         "missing_approval",
@@ -29,6 +29,11 @@ const INCIDENT_MONITOR_POSTURE_RULES: [(&str, &str, &str); 8] = [
     ),
     ("external_action_missing_receipt", "audit_gap", "medium"),
     ("recurring_denied_action", "recurrence_gap", "medium"),
+    (
+        "source_readiness_failed",
+        "source_readiness",
+        "medium",
+    ),
 ];
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -394,6 +399,14 @@ fn incident_monitor_posture_check_sources(
             "project_id": project_id,
             "source_kind": source_kind,
         })];
+        incident_monitor_posture_check_source_readiness_findings(
+            source,
+            source_id,
+            &affected,
+            policy,
+            findings,
+            seen,
+        );
         if incident_monitor_posture_option_gap(source.get("tenant_id"))
             || incident_monitor_posture_option_gap(source.get("workspace_id"))
         {
@@ -440,6 +453,53 @@ fn incident_monitor_posture_check_sources(
                 "Constrain allowed_destination_ids to the smallest approved destination set and use route tags for controlled fan-out.",
             );
         }
+    }
+}
+
+fn incident_monitor_posture_check_source_readiness_findings(
+    source: &Value,
+    source_id: &str,
+    affected: &[Value],
+    policy: &IncidentMonitorPostureRulePolicy,
+    findings: &mut Vec<Value>,
+    seen: &mut HashSet<String>,
+) {
+    for readiness_finding in incident_monitor_posture_array(source, &["readiness", "findings"]) {
+        let source_finding_id =
+            incident_monitor_posture_str(readiness_finding, "finding_id").unwrap_or("unknown");
+        let severity =
+            incident_monitor_posture_str(readiness_finding, "severity").unwrap_or("medium");
+        let title = incident_monitor_posture_str(readiness_finding, "title")
+            .unwrap_or("Source readiness gate failed");
+        let detail = incident_monitor_posture_str(readiness_finding, "detail")
+            .unwrap_or("A monitored source readiness gate failed.");
+        let recommendation = incident_monitor_posture_str(readiness_finding, "recommendation")
+            .unwrap_or("Review source readiness metadata before production routing.");
+        let mut evidence_refs = vec![incident_monitor_posture_evidence_ref(format!(
+            "inventory.monitored_sources[{source_id}].readiness.findings[{source_finding_id}]"
+        ))];
+        for evidence in incident_monitor_posture_array(readiness_finding, &["evidence_refs"]) {
+            if let Some(path) = evidence.as_str().filter(|value| !value.trim().is_empty()) {
+                evidence_refs.push(json!({
+                    "kind": "source_readiness",
+                    "path": path,
+                }));
+            }
+        }
+
+        incident_monitor_posture_push_finding(
+            findings,
+            seen,
+            policy,
+            "source_readiness_failed",
+            "source_readiness",
+            severity,
+            format!("Source readiness: {title}"),
+            detail.to_string(),
+            affected.to_vec(),
+            evidence_refs,
+            recommendation,
+        );
     }
 }
 

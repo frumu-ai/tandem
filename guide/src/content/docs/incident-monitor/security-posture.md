@@ -52,6 +52,7 @@ Tandem can detect and report gaps that are visible from governed runtime configu
 - MCP servers or tools exposed without a narrow allowlist
 - external mutation destinations that do not require approval
 - workflows, sources, or automations missing tenant/workspace context
+- monitored sources missing data-readiness metadata, lineage, freshness, schema drift review, authorization, redaction, or retention coverage
 - monitored sources that can report incidents without an allowed destination policy
 - publish destinations without clear receipt, audit, redaction, or retention posture
 - broad tool policies where a narrower scope is expected
@@ -95,6 +96,7 @@ Safe probe categories:
 
 - approval gate enforcement
 - route preview and destination readiness
+- source readiness warnings surfaced by route preview
 - scoped intake key limits
 - tool policy enforcement
 - tenant/workspace context boundaries

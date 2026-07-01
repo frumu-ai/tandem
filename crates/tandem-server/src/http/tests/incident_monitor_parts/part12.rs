@@ -213,7 +213,7 @@ async fn incident_monitor_posture_checks_detects_broad_source_and_missing_tenant
 
     let payload = get_incident_monitor_posture_checks(
         app,
-        "/incident-monitor/security/posture-checks?rules=broad_source_destination_scope,missing_tenant_context",
+        "/incident-monitor/security/posture-checks?rules=broad_source_destination_scope,missing_tenant_context,source_readiness_failed",
     )
     .await;
     let findings = payload["findings"].as_array().expect("findings");
@@ -225,6 +225,10 @@ async fn incident_monitor_posture_checks_detects_broad_source_and_missing_tenant
     assert!(findings.iter().any(|finding| {
         finding["rule_id"].as_str() == Some("missing_tenant_context")
             && finding["category"].as_str() == Some("tenant_context_gap")
+    }));
+    assert!(findings.iter().any(|finding| {
+        finding["rule_id"].as_str() == Some("source_readiness_failed")
+            && finding["category"].as_str() == Some("source_readiness")
     }));
     assert_posture_fingerprints_are_unique(findings);
 }
@@ -294,6 +298,21 @@ async fn incident_monitor_assessment_report_generates_markdown_and_redacted_arti
                 ..Default::default()
             }],
             default_destination_ids: vec!["report-webhook".to_string()],
+            monitored_projects: vec![crate::IncidentMonitorMonitoredProject {
+                project_id: "payments".to_string(),
+                name: "Payments".to_string(),
+                enabled: true,
+                repo: "acme/payments".to_string(),
+                workspace_root: workspace.path().display().to_string(),
+                source_kind: crate::IncidentMonitorSourceKind::ExternalApp,
+                tenant_id: Some("org-report".to_string()),
+                workspace_id: Some("workspace-report".to_string()),
+                data_readiness: crate::IncidentMonitorSourceReadinessConfig {
+                    authorization_marker: Some("secret-source-authorization-marker".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
             ..Default::default()
         })
         .await
@@ -325,6 +344,18 @@ async fn incident_monitor_assessment_report_generates_markdown_and_redacted_arti
         .expect("findings")
         .iter()
         .any(|finding| finding["rule_id"].as_str() == Some("high_risk_tool_without_approval")));
+    assert!(
+        payload["counts"]["source_readiness_findings"]
+            .as_u64()
+            .is_some_and(|count| count > 0),
+        "assessment report should count source readiness findings: {payload:?}"
+    );
+    assert!(
+        payload["sections"]["monitored_systems_and_sources"]["source_readiness"]["findings"]
+            .as_u64()
+            .is_some_and(|count| count > 0),
+        "assessment report should summarize source readiness: {payload:?}"
+    );
     assert!(payload["sections"]["controlled_probe_results"]["results"]
         .as_array()
         .expect("probe results")
@@ -345,6 +376,7 @@ async fn incident_monitor_assessment_report_generates_markdown_and_redacted_arti
     assert!(artifact.contains("Incident Monitor Security Gap Assessment"));
     assert!(!artifact.contains("tk_admin"));
     assert!(!artifact.contains("INCIDENT_MONITOR_REPORT_SECRET"));
+    assert!(!artifact.contains("secret-source-authorization-marker"));
 }
 
 #[tokio::test]

@@ -50,6 +50,7 @@ async fn incident_monitor_route_preview_uses_configured_source_binding_and_block
             monitored_projects: vec![crate::IncidentMonitorMonitoredProject {
                 project_id: "payments".to_string(),
                 name: "Payments".to_string(),
+                enabled: true,
                 repo: "acme/payments".to_string(),
                 workspace_root: workspace.path().display().to_string(),
                 source_kind: crate::IncidentMonitorSourceKind::ExternalApp,
@@ -138,6 +139,28 @@ async fn incident_monitor_route_preview_uses_configured_source_binding_and_block
             })
             .unwrap_or(false),
         "preview should explain source allowlist block: {preview_payload:?}"
+    );
+    assert_eq!(
+        preview_payload
+            .get("source_readiness")
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("ready"))
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    assert!(
+        preview_payload
+            .get("source_readiness_warnings")
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter().any(|row| {
+                    row.as_str()
+                        .is_some_and(|warning| warning.contains("source owner metadata"))
+                })
+            })
+            .unwrap_or(false),
+        "preview should surface source readiness warnings: {preview_payload:?}"
     );
 }
 

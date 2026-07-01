@@ -961,6 +961,55 @@ export interface IncidentMonitorDestinationReadiness {
   [key: string]: unknown;
 }
 
+export interface IncidentMonitorSourceReadinessConfig {
+  source_owner?: string | null;
+  system_of_record?: string | null;
+  data_classification?: string | null;
+  allowed_use?: string | null;
+  source_of_truth?: string | null;
+  lineage_ref?: string | null;
+  freshness_sla_ms?: number | null;
+  last_observed_at_ms?: number | null;
+  expected_schema_version?: string | null;
+  schema_drift_status?: string | null;
+  quality_notes?: string | null;
+  legal_basis?: string | null;
+  authorization_marker?: string | null;
+  [key: string]: unknown;
+}
+
+export interface IncidentMonitorSourceReadinessFinding {
+  finding_id: string;
+  rule_id: string;
+  category: string;
+  severity: string;
+  title: string;
+  detail: string;
+  evidence_refs?: string[];
+  recommendation: string;
+  [key: string]: unknown;
+}
+
+export interface IncidentMonitorSourceReadiness {
+  project_id: string;
+  source_id?: string | null;
+  source_kind?: IncidentMonitorSourceKind | string;
+  enabled?: boolean;
+  ready?: boolean;
+  governance_ready?: boolean;
+  lineage_ready?: boolean;
+  freshness_ready?: boolean;
+  schema_ready?: boolean;
+  protection_ready?: boolean;
+  missing?: string[];
+  warnings?: string[];
+  findings?: IncidentMonitorSourceReadinessFinding[];
+  last_observed_at_ms?: number | null;
+  stale_after_ms?: number | null;
+  detail?: string | null;
+  [key: string]: unknown;
+}
+
 export interface IncidentMonitorRoutePreviewMatch {
   route_id?: string | null;
   route_name?: string | null;
@@ -974,6 +1023,8 @@ export interface IncidentMonitorRoutePreviewResponse {
   matches?: IncidentMonitorRoutePreviewMatch[];
   destinations?: IncidentMonitorDestinationConfig[];
   readiness?: IncidentMonitorDestinationReadiness[];
+  source_readiness?: IncidentMonitorSourceReadiness[];
+  source_readiness_warnings?: string[];
   default_destination_ids?: string[];
   effective_destination_ids?: string[];
   approval_required?: boolean;
@@ -1024,6 +1075,7 @@ export interface IncidentMonitorLogSource {
   approval_policy?: IncidentMonitorApprovalPolicy | string;
   redaction_profile?: string | null;
   retention_profile?: string | null;
+  data_readiness?: IncidentMonitorSourceReadinessConfig;
 }
 
 export interface IncidentMonitorMonitoredProject {
@@ -1045,6 +1097,7 @@ export interface IncidentMonitorMonitoredProject {
   approval_policy?: IncidentMonitorApprovalPolicy | string;
   redaction_profile?: string | null;
   retention_profile?: string | null;
+  data_readiness?: IncidentMonitorSourceReadinessConfig;
   auto_create_new_issues?: boolean;
   require_approval_for_new_issues?: boolean;
   auto_comment_on_matched_open_issues?: boolean;
@@ -1094,6 +1147,7 @@ export interface IncidentMonitorStatusRow {
   selected_server_binding_candidates?: JsonObject[];
   destinations?: IncidentMonitorDestinationConfig[];
   destination_readiness?: IncidentMonitorDestinationReadiness[];
+  source_readiness?: IncidentMonitorSourceReadiness[];
   binding_source_version?: string | null;
   bindings_last_merged_at_ms?: number | null;
   selected_model?: JsonObject | null;

@@ -69,6 +69,19 @@ describe("Incident Monitor external project public types", () => {
             default_route_tags: ["aca"],
             tenant_id: "tenant-a",
             approval_policy: "high_risk",
+            data_readiness: {
+              source_owner: "platform",
+              system_of_record: "aca-observability",
+              data_classification: "confidential",
+              allowed_use: "incident triage",
+              source_of_truth: "aca-observability",
+              freshness_sla_ms: 60000,
+              last_observed_at_ms: 1234,
+              expected_schema_version: "aca.v1",
+              schema_drift_status: "stable",
+              quality_notes: "complete for worker incidents",
+              authorization_marker: "approved",
+            },
             log_sources: [
               {
                 source_id: "coder-worker",
@@ -98,6 +111,35 @@ describe("Incident Monitor external project public types", () => {
             ready: true,
             publish_ready: true,
             requires_approval: false,
+          },
+        ],
+        source_readiness: [
+          {
+            project_id: "aca",
+            source_id: "coder-worker",
+            source_kind: "ci",
+            enabled: true,
+            ready: false,
+            lineage_ready: true,
+            freshness_ready: true,
+            schema_ready: false,
+            protection_ready: false,
+            missing: ["redaction_profile", "retention_profile"],
+            warnings: ["high: Source `aca/coder-worker` is missing redaction profile coverage"],
+            findings: [
+              {
+                finding_id: "srf_example",
+                rule_id: "source_redaction_profile_missing",
+                category: "source_protection",
+                severity: "high",
+                title: "Source `aca/coder-worker` is missing redaction profile coverage",
+                detail: "Production source readiness requires a redaction profile.",
+                evidence_refs: [
+                  "incident_monitor.config.monitored_projects[].log_sources[coder-worker].redaction_profile",
+                ],
+                recommendation: "Attach a redaction_profile to the source binding.",
+              },
+            ],
           },
         ],
         log_watcher: {
@@ -130,6 +172,8 @@ describe("Incident Monitor external project public types", () => {
       ],
       destinations: config.incident_monitor.destinations,
       readiness: status.status.destination_readiness,
+      source_readiness: status.status.source_readiness,
+      source_readiness_warnings: status.status.source_readiness?.[0]?.warnings,
       default_destination_ids: ["legacy-github"],
       effective_destination_ids: ["legacy-github"],
       approval_required: false,
@@ -158,6 +202,10 @@ describe("Incident Monitor external project public types", () => {
     expect(config.incident_monitor.monitored_projects?.[0]?.source_kind).toBe("external_app");
     expect(config.incident_monitor.monitored_projects?.[0]?.log_sources?.[0]?.source_kind).toBe("ci");
     expect(status.status.log_watcher?.sources?.[0]?.healthy).toBe(true);
+    expect(status.status.source_readiness?.[0]?.findings?.[0]?.rule_id).toBe(
+      "source_redaction_profile_missing"
+    );
+    expect(preview.source_readiness_warnings?.[0]).toContain("redaction profile");
     expect(preview.effective_destination_ids?.[0]).toBe("legacy-github");
     expect(post.receipt && typeof post.receipt === "object").toBe(true);
   });

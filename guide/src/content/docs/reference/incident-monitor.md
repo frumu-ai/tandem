@@ -84,6 +84,19 @@ The response includes:
 
 The inventory is designed for audit evidence and future posture findings. It returns identifiers and field-presence signals, but omits raw intake keys, key hashes, webhook secret values, auth headers, destination config values, action receipts, and arbitrary metadata values. Scoped intake keys cannot access this endpoint.
 
+## Source Data Readiness
+
+Monitored projects and log sources can include `data_readiness` metadata for production review:
+
+- `source_owner`, `system_of_record`, `data_classification`, and `allowed_use`
+- `tenant_id`, `workspace_id`, `source_of_truth`, and `lineage_ref`
+- `freshness_sla_ms`, `last_observed_at_ms`, `expected_schema_version`, and `schema_drift_status`
+- `quality_notes`, `legal_basis`, `authorization_marker`, `redaction_profile`, and `retention_profile`
+
+`GET /incident-monitor/status` returns `source_readiness` beside destination readiness. Route preview returns `source_readiness` and `source_readiness_warnings` when the preview is tied to a configured project or log source. Authority inventory, posture checks, assessment reports, and deployment cards summarize the same readiness findings with severity and evidence refs.
+
+Readiness summaries are intentionally sanitized. They include booleans, missing-field names, timestamps, severity, recommendation text, and evidence paths, but do not embed raw source records, log contents, credentials, source paths, legal-basis values, or authorization marker values.
+
 ## Security Assessment Reports
 
 Use `POST /incident-monitor/security/assessment-report` to generate a redacted Incident Monitor security gap assessment report. The endpoint requires the full admin token, runs read-only posture checks and optional dry-run controlled probes, summarizes incidents and destination receipts, and persists a context-run evidence artifact by default.
@@ -91,6 +104,7 @@ Use `POST /incident-monitor/security/assessment-report` to generate a redacted I
 The report includes JSON sections plus a Markdown summary:
 
 - assessment scope, monitored sources, authority inventory, destinations, routes, and approval coverage
+- source data-readiness counts, missing fields, and warning summaries
 - posture findings, controlled probe results, evidence refs, recommendations, residual risk, and follow-up actions
 - Tandem self-monitoring boundaries using `source_kind=tandem_runtime` and `source_kind=tandem_monitor`
 - protected audit export summaries for Incident Monitor route decisions, publish attempts, monitor events, and control failures
@@ -245,6 +259,7 @@ async with TandemClient(base_url="http://localhost:39731", token="...") as clien
 - Destination/route config changes, intake-key lifecycle changes, and destination-router publish attempts/outcomes emit redacted audit events and protected audit-ledger rows.
 - Authority inventory is read-only and returns summarized evidence; it must not expose raw credentials, intake-key material, action receipts, or secret-backed destination values.
 - Deployment cards are read-only production-governance artifacts generated from authority inventory plus operator metadata. Missing required owner, accountability, escalation, data classification, or review fields return posture findings instead of silently passing.
+- Source-readiness findings are warnings and posture evidence by default; operators decide which readiness gaps block deployment or force quarantine.
 - Webhook destinations should use HTTPS, host allowlists, and env-backed secrets.
 - Secret redaction is enabled by default for Incident Monitor safety defaults. Report-level `redaction_profile` and source bindings can add stricter profiles for specific projects or sources.
 - `retention_days` is unset by default, so deployments should configure retention/export policy for reports, receipts, and protected audit evidence before production use. Source bindings can attach `retention_profile` labels for downstream policy.

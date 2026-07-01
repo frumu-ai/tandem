@@ -339,6 +339,7 @@ fn incident_monitor_assessment_probe_route_preview_high_risk(
         &status.config,
         &status.destinations,
         &status.destination_readiness,
+        &status.source_readiness,
         &context,
         &[],
     );

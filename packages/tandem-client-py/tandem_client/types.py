@@ -766,6 +766,55 @@ class IncidentMonitorDestinationReadiness(BaseModel):
     detail: Optional[str] = None
 
 
+class IncidentMonitorSourceReadinessConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    source_owner: Optional[str] = None
+    system_of_record: Optional[str] = None
+    data_classification: Optional[str] = None
+    allowed_use: Optional[str] = None
+    source_of_truth: Optional[str] = None
+    lineage_ref: Optional[str] = None
+    freshness_sla_ms: Optional[int] = None
+    last_observed_at_ms: Optional[int] = None
+    expected_schema_version: Optional[str] = None
+    schema_drift_status: Optional[str] = None
+    quality_notes: Optional[str] = None
+    legal_basis: Optional[str] = None
+    authorization_marker: Optional[str] = None
+
+
+class IncidentMonitorSourceReadinessFinding(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    finding_id: str
+    rule_id: str
+    category: str
+    severity: str
+    title: str
+    detail: str
+    evidence_refs: list[str] = []
+    recommendation: str
+
+
+class IncidentMonitorSourceReadiness(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    project_id: str
+    source_id: Optional[str] = None
+    source_kind: Optional[str] = None
+    enabled: Optional[bool] = None
+    ready: Optional[bool] = None
+    governance_ready: Optional[bool] = None
+    lineage_ready: Optional[bool] = None
+    freshness_ready: Optional[bool] = None
+    schema_ready: Optional[bool] = None
+    protection_ready: Optional[bool] = None
+    missing: list[str] = []
+    warnings: list[str] = []
+    findings: list[IncidentMonitorSourceReadinessFinding] = []
+    last_observed_at_ms: Optional[int] = None
+    stale_after_ms: Optional[int] = None
+    detail: Optional[str] = None
+
+
 class IncidentMonitorRoutePreviewMatch(BaseModel):
     model_config = ConfigDict(extra="allow")
     route_id: Optional[str] = None
@@ -780,6 +829,8 @@ class IncidentMonitorRoutePreviewResponse(BaseModel):
     matches: list[IncidentMonitorRoutePreviewMatch] = []
     destinations: list[IncidentMonitorDestinationConfig] = []
     readiness: list[IncidentMonitorDestinationReadiness] = []
+    source_readiness: list[IncidentMonitorSourceReadiness] = []
+    source_readiness_warnings: list[str] = []
     default_destination_ids: list[str] = []
     effective_destination_ids: list[str] = []
     approval_required: Optional[bool] = None
@@ -810,6 +861,7 @@ class IncidentMonitorLogSource(BaseModel):
     approval_policy: Optional[str] = None
     redaction_profile: Optional[str] = None
     retention_profile: Optional[str] = None
+    data_readiness: Optional[IncidentMonitorSourceReadinessConfig] = None
 
 
 class IncidentMonitorMonitoredProject(BaseModel):
@@ -832,6 +884,7 @@ class IncidentMonitorMonitoredProject(BaseModel):
     approval_policy: Optional[str] = None
     redaction_profile: Optional[str] = None
     retention_profile: Optional[str] = None
+    data_readiness: Optional[IncidentMonitorSourceReadinessConfig] = None
     auto_create_new_issues: Optional[bool] = None
     require_approval_for_new_issues: Optional[bool] = None
     auto_comment_on_matched_open_issues: Optional[bool] = None
@@ -875,6 +928,7 @@ class IncidentMonitorStatusRow(BaseModel):
     selected_server_binding_candidates: list[dict[str, Any]] = []
     destinations: list[IncidentMonitorDestinationConfig] = []
     destination_readiness: list[IncidentMonitorDestinationReadiness] = []
+    source_readiness: list[IncidentMonitorSourceReadiness] = []
     binding_source_version: Optional[str] = None
     bindings_last_merged_at_ms: Optional[int] = None
     selected_model: Optional[dict[str, Any]] = None

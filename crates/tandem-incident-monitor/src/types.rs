@@ -266,6 +266,136 @@ pub struct IncidentMonitorDestinationReadiness {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct IncidentMonitorSourceReadinessConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_of_record: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_classification: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_use: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_of_truth: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freshness_sla_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_observed_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_schema_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_drift_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_notes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legal_basis: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_marker: Option<String>,
+}
+
+impl IncidentMonitorSourceReadinessConfig {
+    pub fn with_overrides(&self, overrides: &Self) -> Self {
+        Self {
+            source_owner: overrides
+                .source_owner
+                .clone()
+                .or_else(|| self.source_owner.clone()),
+            system_of_record: overrides
+                .system_of_record
+                .clone()
+                .or_else(|| self.system_of_record.clone()),
+            data_classification: overrides
+                .data_classification
+                .clone()
+                .or_else(|| self.data_classification.clone()),
+            allowed_use: overrides
+                .allowed_use
+                .clone()
+                .or_else(|| self.allowed_use.clone()),
+            source_of_truth: overrides
+                .source_of_truth
+                .clone()
+                .or_else(|| self.source_of_truth.clone()),
+            lineage_ref: overrides
+                .lineage_ref
+                .clone()
+                .or_else(|| self.lineage_ref.clone()),
+            freshness_sla_ms: overrides.freshness_sla_ms.or(self.freshness_sla_ms),
+            last_observed_at_ms: overrides.last_observed_at_ms.or(self.last_observed_at_ms),
+            expected_schema_version: overrides
+                .expected_schema_version
+                .clone()
+                .or_else(|| self.expected_schema_version.clone()),
+            schema_drift_status: overrides
+                .schema_drift_status
+                .clone()
+                .or_else(|| self.schema_drift_status.clone()),
+            quality_notes: overrides
+                .quality_notes
+                .clone()
+                .or_else(|| self.quality_notes.clone()),
+            legal_basis: overrides
+                .legal_basis
+                .clone()
+                .or_else(|| self.legal_basis.clone()),
+            authorization_marker: overrides
+                .authorization_marker
+                .clone()
+                .or_else(|| self.authorization_marker.clone()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct IncidentMonitorSourceReadinessFinding {
+    pub finding_id: String,
+    pub rule_id: String,
+    pub category: String,
+    pub severity: String,
+    pub title: String,
+    pub detail: String,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
+    pub recommendation: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct IncidentMonitorSourceReadiness {
+    pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    pub source_kind: IncidentMonitorSourceKind,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub ready: bool,
+    #[serde(default)]
+    pub governance_ready: bool,
+    #[serde(default)]
+    pub lineage_ready: bool,
+    #[serde(default)]
+    pub freshness_ready: bool,
+    #[serde(default)]
+    pub schema_ready: bool,
+    #[serde(default)]
+    pub protection_ready: bool,
+    #[serde(default)]
+    pub missing: Vec<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub findings: Vec<IncidentMonitorSourceReadinessFinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_observed_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_after_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IncidentMonitorRoutePreviewMatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route_id: Option<String>,
@@ -287,6 +417,10 @@ pub struct IncidentMonitorRoutePreviewResponse {
     pub destinations: Vec<IncidentMonitorDestinationConfig>,
     #[serde(default)]
     pub readiness: Vec<IncidentMonitorDestinationReadiness>,
+    #[serde(default)]
+    pub source_readiness: Vec<IncidentMonitorSourceReadiness>,
+    #[serde(default)]
+    pub source_readiness_warnings: Vec<String>,
     #[serde(default)]
     pub default_destination_ids: Vec<String>,
     #[serde(default)]
@@ -456,6 +590,8 @@ pub struct IncidentMonitorMonitoredProject {
     pub redaction_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_profile: Option<String>,
+    #[serde(default)]
+    pub data_readiness: IncidentMonitorSourceReadinessConfig,
     #[serde(default = "default_true")]
     pub auto_create_new_issues: bool,
     #[serde(default)]
@@ -530,6 +666,8 @@ pub struct IncidentMonitorLogSource {
     pub redaction_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_profile: Option<String>,
+    #[serde(default)]
+    pub data_readiness: IncidentMonitorSourceReadinessConfig,
 }
 
 impl Default for IncidentMonitorLogSource {
@@ -556,6 +694,7 @@ impl Default for IncidentMonitorLogSource {
             approval_policy: IncidentMonitorApprovalPolicy::Inherit,
             redaction_profile: None,
             retention_profile: None,
+            data_readiness: IncidentMonitorSourceReadinessConfig::default(),
         }
     }
 }
@@ -586,6 +725,8 @@ pub struct IncidentMonitorSourceBinding {
     pub redaction_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_profile: Option<String>,
+    #[serde(default)]
+    pub data_readiness: IncidentMonitorSourceReadinessConfig,
 }
 
 impl IncidentMonitorMonitoredProject {
@@ -627,6 +768,10 @@ impl IncidentMonitorMonitoredProject {
             .filter(|value| *value != IncidentMonitorApprovalPolicy::Inherit)
             .unwrap_or_else(|| self.approval_policy.clone());
 
+        let data_readiness = source
+            .map(|row| self.data_readiness.with_overrides(&row.data_readiness))
+            .unwrap_or_else(|| self.data_readiness.clone());
+
         IncidentMonitorSourceBinding {
             project_id: self.project_id.clone(),
             source_id: source.map(|row| row.source_id.clone()),
@@ -654,6 +799,7 @@ impl IncidentMonitorMonitoredProject {
             retention_profile: source
                 .and_then(|row| row.retention_profile.clone())
                 .or_else(|| self.retention_profile.clone()),
+            data_readiness,
         }
     }
 }
@@ -1264,6 +1410,8 @@ pub struct IncidentMonitorReadiness {
     #[serde(default)]
     pub destination_ready: bool,
     #[serde(default)]
+    pub source_ready: bool,
+    #[serde(default)]
     pub route_preview_ready: bool,
 }
 
@@ -1288,6 +1436,8 @@ pub struct IncidentMonitorStatus {
     pub destinations: Vec<IncidentMonitorDestinationConfig>,
     #[serde(default)]
     pub destination_readiness: Vec<IncidentMonitorDestinationReadiness>,
+    #[serde(default)]
+    pub source_readiness: Vec<IncidentMonitorSourceReadiness>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding_source_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

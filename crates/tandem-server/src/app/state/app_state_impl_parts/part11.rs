@@ -7,6 +7,7 @@ fn normalize_incident_monitor_source_binding_values(project: &mut IncidentMonito
     normalize_incident_monitor_optional_source_binding_value(&mut project.event_schema_version);
     normalize_incident_monitor_optional_source_binding_value(&mut project.redaction_profile);
     normalize_incident_monitor_optional_source_binding_value(&mut project.retention_profile);
+    normalize_incident_monitor_data_readiness(&mut project.data_readiness);
     normalize_incident_monitor_source_binding_vec(&mut project.allowed_destination_ids);
     normalize_incident_monitor_source_binding_vec(&mut project.default_destination_ids);
     normalize_incident_monitor_source_binding_vec(&mut project.default_route_tags);
@@ -17,6 +18,7 @@ fn normalize_incident_monitor_source_binding_values(project: &mut IncidentMonito
         normalize_incident_monitor_optional_source_binding_value(&mut source.event_schema_version);
         normalize_incident_monitor_optional_source_binding_value(&mut source.redaction_profile);
         normalize_incident_monitor_optional_source_binding_value(&mut source.retention_profile);
+        normalize_incident_monitor_data_readiness(&mut source.data_readiness);
         normalize_incident_monitor_source_binding_vec(&mut source.allowed_destination_ids);
         normalize_incident_monitor_source_binding_vec(&mut source.default_destination_ids);
         normalize_incident_monitor_source_binding_vec(&mut source.default_route_tags);
@@ -40,6 +42,22 @@ fn normalize_incident_monitor_source_binding_vec(values: &mut Vec<String>) {
         out.push(value);
     }
     *values = out;
+}
+
+fn normalize_incident_monitor_data_readiness(
+    readiness: &mut IncidentMonitorSourceReadinessConfig,
+) {
+    normalize_incident_monitor_optional_source_binding_value(&mut readiness.source_owner);
+    normalize_incident_monitor_optional_source_binding_value(&mut readiness.system_of_record);
+    normalize_incident_monitor_optional_source_binding_value(&mut readiness.data_classification);
+    normalize_incident_monitor_optional_source_binding_value(&mut readiness.allowed_use);
+    normalize_incident_monitor_optional_source_binding_value(&mut readiness.source_of_truth);
+    normalize_incident_monitor_optional_source_binding_value(&mut readiness.lineage_ref);
+    normalize_incident_monitor_optional_source_binding_value(&mut readiness.expected_schema_version);
+    normalize_incident_monitor_optional_source_binding_value(&mut readiness.schema_drift_status);
+    normalize_incident_monitor_optional_source_binding_value(&mut readiness.quality_notes);
+    normalize_incident_monitor_optional_source_binding_value(&mut readiness.legal_basis);
+    normalize_incident_monitor_optional_source_binding_value(&mut readiness.authorization_marker);
 }
 
 fn validate_incident_monitor_source_binding_destinations(

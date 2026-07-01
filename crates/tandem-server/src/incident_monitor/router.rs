@@ -10,7 +10,7 @@ use crate::{
     IncidentMonitorConfig, IncidentMonitorDestinationConfig, IncidentMonitorDestinationKind,
     IncidentMonitorDestinationReadiness, IncidentMonitorDraftRecord, IncidentMonitorIncidentRecord,
     IncidentMonitorPostRecord, IncidentMonitorRouteConfig, IncidentMonitorRoutePreviewMatch,
-    IncidentMonitorRoutePreviewResponse, IncidentMonitorSubmission,
+    IncidentMonitorRoutePreviewResponse, IncidentMonitorSourceReadiness, IncidentMonitorSubmission,
     INCIDENT_MONITOR_LEGACY_GITHUB_DESTINATION_ID,
 };
 
@@ -175,6 +175,7 @@ pub fn build_route_preview(
     config: &IncidentMonitorConfig,
     destinations: &[IncidentMonitorDestinationConfig],
     readiness: &[IncidentMonitorDestinationReadiness],
+    source_readiness: &[IncidentMonitorSourceReadiness],
     context: &IncidentMonitorRouteContext,
     requested_destination_ids: &[String],
 ) -> IncidentMonitorRoutePreviewResponse {
@@ -209,6 +210,11 @@ pub fn build_route_preview(
     }
     let selected_destinations = selected_destinations(destinations, &effective_destination_ids);
     let selected_readiness = selected_readiness(readiness, &effective_destination_ids);
+    let selected_source_readiness = selected_source_readiness(source_readiness, &context);
+    let source_readiness_warnings = selected_source_readiness
+        .iter()
+        .flat_map(|row| row.warnings.clone())
+        .collect::<Vec<_>>();
     let mut blocked_reasons = Vec::new();
     if effective_destination_ids.is_empty() {
         blocked_reasons.push("No destination matched route preview".to_string());
@@ -257,6 +263,8 @@ pub fn build_route_preview(
         matches,
         destinations: selected_destinations,
         readiness: selected_readiness,
+        source_readiness: selected_source_readiness,
+        source_readiness_warnings,
         default_destination_ids,
         effective_destination_ids,
         approval_required,
@@ -299,6 +307,7 @@ pub async fn publish_draft(
         &status.config,
         &status.destinations,
         &status.destination_readiness,
+        &status.source_readiness,
         &context,
         &requested_destination_ids,
     );
@@ -1189,6 +1198,31 @@ fn selected_readiness(
         .collect()
 }
 
+fn selected_source_readiness(
+    readiness: &[IncidentMonitorSourceReadiness],
+    context: &IncidentMonitorRouteContext,
+) -> Vec<IncidentMonitorSourceReadiness> {
+    let Some(project_id) = context.project_id.as_deref() else {
+        return Vec::new();
+    };
+    let log_source_id = context.log_source_id.as_deref();
+
+    readiness
+        .iter()
+        .filter(|row| {
+            normalized_equals(&row.project_id, project_id)
+                && match log_source_id {
+                    Some(source_id) => row
+                        .source_id
+                        .as_deref()
+                        .is_some_and(|row_source_id| normalized_equals(row_source_id, source_id)),
+                    None => row.source_id.is_none(),
+                }
+        })
+        .cloned()
+        .collect()
+}
+
 fn normalize_route_values(values: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     push_normalized_values(&mut out, values);
@@ -1497,7 +1531,7 @@ mod tests {
             None,
         );
         let destinations = config.effective_destinations();
-        let preview = build_route_preview(&config, &destinations, &[], &context, &[]);
+        let preview = build_route_preview(&config, &destinations, &[], &[], &context, &[]);
 
         assert_eq!(
             preview.effective_destination_ids,

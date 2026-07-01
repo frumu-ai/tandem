@@ -12,7 +12,7 @@ Incident Monitor is not a compliance certification engine. It records what Tande
 | Governance stage                   | Tandem surface                                                                                                      | Evidence artifact                                                                                                                                     | Operator-owned decision                                                                                         |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | Intended purpose and ownership     | Deployment cards for agents, workflows, sources, and Tandem self-monitoring                                         | JSON/Markdown deployment cards with purpose, owner, accountable team, approval protocol, escalation protocol, data classification, and review cadence | Confirm the purpose is allowed, name accountable owners, and set review cadence                                 |
-| Data readiness and source lineage  | Monitored source identity, route tags, source bindings, scoped intake keys, readiness status                        | Source/project IDs, event schema version, tenant/workspace context, allowed/default destination IDs, redaction and retention profiles                 | Decide which sources may report, which data classes are allowed, and which sources require quarantine or review |
+| Data readiness and source lineage  | Monitored source identity, `data_readiness`, route tags, source bindings, scoped intake keys, source readiness      | Source/project IDs, owner/system-of-record presence, classification/use, lineage, freshness, schema drift, tenant/workspace scope, redaction/retention | Decide which sources may report, which data classes are allowed, and which sources require quarantine or review |
 | Runtime authority inventory        | `GET /incident-monitor/security/authority-inventory`                                                                | Read-only inventory of workflows, agents, tool/MCP policy, destinations, routes, approvals, policy decisions, and recent external publish surfaces    | Decide whether the observed authority matches business intent                                                   |
 | Deterministic posture review       | `GET /incident-monitor/security/posture-checks`                                                                     | Findings with severity, affected authority surface, evidence refs, mitigation guidance, and draft conversion payloads                                 | Map findings to customer policy and assign owners                                                               |
 | Controlled governance checks       | `POST /incident-monitor/security/assessment-probes`                                                                 | Dry-run probe evidence for approval gates, scoped intake limits, route readiness, MCP allowlists, and webhook URL policy                              | Authorize probes, define sandbox boundaries, and decide which failures block production                         |
@@ -55,10 +55,11 @@ Before using Incident Monitor for production governance:
 4. Run only authorized dry-run probes, and record sandbox boundaries for each probe.
 5. Preview routes for representative high-risk, external, legal/regulatory, and low-risk incidents.
 6. Confirm destination readiness for every configured publish target.
-7. Confirm high-risk or sensitive destinations require approval and redaction.
-8. Configure retention/export policy for reports, receipts, protected audit evidence, and customer-owned records.
-9. Assign finding owners and escalation paths before enabling external publish routes.
-10. Schedule periodic drift review for stale deployment cards, repeated failures, approval waits, and route changes.
+7. Confirm source readiness for every production monitored source, including lineage, freshness, schema drift, authorization, redaction, and retention coverage.
+8. Confirm high-risk or sensitive destinations require approval and redaction.
+9. Configure retention/export policy for reports, receipts, protected audit evidence, and customer-owned records.
+10. Assign finding owners and escalation paths before enabling external publish routes.
+11. Schedule periodic drift review for stale deployment cards, stale sources, repeated failures, approval waits, and route changes.
 
 ## Compliance Mapping Notes
 

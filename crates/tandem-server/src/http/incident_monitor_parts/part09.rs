@@ -57,7 +57,13 @@ async fn incident_monitor_authority_inventory_payload(
     let mcp_snapshot = crate::http::mcp_inventory::mcp_inventory_snapshot(&state).await;
     let mcp_inventory = authority_mcp_inventory(mcp_snapshot);
 
-    let monitored_sources = incident_monitor_monitored_sources_inventory(&config);
+    let log_watcher = state.incident_monitor_log_watcher_status.read().await.clone();
+    let source_readiness = crate::incident_monitor::source_readiness::evaluate_source_readiness(
+        &config,
+        &log_watcher,
+        crate::now_ms(),
+    );
+    let monitored_sources = incident_monitor_monitored_sources_inventory(&config, &source_readiness);
     let destination_inventory = destinations
         .iter()
         .map(incident_monitor_destination_inventory)
@@ -137,6 +143,10 @@ async fn incident_monitor_authority_inventory_payload(
                 "workflow.action.with_values",
                 "automation.model_policy_values",
                 "automation.node.metadata_values",
+                "source.data_readiness.allowed_use",
+                "source.data_readiness.quality_notes",
+                "source.data_readiness.legal_basis",
+                "source.data_readiness.authorization_marker",
                 "external_action.receipt",
                 "external_action.metadata",
                 "mcp.secret_refs",
@@ -221,9 +231,14 @@ fn incident_monitor_route_inventory(route: &IncidentMonitorRouteConfig) -> Value
     })
 }
 
-fn incident_monitor_monitored_sources_inventory(config: &IncidentMonitorConfig) -> Vec<Value> {
+fn incident_monitor_monitored_sources_inventory(
+    config: &IncidentMonitorConfig,
+    source_readiness: &[IncidentMonitorSourceReadiness],
+) -> Vec<Value> {
     let mut sources = Vec::new();
     for project in &config.monitored_projects {
+        let readiness =
+            incident_monitor_source_readiness_for(source_readiness, &project.project_id, None);
         sources.push(json!({
             "project_id": project.project_id,
             "source_id": Value::Null,
@@ -247,9 +262,16 @@ fn incident_monitor_monitored_sources_inventory(config: &IncidentMonitorConfig) 
             "require_approval_for_new_issues": project.require_approval_for_new_issues,
             "auto_comment_on_matched_open_issues": project.auto_comment_on_matched_open_issues,
             "log_source_count": project.log_sources.len(),
+            "data_readiness": incident_monitor_source_readiness_metadata_inventory(&project.data_readiness),
+            "readiness": readiness,
         }));
         for source in &project.log_sources {
             let binding = project.source_binding(Some(source));
+            let readiness = incident_monitor_source_readiness_for(
+                source_readiness,
+                &project.project_id,
+                Some(&source.source_id),
+            );
             sources.push(json!({
                 "project_id": project.project_id,
                 "source_id": source.source_id,
@@ -274,10 +296,84 @@ fn incident_monitor_monitored_sources_inventory(config: &IncidentMonitorConfig) 
                 "approval_policy": binding.approval_policy,
                 "redaction_profile": binding.redaction_profile,
                 "retention_profile": binding.retention_profile,
+                "data_readiness": incident_monitor_source_readiness_metadata_inventory(&binding.data_readiness),
+                "readiness": readiness,
             }));
         }
     }
     sources
+}
+
+fn incident_monitor_source_readiness_for(
+    readiness: &[IncidentMonitorSourceReadiness],
+    project_id: &str,
+    source_id: Option<&str>,
+) -> Value {
+    readiness
+        .iter()
+        .find(|row| {
+            row.project_id == project_id
+                && match source_id {
+                    Some(source_id) => row.source_id.as_deref() == Some(source_id),
+                    None => row.source_id.is_none(),
+                }
+        })
+        .map(incident_monitor_source_readiness_inventory)
+        .unwrap_or(Value::Null)
+}
+
+fn incident_monitor_source_readiness_inventory(
+    readiness: &IncidentMonitorSourceReadiness,
+) -> Value {
+    json!({
+        "project_id": readiness.project_id,
+        "source_id": readiness.source_id,
+        "source_kind": readiness.source_kind,
+        "enabled": readiness.enabled,
+        "ready": readiness.ready,
+        "governance_ready": readiness.governance_ready,
+        "lineage_ready": readiness.lineage_ready,
+        "freshness_ready": readiness.freshness_ready,
+        "schema_ready": readiness.schema_ready,
+        "protection_ready": readiness.protection_ready,
+        "missing": readiness.missing,
+        "warnings": readiness.warnings,
+        "findings": readiness.findings.iter().map(|finding| {
+            json!({
+                "finding_id": finding.finding_id,
+                "rule_id": finding.rule_id,
+                "category": finding.category,
+                "severity": finding.severity,
+                "title": finding.title,
+                "detail": finding.detail,
+                "evidence_refs": finding.evidence_refs,
+                "recommendation": finding.recommendation,
+            })
+        }).collect::<Vec<_>>(),
+        "last_observed_at_ms": readiness.last_observed_at_ms,
+        "stale_after_ms": readiness.stale_after_ms,
+        "detail": readiness.detail,
+    })
+}
+
+fn incident_monitor_source_readiness_metadata_inventory(
+    readiness: &crate::IncidentMonitorSourceReadinessConfig,
+) -> Value {
+    json!({
+        "source_owner_present": readiness.source_owner.as_ref().is_some_and(|value| !value.trim().is_empty()),
+        "system_of_record_present": readiness.system_of_record.as_ref().is_some_and(|value| !value.trim().is_empty()),
+        "data_classification_present": readiness.data_classification.as_ref().is_some_and(|value| !value.trim().is_empty()),
+        "allowed_use_present": readiness.allowed_use.as_ref().is_some_and(|value| !value.trim().is_empty()),
+        "source_of_truth_present": readiness.source_of_truth.as_ref().is_some_and(|value| !value.trim().is_empty()),
+        "lineage_ref_present": readiness.lineage_ref.as_ref().is_some_and(|value| !value.trim().is_empty()),
+        "freshness_sla_ms": readiness.freshness_sla_ms,
+        "last_observed_at_ms": readiness.last_observed_at_ms,
+        "expected_schema_version_present": readiness.expected_schema_version.as_ref().is_some_and(|value| !value.trim().is_empty()),
+        "schema_drift_status": readiness.schema_drift_status,
+        "quality_notes_present": readiness.quality_notes.as_ref().is_some_and(|value| !value.trim().is_empty()),
+        "legal_basis_present": readiness.legal_basis.as_ref().is_some_and(|value| !value.trim().is_empty()),
+        "authorization_marker_present": readiness.authorization_marker.as_ref().is_some_and(|value| !value.trim().is_empty()),
+    })
 }
 
 fn incident_monitor_intake_key_inventory(key: &crate::IncidentMonitorProjectIntakeKey) -> Value {

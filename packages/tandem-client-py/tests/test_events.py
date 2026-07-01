@@ -124,6 +124,36 @@ def test_incident_monitor_destination_router_types_accept_payloads() -> None:
         {
             "matches": [{"destination_ids": ["legacy-github"], "approval_required": False}],
             "destinations": config.incident_monitor.destinations,
+            "source_readiness": [
+                {
+                    "project_id": "payments",
+                    "source_id": "ci",
+                    "source_kind": "ci",
+                    "enabled": True,
+                    "ready": False,
+                    "missing": ["redaction_profile"],
+                    "warnings": [
+                        "high: Source `payments/ci` is missing redaction profile coverage"
+                    ],
+                    "findings": [
+                        {
+                            "finding_id": "srf_example",
+                            "rule_id": "source_redaction_profile_missing",
+                            "category": "source_protection",
+                            "severity": "high",
+                            "title": "Source `payments/ci` is missing redaction profile coverage",
+                            "detail": "Production source readiness requires a redaction profile.",
+                            "evidence_refs": [
+                                "incident_monitor.config.monitored_projects[].log_sources[ci].redaction_profile"
+                            ],
+                            "recommendation": "Attach a redaction_profile to the source binding.",
+                        }
+                    ],
+                }
+            ],
+            "source_readiness_warnings": [
+                "high: Source `payments/ci` is missing redaction profile coverage"
+            ],
             "default_destination_ids": ["legacy-github"],
             "effective_destination_ids": ["legacy-github"],
         }
@@ -169,6 +199,8 @@ def test_incident_monitor_destination_router_types_accept_payloads() -> None:
     assert config.incident_monitor.monitored_projects[0].source_kind == "external_app"
     assert config.incident_monitor.monitored_projects[0].log_sources[0].source_kind == "ci"
     assert preview.effective_destination_ids == ["legacy-github"]
+    assert preview.source_readiness[0].findings[0].rule_id == "source_redaction_profile_missing"
+    assert "redaction profile" in preview.source_readiness_warnings[0]
     assert post.receipt["issue_number"] == 42
     assert incident.risk_category == "data_exfiltration"
     assert draft.external_correlation_ids == ["case-123"]

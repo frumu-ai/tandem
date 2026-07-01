@@ -551,69 +551,53 @@ impl AppState {
             github_comment_on_issue: capability_ready("github.comment_on_issue"),
         };
         status.selected_model = selected_model;
+        let mcp_connected = selected_server
+            .as_ref()
+            .map(|row| row.connected)
+            .unwrap_or(false);
+        let github_read_ready = status.required_capabilities.github_list_issues
+            && status.required_capabilities.github_get_issue;
+        let github_write_ready = status.required_capabilities.github_create_issue
+            && status.required_capabilities.github_comment_on_issue;
+        let monitor_publish_ready =
+            config.enabled && !config.paused && repo_valid && mcp_connected && github_read_ready && github_write_ready;
         status.readiness = IncidentMonitorReadiness {
             config_valid: repo_valid
                 && selected_server.is_some()
-                && status.required_capabilities.github_list_issues
-                && status.required_capabilities.github_get_issue
-                && status.required_capabilities.github_create_issue
-                && status.required_capabilities.github_comment_on_issue
+                && github_read_ready
+                && github_write_ready
                 && selected_model_ready,
             repo_valid,
             mcp_server_present: selected_server.is_some(),
-            mcp_connected: selected_server
-                .as_ref()
-                .map(|row| row.connected)
-                .unwrap_or(false),
-            github_read_ready: status.required_capabilities.github_list_issues
-                && status.required_capabilities.github_get_issue,
-            github_write_ready: status.required_capabilities.github_create_issue
-                && status.required_capabilities.github_comment_on_issue,
+            mcp_connected,
+            github_read_ready,
+            github_write_ready,
             selected_model_ready,
             ingest_ready: config.enabled && !config.paused && repo_valid,
-            publish_ready: config.enabled
-                && !config.paused
-                && repo_valid
-                && selected_server
-                    .as_ref()
-                    .map(|row| row.connected)
-                    .unwrap_or(false)
-                && status.required_capabilities.github_list_issues
-                && status.required_capabilities.github_get_issue
-                && status.required_capabilities.github_create_issue
-                && status.required_capabilities.github_comment_on_issue,
-            runtime_ready: config.enabled
-                && !config.paused
-                && repo_valid
-                && selected_server
-                    .as_ref()
-                    .map(|row| row.connected)
-                    .unwrap_or(false)
-                && status.required_capabilities.github_list_issues
-                && status.required_capabilities.github_get_issue
-                && status.required_capabilities.github_create_issue
-                && status.required_capabilities.github_comment_on_issue
-                && selected_model_ready,
-            destination_ready: config.enabled
-                && !config.paused
-                && repo_valid
-                && selected_server
-                    .as_ref()
-                    .map(|row| row.connected)
-                    .unwrap_or(false)
-                && status.required_capabilities.github_list_issues
-                && status.required_capabilities.github_get_issue
-                && status.required_capabilities.github_create_issue
-                && status.required_capabilities.github_comment_on_issue,
+            publish_ready: monitor_publish_ready,
+            runtime_ready: monitor_publish_ready && selected_model_ready,
+            destination_ready: monitor_publish_ready,
+            source_ready: true,
             route_preview_ready: true,
         };
         status.destinations = config.effective_destinations();
         status.destination_readiness =
             incident_monitor_destination_readiness(&config, &status, &servers);
+        status.source_readiness =
+            crate::incident_monitor::source_readiness::evaluate_source_readiness(
+                &config,
+                &status.log_watcher,
+                now_ms(),
+            );
         status.readiness.destination_ready = status
             .destination_readiness
             .iter()
             .any(|destination| destination.publish_ready);
+        status.readiness.source_ready = status
+            .source_readiness
+            .iter()
+            .filter(|source| source.enabled)
+            .all(|source| source.ready);
         if config.enabled {
             if config.paused {
                 status.last_error = Some("Incident monitor monitoring is paused.".to_string());

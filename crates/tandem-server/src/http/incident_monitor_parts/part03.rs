@@ -59,6 +59,7 @@ pub(super) async fn preview_incident_monitor_route(
         &status.config,
         &status.destinations,
         &status.destination_readiness,
+        &status.source_readiness,
         &context,
         &input.destination_ids,
     );

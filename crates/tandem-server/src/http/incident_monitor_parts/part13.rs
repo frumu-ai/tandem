@@ -529,6 +529,8 @@ fn incident_monitor_deployment_card_seed_for_source(source: &Value) -> IncidentM
             "redaction_profile_present": incident_monitor_deployment_card_value_has_text(source, "redaction_profile"),
             "retention_profile_present": incident_monitor_deployment_card_value_has_text(source, "retention_profile"),
             "event_schema_version": source.get("event_schema_version").cloned().unwrap_or(Value::Null),
+            "data_readiness": source.get("data_readiness").cloned().unwrap_or(Value::Null),
+            "source_readiness": source.get("readiness").cloned().unwrap_or(Value::Null),
         }),
     }
 }

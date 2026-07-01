@@ -4,6 +4,7 @@ pub mod log_watcher;
 pub mod router;
 pub mod safety_context;
 pub mod service;
+pub mod source_readiness;
 
 pub(crate) fn source_identity_matches_draft(
     draft: &crate::IncidentMonitorDraftRecord,

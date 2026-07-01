@@ -97,6 +97,15 @@ exports JSON/Markdown cards, and returns structured posture findings when
 required production-governance fields are missing. Monitored-source cards now
 link source posture evidence by source/project identifiers as well as canonical
 source refs.
+Incident Monitor monitored sources now have first-class data-readiness gates.
+Projects and log sources can declare owner, system of record, classification,
+allowed use, lineage/source-of-truth, freshness SLA and observation timestamp,
+expected schema version, schema drift status, quality notes, legal basis or
+authorization marker, and redaction/retention profiles. Status, route preview,
+authority inventory, posture checks, assessment reports, deployment cards, and
+TypeScript/Python SDK types surface sanitized source-readiness warnings and
+findings without embedding raw source data, source paths, credentials, or
+authorization marker values.
 Incident Monitor setup is now available from Control Panel Settings. Operators
 can edit source, destination, route, default destination, and safety-default
 configuration in one place, run route previews before publishing, inspect

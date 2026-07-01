@@ -22,9 +22,11 @@ Use this checklist when setting up Incident Monitor intake, destination routing,
 1. Add `monitored_projects` with stable `project_id`, `repo`, and `workspace_root`.
 2. Add `log_sources` with stable `source_id` values.
 3. Set `source_kind`, route tags, tenant/workspace IDs, and schema version where known.
-4. Set `allowed_destination_ids` and `default_destination_ids` for any source that must be constrained.
-5. Create scoped intake keys only for report-only external systems.
-6. Confirm scoped keys cannot publish, mutate routes/destinations, call tools, or inspect files.
+4. Fill `data_readiness` for production sources: owner, system of record, classification, allowed use, lineage/source of truth, freshness SLA, last observation, expected schema version, schema drift status, quality notes, and legal basis or authorization marker.
+5. Set `redaction_profile` and `retention_profile` on projects or source bindings before production routing.
+6. Set `allowed_destination_ids` and `default_destination_ids` for any source that must be constrained.
+7. Create scoped intake keys only for report-only external systems.
+8. Confirm scoped keys cannot publish, mutate routes/destinations, call tools, or inspect files.
 
 ## Destination-router setup
 
@@ -46,6 +48,7 @@ Use this checklist when setting up Incident Monitor intake, destination routing,
 
 1. Generate deployment cards for Tandem self-monitoring, monitored sources, high-authority agents, and externally mutating workflows.
 2. Fill owner, accountable team, intended purpose, data classification, approval protocol, escalation protocol, and review cadence metadata.
-3. Confirm reports, receipts, and protected audit evidence have a customer-owned retention/export policy before production use.
-4. Map posture findings to customer policy and assign owners before enabling high-risk external destinations.
-5. Use [Production Governance](../production-governance/) for the full operating-model checklist.
+3. Review source-readiness findings from status, route preview, posture checks, assessment reports, and deployment cards.
+4. Confirm reports, receipts, and protected audit evidence have a customer-owned retention/export policy before production use.
+5. Map posture findings to customer policy and assign owners before enabling high-risk external destinations.
+6. Use [Production Governance](../production-governance/) for the full operating-model checklist.

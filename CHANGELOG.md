@@ -83,6 +83,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   governance, with read-only JSON/Markdown exports from authority inventory,
   operator metadata overlays, required-field posture findings, self-monitoring
   boundaries, evidence refs, SDK helpers, and redaction coverage.
+- Added Incident Monitor source data-readiness gates for owner/system-of-record
+  metadata, classification/allowed-use, tenant and workspace boundaries,
+  lineage, freshness, schema drift, quality notes, authorization markers, and
+  redaction/retention coverage. Status, route preview, authority inventory,
+  posture checks, assessment reports, deployment cards, and SDK types now
+  surface sanitized source-readiness findings without embedding raw source data
+  or credentials.
 - Fixed monitored-source deployment cards so source posture findings link through
   source/project identifiers as well as canonical source refs.
 - Added an Incident Monitor setup surface in Settings for sources,

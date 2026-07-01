@@ -219,6 +219,7 @@ async fn incident_monitor_assessment_report_payload(
         },
         "counts": {
             "monitored_sources": monitored_sources.len(),
+            "source_readiness_findings": incident_monitor_assessment_report_source_readiness_finding_count(&monitored_sources),
             "automation_specs": automation_specs.len(),
             "destinations": destinations.len(),
             "routes": routes.len(),
@@ -242,6 +243,7 @@ async fn incident_monitor_assessment_report_payload(
             },
             "monitored_systems_and_sources": {
                 "source_kind_counts": incident_monitor_assessment_report_count_values(&monitored_sources, "source_kind"),
+                "source_readiness": incident_monitor_assessment_report_source_readiness_summary(&monitored_sources),
                 "sources": monitored_sources.iter()
                     .take(50)
                     .map(incident_monitor_assessment_report_source_summary)
@@ -504,6 +506,18 @@ fn incident_monitor_assessment_report_source_summary(source: &Value) -> Value {
         "workspace_id_present": source.get("workspace_id").and_then(Value::as_str).is_some_and(|value| !value.trim().is_empty()),
         "allowed_destination_ids": source.get("allowed_destination_ids").cloned().unwrap_or(Value::Array(Vec::new())),
         "default_destination_ids": source.get("default_destination_ids").cloned().unwrap_or(Value::Array(Vec::new())),
+        "data_readiness": source.get("data_readiness").cloned().unwrap_or(Value::Null),
+        "readiness": {
+            "ready": source.pointer("/readiness/ready").cloned().unwrap_or(Value::Null),
+            "governance_ready": source.pointer("/readiness/governance_ready").cloned().unwrap_or(Value::Null),
+            "lineage_ready": source.pointer("/readiness/lineage_ready").cloned().unwrap_or(Value::Null),
+            "freshness_ready": source.pointer("/readiness/freshness_ready").cloned().unwrap_or(Value::Null),
+            "schema_ready": source.pointer("/readiness/schema_ready").cloned().unwrap_or(Value::Null),
+            "protection_ready": source.pointer("/readiness/protection_ready").cloned().unwrap_or(Value::Null),
+            "missing": source.pointer("/readiness/missing").cloned().unwrap_or(Value::Array(Vec::new())),
+            "warnings": source.pointer("/readiness/warnings").cloned().unwrap_or(Value::Array(Vec::new())),
+            "finding_count": source.pointer("/readiness/findings").and_then(Value::as_array).map(|rows| rows.len()).unwrap_or(0),
+        },
     })
 }
 
@@ -564,6 +578,61 @@ fn incident_monitor_assessment_report_context_coverage(
         "automation_specs_with_explicit_context": automations_with_context,
         "automation_specs_missing_explicit_context": automation_specs.len().saturating_sub(automations_with_context),
     })
+}
+
+fn incident_monitor_assessment_report_source_readiness_summary(monitored_sources: &[Value]) -> Value {
+    let ready_sources = monitored_sources
+        .iter()
+        .filter(|source| {
+            source
+                .pointer("/readiness/ready")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .count();
+    let enabled_sources = monitored_sources
+        .iter()
+        .filter(|source| {
+            source
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+        })
+        .count();
+    let findings = monitored_sources
+        .iter()
+        .flat_map(|source| {
+            source
+                .pointer("/readiness/findings")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "sources": monitored_sources.len(),
+        "enabled_sources": enabled_sources,
+        "ready_sources": ready_sources,
+        "unready_enabled_sources": enabled_sources.saturating_sub(ready_sources),
+        "findings": findings.len(),
+        "findings_by_severity": incident_monitor_assessment_report_count_values(&findings, "severity"),
+        "findings_by_category": incident_monitor_assessment_report_count_values(&findings, "category"),
+    })
+}
+
+fn incident_monitor_assessment_report_source_readiness_finding_count(
+    monitored_sources: &[Value],
+) -> usize {
+    monitored_sources
+        .iter()
+        .map(|source| {
+            source
+                .pointer("/readiness/findings")
+                .and_then(Value::as_array)
+                .map(|findings| findings.len())
+                .unwrap_or(0)
+        })
+        .sum()
 }
 
 fn incident_monitor_assessment_report_value_has_text(value: &Value, key: &str) -> bool {
@@ -634,6 +703,7 @@ fn incident_monitor_assessment_report_route_preview(
         &status.config,
         &status.destinations,
         &status.destination_readiness,
+        &status.source_readiness,
         &context,
         route_destination_ids,
     );
