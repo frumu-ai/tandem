@@ -1205,6 +1205,64 @@ export interface BugMonitorAuthorityIntakeKey {
   [key: string]: unknown;
 }
 
+export interface BugMonitorPostureChecksOptions {
+  mode?: "dry_run" | "enabled" | "disabled" | string;
+  rules?: string[];
+  disabledRules?: string[];
+  disabled_rules?: string[];
+  minSeverity?: "low" | "medium" | "high" | "critical" | string;
+  min_severity?: "low" | "medium" | "high" | "critical" | string;
+}
+
+export interface BugMonitorPostureChecksResponse {
+  schema_version: number;
+  generated_at_ms?: number;
+  scope?: JsonObject;
+  baseline_policy?: JsonObject;
+  rules?: BugMonitorPostureRuleState[];
+  findings: BugMonitorPostureFinding[];
+  counts?: BugMonitorPostureCounts;
+  authority_inventory?: JsonObject;
+  draft_conversion?: JsonObject;
+  sensitive_values?: JsonObject;
+  [key: string]: unknown;
+}
+
+export interface BugMonitorPostureRuleState {
+  rule_id: string;
+  category?: string;
+  default_severity?: string;
+  enabled?: boolean;
+  dry_run?: boolean;
+  [key: string]: unknown;
+}
+
+export interface BugMonitorPostureCounts {
+  findings?: number;
+  by_severity?: Record<string, number>;
+  by_category?: Record<string, number>;
+  active_rules?: number;
+  [key: string]: unknown;
+}
+
+export interface BugMonitorPostureFinding {
+  finding_id: string;
+  fingerprint: string;
+  rule_id: string;
+  category: string;
+  severity: "low" | "medium" | "high" | "critical" | string;
+  title: string;
+  detail?: string;
+  affected_objects?: JsonObject[];
+  evidence_refs?: JsonObject[];
+  recommendation?: string;
+  route_suggestion?: JsonObject;
+  destination_suggestion?: JsonObject;
+  incident_draft_suggestion?: JsonObject;
+  dry_run?: boolean;
+  [key: string]: unknown;
+}
+
 export interface BugMonitorIncidentRecord {
   incident_id: string;
   fingerprint?: string;

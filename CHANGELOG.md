@@ -91,6 +91,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   agents, tool/MCP policy, destinations, routes, monitored sources, approvals,
   policy decisions, and external publish surfaces with sensitive values
   summarized or omitted.
+- Added read-only Incident Monitor security posture checks and SDK helpers that
+  run deterministic baseline rules over the authority inventory and selected
+  decision/action history, producing deduped findings with severity, evidence
+  refs, mitigation guidance, routing suggestions, and normal Bug Monitor draft
+  conversion payloads. Checks default to dry-run and support enabled/disabled
+  rule policy modes.
 - Added Incident Monitor AI Agent Security Posture positioning docs with
   buyer-facing packaging, demo narrative, report outline, comparison guidance,
   and explicit boundaries against broad vulnerability-scanner or SIEM claims.

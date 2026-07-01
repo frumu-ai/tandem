@@ -18,3 +18,4 @@ include!("bug_monitor_parts/part08.rs");
 include!("bug_monitor_parts/part09.rs");
 include!("bug_monitor_parts/part10.rs");
 include!("bug_monitor_parts/part11.rs");
+include!("bug_monitor_parts/part12.rs");

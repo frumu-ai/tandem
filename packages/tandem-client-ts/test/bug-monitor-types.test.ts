@@ -10,6 +10,7 @@ import type {
   BugMonitorIntakeKeyListResponse,
   BugMonitorLogSourceReplayResponse,
   BugMonitorLogSourceResetResponse,
+  BugMonitorPostureChecksResponse,
   BugMonitorPostRecord,
   BugMonitorRouteConfig,
   BugMonitorRoutePreviewResponse,
@@ -333,6 +334,65 @@ describe("Bug Monitor external project public types", () => {
       expect(inventory.inventory.destinations?.[0]?.require_approval).toBe(true);
       expect(calls[0]).toMatchObject({
         url: "http://localhost:39731/bug-monitor/security/authority-inventory",
+        method: "GET",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("fetches security posture checks through the SDK helper", async () => {
+    const client = new TandemClient({ baseUrl: "http://localhost:39731", token: "test-token" });
+    const originalFetch = globalThis.fetch;
+    const calls: Array<{ url: string; method: string }> = [];
+    const response: BugMonitorPostureChecksResponse = {
+      schema_version: 1,
+      scope: {
+        source: "bug_monitor_security_posture_checks",
+        read_only: true,
+        dry_run: true,
+      },
+      baseline_policy: {
+        mode: "dry_run",
+      },
+      findings: [
+        {
+          finding_id: "bpf_123",
+          fingerprint: "sha256:abc",
+          rule_id: "mcp_server_without_tool_allowlist",
+          category: "mcp_allowlist_gap",
+          severity: "high",
+          title: "MCP server missing tool allowlist",
+          incident_draft_suggestion: {
+            source: "security_posture",
+            event_type: "security.posture.finding",
+          },
+        },
+      ],
+      counts: {
+        findings: 1,
+        by_severity: { high: 1 },
+        by_category: { mcp_allowlist_gap: 1 },
+      },
+    };
+
+    globalThis.fetch = (async (input, init) => {
+      calls.push({ url: String(input), method: String(init?.method ?? "GET") });
+      return new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const posture = await client.bugMonitor.getPostureChecks({
+        rules: ["mcp_server_without_tool_allowlist"],
+        minSeverity: "medium",
+      });
+      expect(posture.findings[0]?.category).toBe("mcp_allowlist_gap");
+      expect(posture.counts?.by_severity?.high).toBe(1);
+      expect(calls[0]).toMatchObject({
+        url: "http://localhost:39731/bug-monitor/security/posture-checks?rules=mcp_server_without_tool_allowlist&min_severity=medium",
         method: "GET",
       });
     } finally {

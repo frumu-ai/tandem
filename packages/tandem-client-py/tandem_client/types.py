@@ -915,6 +915,55 @@ class BugMonitorAuthorityInventoryResponse(BaseModel):
     sensitive_values: Optional[dict[str, Any]] = None
 
 
+class BugMonitorPostureRuleState(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    rule_id: str
+    category: Optional[str] = None
+    default_severity: Optional[str] = None
+    enabled: Optional[bool] = None
+    dry_run: Optional[bool] = None
+
+
+class BugMonitorPostureCounts(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    findings: Optional[int] = None
+    by_severity: dict[str, int] = {}
+    by_category: dict[str, int] = {}
+    active_rules: Optional[int] = None
+
+
+class BugMonitorPostureFinding(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    finding_id: str
+    fingerprint: str
+    rule_id: str
+    category: str
+    severity: str
+    title: str
+    detail: Optional[str] = None
+    affected_objects: list[dict[str, Any]] = []
+    evidence_refs: list[dict[str, Any]] = []
+    recommendation: Optional[str] = None
+    route_suggestion: Optional[dict[str, Any]] = None
+    destination_suggestion: Optional[dict[str, Any]] = None
+    incident_draft_suggestion: Optional[dict[str, Any]] = None
+    dry_run: Optional[bool] = None
+
+
+class BugMonitorPostureChecksResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    schema_version: int
+    generated_at_ms: Optional[int] = None
+    scope: Optional[dict[str, Any]] = None
+    baseline_policy: Optional[dict[str, Any]] = None
+    rules: list[BugMonitorPostureRuleState] = []
+    findings: list[BugMonitorPostureFinding] = []
+    counts: Optional[BugMonitorPostureCounts] = None
+    authority_inventory: Optional[dict[str, Any]] = None
+    draft_conversion: Optional[dict[str, Any]] = None
+    sensitive_values: Optional[dict[str, Any]] = None
+
+
 class BugMonitorIncidentRecord(BaseModel):
     model_config = ConfigDict(extra="allow")
     incident_id: str

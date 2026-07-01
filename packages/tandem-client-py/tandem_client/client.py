@@ -42,6 +42,7 @@ from .types import (
     BugMonitorIncidentListResponse,
     BugMonitorIncidentRecord,
     BugMonitorPostListResponse,
+    BugMonitorPostureChecksResponse,
     BugMonitorRouteConfig,
     BugMonitorRoutePreviewResponse,
     CoderGithubProjectInboxResponse,
@@ -553,6 +554,30 @@ class _BugMonitor:
         res = await self._http.get("/bug-monitor/security/authority-inventory")
         res.raise_for_status()
         return BugMonitorAuthorityInventoryResponse.model_validate(res.json())
+
+    async def get_posture_checks(
+        self,
+        *,
+        mode: Optional[str] = None,
+        rules: Optional[list[str]] = None,
+        disabled_rules: Optional[list[str]] = None,
+        min_severity: Optional[str] = None,
+    ) -> BugMonitorPostureChecksResponse:
+        params: dict[str, str] = {}
+        if mode:
+            params["mode"] = mode
+        if rules:
+            params["rules"] = ",".join(rules)
+        if disabled_rules:
+            params["disabled_rules"] = ",".join(disabled_rules)
+        if min_severity:
+            params["min_severity"] = min_severity
+        res = await self._http.get(
+            "/bug-monitor/security/posture-checks",
+            params=params or None,
+        )
+        res.raise_for_status()
+        return BugMonitorPostureChecksResponse.model_validate(res.json())
 
     async def recompute_status(self) -> BugMonitorStatusResponse:
         res = await self._http.post("/bug-monitor/status/recompute")

@@ -38,6 +38,14 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
             get(get_bug_monitor_authority_inventory),
         )
         .route(
+            "/bug-monitor/security/posture-checks",
+            get(get_bug_monitor_security_posture_checks),
+        )
+        .route(
+            "/failure-reporter/security/posture-checks",
+            get(get_bug_monitor_security_posture_checks),
+        )
+        .route(
             "/bug-monitor/route-preview",
             post(preview_bug_monitor_route),
         )

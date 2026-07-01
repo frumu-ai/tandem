@@ -78,6 +78,8 @@ import type {
   BugMonitorConfigResponse,
   BugMonitorStatusResponse,
   BugMonitorAuthorityInventoryResponse,
+  BugMonitorPostureChecksOptions,
+  BugMonitorPostureChecksResponse,
   BugMonitorDestinationConfig,
   BugMonitorRouteConfig,
   BugMonitorIncidentRecord,
@@ -836,6 +838,22 @@ class BugMonitor {
   async getAuthorityInventory(): Promise<BugMonitorAuthorityInventoryResponse> {
     return this.req<BugMonitorAuthorityInventoryResponse>(
       "/bug-monitor/security/authority-inventory"
+    );
+  }
+
+  async getPostureChecks(
+    options?: BugMonitorPostureChecksOptions
+  ): Promise<BugMonitorPostureChecksResponse> {
+    const params = new URLSearchParams();
+    if (options?.mode) params.set("mode", options.mode);
+    if (options?.rules?.length) params.set("rules", options.rules.join(","));
+    const disabledRules = options?.disabledRules ?? options?.disabled_rules;
+    if (disabledRules?.length) params.set("disabled_rules", disabledRules.join(","));
+    const minSeverity = options?.minSeverity ?? options?.min_severity;
+    if (minSeverity) params.set("min_severity", minSeverity);
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    return this.req<BugMonitorPostureChecksResponse>(
+      `/bug-monitor/security/posture-checks${qs}`
     );
   }
 

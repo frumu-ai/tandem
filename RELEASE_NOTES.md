@@ -108,8 +108,12 @@ agents, tool/MCP policy, destinations, routes, monitored sources, scoped intake
 keys, approvals, policy decisions, and external publish surfaces while omitting
 raw credentials, intake-key material, secret-backed destination values, action
 receipts, and arbitrary metadata values. TypeScript and Python clients include
-helpers for the endpoint, and the docs now define AI Agent Security Posture
-positioning, packaging, demo narrative, report outline, self-monitoring
+helpers for the endpoint. Incident Monitor also adds read-only,
+dry-run-by-default security posture checks over that inventory and selected
+policy decision/action history, producing deduped findings with severity, affected
+objects, evidence refs, mitigation guidance, routing suggestions, and normal
+Bug Monitor draft-conversion payloads. The docs now define AI Agent Security
+Posture positioning, packaging, demo narrative, report outline, self-monitoring
 boundaries, and comparisons with SAST, DAST, SIEM, CSPM, EDR, and traditional
 workflow automation without overclaiming full vulnerability scanning.
 The SDK destination removal helpers now also drop routes that would otherwise

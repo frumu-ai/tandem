@@ -12,6 +12,7 @@ from tandem_client.types import (
     BugMonitorDraftRecord,
     BugMonitorIncidentRecord,
     BugMonitorPostRecord,
+    BugMonitorPostureChecksResponse,
     BugMonitorRoutePreviewResponse,
     EngineEvent,
 )
@@ -423,6 +424,59 @@ async def test_bug_monitor_authority_inventory_sdk_helper() -> None:
     assert inventory.inventory.scoped_intake_keys[0]["key_hash_present"] is True
     assert inventory.inventory.destinations[0]["require_approval"] is True
     assert inventory_route.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_bug_monitor_posture_checks_sdk_helper() -> None:
+    posture_payload = {
+        "schema_version": 1,
+        "scope": {
+            "source": "bug_monitor_security_posture_checks",
+            "read_only": True,
+            "dry_run": True,
+        },
+        "baseline_policy": {"mode": "dry_run"},
+        "findings": [
+            {
+                "finding_id": "bpf_123",
+                "fingerprint": "sha256:abc",
+                "rule_id": "mcp_server_without_tool_allowlist",
+                "category": "mcp_allowlist_gap",
+                "severity": "high",
+                "title": "MCP server missing tool allowlist",
+                "incident_draft_suggestion": {
+                    "source": "security_posture",
+                    "event_type": "security.posture.finding",
+                },
+            }
+        ],
+        "counts": {
+            "findings": 1,
+            "by_severity": {"high": 1},
+            "by_category": {"mcp_allowlist_gap": 1},
+        },
+    }
+    posture_route = respx.get(
+        "http://localhost:39731/bug-monitor/security/posture-checks",
+        params={
+            "rules": "mcp_server_without_tool_allowlist",
+            "min_severity": "medium",
+        },
+    ).mock(return_value=httpx.Response(200, json=posture_payload))
+
+    async with TandemClient(base_url="http://localhost:39731", token="token") as client:
+        posture = await client.bug_monitor.get_posture_checks(
+            rules=["mcp_server_without_tool_allowlist"],
+            min_severity="medium",
+        )
+
+    typed_posture = BugMonitorPostureChecksResponse.model_validate(posture_payload)
+    assert posture.schema_version == typed_posture.schema_version
+    assert posture.findings[0].category == "mcp_allowlist_gap"
+    assert posture.counts is not None
+    assert posture.counts.by_severity["high"] == 1
+    assert posture_route.called
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,15 @@ pub(super) async fn get_bug_monitor_authority_inventory(
     verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
 ) -> Response {
     let verified = verified_tenant_context.as_ref().map(|context| &context.0);
+    Json(bug_monitor_authority_inventory_payload(&state, tenant_context, verified).await)
+        .into_response()
+}
+
+async fn bug_monitor_authority_inventory_payload(
+    state: &AppState,
+    tenant_context: TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+) -> Value {
     let config = state.bug_monitor_config().await;
     let destinations = config.effective_destinations();
     let routes = config.routes.clone();
@@ -66,7 +75,7 @@ pub(super) async fn get_bug_monitor_authority_inventory(
         .map(|workflow| bug_monitor_workflow_inventory(workflow, &workflow_hooks))
         .collect::<Vec<_>>();
 
-    Json(json!({
+    json!({
         "schema_version": BUG_MONITOR_AUTHORITY_INVENTORY_SCHEMA_VERSION,
         "generated_at_ms": crate::now_ms(),
         "scope": {
@@ -135,8 +144,7 @@ pub(super) async fn get_bug_monitor_authority_inventory(
                 "mcp.last_auth_challenge"
             ],
         },
-    }))
-    .into_response()
+    })
 }
 
 fn authority_mcp_inventory(snapshot: Value) -> Value {
