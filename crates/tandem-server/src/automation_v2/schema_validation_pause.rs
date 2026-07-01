@@ -215,7 +215,7 @@ fn build_schema_validation_pause_metadata(
             .get("required_next_tool_actions")
             .cloned()
             .unwrap_or_else(|| json!([])),
-        "tenant_context": serde_json::to_value(&automation.tenant_context())
+        "tenant_context": serde_json::to_value(automation.tenant_context())
             .unwrap_or(Value::Null),
     })
 }
