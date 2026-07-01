@@ -290,11 +290,11 @@ pub(crate) fn build_bug_monitor_duplicate_summary(matches: &[Value]) -> Value {
     })
 }
 
-pub(crate) async fn load_bug_monitor_issue_draft_artifact(
+pub(crate) async fn load_incident_monitor_issue_draft_artifact(
     state: &AppState,
     triage_run_id: &str,
 ) -> Option<Value> {
-    load_bug_monitor_artifact_payload(state, triage_run_id, "bug_monitor_issue_draft")
+    load_bug_monitor_artifact_payload(state, triage_run_id, "incident_monitor_issue_draft")
         .await
         .map(|(_, payload)| payload)
 }
@@ -320,7 +320,7 @@ fn bug_monitor_triage_artifacts(
         latest_bug_monitor_artifact(state, triage_run_id, "bug_monitor_triage_summary")
     });
     let issue_draft_artifact = triage_run_id.and_then(|triage_run_id| {
-        latest_bug_monitor_artifact(state, triage_run_id, "bug_monitor_issue_draft")
+        latest_bug_monitor_artifact(state, triage_run_id, "incident_monitor_issue_draft")
     });
     let duplicate_matches_artifact = triage_run_id.and_then(|triage_run_id| {
         latest_bug_monitor_artifact(state, triage_run_id, "failure_duplicate_matches")
@@ -398,7 +398,7 @@ async fn refresh_bug_monitor_duplicate_matches_artifact(
     Some(duplicate_matches)
 }
 
-pub(crate) async fn ensure_bug_monitor_issue_draft(
+pub(crate) async fn ensure_incident_monitor_issue_draft(
     state: AppState,
     draft_id: &str,
     force: bool,
@@ -435,9 +435,12 @@ pub(crate) async fn ensure_bug_monitor_issue_draft(
         );
     }
     if !force {
-        let existing_issue_draft =
-            load_bug_monitor_artifact_payload(&state, &triage_run_id, "bug_monitor_issue_draft")
-                .await;
+        let existing_issue_draft = load_bug_monitor_artifact_payload(
+            &state,
+            &triage_run_id,
+            "incident_monitor_issue_draft",
+        )
+        .await;
         let triage_summary =
             load_bug_monitor_artifact_payload(&state, &triage_run_id, "bug_monitor_triage_summary")
                 .await;
@@ -790,7 +793,7 @@ pub(crate) async fn ensure_bug_monitor_issue_draft(
         &state,
         &triage_run_id,
         &artifact_id,
-        "bug_monitor_issue_draft",
+        "incident_monitor_issue_draft",
         "artifacts/bug_monitor.issue_draft.json",
         &payload,
     )

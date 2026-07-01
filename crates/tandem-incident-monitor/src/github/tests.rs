@@ -3,7 +3,7 @@ use tandem_types::ToolResult;
 
 #[test]
 fn build_issue_body_includes_hidden_markers() {
-    let draft = BugMonitorDraftRecord {
+    let draft = IncidentMonitorDraftRecord {
         draft_id: "draft-1".to_string(),
         fingerprint: "abc123".to_string(),
         repo: "acme/platform".to_string(),
@@ -13,7 +13,7 @@ fn build_issue_body_includes_hidden_markers() {
         issue_number: None,
         title: Some("session.error detected".to_string()),
         detail: Some("summary".to_string()),
-        ..BugMonitorDraftRecord::default()
+        ..IncidentMonitorDraftRecord::default()
     };
     let body = build_issue_body(&draft, None, None, "digest-1");
     assert!(body.contains("<!-- tandem:fingerprint:v1:abc123 -->"));
@@ -41,16 +41,16 @@ fn github_copilot_issue_payloads_match_current_schema() {
 
 #[test]
 fn build_issue_body_renders_incident_excerpt_as_fenced_logs() {
-    let draft = BugMonitorDraftRecord {
+    let draft = IncidentMonitorDraftRecord {
         draft_id: "draft-logs".to_string(),
         fingerprint: "log-fingerprint".to_string(),
         repo: "acme/platform".to_string(),
         status: "draft_ready".to_string(),
         created_at_ms: 1,
         detail: Some("fallback detail".to_string()),
-        ..BugMonitorDraftRecord::default()
+        ..IncidentMonitorDraftRecord::default()
     };
-    let incident = BugMonitorIncidentRecord {
+    let incident = IncidentMonitorIncidentRecord {
         incident_id: "incident-logs".to_string(),
         fingerprint: draft.fingerprint.clone(),
         event_type: "workflow.run.failed".to_string(),
@@ -62,7 +62,7 @@ fn build_issue_body_renders_incident_excerpt_as_fenced_logs() {
             "first failure line".to_string(),
             "second failure line".to_string(),
         ],
-        ..BugMonitorIncidentRecord::default()
+        ..IncidentMonitorIncidentRecord::default()
     };
     let body = build_issue_body(&draft, Some(&incident), None, "digest-logs");
     assert!(body.contains("### Logs\n```\nfirst failure line\nsecond failure line\n```"));
@@ -72,7 +72,7 @@ fn build_issue_body_renders_incident_excerpt_as_fenced_logs() {
 
 #[test]
 fn build_issue_body_renders_deduped_evidence_refs() {
-    let draft = BugMonitorDraftRecord {
+    let draft = IncidentMonitorDraftRecord {
         draft_id: "draft-evidence".to_string(),
         fingerprint: "evidence-fingerprint".to_string(),
         repo: "acme/platform".to_string(),
@@ -82,9 +82,9 @@ fn build_issue_body_renders_deduped_evidence_refs() {
             "artifacts/shared.json".to_string(),
             "artifacts/draft-only.log".to_string(),
         ],
-        ..BugMonitorDraftRecord::default()
+        ..IncidentMonitorDraftRecord::default()
     };
-    let incident = BugMonitorIncidentRecord {
+    let incident = IncidentMonitorIncidentRecord {
         incident_id: "incident-evidence".to_string(),
         fingerprint: draft.fingerprint.clone(),
         event_type: "workflow.run.failed".to_string(),
@@ -96,7 +96,7 @@ fn build_issue_body_renders_deduped_evidence_refs() {
             "artifacts/shared.json".to_string(),
             "artifacts/incident-only.log".to_string(),
         ],
-        ..BugMonitorIncidentRecord::default()
+        ..IncidentMonitorIncidentRecord::default()
     };
     let body = build_issue_body(&draft, Some(&incident), None, "digest-evidence");
     assert!(body.contains("### Evidence"));
@@ -107,15 +107,15 @@ fn build_issue_body_renders_deduped_evidence_refs() {
 
 #[test]
 fn build_issue_body_renders_only_present_diagnostic_metadata() {
-    let draft = BugMonitorDraftRecord {
+    let draft = IncidentMonitorDraftRecord {
         draft_id: "draft-metadata".to_string(),
         fingerprint: "metadata-fingerprint".to_string(),
         repo: "acme/platform".to_string(),
         status: "draft_ready".to_string(),
         created_at_ms: 1,
-        ..BugMonitorDraftRecord::default()
+        ..IncidentMonitorDraftRecord::default()
     };
-    let incident = BugMonitorIncidentRecord {
+    let incident = IncidentMonitorIncidentRecord {
         incident_id: "incident-metadata".to_string(),
         fingerprint: draft.fingerprint.clone(),
         event_type: "workflow.run.failed".to_string(),
@@ -127,7 +127,7 @@ fn build_issue_body_renders_only_present_diagnostic_metadata() {
         component: Some("automation_v2".to_string()),
         occurrence_count: 3,
         last_seen_at_ms: Some(1_777_485_515_668),
-        ..BugMonitorIncidentRecord::default()
+        ..IncidentMonitorIncidentRecord::default()
     };
     let body = build_issue_body(&draft, Some(&incident), None, "digest-metadata");
     assert!(body.contains("### Diagnostic metadata"));
@@ -142,7 +142,7 @@ fn build_issue_body_renders_only_present_diagnostic_metadata() {
 
 #[test]
 fn build_issue_body_renders_fallback_triage_status_for_known_states() {
-    let mut draft = BugMonitorDraftRecord {
+    let mut draft = IncidentMonitorDraftRecord {
         draft_id: "draft-status".to_string(),
         fingerprint: "status-fingerprint".to_string(),
         repo: "acme/platform".to_string(),
@@ -151,8 +151,8 @@ fn build_issue_body_renders_fallback_triage_status_for_known_states() {
         github_status: Some("triage_timed_out".to_string()),
         confidence: Some("medium".to_string()),
         risk_level: Some("medium".to_string()),
-        expected_destination: Some("bug_monitor_issue_draft".to_string()),
-        quality_gate: Some(crate::types::BugMonitorQualityGateReport {
+        expected_destination: Some("incident_monitor_issue_draft".to_string()),
+        quality_gate: Some(crate::types::IncidentMonitorQualityGateReport {
             stage: "draft_to_proposal".to_string(),
             status: "blocked".to_string(),
             passed: false,
@@ -162,7 +162,7 @@ fn build_issue_body_renders_fallback_triage_status_for_known_states() {
             missing: vec!["research_performed".to_string()],
             blocked_reason: Some("triage timed out".to_string()),
         }),
-        ..BugMonitorDraftRecord::default()
+        ..IncidentMonitorDraftRecord::default()
     };
     let body = build_issue_body(&draft, None, None, "digest-status");
     assert!(body.contains("### Triage signal"));
@@ -182,15 +182,15 @@ fn build_issue_body_renders_fallback_triage_status_for_known_states() {
 
 #[test]
 fn build_issue_body_truncates_long_excerpt() {
-    let draft = BugMonitorDraftRecord {
+    let draft = IncidentMonitorDraftRecord {
         draft_id: "draft-long".to_string(),
         fingerprint: "long-fingerprint".to_string(),
         repo: "acme/platform".to_string(),
         status: "draft_ready".to_string(),
         created_at_ms: 1,
-        ..BugMonitorDraftRecord::default()
+        ..IncidentMonitorDraftRecord::default()
     };
-    let incident = BugMonitorIncidentRecord {
+    let incident = IncidentMonitorIncidentRecord {
         incident_id: "incident-long".to_string(),
         fingerprint: draft.fingerprint.clone(),
         event_type: "workflow.run.failed".to_string(),
@@ -199,7 +199,7 @@ fn build_issue_body_truncates_long_excerpt() {
         workspace_root: "/tmp/acme".to_string(),
         title: "Workflow failed".to_string(),
         excerpt: vec!["x".repeat(8_000)],
-        ..BugMonitorIncidentRecord::default()
+        ..IncidentMonitorIncidentRecord::default()
     };
     let body = build_issue_body(&draft, Some(&incident), None, "digest-long");
     assert!(body.len() < 12_500);
@@ -215,7 +215,7 @@ fn extract_issues_from_official_github_mcp_result() {
                 "issues": [
                     {
                         "number": 42,
-                        "title": "Bug Monitor issue",
+                        "title": "Incident Monitor issue",
                         "body": "details\n<!-- tandem:fingerprint:v1:deadbeef -->",
                         "state": "open",
                         "html_url": "https://github.com/acme/platform/issues/42"
@@ -233,15 +233,15 @@ fn extract_issues_from_official_github_mcp_result() {
 
 #[test]
 fn failed_create_posts_suppress_unsafe_create_retries() {
-    let draft = BugMonitorDraftRecord {
+    let draft = IncidentMonitorDraftRecord {
         draft_id: "draft-1".to_string(),
         repo: "acme/source".to_string(),
         fingerprint: "fp-create".to_string(),
         ..Default::default()
     };
-    let destination_id = BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID;
+    let destination_id = INCIDENT_MONITOR_LEGACY_GITHUB_DESTINATION_ID;
     let target_repo = "acme/incidents";
-    let failed_create = BugMonitorPostRecord {
+    let failed_create = IncidentMonitorPostRecord {
         post_id: "post-create".to_string(),
         repo: target_repo.to_string(),
         fingerprint: draft.fingerprint.clone(),
@@ -251,30 +251,30 @@ fn failed_create_posts_suppress_unsafe_create_retries() {
         target_ref: Some(target_repo.to_string()),
         ..Default::default()
     };
-    let failed_auto_post = BugMonitorPostRecord {
+    let failed_auto_post = IncidentMonitorPostRecord {
         operation: "auto_post".to_string(),
         ..failed_create.clone()
     };
-    let failed_preflight_auto_post = BugMonitorPostRecord {
+    let failed_preflight_auto_post = IncidentMonitorPostRecord {
         operation: "auto_post".to_string(),
         error: Some(
-            "Selected provider/model is unavailable. Bug monitor is fail-closed.".to_string(),
+            "Selected provider/model is unavailable. Incident Monitor is fail-closed.".to_string(),
         ),
         ..failed_create.clone()
     };
-    let failed_comment = BugMonitorPostRecord {
+    let failed_comment = IncidentMonitorPostRecord {
         operation: "comment".to_string(),
         ..failed_create.clone()
     };
-    let posted_create = BugMonitorPostRecord {
+    let posted_create = IncidentMonitorPostRecord {
         status: "posted".to_string(),
         ..failed_create.clone()
     };
-    let different_fingerprint = BugMonitorPostRecord {
+    let different_fingerprint = IncidentMonitorPostRecord {
         fingerprint: "other-fingerprint".to_string(),
         ..failed_create.clone()
     };
-    let different_destination = BugMonitorPostRecord {
+    let different_destination = IncidentMonitorPostRecord {
         destination_id: Some("github-secondary".to_string()),
         ..failed_create.clone()
     };
@@ -331,14 +331,14 @@ fn failed_create_posts_suppress_unsafe_create_retries() {
 
 #[test]
 fn post_target_repo_matching_prefers_target_ref() {
-    let legacy_post = BugMonitorPostRecord {
+    let legacy_post = IncidentMonitorPostRecord {
         repo: "acme/platform".to_string(),
         ..Default::default()
     };
     assert!(post_matches_target_repo(&legacy_post, "acme/platform"));
     assert!(!post_matches_target_repo(&legacy_post, "acme/incidents"));
 
-    let routed_post = BugMonitorPostRecord {
+    let routed_post = IncidentMonitorPostRecord {
         repo: "acme/source".to_string(),
         target_ref: Some("acme/incidents".to_string()),
         ..Default::default()
@@ -350,7 +350,7 @@ fn post_target_repo_matching_prefers_target_ref() {
 #[test]
 fn idempotency_key_is_destination_aware() {
     let legacy = build_idempotency_key(
-        BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID,
+        INCIDENT_MONITOR_LEGACY_GITHUB_DESTINATION_ID,
         "acme/platform",
         "fp-create",
         "create_issue",
@@ -377,11 +377,11 @@ fn fallback_issue_body_can_explain_triage_enrichment_pending() {
 
 #[test]
 fn publish_not_ready_reason_does_not_blame_model_when_github_is_ready() {
-    let status = BugMonitorStatus {
+    let status = IncidentMonitorStatus {
         last_error: Some(
-            "Selected provider/model is unavailable. Bug monitor is fail-closed.".to_string(),
+            "Selected provider/model is unavailable. Incident Monitor is fail-closed.".to_string(),
         ),
-        readiness: crate::types::BugMonitorReadiness {
+        readiness: crate::types::IncidentMonitorReadiness {
             repo_valid: true,
             mcp_connected: true,
             github_read_ready: true,
@@ -395,16 +395,16 @@ fn publish_not_ready_reason_does_not_blame_model_when_github_is_ready() {
     };
 
     assert_eq!(
-        bug_monitor_publish_not_ready_reason(&status),
-        "Bug Monitor is not ready for GitHub posting"
+        incident_monitor_publish_not_ready_reason(&status),
+        "Incident Monitor is not ready for GitHub posting"
     );
 }
 
 fn make_incident_with_excerpt_and_last_error(
     excerpt: Vec<String>,
     last_error: Option<String>,
-) -> BugMonitorIncidentRecord {
-    BugMonitorIncidentRecord {
+) -> IncidentMonitorIncidentRecord {
+    IncidentMonitorIncidentRecord {
         incident_id: "incident-pick".to_string(),
         fingerprint: "fp".to_string(),
         event_type: "automation_v2.run.failed".to_string(),
@@ -430,7 +430,7 @@ fn pick_error_message_for_provenance_prefers_excerpt_over_last_error_after_timeo
                 .to_string(),
         ),
     );
-    let draft = BugMonitorDraftRecord::default();
+    let draft = IncidentMonitorDraftRecord::default();
     let picked = pick_error_message_for_provenance(&draft, Some(&incident));
     assert_eq!(
         picked.as_deref(),
@@ -441,7 +441,7 @@ fn pick_error_message_for_provenance_prefers_excerpt_over_last_error_after_timeo
 #[test]
 fn pick_error_message_for_provenance_falls_back_to_title_suffix() {
     let incident = make_incident_with_excerpt_and_last_error(Vec::new(), None);
-    let draft = BugMonitorDraftRecord::default();
+    let draft = IncidentMonitorDraftRecord::default();
     let picked = pick_error_message_for_provenance(&draft, Some(&incident));
     assert_eq!(
         picked.as_deref(),
@@ -473,7 +473,7 @@ fn extract_error_after_colon_uses_rightmost_split() {
 /// on a real fingerprint change.
 #[test]
 fn compute_evidence_digest_stability_contract() {
-    let base = BugMonitorDraftRecord {
+    let base = IncidentMonitorDraftRecord {
         repo: "frumu-ai/tandem".to_string(),
         fingerprint: "abc123".to_string(),
         title: Some("Failure".to_string()),
@@ -482,7 +482,7 @@ fn compute_evidence_digest_stability_contract() {
         ..Default::default()
     };
     let baseline = compute_evidence_digest(&base, None);
-    let mk_inc = |run, sess, count| BugMonitorIncidentRecord {
+    let mk_inc = |run, sess, count| IncidentMonitorIncidentRecord {
         run_id: Some(String::from(run)),
         session_id: Some(String::from(sess)),
         occurrence_count: count,

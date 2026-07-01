@@ -1026,7 +1026,7 @@ async fn bug_monitor_publish_skips_comment_when_matched_open_commenting_disabled
 #[tokio::test]
 #[serial_test::serial]
 #[serial_test::serial(bug_monitor_http)]
-async fn bug_monitor_issue_draft_prefers_structured_triage_summary() {
+async fn incident_monitor_issue_draft_prefers_structured_triage_summary() {
     let state = test_state().await;
     state
         .put_bug_monitor_config(crate::BugMonitorConfig {
@@ -1195,7 +1195,7 @@ async fn bug_monitor_issue_draft_prefers_structured_triage_summary() {
             .get("issue_draft_artifact")
             .and_then(|row| row.get("artifact_type"))
             .and_then(Value::as_str),
-        Some("bug_monitor_issue_draft")
+        Some("incident_monitor_issue_draft")
     );
     assert!(summary_payload
         .get("issue_draft_artifact")
@@ -1347,7 +1347,7 @@ async fn bug_monitor_issue_draft_prefers_structured_triage_summary() {
 #[tokio::test]
 #[serial_test::serial]
 #[serial_test::serial(bug_monitor_http)]
-async fn bug_monitor_issue_draft_blocks_coder_ready_without_required_evidence() {
+async fn incident_monitor_issue_draft_blocks_coder_ready_without_required_evidence() {
     let state = test_state().await;
     state
         .put_bug_monitor_config(crate::BugMonitorConfig {
@@ -1475,7 +1475,7 @@ async fn bug_monitor_issue_draft_blocks_coder_ready_without_required_evidence() 
 #[tokio::test]
 #[serial_test::serial]
 #[serial_test::serial(bug_monitor_http)]
-async fn bug_monitor_issue_draft_blocks_coder_ready_when_tool_scope_missing() {
+async fn incident_monitor_issue_draft_blocks_coder_ready_when_tool_scope_missing() {
     let state = test_state().await;
     state
         .put_bug_monitor_config(crate::BugMonitorConfig {

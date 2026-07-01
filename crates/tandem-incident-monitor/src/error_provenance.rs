@@ -1,6 +1,6 @@
 //! Deterministic error-string → workspace-source-location lookup.
 //!
-//! When a Bug Monitor incident has an error message that contains a
+//! When a Incident Monitor incident has an error message that contains a
 //! distinctive literal (most do — runtime emit_event payloads, anyhow
 //! bail strings, panic messages), this module greps the workspace's
 //! tracked source files and returns the matching file/line/snippet.

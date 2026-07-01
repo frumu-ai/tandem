@@ -399,7 +399,7 @@ pub async fn recover_overdue_bug_monitor_triage_runs(
                     }
                 }
                 state.event_bus.publish(EngineEvent::new(
-                    "bug_monitor.incident.triage_timed_out",
+                    "incident_monitor.incident.triage_timed_out",
                     event_payload,
                 ));
             }
@@ -504,7 +504,7 @@ async fn recover_stale_bug_monitor_triage_event(
             }
         }
         state.event_bus.publish(EngineEvent::new(
-            "bug_monitor.incident.triage_timed_out",
+            "incident_monitor.incident.triage_timed_out",
             event_payload,
         ));
     }
@@ -764,7 +764,7 @@ async fn recover_terminal_bug_monitor_triage_event(
         }
     }
     state.event_bus.publish(EngineEvent::new(
-        "bug_monitor.incident.triage_failed",
+        "incident_monitor.incident.triage_failed",
         event_payload,
     ));
 
@@ -941,7 +941,7 @@ pub async fn process_event(
         incident.updated_at_ms = crate::util::time::now_ms();
         state.put_bug_monitor_incident(incident.clone()).await?;
         state.event_bus.publish(EngineEvent::new(
-            "bug_monitor.incident.duplicate_suppressed",
+            "incident_monitor.incident.duplicate_suppressed",
             serde_json::json!({
                 "incident_id": incident.incident_id,
                 "fingerprint": incident.fingerprint,
@@ -962,7 +962,7 @@ pub async fn process_event(
             incident.updated_at_ms = crate::util::time::now_ms();
             state.put_bug_monitor_incident(incident.clone()).await?;
             state.event_bus.publish(EngineEvent::new(
-                "bug_monitor.incident.detected",
+                "incident_monitor.incident.detected",
                 serde_json::json!({
                     "incident_id": incident.incident_id,
                     "fingerprint": incident.fingerprint,
@@ -1072,7 +1072,7 @@ pub async fn process_event(
     incident.updated_at_ms = crate::util::time::now_ms();
     state.put_bug_monitor_incident(incident.clone()).await?;
     state.event_bus.publish(EngineEvent::new(
-        "bug_monitor.incident.detected",
+        "incident_monitor.incident.detected",
         serde_json::json!({
             "incident_id": incident.incident_id,
             "fingerprint": incident.fingerprint,
@@ -1415,7 +1415,7 @@ pub async fn build_bug_monitor_submission_from_event(
         &["expected_destination", "expectedDestination"],
     )
     .map(|value| truncate_text(&value, 120))
-    .or_else(|| Some("bug_monitor_issue_draft".to_string()));
+    .or_else(|| Some("incident_monitor_issue_draft".to_string()));
     let mut excerpt = collect_bug_monitor_excerpt(state, &event.properties).await;
     if excerpt.is_empty() {
         if let Some(reason) = reason.as_ref() {
@@ -1734,7 +1734,7 @@ fn spawn_triage_deadline_task(
                     }
                 }
                 state.event_bus.publish(EngineEvent::new(
-                    "bug_monitor.incident.triage_timed_out",
+                    "incident_monitor.incident.triage_timed_out",
                     event_payload,
                 ));
             }

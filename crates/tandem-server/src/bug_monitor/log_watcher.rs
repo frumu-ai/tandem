@@ -890,7 +890,7 @@ mod tests {
             fingerprint: fingerprint.to_string(),
             confidence: "high".to_string(),
             risk_level: "medium".to_string(),
-            expected_destination: "bug_monitor_issue_draft".to_string(),
+            expected_destination: "incident_monitor_issue_draft".to_string(),
             ..BugMonitorLogCandidate::default()
         }
     }

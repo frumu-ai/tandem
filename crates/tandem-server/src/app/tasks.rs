@@ -1115,7 +1115,7 @@ pub async fn run_bug_monitor(state: AppState) {
                             })
                             .await;
                         state.event_bus.publish(EngineEvent::new(
-                            "bug_monitor.error",
+                            "incident_monitor.error",
                             serde_json::json!({
                                 "eventType": event.event_type,
                                 "detail": detail,
@@ -1769,7 +1769,7 @@ mod bug_monitor_candidate_tests {
             "workflow.action.completed",
             "automation_v2.run.started",
             "routine.run.completed",
-            "bug_monitor.incident.detected",
+            "incident_monitor.incident.detected",
         ] {
             assert!(
                 !is_bug_monitor_candidate_event(&EngineEvent::new(

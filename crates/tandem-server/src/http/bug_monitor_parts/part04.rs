@@ -417,11 +417,11 @@ pub(crate) async fn finalize_completed_bug_monitor_triage(
                 response.status()
             );
         }
-    } else if load_bug_monitor_issue_draft_artifact(state, &triage_run_id)
+    } else if load_incident_monitor_issue_draft_artifact(state, &triage_run_id)
         .await
         .is_none()
     {
-        ensure_bug_monitor_issue_draft(state.clone(), draft_id, true).await?;
+        ensure_incident_monitor_issue_draft(state.clone(), draft_id, true).await?;
     }
 
     match crate::bug_monitor::router::publish_draft(

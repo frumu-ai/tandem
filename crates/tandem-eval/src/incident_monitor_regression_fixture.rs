@@ -9,21 +9,23 @@ use crate::dataset::{
     ArtifactStatus, AutomationSpecTest, EvalDataset, EvalExpectedOutput, EvalTestCase,
     MetricTolerance, TestNode,
 };
-use tandem_bug_monitor::types::BugMonitorIncidentRecord;
+use tandem_incident_monitor::types::IncidentMonitorIncidentRecord;
 
 const DEFAULT_DATASET_NAME: &str = "dogfooding_regression_fixture";
 const DEFAULT_DATASET_VERSION: &str = "1.0";
 
 #[derive(Debug, Clone, Default)]
-pub struct BugMonitorRegressionFixtureOptions {
+pub struct IncidentMonitorRegressionFixtureOptions {
     pub fixture_id: Option<String>,
     pub dataset_name: Option<String>,
     pub extra_tags: Vec<String>,
 }
 
+pub type BugMonitorRegressionFixtureOptions = IncidentMonitorRegressionFixtureOptions;
+
 pub fn incident_to_regression_dataset(
-    incident: &BugMonitorIncidentRecord,
-    options: BugMonitorRegressionFixtureOptions,
+    incident: &IncidentMonitorIncidentRecord,
+    options: IncidentMonitorRegressionFixtureOptions,
 ) -> EvalDataset {
     let mut dataset = EvalDataset::new(
         options
@@ -33,11 +35,11 @@ pub fn incident_to_regression_dataset(
         DEFAULT_DATASET_VERSION,
     );
     dataset.description =
-        "Dogfooding regression fixture scaffolded from a Bug Monitor incident".to_string();
+        "Dogfooding regression fixture scaffolded from an Incident Monitor incident".to_string();
     dataset.tags = vec![
         "dogfooding".to_string(),
         "regression".to_string(),
-        "bug_monitor".to_string(),
+        "incident_monitor".to_string(),
     ];
     dataset.created_at = chrono::Utc::now().to_rfc3339();
     dataset
@@ -47,8 +49,8 @@ pub fn incident_to_regression_dataset(
 }
 
 pub fn incident_to_eval_test_case(
-    incident: &BugMonitorIncidentRecord,
-    options: &BugMonitorRegressionFixtureOptions,
+    incident: &IncidentMonitorIncidentRecord,
+    options: &IncidentMonitorRegressionFixtureOptions,
 ) -> EvalTestCase {
     let case_id = options.fixture_id.clone().unwrap_or_else(|| {
         format!(
@@ -67,7 +69,7 @@ pub fn incident_to_eval_test_case(
         .unwrap_or_else(|| "incident_replay".to_string());
 
     let mut config = HashMap::new();
-    config.insert("source".to_string(), json!("bug_monitor_incident"));
+    config.insert("source".to_string(), json!("incident_monitor_incident"));
     config.insert(
         "incident_id".to_string(),
         json!(incident.incident_id.as_str()),
@@ -125,7 +127,7 @@ pub fn incident_to_eval_test_case(
 
     let mut tags = vec![
         "dogfooding_regression".to_string(),
-        "bug_monitor".to_string(),
+        "incident_monitor".to_string(),
         "regression".to_string(),
         slugify(&incident.event_type),
     ];
@@ -135,7 +137,7 @@ pub fn incident_to_eval_test_case(
 
     EvalTestCase {
         id: case_id,
-        description: format!("Dogfooding regression replay for Bug Monitor incident: {title}"),
+        description: format!("Dogfooding regression replay for Incident Monitor incident: {title}"),
         priority: 1,
         automation_spec: AutomationSpecTest {
             name: format!("dogfooding_regression_{}", slugify(&incident.event_type)),
@@ -186,10 +188,10 @@ pub fn incident_to_eval_test_case(
 
 pub fn incident_json_to_regression_yaml(
     raw: &str,
-    options: BugMonitorRegressionFixtureOptions,
+    options: IncidentMonitorRegressionFixtureOptions,
 ) -> Result<String> {
-    let incident: BugMonitorIncidentRecord =
-        serde_json::from_str(raw).context("failed to parse Bug Monitor incident JSON")?;
+    let incident: IncidentMonitorIncidentRecord =
+        serde_json::from_str(raw).context("failed to parse Incident Monitor incident JSON")?;
     let dataset = incident_to_regression_dataset(&incident, options);
     serde_yaml::to_string(&dataset).context("failed to serialize dogfooding regression fixture")
 }
@@ -197,11 +199,11 @@ pub fn incident_json_to_regression_yaml(
 pub fn write_incident_regression_fixture(
     incident_path: &Path,
     output_path: &Path,
-    options: BugMonitorRegressionFixtureOptions,
+    options: IncidentMonitorRegressionFixtureOptions,
 ) -> Result<()> {
     let raw = std::fs::read_to_string(incident_path).with_context(|| {
         format!(
-            "failed to read Bug Monitor incident JSON from {}",
+            "failed to read Incident Monitor incident JSON from {}",
             incident_path.display()
         )
     })?;
@@ -402,7 +404,7 @@ fn slugify(value: &str) -> String {
 mod tests {
     use super::*;
 
-    fn sample_incident() -> BugMonitorIncidentRecord {
+    fn sample_incident() -> IncidentMonitorIncidentRecord {
         let mut event_payload = json!({
             "node_id": "send_email",
             "message": "user prompt should not leak",
@@ -420,7 +422,7 @@ mod tests {
             );
         }
 
-        BugMonitorIncidentRecord {
+        IncidentMonitorIncidentRecord {
             incident_id: "failure-incident-abc".to_string(),
             fingerprint: "fp-secret-case".to_string(),
             event_type: "automation.node.failed".to_string(),
@@ -430,7 +432,7 @@ mod tests {
             title: "Provider timeout in approval workflow".to_string(),
             detail: Some("prompt included token=sk-live-secret".to_string()),
             excerpt: vec!["Authorization: Bearer hidden-token".to_string()],
-            source: Some("bug_monitor".to_string()),
+            source: Some("incident_monitor".to_string()),
             run_id: Some("automation-v2-run-123".to_string()),
             session_id: None,
             correlation_id: None,
@@ -446,7 +448,7 @@ mod tests {
             confidence: Some("high".to_string()),
             risk_level: Some("medium".to_string()),
             expected_destination: None,
-            evidence_refs: vec!["tandem://bug-monitor/evidence/1".to_string()],
+            evidence_refs: vec!["tandem://incident-monitor/evidence/1".to_string()],
             quality_gate: None,
             duplicate_summary: None,
             duplicate_matches: None,
@@ -459,7 +461,7 @@ mod tests {
     fn incident_fixture_scaffold_redacts_prompt_and_secret_fields() {
         let yaml = serde_yaml::to_string(&incident_to_regression_dataset(
             &sample_incident(),
-            BugMonitorRegressionFixtureOptions::default(),
+            IncidentMonitorRegressionFixtureOptions::default(),
         ))
         .expect("fixture yaml");
 
@@ -477,7 +479,7 @@ mod tests {
         assert!(case.tags.iter().any(|tag| tag == "dogfooding_regression"));
         assert_eq!(
             case.automation_spec.config.get("source"),
-            Some(&json!("bug_monitor_incident"))
+            Some(&json!("incident_monitor_incident"))
         );
     }
 

@@ -1,7 +1,6 @@
 // Top-level state helpers split from mod.rs for the file-size gate
 // (same module via include!).
 
-
 pub async fn run_session_part_persister(state: AppState) {
     crate::app::tasks::run_session_part_persister(state).await
 }
@@ -182,7 +181,7 @@ pub async fn process_bug_monitor_event(
         incident.updated_at_ms = now_ms();
         state.put_bug_monitor_incident(incident.clone()).await?;
         state.event_bus.publish(EngineEvent::new(
-            "bug_monitor.incident.duplicate_suppressed",
+            "incident_monitor.incident.duplicate_suppressed",
             serde_json::json!({
                 "incident_id": incident.incident_id,
                 "fingerprint": incident.fingerprint,
@@ -208,7 +207,7 @@ pub async fn process_bug_monitor_event(
             incident.updated_at_ms = now_ms();
             state.put_bug_monitor_incident(incident.clone()).await?;
             state.event_bus.publish(EngineEvent::new(
-                "bug_monitor.incident.detected",
+                "incident_monitor.incident.detected",
                 serde_json::json!({
                     "incident_id": incident.incident_id,
                     "fingerprint": incident.fingerprint,
@@ -291,7 +290,7 @@ pub async fn process_bug_monitor_event(
     incident.updated_at_ms = now_ms();
     state.put_bug_monitor_incident(incident.clone()).await?;
     state.event_bus.publish(EngineEvent::new(
-        "bug_monitor.incident.detected",
+        "incident_monitor.incident.detected",
         serde_json::json!({
             "incident_id": incident.incident_id,
             "fingerprint": incident.fingerprint,

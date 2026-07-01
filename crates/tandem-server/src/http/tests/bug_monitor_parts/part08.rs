@@ -210,7 +210,7 @@ async fn bug_monitor_webhook_destination_publishes_signed_payload_and_skips_dupl
     assert_tandem_webhook_signature(&request.headers, &request.body);
     assert_eq!(
         request.headers.get("x-tandem-event").map(String::as_str),
-        Some("bug_monitor.incident")
+        Some("incident_monitor.incident")
     );
     let body_text = String::from_utf8(request.body.clone()).expect("webhook body utf8");
     assert!(!body_text.contains("test-webhook-signing-secret"));

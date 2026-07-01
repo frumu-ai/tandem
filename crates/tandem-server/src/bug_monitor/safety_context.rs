@@ -2,7 +2,9 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 use serde_json::Value;
-use tandem_bug_monitor::{BugMonitorDraftRecord, BugMonitorIncidentRecord, BugMonitorSubmission};
+use tandem_incident_monitor::{
+    BugMonitorDraftRecord, BugMonitorIncidentRecord, BugMonitorSubmission,
+};
 
 use crate::app::state::truncate_text;
 

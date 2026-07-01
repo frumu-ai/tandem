@@ -269,31 +269,31 @@ pub(crate) fn resolve_context_packs_path() -> PathBuf {
 }
 
 pub(crate) fn resolve_bug_monitor_config_path() -> PathBuf {
-    resolve_canonical_data_file_path("bug-monitor/config.json")
+    resolve_canonical_data_file_path("incident-monitor/config.json")
 }
 
 pub(crate) fn resolve_bug_monitor_drafts_path() -> PathBuf {
-    resolve_canonical_data_file_path("bug-monitor/drafts.json")
+    resolve_canonical_data_file_path("incident-monitor/drafts.json")
 }
 
 pub(crate) fn resolve_bug_monitor_incidents_path() -> PathBuf {
-    resolve_canonical_data_file_path("bug-monitor/incidents.json")
+    resolve_canonical_data_file_path("incident-monitor/incidents.json")
 }
 
 pub(crate) fn resolve_bug_monitor_posts_path() -> PathBuf {
-    resolve_canonical_data_file_path("bug-monitor/posts.json")
+    resolve_canonical_data_file_path("incident-monitor/posts.json")
 }
 
 pub(crate) fn resolve_bug_monitor_log_watcher_state_path() -> PathBuf {
-    resolve_canonical_data_file_path("bug-monitor/log-watcher-state.json")
+    resolve_canonical_data_file_path("incident-monitor/log-watcher-state.json")
 }
 
 pub(crate) fn resolve_bug_monitor_log_evidence_dir() -> PathBuf {
-    resolve_canonical_data_file_path("bug-monitor/evidence")
+    resolve_canonical_data_file_path("incident-monitor/evidence")
 }
 
 pub(crate) fn resolve_bug_monitor_intake_keys_path() -> PathBuf {
-    resolve_canonical_data_file_path("bug-monitor/intake-keys.json")
+    resolve_canonical_data_file_path("incident-monitor/intake-keys.json")
 }
 
 pub(crate) fn resolve_external_actions_path() -> PathBuf {

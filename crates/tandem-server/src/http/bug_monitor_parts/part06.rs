@@ -688,7 +688,7 @@ pub(super) async fn create_bug_monitor_triage_summary(
         )
             .into_response();
     }
-    match ensure_bug_monitor_issue_draft(state.clone(), &id, true).await {
+    match ensure_incident_monitor_issue_draft(state.clone(), &id, true).await {
         Ok(issue_draft) => {
             let (triage_summary_artifact, issue_draft_artifact, duplicate_matches_artifact) =
                 bug_monitor_triage_artifacts(&state, Some(&triage_run_id));
@@ -1103,7 +1103,7 @@ pub(super) async fn replay_bug_monitor_incident(
             let run = load_context_run_state(&state, triage_run_id).await.ok();
             let triage_summary =
                 load_bug_monitor_triage_summary_artifact(&state, triage_run_id).await;
-            let issue_draft = ensure_bug_monitor_issue_draft(state.clone(), draft_id, true)
+            let issue_draft = ensure_incident_monitor_issue_draft(state.clone(), draft_id, true)
                 .await
                 .ok();
             let (duplicate_summary, duplicate_matches) =
@@ -1758,7 +1758,7 @@ pub(super) async fn approve_bug_monitor_draft(
             let _ =
                 ensure_bug_monitor_approval_triage_summary_artifact(&state, &approved_draft).await;
             let issue_draft =
-                ensure_bug_monitor_issue_draft(state.clone(), &approved_draft.draft_id, true)
+                ensure_incident_monitor_issue_draft(state.clone(), &approved_draft.draft_id, true)
                     .await
                     .ok();
             let (duplicate_summary, duplicate_matches) = bug_monitor_duplicate_match_context(
@@ -1839,7 +1839,7 @@ pub(super) async fn draft_bug_monitor_issue(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Response {
-    match ensure_bug_monitor_issue_draft(state.clone(), &id, true).await {
+    match ensure_incident_monitor_issue_draft(state.clone(), &id, true).await {
         Ok(issue_draft) => {
             let triage_run_id = issue_draft.get("triage_run_id").and_then(Value::as_str);
             let draft = state.get_bug_monitor_draft(&id).await;
@@ -1942,7 +1942,7 @@ pub(super) async fn create_bug_monitor_triage_run(
             };
             let triage_summary =
                 load_bug_monitor_triage_summary_artifact(&state, triage_run_id).await;
-            let issue_draft = ensure_bug_monitor_issue_draft(state.clone(), &id, true)
+            let issue_draft = ensure_incident_monitor_issue_draft(state.clone(), &id, true)
                 .await
                 .ok();
             let (duplicate_summary, duplicate_matches) =
