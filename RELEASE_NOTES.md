@@ -112,6 +112,13 @@ identity and canonical `incident_monitor`/`incident-monitor` wire names for
 runtime events, evidence refs, persisted data paths, GitHub host methods, and
 the eval fixture CLI. Legacy Rust aliases remain in place so the larger
 server, SDK, and UI migration can land in focused follow-up PRs.
+TypeScript and Python SDKs now use Incident Monitor as the canonical developer
+surface: `client.incidentMonitor`, `client.incident_monitor`,
+`IncidentMonitor*` types, `/incident-monitor/*` endpoints, and
+`incident_monitor` config payloads. Scoped intake keys created through the
+server now default to `incident_monitor:report`, `tim_intake_` key material,
+and the `x-tandem-incident-monitor-intake-key` header while retaining a narrow
+fallback for existing scoped reporters.
 Incident Monitor security readiness now records redacted protected audit events
 for destination/route config changes, scoped intake-key lifecycle changes, and
 destination-router publish attempts, completions, approval-required outcomes,

@@ -87,7 +87,7 @@ pub(super) async fn generate_bug_monitor_deployment_cards(
         return (
             StatusCode::FORBIDDEN,
             Json(json!({
-                "error": "Bug Monitor deployment cards require an admin API token, not a scoped intake key",
+                "error": "Incident Monitor deployment cards require an admin API token, not a scoped intake key",
                 "code": "BUG_MONITOR_DEPLOYMENT_CARDS_ADMIN_REQUIRED",
             })),
         )
@@ -98,7 +98,7 @@ pub(super) async fn generate_bug_monitor_deployment_cards(
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(json!({
-                    "error": "Bug Monitor deployment cards require the full admin API token",
+                    "error": "Incident Monitor deployment cards require the full admin API token",
                     "code": "BUG_MONITOR_DEPLOYMENT_CARDS_ADMIN_REQUIRED",
                 })),
             )

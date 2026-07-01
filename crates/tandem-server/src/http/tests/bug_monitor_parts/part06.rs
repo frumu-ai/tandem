@@ -268,7 +268,7 @@ async fn bug_monitor_config_patch_emits_redacted_admin_audit() {
         .header("x-tandem-token", "tk_admin")
         .body(Body::from(
             json!({
-                "bug_monitor": {
+                "incident_monitor": {
                     "enabled": true,
                     "repo": "acme/platform",
                     "workspace_root": "/tmp/acme",
@@ -352,6 +352,13 @@ async fn incident_monitor_routes_are_canonical_and_failure_reporter_alias_is_rem
         .await
         .expect("incident monitor config response");
     assert_eq!(config_resp.status(), StatusCode::OK);
+    let config_body = axum::body::to_bytes(config_resp.into_body(), usize::MAX)
+        .await
+        .expect("incident monitor config body");
+    let config_payload: Value =
+        serde_json::from_slice(&config_body).expect("incident monitor config json");
+    assert!(config_payload.get("incident_monitor").is_some());
+    assert!(config_payload.get("bug_monitor").is_none());
 
     let failure_status_resp = app
         .clone()

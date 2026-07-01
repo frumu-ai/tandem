@@ -44,9 +44,9 @@ tandem-engine serve --api-token $(tandem-engine token generate)
     description="Copy-ready workflow examples for wizard, TypeScript, and Python agent builders."
   />
   <LinkCard
-    title="Bug Monitor And Issue Reporter"
-    href="../reference/bug-monitor/"
-    description="Inspect failures, triage drafts, and publish governed issue reports."
+    title="Incident Monitor"
+    href="../incident-monitor/overview/"
+    description="Route incidents, safety signals, evidence, and governed destination drafts."
   />
   <LinkCard
     title="Engine Authentication For Agents"
@@ -104,7 +104,7 @@ All namespaces exist on both the TypeScript and Python clients.
 | `routines`                         | Scheduled routines: create, run, approve/deny/pause/resume runs          |
 | `automations`                      | Legacy mission-scoped automations (compatibility path)                   |
 | `automationsV2` / `automations_v2` | Persistent multi-agent DAG automations with per-agent model policy       |
-| `bugMonitor` / `bug_monitor`       | Incident triage, drafts, approval, and publishing helpers                |
+| `incidentMonitor` / `incident_monitor` | Incident routing, drafts, evidence, approval, and publishing helpers     |
 | `coder`                            | Coder runs, artifacts, review summaries, and memory candidates           |
 | `agentTeams`                       | Spawn and manage multi-agent teams                                       |
 | `missions`                         | Multi-agent goals and work item tracking                                 |

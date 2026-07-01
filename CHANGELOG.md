@@ -144,6 +144,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   evidence refs, persisted data paths, GitHub host trait methods, and the eval
   fixture CLI, while keeping explicit legacy Rust aliases for staged follow-up
   migration work.
+- TypeScript and Python SDKs now expose canonical Incident Monitor namespaces,
+  types, endpoints, and examples through `client.incidentMonitor` and
+  `client.incident_monitor`, including `/incident-monitor/*` routes and
+  `incident_monitor` config payloads.
+- Incident Monitor scoped intake keys now default to the
+  `incident_monitor:report` scope and `tim_intake_` key prefix, with canonical
+  `x-tandem-incident-monitor-intake-key` header support and narrow legacy
+  fallback for existing intake keys.
 - Incident Monitor security docs now call out the default secret-redaction and
   retention posture for reports, receipts, and protected audit evidence.
 

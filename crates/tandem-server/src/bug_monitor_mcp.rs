@@ -1097,6 +1097,7 @@ fn redact_sensitive_token(token: &str) -> String {
     let lower = token.to_ascii_lowercase();
     if lower.starts_with("sk-")
         || lower.starts_with("github_pat_")
+        || lower.starts_with("tim_intake_")
         || lower.starts_with("tbm_intake_")
     {
         "[redacted]".to_string()
