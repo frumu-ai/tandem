@@ -1,5 +1,6 @@
 use axum::extract::Extension;
-use tandem_types::{ApprovalListFilter, TenantContext};
+use std::collections::HashSet;
+use tandem_types::{ApprovalListFilter, TenantContext, VerifiedTenantContext};
 
 const BUG_MONITOR_AUTHORITY_INVENTORY_SCHEMA_VERSION: u64 = 1;
 const BUG_MONITOR_AUTHORITY_INVENTORY_LIMIT: usize = 100;
@@ -7,13 +8,23 @@ const BUG_MONITOR_AUTHORITY_INVENTORY_LIMIT: usize = 100;
 pub(super) async fn get_bug_monitor_authority_inventory(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
 ) -> Response {
+    let verified = verified_tenant_context.as_ref().map(|context| &context.0);
     let config = state.bug_monitor_config().await;
     let destinations = config.effective_destinations();
     let routes = config.routes.clone();
     let workflows = state.list_workflows().await;
     let workflow_hooks = state.list_workflow_hooks(None).await;
-    let automations = state.list_automations_v2().await;
+    let automations = state
+        .list_automations_v2()
+        .await
+        .into_iter()
+        .filter(|automation| super::tenant_matches(&tenant_context, &automation.tenant_context()))
+        .filter(|automation| {
+            super::routines_automations::automation_v2_visible_to_context(automation, verified)
+        })
+        .collect::<Vec<_>>();
     let intake_keys = state.list_bug_monitor_intake_keys().await;
     let governance_approvals = state
         .list_approval_requests_for_tenant(None, None, &tenant_context)
@@ -274,14 +285,16 @@ fn bug_monitor_intake_key_inventory(key: &crate::BugMonitorProjectIntakeKey) -> 
     })
 }
 
-fn bug_monitor_workflow_inventory(
+pub(super) fn bug_monitor_workflow_inventory(
     workflow: &tandem_workflows::WorkflowSpec,
     hooks: &[tandem_workflows::WorkflowHookBinding],
 ) -> Value {
+    let mut seen_hook_ids = HashSet::new();
     let workflow_hooks = hooks
         .iter()
         .filter(|hook| hook.workflow_id == workflow.workflow_id)
         .chain(workflow.hooks.iter())
+        .filter(|hook| seen_hook_ids.insert(hook.binding_id.clone()))
         .map(|hook| {
             json!({
                 "binding_id": hook.binding_id,

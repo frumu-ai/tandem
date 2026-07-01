@@ -23,7 +23,9 @@ async fn bug_monitor_authority_inventory_returns_empty_sections() {
     assert_eq!(payload["schema_version"], json!(1));
     assert_eq!(payload["scope"]["read_only"], json!(true));
     assert!(payload["inventory"]["workflows"].as_array().is_some());
-    assert!(payload["inventory"]["automation_specs"].as_array().is_some());
+    assert!(payload["inventory"]["automation_specs"]
+        .as_array()
+        .is_some());
     assert!(payload["inventory"]["scoped_intake_keys"]
         .as_array()
         .expect("intake keys array")
@@ -243,6 +245,112 @@ async fn bug_monitor_authority_inventory_summarizes_authority_and_redacts_secret
     assert!(!body_text.contains("must-not-leak"));
     assert!(!body_text.contains("receipt-must-not-leak"));
     assert!(!body_text.contains("metadata-must-not-leak"));
+}
+
+#[tokio::test]
+#[serial_test::serial(bug_monitor_http)]
+async fn bug_monitor_authority_inventory_filters_automations_by_request_tenant() {
+    let state = test_state().await;
+    let workspace = tempfile::tempdir().expect("authority inventory tenant workspace");
+    let tenant_a = tandem_types::TenantContext::explicit_user_workspace(
+        "org-a",
+        "workspace-a",
+        None,
+        "actor-a",
+    );
+    let tenant_b = tandem_types::TenantContext::explicit_user_workspace(
+        "org-b",
+        "workspace-b",
+        None,
+        "actor-b",
+    );
+
+    let mut automation_a =
+        sample_authority_inventory_automation(workspace.path().display().to_string());
+    automation_a.automation_id = "tenant-a-authority".to_string();
+    automation_a.name = "Tenant A Authority".to_string();
+    automation_a.set_tenant_context(&tenant_a);
+    state
+        .put_automation_v2(automation_a)
+        .await
+        .expect("tenant a automation");
+
+    let mut automation_b =
+        sample_authority_inventory_automation(workspace.path().display().to_string());
+    automation_b.automation_id = "tenant-b-authority".to_string();
+    automation_b.name = "Tenant B Authority".to_string();
+    automation_b.set_tenant_context(&tenant_b);
+    state
+        .put_automation_v2(automation_b)
+        .await
+        .expect("tenant b automation");
+
+    let app = app_router(state);
+    let resp = app
+        .oneshot(authority_inventory_tenant_request(
+            "org-a",
+            "workspace-a",
+            "actor-a",
+        ))
+        .await
+        .expect("authority inventory response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("authority inventory body");
+    let payload: Value = serde_json::from_slice(&body).expect("authority inventory json");
+    let automations = payload["inventory"]["automation_specs"]
+        .as_array()
+        .expect("automation specs");
+    assert_eq!(payload["counts"]["automation_specs"], json!(1));
+    assert!(automations
+        .iter()
+        .any(|row| row["automation_id"].as_str() == Some("tenant-a-authority")));
+    assert!(!automations
+        .iter()
+        .any(|row| row["automation_id"].as_str() == Some("tenant-b-authority")));
+}
+
+#[test]
+fn bug_monitor_authority_inventory_dedupes_registry_and_embedded_workflow_hooks() {
+    let hook = tandem_workflows::WorkflowHookBinding {
+        binding_id: "binding-authority".to_string(),
+        workflow_id: "workflow-authority".to_string(),
+        event: "incident.created".to_string(),
+        enabled: true,
+        actions: vec![tandem_workflows::WorkflowActionSpec {
+            action: "approval.request".to_string(),
+            with: Some(json!({ "secret": "not-returned-as-value" })),
+        }],
+        source: None,
+    };
+    let workflow = tandem_workflows::WorkflowSpec {
+        workflow_id: "workflow-authority".to_string(),
+        name: "Authority workflow".to_string(),
+        description: None,
+        enabled: true,
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        steps: Vec::new(),
+        hooks: vec![hook.clone()],
+        source: None,
+    };
+    let inventory =
+        crate::http::bug_monitor::bug_monitor_workflow_inventory(&workflow, &[hook.clone()]);
+    let hooks = inventory["hooks"].as_array().expect("workflow hooks");
+    assert_eq!(hooks.len(), 1);
+    assert_eq!(hooks[0]["binding_id"], json!("binding-authority"));
+}
+
+fn authority_inventory_tenant_request(org: &str, workspace: &str, actor: &str) -> Request<Body> {
+    Request::builder()
+        .method("GET")
+        .uri("/bug-monitor/security/authority-inventory")
+        .header("x-tandem-org-id", org)
+        .header("x-tandem-workspace-id", workspace)
+        .header("x-tandem-actor-id", actor)
+        .body(Body::empty())
+        .expect("authority inventory tenant request")
 }
 
 fn sample_authority_inventory_automation(workspace_root: String) -> crate::AutomationV2Spec {
