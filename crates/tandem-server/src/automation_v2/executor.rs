@@ -1024,6 +1024,8 @@ fn apply_terminal_run_state(
                         node_id: node_id.clone(),
                         reason: detail.clone(),
                         failed_at_ms: finished_at_ms,
+                        failure_kind: None,
+                        metadata: None,
                     });
             }
             row.status = AutomationRunStatus::Failed;
@@ -1850,8 +1852,27 @@ pub async fn run_automation_v2_run(
                                             "verification failed".to_string()
                                         }),
                                         failed_at_ms: now_ms(),
+                                        failure_kind: Some("verification_failed".to_string()),
+                                        metadata: None,
                                     },
                                 );
+                            }
+                            if needs_repair && !terminal_repair_block && !verify_failed {
+                                if let Some(node) = automation
+                                    .flow
+                                    .nodes
+                                    .iter()
+                                    .find(|node| node.node_id == node_id)
+                                {
+                                    crate::automation_v2::schema_validation_pause::apply_schema_validation_pause(
+                                        row,
+                                        &automation,
+                                        node,
+                                        &output,
+                                        attempt,
+                                        max_attempts,
+                                    );
+                                }
                             }
                             crate::app::state::automation::lifecycle::record_automation_workflow_state_events(
                                 row,
@@ -2277,6 +2298,8 @@ pub async fn run_automation_v2_run(
                                         node_id: node_id.clone(),
                                         reason: detail.clone(),
                                         failed_at_ms: now_ms(),
+                                        failure_kind: Some(failure_class.to_string()),
+                                        metadata: None,
                                     });
                             })
                             .await;

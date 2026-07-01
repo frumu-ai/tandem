@@ -1029,6 +1029,8 @@ async fn restart_recovery_preserves_blocked_run_golden_after_reload() {
                 node_id: "enterprise_connector_approval".to_string(),
                 reason: "missing enterprise connector approval".to_string(),
                 failed_at_ms: crate::now_ms(),
+                failure_kind: None,
+                metadata: None,
             });
         })
         .await

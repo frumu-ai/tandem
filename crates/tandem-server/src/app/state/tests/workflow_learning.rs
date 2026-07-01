@@ -201,6 +201,8 @@ async fn applied_learning_waits_for_minimum_post_change_sample_before_regressing
                     node_id: "node-1".to_string(),
                     reason: "validator rejected unsupported citations".to_string(),
                     failed_at_ms: current_test_ms() + index as u64,
+                    failure_kind: None,
+                    metadata: None,
                 });
             })
             .await
@@ -232,6 +234,8 @@ async fn applied_learning_waits_for_minimum_post_change_sample_before_regressing
                 node_id: "node-1".to_string(),
                 reason: "validator rejected unsupported citations".to_string(),
                 failed_at_ms: current_test_ms() + 3,
+                failure_kind: None,
+                metadata: None,
             });
         })
         .await
@@ -828,6 +832,8 @@ async fn repeated_failures_generate_deduped_repair_and_prompt_candidates_before_
                     node_id: "node-1".to_string(),
                     reason: "validator rejected unsupported citations".to_string(),
                     failed_at_ms: current_test_ms() + index,
+                    failure_kind: None,
+                    metadata: None,
                 });
             })
             .await
@@ -978,6 +984,8 @@ async fn repeated_failures_generate_deduped_repair_and_prompt_candidates_before_
                 node_id: "node-1".to_string(),
                 reason: "validator rejected unsupported citations".to_string(),
                 failed_at_ms: current_test_ms() + 3,
+                failure_kind: None,
+                metadata: None,
             });
         })
         .await

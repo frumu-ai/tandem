@@ -183,6 +183,8 @@ fn recover_corrupt_automation_v2_run_entry(
                 node_id: "checkpoint".to_string(),
                 reason: detail.clone(),
                 failed_at_ms: now,
+                failure_kind: Some("checkpoint_recovery_failed".to_string()),
+                metadata: None,
             }),
         },
         runtime_context: None,

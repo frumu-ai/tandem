@@ -416,6 +416,8 @@ fn requeue_completion_deliverable_repair(
         node_id: repair.node_id.clone(),
         reason: repair.detail.clone(),
         failed_at_ms: now_ms(),
+        failure_kind: Some("missing_required_artifact_path".to_string()),
+        metadata: None,
     });
     row.status = AutomationRunStatus::Running;
     row.detail = Some(repair.detail.clone());

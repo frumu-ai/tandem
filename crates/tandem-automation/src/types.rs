@@ -1165,6 +1165,10 @@ pub struct AutomationFailureRecord {
     pub node_id: String,
     pub reason: String,
     pub failed_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

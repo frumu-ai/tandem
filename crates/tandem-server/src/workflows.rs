@@ -398,6 +398,8 @@ async fn sync_workflow_automation_action_failed(
                 node_id: action_id.to_string(),
                 reason: error.to_string(),
                 failed_at_ms: now_ms(),
+                failure_kind: None,
+                metadata: None,
             });
             run.checkpoint.node_outputs.insert(
                 action_id.to_string(),

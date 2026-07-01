@@ -142,6 +142,10 @@ impl AppState {
                                         node_id: node_id.clone(),
                                         reason: stale_node_detail.clone(),
                                         failed_at_ms: now_ms(),
+                                        failure_kind: Some(
+                                            "stale_no_provider_activity".to_string(),
+                                        ),
+                                        metadata: None,
                                     },
                                 );
                             }

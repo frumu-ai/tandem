@@ -236,6 +236,8 @@ impl AppState {
                     node_id: STARTUP_RUNTIME_CONTEXT_FAILURE_NODE.to_string(),
                     reason: STARTUP_RUNTIME_CONTEXT_MISSING.to_string(),
                     failed_at_ms: now,
+                    failure_kind: Some("startup_runtime_context_missing".to_string()),
+                    metadata: None,
                 });
             }
             let claimed = run.clone();

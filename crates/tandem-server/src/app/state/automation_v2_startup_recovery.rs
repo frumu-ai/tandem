@@ -306,6 +306,8 @@ impl AppState {
                                 "node execution interrupted by server restart before an outcome was recorded"
                                     .to_string(),
                             failed_at_ms: now_ms(),
+                            failure_kind: Some("server_restart_interrupted".to_string()),
+                            metadata: None,
                         });
                     }
                 }

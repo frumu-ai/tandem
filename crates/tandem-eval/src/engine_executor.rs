@@ -884,6 +884,8 @@ mod tests {
             node_id: "n1".to_string(),
             reason: "provider timeout after 3 retries".to_string(),
             failed_at_ms: 1_500,
+            failure_kind: None,
+            metadata: None,
         });
 
         let result = extract_eval_result(&case, &run, Duration::from_millis(0));

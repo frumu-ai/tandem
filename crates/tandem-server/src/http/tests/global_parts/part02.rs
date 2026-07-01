@@ -1448,6 +1448,8 @@ async fn automations_v2_run_recover_on_failed_branch_preserves_completed_sibling
                 node_id: "draft".to_string(),
                 reason: "bad draft".to_string(),
                 failed_at_ms: crate::now_ms(),
+                failure_kind: None,
+                metadata: None,
             });
         })
         .await
@@ -1567,6 +1569,8 @@ async fn automations_v2_run_recover_clears_stale_blocked_nodes_on_failed_run() {
                 node_id: "draft".to_string(),
                 reason: "bad draft".to_string(),
                 failed_at_ms: crate::now_ms(),
+                failure_kind: None,
+                metadata: None,
             });
         })
         .await

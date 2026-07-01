@@ -165,6 +165,8 @@ async fn automations_v2_run_repair_preserves_completed_sibling_branch() {
                 node_id: "draft".to_string(),
                 reason: "draft needs prompt fix".to_string(),
                 failed_at_ms: crate::now_ms(),
+                failure_kind: None,
+                metadata: None,
             });
         })
         .await
@@ -308,6 +310,8 @@ async fn automations_v2_run_repair_resets_descendants_and_records_diff_metadata(
                 node_id: "draft".to_string(),
                 reason: "bad draft".to_string(),
                 failed_at_ms: crate::now_ms(),
+                failure_kind: None,
+                metadata: None,
             });
         })
         .await

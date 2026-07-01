@@ -77,6 +77,20 @@ fn automation_v2_node_repair_guidance(output: &Value) -> Option<Value> {
         .get("knowledge_preflight")
         .cloned()
         .filter(|value| !value.is_null());
+    let runtime_pause = output
+        .get("runtime_pause")
+        .or_else(|| artifact_validation.and_then(|value| value.get("runtime_pause")))
+        .cloned()
+        .filter(|value| !value.is_null());
+    let runtime_state = artifact_validation
+        .and_then(|value| value.get("runtime_state"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            runtime_pause
+                .as_ref()
+                .and_then(|value| value.get("runtime_state"))
+                .and_then(Value::as_str)
+        });
 
     if required_next_tool_actions.is_empty()
         && validator_reason.is_none()
@@ -84,6 +98,7 @@ fn automation_v2_node_repair_guidance(output: &Value) -> Option<Value> {
         && blocking_classification.is_none()
         && validation_basis.is_none()
         && knowledge_preflight.is_none()
+        && runtime_pause.is_none()
     {
         return None;
     }
@@ -100,6 +115,8 @@ fn automation_v2_node_repair_guidance(output: &Value) -> Option<Value> {
         "requiredSourceReadPaths": required_source_read_paths,
         "missingRequiredSourceReadPaths": missing_required_source_read_paths,
         "knowledgePreflight": knowledge_preflight,
+        "runtimeState": runtime_state,
+        "runtimePause": runtime_pause,
         "knowledgeReuseReason": knowledge_preflight.as_ref().and_then(|value| value.get("reuse_reason")).and_then(Value::as_str),
         "knowledgeSkipReason": knowledge_preflight.as_ref().and_then(|value| value.get("skip_reason")).and_then(Value::as_str),
         "knowledgeFreshnessReason": knowledge_preflight.as_ref().and_then(|value| value.get("freshness_reason")).and_then(Value::as_str),

@@ -437,6 +437,7 @@ pub(super) async fn automations_v2_run_resume(
         .update_automation_v2_run(&run_id, |run| {
             run.status = AutomationRunStatus::Queued;
             run.resume_reason = Some(reason.clone());
+            run.pause_reason = None;
             run.stop_kind = None;
             run.stop_reason = None;
             crate::record_automation_lifecycle_event(
