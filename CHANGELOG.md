@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added the `tandem-data-boundary` crate with serializable secure data-boundary
   contract types for policy, provider boundary class, sensitive data class,
   input metadata, findings, decisions, and audit-safe events.
+- Added deterministic secure data-boundary detectors for email, phone-like,
+  credit-card/Luhn, credential, bearer/API key, private-key, AWS key,
+  high-entropy, SSN-like, and simple PHI-marker spans, plus safe redaction and
+  tokenization placeholder helpers that avoid raw-value persistence.
 - Added stateful runtime definition identity helpers so snapshot-backed
   automation runs expose durable workflow definition versions and `sha256:`
   snapshot hashes for future replay and resume checks.

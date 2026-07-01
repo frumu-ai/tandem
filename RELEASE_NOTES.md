@@ -20,6 +20,10 @@ serializable policy, input, finding, decision, and event contract types that
 carry provider/model metadata, tenant/workspace/deployment refs, payload hashes,
 policy fingerprints, reason codes, action tags, and finding counts without
 embedding raw prompts, tool results, secrets, customer data, or model outputs.
+It now also includes deterministic local detector findings for common PII,
+financial, credential, secret, private-key, AWS-key, high-entropy, and simple
+PHI marker spans, with evidence hashes plus redaction/tokenization placeholder
+maps that preserve prompt structure without persisting raw matched values.
 fail closed. Automation V2 run claims are now persisted with lease metadata, and
 expired launch claims without active session or agent handles are reclaimed back
 to the queue so only one executor can safely resume the run.
