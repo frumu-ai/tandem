@@ -13,6 +13,7 @@ Today, Tandem can ingest failures, create governed incidents and drafts, run tri
 - Legacy configs without explicit destinations synthesize a default `legacy-github` destination.
 - GitHub publish still uses the existing MCP capability resolution and duplicate matching behavior.
 - Scoped intake keys can report only. They cannot publish, mutate routes or destinations, call tools, inspect files, or bypass approval.
+- The authority inventory endpoint summarizes governed runtime, tool, route, destination, source, approval, and publish surfaces for security posture assessment without exposing raw credentials.
 
 ## Target flow
 
@@ -39,17 +40,21 @@ Implemented now:
 - route preview for destination matching and readiness explanation
 - normalized external monitored sources and source-level destination binding
 - GitHub destination parity through the destination router
-
-Planned:
-
 - Linear issue destination
 - signed webhook destination
-- telemetry/database destination
+- local telemetry destination
 - generic MCP tool destination
 - internal memory destination
 - safety/risk schema expansion
-- authority inventory and security posture assessment
-- self-monitoring boundary and external audit export
+- security-readiness audit coverage
+- authority inventory for security posture assessment
+
+Planned:
+
+- posture rules and finding generation
+- controlled dry-run probes for governance controls
+- evidence report export packs
+- external audit export for self-monitoring evidence
 
 ## Related
 

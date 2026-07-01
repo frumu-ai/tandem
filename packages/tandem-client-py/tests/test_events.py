@@ -7,6 +7,7 @@ import respx
 from pydantic import TypeAdapter
 from tandem_client import TandemClient
 from tandem_client.types import (
+    BugMonitorAuthorityInventoryResponse,
     BugMonitorConfigResponse,
     BugMonitorDraftRecord,
     BugMonitorIncidentRecord,
@@ -371,6 +372,57 @@ async def test_bug_monitor_destination_router_sdk_helpers() -> None:
         "reason": "ship it",
         "destination_ids": ["legacy-github"],
     }
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_bug_monitor_authority_inventory_sdk_helper() -> None:
+    inventory_payload = {
+        "schema_version": 1,
+        "scope": {
+            "source": "bug_monitor_authority_inventory",
+            "read_only": True,
+        },
+        "inventory": {
+            "workflows": [{"workflow_id": "wf-1", "enabled": True}],
+            "automation_specs": [{"automation_id": "auto-1"}],
+            "mcp": {"servers": [{"server": "github", "tool_count": 1}]},
+            "destinations": [
+                {
+                    "destination_id": "linear-prod",
+                    "kind": "linear_issue",
+                    "require_approval": True,
+                }
+            ],
+            "routes": [{"route_id": "high-risk", "destination_ids": ["linear-prod"]}],
+            "monitored_sources": [{"project_id": "payments", "source_kind": "ci"}],
+            "scoped_intake_keys": [
+                {
+                    "key_id": "key-1",
+                    "project_id": "payments",
+                    "key_hash_present": True,
+                }
+            ],
+            "approval_rules": [{"rule_id": "destination:linear-prod"}],
+            "external_publish_surfaces": {
+                "configured_destinations": [{"surface_id": "linear-prod"}]
+            },
+        },
+        "counts": {"workflows": 1, "automation_specs": 1, "destinations": 1},
+        "sensitive_values": {"policy": "redacted_or_summarized"},
+    }
+    inventory_route = respx.get(
+        "http://localhost:39731/bug-monitor/security/authority-inventory"
+    ).mock(return_value=httpx.Response(200, json=inventory_payload))
+
+    async with TandemClient(base_url="http://localhost:39731", token="token") as client:
+        inventory = await client.bug_monitor.get_authority_inventory()
+
+    typed_inventory = BugMonitorAuthorityInventoryResponse.model_validate(inventory_payload)
+    assert inventory.schema_version == typed_inventory.schema_version
+    assert inventory.inventory.scoped_intake_keys[0]["key_hash_present"] is True
+    assert inventory.inventory.destinations[0]["require_approval"] is True
+    assert inventory_route.called
 
 
 @pytest.mark.asyncio

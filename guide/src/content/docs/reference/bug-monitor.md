@@ -67,6 +67,21 @@ Tandem signs each delivery with `x-tandem-signature: t=<timestamp_ms>,v1=<hmac_s
 
 Private, localhost, link-local, and otherwise internal URL ranges are blocked by default. Development and test-only destinations can opt into `allow_private_networks` and `allow_insecure_http`, but production webhook destinations should use HTTPS, a public endpoint, and a host allowlist. Payloads and response excerpts are bounded, retry attempts are capped, and every delivery records a destination-specific Bug Monitor post receipt with status, attempt count, status code, delivery ID, route metadata, and evidence digest.
 
+## Authority Inventory
+
+Use `GET /bug-monitor/security/authority-inventory` to collect a read-only authority map for Incident Monitor security posture assessment.
+
+The response includes:
+
+- workflows, workflow hooks, Automation V2 specs, agents, tool policies, and MCP policy
+- MCP server/tool inventory summaries
+- Incident Monitor destinations, routes, monitored sources, scoped intake keys, and default destination policy
+- approval rules, pending approvals, governance approval requests, and recent policy decisions
+- external publish surfaces and recent external-action identifiers
+- tenant/workspace context where Tandem has it
+
+The inventory is designed for audit evidence and future posture findings. It returns identifiers and field-presence signals, but omits raw intake keys, key hashes, webhook secret values, auth headers, destination config values, action receipts, and arbitrary metadata values. Scoped intake keys cannot access this endpoint.
+
 ## TypeScript
 
 ```typescript
@@ -85,6 +100,7 @@ if (status.status?.readiness?.enabled === false) {
 const incidents = await client.bugMonitor.listIncidents({ limit: 20 });
 const drafts = await client.bugMonitor.listDrafts({ limit: 20 });
 const destinations = await client.bugMonitor.listDestinations();
+const authority = await client.bugMonitor.getAuthorityInventory();
 
 if (drafts.drafts[0]) {
   await client.bugMonitor.createTriageRun(drafts.drafts[0].draft_id);
@@ -121,6 +137,8 @@ async with TandemClient(base_url="http://localhost:39731", token="...") as clien
             [destination.destination_id for destination in destinations],
         )
 
+    authority = await client.bug_monitor.get_authority_inventory()
+
     await client.bug_monitor.report({
         "title": "Workflow failed while establishing GitHub context",
         "detail": "The automation timed out before triage could complete.",
@@ -133,6 +151,7 @@ async with TandemClient(base_url="http://localhost:39731", token="...") as clien
 ## Useful methods
 
 - `getStatus()` / `get_status()`
+- `getAuthorityInventory()` / `get_authority_inventory()`
 - `recomputeStatus()` / `recompute_status()`
 - `pause()` / `pause()`
 - `resume()` / `resume()`
@@ -171,6 +190,7 @@ async with TandemClient(base_url="http://localhost:39731", token="...") as clien
 - Scoped intake keys can report only for their configured project/scope and cannot use config, route-preview, normal report, publish, or intake-key management routes.
 - Destination and route mutations require the full engine API token.
 - Destination/route config changes, intake-key lifecycle changes, and destination-router publish attempts/outcomes emit redacted audit events and protected audit-ledger rows.
+- Authority inventory is read-only and returns summarized evidence; it must not expose raw credentials, intake-key material, action receipts, or secret-backed destination values.
 - Webhook destinations should use HTTPS, host allowlists, and env-backed secrets.
 - Secret redaction is enabled by default for Incident Monitor safety defaults. Report-level `redaction_profile` and source bindings can add stricter profiles for specific projects or sources.
 - `retention_days` is unset by default, so deployments should configure retention/export policy for reports, receipts, and protected audit evidence before production use. Source bindings can attach `retention_profile` labels for downstream policy.

@@ -888,6 +888,33 @@ class BugMonitorStatusResponse(BaseModel):
     status: BugMonitorStatusRow
 
 
+class BugMonitorAuthorityInventory(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    workflows: list[dict[str, Any]] = []
+    automation_specs: list[dict[str, Any]] = []
+    mcp: Optional[dict[str, Any]] = None
+    bug_monitor: Optional[dict[str, Any]] = None
+    destinations: list[dict[str, Any]] = []
+    routes: list[dict[str, Any]] = []
+    monitored_sources: list[dict[str, Any]] = []
+    scoped_intake_keys: list[dict[str, Any]] = []
+    approval_rules: list[dict[str, Any]] = []
+    pending_approvals: list[dict[str, Any]] = []
+    governance_approval_requests: list[dict[str, Any]] = []
+    policy_decisions: list[dict[str, Any]] = []
+    external_publish_surfaces: Optional[dict[str, Any]] = None
+
+
+class BugMonitorAuthorityInventoryResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    schema_version: int
+    generated_at_ms: Optional[int] = None
+    scope: Optional[dict[str, Any]] = None
+    inventory: BugMonitorAuthorityInventory
+    counts: dict[str, int] = {}
+    sensitive_values: Optional[dict[str, Any]] = None
+
+
 class BugMonitorIncidentRecord(BaseModel):
     model_config = ConfigDict(extra="allow")
     incident_id: str

@@ -86,6 +86,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   destination/route config mutations, scoped intake-key lifecycle changes, and
   destination-router publish attempts/outcomes, with adversarial regression
   tests for scoped intake keys trying to call privileged routes.
+- Added a read-only Incident Monitor authority inventory endpoint and SDK
+  helpers for security posture assessment, covering workflows, automations,
+  agents, tool/MCP policy, destinations, routes, monitored sources, approvals,
+  policy decisions, and external publish surfaces with sensitive values
+  summarized or omitted.
+- Added Incident Monitor AI Agent Security Posture positioning docs with
+  buyer-facing packaging, demo narrative, report outline, comparison guidance,
+  and explicit boundaries against broad vulnerability-scanner or SIEM claims.
 
 ### Changed
 

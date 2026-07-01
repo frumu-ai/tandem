@@ -118,7 +118,9 @@ fn hosted_context_actor_id(verified: Option<&VerifiedTenantContext>) -> Option<&
         .filter(|actor_id| !actor_id.is_empty())
 }
 
-fn automation_v2_access_metadata(automation: &AutomationV2Spec) -> Option<&serde_json::Map<String, Value>> {
+fn automation_v2_access_metadata(
+    automation: &AutomationV2Spec,
+) -> Option<&serde_json::Map<String, Value>> {
     automation
         .metadata
         .as_ref()
@@ -153,7 +155,7 @@ fn automation_v2_access_audiences(automation: &AutomationV2Spec) -> Vec<String> 
         .unwrap_or_default()
 }
 
-fn automation_v2_visible_to_context(
+pub(super) fn automation_v2_visible_to_context(
     automation: &AutomationV2Spec,
     verified: Option<&VerifiedTenantContext>,
 ) -> bool {
@@ -176,7 +178,9 @@ fn automation_v2_visible_to_context(
             let groups = verified
                 .map(|context| context.org_units.as_slice())
                 .unwrap_or(&[]);
-            groups.iter().any(|group| audience.iter().any(|entry| entry == group))
+            groups
+                .iter()
+                .any(|group| audience.iter().any(|entry| entry == group))
         }
         _ => false,
     }
@@ -261,7 +265,9 @@ fn with_automation_v2_private_access_metadata(
     let Some(actor_id) = hosted_context_actor_id(verified) else {
         return metadata;
     };
-    let mut obj = metadata.and_then(|value| value.as_object().cloned()).unwrap_or_default();
+    let mut obj = metadata
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
     obj.entry("resource_access".to_string()).or_insert_with(|| {
         json!({
             "owner_principal": {
@@ -1208,7 +1214,10 @@ pub(super) async fn automations_v2_get(
         return Err(automation_v2_not_found(&id));
     };
     ensure_automation_v2_tenant(&tenant_context, &automation)?;
-    ensure_automation_v2_visible_to_context(&automation, verified_tenant_context.as_ref().map(|context| &context.0))?;
+    ensure_automation_v2_visible_to_context(
+        &automation,
+        verified_tenant_context.as_ref().map(|context| &context.0),
+    )?;
     Ok(Json(json!({ "automation": automation })))
 }
 
@@ -1225,7 +1234,10 @@ pub(super) async fn automations_v2_patch(
         return Err(automation_v2_not_found(&id));
     };
     ensure_automation_v2_tenant(&tenant_context, &automation)?;
-    ensure_automation_v2_owner_or_admin(&automation, verified_tenant_context.as_ref().map(|context| &context.0))?;
+    ensure_automation_v2_owner_or_admin(
+        &automation,
+        verified_tenant_context.as_ref().map(|context| &context.0),
+    )?;
     let actor =
         super::governance::resolve_governance_actor(&headers, &tenant_context, &request_principal);
     let governance = state
@@ -1453,7 +1465,10 @@ pub(super) async fn automations_v2_delete(
         return Err(automation_v2_not_found(&id));
     };
     ensure_automation_v2_tenant(&tenant_context, &automation)?;
-    ensure_automation_v2_owner_or_admin(&automation, verified_tenant_context.as_ref().map(|context| &context.0))?;
+    ensure_automation_v2_owner_or_admin(
+        &automation,
+        verified_tenant_context.as_ref().map(|context| &context.0),
+    )?;
     let actor =
         super::governance::resolve_governance_actor(&headers, &tenant_context, &request_principal);
     let _ = state
@@ -1514,7 +1529,10 @@ pub(super) async fn automations_v2_run_now(
     // GOV-B9: executing a run is a mutation-altitude action, not a read. A user with
     // only read visibility (e.g. org-wide visibility) must not be able to trigger a
     // run; require owner/admin.
-    ensure_automation_v2_owner_or_admin(&automation, verified_tenant_context.as_ref().map(|context| &context.0))?;
+    ensure_automation_v2_owner_or_admin(
+        &automation,
+        verified_tenant_context.as_ref().map(|context| &context.0),
+    )?;
     let actor =
         super::governance::resolve_governance_actor(&headers, &tenant_context, &request_principal);
     let _ = state

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { TandemClient } from "../src/client.js";
 import type {
+  BugMonitorAuthorityInventoryResponse,
   BugMonitorConfigResponse,
   BugMonitorDestinationConfig,
   BugMonitorIntakeKeyCreateInput,
@@ -278,6 +279,60 @@ describe("Bug Monitor external project public types", () => {
       );
       expect(calls[6]).toMatchObject({
         url: "http://localhost:39731/bug-monitor/posts?limit=25&destination_id=legacy-github",
+        method: "GET",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("fetches the authority inventory through the SDK helper", async () => {
+    const client = new TandemClient({ baseUrl: "http://localhost:39731", token: "test-token" });
+    const originalFetch = globalThis.fetch;
+    const calls: Array<{ url: string; method: string }> = [];
+    const response: BugMonitorAuthorityInventoryResponse = {
+      schema_version: 1,
+      scope: {
+        source: "bug_monitor_authority_inventory",
+        read_only: true,
+      },
+      inventory: {
+        workflows: [{ workflow_id: "wf-1", enabled: true }],
+        automation_specs: [{ automation_id: "auto-1", agents: [{ agent_id: "agent-1" }] }],
+        mcp: { servers: [{ server: "github", tool_count: 1 }] },
+        destinations: [{ destination_id: "linear-prod", kind: "linear_issue", require_approval: true }],
+        routes: [{ route_id: "high-risk", destination_ids: ["linear-prod"] }],
+        monitored_sources: [{ project_id: "payments", source_kind: "ci" }],
+        scoped_intake_keys: [{ key_id: "key-1", project_id: "payments", key_hash_present: true }],
+        approval_rules: [{ rule_id: "destination:linear-prod", requires_approval: true }],
+        external_publish_surfaces: {
+          configured_destinations: [{ surface_id: "linear-prod" }],
+        },
+      },
+      counts: {
+        workflows: 1,
+        automation_specs: 1,
+        destinations: 1,
+      },
+      sensitive_values: {
+        policy: "redacted_or_summarized",
+      },
+    };
+
+    globalThis.fetch = (async (input, init) => {
+      calls.push({ url: String(input), method: String(init?.method ?? "GET") });
+      return new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const inventory = await client.bugMonitor.getAuthorityInventory();
+      expect(inventory.inventory.scoped_intake_keys?.[0]?.key_hash_present).toBe(true);
+      expect(inventory.inventory.destinations?.[0]?.require_approval).toBe(true);
+      expect(calls[0]).toMatchObject({
+        url: "http://localhost:39731/bug-monitor/security/authority-inventory",
         method: "GET",
       });
     } finally {

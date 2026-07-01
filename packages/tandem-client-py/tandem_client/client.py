@@ -34,6 +34,7 @@ from .types import (
     BrowserInstallResponse,
     BrowserSmokeTestResponse,
     BrowserStatusResponse,
+    BugMonitorAuthorityInventoryResponse,
     BugMonitorDestinationConfig,
     BugMonitorConfigResponse,
     BugMonitorDraftListResponse,
@@ -547,6 +548,11 @@ class _BugMonitor:
         res = await self._http.get("/bug-monitor/status")
         res.raise_for_status()
         return BugMonitorStatusResponse.model_validate(res.json())
+
+    async def get_authority_inventory(self) -> BugMonitorAuthorityInventoryResponse:
+        res = await self._http.get("/bug-monitor/security/authority-inventory")
+        res.raise_for_status()
+        return BugMonitorAuthorityInventoryResponse.model_validate(res.json())
 
     async def recompute_status(self) -> BugMonitorStatusResponse:
         res = await self._http.post("/bug-monitor/status/recompute")
