@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
-use tandem_bug_monitor::github::{BugMonitorGithubHost, GithubToolSet};
+use tandem_incident_monitor::github::{GithubToolSet, IncidentMonitorGithubHost};
 use tandem_runtime::mcp_ready::{EnsureReadyPolicy, McpReadyError};
 use tandem_runtime::McpRemoteTool;
 use tandem_types::{EngineEvent, ToolResult};
@@ -11,48 +11,51 @@ use crate::{
     BugMonitorPostRecord, BugMonitorStatus, ExternalActionRecord,
 };
 
-pub use tandem_bug_monitor::github::{
+pub use tandem_incident_monitor::github::{
     publish_draft, record_post_failure, GithubDestinationContext, PublishMode, PublishOutcome,
 };
 
-const BUG_MONITOR_LABEL: &str = "bug-monitor";
+const INCIDENT_MONITOR_LABEL: &str = "incident-monitor";
 
 #[async_trait::async_trait]
-impl BugMonitorGithubHost for AppState {
-    async fn bug_monitor_status_snapshot(&self) -> BugMonitorStatus {
+impl IncidentMonitorGithubHost for AppState {
+    async fn incident_monitor_status_snapshot(&self) -> BugMonitorStatus {
         AppState::bug_monitor_status_snapshot(self).await
     }
 
-    async fn get_bug_monitor_draft(&self, draft_id: &str) -> Option<BugMonitorDraftRecord> {
+    async fn get_incident_monitor_draft(&self, draft_id: &str) -> Option<BugMonitorDraftRecord> {
         AppState::get_bug_monitor_draft(self, draft_id).await
     }
 
-    async fn put_bug_monitor_draft(
+    async fn put_incident_monitor_draft(
         &self,
         draft: BugMonitorDraftRecord,
     ) -> anyhow::Result<BugMonitorDraftRecord> {
         AppState::put_bug_monitor_draft(self, draft).await
     }
 
-    async fn get_bug_monitor_incident(
+    async fn get_incident_monitor_incident(
         &self,
         incident_id: &str,
     ) -> Option<BugMonitorIncidentRecord> {
         AppState::get_bug_monitor_incident(self, incident_id).await
     }
 
-    async fn put_bug_monitor_post(
+    async fn put_incident_monitor_post(
         &self,
         post: BugMonitorPostRecord,
     ) -> anyhow::Result<BugMonitorPostRecord> {
         AppState::put_bug_monitor_post(self, post).await
     }
 
-    async fn list_bug_monitor_posts(&self, limit: usize) -> Vec<BugMonitorPostRecord> {
+    async fn list_incident_monitor_posts(&self, limit: usize) -> Vec<BugMonitorPostRecord> {
         AppState::list_bug_monitor_posts(self, limit).await
     }
 
-    async fn list_bug_monitor_posts_by_draft(&self, draft_id: &str) -> Vec<BugMonitorPostRecord> {
+    async fn list_incident_monitor_posts_by_draft(
+        &self,
+        draft_id: &str,
+    ) -> Vec<BugMonitorPostRecord> {
         let mut rows = self
             .bug_monitor_posts
             .read()
@@ -65,7 +68,7 @@ impl BugMonitorGithubHost for AppState {
         rows
     }
 
-    async fn list_bug_monitor_posts_by_fingerprint(
+    async fn list_incident_monitor_posts_by_fingerprint(
         &self,
         repo: &str,
         fingerprint: &str,
@@ -82,7 +85,7 @@ impl BugMonitorGithubHost for AppState {
         rows
     }
 
-    async fn list_bug_monitor_posts_by_idempotency_key(
+    async fn list_incident_monitor_posts_by_idempotency_key(
         &self,
         idempotency_key: &str,
     ) -> Vec<BugMonitorPostRecord> {
@@ -98,14 +101,14 @@ impl BugMonitorGithubHost for AppState {
         rows
     }
 
-    async fn try_claim_bug_monitor_post_idempotency(
+    async fn try_claim_incident_monitor_post_idempotency(
         &self,
         post: BugMonitorPostRecord,
     ) -> anyhow::Result<(bool, BugMonitorPostRecord)> {
         AppState::try_claim_bug_monitor_post_idempotency(self, post).await
     }
 
-    async fn mirror_bug_monitor_post_as_external_action(
+    async fn mirror_incident_monitor_post_as_external_action(
         &self,
         draft: &BugMonitorDraftRecord,
         post: &BugMonitorPostRecord,
@@ -119,12 +122,12 @@ impl BugMonitorGithubHost for AppState {
             action_id: post.post_id.clone(),
             operation: post.operation.clone(),
             status: post.status.clone(),
-            source_kind: Some("bug_monitor".to_string()),
+            source_kind: Some("incident_monitor".to_string()),
             source_id: Some(draft.draft_id.clone()),
             routine_run_id: None,
             context_run_id: draft.triage_run_id.clone(),
             capability_id,
-            provider: Some(BUG_MONITOR_LABEL.to_string()),
+            provider: Some(INCIDENT_MONITOR_LABEL.to_string()),
             target: Some(
                 post.target_ref
                     .clone()
@@ -178,14 +181,14 @@ impl BugMonitorGithubHost for AppState {
                 "expected_destination": post.expected_destination,
                 "evidence_refs": post.evidence_refs,
                 "quality_gate": post.quality_gate,
-                "bug_monitor_operation": post.operation,
+                "incident_monitor_operation": post.operation,
             })),
             created_at_ms: post.created_at_ms,
             updated_at_ms: post.updated_at_ms,
         };
         if let Err(error) = AppState::record_external_action(self, action).await {
             tracing::warn!(
-                "failed to persist external action mirror for bug monitor post {}: {}",
+                "failed to persist external action mirror for incident monitor post {}: {}",
                 post.post_id,
                 error
             );
@@ -203,17 +206,21 @@ impl BugMonitorGithubHost for AppState {
         self.event_bus.publish(event);
     }
 
-    async fn ensure_bug_monitor_issue_draft(
+    async fn ensure_incident_monitor_issue_draft(
         &self,
         draft_id: &str,
         force: bool,
     ) -> anyhow::Result<Value> {
-        crate::http::bug_monitor::ensure_bug_monitor_issue_draft(self.clone(), draft_id, force)
+        crate::http::bug_monitor::ensure_incident_monitor_issue_draft(self.clone(), draft_id, force)
             .await
     }
 
-    async fn load_bug_monitor_issue_draft_artifact(&self, triage_run_id: &str) -> Option<Value> {
-        crate::http::bug_monitor::load_bug_monitor_issue_draft_artifact(self, triage_run_id).await
+    async fn load_incident_monitor_issue_draft_artifact(
+        &self,
+        triage_run_id: &str,
+    ) -> Option<Value> {
+        crate::http::bug_monitor::load_incident_monitor_issue_draft_artifact(self, triage_run_id)
+            .await
     }
 
     async fn resolve_github_tool_set(

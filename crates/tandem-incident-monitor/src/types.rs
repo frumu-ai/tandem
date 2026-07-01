@@ -2,39 +2,41 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tandem_types::ModelSpec;
 
-pub const BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID: &str = "legacy-github";
+pub const INCIDENT_MONITOR_LEGACY_GITHUB_DESTINATION_ID: &str = "legacy-github";
+pub const BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID: &str =
+    INCIDENT_MONITOR_LEGACY_GITHUB_DESTINATION_ID;
 
-fn default_bug_monitor_log_format() -> BugMonitorLogFormat {
-    BugMonitorLogFormat::Auto
+fn default_incident_monitor_log_format() -> IncidentMonitorLogFormat {
+    IncidentMonitorLogFormat::Auto
 }
 
-fn default_bug_monitor_minimum_level() -> BugMonitorLogMinimumLevel {
-    BugMonitorLogMinimumLevel::Error
+fn default_incident_monitor_minimum_level() -> IncidentMonitorLogMinimumLevel {
+    IncidentMonitorLogMinimumLevel::Error
 }
 
-fn default_bug_monitor_watch_interval_seconds() -> u64 {
+fn default_incident_monitor_watch_interval_seconds() -> u64 {
     60
 }
 
-fn default_bug_monitor_log_start_position() -> BugMonitorLogStartPosition {
-    BugMonitorLogStartPosition::End
+fn default_incident_monitor_log_start_position() -> IncidentMonitorLogStartPosition {
+    IncidentMonitorLogStartPosition::End
 }
 
-fn default_bug_monitor_max_bytes_per_poll() -> u64 {
+fn default_incident_monitor_max_bytes_per_poll() -> u64 {
     262_144
 }
 
-fn default_bug_monitor_max_candidates_per_poll() -> usize {
+fn default_incident_monitor_max_candidates_per_poll() -> usize {
     20
 }
 
-fn default_bug_monitor_fingerprint_cooldown_ms() -> u64 {
+fn default_incident_monitor_fingerprint_cooldown_ms() -> u64 {
     3_600_000
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum BugMonitorProviderPreference {
+pub enum IncidentMonitorProviderPreference {
     #[default]
     Auto,
     OfficialGithub,
@@ -44,14 +46,14 @@ pub enum BugMonitorProviderPreference {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum BugMonitorLabelMode {
+pub enum IncidentMonitorLabelMode {
     #[default]
     ReporterOnly,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum BugMonitorDestinationKind {
+pub enum IncidentMonitorDestinationKind {
     #[default]
     GithubIssue,
     LinearIssue,
@@ -63,7 +65,7 @@ pub enum BugMonitorDestinationKind {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum BugMonitorApprovalPolicy {
+pub enum IncidentMonitorApprovalPolicy {
     #[default]
     Inherit,
     Always,
@@ -73,7 +75,7 @@ pub enum BugMonitorApprovalPolicy {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum BugMonitorSourceKind {
+pub enum IncidentMonitorSourceKind {
     TandemRuntime,
     TandemMonitor,
     ExternalApp,
@@ -84,7 +86,7 @@ pub enum BugMonitorSourceKind {
     CustomerSystem,
 }
 
-impl BugMonitorSourceKind {
+impl IncidentMonitorSourceKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::TandemRuntime => "tandem_runtime",
@@ -99,11 +101,11 @@ impl BugMonitorSourceKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BugMonitorDestinationConfig {
+pub struct IncidentMonitorDestinationConfig {
     pub destination_id: String,
     pub name: String,
     #[serde(default)]
-    pub kind: BugMonitorDestinationKind,
+    pub kind: IncidentMonitorDestinationKind,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
@@ -132,12 +134,12 @@ pub struct BugMonitorDestinationConfig {
     pub config: Option<Value>,
 }
 
-impl Default for BugMonitorDestinationConfig {
+impl Default for IncidentMonitorDestinationConfig {
     fn default() -> Self {
         Self {
             destination_id: String::new(),
             name: String::new(),
-            kind: BugMonitorDestinationKind::GithubIssue,
+            kind: IncidentMonitorDestinationKind::GithubIssue,
             enabled: true,
             require_approval: false,
             repo: None,
@@ -156,7 +158,7 @@ impl Default for BugMonitorDestinationConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BugMonitorRouteConfig {
+pub struct IncidentMonitorRouteConfig {
     pub route_id: String,
     pub name: String,
     #[serde(default = "default_true")]
@@ -166,7 +168,7 @@ pub struct BugMonitorRouteConfig {
     #[serde(default)]
     pub destination_ids: Vec<String>,
     #[serde(default)]
-    pub approval_policy: BugMonitorApprovalPolicy,
+    pub approval_policy: IncidentMonitorApprovalPolicy,
     #[serde(default)]
     pub match_event_types: Vec<String>,
     #[serde(default)]
@@ -197,7 +199,7 @@ pub struct BugMonitorRouteConfig {
     pub match_event_schema_versions: Vec<String>,
 }
 
-impl Default for BugMonitorRouteConfig {
+impl Default for IncidentMonitorRouteConfig {
     fn default() -> Self {
         Self {
             route_id: String::new(),
@@ -205,7 +207,7 @@ impl Default for BugMonitorRouteConfig {
             enabled: true,
             priority: 0,
             destination_ids: Vec::new(),
-            approval_policy: BugMonitorApprovalPolicy::Inherit,
+            approval_policy: IncidentMonitorApprovalPolicy::Inherit,
             match_event_types: Vec::new(),
             match_sources: Vec::new(),
             match_components: Vec::new(),
@@ -225,7 +227,7 @@ impl Default for BugMonitorRouteConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BugMonitorSafetyDefaults {
+pub struct IncidentMonitorSafetyDefaults {
     #[serde(default = "default_true")]
     pub require_approval_for_high_risk: bool,
     #[serde(default = "default_true")]
@@ -236,7 +238,7 @@ pub struct BugMonitorSafetyDefaults {
     pub retention_days: Option<u64>,
 }
 
-impl Default for BugMonitorSafetyDefaults {
+impl Default for IncidentMonitorSafetyDefaults {
     fn default() -> Self {
         Self {
             require_approval_for_high_risk: true,
@@ -248,9 +250,9 @@ impl Default for BugMonitorSafetyDefaults {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BugMonitorDestinationReadiness {
+pub struct IncidentMonitorDestinationReadiness {
     pub destination_id: String,
-    pub kind: BugMonitorDestinationKind,
+    pub kind: IncidentMonitorDestinationKind,
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
@@ -266,7 +268,7 @@ pub struct BugMonitorDestinationReadiness {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BugMonitorRoutePreviewMatch {
+pub struct IncidentMonitorRoutePreviewMatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -280,13 +282,13 @@ pub struct BugMonitorRoutePreviewMatch {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BugMonitorRoutePreviewResponse {
+pub struct IncidentMonitorRoutePreviewResponse {
     #[serde(default)]
-    pub matches: Vec<BugMonitorRoutePreviewMatch>,
+    pub matches: Vec<IncidentMonitorRoutePreviewMatch>,
     #[serde(default)]
-    pub destinations: Vec<BugMonitorDestinationConfig>,
+    pub destinations: Vec<IncidentMonitorDestinationConfig>,
     #[serde(default)]
-    pub readiness: Vec<BugMonitorDestinationReadiness>,
+    pub readiness: Vec<IncidentMonitorDestinationReadiness>,
     #[serde(default)]
     pub default_destination_ids: Vec<String>,
     #[serde(default)]
@@ -300,7 +302,7 @@ pub struct BugMonitorRoutePreviewResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BugMonitorConfig {
+pub struct IncidentMonitorConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
@@ -312,7 +314,7 @@ pub struct BugMonitorConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_server: Option<String>,
     #[serde(default)]
-    pub provider_preference: BugMonitorProviderPreference,
+    pub provider_preference: IncidentMonitorProviderPreference,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_policy: Option<Value>,
     #[serde(default = "default_true")]
@@ -322,7 +324,7 @@ pub struct BugMonitorConfig {
     #[serde(default = "default_true")]
     pub auto_comment_on_matched_open_issues: bool,
     #[serde(default)]
-    pub label_mode: BugMonitorLabelMode,
+    pub label_mode: IncidentMonitorLabelMode,
     /// How long to wait for a queued triage run to reach a terminal state
     /// before marking the draft as timed out and falling back to a basic
     /// (non-LLM) issue body. `None` disables the deadline; `Some(0)` is
@@ -333,21 +335,21 @@ pub struct BugMonitorConfig {
     #[serde(default = "default_triage_timeout_ms")]
     pub triage_timeout_ms: Option<u64>,
     #[serde(default)]
-    pub monitored_projects: Vec<BugMonitorMonitoredProject>,
+    pub monitored_projects: Vec<IncidentMonitorMonitoredProject>,
     #[serde(default)]
-    pub destinations: Vec<BugMonitorDestinationConfig>,
+    pub destinations: Vec<IncidentMonitorDestinationConfig>,
     #[serde(default)]
-    pub routes: Vec<BugMonitorRouteConfig>,
+    pub routes: Vec<IncidentMonitorRouteConfig>,
     #[serde(default)]
     pub default_destination_ids: Vec<String>,
     #[serde(default)]
-    pub safety_defaults: BugMonitorSafetyDefaults,
+    pub safety_defaults: IncidentMonitorSafetyDefaults,
     #[serde(default)]
     pub updated_at_ms: u64,
 }
 
 fn default_triage_timeout_ms() -> Option<u64> {
-    // Aligned with `bug_monitor_triage_spec.execution.max_total_runtime_ms`
+    // Aligned with the incident triage spec's execution.max_total_runtime_ms
     // (1_800_000 ms / 30 minutes). The previous 5-minute default
     // guaranteed timeouts because individual nodes have per-node
     // timeout_ms of up to 600_000 ms (research) plus 240_000 ms
@@ -358,7 +360,7 @@ fn default_triage_timeout_ms() -> Option<u64> {
     Some(1_800_000)
 }
 
-impl Default for BugMonitorConfig {
+impl Default for IncidentMonitorConfig {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -366,39 +368,39 @@ impl Default for BugMonitorConfig {
             workspace_root: None,
             repo: None,
             mcp_server: None,
-            provider_preference: BugMonitorProviderPreference::Auto,
+            provider_preference: IncidentMonitorProviderPreference::Auto,
             model_policy: None,
             auto_create_new_issues: true,
             require_approval_for_new_issues: false,
             auto_comment_on_matched_open_issues: true,
-            label_mode: BugMonitorLabelMode::ReporterOnly,
+            label_mode: IncidentMonitorLabelMode::ReporterOnly,
             triage_timeout_ms: default_triage_timeout_ms(),
             monitored_projects: Vec::new(),
             destinations: Vec::new(),
             routes: Vec::new(),
             default_destination_ids: Vec::new(),
-            safety_defaults: BugMonitorSafetyDefaults::default(),
+            safety_defaults: IncidentMonitorSafetyDefaults::default(),
             updated_at_ms: 0,
         }
     }
 }
 
-impl BugMonitorConfig {
-    pub fn effective_destinations(&self) -> Vec<BugMonitorDestinationConfig> {
+impl IncidentMonitorConfig {
+    pub fn effective_destinations(&self) -> Vec<IncidentMonitorDestinationConfig> {
         if !self.destinations.is_empty() {
             return self.destinations.clone();
         }
 
-        vec![BugMonitorDestinationConfig {
-            destination_id: BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string(),
-            name: "GitHub (legacy Bug Monitor)".to_string(),
-            kind: BugMonitorDestinationKind::GithubIssue,
+        vec![IncidentMonitorDestinationConfig {
+            destination_id: INCIDENT_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string(),
+            name: "GitHub (default Incident Monitor)".to_string(),
+            kind: IncidentMonitorDestinationKind::GithubIssue,
             enabled: self.enabled,
             require_approval: self.require_approval_for_new_issues,
             repo: self.repo.clone(),
             mcp_server: self.mcp_server.clone(),
             route_tags: vec!["legacy_github".to_string()],
-            ..BugMonitorDestinationConfig::default()
+            ..IncidentMonitorDestinationConfig::default()
         }]
     }
 
@@ -415,7 +417,7 @@ impl BugMonitorConfig {
         }
 
         if self.destinations.is_empty() {
-            return vec![BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()];
+            return vec![INCIDENT_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()];
         }
 
         Vec::new()
@@ -423,7 +425,7 @@ impl BugMonitorConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BugMonitorMonitoredProject {
+pub struct IncidentMonitorMonitoredProject {
     pub project_id: String,
     pub name: String,
     #[serde(default = "default_true")]
@@ -433,7 +435,7 @@ pub struct BugMonitorMonitoredProject {
     pub repo: String,
     pub workspace_root: String,
     #[serde(default)]
-    pub source_kind: BugMonitorSourceKind,
+    pub source_kind: IncidentMonitorSourceKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_server: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -451,7 +453,7 @@ pub struct BugMonitorMonitoredProject {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_schema_version: Option<String>,
     #[serde(default)]
-    pub approval_policy: BugMonitorApprovalPolicy,
+    pub approval_policy: IncidentMonitorApprovalPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redaction_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -463,12 +465,12 @@ pub struct BugMonitorMonitoredProject {
     #[serde(default = "default_true")]
     pub auto_comment_on_matched_open_issues: bool,
     #[serde(default)]
-    pub log_sources: Vec<BugMonitorLogSource>,
+    pub log_sources: Vec<IncidentMonitorLogSource>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum BugMonitorLogFormat {
+pub enum IncidentMonitorLogFormat {
     Auto,
     Json,
     Plaintext,
@@ -476,41 +478,41 @@ pub enum BugMonitorLogFormat {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum BugMonitorLogMinimumLevel {
+pub enum IncidentMonitorLogMinimumLevel {
     Error,
     Warn,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum BugMonitorLogStartPosition {
+pub enum IncidentMonitorLogStartPosition {
     End,
     Beginning,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BugMonitorLogSource {
+pub struct IncidentMonitorLogSource {
     pub source_id: String,
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_kind: Option<BugMonitorSourceKind>,
-    #[serde(default = "default_bug_monitor_log_format")]
-    pub format: BugMonitorLogFormat,
-    #[serde(default = "default_bug_monitor_minimum_level")]
-    pub minimum_level: BugMonitorLogMinimumLevel,
-    #[serde(default = "default_bug_monitor_watch_interval_seconds")]
+    pub source_kind: Option<IncidentMonitorSourceKind>,
+    #[serde(default = "default_incident_monitor_log_format")]
+    pub format: IncidentMonitorLogFormat,
+    #[serde(default = "default_incident_monitor_minimum_level")]
+    pub minimum_level: IncidentMonitorLogMinimumLevel,
+    #[serde(default = "default_incident_monitor_watch_interval_seconds")]
     pub watch_interval_seconds: u64,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
     pub paused: bool,
-    #[serde(default = "default_bug_monitor_log_start_position")]
-    pub start_position: BugMonitorLogStartPosition,
-    #[serde(default = "default_bug_monitor_max_bytes_per_poll")]
+    #[serde(default = "default_incident_monitor_log_start_position")]
+    pub start_position: IncidentMonitorLogStartPosition,
+    #[serde(default = "default_incident_monitor_max_bytes_per_poll")]
     pub max_bytes_per_poll: u64,
-    #[serde(default = "default_bug_monitor_max_candidates_per_poll")]
+    #[serde(default = "default_incident_monitor_max_candidates_per_poll")]
     pub max_candidates_per_poll: usize,
-    #[serde(default = "default_bug_monitor_fingerprint_cooldown_ms")]
+    #[serde(default = "default_incident_monitor_fingerprint_cooldown_ms")]
     pub fingerprint_cooldown_ms: u64,
     #[serde(default)]
     pub allowed_destination_ids: Vec<String>,
@@ -525,35 +527,35 @@ pub struct BugMonitorLogSource {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_schema_version: Option<String>,
     #[serde(default)]
-    pub approval_policy: BugMonitorApprovalPolicy,
+    pub approval_policy: IncidentMonitorApprovalPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redaction_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_profile: Option<String>,
 }
 
-impl Default for BugMonitorLogSource {
+impl Default for IncidentMonitorLogSource {
     fn default() -> Self {
         Self {
             source_id: String::new(),
             path: String::new(),
             source_kind: None,
-            format: default_bug_monitor_log_format(),
-            minimum_level: default_bug_monitor_minimum_level(),
-            watch_interval_seconds: default_bug_monitor_watch_interval_seconds(),
+            format: default_incident_monitor_log_format(),
+            minimum_level: default_incident_monitor_minimum_level(),
+            watch_interval_seconds: default_incident_monitor_watch_interval_seconds(),
             enabled: true,
             paused: false,
-            start_position: default_bug_monitor_log_start_position(),
-            max_bytes_per_poll: default_bug_monitor_max_bytes_per_poll(),
-            max_candidates_per_poll: default_bug_monitor_max_candidates_per_poll(),
-            fingerprint_cooldown_ms: default_bug_monitor_fingerprint_cooldown_ms(),
+            start_position: default_incident_monitor_log_start_position(),
+            max_bytes_per_poll: default_incident_monitor_max_bytes_per_poll(),
+            max_candidates_per_poll: default_incident_monitor_max_candidates_per_poll(),
+            fingerprint_cooldown_ms: default_incident_monitor_fingerprint_cooldown_ms(),
             allowed_destination_ids: Vec::new(),
             default_destination_ids: Vec::new(),
             default_route_tags: Vec::new(),
             tenant_id: None,
             workspace_id: None,
             event_schema_version: None,
-            approval_policy: BugMonitorApprovalPolicy::Inherit,
+            approval_policy: IncidentMonitorApprovalPolicy::Inherit,
             redaction_profile: None,
             retention_profile: None,
         }
@@ -561,13 +563,13 @@ impl Default for BugMonitorLogSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BugMonitorSourceBinding {
+pub struct IncidentMonitorSourceBinding {
     pub project_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_id: Option<String>,
     pub repo: String,
     pub workspace_root: String,
-    pub source_kind: BugMonitorSourceKind,
+    pub source_kind: IncidentMonitorSourceKind,
     #[serde(default)]
     pub allowed_destination_ids: Vec<String>,
     #[serde(default)]
@@ -581,15 +583,18 @@ pub struct BugMonitorSourceBinding {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_schema_version: Option<String>,
     #[serde(default)]
-    pub approval_policy: BugMonitorApprovalPolicy,
+    pub approval_policy: IncidentMonitorApprovalPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redaction_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_profile: Option<String>,
 }
 
-impl BugMonitorMonitoredProject {
-    pub fn source_binding(&self, source: Option<&BugMonitorLogSource>) -> BugMonitorSourceBinding {
+impl IncidentMonitorMonitoredProject {
+    pub fn source_binding(
+        &self,
+        source: Option<&IncidentMonitorLogSource>,
+    ) -> IncidentMonitorSourceBinding {
         let source_allowed = source
             .map(|row| normalize_source_values(&row.allowed_destination_ids))
             .unwrap_or_default();
@@ -621,10 +626,10 @@ impl BugMonitorMonitoredProject {
 
         let approval_policy = source
             .map(|row| row.approval_policy.clone())
-            .filter(|value| *value != BugMonitorApprovalPolicy::Inherit)
+            .filter(|value| *value != IncidentMonitorApprovalPolicy::Inherit)
             .unwrap_or_else(|| self.approval_policy.clone());
 
-        BugMonitorSourceBinding {
+        IncidentMonitorSourceBinding {
             project_id: self.project_id.clone(),
             source_id: source.map(|row| row.source_id.clone()),
             repo: self.repo.clone(),
@@ -672,7 +677,7 @@ fn push_normalized_source_values(out: &mut Vec<String>, values: &[String]) {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BugMonitorLogSourceState {
+pub struct IncidentMonitorLogSourceState {
     pub project_id: String,
     pub source_id: String,
     pub path: String,
@@ -705,11 +710,11 @@ pub struct BugMonitorLogSourceState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BugMonitorLogCandidate {
+pub struct IncidentMonitorLogCandidate {
     pub project_id: String,
     pub source_id: String,
     #[serde(default)]
-    pub source_kind: BugMonitorSourceKind,
+    pub source_kind: IncidentMonitorSourceKind,
     pub repo: String,
     pub workspace_root: String,
     pub path: String,
@@ -766,7 +771,7 @@ pub struct BugMonitorLogCandidate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_schema_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_approval_policy: Option<BugMonitorApprovalPolicy>,
+    pub source_approval_policy: Option<IncidentMonitorApprovalPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redaction_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -774,7 +779,7 @@ pub struct BugMonitorLogCandidate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BugMonitorLogWatcherStatus {
+pub struct IncidentMonitorLogWatcherStatus {
     #[serde(default)]
     pub running: bool,
     #[serde(default)]
@@ -786,11 +791,11 @@ pub struct BugMonitorLogWatcherStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
     #[serde(default)]
-    pub sources: Vec<BugMonitorLogSourceRuntimeStatus>,
+    pub sources: Vec<IncidentMonitorLogSourceRuntimeStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BugMonitorLogSourceRuntimeStatus {
+pub struct IncidentMonitorLogSourceRuntimeStatus {
     pub project_id: String,
     pub source_id: String,
     pub path: String,
@@ -820,7 +825,7 @@ pub struct BugMonitorLogSourceRuntimeStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BugMonitorProjectIntakeKey {
+pub struct IncidentMonitorProjectIntakeKey {
     pub key_id: String,
     pub project_id: String,
     pub name: String,
@@ -836,7 +841,7 @@ pub struct BugMonitorProjectIntakeKey {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BugMonitorDraftRecord {
+pub struct IncidentMonitorDraftRecord {
     pub draft_id: String,
     pub fingerprint: String,
     pub repo: String,
@@ -845,7 +850,7 @@ pub struct BugMonitorDraftRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_source_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_kind: Option<BugMonitorSourceKind>,
+    pub source_kind: Option<IncidentMonitorSourceKind>,
     pub status: String,
     pub created_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -909,7 +914,7 @@ pub struct BugMonitorDraftRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_schema_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_approval_policy: Option<BugMonitorApprovalPolicy>,
+    pub source_approval_policy: Option<IncidentMonitorApprovalPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redaction_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -917,13 +922,13 @@ pub struct BugMonitorDraftRecord {
     #[serde(default)]
     pub evidence_refs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quality_gate: Option<BugMonitorQualityGateReport>,
+    pub quality_gate: Option<IncidentMonitorQualityGateReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_post_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BugMonitorPostRecord {
+pub struct IncidentMonitorPostRecord {
     pub post_id: String,
     pub draft_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -943,7 +948,7 @@ pub struct BugMonitorPostRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub destination_kind: Option<BugMonitorDestinationKind>,
+    pub destination_kind: Option<IncidentMonitorDestinationKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -969,7 +974,7 @@ pub struct BugMonitorPostRecord {
     #[serde(default)]
     pub evidence_refs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quality_gate: Option<BugMonitorQualityGateReport>,
+    pub quality_gate: Option<IncidentMonitorQualityGateReport>,
     pub idempotency_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_excerpt: Option<String>,
@@ -980,7 +985,7 @@ pub struct BugMonitorPostRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BugMonitorIncidentRecord {
+pub struct IncidentMonitorIncidentRecord {
     pub incident_id: String,
     pub fingerprint: String,
     pub event_type: String,
@@ -993,7 +998,7 @@ pub struct BugMonitorIncidentRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_source_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_kind: Option<BugMonitorSourceKind>,
+    pub source_kind: Option<IncidentMonitorSourceKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     #[serde(default)]
@@ -1059,7 +1064,7 @@ pub struct BugMonitorIncidentRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_schema_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_approval_policy: Option<BugMonitorApprovalPolicy>,
+    pub source_approval_policy: Option<IncidentMonitorApprovalPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redaction_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1067,7 +1072,7 @@ pub struct BugMonitorIncidentRecord {
     #[serde(default)]
     pub evidence_refs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quality_gate: Option<BugMonitorQualityGateReport>,
+    pub quality_gate: Option<IncidentMonitorQualityGateReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duplicate_summary: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1077,7 +1082,7 @@ pub struct BugMonitorIncidentRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BugMonitorQualityGateResult {
+pub struct IncidentMonitorQualityGateResult {
     pub key: String,
     pub label: String,
     pub passed: bool,
@@ -1086,14 +1091,14 @@ pub struct BugMonitorQualityGateResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BugMonitorQualityGateReport {
+pub struct IncidentMonitorQualityGateReport {
     pub stage: String,
     pub status: String,
     pub passed: bool,
     pub passed_count: usize,
     pub total_count: usize,
     #[serde(default)]
-    pub gates: Vec<BugMonitorQualityGateResult>,
+    pub gates: Vec<IncidentMonitorQualityGateResult>,
     #[serde(default)]
     pub missing: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1101,7 +1106,7 @@ pub struct BugMonitorQualityGateReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BugMonitorRuntimeStatus {
+pub struct IncidentMonitorRuntimeStatus {
     #[serde(default)]
     pub monitoring_active: bool,
     #[serde(default)]
@@ -1123,7 +1128,7 @@ pub struct BugMonitorRuntimeStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BugMonitorSubmission {
+pub struct IncidentMonitorSubmission {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1131,7 +1136,7 @@ pub struct BugMonitorSubmission {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_source_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_kind: Option<BugMonitorSourceKind>,
+    pub source_kind: Option<IncidentMonitorSourceKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1197,7 +1202,7 @@ pub struct BugMonitorSubmission {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_schema_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_approval_policy: Option<BugMonitorApprovalPolicy>,
+    pub source_approval_policy: Option<IncidentMonitorApprovalPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redaction_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1207,7 +1212,7 @@ pub struct BugMonitorSubmission {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BugMonitorCapabilityReadiness {
+pub struct IncidentMonitorCapabilityReadiness {
     #[serde(default)]
     pub github_list_issues: bool,
     #[serde(default)]
@@ -1219,7 +1224,7 @@ pub struct BugMonitorCapabilityReadiness {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BugMonitorCapabilityMatch {
+pub struct IncidentMonitorCapabilityMatch {
     pub capability_id: String,
     pub provider: String,
     pub tool_name: String,
@@ -1227,7 +1232,7 @@ pub struct BugMonitorCapabilityMatch {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BugMonitorBindingCandidate {
+pub struct IncidentMonitorBindingCandidate {
     pub capability_id: String,
     pub binding_tool_name: String,
     #[serde(default)]
@@ -1237,7 +1242,7 @@ pub struct BugMonitorBindingCandidate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BugMonitorReadiness {
+pub struct IncidentMonitorReadiness {
     #[serde(default)]
     pub config_valid: bool,
     #[serde(default)]
@@ -1265,26 +1270,26 @@ pub struct BugMonitorReadiness {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BugMonitorStatus {
-    pub config: BugMonitorConfig,
-    pub readiness: BugMonitorReadiness,
+pub struct IncidentMonitorStatus {
+    pub config: IncidentMonitorConfig,
+    pub readiness: IncidentMonitorReadiness,
     #[serde(default)]
-    pub runtime: BugMonitorRuntimeStatus,
+    pub runtime: IncidentMonitorRuntimeStatus,
     #[serde(default)]
-    pub log_watcher: BugMonitorLogWatcherStatus,
-    pub required_capabilities: BugMonitorCapabilityReadiness,
+    pub log_watcher: IncidentMonitorLogWatcherStatus,
+    pub required_capabilities: IncidentMonitorCapabilityReadiness,
     #[serde(default)]
     pub missing_required_capabilities: Vec<String>,
     #[serde(default)]
-    pub resolved_capabilities: Vec<BugMonitorCapabilityMatch>,
+    pub resolved_capabilities: Vec<IncidentMonitorCapabilityMatch>,
     #[serde(default)]
     pub discovered_mcp_tools: Vec<String>,
     #[serde(default)]
-    pub selected_server_binding_candidates: Vec<BugMonitorBindingCandidate>,
+    pub selected_server_binding_candidates: Vec<IncidentMonitorBindingCandidate>,
     #[serde(default)]
-    pub destinations: Vec<BugMonitorDestinationConfig>,
+    pub destinations: Vec<IncidentMonitorDestinationConfig>,
     #[serde(default)]
-    pub destination_readiness: Vec<BugMonitorDestinationReadiness>,
+    pub destination_readiness: Vec<IncidentMonitorDestinationReadiness>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding_source_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1301,6 +1306,42 @@ pub struct BugMonitorStatus {
     pub last_error: Option<String>,
 }
 
+pub type BugMonitorProviderPreference = IncidentMonitorProviderPreference;
+pub type BugMonitorLabelMode = IncidentMonitorLabelMode;
+pub type BugMonitorDestinationKind = IncidentMonitorDestinationKind;
+pub type BugMonitorApprovalPolicy = IncidentMonitorApprovalPolicy;
+pub type BugMonitorSourceKind = IncidentMonitorSourceKind;
+pub type BugMonitorDestinationConfig = IncidentMonitorDestinationConfig;
+pub type BugMonitorRouteConfig = IncidentMonitorRouteConfig;
+pub type BugMonitorSafetyDefaults = IncidentMonitorSafetyDefaults;
+pub type BugMonitorDestinationReadiness = IncidentMonitorDestinationReadiness;
+pub type BugMonitorRoutePreviewMatch = IncidentMonitorRoutePreviewMatch;
+pub type BugMonitorRoutePreviewResponse = IncidentMonitorRoutePreviewResponse;
+pub type BugMonitorConfig = IncidentMonitorConfig;
+pub type BugMonitorMonitoredProject = IncidentMonitorMonitoredProject;
+pub type BugMonitorLogFormat = IncidentMonitorLogFormat;
+pub type BugMonitorLogMinimumLevel = IncidentMonitorLogMinimumLevel;
+pub type BugMonitorLogStartPosition = IncidentMonitorLogStartPosition;
+pub type BugMonitorLogSource = IncidentMonitorLogSource;
+pub type BugMonitorSourceBinding = IncidentMonitorSourceBinding;
+pub type BugMonitorLogSourceState = IncidentMonitorLogSourceState;
+pub type BugMonitorLogCandidate = IncidentMonitorLogCandidate;
+pub type BugMonitorLogWatcherStatus = IncidentMonitorLogWatcherStatus;
+pub type BugMonitorLogSourceRuntimeStatus = IncidentMonitorLogSourceRuntimeStatus;
+pub type BugMonitorProjectIntakeKey = IncidentMonitorProjectIntakeKey;
+pub type BugMonitorDraftRecord = IncidentMonitorDraftRecord;
+pub type BugMonitorPostRecord = IncidentMonitorPostRecord;
+pub type BugMonitorIncidentRecord = IncidentMonitorIncidentRecord;
+pub type BugMonitorQualityGateResult = IncidentMonitorQualityGateResult;
+pub type BugMonitorQualityGateReport = IncidentMonitorQualityGateReport;
+pub type BugMonitorRuntimeStatus = IncidentMonitorRuntimeStatus;
+pub type BugMonitorSubmission = IncidentMonitorSubmission;
+pub type BugMonitorCapabilityReadiness = IncidentMonitorCapabilityReadiness;
+pub type BugMonitorCapabilityMatch = IncidentMonitorCapabilityMatch;
+pub type BugMonitorBindingCandidate = IncidentMonitorBindingCandidate;
+pub type BugMonitorReadiness = IncidentMonitorReadiness;
+pub type BugMonitorStatus = IncidentMonitorStatus;
+
 fn default_true() -> bool {
     true
 }
@@ -1312,28 +1353,31 @@ mod tests {
 
     #[test]
     fn legacy_config_deserializes_with_effective_github_destination() {
-        let config: BugMonitorConfig = serde_json::from_value(json!({
+        let config: IncidentMonitorConfig = serde_json::from_value(json!({
             "enabled": true,
             "repo": "acme/platform",
             "mcp_server": "github",
             "require_approval_for_new_issues": true
         }))
-        .expect("legacy bug monitor config should deserialize");
+        .expect("legacy Incident Monitor config should deserialize");
 
         assert!(config.destinations.is_empty());
         assert!(config.routes.is_empty());
         assert_eq!(
             config.effective_default_destination_ids(),
-            vec![BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()]
+            vec![INCIDENT_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()]
         );
 
         let destinations = config.effective_destinations();
         assert_eq!(destinations.len(), 1);
         assert_eq!(
             destinations[0].destination_id,
-            BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID
+            INCIDENT_MONITOR_LEGACY_GITHUB_DESTINATION_ID
         );
-        assert_eq!(destinations[0].kind, BugMonitorDestinationKind::GithubIssue);
+        assert_eq!(
+            destinations[0].kind,
+            IncidentMonitorDestinationKind::GithubIssue
+        );
         assert_eq!(destinations[0].repo.as_deref(), Some("acme/platform"));
         assert_eq!(destinations[0].mcp_server.as_deref(), Some("github"));
         assert!(destinations[0].require_approval);
@@ -1341,14 +1385,14 @@ mod tests {
 
     #[test]
     fn explicit_destinations_preserve_empty_default_destination_ids() {
-        let config = BugMonitorConfig {
-            destinations: vec![BugMonitorDestinationConfig {
+        let config = IncidentMonitorConfig {
+            destinations: vec![IncidentMonitorDestinationConfig {
                 destination_id: "linear-prod".to_string(),
                 name: "Linear".to_string(),
-                kind: BugMonitorDestinationKind::LinearIssue,
-                ..BugMonitorDestinationConfig::default()
+                kind: IncidentMonitorDestinationKind::LinearIssue,
+                ..IncidentMonitorDestinationConfig::default()
             }],
-            ..BugMonitorConfig::default()
+            ..IncidentMonitorConfig::default()
         };
 
         assert_eq!(config.effective_destinations().len(), 1);
@@ -1357,7 +1401,7 @@ mod tests {
 
     #[test]
     fn safety_context_fields_are_additive_for_legacy_records() {
-        let incident: BugMonitorIncidentRecord = serde_json::from_value(json!({
+        let incident: IncidentMonitorIncidentRecord = serde_json::from_value(json!({
             "incident_id": "incident-1",
             "fingerprint": "fingerprint-1",
             "event_type": "automation.failed",
@@ -1374,7 +1418,7 @@ mod tests {
         assert!(incident.risk_category.is_none());
         assert!(incident.external_correlation_ids.is_empty());
 
-        let submission: BugMonitorSubmission = serde_json::from_value(json!({
+        let submission: IncidentMonitorSubmission = serde_json::from_value(json!({
             "actor": "agent:release",
             "model": "gpt-5",
             "tool_name": "slack.post_message",
@@ -1393,7 +1437,7 @@ mod tests {
         );
         assert_eq!(submission.external_correlation_ids, vec!["case-123"]);
 
-        let route: BugMonitorRouteConfig = serde_json::from_value(json!({
+        let route: IncidentMonitorRouteConfig = serde_json::from_value(json!({
             "route_id": "route-security",
             "name": "Security",
             "match_risk_categories": ["data_exfiltration"]
@@ -1404,7 +1448,7 @@ mod tests {
 
     #[test]
     fn legacy_monitored_project_config_deserializes_with_default_source_binding() {
-        let config: BugMonitorConfig = serde_json::from_value(json!({
+        let config: IncidentMonitorConfig = serde_json::from_value(json!({
             "monitored_projects": [{
                 "project_id": "customer-api",
                 "name": "Customer API",
@@ -1422,43 +1466,49 @@ mod tests {
         let source = &project.log_sources[0];
         let binding = project.source_binding(Some(source));
 
-        assert_eq!(binding.source_kind, BugMonitorSourceKind::CustomerSystem);
+        assert_eq!(
+            binding.source_kind,
+            IncidentMonitorSourceKind::CustomerSystem
+        );
         assert!(binding.allowed_destination_ids.is_empty());
         assert!(binding.default_destination_ids.is_empty());
         assert!(binding.default_route_tags.is_empty());
-        assert_eq!(binding.approval_policy, BugMonitorApprovalPolicy::Inherit);
+        assert_eq!(
+            binding.approval_policy,
+            IncidentMonitorApprovalPolicy::Inherit
+        );
     }
 
     #[test]
     fn source_binding_applies_source_overrides_and_intersects_allowlists() {
-        let project = BugMonitorMonitoredProject {
+        let project = IncidentMonitorMonitoredProject {
             project_id: "payments".to_string(),
             name: "Payments".to_string(),
             repo: "acme/payments".to_string(),
             workspace_root: "/tmp/payments".to_string(),
-            source_kind: BugMonitorSourceKind::ExternalApp,
+            source_kind: IncidentMonitorSourceKind::ExternalApp,
             allowed_destination_ids: vec!["legacy-github".to_string(), "linear-prod".to_string()],
             default_destination_ids: vec!["legacy-github".to_string()],
             default_route_tags: vec!["payments".to_string()],
             tenant_id: Some("tenant-a".to_string()),
-            approval_policy: BugMonitorApprovalPolicy::HighRisk,
-            log_sources: vec![BugMonitorLogSource {
+            approval_policy: IncidentMonitorApprovalPolicy::HighRisk,
+            log_sources: vec![IncidentMonitorLogSource {
                 source_id: "ci".to_string(),
                 path: "logs/ci.jsonl".to_string(),
-                source_kind: Some(BugMonitorSourceKind::Ci),
+                source_kind: Some(IncidentMonitorSourceKind::Ci),
                 allowed_destination_ids: vec!["linear-prod".to_string()],
                 default_destination_ids: vec!["linear-prod".to_string()],
                 default_route_tags: vec!["ci".to_string(), "payments".to_string()],
                 workspace_id: Some("workspace-a".to_string()),
-                approval_policy: BugMonitorApprovalPolicy::Always,
-                ..BugMonitorLogSource::default()
+                approval_policy: IncidentMonitorApprovalPolicy::Always,
+                ..IncidentMonitorLogSource::default()
             }],
-            ..BugMonitorMonitoredProject::default()
+            ..IncidentMonitorMonitoredProject::default()
         };
 
         let binding = project.source_binding(project.log_sources.first());
 
-        assert_eq!(binding.source_kind, BugMonitorSourceKind::Ci);
+        assert_eq!(binding.source_kind, IncidentMonitorSourceKind::Ci);
         assert_eq!(
             binding.allowed_destination_ids,
             vec!["linear-prod".to_string()]
@@ -1473,12 +1523,15 @@ mod tests {
         );
         assert_eq!(binding.tenant_id.as_deref(), Some("tenant-a"));
         assert_eq!(binding.workspace_id.as_deref(), Some("workspace-a"));
-        assert_eq!(binding.approval_policy, BugMonitorApprovalPolicy::Always);
+        assert_eq!(
+            binding.approval_policy,
+            IncidentMonitorApprovalPolicy::Always
+        );
     }
 
     #[test]
     fn safety_defaults_are_fail_closed_for_high_risk_and_redaction() {
-        let defaults = BugMonitorSafetyDefaults::default();
+        let defaults = IncidentMonitorSafetyDefaults::default();
 
         assert!(defaults.require_approval_for_high_risk);
         assert!(defaults.redact_secrets);
@@ -1488,7 +1541,7 @@ mod tests {
 
     #[test]
     fn legacy_post_records_deserialize_without_destination_receipts() {
-        let post: BugMonitorPostRecord = serde_json::from_value(json!({
+        let post: IncidentMonitorPostRecord = serde_json::from_value(json!({
             "post_id": "post-1",
             "draft_id": "draft-1",
             "fingerprint": "fp",
@@ -1501,7 +1554,7 @@ mod tests {
             "created_at_ms": 10,
             "updated_at_ms": 20
         }))
-        .expect("legacy bug monitor post should deserialize");
+        .expect("legacy Incident Monitor post should deserialize");
 
         assert_eq!(post.issue_number, Some(42));
         assert_eq!(post.destination_id, None);

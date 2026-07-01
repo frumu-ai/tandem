@@ -6,16 +6,18 @@ use regex::Regex;
 use serde_json::Value;
 
 use crate::types::{
-    BugMonitorLogCandidate, BugMonitorLogFormat, BugMonitorLogMinimumLevel, BugMonitorLogSource,
-    BugMonitorMonitoredProject,
+    IncidentMonitorLogCandidate, IncidentMonitorLogFormat, IncidentMonitorLogMinimumLevel,
+    IncidentMonitorLogSource, IncidentMonitorMonitoredProject,
 };
 
 #[derive(Debug, Clone, Default)]
-pub struct BugMonitorLogParseResult {
-    pub candidates: Vec<BugMonitorLogCandidate>,
+pub struct IncidentMonitorLogParseResult {
+    pub candidates: Vec<IncidentMonitorLogCandidate>,
     pub next_partial_line: Option<String>,
     pub next_partial_line_offset_start: Option<u64>,
 }
+
+pub type BugMonitorLogParseResult = IncidentMonitorLogParseResult;
 
 #[derive(Debug, Clone)]
 struct ParsedLine {
@@ -38,15 +40,15 @@ struct ParsedSafetyContext {
 }
 
 pub fn parse_log_candidates(
-    project: &BugMonitorMonitoredProject,
-    source: &BugMonitorLogSource,
+    project: &IncidentMonitorMonitoredProject,
+    source: &IncidentMonitorLogSource,
     absolute_path: &Path,
     inode: Option<String>,
     offset_start: u64,
     bytes: &[u8],
     partial_line: Option<String>,
     partial_line_offset_start: Option<u64>,
-) -> BugMonitorLogParseResult {
+) -> IncidentMonitorLogParseResult {
     let decoded = String::from_utf8_lossy(bytes);
     let mut combined = String::new();
     if let Some(partial) = partial_line.as_ref() {
@@ -89,13 +91,13 @@ pub fn parse_log_candidates(
         .collect::<Vec<_>>();
 
     let candidates = match source.format {
-        BugMonitorLogFormat::Json => {
+        IncidentMonitorLogFormat::Json => {
             parse_json_lines(project, source, absolute_path, inode, &lines)
         }
-        BugMonitorLogFormat::Plaintext => {
+        IncidentMonitorLogFormat::Plaintext => {
             parse_plaintext(project, source, absolute_path, inode, &lines)
         }
-        BugMonitorLogFormat::Auto => {
+        IncidentMonitorLogFormat::Auto => {
             let mut out = parse_json_lines(project, source, absolute_path, inode.clone(), &lines);
             out.extend(parse_plaintext(
                 project,
@@ -111,7 +113,7 @@ pub fn parse_log_candidates(
         }
     };
 
-    BugMonitorLogParseResult {
+    IncidentMonitorLogParseResult {
         candidates,
         next_partial_line,
         next_partial_line_offset_start,
@@ -119,12 +121,12 @@ pub fn parse_log_candidates(
 }
 
 fn parse_json_lines(
-    project: &BugMonitorMonitoredProject,
-    source: &BugMonitorLogSource,
+    project: &IncidentMonitorMonitoredProject,
+    source: &IncidentMonitorLogSource,
     absolute_path: &Path,
     inode: Option<String>,
     lines: &[ParsedLine],
-) -> Vec<BugMonitorLogCandidate> {
+) -> Vec<IncidentMonitorLogCandidate> {
     lines
         .iter()
         .filter_map(|line| {
@@ -174,12 +176,12 @@ fn parse_json_lines(
 }
 
 fn parse_plaintext(
-    project: &BugMonitorMonitoredProject,
-    source: &BugMonitorLogSource,
+    project: &IncidentMonitorMonitoredProject,
+    source: &IncidentMonitorLogSource,
     absolute_path: &Path,
     inode: Option<String>,
     lines: &[ParsedLine],
-) -> Vec<BugMonitorLogCandidate> {
+) -> Vec<IncidentMonitorLogCandidate> {
     let mut out = Vec::new();
     let mut index = 0usize;
     while index < lines.len() {
@@ -232,8 +234,8 @@ fn parse_plaintext(
 }
 
 fn candidate_from_block(
-    project: &BugMonitorMonitoredProject,
-    source: &BugMonitorLogSource,
+    project: &IncidentMonitorMonitoredProject,
+    source: &IncidentMonitorLogSource,
     absolute_path: &Path,
     inode: Option<String>,
     offset_start: u64,
@@ -244,7 +246,7 @@ fn candidate_from_block(
     process: Option<String>,
     excerpt: Vec<String>,
     safety: ParsedSafetyContext,
-) -> BugMonitorLogCandidate {
+) -> IncidentMonitorLogCandidate {
     let binding = project.source_binding(Some(source));
     let raw_excerpt_redacted = excerpt
         .iter()
@@ -258,7 +260,7 @@ fn candidate_from_block(
         .collect::<Vec<_>>();
     let first = excerpt.first().cloned().unwrap_or_else(|| event.clone());
     let fingerprint = build_fingerprint(project, source, &event, &first, excerpt.get(1));
-    BugMonitorLogCandidate {
+    IncidentMonitorLogCandidate {
         project_id: project.project_id.clone(),
         source_id: source.source_id.clone(),
         source_kind: binding.source_kind.clone(),
@@ -276,7 +278,7 @@ fn candidate_from_block(
             offset_start,
             offset_end
         ),
-        source: format!("bug_monitor.log.{}", source.source_id),
+        source: format!("incident_monitor.log.{}", source.source_id),
         process,
         component,
         event,
@@ -295,9 +297,9 @@ fn candidate_from_block(
         risk_category: safety.risk_category,
         blast_radius: safety.blast_radius,
         external_correlation_ids: safety.external_correlation_ids,
-        expected_destination: "bug_monitor_issue_draft".to_string(),
+        expected_destination: "incident_monitor_issue_draft".to_string(),
         evidence_refs: vec![format!(
-            "tandem://bug-monitor/{}/logs/{}#offset={}-{}",
+            "tandem://incident-monitor/{}/logs/{}#offset={}-{}",
             project.project_id, source.source_id, offset_start, offset_end
         )],
         timestamp_ms: Some(crate::now_ms()),
@@ -522,17 +524,17 @@ fn detect_level(text: &str) -> Option<String> {
     }
 }
 
-fn level_allowed(level: &str, minimum: &BugMonitorLogMinimumLevel) -> bool {
+fn level_allowed(level: &str, minimum: &IncidentMonitorLogMinimumLevel) -> bool {
     let level = level.to_ascii_lowercase();
     match minimum {
-        BugMonitorLogMinimumLevel::Error => {
+        IncidentMonitorLogMinimumLevel::Error => {
             matches!(level.as_str(), "error" | "fatal" | "panic" | "critical")
                 || level.contains("error")
                 || level.contains("fatal")
                 || level.contains("panic")
         }
-        BugMonitorLogMinimumLevel::Warn => {
-            level_allowed(&level, &BugMonitorLogMinimumLevel::Error) || level.contains("warn")
+        IncidentMonitorLogMinimumLevel::Warn => {
+            level_allowed(&level, &IncidentMonitorLogMinimumLevel::Error) || level.contains("warn")
         }
     }
 }
@@ -560,11 +562,11 @@ fn redact_text(text: &str) -> String {
         Regex::new(
             r"(?i)\b(api[_-]?key|token|password|secret|credential|authorization)\s*[:=]\s*\S+",
         )
-        .expect("valid bug monitor secret regex")
+        .expect("valid Incident Monitor secret regex")
     });
     let bearer = BEARER_SECRET_RE.get_or_init(|| {
         Regex::new(r"(?i)(authorization\s*:\s*)?bearer\s+\S+")
-            .expect("valid bug monitor bearer regex")
+            .expect("valid Incident Monitor bearer regex")
     });
 
     let out = key_value.replace_all(text, |caps: &regex::Captures<'_>| {
@@ -574,8 +576,8 @@ fn redact_text(text: &str) -> String {
 }
 
 fn build_fingerprint(
-    project: &BugMonitorMonitoredProject,
-    source: &BugMonitorLogSource,
+    project: &IncidentMonitorMonitoredProject,
+    source: &IncidentMonitorLogSource,
     event: &str,
     message: &str,
     stack_hint: Option<&String>,
@@ -618,22 +620,22 @@ fn summarize_title(value: &str) -> String {
 mod tests {
     use super::*;
 
-    fn project() -> BugMonitorMonitoredProject {
-        BugMonitorMonitoredProject {
+    fn project() -> IncidentMonitorMonitoredProject {
+        IncidentMonitorMonitoredProject {
             project_id: "customer-api".to_string(),
             name: "Customer API".to_string(),
             repo: "owner/customer-api".to_string(),
             workspace_root: "/tmp/customer-api".to_string(),
-            ..BugMonitorMonitoredProject::default()
+            ..IncidentMonitorMonitoredProject::default()
         }
     }
 
-    fn source(format: BugMonitorLogFormat) -> BugMonitorLogSource {
-        BugMonitorLogSource {
+    fn source(format: IncidentMonitorLogFormat) -> IncidentMonitorLogSource {
+        IncidentMonitorLogSource {
             source_id: "api-log".to_string(),
             path: "logs/app.log".to_string(),
             format,
-            ..BugMonitorLogSource::default()
+            ..IncidentMonitorLogSource::default()
         }
     }
 
@@ -642,7 +644,7 @@ mod tests {
         let line = br#"{"level":"error","message":"upload failed","exception":{"type":"TypeError","stacktrace":"TypeError: bad\n at normalize src/uploads.ts:42:1"},"service":"api"}"#;
         let parsed = parse_log_candidates(
             &project(),
-            &source(BugMonitorLogFormat::Json),
+            &source(IncidentMonitorLogFormat::Json),
             Path::new("/tmp/customer-api/logs/app.log"),
             Some("1".to_string()),
             10,
@@ -666,7 +668,7 @@ mod tests {
         let line = br#"{"level":"error","message":"blocked egress","event":"agent.risk","actor_id":"agent-release","model":"gpt-5","tool_name":"slack.post_message","action":"send_message","approval_state":"denied","risk_category":"data_exfiltration","blast_radius":"customer channel","external_correlation_ids":["case-123","token=SECRET_TOKEN_123"]}"#;
         let parsed = parse_log_candidates(
             &project(),
-            &source(BugMonitorLogFormat::Json),
+            &source(IncidentMonitorLogFormat::Json),
             Path::new("/tmp/customer-api/logs/app.log"),
             Some("1".to_string()),
             10,
@@ -702,7 +704,7 @@ mod tests {
         .to_string();
         let parsed = parse_log_candidates(
             &project(),
-            &source(BugMonitorLogFormat::Json),
+            &source(IncidentMonitorLogFormat::Json),
             Path::new("/tmp/customer-api/logs/app.log"),
             Some("1".to_string()),
             10,
@@ -722,7 +724,7 @@ mod tests {
         let raw = b"INFO booted\nERROR upload failed token=super-secret\n    at normalize src/uploads.ts:42:1\n";
         let parsed = parse_log_candidates(
             &project(),
-            &source(BugMonitorLogFormat::Plaintext),
+            &source(IncidentMonitorLogFormat::Plaintext),
             Path::new("/tmp/customer-api/logs/app.log"),
             None,
             0,
@@ -746,7 +748,7 @@ mod tests {
     fn partial_line_tracks_start_offset() {
         let parsed = parse_log_candidates(
             &project(),
-            &source(BugMonitorLogFormat::Plaintext),
+            &source(IncidentMonitorLogFormat::Plaintext),
             Path::new("/tmp/customer-api/logs/app.log"),
             None,
             100,

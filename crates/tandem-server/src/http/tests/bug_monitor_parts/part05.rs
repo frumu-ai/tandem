@@ -9,8 +9,8 @@ fn portable_bug_monitor_workspace_root() -> String {
 
 #[tokio::test]
 #[serial_test::serial(bug_monitor_http)]
-async fn bug_monitor_route_preview_uses_configured_source_binding_and_blocks_disallowed_destination()
-{
+async fn bug_monitor_route_preview_uses_configured_source_binding_and_blocks_disallowed_destination(
+) {
     let state = test_state().await;
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     std::fs::create_dir_all(workspace.path().join("logs")).expect("logs dir");
@@ -55,7 +55,7 @@ async fn bug_monitor_route_preview_uses_configured_source_binding_and_blocks_dis
                 source_kind: crate::BugMonitorSourceKind::ExternalApp,
                 default_route_tags: vec!["payments".to_string()],
                 allowed_destination_ids: vec![
-                    crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string(),
+                    crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()
                 ],
                 log_sources: vec![crate::BugMonitorLogSource {
                     source_id: "ci".to_string(),
@@ -63,7 +63,7 @@ async fn bug_monitor_route_preview_uses_configured_source_binding_and_blocks_dis
                     source_kind: Some(crate::BugMonitorSourceKind::Ci),
                     default_route_tags: vec!["prod".to_string()],
                     default_destination_ids: vec![
-                        crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string(),
+                        crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()
                     ],
                     tenant_id: Some("tenant-a".to_string()),
                     workspace_id: Some("workspace-a".to_string()),
@@ -72,8 +72,9 @@ async fn bug_monitor_route_preview_uses_configured_source_binding_and_blocks_dis
                 }],
                 ..Default::default()
             }],
-            default_destination_ids: vec![crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID
-                .to_string()],
+            default_destination_ids: vec![
+                crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()
+            ],
             ..Default::default()
         })
         .await
@@ -179,8 +180,9 @@ async fn bug_monitor_route_preview_blocks_disjoint_source_allowlist_intersection
                 }],
                 ..Default::default()
             }],
-            default_destination_ids: vec![crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID
-                .to_string()],
+            default_destination_ids: vec![
+                crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()
+            ],
             ..Default::default()
         })
         .await
@@ -280,14 +282,15 @@ async fn bug_monitor_route_preview_blocks_disjoint_project_and_log_source_allowl
                     source_id: "ci".to_string(),
                     path: "logs/ci.jsonl".to_string(),
                     allowed_destination_ids: vec![
-                        crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string(),
+                        crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()
                     ],
                     ..Default::default()
                 }],
                 ..Default::default()
             }],
-            default_destination_ids: vec![crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID
-                .to_string()],
+            default_destination_ids: vec![
+                crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()
+            ],
             ..Default::default()
         })
         .await
@@ -351,8 +354,9 @@ async fn bug_monitor_publish_uses_configured_source_binding_for_approval() {
                 }],
                 ..Default::default()
             }],
-            default_destination_ids: vec![crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID
-                .to_string()],
+            default_destination_ids: vec![
+                crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()
+            ],
             ..Default::default()
         })
         .await
@@ -369,7 +373,7 @@ async fn bug_monitor_publish_uses_configured_source_binding_for_approval() {
         detail: Some("A pre-upgrade draft only persisted project/source IDs.".to_string()),
         confidence: Some("medium".to_string()),
         risk_level: Some("medium".to_string()),
-        expected_destination: Some("bug_monitor_issue_draft".to_string()),
+        expected_destination: Some("incident_monitor_issue_draft".to_string()),
         ..Default::default()
     };
     state
@@ -424,8 +428,9 @@ async fn bug_monitor_raw_report_cannot_supply_untrusted_never_source_policy() {
                 require_approval: true,
                 ..Default::default()
             }],
-            default_destination_ids: vec![crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID
-                .to_string()],
+            default_destination_ids: vec![
+                crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()
+            ],
             ..Default::default()
         })
         .await
@@ -451,7 +456,11 @@ async fn bug_monitor_raw_report_cannot_supply_untrusted_never_source_policy() {
             .to_string(),
         ))
         .expect("create request");
-    let create_resp = app.clone().oneshot(create_req).await.expect("create response");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("create response");
     assert_eq!(create_resp.status(), StatusCode::OK);
     let create_payload: Value = serde_json::from_slice(
         &to_bytes(create_resp.into_body(), usize::MAX)
@@ -603,8 +612,9 @@ async fn bug_monitor_raw_report_cannot_inherit_configured_never_source_policy() 
                 }],
                 ..Default::default()
             }],
-            default_destination_ids: vec![crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID
-                .to_string()],
+            default_destination_ids: vec![
+                crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()
+            ],
             ..Default::default()
         })
         .await
@@ -677,8 +687,9 @@ async fn bug_monitor_raw_report_cannot_downgrade_global_approval_with_configured
                 }],
                 ..Default::default()
             }],
-            default_destination_ids: vec![crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID
-                .to_string()],
+            default_destination_ids: vec![
+                crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()
+            ],
             ..Default::default()
         })
         .await
@@ -705,7 +716,11 @@ async fn bug_monitor_raw_report_cannot_downgrade_global_approval_with_configured
             .to_string(),
         ))
         .expect("create request");
-    let create_resp = app.clone().oneshot(create_req).await.expect("create response");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("create response");
     assert_eq!(create_resp.status(), StatusCode::OK);
     let create_payload: Value = serde_json::from_slice(
         &to_bytes(create_resp.into_body(), usize::MAX)
@@ -761,8 +776,7 @@ async fn bug_monitor_raw_report_clears_untrusted_source_routing_fields() {
                 route_id: "forged-relaxed-route".to_string(),
                 name: "Forged relaxed route".to_string(),
                 priority: 10,
-                destination_ids: vec![crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID
-                    .to_string()],
+                destination_ids: vec![crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()],
                 match_source_kinds: vec!["ci".to_string()],
                 match_route_tags: vec!["forged".to_string()],
                 match_tenant_ids: vec!["forged-tenant".to_string()],
@@ -785,14 +799,15 @@ async fn bug_monitor_raw_report_clears_untrusted_source_routing_fields() {
                     tenant_id: Some("trusted-tenant".to_string()),
                     workspace_id: Some("trusted-workspace".to_string()),
                     default_destination_ids: vec![
-                        crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string(),
+                        crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()
                     ],
                     ..Default::default()
                 }],
                 ..Default::default()
             }],
-            default_destination_ids: vec![crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID
-                .to_string()],
+            default_destination_ids: vec![
+                crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()
+            ],
             ..Default::default()
         })
         .await
@@ -829,7 +844,11 @@ async fn bug_monitor_raw_report_clears_untrusted_source_routing_fields() {
             .to_string(),
         ))
         .expect("create request");
-    let create_resp = app.clone().oneshot(create_req).await.expect("create response");
+    let create_resp = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("create response");
     assert_eq!(create_resp.status(), StatusCode::OK);
     let create_payload: Value = serde_json::from_slice(
         &to_bytes(create_resp.into_body(), usize::MAX)
@@ -952,7 +971,7 @@ async fn bug_monitor_scoped_intake_inherits_configured_source_binding() {
                 source_kind: crate::BugMonitorSourceKind::ExternalApp,
                 default_route_tags: vec!["payments".to_string()],
                 allowed_destination_ids: vec![
-                    crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string(),
+                    crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()
                 ],
                 tenant_id: Some("tenant-a".to_string()),
                 log_sources: vec![crate::BugMonitorLogSource {
@@ -961,7 +980,7 @@ async fn bug_monitor_scoped_intake_inherits_configured_source_binding() {
                     source_kind: Some(crate::BugMonitorSourceKind::Ci),
                     default_route_tags: vec!["ci".to_string()],
                     default_destination_ids: vec![
-                        crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string(),
+                        crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()
                     ],
                     workspace_id: Some("workspace-a".to_string()),
                     approval_policy: crate::BugMonitorApprovalPolicy::Always,
@@ -969,8 +988,9 @@ async fn bug_monitor_scoped_intake_inherits_configured_source_binding() {
                 }],
                 ..Default::default()
             }],
-            default_destination_ids: vec![crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID
-                .to_string()],
+            default_destination_ids: vec![
+                crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()
+            ],
             ..Default::default()
         })
         .await
@@ -1048,16 +1068,14 @@ async fn bug_monitor_scoped_intake_inherits_configured_source_binding() {
             .and_then(Value::as_str),
         Some(crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID)
     );
-    assert!(
-        draft
-            .get("route_tags")
-            .and_then(Value::as_array)
-            .is_some_and(|rows| {
-                rows.iter().any(|row| row.as_str() == Some("payments"))
-                    && rows.iter().any(|row| row.as_str() == Some("ci"))
-                    && !rows.iter().any(|row| row.as_str() == Some("forged"))
-            })
-    );
+    assert!(draft
+        .get("route_tags")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| {
+            rows.iter().any(|row| row.as_str() == Some("payments"))
+                && rows.iter().any(|row| row.as_str() == Some("ci"))
+                && !rows.iter().any(|row| row.as_str() == Some("forged"))
+        }));
     assert_eq!(
         incident.get("source_kind").and_then(Value::as_str),
         Some("ci")
@@ -1093,8 +1111,9 @@ async fn bug_monitor_scoped_intake_source_never_overrides_global_approval_defaul
                 }],
                 ..Default::default()
             }],
-            default_destination_ids: vec![crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID
-                .to_string()],
+            default_destination_ids: vec![
+                crate::BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string()
+            ],
             ..Default::default()
         })
         .await

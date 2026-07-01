@@ -18,7 +18,7 @@ use crate::{
 
 pub use crate::bug_monitor_github::{PublishMode, PublishOutcome};
 
-const BUG_MONITOR_LABEL: &str = "bug-monitor";
+const BUG_MONITOR_LABEL: &str = "incident-monitor";
 const WEBHOOK_OPERATION: &str = "post_webhook";
 const WEBHOOK_SIGNATURE_SCHEME: &str = "tandem_hmac_sha256_v1";
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
@@ -302,7 +302,7 @@ pub async fn publish_draft(
         None
     } else if mode == PublishMode::ManualPublish {
         Some(
-            crate::http::bug_monitor::ensure_bug_monitor_issue_draft(
+            crate::http::bug_monitor::ensure_incident_monitor_issue_draft(
                 state.clone(),
                 &draft.draft_id,
                 false,
@@ -313,7 +313,8 @@ pub async fn publish_draft(
     } else {
         match draft.triage_run_id.as_deref() {
             Some(run_id) => {
-                crate::http::bug_monitor::load_bug_monitor_issue_draft_artifact(state, run_id).await
+                crate::http::bug_monitor::load_incident_monitor_issue_draft_artifact(state, run_id)
+                    .await
             }
             None => None,
         }
@@ -644,7 +645,7 @@ async fn send_webhook(
             .timeout(Duration::from_millis(policy.timeout_ms))
             .header("content-type", "application/json")
             .header("user-agent", "Tandem-Bug-Monitor/0.6.5")
-            .header("x-tandem-event", "bug_monitor.incident")
+            .header("x-tandem-event", "incident_monitor.incident")
             .header("x-tandem-delivery-id", delivery_id)
             .header("x-tandem-signature", signature)
             .header("x-tandem-signature-scheme", WEBHOOK_SIGNATURE_SCHEME)
@@ -1047,7 +1048,7 @@ fn build_webhook_payload(
     evidence_digest: &str,
 ) -> Value {
     json!({
-        "event": "bug_monitor.incident",
+        "event": "incident_monitor.incident",
         "schema_version": "2026-06-29",
         "delivery_id": delivery_id,
         "idempotency_key": idempotency_key,
@@ -1342,7 +1343,7 @@ async fn mirror_webhook_post_as_external_action(
         action_id: post.post_id.clone(),
         operation: post.operation.clone(),
         status: post.status.clone(),
-        source_kind: Some("bug_monitor".to_string()),
+        source_kind: Some("incident_monitor".to_string()),
         source_id: Some(draft.draft_id.clone()),
         routine_run_id: None,
         context_run_id: draft.triage_run_id.clone(),
@@ -1393,7 +1394,7 @@ async fn mirror_webhook_post_as_external_action(
             "expected_destination": post.expected_destination,
             "evidence_refs": post.evidence_refs,
             "quality_gate": post.quality_gate,
-            "bug_monitor_operation": post.operation,
+            "incident_monitor_operation": post.operation,
         })),
         created_at_ms: post.created_at_ms,
         updated_at_ms: post.updated_at_ms,

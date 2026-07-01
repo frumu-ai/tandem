@@ -13,7 +13,7 @@ use crate::{
 
 pub use crate::bug_monitor_github::{PublishMode, PublishOutcome};
 
-const BUG_MONITOR_LABEL: &str = "bug-monitor";
+const BUG_MONITOR_LABEL: &str = "incident-monitor";
 const LINEAR_BODY_BYTE_BUDGET: usize = 18_000;
 const LINEAR_BODY_MARKER_SAFE_SPACE: usize = 512;
 const LINEAR_EVIDENCE_REF_LIMIT: usize = 15;
@@ -148,7 +148,7 @@ pub async fn publish_draft(
         None
     } else if mode == PublishMode::ManualPublish {
         Some(
-            crate::http::bug_monitor::ensure_bug_monitor_issue_draft(
+            crate::http::bug_monitor::ensure_incident_monitor_issue_draft(
                 state.clone(),
                 &draft.draft_id,
                 false,
@@ -159,7 +159,8 @@ pub async fn publish_draft(
     } else {
         match draft.triage_run_id.as_deref() {
             Some(run_id) => {
-                crate::http::bug_monitor::load_bug_monitor_issue_draft_artifact(state, run_id).await
+                crate::http::bug_monitor::load_incident_monitor_issue_draft_artifact(state, run_id)
+                    .await
             }
             None => None,
         }
@@ -1305,7 +1306,7 @@ async fn mirror_linear_post_as_external_action(
         action_id: post.post_id.clone(),
         operation: post.operation.clone(),
         status: post.status.clone(),
-        source_kind: Some("bug_monitor".to_string()),
+        source_kind: Some("incident_monitor".to_string()),
         source_id: Some(draft.draft_id.clone()),
         routine_run_id: None,
         context_run_id: draft.triage_run_id.clone(),
@@ -1356,7 +1357,7 @@ async fn mirror_linear_post_as_external_action(
             "expected_destination": post.expected_destination,
             "evidence_refs": post.evidence_refs,
             "quality_gate": post.quality_gate,
-            "bug_monitor_operation": post.operation,
+            "incident_monitor_operation": post.operation,
         })),
         created_at_ms: post.created_at_ms,
         updated_at_ms: post.updated_at_ms,

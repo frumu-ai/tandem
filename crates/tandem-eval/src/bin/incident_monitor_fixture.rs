@@ -1,18 +1,18 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use tandem_eval::bug_monitor_regression_fixture::{
-    write_incident_regression_fixture, BugMonitorRegressionFixtureOptions,
+use tandem_eval::incident_monitor_regression_fixture::{
+    write_incident_regression_fixture, IncidentMonitorRegressionFixtureOptions,
 };
 
 const USAGE: &str = r#"
-Bug Monitor Regression Fixture Scaffold
+Incident Monitor Regression Fixture Scaffold
 
 USAGE:
-    bug-monitor-fixture --incident <FILE> --output <FILE> [OPTIONS]
+    incident-monitor-fixture --incident <FILE> --output <FILE> [OPTIONS]
 
 OPTIONS:
-    --incident <FILE>    Bug Monitor incident JSON export
+    --incident <FILE>    Incident Monitor incident JSON export
     --output <FILE>      Output YAML dataset path
     --id <ID>            Override generated test case id
     --tag <TAG>          Add an extra test tag; may be repeated
@@ -20,7 +20,7 @@ OPTIONS:
     --help               Print this help message
 
 EXAMPLE:
-    cargo run -p tandem-eval --bin bug-monitor-fixture -- \
+    cargo run -p tandem-eval --bin incident-monitor-fixture -- \
       --incident /tmp/incident.json \
       --output eval_datasets/regressions/dogfood_001.yaml \
       --id dogfood_001_provider_timeout
@@ -102,7 +102,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let options = BugMonitorRegressionFixtureOptions {
+    let options = IncidentMonitorRegressionFixtureOptions {
         fixture_id: args.fixture_id,
         dataset_name: args.dataset_name,
         extra_tags: args.extra_tags,

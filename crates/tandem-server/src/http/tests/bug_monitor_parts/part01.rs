@@ -619,7 +619,7 @@ async fn bug_monitor_report_creates_and_dedupes_draft() {
             "approval_state": "denied",
             "blast_radius": "customer channel",
             "external_correlation_ids": ["case-123", "token=SECRET_TOKEN_123"],
-            "expected_destination": "bug_monitor_issue_draft",
+            "expected_destination": "incident_monitor_issue_draft",
             "evidence_refs": ["artifact://runs/run-123/logs"],
             "excerpt": ["boom", "stack trace"],
         }
@@ -665,7 +665,7 @@ async fn bug_monitor_report_creates_and_dedupes_draft() {
     assert!(detail.contains("blast_radius: customer channel"));
     assert!(detail.contains("external_correlation_ids: case-123, token=[redacted]"));
     assert!(!detail.contains("SECRET_TOKEN_123"));
-    assert!(detail.contains("expected_destination: bug_monitor_issue_draft"));
+    assert!(detail.contains("expected_destination: incident_monitor_issue_draft"));
     assert!(detail.contains("evidence_refs:"));
     assert!(detail.contains("artifact://runs/run-123/logs"));
     assert_eq!(
@@ -680,13 +680,19 @@ async fn bug_monitor_report_creates_and_dedupes_draft() {
         draft.get("risk_category").and_then(Value::as_str),
         Some("data_exfiltration")
     );
-    assert_eq!(draft.get("actor").and_then(Value::as_str), Some("agent-release"));
+    assert_eq!(
+        draft.get("actor").and_then(Value::as_str),
+        Some("agent-release")
+    );
     assert_eq!(draft.get("model").and_then(Value::as_str), Some("gpt-5"));
     assert_eq!(
         draft.get("tool_name").and_then(Value::as_str),
         Some("slack.post_message")
     );
-    assert_eq!(draft.get("action").and_then(Value::as_str), Some("send_message"));
+    assert_eq!(
+        draft.get("action").and_then(Value::as_str),
+        Some("send_message")
+    );
     assert_eq!(
         draft.get("policy").and_then(Value::as_str),
         Some("approval.high_risk")
@@ -703,16 +709,12 @@ async fn bug_monitor_report_creates_and_dedupes_draft() {
         draft
             .get("external_correlation_ids")
             .and_then(Value::as_array)
-            .map(|rows| {
-                rows.iter()
-                    .filter_map(Value::as_str)
-                    .collect::<Vec<_>>()
-            }),
+            .map(|rows| { rows.iter().filter_map(Value::as_str).collect::<Vec<_>>() }),
         Some(vec!["case-123", "token=[redacted]"])
     );
     assert_eq!(
         draft.get("expected_destination").and_then(Value::as_str),
-        Some("bug_monitor_issue_draft")
+        Some("incident_monitor_issue_draft")
     );
     assert_eq!(
         draft

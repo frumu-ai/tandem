@@ -1,6 +1,6 @@
 #[tokio::test]
 #[serial_test::serial(bug_monitor_http)]
-async fn bug_monitor_issue_draft_blocks_weak_proposal_without_completed_triage() {
+async fn incident_monitor_issue_draft_blocks_weak_proposal_without_completed_triage() {
     let state = test_state().await;
     state
         .put_bug_monitor_config(crate::BugMonitorConfig {
@@ -104,7 +104,7 @@ async fn bug_monitor_issue_draft_blocks_weak_proposal_without_completed_triage()
 
 #[tokio::test]
 #[serial_test::serial(bug_monitor_http)]
-async fn bug_monitor_issue_draft_renders_repo_template() {
+async fn incident_monitor_issue_draft_renders_repo_template() {
     let state = test_state().await;
     state
         .put_bug_monitor_config(crate::BugMonitorConfig {
@@ -212,7 +212,7 @@ async fn bug_monitor_issue_draft_renders_repo_template() {
             .get("issue_draft_artifact")
             .and_then(|row| row.get("artifact_type"))
             .and_then(Value::as_str),
-        Some("bug_monitor_issue_draft")
+        Some("incident_monitor_issue_draft")
     );
     assert!(issue_draft_payload
         .get("issue_draft_artifact")
@@ -338,7 +338,7 @@ async fn bug_monitor_publish_and_recheck_fail_with_issue_draft_context() {
             .get("issue_draft_artifact")
             .and_then(|row| row.get("artifact_type"))
             .and_then(Value::as_str),
-        Some("bug_monitor_issue_draft")
+        Some("incident_monitor_issue_draft")
     );
 
     let recheck_req = Request::builder()
@@ -393,7 +393,7 @@ async fn bug_monitor_publish_and_recheck_fail_with_issue_draft_context() {
             .get("issue_draft_artifact")
             .and_then(|row| row.get("artifact_type"))
             .and_then(Value::as_str),
-        Some("bug_monitor_issue_draft")
+        Some("incident_monitor_issue_draft")
     );
 }
 
@@ -519,7 +519,7 @@ async fn bug_monitor_publish_and_recheck_succeed_with_triage_context() {
             .get("external_action")
             .and_then(|row| row.get("source_kind"))
             .and_then(Value::as_str),
-        Some("bug_monitor")
+        Some("incident_monitor")
     );
     assert!(matches!(
         publish_payload
@@ -545,7 +545,7 @@ async fn bug_monitor_publish_and_recheck_succeed_with_triage_context() {
             .get("issue_draft_artifact")
             .and_then(|row| row.get("artifact_type"))
             .and_then(Value::as_str),
-        Some("bug_monitor_issue_draft")
+        Some("incident_monitor_issue_draft")
     );
     assert!(matches!(
         publish_payload
@@ -606,7 +606,7 @@ async fn bug_monitor_publish_and_recheck_succeed_with_triage_context() {
             .get("issue_draft_artifact")
             .and_then(|row| row.get("artifact_type"))
             .and_then(Value::as_str),
-        Some("bug_monitor_issue_draft")
+        Some("incident_monitor_issue_draft")
     );
     assert!(matches!(
         recheck_payload

@@ -41,7 +41,7 @@ const cargoFiles = [
   "Cargo.lock",
   "crates/tandem-agent-teams/Cargo.toml",
   "crates/tandem-automation/Cargo.toml",
-  "crates/tandem-bug-monitor/Cargo.toml",
+  "crates/tandem-incident-monitor/Cargo.toml",
   "crates/tandem-browser/Cargo.toml",
   "crates/tandem-channels/Cargo.toml",
   "crates/tandem-core/Cargo.toml",

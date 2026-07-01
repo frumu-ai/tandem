@@ -107,6 +107,11 @@ compatible when no explicit router destination is configured.
 The server now exposes the same monitor APIs through canonical
 `/incident-monitor/*` and `/config/incident-monitor` routes, and the stale
 `/failure-reporter/*` aliases have been removed.
+Shared Incident Monitor contracts now use the `tandem-incident-monitor` crate
+identity and canonical `incident_monitor`/`incident-monitor` wire names for
+runtime events, evidence refs, persisted data paths, GitHub host methods, and
+the eval fixture CLI. Legacy Rust aliases remain in place so the larger
+server, SDK, and UI migration can land in focused follow-up PRs.
 Incident Monitor security readiness now records redacted protected audit events
 for destination/route config changes, scoped intake-key lifecycle changes, and
 destination-router publish attempts, completions, approval-required outcomes,

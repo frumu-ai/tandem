@@ -139,6 +139,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Server routes now expose canonical Incident Monitor endpoints under
   `/incident-monitor/*` and `/config/incident-monitor`, with the stale
   `/failure-reporter/*` aliases removed.
+- Renamed shared Incident Monitor contracts from the `tandem-bug-monitor` crate
+  to `tandem-incident-monitor`, including canonical runtime event names,
+  evidence refs, persisted data paths, GitHub host trait methods, and the eval
+  fixture CLI, while keeping explicit legacy Rust aliases for staged follow-up
+  migration work.
 - Incident Monitor security docs now call out the default secret-redaction and
   retention posture for reports, receipts, and protected audit evidence.
 

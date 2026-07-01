@@ -68,7 +68,7 @@ impl AppState {
             submission.risk_level = Some("medium".to_string());
         }
         if submission.expected_destination.is_none() {
-            submission.expected_destination = Some("bug_monitor_issue_draft".to_string());
+            submission.expected_destination = Some("incident_monitor_issue_draft".to_string());
         }
 
         let config = self.bug_monitor_config().await;

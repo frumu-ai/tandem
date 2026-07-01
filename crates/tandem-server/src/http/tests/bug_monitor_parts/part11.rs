@@ -153,7 +153,7 @@ async fn bug_monitor_authority_inventory_summarizes_authority_and_redacts_secret
             action_id: "action-authority-1".to_string(),
             operation: "create_linear_issue".to_string(),
             status: "posted".to_string(),
-            source_kind: Some("bug_monitor".to_string()),
+            source_kind: Some("incident_monitor".to_string()),
             source_id: Some("draft-1".to_string()),
             provider: Some("linear".to_string()),
             target: Some("linear-prod".to_string()),

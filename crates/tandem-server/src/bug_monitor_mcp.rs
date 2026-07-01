@@ -742,7 +742,7 @@ async fn mirror_mcp_tool_post_as_external_action(
         action_id: post.post_id.clone(),
         operation: post.operation.clone(),
         status: post.status.clone(),
-        source_kind: Some("bug_monitor".to_string()),
+        source_kind: Some("incident_monitor".to_string()),
         source_id: Some(draft.draft_id.clone()),
         routine_run_id: None,
         context_run_id: draft.triage_run_id.clone(),
@@ -752,7 +752,7 @@ async fn mirror_mcp_tool_post_as_external_action(
             .and_then(|row| row.get("namespaced_tool"))
             .and_then(Value::as_str)
             .map(ToString::to_string),
-        provider: Some("bug-monitor".to_string()),
+        provider: Some("incident-monitor".to_string()),
         target: post.target_ref.clone(),
         approval_state: Some(if draft.status.eq_ignore_ascii_case("approval_required") {
             "approval_required".to_string()
@@ -796,7 +796,7 @@ async fn mirror_mcp_tool_post_as_external_action(
             "external_correlation_ids": draft.external_correlation_ids,
             "expected_destination": post.expected_destination,
             "evidence_refs": post.evidence_refs,
-            "bug_monitor_operation": post.operation,
+            "incident_monitor_operation": post.operation,
         })),
         created_at_ms: post.created_at_ms,
         updated_at_ms: post.updated_at_ms,

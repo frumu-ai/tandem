@@ -8,7 +8,7 @@ use crate::{
 
 pub use crate::bug_monitor_github::{PublishMode, PublishOutcome};
 
-const DEFAULT_TELEMETRY_PATH: &str = "bug-monitor/telemetry";
+const DEFAULT_TELEMETRY_PATH: &str = "incident-monitor/telemetry";
 const DEFAULT_MEMORY_CATEGORY: &str = "failure_pattern";
 const MEMORY_CATEGORY_FAILURE_PATTERN: &str = "failure_pattern";
 const MEMORY_CATEGORY_RECURRENCE: &str = "recurrence";

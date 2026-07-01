@@ -1168,7 +1168,7 @@ async fn persist_blocked_bug_monitor_report_observation(
         .as_deref()
         .is_none_or(|value| value.trim().is_empty())
     {
-        submission.expected_destination = Some("bug_monitor_issue_draft".to_string());
+        submission.expected_destination = Some("incident_monitor_issue_draft".to_string());
     }
     submission.excerpt = submission
         .excerpt

@@ -312,16 +312,16 @@ not every key.
 | `pack_builder.apply_started` / `pack_builder.apply_completed` / `pack_builder.apply_blocked` / `pack_builder.cancelled` / `pack_builder.error` / `pack_builder.preview_ready`                                                                                                    | Pack-builder workflow lifecycle. | `sessionID`, `threadKey`, `planID`, `status` |
 | `pack_builder.apply.success` / `pack_builder.apply.cancelled` / `pack_builder.apply.blocked_auth` / `pack_builder.apply.blocked_missing_secrets` / `pack_builder.apply.wrong_plan_prevented` / `pack_builder.apply.count` / `pack_builder.preview.count` / `pack_builder.metric` | Pack-builder metrics.            | `metric`, `value`, `surface`, `planID`       |
 
-### Bug monitor
+### Incident Monitor
 
-| Event type                                                                     | Fires when                     | Key payload fields                                        |
-| ------------------------------------------------------------------------------ | ------------------------------ | --------------------------------------------------------- |
-| `bug_monitor.incident.detected`                                                | A new incident is detected.    | `incident_id`, `fingerprint`, `draft_id`, `triage_run_id` |
-| `bug_monitor.incident.duplicate_suppressed`                                    | Duplicate incident suppressed. | `incident_id`, `fingerprint`, `duplicate_summary`         |
-| `bug_monitor.incident.triage_failed` / `bug_monitor.incident.triage_timed_out` | Triage failure modes.          | incident refs                                             |
-| `bug_monitor.triage_run.created`                                               | A triage run is spawned.       | `draft_id`, `run_id`, `automation_run_id`, `repo`         |
-| `bug_monitor.github.issue_created` / `bug_monitor.github.comment_posted`       | GitHub escalation.             | `draft_id`, `issue_number`, `repo`                        |
-| `bug_monitor.error`                                                            | Bug monitor internal error.    | `eventType`, `detail`                                     |
+| Event type                                                                               | Fires when                       | Key payload fields                                        |
+| ---------------------------------------------------------------------------------------- | -------------------------------- | --------------------------------------------------------- |
+| `incident_monitor.incident.detected`                                                     | A new incident is detected.      | `incident_id`, `fingerprint`, `draft_id`, `triage_run_id` |
+| `incident_monitor.incident.duplicate_suppressed`                                         | Duplicate incident suppressed.   | `incident_id`, `fingerprint`, `duplicate_summary`         |
+| `incident_monitor.incident.triage_failed` / `incident_monitor.incident.triage_timed_out` | Triage failure modes.            | incident refs                                             |
+| `incident_monitor.triage_run.created`                                                    | A triage run is spawned.         | `draft_id`, `run_id`, `automation_run_id`, `repo`         |
+| `incident_monitor.github.issue_created` / `incident_monitor.github.comment_posted`       | GitHub escalation.               | `draft_id`, `issue_number`, `repo`                        |
+| `incident_monitor.error`                                                                 | Incident Monitor internal error. | `eventType`, `detail`                                     |
 
 ### Enterprise
 

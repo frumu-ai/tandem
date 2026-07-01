@@ -26,7 +26,7 @@ pub(super) async fn publish_bug_monitor_draft(
                         load_bug_monitor_triage_summary_artifact(&state, triage_run_id).await
                     });
             let issue_draft = if outcome.draft.triage_run_id.is_some() {
-                ensure_bug_monitor_issue_draft(state.clone(), &outcome.draft.draft_id, false)
+                ensure_incident_monitor_issue_draft(state.clone(), &outcome.draft.draft_id, false)
                     .await
                     .ok()
             } else {
@@ -100,7 +100,7 @@ pub(super) async fn publish_bug_monitor_draft(
                 .and_then(|row| row.triage_run_id.as_ref())
                 .is_some()
             {
-                ensure_bug_monitor_issue_draft(state.clone(), &id, false)
+                ensure_incident_monitor_issue_draft(state.clone(), &id, false)
                     .await
                     .ok()
             } else {
@@ -189,7 +189,7 @@ pub(super) async fn recheck_bug_monitor_draft_match(
                         load_bug_monitor_triage_summary_artifact(&state, triage_run_id).await
                     });
             let issue_draft = if outcome.draft.triage_run_id.is_some() {
-                ensure_bug_monitor_issue_draft(state.clone(), &outcome.draft.draft_id, false)
+                ensure_incident_monitor_issue_draft(state.clone(), &outcome.draft.draft_id, false)
                     .await
                     .ok()
             } else {
@@ -258,7 +258,7 @@ pub(super) async fn recheck_bug_monitor_draft_match(
                 .and_then(|row| row.triage_run_id.as_ref())
                 .is_some()
             {
-                ensure_bug_monitor_issue_draft(state.clone(), &id, false)
+                ensure_incident_monitor_issue_draft(state.clone(), &id, false)
                     .await
                     .ok()
             } else {
@@ -597,7 +597,7 @@ pub(crate) async fn ensure_bug_monitor_triage_run(
             })?;
     }
     state.event_bus.publish(tandem_types::EngineEvent::new(
-        "bug_monitor.triage_run.created",
+        "incident_monitor.triage_run.created",
         json!({
             "draft_id": updated_draft.draft_id,
             "run_id": run_id,

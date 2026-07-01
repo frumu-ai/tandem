@@ -10,11 +10,11 @@
 //! the symptom.
 
 use crate::truncate_text;
-use crate::types::{BugMonitorDraftRecord, BugMonitorIncidentRecord};
+use crate::types::{IncidentMonitorDraftRecord, IncidentMonitorIncidentRecord};
 
 pub fn build_comment_recurrence_summary(
-    draft: &BugMonitorDraftRecord,
-    incident: Option<&BugMonitorIncidentRecord>,
+    draft: &IncidentMonitorDraftRecord,
+    incident: Option<&IncidentMonitorIncidentRecord>,
 ) -> String {
     let mut lines = vec![lead_in_line(draft.github_status.as_deref()).to_string()];
     if let Some(incident) = incident {
@@ -73,8 +73,8 @@ fn reason_line_from_detail(detail: &str) -> Option<&str> {
 mod tests {
     use super::*;
 
-    fn draft_with_status(status: Option<&str>, detail: Option<&str>) -> BugMonitorDraftRecord {
-        BugMonitorDraftRecord {
+    fn draft_with_status(status: Option<&str>, detail: Option<&str>) -> IncidentMonitorDraftRecord {
+        IncidentMonitorDraftRecord {
             github_status: status.map(str::to_string),
             detail: detail.map(str::to_string),
             ..Default::default()
@@ -115,7 +115,7 @@ mod tests {
     #[test]
     fn summary_includes_occurrence_count_when_greater_than_one() {
         let draft = draft_with_status(Some("triage_timed_out"), Some("reason: test failure"));
-        let incident = BugMonitorIncidentRecord {
+        let incident = IncidentMonitorIncidentRecord {
             occurrence_count: 5,
             last_seen_at_ms: Some(1_700_000_000_000),
             ..Default::default()
@@ -130,7 +130,7 @@ mod tests {
     #[test]
     fn summary_omits_occurrence_count_when_only_one() {
         let draft = draft_with_status(None, None);
-        let incident = BugMonitorIncidentRecord {
+        let incident = IncidentMonitorIncidentRecord {
             occurrence_count: 1,
             ..Default::default()
         };

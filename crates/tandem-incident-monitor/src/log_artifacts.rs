@@ -4,7 +4,7 @@ use anyhow::Context;
 use serde_json::json;
 use tokio::fs;
 
-use crate::types::BugMonitorLogCandidate;
+use crate::types::IncidentMonitorLogCandidate;
 
 fn safe_segment(value: &str) -> String {
     value
@@ -23,7 +23,7 @@ fn safe_segment(value: &str) -> String {
 
 pub async fn write_log_evidence_artifact(
     log_evidence_dir: &Path,
-    candidate: &BugMonitorLogCandidate,
+    candidate: &IncidentMonitorLogCandidate,
 ) -> anyhow::Result<String> {
     let project_id = safe_segment(&candidate.project_id);
     let source_id = safe_segment(&candidate.source_id);
@@ -62,7 +62,7 @@ pub async fn write_log_evidence_artifact(
         .await
         .with_context(|| format!("failed to write log evidence artifact {}", path.display()))?;
     Ok(format!(
-        "tandem://bug-monitor/{}/evidence/{}/{}",
+        "tandem://incident-monitor/{}/evidence/{}/{}",
         project_id, source_id, file_name
     ))
 }
