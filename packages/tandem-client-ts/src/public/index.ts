@@ -890,6 +890,7 @@ export type BugMonitorDestinationKind =
 export type BugMonitorApprovalPolicy = "inherit" | "always" | "high_risk" | "never";
 export type BugMonitorSourceKind =
   | "tandem_runtime"
+  | "tandem_monitor"
   | "external_app"
   | "ci"
   | "agent_runtime"
@@ -1309,6 +1310,52 @@ export interface BugMonitorAssessmentProbeResult {
   source_finding?: JsonObject | null;
   incident_draft_suggestion?: JsonObject | null;
   dry_run?: boolean;
+  [key: string]: unknown;
+}
+
+export interface BugMonitorAssessmentReportInput {
+  from_ms?: number;
+  to_ms?: number;
+  source_kind?: BugMonitorSourceKind | string;
+  min_severity?: "low" | "medium" | "high" | "critical" | string;
+  probes?: string[];
+  include_probe_results?: boolean;
+  includeProbeResults?: boolean;
+  include_draft_suggestions?: boolean;
+  includeDraftSuggestions?: boolean;
+  persist_artifact?: boolean;
+  persistArtifact?: boolean;
+  route_destination_ids?: string[];
+  routeDestinationIds?: string[];
+  include_raw_payloads?: boolean;
+  includeRawPayloads?: boolean;
+  [key: string]: unknown;
+}
+
+export interface BugMonitorAssessmentReportResponse {
+  schema_version: number;
+  generated_at_ms?: number;
+  scope?: JsonObject;
+  counts?: JsonObject;
+  sections?: {
+    assessment_scope?: JsonObject;
+    monitored_systems_and_sources?: JsonObject;
+    authority_inventory?: JsonObject;
+    approval_coverage?: JsonObject;
+    tenant_workspace_context_coverage?: JsonObject;
+    detected_findings?: JsonObject;
+    controlled_probe_results?: JsonObject;
+    incidents_and_evidence_refs?: JsonObject;
+    destination_receipts?: JsonObject;
+    recommended_mitigations?: JsonObject[];
+    residual_risk_and_follow_up?: JsonObject;
+    self_monitoring_boundary?: JsonObject;
+    external_audit_export?: JsonObject;
+    [key: string]: unknown;
+  };
+  markdown_summary?: string;
+  evidence_pack?: JsonObject;
+  sensitive_values?: JsonObject;
   [key: string]: unknown;
 }
 

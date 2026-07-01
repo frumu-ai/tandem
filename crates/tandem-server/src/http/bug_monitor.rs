@@ -3,8 +3,9 @@ use crate::http::AppState;
 use crate::{
     bug_monitor_github, BugMonitorApprovalPolicy, BugMonitorConfig, BugMonitorDestinationConfig,
     BugMonitorDestinationKind, BugMonitorDestinationReadiness, BugMonitorDraftRecord,
-    BugMonitorIncidentRecord, BugMonitorRouteConfig, BugMonitorRoutePreviewMatch,
-    BugMonitorRoutePreviewResponse, BugMonitorSubmission,
+    BugMonitorIncidentRecord, BugMonitorPostRecord, BugMonitorRouteConfig,
+    BugMonitorRoutePreviewMatch, BugMonitorRoutePreviewResponse, BugMonitorSourceKind,
+    BugMonitorSubmission,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -25,3 +26,4 @@ include!("bug_monitor_parts/part04.rs");
 include!("bug_monitor_parts/part09.rs");
 include!("bug_monitor_parts/part10.rs");
 include!("bug_monitor_parts/part11.rs");
+include!("bug_monitor_parts/part12.rs");

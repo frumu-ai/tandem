@@ -8,12 +8,13 @@ from pydantic import TypeAdapter
 from tandem_client import TandemClient
 from tandem_client.types import (
     BugMonitorAuthorityInventoryResponse,
+    BugMonitorAssessmentReportResponse,
+    BugMonitorAssessmentProbeRunResponse,
     BugMonitorConfigResponse,
     BugMonitorDraftRecord,
     BugMonitorIncidentRecord,
     BugMonitorPostRecord,
     BugMonitorPostureChecksResponse,
-    BugMonitorAssessmentProbeRunResponse,
     BugMonitorRoutePreviewResponse,
     EngineEvent,
 )
@@ -532,6 +533,62 @@ async def test_bug_monitor_assessment_probes_sdk_helper() -> None:
     assert probes.counts is not None
     assert probes.counts.fail == 1
     assert probes_route.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_bug_monitor_assessment_report_sdk_helper() -> None:
+    report_payload = {
+        "schema_version": 1,
+        "scope": {
+            "source": "bug_monitor_security_gap_assessment_report",
+            "read_only": True,
+        },
+        "counts": {
+            "findings": 1,
+            "protected_audit_events": 1,
+        },
+        "sections": {
+            "self_monitoring_boundary": {
+                "source_kinds": ["tandem_runtime", "tandem_monitor"],
+                "external_export_required_for_high_assurance": True,
+            },
+            "external_audit_export": {
+                "existing_ndjson_endpoint": "/audit/export",
+                "records": [{"event_type": "bug_monitor.publish.failed"}],
+            },
+        },
+        "markdown_summary": "# Incident Monitor Security Gap Assessment",
+        "evidence_pack": {
+            "persisted": True,
+            "context_run_id": "bug-monitor-assessment-report-1",
+        },
+    }
+    report_route = respx.post(
+        "http://localhost:39731/bug-monitor/security/assessment-report",
+        json={
+            "source_kind": "tandem_monitor",
+            "include_probe_results": True,
+            "persist_artifact": True,
+            "route_destination_ids": ["audit-webhook"],
+        },
+    ).mock(return_value=httpx.Response(200, json=report_payload))
+
+    async with TandemClient(base_url="http://localhost:39731", token="token") as client:
+        report = await client.bug_monitor.generate_assessment_report(
+            source_kind="tandem_monitor",
+            include_probe_results=True,
+            persist_artifact=True,
+            route_destination_ids=["audit-webhook"],
+        )
+
+    typed_report = BugMonitorAssessmentReportResponse.model_validate(report_payload)
+    assert report.schema_version == typed_report.schema_version
+    assert report.sections is not None
+    assert report.sections["self_monitoring_boundary"]["source_kinds"][1] == "tandem_monitor"
+    assert report.markdown_summary is not None
+    assert "Security Gap Assessment" in report.markdown_summary
+    assert report_route.called
 
 
 @pytest.mark.asyncio

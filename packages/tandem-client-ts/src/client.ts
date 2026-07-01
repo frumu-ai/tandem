@@ -78,6 +78,8 @@ import type {
   BugMonitorConfigResponse,
   BugMonitorStatusResponse,
   BugMonitorAuthorityInventoryResponse,
+  BugMonitorAssessmentReportInput,
+  BugMonitorAssessmentReportResponse,
   BugMonitorAssessmentProbeRunInput,
   BugMonitorAssessmentProbeRunResponse,
   BugMonitorPostureChecksOptions,
@@ -872,6 +874,42 @@ class BugMonitor {
     delete body.includeDraftSuggestions;
     return this.req<BugMonitorAssessmentProbeRunResponse>(
       "/bug-monitor/security/assessment-probes",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      }
+    );
+  }
+
+  async generateAssessmentReport(
+    input?: BugMonitorAssessmentReportInput
+  ): Promise<BugMonitorAssessmentReportResponse> {
+    const body = { ...(input ?? {}) };
+    if (body.include_probe_results === undefined && body.includeProbeResults !== undefined) {
+      body.include_probe_results = body.includeProbeResults;
+    }
+    if (
+      body.include_draft_suggestions === undefined &&
+      body.includeDraftSuggestions !== undefined
+    ) {
+      body.include_draft_suggestions = body.includeDraftSuggestions;
+    }
+    if (body.persist_artifact === undefined && body.persistArtifact !== undefined) {
+      body.persist_artifact = body.persistArtifact;
+    }
+    if (body.route_destination_ids === undefined && body.routeDestinationIds !== undefined) {
+      body.route_destination_ids = body.routeDestinationIds;
+    }
+    if (body.include_raw_payloads === undefined && body.includeRawPayloads !== undefined) {
+      body.include_raw_payloads = body.includeRawPayloads;
+    }
+    delete body.includeProbeResults;
+    delete body.includeDraftSuggestions;
+    delete body.persistArtifact;
+    delete body.routeDestinationIds;
+    delete body.includeRawPayloads;
+    return this.req<BugMonitorAssessmentReportResponse>(
+      "/bug-monitor/security/assessment-report",
       {
         method: "POST",
         body: JSON.stringify(body),
