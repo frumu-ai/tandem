@@ -6,6 +6,7 @@ import {
   DEFAULT_STATEFUL_RUN_FILTERS,
   RUN_SOURCE_FILTERS,
   RUN_STATUS_FILTERS,
+  buildRunObservabilityDetail,
   buildStatefulRunRows,
   filterStatefulRunRows,
   formatRunTimestamp,
@@ -103,8 +104,201 @@ function setFilter(filters: any, key: string, value: string) {
   return normalizeStatefulRunFilters({ ...filters, [key]: value });
 }
 
+function selectedRunIdFromHash() {
+  if (typeof window === "undefined") return "";
+  const [, query = ""] = String(window.location.hash || "").split("?");
+  return new URLSearchParams(query).get("run") || "";
+}
+
+function replaceRunSelectionHash(runId: string) {
+  if (typeof window === "undefined" || !runId) return;
+  const hash = `#/runs?run=${encodeURIComponent(runId)}`;
+  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${hash}`);
+}
+
+async function runObservabilityPayload(api: RunsProps["api"], runId: string) {
+  const query = "event_limit=80&snapshot_limit=25&reliability_limit=80&audit_limit=25";
+  return api(`/api/engine/stateful-runtime/runs/${encodeURIComponent(runId)}/observability?${query}`);
+}
+
+function compactRows(rows: any[], limit = 5) {
+  return Array.isArray(rows) ? rows.slice(0, limit) : [];
+}
+
+function recordTime(row: any) {
+  return row?.occurredAtMs || row?.updatedAtMs || row?.createdAtMs || 0;
+}
+
+function DetailRecords({ title, rows, emptyText }: { title: string; rows: any[]; emptyText: string }) {
+  const visibleRows = compactRows(rows);
+  return (
+    <section className="border-t border-white/10 pt-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-tcp-text-muted">{title}</h3>
+        <span className="text-[11px] tabular-nums text-tcp-text-muted">{rows?.length || 0}</span>
+      </div>
+      {visibleRows.length ? (
+        <div className="space-y-2">
+          {visibleRows.map((row: any, index: number) => (
+            <div key={`${row.id || row.label || title}:${index}`} className="border-l border-white/10 pl-3">
+              <div className="flex min-w-0 items-center justify-between gap-2">
+                <span className="truncate text-xs font-medium text-tcp-text-secondary">{row.label || row.id}</span>
+                {row.status ? <Badge tone={badgeTone(row.statusGroup || row.status)}>{row.status}</Badge> : null}
+              </div>
+              {row.detail ? <div className="mt-1 line-clamp-2 text-[11px] text-tcp-text-muted">{row.detail}</div> : null}
+              {row.seq || recordTime(row) ? (
+                <div className="mt-1 flex min-w-0 gap-2 text-[10px] text-tcp-text-muted">
+                  {row.seq ? <span className="font-mono">seq {row.seq}</span> : null}
+                  {recordTime(row) ? <span>{formatRunTimestamp(recordTime(row))}</span> : null}
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="text-xs text-tcp-text-muted">{emptyText}</div>
+      )}
+    </section>
+  );
+}
+
+function RunObservabilityPanel({
+  selectedRow,
+  detail,
+  loading,
+  error,
+  onOpen,
+}: {
+  selectedRow: any;
+  detail: any;
+  loading: boolean;
+  error: string;
+  onOpen: () => void;
+}) {
+  if (!selectedRow) {
+    return (
+      <PanelCard title="Run Detail" subtitle="Select a run to inspect durable state." fullHeight>
+        <EmptyState title="No run selected" text="Run details will appear here." />
+      </PanelCard>
+    );
+  }
+
+  if (selectedRow.source === "context") {
+    return (
+      <PanelCard title="Run Detail" subtitle={selectedRow.title} fullHeight>
+        <div className="space-y-3 text-sm text-tcp-text-secondary">
+          <p>Context run details are available from the Orchestrator surface.</p>
+          <button type="button" className="tcp-btn h-8 px-3 text-xs" onClick={onOpen}>
+            <i data-lucide="external-link"></i>
+            Open
+          </button>
+        </div>
+      </PanelCard>
+    );
+  }
+
+  return (
+    <PanelCard
+      title="Run Detail"
+      subtitle={selectedRow.title}
+      fullHeight
+      actions={
+        <Toolbar>
+          <button type="button" className="tcp-btn h-8 px-3 text-xs" onClick={onOpen}>
+            <i data-lucide="external-link"></i>
+            Open
+          </button>
+        </Toolbar>
+      }
+    >
+      {loading ? (
+        <LoadingState title="Loading run detail" />
+      ) : error ? (
+        <EmptyState title="Detail unavailable" text={error} />
+      ) : (
+        <div className="min-h-0 space-y-4 overflow-auto pr-1">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <div className="text-[11px] uppercase tracking-wide text-tcp-text-muted">Status</div>
+              <div className="mt-1 flex items-center gap-2">
+                <Badge tone={badgeTone(selectedRow.statusGroup)}>{detail.statusLabel || selectedRow.statusLabel}</Badge>
+                {detail.isBlocked ? <Badge tone="warn">blocked</Badge> : null}
+              </div>
+            </div>
+            <div>
+              <div className="text-[11px] uppercase tracking-wide text-tcp-text-muted">Phase</div>
+              <div className="mt-1 truncate text-sm text-tcp-text-secondary">{detail.phase || selectedRow.phase}</div>
+            </div>
+            <div>
+              <div className="text-[11px] uppercase tracking-wide text-tcp-text-muted">Current Wait</div>
+              <div className="mt-1 truncate text-sm text-tcp-text-secondary">
+                {detail.currentWait?.label || selectedRow.currentWait || "n/a"}
+              </div>
+              {detail.currentWait?.detail ? (
+                <div className="mt-1 truncate text-[11px] text-tcp-text-muted">{detail.currentWait.detail}</div>
+              ) : null}
+            </div>
+            <div>
+              <div className="text-[11px] uppercase tracking-wide text-tcp-text-muted">Workflow Version</div>
+              <div className="mt-1 truncate font-mono text-[11px] text-tcp-text-secondary">
+                {detail.workflowDefinitionVersion || "n/a"}
+              </div>
+            </div>
+          </div>
+
+          <section className="border-t border-white/10 pt-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-tcp-text-muted">Replay Boundary</h3>
+            <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+              <div>
+                <div className="text-tcp-text-muted">Events</div>
+                <div className="mt-1 font-mono text-tcp-text-secondary">{detail.replay?.eventCount || 0}</div>
+              </div>
+              <div>
+                <div className="text-tcp-text-muted">Seq</div>
+                <div className="mt-1 font-mono text-tcp-text-secondary">
+                  {detail.replay?.firstSeq && detail.replay?.lastSeq
+                    ? `${detail.replay.firstSeq}-${detail.replay.lastSeq}`
+                    : "n/a"}
+                </div>
+              </div>
+              <div>
+                <div className="text-tcp-text-muted">Snapshots</div>
+                <div className="mt-1 font-mono text-tcp-text-secondary">{detail.counts?.snapshots || 0}</div>
+              </div>
+            </div>
+            {detail.replay?.unsafeReasons?.length ? (
+              <div className="mt-2 space-y-1">
+                {compactRows(detail.replay.unsafeReasons, 3).map((reason: string) => (
+                  <div key={reason} className="text-[11px] text-yellow-100">
+                    {reason}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-2 text-xs text-tcp-text-muted">No replay blockers reported by the aggregate view.</div>
+            )}
+          </section>
+
+          <DetailRecords title="Operator Actions" rows={detail.allowedActions || []} emptyText="No operator actions." />
+          <DetailRecords title="Blocking Reasons" rows={detail.blockingReasons || []} emptyText="No blocking reasons." />
+          <DetailRecords title="Events" rows={detail.events || []} emptyText="No event tail." />
+          <DetailRecords title="Snapshots" rows={detail.snapshots || []} emptyText="No snapshots." />
+          <DetailRecords title="Policy Decisions" rows={detail.policyDecisions || []} emptyText="No policy decisions." />
+          <DetailRecords title="Tool Effects" rows={detail.toolEffects || []} emptyText="No tool effects." />
+          <DetailRecords title="Outbox" rows={detail.outbox || []} emptyText="No outbox rows." />
+          <DetailRecords title="Dead Letters" rows={detail.deadLetters || []} emptyText="No dead letters." />
+          <DetailRecords title="Compensations" rows={detail.compensations || []} emptyText="No compensations." />
+          <DetailRecords title="Protected Audit" rows={detail.protectedAuditEvents || []} emptyText="No protected audit rows." />
+        </div>
+      )}
+    </PanelCard>
+  );
+}
+
 export function StatefulRunsPage({ api, client, navigate }: RunsProps) {
   const [filters, setFilters] = useState(DEFAULT_STATEFUL_RUN_FILTERS);
+  const [selectedRunKey, setSelectedRunKey] = useState("");
+  const [selectedRunIdHint, setSelectedRunIdHint] = useState(selectedRunIdFromHash);
   const runsQuery = useQuery({
     queryKey: ["stateful-runs", "list"],
     queryFn: () => runListPayload({ api, client }),
@@ -123,9 +317,37 @@ export function StatefulRunsPage({ api, client, navigate }: RunsProps) {
   );
   const filteredRows = useMemo(() => filterStatefulRunRows(rows, filters), [rows, filters]);
   const summary = useMemo(() => summarizeStatefulRuns(rows), [rows]);
+  const selectedRow = useMemo(
+    () =>
+      filteredRows.find((row: any) => `${row.source}:${row.id}` === selectedRunKey) ||
+      filteredRows.find((row: any) => row.id === selectedRunIdHint || row.canonicalId === selectedRunIdHint) ||
+      filteredRows[0] ||
+      null,
+    [filteredRows, selectedRunIdHint, selectedRunKey]
+  );
+  const selectedObservabilityRunId = selectedRow?.observabilityRunId || selectedRow?.id || "";
+  const detailQuery = useQuery({
+    queryKey: ["stateful-runs", "observability", selectedObservabilityRunId],
+    queryFn: () =>
+      runObservabilityPayload(api, selectedObservabilityRunId).catch((error: any) => ({
+        error: errorText(error),
+      })),
+    enabled: Boolean(selectedObservabilityRunId && selectedRow?.source !== "context"),
+    refetchInterval: 10000,
+  });
+  const detail = useMemo(
+    () => buildRunObservabilityDetail(detailQuery.data && !detailQuery.data.error ? detailQuery.data : {}),
+    [detailQuery.data]
+  );
   const hasFilters = JSON.stringify(normalizeStatefulRunFilters(filters)) !== JSON.stringify(DEFAULT_STATEFUL_RUN_FILTERS);
   const loading = runsQuery.isLoading && !runsQuery.data;
   const errors = runsQuery.data?.errors ?? [];
+  const selectRow = (rowKey: string, row: any) => {
+    const runId = row?.canonicalId || row?.id || "";
+    setSelectedRunKey(rowKey);
+    setSelectedRunIdHint(runId);
+    replaceRunSelectionHash(runId);
+  };
 
   return (
     <div className="grid h-full min-h-0 grid-rows-[auto_1fr] gap-4">
@@ -302,125 +524,158 @@ export function StatefulRunsPage({ api, client, navigate }: RunsProps) {
         </div>
       </PanelCard>
 
-      <PanelCard
-        title="Run List"
-        subtitle={`${filteredRows.length} of ${rows.length} runs`}
-        fullHeight
-      >
-        {loading ? (
-          <LoadingState title="Loading runs" />
-        ) : filteredRows.length ? (
-          <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-white/10">
-            <table className="w-full min-w-[1340px] table-fixed text-left text-xs">
-              <thead className="sticky top-0 z-10 bg-black/80 text-[11px] uppercase text-tcp-text-muted backdrop-blur">
-                <tr>
-                  <th className="w-[20rem] px-3 py-2 font-medium">Run</th>
-                  <th className="w-[8rem] px-3 py-2 font-medium">Status</th>
-                  <th className="w-[10rem] px-3 py-2 font-medium">Phase</th>
-                  <th className="w-[9rem] px-3 py-2 font-medium">Trigger</th>
-                  <th className="w-[13rem] px-3 py-2 font-medium">Tenant</th>
-                  <th className="w-[17rem] px-3 py-2 font-medium">Scope</th>
-                  <th className="w-[15rem] px-3 py-2 font-medium">Workspace</th>
-                  <th className="w-[14rem] px-3 py-2 font-medium">Wait</th>
-                  <th className="w-[12rem] px-3 py-2 font-medium">Retry</th>
-                  <th className="w-[10rem] px-3 py-2 font-medium">Updated</th>
-                  <th className="w-[6rem] px-3 py-2 font-medium"></th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/8">
-                {filteredRows.map((row: any) => (
-                  <tr key={`${row.source}:${row.id}`} className="align-top hover:bg-white/[0.03]">
-                    <td className="px-3 py-3">
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-medium text-tcp-text-primary">{row.title}</div>
-                        <div className="mt-1 flex min-w-0 flex-wrap gap-2 text-[11px] text-tcp-text-muted">
-                          <span className="font-mono">{row.id}</span>
-                          <span>{row.sourceLabel}</span>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-3 py-3">
-                      <Badge tone={badgeTone(row.statusGroup)}>{row.statusLabel}</Badge>
-                    </td>
-                    <td className="px-3 py-3 text-tcp-text-secondary">{row.phase}</td>
-                    <td className="px-3 py-3 text-tcp-text-secondary">{row.triggerSource}</td>
-                    <td className="px-3 py-3">
-                      <div className="truncate text-tcp-text-secondary">{row.tenantOrg}</div>
-                      <div className="truncate text-[11px] text-tcp-text-muted">{row.tenantWorkspace}</div>
-                    </td>
-                    <td className="px-3 py-3">
-                      <div className="min-h-[4.25rem] rounded-md border border-white/10 bg-white/[0.025] px-2.5 py-2">
-                        <div className="truncate text-tcp-text-secondary">
-                          {row.orgUnitName || row.orgUnitId || "Tenant scoped"}
-                        </div>
-                        <div className="mt-1 truncate font-mono text-[11px] text-tcp-text-muted">
-                          {row.resourceLabel || row.resourceId || "n/a"}
-                        </div>
-                        <div className="mt-1 flex min-w-0 flex-wrap gap-1">
-                          {row.policyVersion ? (
-                            <span className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-tcp-text-muted">
-                              {row.policyVersion}
-                            </span>
-                          ) : null}
-                          {row.dataClasses?.slice(0, 2).map((dataClass: string) => (
-                            <span
-                              key={dataClass}
-                              className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-tcp-text-muted"
-                            >
-                              {dataClass}
-                            </span>
-                          ))}
-                          {row.knowledgeSourceCount ? (
-                            <span className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-tcp-text-muted">
-                              {row.knowledgeSourceCount} src
-                            </span>
-                          ) : null}
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-3 py-3">
-                      <div className="truncate font-mono text-[11px] text-tcp-text-secondary">
-                        {row.workspace || "n/a"}
-                      </div>
-                    </td>
-                    <td className="px-3 py-3">
-                      <div className="line-clamp-2 text-tcp-text-secondary">{row.currentWait || "n/a"}</div>
-                      {row.waitDetail ? (
-                        <div className="mt-1 truncate text-[11px] text-tcp-text-muted">{row.waitDetail}</div>
-                      ) : null}
-                    </td>
-                    <td className="px-3 py-3">
-                      <div className="truncate text-tcp-text-secondary">{row.retryState}</div>
-                      {row.retryDetail ? (
-                        <div className="mt-1 truncate text-[11px] text-tcp-text-muted">{row.retryDetail}</div>
-                      ) : null}
-                    </td>
-                    <td className="px-3 py-3 text-tcp-text-secondary">
-                      {formatRunTimestamp(row.updatedAtMs)}
-                    </td>
-                    <td className="px-3 py-3">
-                      <button
-                        type="button"
-                        className="tcp-btn h-7 px-2 text-xs"
-                        onClick={() => navigate(row.route)}
-                        title={`Open ${row.sourceLabel.toLowerCase()} view`}
-                      >
-                        <i data-lucide="external-link"></i>
-                        Open
-                      </button>
-                    </td>
+      <div className="grid min-h-0 gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(24rem,0.65fr)]">
+        <PanelCard
+          title="Run List"
+          subtitle={`${filteredRows.length} of ${rows.length} runs`}
+          fullHeight
+        >
+          {loading ? (
+            <LoadingState title="Loading runs" />
+          ) : filteredRows.length ? (
+            <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-white/10">
+              <table className="w-full min-w-[1380px] table-fixed text-left text-xs">
+                <thead className="sticky top-0 z-10 bg-black/80 text-[11px] uppercase text-tcp-text-muted backdrop-blur">
+                  <tr>
+                    <th className="w-[20rem] px-3 py-2 font-medium">Run</th>
+                    <th className="w-[8rem] px-3 py-2 font-medium">Status</th>
+                    <th className="w-[10rem] px-3 py-2 font-medium">Phase</th>
+                    <th className="w-[9rem] px-3 py-2 font-medium">Trigger</th>
+                    <th className="w-[13rem] px-3 py-2 font-medium">Tenant</th>
+                    <th className="w-[17rem] px-3 py-2 font-medium">Scope</th>
+                    <th className="w-[15rem] px-3 py-2 font-medium">Workspace</th>
+                    <th className="w-[14rem] px-3 py-2 font-medium">Wait</th>
+                    <th className="w-[12rem] px-3 py-2 font-medium">Retry</th>
+                    <th className="w-[10rem] px-3 py-2 font-medium">Updated</th>
+                    <th className="w-[9rem] px-3 py-2 font-medium"></th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <EmptyState
-            title={rows.length ? "No matching runs" : "No runs yet"}
-            text={rows.length ? "Try another filter." : "Run activity will appear here."}
-          />
-        )}
-      </PanelCard>
+                </thead>
+                <tbody className="divide-y divide-white/8">
+                  {filteredRows.map((row: any) => {
+                    const rowKey = `${row.source}:${row.id}`;
+                    const selected = rowKey === `${selectedRow?.source}:${selectedRow?.id}`;
+                    return (
+                      <tr
+                        key={rowKey}
+                        className={`align-top hover:bg-white/[0.03] ${selected ? "bg-white/[0.045]" : ""}`}
+                        onClick={() => selectRow(rowKey, row)}
+                      >
+                        <td className="px-3 py-3">
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-medium text-tcp-text-primary">{row.title}</div>
+                            <div className="mt-1 flex min-w-0 flex-wrap gap-2 text-[11px] text-tcp-text-muted">
+                              <span className="font-mono">{row.id}</span>
+                              <span>{row.sourceLabel}</span>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-3 py-3">
+                          <Badge tone={badgeTone(row.statusGroup)}>{row.statusLabel}</Badge>
+                        </td>
+                        <td className="px-3 py-3 text-tcp-text-secondary">{row.phase}</td>
+                        <td className="px-3 py-3 text-tcp-text-secondary">{row.triggerSource}</td>
+                        <td className="px-3 py-3">
+                          <div className="truncate text-tcp-text-secondary">{row.tenantOrg}</div>
+                          <div className="truncate text-[11px] text-tcp-text-muted">{row.tenantWorkspace}</div>
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="min-h-[4.25rem] rounded-md border border-white/10 bg-white/[0.025] px-2.5 py-2">
+                            <div className="truncate text-tcp-text-secondary">
+                              {row.orgUnitName || row.orgUnitId || "Tenant scoped"}
+                            </div>
+                            <div className="mt-1 truncate font-mono text-[11px] text-tcp-text-muted">
+                              {row.resourceLabel || row.resourceId || "n/a"}
+                            </div>
+                            <div className="mt-1 flex min-w-0 flex-wrap gap-1">
+                              {row.policyVersion ? (
+                                <span className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-tcp-text-muted">
+                                  {row.policyVersion}
+                                </span>
+                              ) : null}
+                              {row.dataClasses?.slice(0, 2).map((dataClass: string) => (
+                                <span
+                                  key={dataClass}
+                                  className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-tcp-text-muted"
+                                >
+                                  {dataClass}
+                                </span>
+                              ))}
+                              {row.knowledgeSourceCount ? (
+                                <span className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-tcp-text-muted">
+                                  {row.knowledgeSourceCount} src
+                                </span>
+                              ) : null}
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="truncate font-mono text-[11px] text-tcp-text-secondary">
+                            {row.workspace || "n/a"}
+                          </div>
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="line-clamp-2 text-tcp-text-secondary">{row.currentWait || "n/a"}</div>
+                          {row.waitDetail ? (
+                            <div className="mt-1 truncate text-[11px] text-tcp-text-muted">{row.waitDetail}</div>
+                          ) : null}
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="truncate text-tcp-text-secondary">{row.retryState}</div>
+                          {row.retryDetail ? (
+                            <div className="mt-1 truncate text-[11px] text-tcp-text-muted">{row.retryDetail}</div>
+                          ) : null}
+                        </td>
+                        <td className="px-3 py-3 text-tcp-text-secondary">
+                          {formatRunTimestamp(row.updatedAtMs)}
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              className="tcp-btn h-7 px-2 text-xs"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                selectRow(rowKey, row);
+                              }}
+                              title="Inspect run detail"
+                            >
+                              <i data-lucide="search"></i>
+                            </button>
+                            <button
+                              type="button"
+                              className="tcp-btn h-7 px-2 text-xs"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                navigate(row.route);
+                              }}
+                              title={`Open ${row.sourceLabel.toLowerCase()} view`}
+                            >
+                              <i data-lucide="external-link"></i>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <EmptyState
+              title={rows.length ? "No matching runs" : "No runs yet"}
+              text={rows.length ? "Try another filter." : "Run activity will appear here."}
+            />
+          )}
+        </PanelCard>
+
+        <RunObservabilityPanel
+          selectedRow={selectedRow}
+          detail={detail}
+          loading={detailQuery.isLoading && !detailQuery.data && selectedRow?.source !== "context"}
+          error={detailQuery.data?.error || ""}
+          onOpen={() => selectedRow && navigate(selectedRow.route)}
+        />
+      </div>
     </div>
   );
 }

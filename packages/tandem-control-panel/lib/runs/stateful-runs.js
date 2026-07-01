@@ -385,6 +385,266 @@ function retryStateOf(row) {
   return { label: "None", detail: "" };
 }
 
+function numberValue(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function recordStatus(row) {
+  return stringValue(row?.status || row?.decision || row?.state || row?.effect || row?.kind, "unknown");
+}
+
+function recordId(row, keys, fallback = "") {
+  for (const key of keys) {
+    const value = stringValue(row?.[key]);
+    if (value) return value;
+  }
+  return fallback;
+}
+
+function projectObservabilityWait(wait) {
+  const kind = stringValue(wait?.wait_kind || wait?.waitKind, "wait");
+  return {
+    id: recordId(wait, ["wait_id", "waitId"], kind),
+    label: stringValue(wait?.reason, titleCase(kind)),
+    status: recordStatus(wait),
+    detail: compact([wait?.phase_id || wait?.phaseId, wait?.wait_id || wait?.waitId]).join(" · "),
+    updatedAtMs: firstTimestamp([wait?.updated_at_ms, wait?.updatedAtMs, wait?.created_at_ms, wait?.createdAtMs]),
+  };
+}
+
+function projectObservabilityEvent(event) {
+  return {
+    id: recordId(event, ["event_id", "eventId"], `seq-${event?.seq || "unknown"}`),
+    label: titleCase(event?.event_type || event?.eventType || "event"),
+    status: stringValue(event?.event_type || event?.eventType, "event"),
+    seq: numberValue(event?.seq),
+    detail: compact([event?.phase_id || event?.phaseId, event?.causation_id || event?.causationId]).join(" · "),
+    correlationId: stringValue(event?.correlation_id || event?.correlationId),
+    occurredAtMs: firstTimestamp([event?.occurred_at_ms, event?.occurredAtMs, event?.created_at_ms, event?.createdAtMs]),
+  };
+}
+
+function projectObservabilitySnapshot(snapshot) {
+  const seq = numberValue(snapshot?.seq);
+  return {
+    id: recordId(snapshot, ["snapshot_id", "snapshotId"], seq ? `snapshot-${seq}` : "snapshot"),
+    label: seq ? `Snapshot ${seq}` : "Snapshot",
+    status: recordStatus(snapshot),
+    seq,
+    detail: compact([snapshot?.phase_id || snapshot?.phaseId, snapshot?.payload_digest || snapshot?.payloadDigest]).join(" · "),
+    createdAtMs: firstTimestamp([snapshot?.created_at_ms, snapshot?.createdAtMs]),
+    workflowDefinitionVersion: stringValue(snapshot?.workflow_definition_version || snapshot?.workflowDefinitionVersion),
+    workflowDefinitionSnapshotHash: stringValue(
+      snapshot?.workflow_definition_snapshot_hash || snapshot?.workflowDefinitionSnapshotHash
+    ),
+  };
+}
+
+function projectPolicyDecision(decision) {
+  return {
+    id: recordId(decision, ["decision_id", "decisionId"], "policy-decision"),
+    label: titleCase(decision?.decision || "decision"),
+    status: recordStatus(decision),
+    detail: compact([
+      decision?.tool,
+      decision?.reason_code || decision?.reasonCode,
+      decision?.approval_id || decision?.approvalId,
+    ]).join(" · "),
+    createdAtMs: firstTimestamp([decision?.created_at_ms, decision?.createdAtMs]),
+  };
+}
+
+function projectReliabilityRecord(row, kind) {
+  const id = recordId(
+    row,
+    [
+      "effect_id",
+      "effectId",
+      "outbox_id",
+      "outboxId",
+      "dead_letter_id",
+      "deadLetterId",
+      "compensation_id",
+      "compensationId",
+    ],
+    kind
+  );
+  return {
+    id,
+    kind,
+    label: titleCase(row?.operation || row?.source_type || row?.sourceType || row?.compensation_type || row?.compensationType || kind),
+    status: recordStatus(row),
+    detail: compact([
+      row?.tool,
+      row?.provider,
+      row?.target,
+      row?.idempotency_key || row?.idempotencyKey,
+      row?.policy_decision_id || row?.policyDecisionId,
+      row?.reason,
+      row?.error,
+    ]).join(" · "),
+    updatedAtMs: firstTimestamp([row?.updated_at_ms, row?.updatedAtMs, row?.created_at_ms, row?.createdAtMs]),
+  };
+}
+
+function projectAuditEvent(event) {
+  return {
+    id: recordId(event, ["event_id", "eventId"], "audit-event"),
+    label: titleCase(event?.event_type || event?.eventType || "audit"),
+    status: stringValue(event?.event_type || event?.eventType, "audit"),
+    seq: numberValue(event?.seq),
+    detail: compact([event?.actor, event?.payload_digest || event?.payloadDigest || event?.record_hash || event?.recordHash]).join(" · "),
+    createdAtMs: firstTimestamp([event?.created_at_ms, event?.createdAtMs]),
+  };
+}
+
+function projectOperatorItem(row, fallbackKind) {
+  const action = stringValue(row?.action || row?.kind, fallbackKind);
+  return {
+    id: compact([
+      action,
+      row?.wait_id || row?.waitId,
+      row?.decision_id || row?.decisionId,
+      row?.effect_id || row?.effectId,
+      row?.dead_letter_id || row?.deadLetterId,
+      row?.compensation_id || row?.compensationId,
+    ]).join(":"),
+    label: titleCase(action),
+    status: recordStatus(row),
+    detail: compact([
+      row?.reason,
+      row?.reason_code || row?.reasonCode,
+      row?.status,
+      row?.phase_id || row?.phaseId,
+      row?.wait_kind || row?.waitKind,
+      row?.tool,
+    ]).join(" · "),
+  };
+}
+
+function replayUnsafeReasons({ operator, reliability }) {
+  const reasons = [];
+  for (const reason of toArray(operator.blocking_reasons || operator.blockingReasons, "blocking_reasons")) {
+    const projected = projectOperatorItem(reason, "blocked");
+    reasons.push(compact([projected.label, projected.detail]).join(": "));
+  }
+  for (const row of toArray(reliability.tool_effects || reliability.toolEffects, "tool_effects")) {
+    const status = normalizeKey(row?.status);
+    if (["failed", "unknown"].includes(status)) reasons.push(`Tool effect ${recordId(row, ["effect_id", "effectId"]) || "unknown"} is ${status}`);
+  }
+  for (const row of toArray(reliability.outbox, "outbox")) {
+    const status = normalizeKey(row?.status);
+    if (["pending", "failed", "dead_lettered"].includes(status)) {
+      reasons.push(`Outbox ${recordId(row, ["outbox_id", "outboxId"]) || "unknown"} is ${status}`);
+    }
+  }
+  for (const row of toArray(reliability.dead_letters || reliability.deadLetters, "dead_letters")) {
+    const status = normalizeKey(row?.status);
+    if (status === "open") reasons.push(`Dead letter ${recordId(row, ["dead_letter_id", "deadLetterId"]) || "unknown"} is open`);
+  }
+  return uniqueCompact(reasons);
+}
+
+function buildRunObservabilityDetail(payload = {}) {
+  const input = payload && typeof payload === "object" ? payload : {};
+  const run = input.run && typeof input.run === "object" ? input.run : {};
+  const reliability = input.reliability && typeof input.reliability === "object" ? input.reliability : {};
+  const operator = input.operator_summary || input.operatorSummary || {};
+  const eventsBlock = input.events && typeof input.events === "object" && !Array.isArray(input.events) ? input.events : {};
+  const snapshotsBlock =
+    input.snapshots && typeof input.snapshots === "object" && !Array.isArray(input.snapshots) ? input.snapshots : {};
+  const audit = input.audit && typeof input.audit === "object" ? input.audit : {};
+  const waits = toArray(input.waits, "waits").map(projectObservabilityWait);
+  const currentWait = input.current_wait || input.currentWait;
+  const currentWaitRow = currentWait ? projectObservabilityWait(currentWait) : waits.find((wait) => normalizeKey(wait.status) === "waiting") || null;
+  const events = toArray(eventsBlock.tail || eventsBlock.items || input.event_tail || input.eventTail, "tail").map(projectObservabilityEvent);
+  const snapshots = toArray(snapshotsBlock.items || input.snapshots, "items").map(projectObservabilitySnapshot);
+  const policyDecisions = toArray(input.policy_decisions || input.policyDecisions, "policy_decisions").map(projectPolicyDecision);
+  const outbox = toArray(reliability.outbox, "outbox").map((row) => projectReliabilityRecord(row, "outbox"));
+  const toolEffects = toArray(reliability.tool_effects || reliability.toolEffects, "tool_effects").map((row) =>
+    projectReliabilityRecord(row, "tool_effect")
+  );
+  const deadLetters = toArray(reliability.dead_letters || reliability.deadLetters, "dead_letters").map((row) =>
+    projectReliabilityRecord(row, "dead_letter")
+  );
+  const compensations = toArray(reliability.compensations, "compensations").map((row) =>
+    projectReliabilityRecord(row, "compensation")
+  );
+  const protectedAuditEvents = toArray(audit.protected_events || audit.protectedEvents, "protected_events").map(projectAuditEvent);
+  const blockingReasons = toArray(operator.blocking_reasons || operator.blockingReasons, "blocking_reasons").map((row) =>
+    projectOperatorItem(row, "blocked")
+  );
+  const allowedActions = toArray(operator.allowed_actions || operator.allowedActions, "allowed_actions").map((row) =>
+    projectOperatorItem(row, "action")
+  );
+  const latestEvent = eventsBlock.latest ? projectObservabilityEvent(eventsBlock.latest) : events[events.length - 1] || null;
+  const latestSnapshot = snapshotsBlock.latest
+    ? projectObservabilitySnapshot(snapshotsBlock.latest)
+    : snapshots[snapshots.length - 1] || null;
+  const unsafeReasons = replayUnsafeReasons({ operator, reliability });
+  const eventSeqs = events.map((event) => event.seq).filter((seq) => seq > 0);
+  const counts = input.counts && typeof input.counts === "object" ? input.counts : {};
+  const runStatus = stringValue(run.status, "unknown");
+
+  return {
+    runId: stringValue(input.run_id || input.runId || run.run_id || run.runId),
+    source: stringValue(input.source, "stateful_runtime_observability"),
+    status: runStatus,
+    statusLabel: titleCase(runStatus),
+    phase: titleCase(
+      run.current_phase_id || run.currentPhaseId || run.phase?.phase_id || run.phase?.phaseId || run.phase?.name || run.phase?.status || runStatus
+    ),
+    kind: titleCase(run.kind || "workflow"),
+    workflowDefinitionVersion: stringValue(
+      run.workflow_definition_version || run.workflowDefinitionVersion || latestSnapshot?.workflowDefinitionVersion
+    ),
+    workflowDefinitionSnapshotHash: stringValue(
+      run.workflow_definition_snapshot_hash || run.workflowDefinitionSnapshotHash || latestSnapshot?.workflowDefinitionSnapshotHash
+    ),
+    currentWait: currentWaitRow,
+    waits,
+    events,
+    latestEvent,
+    snapshots,
+    latestSnapshot,
+    policyDecisions,
+    outbox,
+    toolEffects,
+    deadLetters,
+    compensations,
+    protectedAuditEvents,
+    blockingReasons,
+    allowedActions,
+    isBlocked: Boolean(operator.is_blocked || operator.isBlocked || blockingReasons.length),
+    counts: {
+      waits: numberValue(counts.waits, waits.length),
+      activeWaits: numberValue(counts.active_waits ?? counts.activeWaits, currentWaitRow ? 1 : 0),
+      policyDecisions: numberValue(counts.policy_decisions ?? counts.policyDecisions, policyDecisions.length),
+      outbox: numberValue(counts.outbox, outbox.length),
+      toolEffects: numberValue(counts.tool_effects ?? counts.toolEffects, toolEffects.length),
+      deadLetters: numberValue(counts.dead_letters ?? counts.deadLetters, deadLetters.length),
+      compensations: numberValue(counts.compensations, compensations.length),
+      protectedAuditEvents: numberValue(
+        counts.protected_audit_events ?? counts.protectedAuditEvents,
+        protectedAuditEvents.length
+      ),
+      events: numberValue(counts.events, events.length),
+      snapshots: numberValue(counts.snapshots, snapshots.length),
+    },
+    replay: {
+      eventCount: events.length,
+      firstSeq: eventSeqs.length ? Math.min(...eventSeqs) : 0,
+      lastSeq: eventSeqs.length ? Math.max(...eventSeqs) : 0,
+      latestEventLabel: latestEvent?.label || "",
+      latestSnapshotLabel: latestSnapshot?.label || "",
+      unsafeReasons,
+      isUnsafe: unsafeReasons.length > 0,
+    },
+    payloadPolicy: stringValue(audit.payload_policy || audit.payloadPolicy),
+  };
+}
+
 function triggerSourceOf(row) {
   const metadata = row?.metadata || row?.automation_snapshot?.metadata || row?.automationSnapshot?.metadata || {};
   return titleCase(
@@ -449,6 +709,7 @@ function projectRun(row, source) {
   return {
     id,
     canonicalId: canonicalRunId(id),
+    observabilityRunId: id,
     source,
     sourceLabel: source === "workflow" ? "Workflow" : source === "context" ? "Context" : "Automation",
     title: titleOf(row, source),
@@ -544,6 +805,7 @@ function mergeRows(existing, candidate) {
     "policyVersion",
     "ownerPrincipal",
     "scopeSummary",
+    "observabilityRunId",
   ]) {
     if (!primary[key] && secondary[key]) primary[key] = secondary[key];
   }
@@ -762,6 +1024,7 @@ export {
   DEFAULT_STATEFUL_RUN_FILTERS,
   RUN_SOURCE_FILTERS,
   RUN_STATUS_FILTERS,
+  buildRunObservabilityDetail,
   buildStatefulRunRows,
   filterStatefulRunRows,
   formatRunTimestamp,

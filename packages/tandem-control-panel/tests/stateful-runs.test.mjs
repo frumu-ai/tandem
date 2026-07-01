@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   DEFAULT_STATEFUL_RUN_FILTERS,
+  buildRunObservabilityDetail,
   buildStatefulRunRows,
   filterStatefulRunRows,
   formatRunTimestamp,
@@ -132,8 +133,26 @@ test("stateful run helpers classify waits, retries, and summary buckets", () => 
 	    orgUnits: 0,
 	    policyVersions: 0,
 	    knowledgeSources: 0,
-	  });
-	});
+  });
+});
+
+test("stateful run helpers keep the persisted run id for observability requests", () => {
+  const rows = buildStatefulRunRows({
+    workflowRuns: [
+      {
+        run_id: "automation-v2-run-123",
+        automation_id: "workflow-prefixed",
+        status: "running",
+        updated_at_ms: 1000,
+      },
+    ],
+  });
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, "automation-v2-run-123");
+  assert.equal(rows[0].canonicalId, "run-123");
+  assert.equal(rows[0].observabilityRunId, "automation-v2-run-123");
+});
 
 test("stateful run helpers project canonical stateful runtime API rows", () => {
   const rows = buildStatefulRunRows({
@@ -213,7 +232,112 @@ test("stateful run helpers project canonical stateful runtime API rows", () => {
 	  assert.equal(rows[0].policyVersion, "policy-2026-06");
 	  assert.deepEqual(rows[0].dataClasses, ["financial_record"]);
 	  assert.deepEqual(rows[0].knowledgeSourceIds, ["binding-repo"]);
-	});
+		});
+
+test("stateful run helpers normalize observability detail sections", () => {
+  const detail = buildRunObservabilityDetail({
+    run_id: "run-observe",
+    source: "stateful_runtime_observability",
+    run: {
+      run_id: "run-observe",
+      kind: "automation_v2",
+      status: "blocked",
+      current_phase_id: "phase-review",
+      workflow_definition_version: "v3",
+      workflow_definition_snapshot_hash: "sha256:workflow",
+    },
+    current_wait: {
+      wait_id: "wait-approval",
+      wait_kind: "approval",
+      status: "waiting",
+      phase_id: "phase-review",
+      reason: "awaiting operator",
+    },
+    waits: [
+      {
+        wait_id: "wait-approval",
+        wait_kind: "approval",
+        status: "waiting",
+        phase_id: "phase-review",
+        reason: "awaiting operator",
+      },
+    ],
+    policy_decisions: [
+      {
+        decision_id: "decision-a",
+        decision: "approval_required",
+        tool: "github.comment",
+        reason_code: "external_effect",
+        approval_id: "approval-a",
+      },
+    ],
+    reliability: {
+      outbox: [{ outbox_id: "outbox-a", operation: "github.comment", status: "pending", idempotency_key: "idem-a" }],
+      tool_effects: [{ effect_id: "effect-a", operation: "github.comment", status: "failed", error: "timeout" }],
+      dead_letters: [{ dead_letter_id: "dead-a", source_type: "tool_effect", status: "open", reason: "timeout" }],
+      compensations: [
+        {
+          compensation_id: "comp-a",
+          compensation_type: "operator_review",
+          status: "awaiting_approval",
+          target_effect_id: "effect-a",
+        },
+      ],
+    },
+    audit: {
+      payload_policy: "redacted_payload_digest_only",
+      protected_events: [
+        {
+          event_id: "audit-a",
+          event_type: "policy.decision.recorded",
+          seq: 5,
+          actor: "operator-a",
+          payload_digest: "sha256:audit",
+        },
+      ],
+    },
+    events: {
+      latest: { event_id: "event-4", event_type: "runtime.effect.failed", seq: 4, phase_id: "phase-review" },
+      tail: [
+        { event_id: "event-2", event_type: "runtime.wait.recorded", seq: 2, phase_id: "phase-review" },
+        { event_id: "event-4", event_type: "runtime.effect.failed", seq: 4, phase_id: "phase-review" },
+      ],
+    },
+    snapshots: {
+      latest: {
+        snapshot_id: "snapshot-4",
+        seq: 4,
+        status: "blocked",
+        phase_id: "phase-review",
+        workflow_definition_version: "v3",
+      },
+      items: [
+        { snapshot_id: "snapshot-2", seq: 2, status: "waiting" },
+        { snapshot_id: "snapshot-4", seq: 4, status: "blocked", phase_id: "phase-review" },
+      ],
+    },
+    operator_summary: {
+      is_blocked: true,
+      blocking_reasons: [{ kind: "active_wait", wait_id: "wait-approval", wait_kind: "approval", status: "waiting" }],
+      allowed_actions: [{ action: "review_wait", wait_ids: ["wait-approval"] }],
+    },
+  });
+
+  assert.equal(detail.runId, "run-observe");
+  assert.equal(detail.statusLabel, "Blocked");
+  assert.equal(detail.phase, "Phase Review");
+  assert.equal(detail.workflowDefinitionVersion, "v3");
+  assert.equal(detail.currentWait.label, "awaiting operator");
+  assert.equal(detail.policyDecisions[0].detail, "github.comment · external_effect · approval-a");
+  assert.equal(detail.toolEffects[0].status, "failed");
+  assert.equal(detail.protectedAuditEvents[0].detail, "operator-a · sha256:audit");
+  assert.equal(detail.counts.events, 2);
+  assert.equal(detail.replay.firstSeq, 2);
+  assert.equal(detail.replay.lastSeq, 4);
+  assert.equal(detail.replay.isUnsafe, true);
+  assert.ok(detail.replay.unsafeReasons.some((reason) => reason.includes("Outbox outbox-a is pending")));
+  assert.equal(detail.payloadPolicy, "redacted_payload_digest_only");
+});
 
 test("stateful run helpers filter by status source tenant workspace and phase wait text", () => {
   const rows = buildStatefulRunRows({
