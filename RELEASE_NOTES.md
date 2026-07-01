@@ -104,6 +104,9 @@ destination readiness badges, filter post receipts by destination, and use
 TypeScript/Python SDK helpers for destination and route CRUD plus
 destination-targeted draft publishing. Legacy GitHub Bug Monitor setup remains
 compatible when no explicit router destination is configured.
+The server now exposes the same monitor APIs through canonical
+`/incident-monitor/*` and `/config/incident-monitor` routes, and the stale
+`/failure-reporter/*` aliases have been removed.
 Incident Monitor security readiness now records redacted protected audit events
 for destination/route config changes, scoped intake-key lifecycle changes, and
 destination-router publish attempts, completions, approval-required outcomes,

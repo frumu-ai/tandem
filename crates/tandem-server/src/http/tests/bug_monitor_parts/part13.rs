@@ -28,7 +28,12 @@ async fn bug_monitor_assessment_probes_detect_approval_and_mcp_gaps() {
         json!({
             "probes": ["approval_required_tool_policy", "mcp_tool_allowlist"]
         }),
-        Some(("org-assessment", "workspace-assessment", "security-admin", "tk_admin")),
+        Some((
+            "org-assessment",
+            "workspace-assessment",
+            "security-admin",
+            "tk_admin",
+        )),
     )
     .await;
     let results = payload["results"].as_array().expect("probe results");
@@ -47,11 +52,9 @@ async fn bug_monitor_assessment_probes_detect_approval_and_mcp_gaps() {
     let artifact_path = payload["evidence_pack"]["path"]
         .as_str()
         .expect("assessment artifact path");
-    assert!(
-        std::fs::read_to_string(artifact_path)
-            .expect("assessment artifact")
-            .contains("approval_required_tool_policy")
-    );
+    assert!(std::fs::read_to_string(artifact_path)
+        .expect("assessment artifact")
+        .contains("approval_required_tool_policy"));
 }
 
 #[tokio::test]
@@ -125,8 +128,10 @@ async fn bug_monitor_assessment_probes_reject_scoped_intake_key_and_report_scope
         .as_array()
         .expect("results")
         .iter()
-        .any(|result| result["probe_id"].as_str() == Some("scoped_intake_restriction")
-            && result["status"].as_str() == Some("pass")));
+        .any(
+            |result| result["probe_id"].as_str() == Some("scoped_intake_restriction")
+                && result["status"].as_str() == Some("pass")
+        ));
 }
 
 #[tokio::test]
@@ -192,7 +197,7 @@ async fn bug_monitor_assessment_probes_detect_destination_readiness_and_webhook_
 
     let payload = run_bug_monitor_assessment_probes(
         app,
-        "/failure-reporter/security/assessment-probes",
+        "/incident-monitor/security/assessment-probes",
         json!({
             "probes": ["destination_readiness_fail_closed", "webhook_url_policy"]
         }),
@@ -211,10 +216,10 @@ async fn bug_monitor_assessment_probes_detect_destination_readiness_and_webhook_
     assert!(results.iter().any(|result| {
         result["probe_id"].as_str() == Some("webhook_url_policy")
             && result["status"].as_str() == Some("fail")
-            && result["observed_behavior"]
-                .as_str()
-                .is_some_and(|value| value.contains("localhost/private network")
-                    || value.contains("Webhook URL must use https"))
+            && result["observed_behavior"].as_str().is_some_and(|value| {
+                value.contains("localhost/private network")
+                    || value.contains("Webhook URL must use https")
+            })
     }));
     let artifact_path = payload["evidence_pack"]["path"]
         .as_str()
@@ -253,11 +258,6 @@ async fn run_bug_monitor_assessment_probes(
     let body = to_bytes(resp.into_body(), usize::MAX)
         .await
         .expect("assessment probes body");
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "{}",
-        String::from_utf8_lossy(&body)
-    );
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
     serde_json::from_slice(&body).expect("assessment probes json")
 }

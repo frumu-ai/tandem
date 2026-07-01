@@ -213,7 +213,7 @@ async fn bug_monitor_posture_checks_detects_broad_source_and_missing_tenant_cont
 
     let payload = get_bug_monitor_posture_checks(
         app,
-        "/failure-reporter/security/posture-checks?rules=broad_source_destination_scope,missing_tenant_context",
+        "/incident-monitor/security/posture-checks?rules=broad_source_destination_scope,missing_tenant_context",
     )
     .await;
     let findings = payload["findings"].as_array().expect("findings");
@@ -245,11 +245,9 @@ async fn bug_monitor_posture_checks_respects_disabled_mode() {
         .expect("disabled mode automation");
     let app = app_router(state);
 
-    let payload = get_bug_monitor_posture_checks(
-        app,
-        "/bug-monitor/security/posture-checks?mode=disabled",
-    )
-    .await;
+    let payload =
+        get_bug_monitor_posture_checks(app, "/bug-monitor/security/posture-checks?mode=disabled")
+            .await;
 
     assert_eq!(payload["baseline_policy"]["mode"], json!("disabled"));
     assert_eq!(payload["findings"].as_array().expect("findings").len(), 0);
@@ -309,7 +307,12 @@ async fn bug_monitor_assessment_report_generates_markdown_and_redacted_artifact(
             "probes": ["approval_required_tool_policy", "mcp_tool_allowlist"],
             "route_destination_ids": ["report-webhook"]
         }),
-        Some(("org-report", "workspace-report", "security-admin", "tk_admin")),
+        Some((
+            "org-report",
+            "workspace-report",
+            "security-admin",
+            "tk_admin",
+        )),
     )
     .await;
 
@@ -321,14 +324,15 @@ async fn bug_monitor_assessment_report_generates_markdown_and_redacted_artifact(
         .as_array()
         .expect("findings")
         .iter()
-        .any(|finding| finding["rule_id"].as_str()
-            == Some("high_risk_tool_without_approval")));
+        .any(|finding| finding["rule_id"].as_str() == Some("high_risk_tool_without_approval")));
     assert!(payload["sections"]["controlled_probe_results"]["results"]
         .as_array()
         .expect("probe results")
         .iter()
-        .any(|result| result["probe_id"].as_str() == Some("mcp_tool_allowlist")
-            && result["status"].as_str() == Some("fail")));
+        .any(
+            |result| result["probe_id"].as_str() == Some("mcp_tool_allowlist")
+                && result["status"].as_str() == Some("fail")
+        ));
     assert_eq!(
         payload["sections"]["external_audit_export"]["route_preview"]["mutates_external_systems"],
         json!(false)
@@ -435,7 +439,7 @@ async fn bug_monitor_assessment_report_distinguishes_self_monitoring_audit_expor
 
     let payload = post_bug_monitor_assessment_report(
         app,
-        "/failure-reporter/security/assessment-report",
+        "/incident-monitor/security/assessment-report",
         json!({
             "include_probe_results": false,
             "persist_artifact": false
@@ -498,12 +502,7 @@ async fn post_bug_monitor_assessment_report(
     let body = to_bytes(resp.into_body(), usize::MAX)
         .await
         .expect("assessment report body");
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "{}",
-        String::from_utf8_lossy(&body)
-    );
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
     serde_json::from_slice(&body).expect("assessment report json")
 }
 
@@ -546,6 +545,9 @@ fn assert_posture_fingerprints_are_unique(findings: &[Value]) {
         let fingerprint = finding["fingerprint"]
             .as_str()
             .expect("finding fingerprint");
-        assert!(seen.insert(fingerprint.to_string()), "duplicate {fingerprint}");
+        assert!(
+            seen.insert(fingerprint.to_string()),
+            "duplicate {fingerprint}"
+        );
     }
 }

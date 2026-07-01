@@ -1,224 +1,201 @@
 use super::bug_monitor::*;
 use crate::http::AppState;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, MethodRouter};
 use axum::Router;
 
 pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
-    router
-        .route(
-            "/config/bug-monitor",
-            get(get_bug_monitor_config).patch(patch_bug_monitor_config),
-        )
-        .route(
-            "/config/failure-reporter",
-            get(get_bug_monitor_config).patch(patch_bug_monitor_config),
-        )
-        .route("/bug-monitor/status", get(get_bug_monitor_status))
-        .route("/failure-reporter/status", get(get_bug_monitor_status))
-        .route(
-            "/bug-monitor/status/recompute",
-            post(recompute_bug_monitor_status),
-        )
-        .route(
-            "/failure-reporter/status/recompute",
-            post(recompute_bug_monitor_status),
-        )
-        .route("/bug-monitor/pause", post(pause_bug_monitor))
-        .route("/failure-reporter/pause", post(pause_bug_monitor))
-        .route("/bug-monitor/resume", post(resume_bug_monitor))
-        .route("/failure-reporter/resume", post(resume_bug_monitor))
-        .route("/bug-monitor/debug", get(get_bug_monitor_debug))
-        .route("/failure-reporter/debug", get(get_bug_monitor_debug))
-        .route(
-            "/bug-monitor/security/authority-inventory",
-            get(get_bug_monitor_authority_inventory),
-        )
-        .route(
-            "/failure-reporter/security/authority-inventory",
-            get(get_bug_monitor_authority_inventory),
-        )
-        .route(
-            "/bug-monitor/security/posture-checks",
-            get(get_bug_monitor_security_posture_checks),
-        )
-        .route(
-            "/failure-reporter/security/posture-checks",
-            get(get_bug_monitor_security_posture_checks),
-        )
-        .route(
-            "/bug-monitor/security/assessment-probes",
-            post(run_bug_monitor_security_assessment_probes),
-        )
-        .route(
-            "/failure-reporter/security/assessment-probes",
-            post(run_bug_monitor_security_assessment_probes),
-        )
-        .route(
-            "/bug-monitor/security/assessment-report",
-            post(generate_bug_monitor_security_assessment_report),
-        )
-        .route(
-            "/failure-reporter/security/assessment-report",
-            post(generate_bug_monitor_security_assessment_report),
-        )
-        .route(
-            "/bug-monitor/security/deployment-cards",
-            post(generate_bug_monitor_deployment_cards),
-        )
-        .route(
-            "/failure-reporter/security/deployment-cards",
-            post(generate_bug_monitor_deployment_cards),
-        )
-        .route(
-            "/bug-monitor/route-preview",
-            post(preview_bug_monitor_route),
-        )
-        .route(
-            "/failure-reporter/route-preview",
-            post(preview_bug_monitor_route),
-        )
-        .route("/bug-monitor/incidents", get(list_bug_monitor_incidents))
-        .route(
-            "/failure-reporter/incidents",
-            get(list_bug_monitor_incidents),
-        )
-        .route(
-            "/bug-monitor/incidents/bulk-delete",
-            post(bulk_delete_bug_monitor_incidents),
-        )
-        .route(
-            "/failure-reporter/incidents/bulk-delete",
-            post(bulk_delete_bug_monitor_incidents),
-        )
-        .route(
-            "/bug-monitor/incidents/{id}",
-            get(get_bug_monitor_incident).delete(delete_bug_monitor_incident),
-        )
-        .route(
-            "/failure-reporter/incidents/{id}",
-            get(get_bug_monitor_incident).delete(delete_bug_monitor_incident),
-        )
-        .route(
-            "/bug-monitor/incidents/{id}/replay",
-            post(replay_bug_monitor_incident),
-        )
-        .route(
-            "/failure-reporter/incidents/{id}/replay",
-            post(replay_bug_monitor_incident),
-        )
-        .route("/bug-monitor/drafts", get(list_bug_monitor_drafts))
-        .route("/failure-reporter/drafts", get(list_bug_monitor_drafts))
-        .route(
-            "/bug-monitor/drafts/bulk-delete",
-            post(bulk_delete_bug_monitor_drafts),
-        )
-        .route(
-            "/failure-reporter/drafts/bulk-delete",
-            post(bulk_delete_bug_monitor_drafts),
-        )
-        .route("/bug-monitor/posts", get(list_bug_monitor_posts))
-        .route("/failure-reporter/posts", get(list_bug_monitor_posts))
-        .route(
-            "/bug-monitor/posts/bulk-delete",
-            post(bulk_delete_bug_monitor_posts),
-        )
-        .route(
-            "/failure-reporter/posts/bulk-delete",
-            post(bulk_delete_bug_monitor_posts),
-        )
-        .route("/bug-monitor/posts/{id}", delete(delete_bug_monitor_post))
-        .route(
-            "/failure-reporter/posts/{id}",
-            delete(delete_bug_monitor_post),
-        )
-        .route(
-            "/bug-monitor/drafts/{id}",
-            get(get_bug_monitor_draft).delete(delete_bug_monitor_draft),
-        )
-        .route(
-            "/failure-reporter/drafts/{id}",
-            get(get_bug_monitor_draft).delete(delete_bug_monitor_draft),
-        )
-        .route(
-            "/bug-monitor/drafts/{id}/approve",
-            post(approve_bug_monitor_draft),
-        )
-        .route(
-            "/failure-reporter/drafts/{id}/approve",
-            post(approve_bug_monitor_draft),
-        )
-        .route(
-            "/bug-monitor/drafts/{id}/deny",
-            post(deny_bug_monitor_draft),
-        )
-        .route(
-            "/failure-reporter/drafts/{id}/deny",
-            post(deny_bug_monitor_draft),
-        )
-        .route("/bug-monitor/report", post(report_bug_monitor_issue))
-        .route("/failure-reporter/report", post(report_bug_monitor_issue))
-        .route(
-            "/bug-monitor/intake/report",
-            post(report_bug_monitor_intake),
-        )
-        .route(
-            "/failure-reporter/intake/report",
-            post(report_bug_monitor_intake),
-        )
-        .route(
-            "/bug-monitor/intake/keys",
-            get(list_bug_monitor_intake_keys).post(create_bug_monitor_intake_key),
-        )
-        .route(
-            "/bug-monitor/intake/keys/{id}/disable",
-            post(disable_bug_monitor_intake_key),
-        )
-        .route(
-            "/bug-monitor/log-sources/{project_id}/{source_id}/reset-offset",
-            post(reset_bug_monitor_log_source_offset),
-        )
-        .route(
-            "/bug-monitor/log-sources/{project_id}/{source_id}/replay-latest",
-            post(replay_latest_bug_monitor_log_source_candidate),
-        )
-        .route(
-            "/bug-monitor/drafts/{id}/triage-run",
-            post(create_bug_monitor_triage_run),
-        )
-        .route(
-            "/failure-reporter/drafts/{id}/triage-run",
-            post(create_bug_monitor_triage_run),
-        )
-        .route(
-            "/bug-monitor/drafts/{id}/triage-summary",
-            post(create_bug_monitor_triage_summary),
-        )
-        .route(
-            "/failure-reporter/drafts/{id}/triage-summary",
-            post(create_bug_monitor_triage_summary),
-        )
-        .route(
-            "/bug-monitor/drafts/{id}/issue-draft",
-            post(draft_bug_monitor_issue),
-        )
-        .route(
-            "/failure-reporter/drafts/{id}/issue-draft",
-            post(draft_bug_monitor_issue),
-        )
-        .route(
-            "/bug-monitor/drafts/{id}/publish",
-            post(publish_bug_monitor_draft),
-        )
-        .route(
-            "/failure-reporter/drafts/{id}/publish",
-            post(publish_bug_monitor_draft),
-        )
-        .route(
-            "/bug-monitor/drafts/{id}/recheck-match",
-            post(recheck_bug_monitor_draft_match),
-        )
-        .route(
-            "/failure-reporter/drafts/{id}/recheck-match",
-            post(recheck_bug_monitor_draft_match),
-        )
+    let router = router.route(
+        "/config/incident-monitor",
+        get(get_bug_monitor_config).patch(patch_bug_monitor_config),
+    );
+    let router = apply_incident_monitor_routes(router, "/incident-monitor");
+
+    // Temporary compatibility until the SDK/UI rename batches land.
+    let router = router.route(
+        "/config/bug-monitor",
+        get(get_bug_monitor_config).patch(patch_bug_monitor_config),
+    );
+    apply_incident_monitor_routes(router, "/bug-monitor")
+}
+
+fn apply_incident_monitor_routes(router: Router<AppState>, prefix: &str) -> Router<AppState> {
+    let router = route_prefixed(router, prefix, "/status", get(get_bug_monitor_status));
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/status/recompute",
+        post(recompute_bug_monitor_status),
+    );
+    let router = route_prefixed(router, prefix, "/pause", post(pause_bug_monitor));
+    let router = route_prefixed(router, prefix, "/resume", post(resume_bug_monitor));
+    let router = route_prefixed(router, prefix, "/debug", get(get_bug_monitor_debug));
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/security/authority-inventory",
+        get(get_bug_monitor_authority_inventory),
+    );
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/security/posture-checks",
+        get(get_bug_monitor_security_posture_checks),
+    );
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/security/assessment-probes",
+        post(run_bug_monitor_security_assessment_probes),
+    );
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/security/assessment-report",
+        post(generate_bug_monitor_security_assessment_report),
+    );
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/security/deployment-cards",
+        post(generate_bug_monitor_deployment_cards),
+    );
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/route-preview",
+        post(preview_bug_monitor_route),
+    );
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/incidents",
+        get(list_bug_monitor_incidents),
+    );
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/incidents/bulk-delete",
+        post(bulk_delete_bug_monitor_incidents),
+    );
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/incidents/{id}",
+        get(get_bug_monitor_incident).delete(delete_bug_monitor_incident),
+    );
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/incidents/{id}/replay",
+        post(replay_bug_monitor_incident),
+    );
+    let router = route_prefixed(router, prefix, "/drafts", get(list_bug_monitor_drafts));
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/drafts/bulk-delete",
+        post(bulk_delete_bug_monitor_drafts),
+    );
+    let router = route_prefixed(router, prefix, "/posts", get(list_bug_monitor_posts));
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/posts/bulk-delete",
+        post(bulk_delete_bug_monitor_posts),
+    );
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/posts/{id}",
+        delete(delete_bug_monitor_post),
+    );
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/drafts/{id}",
+        get(get_bug_monitor_draft).delete(delete_bug_monitor_draft),
+    );
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/drafts/{id}/approve",
+        post(approve_bug_monitor_draft),
+    );
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/drafts/{id}/deny",
+        post(deny_bug_monitor_draft),
+    );
+    let router = route_prefixed(router, prefix, "/report", post(report_bug_monitor_issue));
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/intake/report",
+        post(report_bug_monitor_intake),
+    );
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/intake/keys",
+        get(list_bug_monitor_intake_keys).post(create_bug_monitor_intake_key),
+    );
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/intake/keys/{id}/disable",
+        post(disable_bug_monitor_intake_key),
+    );
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/log-sources/{project_id}/{source_id}/reset-offset",
+        post(reset_bug_monitor_log_source_offset),
+    );
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/log-sources/{project_id}/{source_id}/replay-latest",
+        post(replay_latest_bug_monitor_log_source_candidate),
+    );
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/drafts/{id}/triage-run",
+        post(create_bug_monitor_triage_run),
+    );
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/drafts/{id}/triage-summary",
+        post(create_bug_monitor_triage_summary),
+    );
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/drafts/{id}/issue-draft",
+        post(draft_bug_monitor_issue),
+    );
+    let router = route_prefixed(
+        router,
+        prefix,
+        "/drafts/{id}/publish",
+        post(publish_bug_monitor_draft),
+    );
+    route_prefixed(
+        router,
+        prefix,
+        "/drafts/{id}/recheck-match",
+        post(recheck_bug_monitor_draft_match),
+    )
+}
+
+fn route_prefixed(
+    router: Router<AppState>,
+    prefix: &str,
+    suffix: &str,
+    method_router: MethodRouter<AppState>,
+) -> Router<AppState> {
+    let path = format!("{prefix}{suffix}");
+    router.route(&path, method_router)
 }

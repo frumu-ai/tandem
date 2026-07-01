@@ -136,6 +136,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Control Panel settings now label the Bug Monitor router setup as Incident
   Monitor while keeping the legacy Bug Monitor operational page and GitHub
   compatibility path intact.
+- Server routes now expose canonical Incident Monitor endpoints under
+  `/incident-monitor/*` and `/config/incident-monitor`, with the stale
+  `/failure-reporter/*` aliases removed.
 - Incident Monitor security docs now call out the default secret-redaction and
   retention posture for reports, receipts, and protected audit evidence.
 

@@ -99,7 +99,7 @@ async fn bug_monitor_deployment_cards_generate_inventory_cards_and_markdown() {
 
     let payload = post_bug_monitor_deployment_cards(
         app,
-        "/failure-reporter/security/deployment-cards",
+        "/incident-monitor/security/deployment-cards",
         json!({
             "include_raw_inventory": true,
             "defaults": {

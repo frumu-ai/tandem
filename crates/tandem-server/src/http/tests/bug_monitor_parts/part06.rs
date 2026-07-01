@@ -263,7 +263,7 @@ async fn bug_monitor_config_patch_emits_redacted_admin_audit() {
 
     let patch_req = Request::builder()
         .method("PATCH")
-        .uri("/config/bug-monitor")
+        .uri("/config/incident-monitor")
         .header("content-type", "application/json")
         .header("x-tandem-token", "tk_admin")
         .body(Body::from(
@@ -320,6 +320,69 @@ async fn bug_monitor_config_patch_emits_redacted_admin_audit() {
 
 #[tokio::test]
 #[serial_test::serial(bug_monitor_http)]
+async fn incident_monitor_routes_are_canonical_and_failure_reporter_alias_is_removed() {
+    let state = test_state().await;
+    state.set_api_token(Some("tk_admin".to_string())).await;
+    let app = app_router(state);
+
+    let status_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/incident-monitor/status")
+                .header("x-tandem-token", "tk_admin")
+                .body(Body::empty())
+                .expect("incident monitor status request"),
+        )
+        .await
+        .expect("incident monitor status response");
+    assert_eq!(status_resp.status(), StatusCode::OK);
+
+    let config_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/config/incident-monitor")
+                .header("x-tandem-token", "tk_admin")
+                .body(Body::empty())
+                .expect("incident monitor config request"),
+        )
+        .await
+        .expect("incident monitor config response");
+    assert_eq!(config_resp.status(), StatusCode::OK);
+
+    let failure_status_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/failure-reporter/status")
+                .header("x-tandem-token", "tk_admin")
+                .body(Body::empty())
+                .expect("failure reporter status request"),
+        )
+        .await
+        .expect("failure reporter status response");
+    assert_eq!(failure_status_resp.status(), StatusCode::NOT_FOUND);
+
+    let failure_config_resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/config/failure-reporter")
+                .header("x-tandem-token", "tk_admin")
+                .body(Body::empty())
+                .expect("failure reporter config request"),
+        )
+        .await
+        .expect("failure reporter config response");
+    assert_eq!(failure_config_resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+#[serial_test::serial(bug_monitor_http)]
 async fn bug_monitor_scoped_intake_key_cannot_call_privileged_routes() {
     let state = test_state().await;
     let workspace = tempfile::tempdir().expect("bug monitor scoped intake workspace");
@@ -364,7 +427,7 @@ async fn bug_monitor_scoped_intake_key_cannot_call_privileged_routes() {
     let app = app_router(state.clone());
     let intake_req = Request::builder()
         .method("POST")
-        .uri("/bug-monitor/intake/report")
+        .uri("/incident-monitor/intake/report")
         .header("content-type", "application/json")
         .header("x-tandem-bug-monitor-intake-key", raw_key)
         .body(Body::from(
@@ -405,7 +468,7 @@ async fn bug_monitor_scoped_intake_key_cannot_call_privileged_routes() {
     let privileged_requests = vec![
         Request::builder()
             .method("GET")
-            .uri("/config/bug-monitor")
+            .uri("/config/incident-monitor")
             .header("x-tandem-bug-monitor-intake-key", raw_key)
             .body(Body::empty())
             .expect("config request"),
@@ -417,10 +480,10 @@ async fn bug_monitor_scoped_intake_key_cannot_call_privileged_routes() {
             .expect("authority inventory request"),
         Request::builder()
             .method("GET")
-            .uri("/failure-reporter/security/authority-inventory")
+            .uri("/incident-monitor/security/authority-inventory")
             .header("x-tandem-bug-monitor-intake-key", raw_key)
             .body(Body::empty())
-            .expect("failure reporter authority inventory request"),
+            .expect("incident monitor authority inventory request"),
         Request::builder()
             .method("POST")
             .uri("/bug-monitor/route-preview")
