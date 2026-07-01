@@ -1263,6 +1263,55 @@ export interface BugMonitorPostureFinding {
   [key: string]: unknown;
 }
 
+export interface BugMonitorAssessmentProbeRunInput {
+  mode?: "dry_run" | "disabled" | string;
+  probes?: string[];
+  include_draft_suggestions?: boolean;
+  includeDraftSuggestions?: boolean;
+  [key: string]: unknown;
+}
+
+export interface BugMonitorAssessmentProbeRunResponse {
+  schema_version: number;
+  generated_at_ms?: number;
+  scope?: JsonObject;
+  probe_policy?: JsonObject;
+  counts?: BugMonitorAssessmentProbeCounts;
+  results: BugMonitorAssessmentProbeResult[];
+  authority_inventory?: JsonObject;
+  evidence_pack?: JsonObject;
+  draft_conversion?: JsonObject;
+  sensitive_values?: JsonObject;
+  [key: string]: unknown;
+}
+
+export interface BugMonitorAssessmentProbeCounts {
+  results?: number;
+  pass?: number;
+  fail?: number;
+  blocked?: number;
+  by_status?: Record<string, number>;
+  draft_suggestions?: number;
+  [key: string]: unknown;
+}
+
+export interface BugMonitorAssessmentProbeResult {
+  probe_id: string;
+  target?: JsonObject;
+  expected_behavior?: string;
+  observed_behavior?: string;
+  status: "pass" | "fail" | "blocked" | string;
+  passed?: boolean;
+  blocked?: boolean;
+  fingerprint?: string;
+  finding_id?: string | null;
+  evidence_refs?: JsonObject[];
+  source_finding?: JsonObject | null;
+  incident_draft_suggestion?: JsonObject | null;
+  dry_run?: boolean;
+  [key: string]: unknown;
+}
+
 export interface BugMonitorIncidentRecord {
   incident_id: string;
   fingerprint?: string;

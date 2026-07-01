@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { TandemClient } from "../src/client.js";
 import type {
   BugMonitorAuthorityInventoryResponse,
+  BugMonitorAssessmentProbeRunResponse,
   BugMonitorConfigResponse,
   BugMonitorDestinationConfig,
   BugMonitorIntakeKeyCreateInput,
@@ -394,6 +395,74 @@ describe("Bug Monitor external project public types", () => {
       expect(calls[0]).toMatchObject({
         url: "http://localhost:39731/bug-monitor/security/posture-checks?rules=mcp_server_without_tool_allowlist&min_severity=medium",
         method: "GET",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("runs security assessment probes through the SDK helper", async () => {
+    const client = new TandemClient({ baseUrl: "http://localhost:39731", token: "test-token" });
+    const originalFetch = globalThis.fetch;
+    const calls: Array<{ url: string; method: string; body?: string }> = [];
+    const response: BugMonitorAssessmentProbeRunResponse = {
+      schema_version: 1,
+      scope: {
+        source: "bug_monitor_security_assessment_probes",
+        read_only: true,
+        dry_run: true,
+      },
+      probe_policy: {
+        mode: "dry_run",
+        selected_probe_ids: ["webhook_url_policy"],
+      },
+      results: [
+        {
+          probe_id: "webhook_url_policy",
+          status: "fail",
+          expected_behavior: "Webhook destinations must use public HTTPS URLs.",
+          observed_behavior: "Webhook URL points to localhost/private network",
+          incident_draft_suggestion: {
+            source: "security_assessment_probe",
+          },
+        },
+      ],
+      counts: {
+        results: 1,
+        fail: 1,
+        by_status: { fail: 1 },
+        draft_suggestions: 1,
+      },
+      evidence_pack: {
+        persisted: true,
+        context_run_id: "bug-monitor-assessment-probes-1",
+      },
+    };
+
+    globalThis.fetch = (async (input, init) => {
+      calls.push({
+        url: String(input),
+        method: String(init?.method ?? "GET"),
+        body: String(init?.body ?? ""),
+      });
+      return new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const probes = await client.bugMonitor.runAssessmentProbes({
+        probes: ["webhook_url_policy"],
+      });
+      expect(probes.results[0]?.probe_id).toBe("webhook_url_policy");
+      expect(probes.counts?.fail).toBe(1);
+      expect(calls[0]).toMatchObject({
+        url: "http://localhost:39731/bug-monitor/security/assessment-probes",
+        method: "POST",
+      });
+      expect(JSON.parse(calls[0]?.body ?? "{}")).toEqual({
+        probes: ["webhook_url_policy"],
       });
     } finally {
       globalThis.fetch = originalFetch;

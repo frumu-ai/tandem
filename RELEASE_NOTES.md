@@ -116,6 +116,14 @@ Bug Monitor draft-conversion payloads. The docs now define AI Agent Security
 Posture positioning, packaging, demo narrative, report outline, self-monitoring
 boundaries, and comparisons with SAST, DAST, SIEM, CSPM, EDR, and traditional
 workflow automation without overclaiming full vulnerability scanning.
+Incident Monitor now also provides controlled dry-run security assessment
+probes for approval-gated tool policy, high-risk route previews, fail-closed
+destination readiness, scoped intake-key restrictions, MCP destination
+allowlists, and webhook URL policy. Probe runs reject scoped intake keys,
+require full API-token/admin context when token auth is configured, persist
+evidence packs as context-run artifacts, emit admin audit events, and return
+draft-conversion suggestions for failed probes through the TypeScript and
+Python SDKs.
 The SDK destination removal helpers now also drop routes that would otherwise
 be left with no explicit destinations, preventing accidental fallback to the
 default destination set.

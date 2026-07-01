@@ -13,6 +13,7 @@ from tandem_client.types import (
     BugMonitorIncidentRecord,
     BugMonitorPostRecord,
     BugMonitorPostureChecksResponse,
+    BugMonitorAssessmentProbeRunResponse,
     BugMonitorRoutePreviewResponse,
     EngineEvent,
 )
@@ -477,6 +478,60 @@ async def test_bug_monitor_posture_checks_sdk_helper() -> None:
     assert posture.counts is not None
     assert posture.counts.by_severity["high"] == 1
     assert posture_route.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_bug_monitor_assessment_probes_sdk_helper() -> None:
+    probes_payload = {
+        "schema_version": 1,
+        "scope": {
+            "source": "bug_monitor_security_assessment_probes",
+            "read_only": True,
+            "dry_run": True,
+        },
+        "probe_policy": {
+            "mode": "dry_run",
+            "selected_probe_ids": ["webhook_url_policy"],
+        },
+        "results": [
+            {
+                "probe_id": "webhook_url_policy",
+                "status": "fail",
+                "expected_behavior": "Webhook destinations must use public HTTPS URLs.",
+                "observed_behavior": "Webhook URL points to localhost/private network",
+                "incident_draft_suggestion": {
+                    "source": "security_assessment_probe",
+                },
+            }
+        ],
+        "counts": {
+            "results": 1,
+            "fail": 1,
+            "by_status": {"fail": 1},
+            "draft_suggestions": 1,
+        },
+        "evidence_pack": {
+            "persisted": True,
+            "context_run_id": "bug-monitor-assessment-probes-1",
+        },
+    }
+    probes_route = respx.post(
+        "http://localhost:39731/bug-monitor/security/assessment-probes",
+        json={"probes": ["webhook_url_policy"]},
+    ).mock(return_value=httpx.Response(200, json=probes_payload))
+
+    async with TandemClient(base_url="http://localhost:39731", token="token") as client:
+        probes = await client.bug_monitor.run_assessment_probes(
+            probes=["webhook_url_policy"],
+        )
+
+    typed_probes = BugMonitorAssessmentProbeRunResponse.model_validate(probes_payload)
+    assert probes.schema_version == typed_probes.schema_version
+    assert probes.results[0].probe_id == "webhook_url_policy"
+    assert probes.counts is not None
+    assert probes.counts.fail == 1
+    assert probes_route.called
 
 
 @pytest.mark.asyncio

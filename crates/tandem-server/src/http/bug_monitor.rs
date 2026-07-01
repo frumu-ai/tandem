@@ -2,9 +2,9 @@ use crate::capability_resolver::canonicalize_tool_name;
 use crate::http::AppState;
 use crate::{
     bug_monitor_github, BugMonitorApprovalPolicy, BugMonitorConfig, BugMonitorDestinationConfig,
-    BugMonitorDestinationReadiness, BugMonitorDraftRecord, BugMonitorIncidentRecord,
-    BugMonitorRouteConfig, BugMonitorRoutePreviewMatch, BugMonitorRoutePreviewResponse,
-    BugMonitorSubmission,
+    BugMonitorDestinationKind, BugMonitorDestinationReadiness, BugMonitorDraftRecord,
+    BugMonitorIncidentRecord, BugMonitorRouteConfig, BugMonitorRoutePreviewMatch,
+    BugMonitorRoutePreviewResponse, BugMonitorSubmission,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -24,3 +24,4 @@ include!("bug_monitor_parts/part03.rs");
 include!("bug_monitor_parts/part04.rs");
 include!("bug_monitor_parts/part09.rs");
 include!("bug_monitor_parts/part10.rs");
+include!("bug_monitor_parts/part11.rs");

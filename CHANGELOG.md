@@ -97,6 +97,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refs, mitigation guidance, routing suggestions, and normal Bug Monitor draft
   conversion payloads. Checks default to dry-run and support enabled/disabled
   rule policy modes.
+- Added dry-run Incident Monitor security assessment probes for approval-gated
+  tool policy, high-risk route approval, fail-closed destination readiness,
+  scoped intake restrictions, MCP tool allowlists, and webhook URL policy.
+  Probe runs require full API-token/admin context, reject scoped intake keys,
+  persist evidence packs as context-run artifacts, emit protected admin audit
+  events, and expose TypeScript/Python SDK helpers.
 - Added Incident Monitor AI Agent Security Posture positioning docs with
   buyer-facing packaging, demo narrative, report outline, comparison guidance,
   and explicit boundaries against broad vulnerability-scanner or SIEM claims.

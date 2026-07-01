@@ -964,6 +964,47 @@ class BugMonitorPostureChecksResponse(BaseModel):
     sensitive_values: Optional[dict[str, Any]] = None
 
 
+class BugMonitorAssessmentProbeCounts(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    results: Optional[int] = None
+    pass_: Optional[int] = Field(default=None, alias="pass")
+    fail: Optional[int] = None
+    blocked: Optional[int] = None
+    by_status: dict[str, int] = {}
+    draft_suggestions: Optional[int] = None
+
+
+class BugMonitorAssessmentProbeResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    probe_id: str
+    target: Optional[dict[str, Any]] = None
+    expected_behavior: Optional[str] = None
+    observed_behavior: Optional[str] = None
+    status: str
+    passed: Optional[bool] = None
+    blocked: Optional[bool] = None
+    fingerprint: Optional[str] = None
+    finding_id: Optional[str] = None
+    evidence_refs: list[dict[str, Any]] = []
+    source_finding: Optional[dict[str, Any]] = None
+    incident_draft_suggestion: Optional[dict[str, Any]] = None
+    dry_run: Optional[bool] = None
+
+
+class BugMonitorAssessmentProbeRunResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    schema_version: int
+    generated_at_ms: Optional[int] = None
+    scope: Optional[dict[str, Any]] = None
+    probe_policy: Optional[dict[str, Any]] = None
+    counts: Optional[BugMonitorAssessmentProbeCounts] = None
+    results: list[BugMonitorAssessmentProbeResult] = []
+    authority_inventory: Optional[dict[str, Any]] = None
+    evidence_pack: Optional[dict[str, Any]] = None
+    draft_conversion: Optional[dict[str, Any]] = None
+    sensitive_values: Optional[dict[str, Any]] = None
+
+
 class BugMonitorIncidentRecord(BaseModel):
     model_config = ConfigDict(extra="allow")
     incident_id: str
