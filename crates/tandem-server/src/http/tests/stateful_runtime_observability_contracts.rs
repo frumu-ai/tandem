@@ -2,7 +2,7 @@ use super::*;
 
 use crate::audit::append_protected_audit_event;
 use crate::automation_v2::types::{
-    AutomationRunCheckpoint, AutomationRunStatus, AutomationV2RunRecord,
+    AutomationPendingGate, AutomationRunCheckpoint, AutomationRunStatus, AutomationV2RunRecord,
 };
 use crate::stateful_runtime::{
     append_stateful_run_event, stateful_reliability_path_from_runtime_events_path,
@@ -149,6 +149,134 @@ async fn run_observability_contract_joins_governance_waits_and_reliability() {
     assert!(action_names.contains(&"retry_or_reconcile_effect"));
     assert!(action_names.contains(&"resolve_dead_letter"));
     assert!(action_names.contains(&"run_or_cancel_compensation"));
+}
+
+#[tokio::test]
+async fn run_observability_falls_back_to_run_level_active_wait() {
+    let state = test_state().await;
+    let tenant = tenant("org-observability-wait", "workspace-wait", "operator-a");
+    let run_id = "run-level-wait";
+    let mut run = automation_run(run_id, tenant.clone());
+    run.status = AutomationRunStatus::AwaitingApproval;
+    run.checkpoint.awaiting_gate = Some(AutomationPendingGate {
+        node_id: "approve-run-level".to_string(),
+        title: "Approve run".to_string(),
+        instructions: Some("review the run-level gate".to_string()),
+        decisions: vec!["approve".to_string(), "reject".to_string()],
+        rework_targets: Vec::new(),
+        requested_at_ms: 2_250,
+        upstream_node_ids: vec!["prepare".to_string()],
+        metadata: None,
+        expiry_policy: None,
+    });
+    state
+        .automation_v2_runs
+        .write()
+        .await
+        .insert(run_id.to_string(), run);
+
+    let response = app_router(state)
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/stateful-runtime/runs/{run_id}/observability"))
+                .header("x-tandem-org-id", tenant.org_id.as_str())
+                .header("x-tandem-workspace-id", tenant.workspace_id.as_str())
+                .header("x-tandem-actor-id", "operator-a")
+                .body(Body::empty())
+                .expect("observability request"),
+        )
+        .await
+        .expect("observability response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = response_json(response).await;
+    assert_eq!(payload["counts"]["waits"], json!(0));
+    assert_eq!(payload["counts"]["active_waits"], json!(1));
+    assert_eq!(
+        payload["current_wait"]["wait_id"],
+        json!("approve-run-level")
+    );
+    assert_eq!(payload["current_wait"]["wait_kind"], json!("approval"));
+    assert_eq!(
+        payload["current_wait"]["metadata"]["source"],
+        json!("run_record")
+    );
+    let action_names = payload["operator_summary"]["allowed_actions"]
+        .as_array()
+        .expect("actions")
+        .iter()
+        .filter_map(|action| action.get("action").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    assert!(action_names.contains(&"review_wait"));
+}
+
+#[tokio::test]
+async fn run_observability_tails_protected_audit_events() {
+    let state = test_state().await;
+    let tenant = tenant("org-observability-audit", "workspace-audit", "operator-a");
+    let run_id = "run-audit-tail";
+    state
+        .automation_v2_runs
+        .write()
+        .await
+        .insert(run_id.to_string(), automation_run(run_id, tenant.clone()));
+    append_protected_audit_event(
+        &state,
+        "tail.old",
+        &tenant,
+        Some("operator-a".to_string()),
+        json!({ "run_id": run_id, "marker": "old" }),
+    )
+    .await
+    .expect("append old protected audit");
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    append_protected_audit_event(
+        &state,
+        "tail.middle",
+        &tenant,
+        Some("operator-a".to_string()),
+        json!({ "run_id": run_id, "marker": "middle" }),
+    )
+    .await
+    .expect("append middle protected audit");
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    append_protected_audit_event(
+        &state,
+        "tail.newest",
+        &tenant,
+        Some("operator-a".to_string()),
+        json!({ "run_id": run_id, "marker": "newest" }),
+    )
+    .await
+    .expect("append newest protected audit");
+
+    let response = app_router(state)
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/stateful-runtime/runs/{run_id}/observability?audit_limit=2"
+                ))
+                .header("x-tandem-org-id", tenant.org_id.as_str())
+                .header("x-tandem-workspace-id", tenant.workspace_id.as_str())
+                .header("x-tandem-actor-id", "operator-a")
+                .body(Body::empty())
+                .expect("observability request"),
+        )
+        .await
+        .expect("observability response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = response_json(response).await;
+    assert_eq!(payload["counts"]["protected_audit_events"], json!(2));
+    let event_types = payload["audit"]["protected_events"]
+        .as_array()
+        .expect("protected audit events")
+        .iter()
+        .filter_map(|event| event.get("event_type").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    assert_eq!(event_types, vec!["tail.middle", "tail.newest"]);
 }
 
 #[tokio::test]

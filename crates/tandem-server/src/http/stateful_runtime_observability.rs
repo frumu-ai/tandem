@@ -11,7 +11,7 @@ use crate::stateful_runtime::{
     StatefulReliabilityQuery, StatefulRunEventQuery, StatefulRunEventRecord,
     StatefulRuntimeStoragePaths, StatefulToolEffectRecord, StatefulToolEffectStatus,
     StatefulWaitQuery, StatefulWaitRecord, StatefulWaitStatus, StatefulWorkflowRunRecord,
-    StatefulWorkflowRunStatus,
+    StatefulWorkflowRunStatus, STATEFUL_RUNTIME_SCHEMA_VERSION,
 };
 use tandem_types::{PolicyDecisionEffect, PolicyDecisionRecord};
 
@@ -97,14 +97,10 @@ pub(super) async fn get_stateful_run_observability(
         .await
         .into_iter()
         .filter(|event| audit_event_mentions_run(event, &run_id, &policy_decisions))
-        .take(audit_limit)
         .collect::<Vec<_>>();
+    let protected_audit = tail_protected_audit_events(protected_audit, audit_limit);
 
-    let active_waits = waits
-        .iter()
-        .filter(|wait| wait.status.is_active())
-        .cloned()
-        .collect::<Vec<_>>();
+    let active_waits = active_waits_for_observability(&run, &waits);
     let blocking_reasons = blocking_reasons(
         &run,
         &active_waits,
@@ -215,6 +211,61 @@ fn limit(value: Option<usize>) -> usize {
     value
         .unwrap_or(DEFAULT_OBSERVABILITY_LIMIT)
         .clamp(1, MAX_OBSERVABILITY_LIMIT)
+}
+
+fn active_waits_for_observability(
+    run: &StatefulWorkflowRunRecord,
+    waits: &[StatefulWaitRecord],
+) -> Vec<StatefulWaitRecord> {
+    let mut active_waits = waits
+        .iter()
+        .filter(|wait| wait.status.is_active())
+        .cloned()
+        .collect::<Vec<_>>();
+    if let Some(inferred_wait) = inferred_active_wait_from_run(run, &active_waits) {
+        active_waits.push(inferred_wait);
+    }
+    active_waits
+}
+
+fn inferred_active_wait_from_run(
+    run: &StatefulWorkflowRunRecord,
+    active_waits: &[StatefulWaitRecord],
+) -> Option<StatefulWaitRecord> {
+    let wait_kind = run.active_wait_kind.clone()?;
+    let wait_id = run.active_wait_id.as_ref()?;
+    if active_waits.iter().any(|wait| wait.wait_id == *wait_id) {
+        return None;
+    }
+    Some(StatefulWaitRecord {
+        schema_version: STATEFUL_RUNTIME_SCHEMA_VERSION,
+        wait_id: wait_id.clone(),
+        run_id: run.run_id.clone(),
+        wait_kind,
+        status: StatefulWaitStatus::Waiting,
+        scope: run.scope.clone(),
+        phase_id: run.current_phase_id.clone(),
+        reason: Some("run_level_active_wait".to_string()),
+        created_at_ms: run.updated_at_ms,
+        updated_at_ms: run.updated_at_ms,
+        wake_at_ms: None,
+        timeout_policy: None,
+        event_seq: None,
+        wake_idempotency_key: None,
+        claimed_by: None,
+        claimed_at_ms: None,
+        claim_expires_at_ms: None,
+        completed_at_ms: None,
+        metadata: Some(json!({ "source": "run_record" })),
+    })
+}
+
+fn tail_protected_audit_events(
+    mut events: Vec<ProtectedAuditEnvelope>,
+    limit: usize,
+) -> Vec<ProtectedAuditEnvelope> {
+    let start = events.len().saturating_sub(limit);
+    events.split_off(start)
 }
 
 fn blocking_reasons(
