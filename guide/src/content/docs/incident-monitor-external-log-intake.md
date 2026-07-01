@@ -15,7 +15,7 @@ Use this when an external app, CI job, or long-running agent writes logs that sh
 - External reporters can submit failures with scoped intake keys instead of the full engine token.
 - Scoped intake keys can only report for their configured project and scope. They cannot change config, run workflows, publish issues, call tools, or read files.
 - Reset/replay debug actions require the full engine API token because they mutate watcher state.
-- GitHub posting is still governed by Incident Monitor draft, approval, and publish policy.
+- Destination publishing is still governed by Incident Monitor draft, approval, route, and publish policy.
 - Incident Monitor extends this model with destination routing, route preview, destination readiness, and destination-neutral receipts. See [Incident Monitor Overview](./incident-monitor/overview/).
 
 ## Setup Checklist
@@ -210,7 +210,7 @@ The live smoke appends a unique JSONL error, resets the configured source offset
 
 When explaining this feature to an operator:
 
-1. Start with the safety model: watched logs and scoped report keys create Incident Monitor intake, not direct GitHub mutations.
+1. Start with the safety model: watched logs and scoped report keys create Incident Monitor intake, not direct destination publishes.
 2. Ask where the external project lives on disk and which log file contains actionable failures.
 3. Use the starter generator in Settings to create the first `monitored_projects` block.
 4. Save config and watch source health before creating any intake keys.
@@ -231,7 +231,8 @@ When explaining this feature to an operator:
 
 ## Related
 
-- [Incident Monitor and Issue Reporter](./reference/incident-monitor/)
+- [Incident Monitor Reference](./reference/incident-monitor/)
+- [Incident Monitor Agent Runtime Guide](./incident-monitor/agent-runtime-guide/)
 - [Incident Monitor Overview](./incident-monitor/overview/)
 - [Incident Monitor Destination Router](./incident-monitor/destination-router/)
 - [Control Panel](./control-panel/)

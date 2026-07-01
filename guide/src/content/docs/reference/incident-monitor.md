@@ -1,11 +1,11 @@
 ---
-title: Incident Monitor and Issue Reporter
-description: Use Tandem's Incident Monitor namespace to turn runtime failures into governed drafts, approvals, and published issues.
+title: Incident Monitor Reference
+description: Use Tandem's Incident Monitor namespace to turn runtime failures and safety signals into governed drafts, approvals, receipts, and destination publishes.
 ---
 
 Incident Monitor is Tandem's governed failure-intake pipeline.
 
-Use it when a workflow failure, recurring runtime error, manual report, or operator finding should become a reviewable draft instead of a direct external mutation.
+Use it when a workflow failure, recurring runtime error, manual report, safety signal, or operator finding should become a reviewable draft instead of a direct external mutation.
 
 ## What it covers
 
@@ -28,7 +28,9 @@ Use it when a workflow failure, recurring runtime error, manual report, or opera
 
 Incident Monitor is intentionally not "report everything immediately to GitHub". It keeps intake, triage, and approval separate so the system can add evidence before anything leaves Tandem.
 
-Incident Monitor is the destination-router evolution of this pipeline. GitHub, Linear, and signed webhook destinations use the governed router today, and the same source identity, routing, destination readiness, approval, and receipt model is available for future telemetry/database, MCP tool, and internal memory destinations. See [Incident Monitor Overview](../incident-monitor/overview/) and [Destination Router](../incident-monitor/destination-router/).
+Incident Monitor is the destination-router evolution of this pipeline. GitHub, Linear, signed webhook, local telemetry, generic MCP tool, and internal memory destinations use the governed router model with source identity, routing, destination readiness, approval, and receipts. See [Incident Monitor Overview](../incident-monitor/overview/) and [Destination Router](../incident-monitor/destination-router/).
+
+If you are an MCP-connected agent, start with [Incident Monitor Agent Runtime Guide](../incident-monitor/agent-runtime-guide/) before choosing a publish path.
 
 ## Control Panel Setup
 
@@ -246,3 +248,4 @@ async with TandemClient(base_url="http://localhost:39731", token="...") as clien
 - [Python SDK](../sdk/python/)
 - [Control Panel](../control-panel/)
 - [Incident Monitor Overview](../incident-monitor/overview/)
+- [Incident Monitor Agent Runtime Guide](../incident-monitor/agent-runtime-guide/)

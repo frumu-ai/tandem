@@ -110,29 +110,29 @@ TandemClient(base_url, token, *, timeout=20.0)
 
 ### `client.sessions`
 
-| Method                                                          | Description                                   |
-| --------------------------------------------------------------- | --------------------------------------------- |
-| `create(*, title?, directory?, provider?, model?, temperature?, top_p?, max_tokens?)` | Create a session, returns `session_id` |
-| `list(*, q?, page?, page_size?, archived?, scope?, workspace?)` | List sessions                                 |
-| `get(session_id)`                                               | Get session details                           |
-| `update(session_id, *, title?, archived?)`                      | Update title or archive status                |
-| `archive(session_id)`                                           | Archive a session                             |
-| `delete(session_id)`                                            | Permanently delete                            |
-| `messages(session_id)`                                          | Full message history                          |
-| `todos(session_id)`                                             | Pending TODOs                                 |
-| `active_run(session_id)`                                        | Currently active run                          |
-| `prompt_async(session_id, prompt, *, temperature?, top_p?, max_tokens?)` | Start async run → `PromptAsyncResult(run_id)` |
-| `prompt_sync(session_id, prompt)`                               | Blocking prompt → reply `str`                 |
-| `abort(session_id)`                                             | Abort the active run                          |
-| `cancel(session_id)`                                            | Cancel the active run                         |
-| `cancel_run(session_id, run_id)`                                | Cancel a specific run                         |
-| `fork(session_id)`                                              | Fork into a child session                     |
-| `diff(session_id)`                                              | Workspace diff from last run                  |
-| `revert(session_id)`                                            | Revert uncommitted changes                    |
-| `unrevert(session_id)`                                          | Undo a revert                                 |
-| `children(session_id)`                                          | List forked child sessions                    |
-| `summarize(session_id)`                                         | Trigger conversation summarization            |
-| `attach(session_id, target_workspace)`                          | Re-attach to a different workspace            |
+| Method                                                                                | Description                                   |
+| ------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `create(*, title?, directory?, provider?, model?, temperature?, top_p?, max_tokens?)` | Create a session, returns `session_id`        |
+| `list(*, q?, page?, page_size?, archived?, scope?, workspace?)`                       | List sessions                                 |
+| `get(session_id)`                                                                     | Get session details                           |
+| `update(session_id, *, title?, archived?)`                                            | Update title or archive status                |
+| `archive(session_id)`                                                                 | Archive a session                             |
+| `delete(session_id)`                                                                  | Permanently delete                            |
+| `messages(session_id)`                                                                | Full message history                          |
+| `todos(session_id)`                                                                   | Pending TODOs                                 |
+| `active_run(session_id)`                                                              | Currently active run                          |
+| `prompt_async(session_id, prompt, *, temperature?, top_p?, max_tokens?)`              | Start async run → `PromptAsyncResult(run_id)` |
+| `prompt_sync(session_id, prompt)`                                                     | Blocking prompt → reply `str`                 |
+| `abort(session_id)`                                                                   | Abort the active run                          |
+| `cancel(session_id)`                                                                  | Cancel the active run                         |
+| `cancel_run(session_id, run_id)`                                                      | Cancel a specific run                         |
+| `fork(session_id)`                                                                    | Fork into a child session                     |
+| `diff(session_id)`                                                                    | Workspace diff from last run                  |
+| `revert(session_id)`                                                                  | Revert uncommitted changes                    |
+| `unrevert(session_id)`                                                                | Undo a revert                                 |
+| `children(session_id)`                                                                | List forked child sessions                    |
+| `summarize(session_id)`                                                               | Trigger conversation summarization            |
+| `attach(session_id, target_workspace)`                                                | Re-attach to a different workspace            |
 
 #### Prompt with file parts
 
@@ -373,7 +373,9 @@ Use `client.worktrees.cleanup(...)` for operator-directed repo maintenance only.
 
 ### `client.incident_monitor`
 
-Use `client.incident_monitor` when a failure, manual report, or recurring runtime issue should become a governed draft instead of a direct GitHub mutation.
+Use `client.incident_monitor` when a failure, manual report, safety signal, or recurring runtime issue should become a governed draft instead of a direct external mutation.
+
+For the full MCP-agent operating sequence, see [Incident Monitor Agent Runtime Guide](../incident-monitor/agent-runtime-guide/).
 
 ```python
 status = await client.incident_monitor.get_status()
@@ -390,7 +392,8 @@ Key helpers:
 - `list_incidents()`, `get_incident()`, and `replay_incident()`
 - `list_drafts()`, `get_draft()`, `approve_draft()`, and `deny_draft()`
 - `create_triage_run()`, `create_triage_summary()`, `create_issue_draft()`, `publish_draft()`, and `recheck_match()`
-- `list_posts()`, plus `report()` for manual intake
+- `preview_route()`, `list_destinations()`, `list_routes()`, and `list_posts()`
+- `report()` for manual intake
 
 ### `client.coder`
 

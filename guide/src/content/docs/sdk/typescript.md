@@ -360,7 +360,9 @@ Use `client.worktrees.cleanup(...)` for operator-directed repo maintenance only.
 
 ### `client.incidentMonitor`
 
-Use `client.incidentMonitor` when a failure, manual report, or recurring runtime issue should become a governed draft instead of a direct GitHub mutation.
+Use `client.incidentMonitor` when a failure, manual report, safety signal, or recurring runtime issue should become a governed draft instead of a direct external mutation.
+
+For the full MCP-agent operating sequence, see [Incident Monitor Agent Runtime Guide](../incident-monitor/agent-runtime-guide/).
 
 ```typescript
 const status = await client.incidentMonitor.getStatus();
@@ -378,7 +380,8 @@ Key helpers:
 - `listIncidents()`, `getIncident()`, and `replayIncident()`
 - `listDrafts()`, `getDraft()`, `approveDraft()`, and `denyDraft()`
 - `createTriageRun()`, `createTriageSummary()`, `createIssueDraft()`, `publishDraft()`, and `recheckMatch()`
-- `listPosts()`, plus `report()` for manual intake
+- `previewRoute()`, `listDestinations()`, `listRoutes()`, and `listPosts()`
+- `report()` for manual intake
 
 ### `client.coder`
 

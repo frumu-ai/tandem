@@ -45,8 +45,8 @@ tandem-engine serve --api-token $(tandem-engine token generate)
   />
   <LinkCard
     title="Incident Monitor"
-    href="../incident-monitor/overview/"
-    description="Route incidents, safety signals, evidence, and governed destination drafts."
+    href="../incident-monitor/agent-runtime-guide/"
+    description="Use governed incident intake, triage, route preview, approval, publishing, and receipts safely."
   />
   <LinkCard
     title="Engine Authentication For Agents"
@@ -85,29 +85,29 @@ Both SDKs expose the same SSE event stream. These are the most common types you 
 
 All namespaces exist on both the TypeScript and Python clients.
 
-| Namespace                          | What it covers                                                           |
-| ---------------------------------- | ------------------------------------------------------------------------ |
-| `sessions`                         | Create, list, message, fork, abort, cancel, diff, revert sessions        |
-| `permissions`                      | List and reply to permission requests                                    |
-| `questions`                        | List/reply/reject AI-generated approval questions                        |
-| `providers`                        | Catalog, config, set API keys and defaults                               |
-| `channels`                         | Telegram, Discord, Slack integration config                              |
-| `mcp`                              | Register, connect, refresh MCP servers and tools                         |
-| `browser`                          | Browser sidecar status, install, and smoke testing only                  |
-| `storage`                          | Engine storage file inspection and legacy repair helpers                 |
-| `worktrees`                        | Repo-local stale managed-worktree preview and cleanup helpers            |
-| `memory`                           | Global memory: import, put, search, list, promote, demote, delete, audit |
-| `skills`                           | Agent skill packs: list, import, preview, install templates              |
-| `resources`                        | Key-value resource store (shared agent state)                            |
-| `workflows`                        | Workflow registry, runs, hooks, and event streams                        |
-| `workflowPlans` / `workflow_plans` | Planner chat, preview, and apply flows for automation generation         |
-| `routines`                         | Scheduled routines: create, run, approve/deny/pause/resume runs          |
-| `automations`                      | Legacy mission-scoped automations (compatibility path)                   |
-| `automationsV2` / `automations_v2` | Persistent multi-agent DAG automations with per-agent model policy       |
+| Namespace                              | What it covers                                                           |
+| -------------------------------------- | ------------------------------------------------------------------------ |
+| `sessions`                             | Create, list, message, fork, abort, cancel, diff, revert sessions        |
+| `permissions`                          | List and reply to permission requests                                    |
+| `questions`                            | List/reply/reject AI-generated approval questions                        |
+| `providers`                            | Catalog, config, set API keys and defaults                               |
+| `channels`                             | Telegram, Discord, Slack integration config                              |
+| `mcp`                                  | Register, connect, refresh MCP servers and tools                         |
+| `browser`                              | Browser sidecar status, install, and smoke testing only                  |
+| `storage`                              | Engine storage file inspection and legacy repair helpers                 |
+| `worktrees`                            | Repo-local stale managed-worktree preview and cleanup helpers            |
+| `memory`                               | Global memory: import, put, search, list, promote, demote, delete, audit |
+| `skills`                               | Agent skill packs: list, import, preview, install templates              |
+| `resources`                            | Key-value resource store (shared agent state)                            |
+| `workflows`                            | Workflow registry, runs, hooks, and event streams                        |
+| `workflowPlans` / `workflow_plans`     | Planner chat, preview, and apply flows for automation generation         |
+| `routines`                             | Scheduled routines: create, run, approve/deny/pause/resume runs          |
+| `automations`                          | Legacy mission-scoped automations (compatibility path)                   |
+| `automationsV2` / `automations_v2`     | Persistent multi-agent DAG automations with per-agent model policy       |
 | `incidentMonitor` / `incident_monitor` | Incident routing, drafts, evidence, approval, and publishing helpers     |
-| `coder`                            | Coder runs, artifacts, review summaries, and memory candidates           |
-| `agentTeams`                       | Spawn and manage multi-agent teams                                       |
-| `missions`                         | Multi-agent goals and work item tracking                                 |
+| `coder`                                | Coder runs, artifacts, review summaries, and memory candidates           |
+| `agentTeams`                           | Spawn and manage multi-agent teams                                       |
+| `missions`                             | Multi-agent goals and work item tracking                                 |
 
 For the storage model behind the `memory` namespace, see [Memory Internals](../memory-internals/). For local cleanup, context-run archives, Automation V2 run-history shards, and repo-local managed worktree cleanup, see [Storage Maintenance For Agents](../storage-maintenance/).
 

@@ -159,6 +159,10 @@ labels, and examples, with pre-rename redirects removed.
 CI now also runs an Incident Monitor terminology guard over public UI, SDK,
 docs, examples, scripts, and release surfaces so stale public terminology is
 reported with file and line details.
+The public guide now includes an agent-facing Incident Monitor runtime guide
+that teaches MCP-connected agents and SDK clients the safe readiness,
+route-preview, intake, triage, approval, publish, receipt, and governance
+evidence sequence instead of direct external mutation.
 The Incident Monitor rename also stays under the CI touched-file-size guard by
 compacting UI rename formatting and moving server service tests into a dedicated
 module.

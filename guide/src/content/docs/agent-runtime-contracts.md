@@ -105,6 +105,8 @@ When something fails, distinguish:
 
 Do not default to recreating the workflow. Inspect the run, checkpoint, artifacts, events, and governance/audit surfaces first.
 
+When a failure, safety signal, policy gap, or recurring runtime issue needs durable evidence and governed routing, use [Incident Monitor Agent Runtime Guide](./incident-monitor/agent-runtime-guide/) instead of mutating GitHub, Linear, webhooks, memory, telemetry, or MCP destinations directly.
+
 ## Answering questions from docs
 
 When using these docs through MCP or a published index:
@@ -122,3 +124,4 @@ When using these docs through MCP or a published index:
 - [Agents & Sessions](./agents-and-sessions/)
 - [Memory Internals](./memory-internals/)
 - [Storage Maintenance](./storage-maintenance/)
+- [Incident Monitor Agent Runtime Guide](./incident-monitor/agent-runtime-guide/)

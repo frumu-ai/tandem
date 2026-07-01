@@ -120,6 +120,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added an Incident Monitor terminology regression guard for public UI, SDK,
   docs, examples, scripts, and CI surfaces with a narrow compatibility
   allowlist.
+- Added an agent-facing Incident Monitor runtime guide for MCP-connected agents,
+  SDK users, and public docs consumers, including auth boundaries, safe
+  route-preview/triage/publish flow, governance evidence, and failure handling.
 
 ### Changed
 

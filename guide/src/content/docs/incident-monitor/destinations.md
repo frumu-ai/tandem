@@ -1,6 +1,6 @@
 ---
 title: Incident Monitor Destinations
-description: Track current and planned destination adapters for Incident Monitor publishing.
+description: Track destination adapters for governed Incident Monitor publishing.
 ---
 
 Destinations are governed publish targets. Every destination should have explicit readiness, route behavior, approval policy, idempotency, and receipt semantics.
@@ -33,23 +33,23 @@ Status: implemented.
 
 Webhook publishing validates URLs, enforces optional host allowlists, signs payloads with Tandem HMAC SHA-256 headers, bounds payload and response sizes, caps retry attempts, and records durable receipts with delivery ID, status code, attempt metadata, route metadata, and evidence digest. Report-only intake credentials cannot mutate routes or destinations.
 
-## Telemetry/database destination
+## Local telemetry destination
 
-Status: planned.
+Status: implemented.
 
-Telemetry/database publishing should write local, queryable incident payloads and receipts without requiring an external service.
+Local telemetry publishing records durable destination-aware post receipts that can be filtered by destination ID. Use it when a deployment needs local queryable evidence without requiring an external issue tracker or webhook receiver.
 
 ## Generic MCP tool destination
 
-Status: planned and high risk.
+Status: implemented and high risk.
 
-Generic MCP publishing must be allowlisted, schema-mapped, route-aware, and disabled by default. It should require explicit admin/full-token configuration because MCP tools may mutate external systems.
+Generic MCP publishing is allowlisted, schema-mapped, route-aware, and disabled by default. It requires explicit admin/full-token configuration with `allow_publish` because MCP tools may mutate external systems.
 
 ## Internal memory destination
 
-Status: planned.
+Status: implemented.
 
-Internal memory should store bounded, redacted incident summaries for recurrence patterns, policy gaps, duplicate failures, and operational risk learning.
+Internal memory stores bounded, redacted incident summaries for recurrence patterns, policy gaps, duplicate failures, and operational risk learning. It records memory refs and duplicate-suppression details in destination-aware receipts.
 
 ## Receipt requirements
 
