@@ -161,26 +161,13 @@ async fn bug_monitor_assessment_report_payload(
         .get("inventory")
         .cloned()
         .unwrap_or(Value::Null);
-    let monitored_sources = bug_monitor_posture_array(&inventory, &["monitored_sources"])
-        .into_iter()
-        .cloned()
-        .collect::<Vec<_>>();
-    let destinations = bug_monitor_posture_array(&inventory, &["destinations"])
-        .into_iter()
-        .cloned()
-        .collect::<Vec<_>>();
-    let routes = bug_monitor_posture_array(&inventory, &["routes"])
-        .into_iter()
-        .cloned()
-        .collect::<Vec<_>>();
-    let automation_specs = bug_monitor_posture_array(&inventory, &["automation_specs"])
-        .into_iter()
-        .cloned()
-        .collect::<Vec<_>>();
-    let approval_rules = bug_monitor_posture_array(&inventory, &["approval_rules"])
-        .into_iter()
-        .cloned()
-        .collect::<Vec<_>>();
+    let monitored_sources =
+        bug_monitor_posture_array(&inventory, &["monitored_sources"]).to_vec();
+    let destinations = bug_monitor_posture_array(&inventory, &["destinations"]).to_vec();
+    let routes = bug_monitor_posture_array(&inventory, &["routes"]).to_vec();
+    let automation_specs =
+        bug_monitor_posture_array(&inventory, &["automation_specs"]).to_vec();
+    let approval_rules = bug_monitor_posture_array(&inventory, &["approval_rules"]).to_vec();
     let finding_counts = bug_monitor_assessment_report_findings_counts(&findings);
     let probe_counts = bug_monitor_assessment_counts(&probe_results);
     let incident_summaries = incidents
