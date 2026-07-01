@@ -1,15 +1,15 @@
 ---
 title: Incident Monitor Overview
-description: Understand how Bug Monitor evolves into destination-agnostic Incident Monitor while preserving GitHub compatibility.
+description: Understand how Incident Monitor evolves into destination-agnostic Incident Monitor while preserving GitHub compatibility.
 ---
 
-Incident Monitor is the destination-agnostic evolution of Bug Monitor.
+Incident Monitor is the destination-agnostic evolution of Incident Monitor.
 
 Today, Tandem can ingest failures, create governed incidents and drafts, run triage, require approval, and publish to GitHub. The destination-router work keeps that GitHub behavior compatible while adding the model needed for Linear, webhook, telemetry/database, MCP tool, and internal memory destinations.
 
 ## Current behavior
 
-- Bug Monitor remains the production path for failure intake, draft review, triage, approval, and GitHub issue/comment publishing.
+- Incident Monitor remains the production path for failure intake, draft review, triage, approval, and GitHub issue/comment publishing.
 - Legacy configs without explicit destinations synthesize a default `legacy-github` destination.
 - GitHub publish still uses the existing MCP capability resolution and duplicate matching behavior.
 - Scoped intake keys can report only. They cannot publish, mutate routes or destinations, call tools, inspect files, or bypass approval.
@@ -28,7 +28,7 @@ The important shift is that Tandem separates the monitored source from the publi
 - Do not assume every incident becomes a GitHub issue.
 - Use route preview before publishing when destination choice matters.
 - Treat source identity, route tags, allowed destinations, tenant/workspace context, approval policy, and readiness as part of the incident state.
-- Preserve GitHub compatibility when touching current Bug Monitor paths.
+- Preserve GitHub compatibility when touching current Incident Monitor paths.
 - Do not use scoped intake credentials for publish, route management, destination setup, tool calls, or file inspection.
 
 ## Implemented now vs planned
@@ -63,4 +63,4 @@ Planned:
 - [Destinations](./destinations/)
 - [Security Posture Mode](./security-posture/)
 - [Setup Checklist](./setup-checklist/)
-- [Bug Monitor External Log Intake](../bug-monitor-external-log-intake/)
+- [Incident Monitor External Log Intake](../incident-monitor-external-log-intake/)

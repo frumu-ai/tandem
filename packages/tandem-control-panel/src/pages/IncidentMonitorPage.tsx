@@ -9,7 +9,7 @@ import {
   SignalLifecyclePanel,
   SignalMetadataGrid,
   StatTile,
-} from "./BugMonitorPageShared";
+} from "./IncidentMonitorPageShared";
 import type { AppPageProps } from "./pageTypes";
 
 const LIST_PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
@@ -56,10 +56,10 @@ const emptyReporterForm: ReporterForm = {
   body: "",
   severity: "error",
   source: "manual",
-  labels: "bug-monitor, runtime-failure",
+  labels: "incident-monitor, runtime-failure",
   confidence: "medium",
   riskLevel: "medium",
-  expectedDestination: "bug_monitor_issue_draft",
+  expectedDestination: "incident_monitor_issue_draft",
   evidenceRefs: "",
   relatedRunId: "",
   relatedWorkflowId: "",
@@ -214,7 +214,7 @@ function buildReportPayload(form: ReporterForm): AnyRecord {
   };
 }
 
-export function BugMonitorPage({ client, toast }: AppPageProps) {
+export function IncidentMonitorPage({ client, toast }: AppPageProps) {
   const queryClient = useQueryClient();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [form, setForm] = useState<ReporterForm>(emptyReporterForm);
@@ -251,31 +251,31 @@ export function BugMonitorPage({ client, toast }: AppPageProps) {
 
   const invalidateMonitorQueries = async () => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["bug-monitor", "status"] }),
-      queryClient.invalidateQueries({ queryKey: ["bug-monitor", "incidents"] }),
-      queryClient.invalidateQueries({ queryKey: ["bug-monitor", "drafts"] }),
-      queryClient.invalidateQueries({ queryKey: ["bug-monitor", "posts"] }),
+      queryClient.invalidateQueries({ queryKey: ["incident-monitor", "status"] }),
+      queryClient.invalidateQueries({ queryKey: ["incident-monitor", "incidents"] }),
+      queryClient.invalidateQueries({ queryKey: ["incident-monitor", "drafts"] }),
+      queryClient.invalidateQueries({ queryKey: ["incident-monitor", "posts"] }),
     ]);
   };
 
   const statusQuery = useQuery({
-    queryKey: ["bug-monitor", "status"],
+    queryKey: ["incident-monitor", "status"],
     queryFn: () => client.incidentMonitor.getStatus(),
     refetchInterval: 10000,
   });
 
   const incidentsQuery = useQuery({
-    queryKey: ["bug-monitor", "incidents", LIST_FETCH_LIMIT],
+    queryKey: ["incident-monitor", "incidents", LIST_FETCH_LIMIT],
     queryFn: () => client.incidentMonitor.listIncidents({ limit: LIST_FETCH_LIMIT }),
   });
 
   const draftsQuery = useQuery({
-    queryKey: ["bug-monitor", "drafts", LIST_FETCH_LIMIT],
+    queryKey: ["incident-monitor", "drafts", LIST_FETCH_LIMIT],
     queryFn: () => client.incidentMonitor.listDrafts({ limit: LIST_FETCH_LIMIT }),
   });
 
   const postsQuery = useQuery({
-    queryKey: ["bug-monitor", "posts", LIST_FETCH_LIMIT, postDestinationFilter],
+    queryKey: ["incident-monitor", "posts", LIST_FETCH_LIMIT, postDestinationFilter],
     queryFn: () =>
       client.incidentMonitor.listPosts({
         limit: LIST_FETCH_LIMIT,
@@ -292,11 +292,11 @@ export function BugMonitorPage({ client, toast }: AppPageProps) {
     },
     onSuccess: async (result, action) => {
       if (action === "debug") {
-        setDetail({ title: "Bug Monitor Debug Payload", value: result });
+        setDetail({ title: "Incident Monitor Debug Payload", value: result });
       }
       toast(
         "ok",
-        action === "debug" ? "Bug Monitor debug payload loaded." : "Bug Monitor updated."
+        action === "debug" ? "Incident Monitor debug payload loaded." : "Incident Monitor updated."
       );
       await invalidateMonitorQueries();
     },
@@ -628,7 +628,7 @@ export function BugMonitorPage({ client, toast }: AppPageProps) {
     <AnimatedPage className="grid h-full min-h-0 gap-4">
       <div ref={rootRef} className="grid h-full min-h-0 gap-4">
         <PanelCard
-          title="Bug Monitor"
+          title="Incident Monitor"
           subtitle="Runtime failures, workflow failures, draft issues, and GitHub publishing."
           actions={
             <div className="flex flex-wrap items-center justify-end gap-2">
@@ -658,7 +658,7 @@ export function BugMonitorPage({ client, toast }: AppPageProps) {
                     incidentsQuery.refetch(),
                     draftsQuery.refetch(),
                     postsQuery.refetch(),
-                  ]).then(() => toast("ok", "Bug Monitor refreshed."));
+                  ]).then(() => toast("ok", "Incident Monitor refreshed."));
                 }}
               >
                 <i data-lucide="refresh-cw"></i>
@@ -688,7 +688,7 @@ export function BugMonitorPage({ client, toast }: AppPageProps) {
                 disabled={statusMutation.isPending}
                 onClick={() => statusMutation.mutate("debug")}
               >
-                <i data-lucide="bug-play"></i>
+                <i data-lucide="shield-alert"></i>
                 Debug
               </button>
             </div>
@@ -1180,7 +1180,7 @@ export function BugMonitorPage({ client, toast }: AppPageProps) {
                             action: "approve",
                             draft,
                             reason:
-                              window.prompt("Approval reason", "Approved from Bug Monitor.") ||
+                              window.prompt("Approval reason", "Approved from Incident Monitor.") ||
                               undefined,
                           })
                         }
@@ -1197,7 +1197,7 @@ export function BugMonitorPage({ client, toast }: AppPageProps) {
                             action: "deny",
                             draft,
                             reason:
-                              window.prompt("Denial reason", "Denied from Bug Monitor.") ||
+                              window.prompt("Denial reason", "Denied from Incident Monitor.") ||
                               undefined,
                           })
                         }
@@ -1268,7 +1268,7 @@ export function BugMonitorPage({ client, toast }: AppPageProps) {
                             .map((value) => value.trim())
                             .filter(Boolean);
                           const reason =
-                            window.prompt("Publish reason", "Published from Bug Monitor.") ||
+                            window.prompt("Publish reason", "Published from Incident Monitor.") ||
                             undefined;
                           draftMutation.mutate({
                             action: "publish",
@@ -1278,7 +1278,7 @@ export function BugMonitorPage({ client, toast }: AppPageProps) {
                           });
                         }}
                       >
-                        <i data-lucide="bug-play"></i>
+                        <i data-lucide="shield-alert"></i>
                         Publish
                       </button>
                       <button
@@ -1562,7 +1562,7 @@ export function BugMonitorPage({ client, toast }: AppPageProps) {
 
       <DetailDrawer
         open={!!detail}
-        title={detail?.title || "Bug Monitor Detail"}
+        title={detail?.title || "Incident Monitor Detail"}
         onClose={() => setDetail(null)}
       >
         <pre className="tcp-code whitespace-pre-wrap break-words text-xs">
@@ -1638,7 +1638,7 @@ export function BugMonitorPage({ client, toast }: AppPageProps) {
                 onChange={(event) =>
                   setForm((prev) => ({ ...prev, labels: event.currentTarget.value }))
                 }
-                placeholder="bug-monitor, regression"
+                placeholder="incident-monitor, regression"
               />
             </label>
             <label className="grid gap-1">
@@ -1680,7 +1680,7 @@ export function BugMonitorPage({ client, toast }: AppPageProps) {
                   setForm((prev) => ({ ...prev, expectedDestination: event.currentTarget.value }))
                 }
               >
-                <option value="bug_monitor_issue_draft">Bug Monitor issue draft</option>
+                <option value="incident_monitor_issue_draft">Incident Monitor issue draft</option>
                 <option value="triage_only">Triage only</option>
                 <option value="research_brief">Research brief</option>
                 <option value="workflow_proposal">Workflow proposal</option>

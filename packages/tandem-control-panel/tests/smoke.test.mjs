@@ -441,7 +441,9 @@ async function startFakeEngine(options = {}) {
       run.updated_at_ms = Date.now();
       runs.set(runId, run);
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, task: selected || null, blackboard: { tasks: run.tasks } }));
+      res.end(
+        JSON.stringify({ ok: true, task: selected || null, blackboard: { tasks: run.tasks } })
+      );
       return;
     }
 
@@ -495,7 +497,9 @@ async function startFakeEngine(options = {}) {
               decisions: [],
               open_questions: [],
               artifacts: [],
-              tasks: Array.isArray(runs.get(decodeURIComponent(url.pathname.split("/")[3] || ""))?.tasks)
+              tasks: Array.isArray(
+                runs.get(decodeURIComponent(url.pathname.split("/")[3] || ""))?.tasks
+              )
                 ? runs.get(decodeURIComponent(url.pathname.split("/")[3] || "")).tasks
                 : [],
               summaries: { rolling: "" },
@@ -662,7 +666,7 @@ test("control panel auth/proxy/swarm smoke", async (t) => {
           sources: {
             user_created: true,
             agent_created: true,
-            bug_monitor: false,
+            incident_monitor: false,
             system: false,
           },
           statuses: {
@@ -681,7 +685,10 @@ test("control panel auth/proxy/swarm smoke", async (t) => {
     "workflow-a",
     "workflow-b",
   ]);
-  assert.equal(prefsUpdateJson.preferences.workflow_library_filters.sources.bug_monitor, false);
+  assert.equal(
+    prefsUpdateJson.preferences.workflow_library_filters.sources.incident_monitor,
+    false
+  );
   assert.equal(prefsUpdateJson.preferences.workflow_library_filters.statuses.paused, false);
 
   const relogin = await request(baseUrl, "/api/auth/login", {
@@ -767,8 +774,8 @@ test("control panel auth/proxy/swarm smoke", async (t) => {
     "expected execution prompt_sync calls to set tool_mode=required"
   );
   assert.ok(
-    fake.promptSyncCalls.some((call) =>
-      call?.body?.tool_mode === "required" && call?.body?.write_required === true
+    fake.promptSyncCalls.some(
+      (call) => call?.body?.tool_mode === "required" && call?.body?.write_required === true
     ),
     "expected execution prompt_sync calls to set write_required=true"
   );
@@ -1243,10 +1250,7 @@ test("swarm verification prefers provider-specific malformed write reasons", asy
     (event) => event?.type === "step_failed" || event?.type === "task_failed"
   );
   assert.ok(stepFailed, "missing step_failed event");
-  assert.equal(
-    stepFailed?.payload?.verification?.reason,
-    "WRITE_ARGS_EMPTY_FROM_PROVIDER"
-  );
+  assert.equal(stepFailed?.payload?.verification?.reason, "WRITE_ARGS_EMPTY_FROM_PROVIDER");
 });
 
 test("swarm strict write retries malformed write failures up to configured budget", async (t) => {
@@ -1383,10 +1387,7 @@ test("swarm strict write retries malformed write failures up to configured budge
   );
   assert.ok(stepFailed, "missing step_failed event");
   assert.equal(stepFailed?.payload?.verification?.reason, "WRITE_ARGS_EMPTY_FROM_PROVIDER");
-  assert.equal(
-    stepFailed?.payload?.verification?.execution_trace?.attempts?.length,
-    3
-  );
+  assert.equal(stepFailed?.payload?.verification?.execution_trace?.attempts?.length, 3);
   assert.equal(requiredCallCount, 3);
 });
 
@@ -1531,9 +1532,13 @@ test("swarm non-writing tasks retry when tool activity is missing", async (t) =>
     return String(payload?.run?.status || "").toLowerCase() === "completed";
   }, 12000);
 
-  const runRes = await request(baseUrl, `/api/swarm/run/${encodeURIComponent(swarmStartJson.runId)}`, {
-    cookie,
-  });
+  const runRes = await request(
+    baseUrl,
+    `/api/swarm/run/${encodeURIComponent(swarmStartJson.runId)}`,
+    {
+      cookie,
+    }
+  );
   assert.equal(runRes.status, 200);
   const runJson = await runRes.json();
   assert.equal(String(runJson?.run?.status || "").toLowerCase(), "completed");
@@ -1546,7 +1551,9 @@ test("swarm non-writing tasks retry when tool activity is missing", async (t) =>
   assert.equal(taskCompleted?.payload?.verification?.execution_trace?.attempts?.length, 2);
   assert.equal(requiredCallCount, 2);
 
-  const requiredCalls = fake.promptSyncCalls.filter((entry) => entry?.body?.tool_mode === "required");
+  const requiredCalls = fake.promptSyncCalls.filter(
+    (entry) => entry?.body?.tool_mode === "required"
+  );
   assert.equal(requiredCalls.length, 2);
   assert.deepEqual(requiredCalls[0]?.body?.tool_allowlist, [
     "ls",

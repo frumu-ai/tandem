@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from "motion/react";
 import { Badge, DetailDrawer, Toolbar } from "../ui/index.tsx";
-import { BugMonitorExternalProjectsPanel } from "../components/BugMonitorExternalProjectsPanel";
+import { IncidentMonitorExternalProjectsPanel } from "../components/IncidentMonitorExternalProjectsPanel";
 import { EmptyState } from "./ui";
 import {
   HOSTED_CODER_REPO_ROOT,
@@ -28,15 +28,15 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
     browserRecommendations,
     browserSmokeResult,
     browserStatus,
-    bugMonitorCurrentBrowseDir,
-    bugMonitorSuggestedWorkspaceRoot,
-    bugMonitorWorkspaceBrowserOpen,
-    bugMonitorWorkspaceBrowserSearch,
-    bugMonitorWorkspaceParentDir,
-    bugMonitorWorkspaceSearchQuery,
+    incidentMonitorCurrentBrowseDir,
+    incidentMonitorSuggestedWorkspaceRoot,
+    incidentMonitorWorkspaceBrowserOpen,
+    incidentMonitorWorkspaceBrowserSearch,
+    incidentMonitorWorkspaceParentDir,
+    incidentMonitorWorkspaceSearchQuery,
     configuredMcpServerNames,
     diagnosticsOpen,
-    filteredBugMonitorWorkspaceDirectories,
+    filteredIncidentMonitorWorkspaceDirectories,
     filteredMcpCatalog,
     githubMcpGuideOpen,
     mcpAuthMode,
@@ -59,10 +59,10 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
     mcpToken,
     mcpTransport,
     smokeTestBrowserMutation,
-    setBugMonitorWorkspaceBrowserDir,
-    setBugMonitorWorkspaceBrowserOpen,
-    setBugMonitorWorkspaceBrowserSearch,
-    setBugMonitorWorkspaceRoot,
+    setIncidentMonitorWorkspaceBrowserDir,
+    setIncidentMonitorWorkspaceBrowserOpen,
+    setIncidentMonitorWorkspaceBrowserSearch,
+    setIncidentMonitorWorkspaceRoot,
     setGithubMcpGuideOpen,
     setMcpAuthMode,
     setMcpCatalogSearch,
@@ -78,10 +78,10 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
     setMcpTransport,
     toast,
   } = controller;
-  const safeFilteredBugMonitorWorkspaceDirectories = Array.isArray(
-    filteredBugMonitorWorkspaceDirectories
+  const safeFilteredIncidentMonitorWorkspaceDirectories = Array.isArray(
+    filteredIncidentMonitorWorkspaceDirectories
   )
-    ? filteredBugMonitorWorkspaceDirectories
+    ? filteredIncidentMonitorWorkspaceDirectories
     : [];
   const safeBrowserIssues = Array.isArray(browserIssues) ? browserIssues : [];
   const safeBrowserRecommendations = Array.isArray(browserRecommendations)
@@ -100,7 +100,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
       >
         <div className="grid gap-3">
           <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm">
-            Recommended for Bug Monitor: use the official GitHub MCP endpoint instead of a
+            Recommended for Incident Monitor: use the official GitHub MCP endpoint instead of a
             third-party wrapper when you want stable issue read/write operations.
           </div>
 
@@ -134,7 +134,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
               <br />
               5. Paste a GitHub Personal Access Token.
               <br />
-              6. Save, connect, then select that MCP server in Bug Monitor settings.
+              6. Save, connect, then select that MCP server in Incident Monitor settings.
             </div>
           </div>
 
@@ -183,7 +183,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
       </DetailDrawer>
 
       <AnimatePresence>
-        {bugMonitorWorkspaceBrowserOpen ? (
+        {incidentMonitorWorkspaceBrowserOpen ? (
           <motion.div
             className="tcp-confirm-overlay"
             initial={{ opacity: 0 }}
@@ -193,10 +193,10 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
             <button
               type="button"
               className="tcp-confirm-backdrop"
-              aria-label="Close Bug Monitor workspace dialog"
+              aria-label="Close Incident Monitor workspace dialog"
               onClick={() => {
-                setBugMonitorWorkspaceBrowserOpen(false);
-                setBugMonitorWorkspaceBrowserSearch("");
+                setIncidentMonitorWorkspaceBrowserOpen(false);
+                setIncidentMonitorWorkspaceBrowserSearch("");
               }}
             />
             <motion.div
@@ -205,14 +205,16 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 6, scale: 0.98 }}
             >
-              <h3 className="tcp-confirm-title">Select Bug Monitor Directory</h3>
-              <p className="tcp-confirm-message">Current: {bugMonitorCurrentBrowseDir || "n/a"}</p>
+              <h3 className="tcp-confirm-title">Select Incident Monitor Directory</h3>
+              <p className="tcp-confirm-message">
+                Current: {incidentMonitorCurrentBrowseDir || "n/a"}
+              </p>
               <div className="mb-3 rounded-xl border border-white/10 bg-black/20 p-3 text-xs">
                 <div className="font-semibold text-slate-100">Where should I go?</div>
                 <div className="tcp-subtle mt-1">
                   Hosted installs share Coder repositories at <code>{HOSTED_CODER_REPO_ROOT}</code>.
                   Choose the repo folder, for example{" "}
-                  <code>{bugMonitorSuggestedWorkspaceRoot}</code>. The{" "}
+                  <code>{incidentMonitorSuggestedWorkspaceRoot}</code>. The{" "}
                   <code>{HOSTED_TANDEM_DATA_ROOT}</code> folder is runtime state, not the source
                   checkout.
                 </div>
@@ -221,10 +223,10 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                 <button
                   className="tcp-btn"
                   onClick={() => {
-                    if (!bugMonitorWorkspaceParentDir) return;
-                    setBugMonitorWorkspaceBrowserDir(bugMonitorWorkspaceParentDir);
+                    if (!incidentMonitorWorkspaceParentDir) return;
+                    setIncidentMonitorWorkspaceBrowserDir(incidentMonitorWorkspaceParentDir);
                   }}
-                  disabled={!bugMonitorWorkspaceParentDir}
+                  disabled={!incidentMonitorWorkspaceParentDir}
                 >
                   <i data-lucide="arrow-up-circle"></i>
                   Up
@@ -232,8 +234,8 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                 <button
                   className="tcp-btn"
                   onClick={() => {
-                    setBugMonitorWorkspaceBrowserDir(HOSTED_CODER_REPO_ROOT);
-                    setBugMonitorWorkspaceBrowserSearch("");
+                    setIncidentMonitorWorkspaceBrowserDir(HOSTED_CODER_REPO_ROOT);
+                    setIncidentMonitorWorkspaceBrowserSearch("");
                   }}
                 >
                   <i data-lucide="folder-git-2"></i>
@@ -242,11 +244,14 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                 <button
                   className="tcp-btn-primary"
                   onClick={() => {
-                    if (!bugMonitorCurrentBrowseDir) return;
-                    setBugMonitorWorkspaceRoot(bugMonitorCurrentBrowseDir);
-                    setBugMonitorWorkspaceBrowserOpen(false);
-                    setBugMonitorWorkspaceBrowserSearch("");
-                    toast("ok", `Bug Monitor directory selected: ${bugMonitorCurrentBrowseDir}`);
+                    if (!incidentMonitorCurrentBrowseDir) return;
+                    setIncidentMonitorWorkspaceRoot(incidentMonitorCurrentBrowseDir);
+                    setIncidentMonitorWorkspaceBrowserOpen(false);
+                    setIncidentMonitorWorkspaceBrowserSearch("");
+                    toast(
+                      "ok",
+                      `Incident Monitor directory selected: ${incidentMonitorCurrentBrowseDir}`
+                    );
                   }}
                 >
                   <i data-lucide="badge-check"></i>
@@ -255,8 +260,8 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                 <button
                   className="tcp-btn"
                   onClick={() => {
-                    setBugMonitorWorkspaceBrowserOpen(false);
-                    setBugMonitorWorkspaceBrowserSearch("");
+                    setIncidentMonitorWorkspaceBrowserOpen(false);
+                    setIncidentMonitorWorkspaceBrowserSearch("");
                   }}
                 >
                   <i data-lucide="x"></i>
@@ -267,22 +272,22 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                 <input
                   className="tcp-input"
                   placeholder="Type to filter folders..."
-                  value={bugMonitorWorkspaceBrowserSearch}
+                  value={incidentMonitorWorkspaceBrowserSearch}
                   onInput={(e) =>
-                    setBugMonitorWorkspaceBrowserSearch((e.target as HTMLInputElement).value)
+                    setIncidentMonitorWorkspaceBrowserSearch((e.target as HTMLInputElement).value)
                   }
                 />
               </div>
               <div className="max-h-[360px] overflow-auto rounded-lg border border-slate-700/60 bg-slate-900/20 p-2">
-                {safeFilteredBugMonitorWorkspaceDirectories.length ? (
-                  safeFilteredBugMonitorWorkspaceDirectories.map((entry: any) => {
+                {safeFilteredIncidentMonitorWorkspaceDirectories.length ? (
+                  safeFilteredIncidentMonitorWorkspaceDirectories.map((entry: any) => {
                     const entryPath = String(entry?.path || "");
                     const hint = hostedWorkspaceDirectoryHint(entryPath);
                     return (
                       <button
                         key={String(entry?.path || entry?.name)}
                         className="tcp-list-item mb-1 w-full text-left"
-                        onClick={() => setBugMonitorWorkspaceBrowserDir(entryPath)}
+                        onClick={() => setIncidentMonitorWorkspaceBrowserDir(entryPath)}
                       >
                         <i data-lucide="folder-open"></i>
                         <span className="min-w-0">
@@ -297,7 +302,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                 ) : (
                   <EmptyState
                     text={
-                      bugMonitorWorkspaceSearchQuery
+                      incidentMonitorWorkspaceSearchQuery
                         ? "No folders match your search."
                         : "No subdirectories in this folder."
                     }

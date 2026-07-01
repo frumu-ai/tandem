@@ -1,12 +1,12 @@
-# Bug Monitor External Log Intake Demo
+# Incident Monitor External Log Intake Demo
 
 This fixture exercises the external-project intake path without requiring a workflow run.
 
 ## Fixture
 
-- Example log: `docs/fixtures/bug-monitor-external-log-intake/service.log.jsonl`
+- Example log: `docs/fixtures/incident-monitor-external-log-intake/service.log.jsonl`
 - Source format: JSON-lines
-- Expected result: one Bug Monitor incident/draft for `external_service_crash`
+- Expected result: one Incident Monitor incident/draft for `external_service_crash`
 
 ## Example Config
 
@@ -14,7 +14,7 @@ Use a workspace-local copy of this repository when testing path validation.
 
 ```json
 {
-  "bug_monitor": {
+  "incident_monitor": {
     "enabled": true,
     "repo": "frumu-ai/tandem",
     "monitored_projects": [
@@ -34,7 +34,7 @@ Use a workspace-local copy of this repository when testing path validation.
         "log_sources": [
           {
             "source_id": "service-jsonl",
-            "path": "docs/fixtures/bug-monitor-external-log-intake/service.log.jsonl",
+            "path": "docs/fixtures/incident-monitor-external-log-intake/service.log.jsonl",
             "source_kind": "ci",
             "format": "json",
             "minimum_level": "error",
@@ -71,18 +71,18 @@ Route preview can use `project_id` and `log_source_id` to show the route that wo
 2. Confirm the external project panel shows one enabled project, one enabled source, route tags, and allowed/default destinations.
 3. Wait for the watcher to poll.
 4. Confirm the source health reports a candidate/submission count.
-5. Confirm Bug Monitor incidents include the fixture failure with a `tandem://bug-monitor/...` evidence ref.
+5. Confirm Incident Monitor incidents include the fixture failure with a `tandem://incident-monitor/...` evidence ref.
 
 For live testing, append a new JSON line with a distinct `fingerprint` or error message so dedupe cooldown does not suppress the candidate.
 
 ## Smoke Script
 
-After saving the example config, this script appends a unique fixture error, resets the demo source offset, and polls Bug Monitor incidents until the matching fingerprint appears:
+After saving the example config, this script appends a unique fixture error, resets the demo source offset, and polls Incident Monitor incidents until the matching fingerprint appears:
 
 ```bash
 TANDEM_BASE_URL=http://localhost:3000/api/engine \
 TANDEM_TOKEN="$TANDEM_TOKEN" \
-node scripts/bug-monitor-external-log-intake-smoke.mjs
+node scripts/incident-monitor-external-log-intake-smoke.mjs
 ```
 
-Set `BUG_MONITOR_DEMO_PROJECT_ID` or `BUG_MONITOR_DEMO_SOURCE_ID` if your saved config uses different ids.
+Set `INCIDENT_MONITOR_DEMO_PROJECT_ID` or `INCIDENT_MONITOR_DEMO_SOURCE_ID` if your saved config uses different ids.

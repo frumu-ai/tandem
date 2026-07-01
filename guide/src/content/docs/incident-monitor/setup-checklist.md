@@ -1,13 +1,13 @@
 ---
 title: Incident Monitor Setup Checklist
-description: Configure current Bug Monitor behavior and prepare for destination-router Incident Monitor concepts.
+description: Configure current Incident Monitor behavior and prepare for destination-router Incident Monitor concepts.
 ---
 
-Use this checklist when setting up current Bug Monitor or preparing for destination-router Incident Monitor work.
+Use this checklist when setting up current Incident Monitor or preparing for destination-router Incident Monitor work.
 
 ## Current GitHub setup
 
-1. Enable Bug Monitor in `Settings -> Bug Monitor`.
+1. Enable Incident Monitor in `Settings -> Incident Monitor`.
 2. Set the GitHub repo in `owner/repo` format.
 3. Select an MCP server with GitHub list, get, create, and comment capabilities.
 4. Keep `require_approval_for_new_issues` aligned with team policy.

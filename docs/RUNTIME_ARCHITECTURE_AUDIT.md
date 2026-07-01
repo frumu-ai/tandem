@@ -6,11 +6,11 @@ Recorded: 2026-06-13
 
 The first TAN-200 guard focuses on the production hot files called out in Linear:
 
-| File | Production `.unwrap()` / `.expect()` / `panic!` count |
-| --- | ---: |
-| `crates/tandem-server/src/app/state/approval_message_map.rs` | 0 |
-| `crates/tandem-server/src/pack_manager.rs` | 0 |
-| `crates/tandem-server/src/bug_monitor/log_watcher.rs` | 0 |
+| File                                                         | Production `.unwrap()` / `.expect()` / `panic!` count |
+| ------------------------------------------------------------ | ----------------------------------------------------: |
+| `crates/tandem-server/src/app/state/approval_message_map.rs` |                                                     0 |
+| `crates/tandem-server/src/pack_manager.rs`                   |                                                     0 |
+| `crates/tandem-server/src/incident_monitor/log_watcher.rs`   |                                                     0 |
 
 The same scanner reports 32 production panic-surface findings across
 `crates/tandem-server/src` when run with `--all-server --max-per-file=999999`.

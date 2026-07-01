@@ -118,14 +118,14 @@ function useIdentity(client: TandemClient | null, enabled: boolean) {
   });
 }
 
-function useBugMonitorStatus(enabled: boolean) {
+function useIncidentMonitorStatus(enabled: boolean) {
   return useQuery({
-    queryKey: ["bug-monitor", "status"],
+    queryKey: ["incident-monitor", "status"],
     enabled,
     refetchInterval: enabled ? 10000 : false,
     queryFn: async () => {
       try {
-        return await api("/api/engine/bug-monitor/status", { method: "GET" });
+        return await api("/api/engine/incident-monitor/status", { method: "GET" });
       } catch {
         return null;
       }
@@ -168,7 +168,7 @@ function AppBody() {
   const identityQuery = useIdentity(client, authed);
   const healthQuery = useSystemHealth(authed);
   const swarmStatusQuery = useSwarmStatus(authed);
-  const bugMonitorQuery = useBugMonitorStatus(authed);
+  const incidentMonitorQuery = useIncidentMonitorStatus(authed);
 
   const loginMutation = useMutation({
     mutationFn: async ({ token }: { token: string; remember: boolean }) => {
@@ -348,15 +348,17 @@ function AppBody() {
   const providerText = providerQuery.data?.ready
     ? `${providerQuery.data?.defaultProvider || "none"}/${providerQuery.data?.defaultModel || "none"}`
     : "provider setup required";
-  const bugMonitorStatus = (bugMonitorQuery.data as any) || null;
-  const bugMonitorEnabled = !!bugMonitorStatus?.config?.enabled;
-  const bugMonitorPendingIncidents = Number(bugMonitorStatus?.runtime?.pending_incidents || 0);
-  const bugMonitorMonitoringActive = !!bugMonitorStatus?.runtime?.monitoring_active;
-  const bugMonitorPaused = !!bugMonitorStatus?.runtime?.paused;
-  const bugMonitorIngestReady = !!bugMonitorStatus?.readiness?.ingest_ready;
-  const bugMonitorPublishReady = !!bugMonitorStatus?.readiness?.publish_ready;
-  const bugMonitorLastError = String(
-    bugMonitorStatus?.runtime?.last_runtime_error || bugMonitorStatus?.last_error || ""
+  const incidentMonitorStatus = (incidentMonitorQuery.data as any) || null;
+  const incidentMonitorEnabled = !!incidentMonitorStatus?.config?.enabled;
+  const incidentMonitorPendingIncidents = Number(
+    incidentMonitorStatus?.runtime?.pending_incidents || 0
+  );
+  const incidentMonitorMonitoringActive = !!incidentMonitorStatus?.runtime?.monitoring_active;
+  const incidentMonitorPaused = !!incidentMonitorStatus?.runtime?.paused;
+  const incidentMonitorIngestReady = !!incidentMonitorStatus?.readiness?.ingest_ready;
+  const incidentMonitorPublishReady = !!incidentMonitorStatus?.readiness?.publish_ready;
+  const incidentMonitorLastError = String(
+    incidentMonitorStatus?.runtime?.last_runtime_error || incidentMonitorStatus?.last_error || ""
   ).trim();
 
   return (
@@ -379,17 +381,19 @@ function AppBody() {
           )
             ? 1
             : 0,
-          bugMonitor: bugMonitorEnabled
+          incidentMonitor: incidentMonitorEnabled
             ? {
                 enabled: true,
-                monitoringActive: bugMonitorMonitoringActive,
-                paused: bugMonitorPaused,
-                pendingIncidents: bugMonitorPendingIncidents,
-                blocked: !bugMonitorIngestReady,
+                monitoringActive: incidentMonitorMonitoringActive,
+                paused: incidentMonitorPaused,
+                pendingIncidents: incidentMonitorPendingIncidents,
+                blocked: !incidentMonitorIngestReady,
                 lastError:
-                  bugMonitorMonitoringActive && !bugMonitorPublishReady && bugMonitorLastError
-                    ? `Watching locally only. ${bugMonitorLastError}`
-                    : bugMonitorLastError,
+                  incidentMonitorMonitoringActive &&
+                  !incidentMonitorPublishReady &&
+                  incidentMonitorLastError
+                    ? `Watching locally only. ${incidentMonitorLastError}`
+                    : incidentMonitorLastError,
               }
             : null,
         }}

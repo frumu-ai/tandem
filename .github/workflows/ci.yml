@@ -45,8 +45,11 @@ jobs:
       - name: Validate i18n parity
         run: pnpm i18n:parity
 
-      - name: Validate Bug Monitor external log fixture
-        run: pnpm bug-monitor:fixture:test
+      - name: Validate Incident Monitor external log fixture
+        run: pnpm incident-monitor:fixture:test
+
+      - name: Validate Incident Monitor terminology
+        run: pnpm incident-monitor:terminology
 
       - name: Run linter
         run: pnpm -C apps/tandem-desktop lint

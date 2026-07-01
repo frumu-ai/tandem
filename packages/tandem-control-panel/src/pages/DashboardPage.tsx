@@ -55,7 +55,7 @@ export function DashboardPage(props: AppPageProps) {
   const { api, client, navigate, providerStatus } = props;
   const [selectedWorkflowContextRunId, setSelectedWorkflowContextRunId] = useState("");
   const [tokenGranularity, setTokenGranularity] = useState<"day" | "week" | "month">("day");
-  const visibleContextRunTypes = new Set(["workflow", "bug_monitor_triage"]);
+  const visibleContextRunTypes = new Set(["workflow", "incident_monitor_triage"]);
 
   const health = useQuery({
     queryKey: ["dashboard", "health"],

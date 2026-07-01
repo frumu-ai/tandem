@@ -42,7 +42,7 @@ Security posture mode should be described as a layer on top of the existing Tand
 - Incident Monitor: passive intake, triage, routing, destination readiness, approvals, receipts, and remediation routing.
 - Security posture assessment: read-only authority inventory, posture rules, controlled checks, evidence reports, and remediation issues.
 
-The first posture primitive is the read-only authority inventory at `GET /bug-monitor/security/authority-inventory`. It summarizes workflows, Automation V2 specs, agent/tool/MCP policy, Incident Monitor destinations and routes, monitored sources, scoped intake keys, approvals, policy decisions, and recent external publish surfaces without exposing raw secrets or credentials.
+The first posture primitive is the read-only authority inventory at `GET /incident-monitor/security/authority-inventory`. It summarizes workflows, Automation V2 specs, agent/tool/MCP policy, Incident Monitor destinations and routes, monitored sources, scoped intake keys, approvals, policy decisions, and recent external publish surfaces without exposing raw secrets or credentials.
 
 ## What Tandem detects
 
@@ -139,14 +139,14 @@ The package boundary should track governance value: who can see authority, who c
 
 ## Comparison
 
-| Category | What it covers | Tandem relationship |
-| --- | --- | --- |
-| SAST | Static source-code vulnerability patterns | Complementary. Tandem focuses on runtime agent authority, routes, approvals, and tool/destination surfaces. |
-| DAST | Runtime web/app security testing | Complementary. Tandem should not probe customer apps unless checks are explicitly authorized and bounded. |
-| SIEM | Centralized security event collection and correlation | Complementary. Tandem can export evidence and incidents, but does not replace the customer's SIEM. |
-| CSPM | Cloud posture and infrastructure configuration | Complementary. Tandem assesses AI-agent governance surfaces, not full cloud account posture. |
-| EDR | Endpoint detection and response | Complementary. Tandem does not claim host-level malware or endpoint compromise detection. |
-| Workflow automation | Task execution and integrations | Tandem adds governed runtime controls, authority inventory, approvals, evidence, and incident routing for AI agents using real tools. |
+| Category            | What it covers                                        | Tandem relationship                                                                                                                   |
+| ------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| SAST                | Static source-code vulnerability patterns             | Complementary. Tandem focuses on runtime agent authority, routes, approvals, and tool/destination surfaces.                           |
+| DAST                | Runtime web/app security testing                      | Complementary. Tandem should not probe customer apps unless checks are explicitly authorized and bounded.                             |
+| SIEM                | Centralized security event collection and correlation | Complementary. Tandem can export evidence and incidents, but does not replace the customer's SIEM.                                    |
+| CSPM                | Cloud posture and infrastructure configuration        | Complementary. Tandem assesses AI-agent governance surfaces, not full cloud account posture.                                          |
+| EDR                 | Endpoint detection and response                       | Complementary. Tandem does not claim host-level malware or endpoint compromise detection.                                             |
+| Workflow automation | Task execution and integrations                       | Tandem adds governed runtime controls, authority inventory, approvals, evidence, and incident routing for AI agents using real tools. |
 
 ## Self-monitoring boundary
 

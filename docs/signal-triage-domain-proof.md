@@ -1,9 +1,9 @@
 # Signal Triage Domain Proof
 
 This note records the TAN-69 proof scope for applying signal-triage behavior
-outside Bug Monitor.
+outside Incident Monitor.
 
-Bug Monitor remains the first production vertical slice. The additional
+Incident Monitor remains the first production vertical slice. The additional
 domains here are deterministic server-side proofs, not a new generic framework
 or user-facing API.
 
@@ -57,8 +57,8 @@ Run the focused server tests:
 cargo test -p tandem-server signal_triage -- --nocapture
 ```
 
-If shared Bug Monitor code is touched, also rerun:
+If shared Incident Monitor code is touched, also rerun:
 
 ```powershell
-cargo test -p tandem-server bug_monitor -- --nocapture
+cargo test -p tandem-server incident_monitor -- --nocapture
 ```

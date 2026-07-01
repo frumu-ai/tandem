@@ -507,7 +507,15 @@ export function QualityGateStrip({ record }: { record: AnyRecord }) {
   );
 }
 
-export function StatTile({ label, value, tone = "info" }: { label: string; value: any; tone?: any }) {
+export function StatTile({
+  label,
+  value,
+  tone = "info",
+}: {
+  label: string;
+  value: any;
+  tone?: any;
+}) {
   return (
     <div className="tcp-list-item min-h-[5rem]">
       <div className="tcp-subtle text-xs uppercase tracking-[0.18em]">{label}</div>

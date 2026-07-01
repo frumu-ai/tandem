@@ -70,10 +70,10 @@ test("workflow list helpers classify and filter library sources", () => {
     { automation_id: "user", name: "Daily notes", status: "active", creator_id: "desktop" },
     {
       automation_id: "bug",
-      name: "Bug Monitor triage: failure",
+      name: "Incident Monitor triage: failure",
       status: "active",
-      creator_id: "bug_monitor",
-      metadata: { source: "bug_monitor" },
+      creator_id: "incident_monitor",
+      metadata: { source: "incident_monitor" },
     },
     {
       automation_id: "agent",
@@ -81,17 +81,24 @@ test("workflow list helpers classify and filter library sources", () => {
       status: "paused",
       creator_id: "workflow_planner",
     },
-    { automation_id: "system", name: "System helper", status: "active", metadata: { source: "system" } },
+    {
+      automation_id: "system",
+      name: "System helper",
+      status: "active",
+      metadata: { source: "system" },
+    },
   ];
 
-  assert.equal(classifyAutomationSource(rows[1]).key, "bug_monitor");
+  assert.equal(classifyAutomationSource(rows[1]).key, "incident_monitor");
   assert.deepEqual(
-    filterWorkflowAutomations(rows, DEFAULT_WORKFLOW_LIBRARY_FILTERS).map((row) => row.automation_id),
+    filterWorkflowAutomations(rows, DEFAULT_WORKFLOW_LIBRARY_FILTERS).map(
+      (row) => row.automation_id
+    ),
     ["user", "agent"]
   );
   assert.deepEqual(
     filterWorkflowAutomations(rows, {
-      sources: { user_created: false, agent_created: false, bug_monitor: true, system: false },
+      sources: { user_created: false, agent_created: false, incident_monitor: true, system: false },
       statuses: { active: true, paused: true, draft: true },
     }).map((row) => row.automation_id),
     ["bug"]
@@ -100,13 +107,13 @@ test("workflow list helpers classify and filter library sources", () => {
 
 test("workflow list helpers normalize library filters", () => {
   const filters = normalizeWorkflowLibraryFilters({
-    sources: { bug_monitor: true, system: true, unknown: true },
+    sources: { incident_monitor: true, system: true, unknown: true },
     statuses: { paused: false },
   });
 
   assert.equal(filters.sources.user_created, true);
   assert.equal(filters.sources.agent_created, true);
-  assert.equal(filters.sources.bug_monitor, true);
+  assert.equal(filters.sources.incident_monitor, true);
   assert.equal(filters.sources.system, true);
   assert.equal(filters.statuses.active, true);
   assert.equal(filters.statuses.paused, false);

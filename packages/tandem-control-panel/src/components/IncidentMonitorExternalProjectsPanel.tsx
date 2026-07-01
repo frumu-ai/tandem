@@ -2,7 +2,7 @@ import { Badge } from "../ui/index.tsx";
 import { EmptyState } from "../pages/ui";
 import { useMemo, useState } from "react";
 
-export type BugMonitorLogSourceDraft = {
+export type IncidentMonitorLogSourceDraft = {
   source_id?: string;
   path?: string;
   source_kind?: string | null;
@@ -26,7 +26,7 @@ export type BugMonitorLogSourceDraft = {
   retention_profile?: string | null;
 };
 
-export type BugMonitorMonitoredProjectDraft = {
+export type IncidentMonitorMonitoredProjectDraft = {
   project_id?: string;
   name?: string;
   enabled?: boolean;
@@ -48,10 +48,10 @@ export type BugMonitorMonitoredProjectDraft = {
   auto_create_new_issues?: boolean;
   require_approval_for_new_issues?: boolean;
   auto_comment_on_matched_open_issues?: boolean;
-  log_sources?: BugMonitorLogSourceDraft[];
+  log_sources?: IncidentMonitorLogSourceDraft[];
 };
 
-export type BugMonitorLogSourceRuntimeStatusDraft = {
+export type IncidentMonitorLogSourceRuntimeStatusDraft = {
   project_id?: string;
   source_id?: string;
   path?: string;
@@ -69,16 +69,16 @@ export type BugMonitorLogSourceRuntimeStatusDraft = {
   total_submitted?: number;
 };
 
-export type BugMonitorLogWatcherStatusDraft = {
+export type IncidentMonitorLogWatcherStatusDraft = {
   running?: boolean;
   enabled_projects?: number;
   enabled_sources?: number;
   last_poll_at_ms?: number | null;
   last_error?: string | null;
-  sources?: BugMonitorLogSourceRuntimeStatusDraft[];
+  sources?: IncidentMonitorLogSourceRuntimeStatusDraft[];
 };
 
-export type BugMonitorProjectIntakeKeyDraft = {
+export type IncidentMonitorProjectIntakeKeyDraft = {
   key_id?: string;
   project_id?: string;
   name?: string;
@@ -113,7 +113,7 @@ function sourceKey(projectId: string, sourceId: string): string {
   return `${projectId || "project"}::${sourceId || "source"}`;
 }
 
-export function BugMonitorExternalProjectsPanel({
+export function IncidentMonitorExternalProjectsPanel({
   projects,
   watcher,
   projectsJson,
@@ -132,11 +132,11 @@ export function BugMonitorExternalProjectsPanel({
   onResetSourceOffset,
   onReplayLatestSourceCandidate,
 }: {
-  projects: BugMonitorMonitoredProjectDraft[];
-  watcher: BugMonitorLogWatcherStatusDraft;
+  projects: IncidentMonitorMonitoredProjectDraft[];
+  watcher: IncidentMonitorLogWatcherStatusDraft;
   projectsJson: string;
   projectsJsonError: string;
-  intakeKeys: BugMonitorProjectIntakeKeyDraft[];
+  intakeKeys: IncidentMonitorProjectIntakeKeyDraft[];
   createdRawKey: string;
   isCreatingKey: boolean;
   disablingKeyId: string;
@@ -192,7 +192,7 @@ export function BugMonitorExternalProjectsPanel({
             const sourceId = String(source.source_id || `source-${sourceIndex + 1}`);
             return statusBySource.get(sourceKey(projectId, sourceId));
           })
-          .filter(Boolean) as BugMonitorLogSourceRuntimeStatusDraft[];
+          .filter(Boolean) as IncidentMonitorLogSourceRuntimeStatusDraft[];
         const unhealthyCount = runtimeRows.filter((row) => row.healthy === false).length;
         const candidateCount = runtimeRows.reduce(
           (total, row) => total + Number(row.total_candidates || 0),
@@ -674,7 +674,7 @@ export function BugMonitorExternalProjectsPanel({
                       <div className="font-medium">{key.name || keyId || "intake key"}</div>
                       <div className="tcp-subtle text-xs">
                         {key.project_id || "unknown project"} ·{" "}
-                        {(key.scopes || ["bug_monitor:report"]).join(", ")}
+                        {(key.scopes || ["incident_monitor:report"]).join(", ")}
                       </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">

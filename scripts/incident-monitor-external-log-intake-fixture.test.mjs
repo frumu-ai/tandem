@@ -8,9 +8,12 @@ import test from "node:test";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixturePath = path.join(
   repoRoot,
-  "docs/fixtures/bug-monitor-external-log-intake/service.log.jsonl"
+  "docs/fixtures/incident-monitor-external-log-intake/service.log.jsonl"
 );
-const smokeScriptPath = path.join(repoRoot, "scripts/bug-monitor-external-log-intake-smoke.mjs");
+const smokeScriptPath = path.join(
+  repoRoot,
+  "scripts/incident-monitor-external-log-intake-smoke.mjs"
+);
 
 function readFixtureLines() {
   return fs

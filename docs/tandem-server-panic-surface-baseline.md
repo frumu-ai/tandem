@@ -18,7 +18,7 @@ The CI gate enforces zero production findings in:
 | ------------------------------------------------------------ | ------------------: |
 | `crates/tandem-server/src/app/state/approval_message_map.rs` |                   0 |
 | `crates/tandem-server/src/pack_manager.rs`                   |                   0 |
-| `crates/tandem-server/src/bug_monitor/log_watcher.rs`        |                   0 |
+| `crates/tandem-server/src/incident_monitor/log_watcher.rs`   |                   0 |
 
 These modules also deny `clippy::unwrap_used`, `clippy::expect_used`, and
 `clippy::panic` outside test builds. CI runs `cargo clippy -p tandem-server

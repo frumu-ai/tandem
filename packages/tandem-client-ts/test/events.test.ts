@@ -747,7 +747,7 @@ describe("High-value parity coverage", () => {
     }
   });
 
-  it("uses canonical bug monitor routes", async () => {
+  it("uses canonical incident monitor routes", async () => {
     const client = new TandemClient({ baseUrl: "http://localhost:39731", token: "test-token" });
     const originalFetch = globalThis.fetch;
     const urls: string[] = [];

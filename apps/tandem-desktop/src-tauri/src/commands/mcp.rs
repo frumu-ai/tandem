@@ -58,77 +58,77 @@ pub async fn capability_readiness(
 }
 
 #[tauri::command]
-pub async fn bug_monitor_get_config(state: State<'_, AppState>) -> Result<serde_json::Value> {
-    state.sidecar.bug_monitor_get_config().await
+pub async fn incident_monitor_get_config(state: State<'_, AppState>) -> Result<serde_json::Value> {
+    state.sidecar.incident_monitor_get_config().await
 }
 
 #[tauri::command]
-pub async fn bug_monitor_patch_config(
+pub async fn incident_monitor_patch_config(
     state: State<'_, AppState>,
     config: serde_json::Value,
 ) -> Result<serde_json::Value> {
-    state.sidecar.bug_monitor_patch_config(config).await
+    state.sidecar.incident_monitor_patch_config(config).await
 }
 
 #[tauri::command]
-pub async fn bug_monitor_get_status(state: State<'_, AppState>) -> Result<serde_json::Value> {
-    state.sidecar.bug_monitor_get_status().await
+pub async fn incident_monitor_get_status(state: State<'_, AppState>) -> Result<serde_json::Value> {
+    state.sidecar.incident_monitor_get_status().await
 }
 
 #[tauri::command]
-pub async fn bug_monitor_list_drafts(
+pub async fn incident_monitor_list_drafts(
     state: State<'_, AppState>,
     limit: Option<usize>,
 ) -> Result<serde_json::Value> {
-    state.sidecar.bug_monitor_list_drafts(limit).await
+    state.sidecar.incident_monitor_list_drafts(limit).await
 }
 
 #[tauri::command]
-pub async fn bug_monitor_get_draft(
+pub async fn incident_monitor_get_draft(
     state: State<'_, AppState>,
     draft_id: String,
 ) -> Result<serde_json::Value> {
-    state.sidecar.bug_monitor_get_draft(&draft_id).await
+    state.sidecar.incident_monitor_get_draft(&draft_id).await
 }
 
 #[tauri::command]
-pub async fn bug_monitor_report(
+pub async fn incident_monitor_report(
     state: State<'_, AppState>,
     report: serde_json::Value,
 ) -> Result<serde_json::Value> {
-    state.sidecar.bug_monitor_report(report).await
+    state.sidecar.incident_monitor_report(report).await
 }
 
 #[tauri::command]
-pub async fn bug_monitor_approve_draft(
+pub async fn incident_monitor_approve_draft(
     state: State<'_, AppState>,
     draft_id: String,
     reason: Option<String>,
 ) -> Result<serde_json::Value> {
     state
         .sidecar
-        .bug_monitor_approve_draft(&draft_id, reason)
+        .incident_monitor_approve_draft(&draft_id, reason)
         .await
 }
 
 #[tauri::command]
-pub async fn bug_monitor_deny_draft(
+pub async fn incident_monitor_deny_draft(
     state: State<'_, AppState>,
     draft_id: String,
     reason: Option<String>,
 ) -> Result<serde_json::Value> {
     state
         .sidecar
-        .bug_monitor_deny_draft(&draft_id, reason)
+        .incident_monitor_deny_draft(&draft_id, reason)
         .await
 }
 
 #[tauri::command]
-pub async fn bug_monitor_create_triage_run(
+pub async fn incident_monitor_create_triage_run(
     state: State<'_, AppState>,
     draft_id: String,
 ) -> Result<serde_json::Value> {
-    state.sidecar.bug_monitor_create_triage_run(&draft_id).await
+    state.sidecar.incident_monitor_create_triage_run(&draft_id).await
 }
 
 #[tauri::command]

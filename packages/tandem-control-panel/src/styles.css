@@ -405,7 +405,7 @@
     gap: 0.55rem;
   }
 
-  .tcp-bug-monitor-pill {
+  .tcp-incident-monitor-pill {
     display: inline-flex;
     align-items: center;
     gap: 0.45rem;
@@ -425,17 +425,17 @@
       box-shadow 150ms ease;
   }
 
-  .tcp-bug-monitor-pill:hover {
+  .tcp-incident-monitor-pill:hover {
     border-color: color-mix(in srgb, var(--color-primary) 42%, var(--color-border-subtle) 58%);
     background: color-mix(in srgb, var(--color-surface-elevated) 82%, var(--color-primary) 18%);
   }
 
-  .tcp-bug-monitor-pill svg {
+  .tcp-incident-monitor-pill svg {
     width: 14px;
     height: 14px;
   }
 
-  .tcp-bug-monitor-dot {
+  .tcp-incident-monitor-dot {
     width: 0.42rem;
     height: 0.42rem;
     border-radius: 9999px;
@@ -444,27 +444,27 @@
     animation: tcpPulseDot 2.4s ease-out infinite;
   }
 
-  .tcp-bug-monitor-pill.watching {
+  .tcp-incident-monitor-pill.watching {
     color: color-mix(in srgb, var(--color-primary) 76%, white 24%);
     border-color: color-mix(in srgb, var(--color-primary) 42%, transparent);
   }
 
-  .tcp-bug-monitor-pill.incidents {
+  .tcp-incident-monitor-pill.incidents {
     color: #fca5a5;
     border-color: color-mix(in srgb, #ef4444 42%, transparent);
     background: color-mix(in srgb, #7f1d1d 24%, var(--color-surface-elevated) 76%);
   }
 
-  .tcp-bug-monitor-pill.blocked {
+  .tcp-incident-monitor-pill.blocked {
     color: #fcd34d;
     border-color: color-mix(in srgb, #f59e0b 42%, transparent);
   }
 
-  .tcp-bug-monitor-pill.paused {
+  .tcp-incident-monitor-pill.paused {
     color: color-mix(in srgb, var(--color-text-muted) 86%, white 14%);
   }
 
-  .tcp-bug-monitor-pill.ready {
+  .tcp-incident-monitor-pill.ready {
     color: #86efac;
     border-color: color-mix(in srgb, #22c55e 34%, transparent);
   }
@@ -2136,7 +2136,7 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   .tcp-theme-preview-card,
   .tcp-theme-active,
   .tcp-brand-avatar,
-  .tcp-bug-monitor-pill,
+  .tcp-incident-monitor-pill,
   .tcp-approval-pill,
   .tcp-status-pulse,
   .tcp-icon-btn,

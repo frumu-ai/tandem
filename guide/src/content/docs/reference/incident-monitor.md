@@ -1,9 +1,9 @@
 ---
-title: Bug Monitor And Issue Reporter
-description: Use Tandem's Bug Monitor namespace to turn runtime failures into governed drafts, approvals, and published issues.
+title: Incident Monitor and Issue Reporter
+description: Use Tandem's Incident Monitor namespace to turn runtime failures into governed drafts, approvals, and published issues.
 ---
 
-Bug Monitor is Tandem's governed failure-intake pipeline.
+Incident Monitor is Tandem's governed failure-intake pipeline.
 
 Use it when a workflow failure, recurring runtime error, manual report, or operator finding should become a reviewable draft instead of a direct external mutation.
 
@@ -26,7 +26,7 @@ Use it when a workflow failure, recurring runtime error, manual report, or opera
 5. Approve, deny, or publish when the draft is ready.
 6. Recheck the match or review the resulting posts.
 
-Bug Monitor is intentionally not "report everything immediately to GitHub". It keeps intake, triage, and approval separate so the system can add evidence before anything leaves Tandem.
+Incident Monitor is intentionally not "report everything immediately to GitHub". It keeps intake, triage, and approval separate so the system can add evidence before anything leaves Tandem.
 
 Incident Monitor is the destination-router evolution of this pipeline. GitHub, Linear, and signed webhook destinations use the governed router today, and the same source identity, routing, destination readiness, approval, and receipt model is available for future telemetry/database, MCP tool, and internal memory destinations. See [Incident Monitor Overview](../incident-monitor/overview/) and [Destination Router](../incident-monitor/destination-router/).
 
@@ -41,17 +41,17 @@ The setup panel is organized around:
 - Routing: default destinations, ordered routes, match rules, route tags, source bindings, and route preview.
 - Safety Defaults: approval, redaction, unready destination blocking, and retention defaults.
 
-Legacy GitHub setup remains compatible: if no explicit router destination is configured, Tandem still treats the existing GitHub posting settings as the default Bug Monitor destination. New destinations and routes are admin/full-token config mutations; scoped intake keys are report-only and cannot change routes, preview destination details, call tools, or publish issues.
+Legacy GitHub setup remains compatible: if no explicit router destination is configured, Tandem still treats the existing GitHub posting settings as the default Incident Monitor destination. New destinations and routes are admin/full-token config mutations; scoped intake keys are report-only and cannot change routes, preview destination details, call tools, or publish issues.
 
 ## External Project Log Intake
 
-Bug Monitor can also watch local logs for projects outside a Tandem workflow. Configure `monitored_projects` in `Settings -> Incident Monitor`, then use the external-project panel to inspect source health, create scoped intake keys, reset offsets, and replay the latest log candidate.
+Incident Monitor can also watch local logs for projects outside a Tandem workflow. Configure `monitored_projects` in `Settings -> Incident Monitor`, then use the external-project panel to inspect source health, create scoped intake keys, reset offsets, and replay the latest log candidate.
 
-Use this path when CI, ACA, or another local service writes failures to JSON-lines or plaintext logs and should produce governed Bug Monitor incidents.
+Use this path when CI, ACA, or another local service writes failures to JSON-lines or plaintext logs and should produce governed Incident Monitor incidents.
 
-On hosted installs, Coder and Bug Monitor share repositories under `/workspace/repos`. Sync the repo from the Coder page first, then set Bug Monitor's local directory to `/workspace/repos/<repo-name>` so triage can inspect the source tree. `/workspace/tandem-data` is runtime state, not source code.
+On hosted installs, Coder and Incident Monitor share repositories under `/workspace/repos`. Sync the repo from the Coder page first, then set Incident Monitor's local directory to `/workspace/repos/<repo-name>` so triage can inspect the source tree. `/workspace/tandem-data` is runtime state, not source code.
 
-For setup steps, examples, and agent-facing guidance, see [Bug Monitor External Log Intake](../bug-monitor-external-log-intake/).
+For setup steps, examples, and agent-facing guidance, see [Incident Monitor External Log Intake](../incident-monitor-external-log-intake/).
 
 ## Signed Webhook Destinations
 
@@ -65,11 +65,11 @@ Webhook destinations require:
 
 Tandem signs each delivery with `x-tandem-signature: t=<timestamp_ms>,v1=<hmac_sha256>` over `<timestamp_ms>.<raw_json_body>` and includes `x-tandem-signature-scheme: tandem_hmac_sha256_v1`, `x-tandem-delivery-id`, `x-tandem-event`, and `idempotency-key` headers.
 
-Private, localhost, link-local, and otherwise internal URL ranges are blocked by default. Development and test-only destinations can opt into `allow_private_networks` and `allow_insecure_http`, but production webhook destinations should use HTTPS, a public endpoint, and a host allowlist. Payloads and response excerpts are bounded, retry attempts are capped, and every delivery records a destination-specific Bug Monitor post receipt with status, attempt count, status code, delivery ID, route metadata, and evidence digest.
+Private, localhost, link-local, and otherwise internal URL ranges are blocked by default. Development and test-only destinations can opt into `allow_private_networks` and `allow_insecure_http`, but production webhook destinations should use HTTPS, a public endpoint, and a host allowlist. Payloads and response excerpts are bounded, retry attempts are capped, and every delivery records a destination-specific Incident Monitor post receipt with status, attempt count, status code, delivery ID, route metadata, and evidence digest.
 
 ## Authority Inventory
 
-Use `GET /bug-monitor/security/authority-inventory` to collect a read-only authority map for Incident Monitor security posture assessment.
+Use `GET /incident-monitor/security/authority-inventory` to collect a read-only authority map for Incident Monitor security posture assessment.
 
 The response includes:
 
@@ -84,14 +84,14 @@ The inventory is designed for audit evidence and future posture findings. It ret
 
 ## Security Assessment Reports
 
-Use `POST /bug-monitor/security/assessment-report` to generate a redacted Incident Monitor security gap assessment report. The endpoint requires the full admin token, runs read-only posture checks and optional dry-run controlled probes, summarizes incidents and destination receipts, and persists a context-run evidence artifact by default.
+Use `POST /incident-monitor/security/assessment-report` to generate a redacted Incident Monitor security gap assessment report. The endpoint requires the full admin token, runs read-only posture checks and optional dry-run controlled probes, summarizes incidents and destination receipts, and persists a context-run evidence artifact by default.
 
 The report includes JSON sections plus a Markdown summary:
 
 - assessment scope, monitored sources, authority inventory, destinations, routes, and approval coverage
 - posture findings, controlled probe results, evidence refs, recommendations, residual risk, and follow-up actions
 - Tandem self-monitoring boundaries using `source_kind=tandem_runtime` and `source_kind=tandem_monitor`
-- protected audit export summaries for Bug Monitor route decisions, publish attempts, monitor events, and control failures
+- protected audit export summaries for Incident Monitor route decisions, publish attempts, monitor events, and control failures
 - a non-mutating destination route preview for report export
 
 Reports do not embed raw protected-audit payloads, scoped intake keys, auth headers, webhook secret values, or destination receipt payloads by default. High-assurance deployments should export protected audit evidence to a customer-owned system of record such as SIEM, database, object storage, Linear, GitHub, webhook, telemetry, or an approved MCP destination. Tandem can show what it observed and enforced; it does not independently prove itself safe.
@@ -106,29 +106,29 @@ const client = new TandemClient({
   token: process.env.TANDEM_ENGINE_TOKEN!,
 });
 
-const status = await client.bugMonitor.getStatus();
+const status = await client.incidentMonitor.getStatus();
 if (status.status?.readiness?.enabled === false) {
-  console.log("Bug Monitor is disabled or missing config");
+  console.log("Incident Monitor is disabled or missing config");
 }
 
-const incidents = await client.bugMonitor.listIncidents({ limit: 20 });
-const drafts = await client.bugMonitor.listDrafts({ limit: 20 });
-const destinations = await client.bugMonitor.listDestinations();
-const authority = await client.bugMonitor.getAuthorityInventory();
-const report = await client.bugMonitor.generateAssessmentReport({
+const incidents = await client.incidentMonitor.listIncidents({ limit: 20 });
+const drafts = await client.incidentMonitor.listDrafts({ limit: 20 });
+const destinations = await client.incidentMonitor.listDestinations();
+const authority = await client.incidentMonitor.getAuthorityInventory();
+const report = await client.incidentMonitor.generateAssessmentReport({
   source_kind: "tandem_monitor",
   routeDestinationIds: destinations.map((destination) => destination.destination_id),
 });
 
 if (drafts.drafts[0]) {
-  await client.bugMonitor.createTriageRun(drafts.drafts[0].draft_id);
-  await client.bugMonitor.publishDraftToDestinations(
+  await client.incidentMonitor.createTriageRun(drafts.drafts[0].draft_id);
+  await client.incidentMonitor.publishDraftToDestinations(
     drafts.drafts[0].draft_id,
     destinations.map((destination) => destination.destination_id)
   );
 }
 
-await client.bugMonitor.report({
+await client.incidentMonitor.report({
   title: "Workflow failed while establishing GitHub context",
   detail: "The automation timed out before triage could complete.",
   source: "automation_v2",
@@ -143,24 +143,24 @@ await client.bugMonitor.report({
 from tandem_client import TandemClient
 
 async with TandemClient(base_url="http://localhost:39731", token="...") as client:
-    status = await client.bug_monitor.get_status()
-    incidents = await client.bug_monitor.list_incidents(limit=20)
-    drafts = await client.bug_monitor.list_drafts(limit=20)
-    destinations = await client.bug_monitor.list_destinations()
+    status = await client.incident_monitor.get_status()
+    incidents = await client.incident_monitor.list_incidents(limit=20)
+    drafts = await client.incident_monitor.list_drafts(limit=20)
+    destinations = await client.incident_monitor.list_destinations()
 
     if drafts.drafts:
-        await client.bug_monitor.create_triage_run(drafts.drafts[0].draft_id)
-        await client.bug_monitor.publish_draft_to_destinations(
+        await client.incident_monitor.create_triage_run(drafts.drafts[0].draft_id)
+        await client.incident_monitor.publish_draft_to_destinations(
             drafts.drafts[0].draft_id,
             [destination.destination_id for destination in destinations],
         )
 
-    authority = await client.bug_monitor.get_authority_inventory()
-    report = await client.bug_monitor.generate_assessment_report(
+    authority = await client.incident_monitor.get_authority_inventory()
+    report = await client.incident_monitor.generate_assessment_report(
         source_kind="tandem_monitor",
         route_destination_ids=[destination.destination_id for destination in destinations],
     )
-    cards = await client.bug_monitor.generate_deployment_cards(
+    cards = await client.incident_monitor.generate_deployment_cards(
         defaults={
             "business_owner": "Security Ops",
             "accountable_team": "AI Governance",
@@ -171,13 +171,13 @@ async with TandemClient(base_url="http://localhost:39731", token="...") as clien
             "review_cadence_days": 30,
         },
         metadata={
-            "tandem:self_monitoring:bug_monitor": {
+            "tandem:self_monitoring:incident_monitor": {
                 "intended_purpose": "Route governed incident evidence",
             }
         },
     )
 
-    await client.bug_monitor.report({
+    await client.incident_monitor.report({
         "title": "Workflow failed while establishing GitHub context",
         "detail": "The automation timed out before triage could complete.",
         "source": "automation_v2",
@@ -237,7 +237,7 @@ async with TandemClient(base_url="http://localhost:39731", token="...") as clien
 - `retention_days` is unset by default, so deployments should configure retention/export policy for reports, receipts, and protected audit evidence before production use. Source bindings can attach `retention_profile` labels for downstream policy.
 - Reset/replay log-source actions require the full engine API token.
 - Status can be blocked by missing config, missing repo access, or missing runtime capabilities.
-- Missing fields should be handled defensively; Bug Monitor records are intentionally flexible.
+- Missing fields should be handled defensively; Incident Monitor records are intentionally flexible.
 
 ## Related
 

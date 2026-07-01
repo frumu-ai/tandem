@@ -1,39 +1,39 @@
 ---
-title: Bug Monitor External Log Intake
-description: Configure Tandem Bug Monitor to watch external project logs, accept scoped reports, and help agents diagnose failures without a workflow run.
+title: Incident Monitor External Log Intake
+description: Configure Tandem Incident Monitor to watch external project logs, accept scoped reports, and help agents diagnose failures without a workflow run.
 ---
 
-Bug Monitor external log intake lets Tandem watch another local project for failures without requiring that project to run a Tandem workflow.
+Incident Monitor external log intake lets Tandem watch another local project for failures without requiring that project to run a Tandem workflow.
 
-Use this when an external app, CI job, or long-running agent writes logs that should become Bug Monitor incidents and issue drafts.
+Use this when an external app, CI job, or long-running agent writes logs that should become Incident Monitor incidents and issue drafts.
 
 ## What Agents Should Know
 
-- Bug Monitor can watch configured local log files under a monitored project's `workspace_root`.
+- Incident Monitor can watch configured local log files under a monitored project's `workspace_root`.
 - The watcher accepts JSON-lines logs and plaintext stack traces.
 - Watched log files must stay inside the configured workspace root; path escapes and symlink escapes are rejected.
 - External reporters can submit failures with scoped intake keys instead of the full engine token.
 - Scoped intake keys can only report for their configured project and scope. They cannot change config, run workflows, publish issues, call tools, or read files.
 - Reset/replay debug actions require the full engine API token because they mutate watcher state.
-- GitHub posting is still governed by Bug Monitor draft, approval, and publish policy.
+- GitHub posting is still governed by Incident Monitor draft, approval, and publish policy.
 - Incident Monitor extends this model with destination routing, route preview, destination readiness, and destination-neutral receipts. See [Incident Monitor Overview](./incident-monitor/overview/).
 
 ## Setup Checklist
 
-1. Open `Settings -> Bug Monitor`.
-2. Enable Bug Monitor and set the target GitHub repo.
-3. Select the MCP server Bug Monitor should use for GitHub issue lookup/publish.
+1. Open `Settings -> Incident Monitor`.
+2. Enable Incident Monitor and set the target GitHub repo.
+3. Select the MCP server Incident Monitor should use for GitHub issue lookup/publish.
 4. Add or generate `monitored_projects` JSON.
-5. Save the Bug Monitor config.
+5. Save the Incident Monitor config.
 6. Confirm the external-project panel shows the project and source health.
 7. Create a scoped intake key if CI or another external service needs to report directly.
 8. Keep `auto_create_new_issues` and `require_approval_for_new_issues` aligned with your team's policy.
 
 ## Hosted Workspace Layout
 
-Hosted Tandem installs share the same checked-out repositories between Coder and Bug Monitor.
+Hosted Tandem installs share the same checked-out repositories between Coder and Incident Monitor.
 
-Use Coder's `Sync repo` action first, then set Bug Monitor's local directory to the synced repo folder:
+Use Coder's `Sync repo` action first, then set Incident Monitor's local directory to the synced repo folder:
 
 ```text
 /workspace/repos/<repo-name>
@@ -50,7 +50,7 @@ Other hosted paths are for runtime state:
 | Path                           | Purpose                                                                         |
 | ------------------------------ | ------------------------------------------------------------------------------- |
 | `/workspace/repos`             | Shared source checkouts created by Coder sync.                                  |
-| `/workspace/repos/<repo-name>` | The repo folder Bug Monitor should inspect.                                     |
+| `/workspace/repos/<repo-name>` | The repo folder Incident Monitor should inspect.                                |
 | `/workspace/aca/repos`         | Compatibility mount for ACA/Coder internals; it points at the same repo volume. |
 | `/workspace/tandem-data`       | Runtime config, incidents, drafts, logs, and state; not the source checkout.    |
 
@@ -60,7 +60,7 @@ Minimal example:
 
 ```json
 {
-  "bug_monitor": {
+  "incident_monitor": {
     "enabled": true,
     "repo": "frumu-ai/tandem",
     "monitored_projects": [
@@ -73,7 +73,7 @@ Minimal example:
         "log_sources": [
           {
             "source_id": "service-jsonl",
-            "path": "docs/fixtures/bug-monitor-external-log-intake/service.log.jsonl",
+            "path": "docs/fixtures/incident-monitor-external-log-intake/service.log.jsonl",
             "format": "json",
             "minimum_level": "error",
             "start_position": "beginning",
@@ -120,13 +120,13 @@ If no `fingerprint` is provided, Tandem computes one from the failure content. P
 
 ## Scoped Intake Keys
 
-Create keys from `Settings -> Bug Monitor -> Scoped intake keys` or the TypeScript SDK.
+Create keys from `Settings -> Incident Monitor -> Scoped intake keys` or the TypeScript SDK.
 
 ```typescript
-const created = await client.bugMonitor.createIntakeKey({
+const created = await client.incidentMonitor.createIntakeKey({
   project_id: "external-demo",
   name: "CI reporter",
-  scopes: ["bug_monitor:report"],
+  scopes: ["incident_monitor:report"],
 });
 
 console.log(created.raw_key); // Store once. Tandem only persists the hash.
@@ -135,9 +135,9 @@ console.log(created.raw_key); // Store once. Tandem only persists the hash.
 Use the raw key to report from an external process:
 
 ```bash
-curl -X POST "$TANDEM_BASE_URL/bug-monitor/intake/report" \
+curl -X POST "$TANDEM_BASE_URL/incident-monitor/intake/report" \
   -H "content-type: application/json" \
-  -H "x-tandem-bug-monitor-intake-key: $BUG_MONITOR_INTAKE_KEY" \
+  -H "x-tandem-incident-monitor-intake-key: $INCIDENT_MONITOR_INTAKE_KEY" \
   -d '{
     "project_id": "external-demo",
     "source_id": "ci",
@@ -158,9 +158,9 @@ The key is scoped to the project id and scope. If a reporter sends a different p
 Use these when helping a human test or recover a watched source.
 
 ```typescript
-await client.bugMonitor.resetLogSourceOffset("external-demo", "service-jsonl");
+await client.incidentMonitor.resetLogSourceOffset("external-demo", "service-jsonl");
 
-const replay = await client.bugMonitor.replayLatestLogSourceCandidate(
+const replay = await client.incidentMonitor.replayLatestLogSourceCandidate(
   "external-demo",
   "service-jsonl"
 );
@@ -186,14 +186,14 @@ Replaying the latest candidate:
 The repository includes a demo log:
 
 ```text
-docs/fixtures/bug-monitor-external-log-intake/service.log.jsonl
+docs/fixtures/incident-monitor-external-log-intake/service.log.jsonl
 ```
 
 Dry-run the smoke script in CI-safe mode:
 
 ```bash
-npm run bug-monitor:fixture:test
-node scripts/bug-monitor-external-log-intake-smoke.mjs --dry-run
+npm run incident-monitor:fixture:test
+node scripts/incident-monitor-external-log-intake-smoke.mjs --dry-run
 ```
 
 Run a live local smoke after saving the example monitored project config:
@@ -201,16 +201,16 @@ Run a live local smoke after saving the example monitored project config:
 ```bash
 TANDEM_BASE_URL=http://localhost:3000/api/engine \
 TANDEM_TOKEN="$TANDEM_TOKEN" \
-node scripts/bug-monitor-external-log-intake-smoke.mjs
+node scripts/incident-monitor-external-log-intake-smoke.mjs
 ```
 
-The live smoke appends a unique JSONL error, resets the configured source offset, and polls Bug Monitor incidents until the matching fingerprint appears.
+The live smoke appends a unique JSONL error, resets the configured source offset, and polls Incident Monitor incidents until the matching fingerprint appears.
 
 ## Teaching Humans
 
 When explaining this feature to an operator:
 
-1. Start with the safety model: watched logs and scoped report keys create Bug Monitor intake, not direct GitHub mutations.
+1. Start with the safety model: watched logs and scoped report keys create Incident Monitor intake, not direct GitHub mutations.
 2. Ask where the external project lives on disk and which log file contains actionable failures.
 3. Use the starter generator in Settings to create the first `monitored_projects` block.
 4. Save config and watch source health before creating any intake keys.
@@ -220,18 +220,18 @@ When explaining this feature to an operator:
 
 ## Troubleshooting
 
-| Symptom                | Likely Cause                                                | Fix                                                           |
-| ---------------------- | ----------------------------------------------------------- | ------------------------------------------------------------- |
-| Source stays `Waiting` | The watcher has not polled or the path is empty.            | Check `watch_interval_seconds`, file path, and server logs.   |
-| Source is `Unhealthy`  | Path validation, file read, or parse error.                 | Inspect `last_error` in Settings.                             |
-| Intake key rejected    | Wrong project id, disabled key, or missing scope.           | List keys and confirm `project_id` plus `bug_monitor:report`. |
-| Replay returns 404     | No log-backed incident exists yet.                          | Let the watcher ingest a candidate first.                     |
-| Replay returns 400     | Stored offsets no longer match the current file.            | Reset offset and let the watcher ingest a fresh candidate.    |
-| Too many drafts        | Fingerprints are too noisy or `minimum_level` is too broad. | Add stable fingerprints and use `minimum_level: "error"`.     |
+| Symptom                | Likely Cause                                                | Fix                                                                |
+| ---------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------ |
+| Source stays `Waiting` | The watcher has not polled or the path is empty.            | Check `watch_interval_seconds`, file path, and server logs.        |
+| Source is `Unhealthy`  | Path validation, file read, or parse error.                 | Inspect `last_error` in Settings.                                  |
+| Intake key rejected    | Wrong project id, disabled key, or missing scope.           | List keys and confirm `project_id` plus `incident_monitor:report`. |
+| Replay returns 404     | No log-backed incident exists yet.                          | Let the watcher ingest a candidate first.                          |
+| Replay returns 400     | Stored offsets no longer match the current file.            | Reset offset and let the watcher ingest a fresh candidate.         |
+| Too many drafts        | Fingerprints are too noisy or `minimum_level` is too broad. | Add stable fingerprints and use `minimum_level: "error"`.          |
 
 ## Related
 
-- [Bug Monitor And Issue Reporter](./reference/bug-monitor/)
+- [Incident Monitor and Issue Reporter](./reference/incident-monitor/)
 - [Incident Monitor Overview](./incident-monitor/overview/)
 - [Incident Monitor Destination Router](./incident-monitor/destination-router/)
 - [Control Panel](./control-panel/)

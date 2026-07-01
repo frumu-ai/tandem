@@ -14,7 +14,10 @@ import { ProviderModelSelector } from "../components/ProviderModelSelector";
 import { buildPlannerProviderOptions } from "../features/planner/plannerShared";
 import type { AppPageProps } from "./pageTypes";
 import { LazyJson } from "../features/automations/LazyJson";
-import { CodingWorkflowsConnectingState, CodingWorkflowsDisconnectedState } from "./CodingWorkflowsDisconnectedState";
+import {
+  CodingWorkflowsConnectingState,
+  CodingWorkflowsDisconnectedState,
+} from "./CodingWorkflowsDisconnectedState";
 import {
   type CodingTab,
   type GithubRepoRef,
@@ -75,7 +78,9 @@ export function CodingWorkflowsPage({
   const [taskSourceProject, setTaskSourceProject] = useState("");
   const [taskSourceLinearTeam, setTaskSourceLinearTeam] = useState("");
   const [taskSourceLinearProject, setTaskSourceLinearProject] = useState("");
-  const [taskSourceLinearStatuses, setTaskSourceLinearStatuses] = useState("Backlog,Todo,Triage,Ready");
+  const [taskSourceLinearStatuses, setTaskSourceLinearStatuses] = useState(
+    "Backlog,Todo,Triage,Ready"
+  );
   const [taskSourceLinearLabels, setTaskSourceLinearLabels] = useState("");
   const [taskSourceLinearQuery, setTaskSourceLinearQuery] = useState("");
   const [runItem, setRunItem] = useState("");
@@ -457,8 +462,10 @@ export function CodingWorkflowsPage({
       }
       if (["blocked", "stalled", "on_hold", "failed"].includes(statusKey)) return "blocked";
       if (["review", "in_review", "ready_for_review"].includes(statusKey)) return "review";
-      if (["done", "complete", "completed", "closed", "canceled", "cancelled"].includes(statusKey)) return "done";
-      if (["todo", "todos", "ready", "backlog", "open", "triage", "unstarted"].includes(statusKey)) return "todos";
+      if (["done", "complete", "completed", "closed", "canceled", "cancelled"].includes(statusKey))
+        return "done";
+      if (["todo", "todos", "ready", "backlog", "open", "triage", "unstarted"].includes(statusKey))
+        return "todos";
       return "unknown";
     };
     const rankItem = (item: any) => {
@@ -672,9 +679,10 @@ export function CodingWorkflowsPage({
   }
   async function registerProject() {
     const repoRef = parseGithubRepoRef(newRepoUrl);
-    const linearSlugSeed = taskSourceType === "linear"
-      ? `linear-${taskSourceLinearTeam || "team"}-${taskSourceLinearProject || "issues"}`
-      : "";
+    const linearSlugSeed =
+      taskSourceType === "linear"
+        ? `linear-${taskSourceLinearTeam || "team"}-${taskSourceLinearProject || "issues"}`
+        : "";
     const safeLinearSlug = linearSlugSeed
       .trim()
       .toLowerCase()
@@ -839,15 +847,24 @@ export function CodingWorkflowsPage({
     if (!itemRef || !targetState) return;
     const movingKey = `${itemId || itemRef}:${targetState}`;
     setMovingTaskStates((current) => ({ ...current, [movingKey]: targetState }));
-    queryClient.setQueryData(["coding-workflows", "aca-project-board", selectedProjectSlug], (current: any) => optimisticallyMoveBoardItems(current, [item], targetState));
+    queryClient.setQueryData(
+      ["coding-workflows", "aca-project-board", selectedProjectSlug],
+      (current: any) => optimisticallyMoveBoardItems(current, [item], targetState)
+    );
     try {
       const path = `/api/aca/projects/${encodeURIComponent(selectedProjectSlug)}/tasks/${encodeURIComponent(itemRef)}/state`;
       await api(path, { method: "POST", body: JSON.stringify({ state: targetState }) });
-      void queryClient.invalidateQueries({ queryKey: ["coding-workflows", "aca-project-board", selectedProjectSlug] });
-      void queryClient.invalidateQueries({ queryKey: ["coding-workflows", "aca-project-tasks", selectedProjectSlug] });
+      void queryClient.invalidateQueries({
+        queryKey: ["coding-workflows", "aca-project-board", selectedProjectSlug],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["coding-workflows", "aca-project-tasks", selectedProjectSlug],
+      });
       toast("ok", `Moved ${itemRef} to ${formatStatus(targetState)}.`);
     } catch (error) {
-      void queryClient.invalidateQueries({ queryKey: ["coding-workflows", "aca-project-board", selectedProjectSlug] });
+      void queryClient.invalidateQueries({
+        queryKey: ["coding-workflows", "aca-project-board", selectedProjectSlug],
+      });
       toast("err", error instanceof Error ? error.message : String(error));
     } finally {
       setMovingTaskStates((current) => {
@@ -890,7 +907,10 @@ export function CodingWorkflowsPage({
       });
       return next;
     });
-    queryClient.setQueryData(["coding-workflows", "aca-project-board", selectedProjectSlug], (current: any) => optimisticallyMoveBoardItems(current, launchableItems, "in_progress"));
+    queryClient.setQueryData(
+      ["coding-workflows", "aca-project-board", selectedProjectSlug],
+      (current: any) => optimisticallyMoveBoardItems(current, launchableItems, "in_progress")
+    );
     setBatchTriggering(true);
     try {
       const result = await api("/api/aca/runs/trigger-batch", {
@@ -904,8 +924,12 @@ export function CodingWorkflowsPage({
       void queryClient.invalidateQueries({ queryKey: ["coding-workflows", "aca-runs"] });
       void queryClient.invalidateQueries({ queryKey: ["coding-workflows", "coder-runs"] });
       void queryClient.invalidateQueries({ queryKey: ["coding-workflows", "aca-overview"] });
-      void queryClient.invalidateQueries({ queryKey: ["coding-workflows", "aca-project-board", selectedProjectSlug] });
-      void queryClient.invalidateQueries({ queryKey: ["coding-workflows", "aca-project-tasks", selectedProjectSlug] });
+      void queryClient.invalidateQueries({
+        queryKey: ["coding-workflows", "aca-project-board", selectedProjectSlug],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["coding-workflows", "aca-project-tasks", selectedProjectSlug],
+      });
       const runs = toArray(result, "runs");
       const nextRunId = String(runs?.[0]?.run_id || "").trim();
       if (nextRunId) {
@@ -926,7 +950,9 @@ export function CodingWorkflowsPage({
         });
         return next;
       });
-      void queryClient.invalidateQueries({ queryKey: ["coding-workflows", "aca-project-board", selectedProjectSlug] });
+      void queryClient.invalidateQueries({
+        queryKey: ["coding-workflows", "aca-project-board", selectedProjectSlug],
+      });
       toast("err", error instanceof Error ? error.message : String(error));
     } finally {
       setBatchTriggering(false);
@@ -1107,7 +1133,7 @@ export function CodingWorkflowsPage({
                     {String(repoSyncResult.repo.commit).slice(0, 7)}
                   </div>
                   <div className="rounded-xl border border-sky-500/20 bg-sky-500/10 p-2 text-sky-100">
-                    Bug Monitor should use this checkout as its local directory when reporting
+                    Incident Monitor should use this checkout as its local directory when reporting
                     issues for this repo.
                   </div>
                 </div>
@@ -1218,7 +1244,9 @@ export function CodingWorkflowsPage({
                           onClick={refreshGithubBoard}
                           disabled={projectBoardQuery.isFetching}
                         >
-                          {projectBoardQuery.isFetching ? "Refreshing..." : `Refresh from ${selectedTaskSourceLabel}`}
+                          {projectBoardQuery.isFetching
+                            ? "Refreshing..."
+                            : `Refresh from ${selectedTaskSourceLabel}`}
                         </button>
                       </div>
                     </div>
@@ -1491,7 +1519,9 @@ export function CodingWorkflowsPage({
                         </div>
                       </div>
                     ) : (
-                      <EmptyState text={`No ${selectedTaskSourceLabel} items returned for this project.`} />
+                      <EmptyState
+                        text={`No ${selectedTaskSourceLabel} items returned for this project.`}
+                      />
                     )}
                   </div>
                 )

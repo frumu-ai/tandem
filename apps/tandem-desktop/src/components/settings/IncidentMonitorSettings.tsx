@@ -1,30 +1,30 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertCircle, Bug, ExternalLink, RefreshCw, Siren } from "lucide-react";
+import { AlertCircle, ExternalLink, RefreshCw, Siren } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Switch } from "@/components/ui/Switch";
 import {
-  approveBugMonitorDraft,
-  createBugMonitorTriageRun,
-  denyBugMonitorDraft,
-  getBugMonitorConfig,
-  getBugMonitorStatus,
-  listBugMonitorDrafts,
+  approveIncidentMonitorDraft,
+  createIncidentMonitorTriageRun,
+  denyIncidentMonitorDraft,
+  getIncidentMonitorConfig,
+  getIncidentMonitorStatus,
+  listIncidentMonitorDrafts,
   mcpListServers,
-  patchBugMonitorConfig,
-  type BugMonitorConfig,
-  type BugMonitorDraftRecord,
-  type BugMonitorStatus,
+  patchIncidentMonitorConfig,
+  type IncidentMonitorConfig,
+  type IncidentMonitorDraftRecord,
+  type IncidentMonitorStatus,
   type McpServerRecord,
 } from "@/lib/tauri";
 
-interface BugMonitorSettingsProps {
+interface IncidentMonitorSettingsProps {
   providerCatalogModels: Record<string, string[]>;
   onOpenMcpSettings?: () => void;
 }
 
-function emptyConfig(): BugMonitorConfig {
+function emptyConfig(): IncidentMonitorConfig {
   return {
     enabled: false,
     repo: "",
@@ -36,7 +36,7 @@ function emptyConfig(): BugMonitorConfig {
   };
 }
 
-function normalizeConfig(config?: BugMonitorConfig | null): BugMonitorConfig {
+function normalizeConfig(config?: IncidentMonitorConfig | null): IncidentMonitorConfig {
   if (!config) return emptyConfig();
   return {
     enabled: !!config.enabled,
@@ -50,13 +50,13 @@ function normalizeConfig(config?: BugMonitorConfig | null): BugMonitorConfig {
   };
 }
 
-export function BugMonitorSettings({
+export function IncidentMonitorSettings({
   providerCatalogModels,
   onOpenMcpSettings,
-}: BugMonitorSettingsProps) {
-  const [config, setConfig] = useState<BugMonitorConfig>(emptyConfig);
-  const [status, setStatus] = useState<BugMonitorStatus | null>(null);
-  const [drafts, setDrafts] = useState<BugMonitorDraftRecord[]>([]);
+}: IncidentMonitorSettingsProps) {
+  const [config, setConfig] = useState<IncidentMonitorConfig>(emptyConfig);
+  const [status, setStatus] = useState<IncidentMonitorStatus | null>(null);
+  const [drafts, setDrafts] = useState<IncidentMonitorDraftRecord[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServerRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -78,9 +78,9 @@ export function BugMonitorSettings({
     setError(null);
     try {
       const [configPayload, statusPayload, draftsPayload, servers] = await Promise.all([
-        getBugMonitorConfig(),
-        getBugMonitorStatus(),
-        listBugMonitorDrafts(20),
+        getIncidentMonitorConfig(),
+        getIncidentMonitorStatus(),
+        listIncidentMonitorDrafts(20),
         mcpListServers(),
       ]);
       setConfig(normalizeConfig(configPayload.incident_monitor ?? configPayload.bug_monitor));
@@ -88,7 +88,7 @@ export function BugMonitorSettings({
       setDrafts(Array.isArray(draftsPayload.drafts) ? draftsPayload.drafts : []);
       setMcpServers(servers);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load Bug Monitor settings");
+      setError(err instanceof Error ? err.message : "Failed to load Incident Monitor settings");
     } finally {
       setLoading(false);
     }
@@ -98,7 +98,7 @@ export function BugMonitorSettings({
     void refresh();
   }, [refresh]);
 
-  const updateConfig = (patch: Partial<BugMonitorConfig>) => {
+  const updateConfig = (patch: Partial<IncidentMonitorConfig>) => {
     setConfig((prev) => ({ ...prev, ...patch }));
   };
 
@@ -142,12 +142,12 @@ export function BugMonitorSettings({
         require_approval_for_new_issues: config.require_approval_for_new_issues ?? true,
         auto_comment_on_matched_open_issues: config.auto_comment_on_matched_open_issues ?? true,
       };
-      const response = await patchBugMonitorConfig(payload);
+      const response = await patchIncidentMonitorConfig(payload);
       setConfig(normalizeConfig(response.incident_monitor ?? response.bug_monitor));
-      setNotice("Bug Monitor settings saved.");
+      setNotice("Incident Monitor settings saved.");
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save Bug Monitor settings");
+      setError(err instanceof Error ? err.message : "Failed to save Incident Monitor settings");
     } finally {
       setSaving(false);
     }
@@ -159,15 +159,15 @@ export function BugMonitorSettings({
     setNotice(null);
     try {
       if (decision === "approve") {
-        await approveBugMonitorDraft(draftId, "approved from desktop settings");
-        setNotice(`Bug Monitor draft ${draftId} approved.`);
+        await approveIncidentMonitorDraft(draftId, "approved from desktop settings");
+        setNotice(`Incident Monitor draft ${draftId} approved.`);
       } else {
-        await denyBugMonitorDraft(draftId, "denied from desktop settings");
-        setNotice(`Bug Monitor draft ${draftId} denied.`);
+        await denyIncidentMonitorDraft(draftId, "denied from desktop settings");
+        setNotice(`Incident Monitor draft ${draftId} denied.`);
       }
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : `Failed to ${decision} Bug Monitor draft`);
+      setError(err instanceof Error ? err.message : `Failed to ${decision} Incident Monitor draft`);
     } finally {
       setActingDraftId(null);
     }
@@ -178,11 +178,11 @@ export function BugMonitorSettings({
     setError(null);
     setNotice(null);
     try {
-      const response = await createBugMonitorTriageRun(draftId);
+      const response = await createIncidentMonitorTriageRun(draftId);
       setNotice(
         response.deduped
-          ? `Bug Monitor triage run already exists: ${response.run.run_id}`
-          : `Bug Monitor triage run created: ${response.run.run_id}`
+          ? `Incident Monitor triage run already exists: ${response.run.run_id}`
+          : `Incident Monitor triage run created: ${response.run.run_id}`
       );
       await refresh();
     } catch (err) {
@@ -199,7 +199,7 @@ export function BugMonitorSettings({
           <div>
             <CardTitle className="flex items-center gap-2">
               <Siren className="h-5 w-5 text-primary" />
-              Bug Monitor
+              Incident Monitor
             </CardTitle>
             <CardDescription>
               Configure engine-backed failure-to-issue reporting and inspect pending drafts without
@@ -304,7 +304,7 @@ export function BugMonitorSettings({
               onChange={(event) =>
                 updateConfig({
                   provider_preference: event.target
-                    .value as BugMonitorConfig["provider_preference"],
+                    .value as IncidentMonitorConfig["provider_preference"],
                 })
               }
             >
@@ -332,13 +332,13 @@ export function BugMonitorSettings({
           <div className="space-y-2 md:col-span-2">
             <label className="text-xs font-medium text-text-subtle">Model</label>
             <Input
-              list="bug-monitor-model-options"
+              list="incident-monitor-model-options"
               value={modelId}
               onChange={(event) => setModelRoute(providerId, event.target.value)}
               placeholder={providerId ? "Type or paste a model id" : "Choose a provider first"}
               disabled={!providerId}
             />
-            <datalist id="bug-monitor-model-options">
+            <datalist id="incident-monitor-model-options">
               {modelOptions.map((option) => (
                 <option key={option} value={option} />
               ))}
@@ -398,7 +398,7 @@ export function BugMonitorSettings({
 
         <div className="flex flex-wrap items-center gap-3">
           <Button onClick={() => void save()} disabled={saving || loading}>
-            {saving ? "Saving..." : "Save Bug Monitor"}
+            {saving ? "Saving..." : "Save Incident Monitor"}
           </Button>
           {onOpenMcpSettings && (
             <Button variant="secondary" onClick={onOpenMcpSettings}>
@@ -409,7 +409,7 @@ export function BugMonitorSettings({
 
         <div className="space-y-3 rounded-xl border border-border bg-surface-elevated/40 p-4">
           <div className="flex items-center gap-2">
-            <Bug className="h-4 w-4 text-primary" />
+            <Siren className="h-4 w-4 text-primary" />
             <p className="text-sm font-medium text-text">Recent drafts</p>
           </div>
           {loading ? (
@@ -417,7 +417,7 @@ export function BugMonitorSettings({
           ) : drafts.length === 0 ? (
             <div className="flex items-start gap-2 rounded-lg border border-border bg-surface p-3 text-sm text-text-muted">
               <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
-              No Bug Monitor drafts yet.
+              No Incident Monitor drafts yet.
             </div>
           ) : (
             <div className="space-y-2">

@@ -42,6 +42,6 @@ Scoped intake keys are report-only credentials. They can submit events for their
 
 ## Existing external log intake
 
-Bug Monitor already supports local external log intake for configured projects. Use [Bug Monitor External Log Intake](../bug-monitor-external-log-intake/) for current setup details.
+Incident Monitor already supports local external log intake for configured projects. Use [Incident Monitor External Log Intake](../incident-monitor-external-log-intake/) for current setup details.
 
 Incident Monitor builds on that source model so future destination routing can use the same source identity and allowlists.

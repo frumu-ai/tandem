@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import { appendFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = resolve(new URL("..", import.meta.url).pathname);
+const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const fixturePath = resolve(
   root,
-  "docs/fixtures/bug-monitor-external-log-intake/service.log.jsonl"
+  "docs/fixtures/incident-monitor-external-log-intake/service.log.jsonl"
 );
 
 const baseUrl = (process.env.TANDEM_BASE_URL || "http://localhost:3000/api/engine").replace(
@@ -13,9 +14,9 @@ const baseUrl = (process.env.TANDEM_BASE_URL || "http://localhost:3000/api/engin
   ""
 );
 const token = process.env.TANDEM_TOKEN || "";
-const projectId = process.env.BUG_MONITOR_DEMO_PROJECT_ID || "external-demo";
-const sourceId = process.env.BUG_MONITOR_DEMO_SOURCE_ID || "service-jsonl";
-const timeoutMs = Number(process.env.BUG_MONITOR_SMOKE_TIMEOUT_MS || 60_000);
+const projectId = process.env.INCIDENT_MONITOR_DEMO_PROJECT_ID || "external-demo";
+const sourceId = process.env.INCIDENT_MONITOR_DEMO_SOURCE_ID || "service-jsonl";
+const timeoutMs = Number(process.env.INCIDENT_MONITOR_SMOKE_TIMEOUT_MS || 60_000);
 const startedAt = Date.now();
 const fingerprint = `external-demo-smoke-${startedAt}`;
 const dryRun = process.argv.includes("--dry-run");
@@ -57,7 +58,7 @@ function demoFailureLine() {
     message: "smoke test worker failed while processing external log intake",
     error: "SmokeError: external log intake smoke marker",
     stack:
-      "SmokeError: external log intake smoke marker\n    at smokeTest (docs/fixtures/bug-monitor-external-log-intake/service.log.jsonl:1:1)",
+      "SmokeError: external log intake smoke marker\n    at smokeTest (docs/fixtures/incident-monitor-external-log-intake/service.log.jsonl:1:1)",
     fingerprint,
   };
 }
@@ -89,13 +90,13 @@ async function main() {
     return;
   }
   await post(
-    `/bug-monitor/log-sources/${encodeURIComponent(projectId)}/${encodeURIComponent(
+    `/incident-monitor/log-sources/${encodeURIComponent(projectId)}/${encodeURIComponent(
       sourceId
     )}/reset-offset`
   );
 
   while (Date.now() - startedAt < timeoutMs) {
-    const payload = await get("/bug-monitor/incidents?limit=50");
+    const payload = await get("/incident-monitor/incidents?limit=50");
     const incidents = Array.isArray(payload?.incidents) ? payload.incidents : [];
     const match = incidents.find((incident) => incident?.fingerprint === fingerprint);
     if (match) {
@@ -117,7 +118,7 @@ async function main() {
     await new Promise((resolveTimeout) => setTimeout(resolveTimeout, 2_000));
   }
 
-  throw new Error(`Timed out waiting for Bug Monitor incident ${fingerprint}`);
+  throw new Error(`Timed out waiting for Incident Monitor incident ${fingerprint}`);
 }
 
 main().catch((error) => {

@@ -11,20 +11,20 @@ The local state root is usually `~/.local/share/tandem` on Linux or the configur
 
 Important directories:
 
-| Path                                 | Purpose                                          |
-| ------------------------------------ | ------------------------------------------------ |
-| `data/automation-runs/YYYY/MM/`      | Immutable Automation V2 per-run history shards   |
-| `data/context-runs/hot/`             | Active and recent context-run directories        |
-| `data/context-runs/archive/YYYY/MM/` | Compressed old context-run archives              |
-| `data/mcp/`                          | MCP registry files                               |
-| `data/channels/`                     | Channel sessions and tool preferences            |
-| `data/routines/`                     | Routine definitions and run history              |
-| `data/bug-monitor/`                  | Bug Monitor config, incidents, drafts, and posts |
-| `data/actions/`                      | External action history                          |
-| `data/pack-builder/`                 | Pack-builder workflows, plans, and zip artifacts |
-| `data/system/`                       | Shared resources and other system-level state    |
-| `data/knowledge/`                    | Legacy embedded-doc bootstrap markers            |
-| `data/workflow-planner/`             | Workflow-planner sessions                        |
+| Path                                 | Purpose                                               |
+| ------------------------------------ | ----------------------------------------------------- |
+| `data/automation-runs/YYYY/MM/`      | Immutable Automation V2 per-run history shards        |
+| `data/context-runs/hot/`             | Active and recent context-run directories             |
+| `data/context-runs/archive/YYYY/MM/` | Compressed old context-run archives                   |
+| `data/mcp/`                          | MCP registry files                                    |
+| `data/channels/`                     | Channel sessions and tool preferences                 |
+| `data/routines/`                     | Routine definitions and run history                   |
+| `data/incident-monitor/`             | Incident Monitor config, incidents, drafts, and posts |
+| `data/actions/`                      | External action history                               |
+| `data/pack-builder/`                 | Pack-builder workflows, plans, and zip artifacts      |
+| `data/system/`                       | Shared resources and other system-level state         |
+| `data/knowledge/`                    | Legacy embedded-doc bootstrap markers                 |
+| `data/workflow-planner/`             | Workflow-planner sessions                             |
 
 Hot indexes should stay small. Large node outputs, blackboards, runtime context, and terminal run details belong in per-run files, JSONL shards, or artifact files referenced by path.
 
@@ -132,7 +132,7 @@ Storage SDK methods do not run archive cleanup. Worktree cleanup only affects re
 
 ## Agent guidance
 
-Before fixing workflow or Bug Monitor bugs on a machine with slow startup, inspect storage first. A root directory full of large JSON maps or thousands of legacy `context_runs` entries can make unrelated bugs look worse.
+Before fixing workflow or Incident Monitor bugs on a machine with slow startup, inspect storage first. A root directory full of large JSON maps or thousands of legacy `context_runs` entries can make unrelated bugs look worse.
 
 The old embedded docs path used `guide_docs:` memory rows plus a legacy
 `default_knowledge_state.json` marker. If those still exist on a machine, purge

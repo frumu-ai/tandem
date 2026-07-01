@@ -1136,40 +1136,40 @@ export async function capabilityReadiness(
   return invoke("capability_readiness", { request });
 }
 
-export type BugMonitorProviderPreference = "auto" | "official_github" | "composio" | "arcade";
+export type IncidentMonitorProviderPreference = "auto" | "official_github" | "composio" | "arcade";
 
-export interface BugMonitorModelPolicy {
+export interface IncidentMonitorModelPolicy {
   default_model?: {
     provider_id?: string;
     model_id?: string;
   };
 }
 
-export interface BugMonitorConfig {
+export interface IncidentMonitorConfig {
   enabled: boolean;
   repo?: string | null;
   mcp_server?: string | null;
-  provider_preference: BugMonitorProviderPreference | string;
-  model_policy?: BugMonitorModelPolicy | null;
+  provider_preference: IncidentMonitorProviderPreference | string;
+  model_policy?: IncidentMonitorModelPolicy | null;
   require_approval_for_new_issues?: boolean;
   auto_comment_on_matched_open_issues?: boolean;
   updated_at_ms?: number;
 }
 
-export interface BugMonitorCapabilityReadiness {
+export interface IncidentMonitorCapabilityReadiness {
   github_list_issues?: boolean;
   github_get_issue?: boolean;
   github_create_issue?: boolean;
   github_comment_on_issue?: boolean;
 }
 
-export interface BugMonitorCapabilityMatch {
+export interface IncidentMonitorCapabilityMatch {
   capability_id: string;
   provider: string;
   tool_name: string;
 }
 
-export interface BugMonitorReadiness {
+export interface IncidentMonitorReadiness {
   config_valid?: boolean;
   repo_valid?: boolean;
   mcp_server_present?: boolean;
@@ -1182,14 +1182,14 @@ export interface BugMonitorReadiness {
   runtime_ready?: boolean;
 }
 
-export interface BugMonitorSelectedModel {
+export interface IncidentMonitorSelectedModel {
   provider_id?: string;
   model_id?: string;
 }
 
-export interface BugMonitorStatus {
-  config: BugMonitorConfig;
-  readiness?: BugMonitorReadiness;
+export interface IncidentMonitorStatus {
+  config: IncidentMonitorConfig;
+  readiness?: IncidentMonitorReadiness;
   runtime?: {
     monitoring_active?: boolean;
     paused?: boolean;
@@ -1201,17 +1201,17 @@ export interface BugMonitorStatus {
     last_post_result?: string | null;
     pending_posts?: number;
   };
-  required_capabilities?: BugMonitorCapabilityReadiness;
+  required_capabilities?: IncidentMonitorCapabilityReadiness;
   missing_required_capabilities?: string[];
-  resolved_capabilities?: BugMonitorCapabilityMatch[];
+  resolved_capabilities?: IncidentMonitorCapabilityMatch[];
   discovered_mcp_tools?: string[];
-  selected_model?: BugMonitorSelectedModel | null;
+  selected_model?: IncidentMonitorSelectedModel | null;
   pending_drafts?: number;
   last_activity_at_ms?: number | null;
   last_error?: string | null;
 }
 
-export interface BugMonitorDraftRecord {
+export interface IncidentMonitorDraftRecord {
   draft_id: string;
   fingerprint: string;
   repo: string;
@@ -1223,7 +1223,7 @@ export interface BugMonitorDraftRecord {
   detail?: string | null;
 }
 
-export interface BugMonitorTriageRunRecord {
+export interface IncidentMonitorTriageRunRecord {
   run_id: string;
   run_type?: string;
   status?: string;
@@ -1231,7 +1231,7 @@ export interface BugMonitorTriageRunRecord {
   [key: string]: unknown;
 }
 
-export interface BugMonitorSubmission {
+export interface IncidentMonitorSubmission {
   repo?: string | null;
   title?: string | null;
   detail?: string | null;
@@ -1440,63 +1440,63 @@ export interface CoderMemoryCandidateRecord {
   created_at_ms?: number;
 }
 
-export async function getBugMonitorConfig(): Promise<{
-  incident_monitor?: BugMonitorConfig;
-  bug_monitor?: BugMonitorConfig;
+export async function getIncidentMonitorConfig(): Promise<{
+  incident_monitor?: IncidentMonitorConfig;
+  bug_monitor?: IncidentMonitorConfig;
 }> {
-  return invoke("bug_monitor_get_config");
+  return invoke("incident_monitor_get_config");
 }
 
-export async function patchBugMonitorConfig(
+export async function patchIncidentMonitorConfig(
   config: Record<string, unknown>
-): Promise<{ incident_monitor?: BugMonitorConfig; bug_monitor?: BugMonitorConfig }> {
-  return invoke("bug_monitor_patch_config", { config });
+): Promise<{ incident_monitor?: IncidentMonitorConfig; bug_monitor?: IncidentMonitorConfig }> {
+  return invoke("incident_monitor_patch_config", { config });
 }
 
-export async function getBugMonitorStatus(): Promise<{ status: BugMonitorStatus }> {
-  return invoke("bug_monitor_get_status");
+export async function getIncidentMonitorStatus(): Promise<{ status: IncidentMonitorStatus }> {
+  return invoke("incident_monitor_get_status");
 }
 
-export async function listBugMonitorDrafts(limit?: number): Promise<{
-  drafts: BugMonitorDraftRecord[];
+export async function listIncidentMonitorDrafts(limit?: number): Promise<{
+  drafts: IncidentMonitorDraftRecord[];
   count: number;
 }> {
-  return invoke("bug_monitor_list_drafts", { limit });
+  return invoke("incident_monitor_list_drafts", { limit });
 }
 
-export async function getBugMonitorDraft(draftId: string): Promise<{
-  draft: BugMonitorDraftRecord;
+export async function getIncidentMonitorDraft(draftId: string): Promise<{
+  draft: IncidentMonitorDraftRecord;
 }> {
-  return invoke("bug_monitor_get_draft", { draftId });
+  return invoke("incident_monitor_get_draft", { draftId });
 }
 
-export async function reportBugMonitorIssue(
-  report: BugMonitorSubmission
-): Promise<{ draft: BugMonitorDraftRecord }> {
-  return invoke("bug_monitor_report", { report });
+export async function reportIncidentMonitorIssue(
+  report: IncidentMonitorSubmission
+): Promise<{ draft: IncidentMonitorDraftRecord }> {
+  return invoke("incident_monitor_report", { report });
 }
 
-export async function approveBugMonitorDraft(
+export async function approveIncidentMonitorDraft(
   draftId: string,
   reason?: string
-): Promise<{ ok: boolean; draft: BugMonitorDraftRecord }> {
-  return invoke("bug_monitor_approve_draft", { draftId, reason });
+): Promise<{ ok: boolean; draft: IncidentMonitorDraftRecord }> {
+  return invoke("incident_monitor_approve_draft", { draftId, reason });
 }
 
-export async function denyBugMonitorDraft(
+export async function denyIncidentMonitorDraft(
   draftId: string,
   reason?: string
-): Promise<{ ok: boolean; draft: BugMonitorDraftRecord }> {
-  return invoke("bug_monitor_deny_draft", { draftId, reason });
+): Promise<{ ok: boolean; draft: IncidentMonitorDraftRecord }> {
+  return invoke("incident_monitor_deny_draft", { draftId, reason });
 }
 
-export async function createBugMonitorTriageRun(draftId: string): Promise<{
+export async function createIncidentMonitorTriageRun(draftId: string): Promise<{
   ok: boolean;
   deduped?: boolean;
-  draft: BugMonitorDraftRecord;
-  run: BugMonitorTriageRunRecord;
+  draft: IncidentMonitorDraftRecord;
+  run: IncidentMonitorTriageRunRecord;
 }> {
-  return invoke("bug_monitor_create_triage_run", { draftId });
+  return invoke("incident_monitor_create_triage_run", { draftId });
 }
 
 export async function listCoderRuns(params?: {

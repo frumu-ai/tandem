@@ -62,29 +62,29 @@ Automation V2 run records now also persist first-class workflow definition
 version and snapshot hash fields, backfill them from existing run snapshots on
 load, expose them through SDK types, and fail restart recovery closed if the
 recorded snapshot hash no longer matches the available definition.
-Bug Monitor/Incident Monitor routing now supports Linear issue destinations
+Incident Monitor routing now supports Linear issue destinations
 with MCP readiness checks, duplicate issue matching, destination-aware receipts,
 and external-action records, and publish/recheck errors include the underlying
 destination failure chain for easier operator diagnosis.
-Bug Monitor/Incident Monitor routing also supports signed webhook destinations
+Incident Monitor routing also supports signed webhook destinations
 with env-backed HMAC secrets, default SSRF blocking for private/internal URLs,
 bounded payloads and response excerpts, capped retry attempts, and durable
 per-delivery receipts. URL validation classifies parsed IPv4/IPv6 literals
 before DNS lookup so IPv4-mapped private IPv6 webhook hosts fail closed
 consistently across platforms.
-Bug Monitor/Incident Monitor routing now also supports local telemetry and
+Incident Monitor routing now also supports local telemetry and
 internal memory destinations. Telemetry publishes durable destination-aware post
 receipts that can be filtered by destination id, while internal memory
 destinations store bounded, redacted summaries with category-specific record
 refs and duplicate suppression.
-Generic MCP tool destinations can now be configured for Bug Monitor/Incident
-Monitor routing. These destinations fail closed unless an admin-configured
+Generic MCP tool destinations can now be configured for Incident Monitor routing.
+These destinations fail closed unless an admin-configured
 destination names the MCP server/tool, sets `allow_publish`, and provides an
 explicit payload mapping. Route preview reports server/tool/mapping readiness
 without executing tools, and publish attempts record destination, route, tool,
 redacted receipt, duplicate-suppression, and failure details.
-Bug Monitor/Incident Monitor incidents can now carry AI-agent safety and risk
-context without breaking existing submissions. Drafts and incidents persist
+Incident Monitor incidents can now carry AI-agent safety and risk context without
+breaking existing submissions. Drafts and incidents persist
 redacted actor, model, tool, action, policy, approval state, risk category,
 blast radius, and external correlation ids; SDK models and destination payloads
 expose the context, and route preview can match risk categories for targeted
@@ -102,11 +102,11 @@ can edit source, destination, route, default destination, and safety-default
 configuration in one place, run route previews before publishing, inspect
 destination readiness badges, filter post receipts by destination, and use
 TypeScript/Python SDK helpers for destination and route CRUD plus
-destination-targeted draft publishing. Legacy GitHub Bug Monitor setup remains
-compatible when no explicit router destination is configured.
+destination-targeted draft publishing. The legacy GitHub setup remains compatible
+when no explicit router destination is configured.
 The server now exposes the same monitor APIs through canonical
 `/incident-monitor/*` and `/config/incident-monitor` routes, and the stale
-`/failure-reporter/*` aliases have been removed.
+`/incident-monitor/*` aliases have been removed.
 Shared Incident Monitor contracts now use the `tandem-incident-monitor` crate
 identity and canonical `incident_monitor`/`incident-monitor` wire names for
 runtime events, evidence refs, persisted data paths, GitHub host methods, and
@@ -135,7 +135,7 @@ helpers for the endpoint. Incident Monitor also adds read-only,
 dry-run-by-default security posture checks over that inventory and selected
 policy decision/action history, producing deduped findings with severity, affected
 objects, evidence refs, mitigation guidance, routing suggestions, and normal
-Bug Monitor draft-conversion payloads. The docs now define AI Agent Security
+Incident Monitor draft-conversion payloads. The docs now define AI Agent Security
 Posture positioning, packaging, demo narrative, report outline, self-monitoring
 boundaries, and comparisons with SAST, DAST, SIEM, CSPM, EDR, and traditional
 workflow automation without overclaiming full vulnerability scanning.
@@ -156,6 +156,12 @@ monitoring, expose protected audit export summaries without raw payloads, and
 include non-mutating destination route previews so report artifacts can move to
 customer-owned systems of record after approval. TypeScript and Python SDKs
 include helpers for the report endpoint.
+Control Panel, desktop settings, create-panel templates, docs, examples,
+scripts, and CI workflow labels now use Incident Monitor routes, filenames,
+labels, and examples while retaining narrow legacy compatibility redirects.
+CI now also runs an Incident Monitor terminology guard over public UI, SDK,
+docs, examples, scripts, and release surfaces so stale public terminology is
+reported with file and line details.
 The SDK destination removal helpers now also drop routes that would otherwise
 be left with no explicit destinations, preventing accidental fallback to the
 default destination set.
@@ -223,7 +229,7 @@ especially prompts and MCP-bound steps, from the existing edit modal.
 
 Tandem 0.6.3 is a patch release for workflow-runtime reliability and Bug
 Monitor routing. It repairs the MCP/Notion/Composio workflow paths exercised by
-the Reddit infrastructure leads automation, and it advances Bug Monitor toward
+the Reddit infrastructure leads automation, and it advances Incident Monitor toward
 destination-neutral incident routing while preserving the current GitHub
 publishing behavior.
 
@@ -277,12 +283,12 @@ publishing behavior.
   previous pack-oriented label, and scoped MCP inventory output is more compact
   for large connected servers.
 
-### Bug Monitor Routing
+### Incident Monitor Routing
 
-- Bug Monitor now has destination-neutral Incident Monitor routing foundations:
+- Incident Monitor now has destination-neutral Incident Monitor routing foundations:
   destination readiness, route preview APIs, destination-aware post
   filtering/idempotency, and TypeScript/Python SDK types.
-- A centralized `bug_monitor::router` handles route preview, route matching,
+- A centralized `incident_monitor::router` handles route preview, route matching,
   destination readiness checks, and publish dispatch for manual, automatic,
   approval, recovery, timeout, and service paths. GitHub remains the only
   executable destination in this phase, and unsupported destination overrides
@@ -357,8 +363,8 @@ MCP connections.
   request IDs are rejected after restart, and concurrent state-file writes are
   serialized so simultaneous prompts and decisions remain durable.
 - Dogfooding bugs now have a permanent replay lane: `eval_datasets/dogfooding_regressions.yaml`
-  seeds five recent workflow/runtime bug classes, `bug-monitor-fixture` scaffolds
-  sanitized eval fixtures from Bug Monitor incidents, and a nightly workflow runs
+  seeds five recent workflow/runtime bug classes, `incident-monitor-fixture` scaffolds
+  sanitized eval fixtures from Incident Monitor incidents, and a nightly workflow runs
   the dogfooding regression dataset through `eval-runner --engine-mode stub`.
   Stub/live eval-runner modes now use Tokio's multithreaded runtime so local
   in-process Automation V2 evals do not overflow the single-thread runtime stack.
@@ -380,21 +386,21 @@ MCP connections.
   `tandem-core`, with compatibility re-exports left in core for existing
   callers. This starts the TAN-205 crate-boundary cleanup without changing
   persisted credential file names or tenant-scoped credential behavior.
-- Bug Monitor domain logic now lives in a dedicated `tandem-bug-monitor` crate.
-  The moved layer owns Bug Monitor records, log parsing and evidence artifact
+- Incident Monitor domain logic now lives in a dedicated `tandem-incident-monitor` crate.
+  The moved layer owns Incident Monitor records, log parsing and evidence artifact
   rendering, recurrence comment summaries, deterministic error provenance, and
   the GitHub publish algorithm, while `tandem-server` provides a thin
   AppState/HTTP/MCP host shim and compatibility re-exports for current callers.
   The host shim keeps duplicate post detection and ambiguous failed-create
   suppression on scoped, uncapped storage lookups rather than the public capped
   post-list API.
-- Bug Monitor log sources that start at EOF now keep missing-file health updates
+- Incident Monitor log sources that start at EOF now keep missing-file health updates
   separate from successful first positioning. If a watched log appears later
   with bootstrap/history content, Tandem seeks to the end before ingesting new
   lines instead of replaying the preexisting file.
 - The eval framework now lives in a dedicated `tandem-eval` crate. The
   eval-runner CLI, datasets/metrics/regression helpers, scripted provider,
-  isolated AppState bootstrap, and Bug Monitor fixture scaffold moved out of
+  isolated AppState bootstrap, and Incident Monitor fixture scaffold moved out of
   `tandem-server`; eval CI now builds `cargo build --bin eval-runner -p
 tandem-eval` while the server exposes only narrow public eval-support
   wrappers for the harness.
@@ -977,7 +983,7 @@ visibility, secret storage, and browser/provider network guardrails.
   permissions, and vault passphrases replace the previous 4-digit PIN model.
 - Browser navigation fails closed without an allowlist and blocks local/private
   targets; provider base URL validation rejects unsafe remote HTTP endpoints.
-- Provider credential debug output and bug-monitor log redaction now avoid
+- Provider credential debug output and incident-monitor log redaction now avoid
   leaking plaintext secrets.
 
 ### Compatibility Notes
@@ -1805,7 +1811,7 @@ What ships now:
 
 - **Type foundation** (`automation_v2::execution_profile`): `ExecutionProfile` enum (`strict`/`guided`/`yolo`), `ValidatorClass` taxonomy with `is_relaxable_in(profile)` and a conservative `is_critical()` allowlist for never-relaxable classes (auth, secret access, destructive-action approval, budget caps, kill switch, deterministic verifier failures). `decide_profile_validation` is the single chokepoint; `augment_output_with_profile_relaxation` is the executor-facing helper; `classify_unmet_requirement` maps existing validator strings to the taxonomy.
 - **Run record and API**: `AutomationExecutionPolicy.profile` is now optional and persisted. Every `AutomationV2RunRecord` carries typed `effective_execution_profile` and `requested_execution_profile`. `POST /automations/v2/{id}/run_now` accepts an optional `execution_profile` override (Strict, Guided, or YOLO) that applies for the single run only without mutating the saved automation. `resolve_effective_execution_profile` enforces a deterministic precedence: run override → workflow policy → Strict.
-- **Lifecycle and event observability**: `record_automation_lifecycle_event_with_metadata` automatically merges the run's `effective_execution_profile` into every `AutomationLifecycleRecord` so existing audit, replay, and Bug Monitor surfaces see the profile without per-call-site changes. The `automation_v2.run.failed` engine event now includes both `effective_execution_profile` and `requested_execution_profile`, so Bug Monitor and downstream observers can attribute failures to the active profile.
+- **Lifecycle and event observability**: `record_automation_lifecycle_event_with_metadata` automatically merges the run's `effective_execution_profile` into every `AutomationLifecycleRecord` so existing audit, replay, and Incident Monitor surfaces see the profile without per-call-site changes. The `automation_v2.run.failed` engine event now includes both `effective_execution_profile` and `requested_execution_profile`, so Incident Monitor and downstream observers can attribute failures to the active profile.
 - **Executor chokepoint (telemetry-only)**: The executor invokes `augment_output_with_profile_relaxation` at the single run-acceptance moment. When every `unmet_requirement` on a node output is relaxable under the active profile, it writes `relaxed_validator_classes` (structured), `effective_outcome`, `original_validator_outcome`, `execution_profile`, and `experimental: true` (YOLO) into the `artifact_validation` block. Strict runs are unchanged. Critical classes (destructive-action approval, budget cap, etc.) always block; if any classification is unknown, the augmentation conservatively skips so behavior stays Strict-equivalent.
 - **24 unit tests** covering serde round-trip, default-to-Strict, critical-class blocking, soft-class relaxation per profile, tenant-denylist enforcement, classifier mapping, augmentation purity, and lifecycle metadata merge semantics.
 
@@ -1820,17 +1826,17 @@ What is intentionally deferred to follow-up slices and tracked in `docs/internal
 
 This patch keeps automation-owned runtime sessions out of the user Chat session list without hiding their audit trail from the rest of Tandem.
 
-Sessions now carry explicit source metadata. New interactive sessions default to `sourceKind: chat`, Automation V2/Bug Monitor worker sessions are classified as `automation_v2`, and session listing supports filtering by source. The TypeScript client and wire model expose the same fields so control-panel views can ask for the session class they actually need.
+Sessions now carry explicit source metadata. New interactive sessions default to `sourceKind: chat`, Automation V2/Incident Monitor worker sessions are classified as `automation_v2`, and session listing supports filtering by source. The TypeScript client and wire model expose the same fields so control-panel views can ask for the session class they actually need.
 
-The Chat sidebar and Dashboard recent-session list now request only `source=chat`, so Bug Monitor submissions such as `Automation automation-v2-bug-monitor-triage-failure-draft-... / inspect_failure_report` no longer appear as conversations. Legacy automation records with the existing title format are classified at the storage/wire boundary, preserving backward compatibility for already-written sessions.
+The Chat sidebar and Dashboard recent-session list now request only `source=chat`, so Incident Monitor submissions such as `Automation automation-v2-incident-monitor-triage-failure-draft-... / inspect_failure_report` no longer appear as conversations. Legacy automation records with the existing title format are classified at the storage/wire boundary, preserving backward compatibility for already-written sessions.
 
 The Tauri desktop Automation Calendar no longer crashes the app while loading. FullCalendar is now isolated into its own lazy bundle and imported only after the WebKit stylesheet host is ready, preventing the `Cannot read properties of null (reading 'cssRules')` startup failure seen when opening the calendar view.
 
-Bug Monitor GitHub issue creation now uses a persisted pending idempotency claim before calling GitHub. Completion finalization, stale-provider recovery, deadline recovery, and status-sweep recovery can all wake up around the same draft, but only the first caller that claims the create-issue digest is allowed to create the GitHub issue. Concurrent callers now see `publish_in_progress` or reuse the posted record instead of producing duplicate issues with the same fingerprint and triage run.
+Incident Monitor GitHub issue creation now uses a persisted pending idempotency claim before calling GitHub. Completion finalization, stale-provider recovery, deadline recovery, and status-sweep recovery can all wake up around the same draft, but only the first caller that claims the create-issue digest is allowed to create the GitHub issue. Concurrent callers now see `publish_in_progress` or reuse the posted record instead of producing duplicate issues with the same fingerprint and triage run.
 
-Bug Monitor proposal quality gates also recognize the structured handoff shapes that triage nodes actually return, including wrapped objects such as `{ "bug_monitor_inspection": ... }` and array responses containing the artifact followed by a compact status object. Placeholder task specs still fail the gate, but valid completed inspection, research, validation, and fix-proposal artifacts no longer get treated as missing and replaced with broad fallback evidence.
+Incident Monitor proposal quality gates also recognize the structured handoff shapes that triage nodes actually return, including wrapped objects such as `{ "incident_monitor_inspection": ... }` and array responses containing the artifact followed by a compact status object. Placeholder task specs still fail the gate, but valid completed inspection, research, validation, and fix-proposal artifacts no longer get treated as missing and replaced with broad fallback evidence.
 
-Bug Monitor triage status detection now treats nested `status: blocked` fields inside structured Bug Monitor handoffs as evidence/limitation data, not as the node's own runtime status. This prevents `propose_fix_and_verification` from recursively blocking the debugger when it has produced a useful partial fix proposal with acceptance criteria and bounded next steps.
+Incident Monitor triage status detection now treats nested `status: blocked` fields inside structured Incident Monitor handoffs as evidence/limitation data, not as the node's own runtime status. This prevents `propose_fix_and_verification` from recursively blocking the debugger when it has produced a useful partial fix proposal with acceptance criteria and bounded next steps.
 
 Automation V2 long-running nodes now get to own their timeout path. The stale-run reaper honors the run-registry heartbeat that active node execution already emits every few seconds, so a first task with a 600-second budget is not globally paused as `stale_no_provider_activity` at the exact timeout boundary before the node can fail or repair normally.
 
@@ -1848,7 +1854,7 @@ Transient provider stream decode failures are now treated as recoverable provide
 
 Automation V2 governance now gives repair attempts a calmer, more actionable handoff. Attempt verdicts include a `calm_teammate_v1` review with a progress score, what the agent completed correctly, what is still needed, why the missing work matters, and the next concrete moves. Repair prompts show that review before the raw expected/observed contract JSON, so retries can keep good evidence and fix the smallest missing piece rather than restarting from a vague validation failure.
 
-Bug Monitor failure reports now preserve both the final failure and the useful prior attempt evidence. Automation V2 failure events carry recent attempt verdict chains and attempt review chains into Bug Monitor submissions, making issue details show earlier contract misses such as missing workspace files, missing connector calls, citation gaps, or required next actions even when the final observed failure is a provider stream/runtime error.
+Incident Monitor failure reports now preserve both the final failure and the useful prior attempt evidence. Automation V2 failure events carry recent attempt verdict chains and attempt review chains into Incident Monitor submissions, making issue details show earlier contract misses such as missing workspace files, missing connector calls, citation gaps, or required next actions even when the final observed failure is a provider stream/runtime error.
 
 Stale provider/session recovery now retries by default instead of stopping at a pause. When the stale reaper cancels a dead session, the in-progress node is marked `needs_repair` and the stale-reaped run is automatically requeued while attempt budget remains. The existing auto-resume cap keeps truly wedged providers from looping forever, and operators can opt out with `TANDEM_DISABLE_STALE_AUTO_RESUME`.
 
@@ -1878,7 +1884,7 @@ This patch fixes automation schedule timezone handling, tightens the distinction
 
 Automation cron schedules now preserve the selected local wall-clock time end to end. The server accepts the 5-field cron expressions emitted by the control panel, normalizes them for the Rust cron parser, and evaluates them in the saved IANA timezone when computing `next_fire_at_ms`. The control panel now carries that timezone through guided schedule summaries, creation review, workflow editing, calendar labels, and standup scheduling, with `Europe/Budapest` available in the common timezone picker. A regression test covers weekday 9:00 AM in Budapest resolving correctly through DST-aware UTC storage.
 
-Final report/brief nodes that synthesize already-collected Tandem MCP notes, Reddit MCP signals, web findings, and run artifacts no longer require fresh workspace `read` calls. The planner stops adding `local_source_reads` to new `research_synthesis` contracts, and the runtime validator waives stale local-read enforcement on existing saved synthesis nodes. Code-change, local-research, and Bug Monitor source-inspection nodes still retain their strict repo-read gates.
+Final report/brief nodes that synthesize already-collected Tandem MCP notes, Reddit MCP signals, web findings, and run artifacts no longer require fresh workspace `read` calls. The planner stops adding `local_source_reads` to new `research_synthesis` contracts, and the runtime validator waives stale local-read enforcement on existing saved synthesis nodes. Code-change, local-research, and Incident Monitor source-inspection nodes still retain their strict repo-read gates.
 
 This prevents research-to-destination workflows from blocking with messages such as `research brief cited workspace sources without using read` when the workflow only cites MCP/web/upstream artifact evidence and does not need repository source files.
 
