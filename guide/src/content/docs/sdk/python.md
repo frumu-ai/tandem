@@ -354,7 +354,7 @@ The Python SDK also exposes the newer engine surfaces used across the Tandem rep
 - `client.resources` for key-value resources
 - `client.skills` for validation, routing, evals, compile, and generate flows in addition to list/get/import
 - `client.packs` and `client.capabilities` for pack lifecycle and capability resolution
-- `client.automations_v2`, `client.bug_monitor`, `client.coder`, `client.agent_teams`, `client.missions`, and `client.optimizations` for newer orchestration APIs
+- `client.automations_v2`, `client.incident_monitor`, `client.coder`, `client.agent_teams`, `client.missions`, and `client.optimizations` for newer orchestration APIs
 
 ```python
 browser = await client.browser.status()
@@ -371,17 +371,17 @@ For actual browser automation, use `client.execute_tool(...)` with tools like `b
 
 Use `client.worktrees.cleanup(...)` for operator-directed repo maintenance only. It wraps `POST /worktree/cleanup`, should usually be called in `dry_run` mode first, and is meant for leaked `.tandem/worktrees` entries after blocked, failed, or restarted repo tasks.
 
-### `client.bug_monitor`
+### `client.incident_monitor`
 
-Use `client.bug_monitor` when a failure, manual report, or recurring runtime issue should become a governed draft instead of a direct GitHub mutation.
+Use `client.incident_monitor` when a failure, manual report, or recurring runtime issue should become a governed draft instead of a direct GitHub mutation.
 
 ```python
-status = await client.bug_monitor.get_status()
-incidents = await client.bug_monitor.list_incidents(limit=10)
-drafts = await client.bug_monitor.list_drafts(limit=10)
+status = await client.incident_monitor.get_status()
+incidents = await client.incident_monitor.list_incidents(limit=10)
+drafts = await client.incident_monitor.list_drafts(limit=10)
 
 if drafts.drafts:
-    await client.bug_monitor.create_triage_run(drafts.drafts[0].draft_id)
+    await client.incident_monitor.create_triage_run(drafts.drafts[0].draft_id)
 ```
 
 Key helpers:

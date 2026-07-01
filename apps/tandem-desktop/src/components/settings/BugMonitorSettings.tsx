@@ -83,7 +83,7 @@ export function BugMonitorSettings({
         listBugMonitorDrafts(20),
         mcpListServers(),
       ]);
-      setConfig(normalizeConfig(configPayload.bug_monitor));
+      setConfig(normalizeConfig(configPayload.incident_monitor ?? configPayload.bug_monitor));
       setStatus(statusPayload.status ?? null);
       setDrafts(Array.isArray(draftsPayload.drafts) ? draftsPayload.drafts : []);
       setMcpServers(servers);
@@ -143,7 +143,7 @@ export function BugMonitorSettings({
         auto_comment_on_matched_open_issues: config.auto_comment_on_matched_open_issues ?? true,
       };
       const response = await patchBugMonitorConfig(payload);
-      setConfig(normalizeConfig(response.bug_monitor));
+      setConfig(normalizeConfig(response.incident_monitor ?? response.bug_monitor));
       setNotice("Bug Monitor settings saved.");
       await refresh();
     } catch (err) {

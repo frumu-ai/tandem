@@ -1,4 +1,4 @@
-// Bug Monitor intake helpers split from part06.rs for the file-size gate
+// Incident Monitor intake helpers split from part06.rs for the file-size gate
 // (same module via include!).
 
 fn apply_bug_monitor_report_source_approval_binding(
@@ -24,6 +24,14 @@ fn clear_bug_monitor_raw_source_routing_fields(report: &mut BugMonitorSubmission
 }
 
 fn bug_monitor_intake_key_from_headers(headers: &HeaderMap) -> Option<String> {
+    if let Some(value) = headers
+        .get("x-tandem-incident-monitor-intake-key")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(value.to_string());
+    }
     if let Some(value) = headers
         .get("x-tandem-bug-monitor-intake-key")
         .and_then(|value| value.to_str().ok())

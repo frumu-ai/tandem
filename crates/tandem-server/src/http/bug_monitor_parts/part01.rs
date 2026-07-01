@@ -23,7 +23,8 @@ const DEFAULT_BUG_MONITOR_TEMPLATE: &str =
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct BugMonitorConfigInput {
     #[serde(default)]
-    pub bug_monitor: Option<BugMonitorConfig>,
+    #[serde(alias = "bug_monitor")]
+    pub incident_monitor: Option<BugMonitorConfig>,
 }
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct BugMonitorDraftsQuery {

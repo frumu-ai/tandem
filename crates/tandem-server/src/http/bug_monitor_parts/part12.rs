@@ -35,7 +35,7 @@ pub(super) async fn generate_bug_monitor_security_assessment_report(
         return (
             StatusCode::FORBIDDEN,
             Json(json!({
-                "error": "Bug Monitor assessment reports require an admin API token, not a scoped intake key",
+                "error": "Incident Monitor assessment reports require an admin API token, not a scoped intake key",
                 "code": "BUG_MONITOR_ASSESSMENT_REPORT_ADMIN_REQUIRED",
             })),
         )
@@ -46,7 +46,7 @@ pub(super) async fn generate_bug_monitor_security_assessment_report(
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(json!({
-                    "error": "Bug Monitor assessment reports require the full admin API token",
+                    "error": "Incident Monitor assessment reports require the full admin API token",
                     "code": "BUG_MONITOR_ASSESSMENT_REPORT_ADMIN_REQUIRED",
                 })),
             )
@@ -79,7 +79,7 @@ pub(super) async fn generate_bug_monitor_security_assessment_report(
                 return (
                     status_code,
                     Json(json!({
-                        "error": "Failed to persist Bug Monitor assessment report evidence pack",
+                        "error": "Failed to persist Incident Monitor assessment report evidence pack",
                         "code": "BUG_MONITOR_ASSESSMENT_REPORT_EVIDENCE_WRITE_FAILED",
                     })),
                 )

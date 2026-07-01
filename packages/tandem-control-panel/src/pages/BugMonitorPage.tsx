@@ -260,24 +260,24 @@ export function BugMonitorPage({ client, toast }: AppPageProps) {
 
   const statusQuery = useQuery({
     queryKey: ["bug-monitor", "status"],
-    queryFn: () => client.bugMonitor.getStatus(),
+    queryFn: () => client.incidentMonitor.getStatus(),
     refetchInterval: 10000,
   });
 
   const incidentsQuery = useQuery({
     queryKey: ["bug-monitor", "incidents", LIST_FETCH_LIMIT],
-    queryFn: () => client.bugMonitor.listIncidents({ limit: LIST_FETCH_LIMIT }),
+    queryFn: () => client.incidentMonitor.listIncidents({ limit: LIST_FETCH_LIMIT }),
   });
 
   const draftsQuery = useQuery({
     queryKey: ["bug-monitor", "drafts", LIST_FETCH_LIMIT],
-    queryFn: () => client.bugMonitor.listDrafts({ limit: LIST_FETCH_LIMIT }),
+    queryFn: () => client.incidentMonitor.listDrafts({ limit: LIST_FETCH_LIMIT }),
   });
 
   const postsQuery = useQuery({
     queryKey: ["bug-monitor", "posts", LIST_FETCH_LIMIT, postDestinationFilter],
     queryFn: () =>
-      client.bugMonitor.listPosts({
+      client.incidentMonitor.listPosts({
         limit: LIST_FETCH_LIMIT,
         destinationId: postDestinationFilter || undefined,
       }),
@@ -285,10 +285,10 @@ export function BugMonitorPage({ client, toast }: AppPageProps) {
 
   const statusMutation = useMutation({
     mutationFn: async (action: "recompute" | "pause" | "resume" | "debug") => {
-      if (action === "recompute") return client.bugMonitor.recomputeStatus();
-      if (action === "pause") return client.bugMonitor.pause();
-      if (action === "resume") return client.bugMonitor.resume();
-      return client.bugMonitor.debug();
+      if (action === "recompute") return client.incidentMonitor.recomputeStatus();
+      if (action === "pause") return client.incidentMonitor.pause();
+      if (action === "resume") return client.incidentMonitor.resume();
+      return client.incidentMonitor.debug();
     },
     onSuccess: async (result, action) => {
       if (action === "debug") {
@@ -310,16 +310,16 @@ export function BugMonitorPage({ client, toast }: AppPageProps) {
     }) => {
       const incidentId = firstString(vars.incident, ["incident_id", "id"]);
       if (!incidentId) throw new Error("Incident id missing.");
-      if (vars.action === "view") return client.bugMonitor.getIncident(incidentId);
+      if (vars.action === "view") return client.incidentMonitor.getIncident(incidentId);
       if (vars.action === "route-preview") {
-        return client.bugMonitor.previewRoute({ incident_id: incidentId });
+        return client.incidentMonitor.previewRoute({ incident_id: incidentId });
       }
       if (vars.action === "triage") {
         const draftId = firstString(vars.incident, ["draft_id"]);
         if (!draftId) throw new Error("Incident has no draft id for triage.");
-        return client.bugMonitor.createTriageRun(draftId);
+        return client.incidentMonitor.createTriageRun(draftId);
       }
-      return client.bugMonitor.replayIncident(incidentId);
+      return client.incidentMonitor.replayIncident(incidentId);
     },
     onSuccess: async (result, vars) => {
       if (vars.action === "view") {
@@ -348,28 +348,30 @@ export function BugMonitorPage({ client, toast }: AppPageProps) {
     }) => {
       const draftId = firstString(vars.draft, ["draft_id", "id"]);
       if (!draftId) throw new Error("Draft id missing.");
-      if (vars.action === "view") return client.bugMonitor.getDraft(draftId);
+      if (vars.action === "view") return client.incidentMonitor.getDraft(draftId);
       if (vars.action === "route-preview") {
-        return client.bugMonitor.previewRoute({ draft_id: draftId });
+        return client.incidentMonitor.previewRoute({ draft_id: draftId });
       }
-      if (vars.action === "approve") return client.bugMonitor.approveDraft(draftId, vars.reason);
-      if (vars.action === "deny") return client.bugMonitor.denyDraft(draftId, vars.reason);
-      if (vars.action === "triage-run") return client.bugMonitor.createTriageRun(draftId);
+      if (vars.action === "approve")
+        return client.incidentMonitor.approveDraft(draftId, vars.reason);
+      if (vars.action === "deny") return client.incidentMonitor.denyDraft(draftId, vars.reason);
+      if (vars.action === "triage-run") return client.incidentMonitor.createTriageRun(draftId);
       if (vars.action === "triage-summary") {
-        return client.bugMonitor.createTriageSummary(draftId, {
+        return client.incidentMonitor.createTriageSummary(draftId, {
           suggested_title: firstString(vars.draft, ["title", "fingerprint"], "Runtime failure"),
           what_happened: firstString(vars.draft, ["detail", "evidence_digest"], ""),
           notes: vars.reason || "Created from the control panel.",
         });
       }
-      if (vars.action === "issue-draft") return client.bugMonitor.createIssueDraft(draftId, {});
+      if (vars.action === "issue-draft")
+        return client.incidentMonitor.createIssueDraft(draftId, {});
       if (vars.action === "publish") {
-        return client.bugMonitor.publishDraft(draftId, {
+        return client.incidentMonitor.publishDraft(draftId, {
           ...(vars.destinationIds?.length ? { destination_ids: vars.destinationIds } : {}),
           ...(vars.reason ? { reason: vars.reason } : {}),
         });
       }
-      if (vars.action === "recheck") return client.bugMonitor.recheckMatch(draftId, {});
+      if (vars.action === "recheck") return client.incidentMonitor.recheckMatch(draftId, {});
       throw new Error(`Unknown draft action: ${vars.action}`);
     },
     onSuccess: async (result, vars) => {
@@ -395,7 +397,7 @@ export function BugMonitorPage({ client, toast }: AppPageProps) {
       const payload = buildReportPayload(form);
       if (!String(payload.title || "").trim()) throw new Error("Title is required.");
       if (!String(payload.detail || "").trim()) throw new Error("Summary/body is required.");
-      return client.bugMonitor.report(payload);
+      return client.incidentMonitor.report(payload);
     },
     onSuccess: async (result) => {
       setDetail({ title: "Manual Report Result", value: result });
@@ -408,8 +410,8 @@ export function BugMonitorPage({ client, toast }: AppPageProps) {
 
   const deleteIncidentsMutation = useMutation({
     mutationFn: async (vars: { ids: string[]; all: boolean }) => {
-      if (vars.all) return client.bugMonitor.bulkDeleteIncidents({ all: true });
-      return client.bugMonitor.bulkDeleteIncidents({ ids: vars.ids });
+      if (vars.all) return client.incidentMonitor.bulkDeleteIncidents({ all: true });
+      return client.incidentMonitor.bulkDeleteIncidents({ ids: vars.ids });
     },
     onSuccess: async (result, vars) => {
       const deleted = Number((result as any)?.deleted || vars.ids.length || 0);
@@ -423,8 +425,8 @@ export function BugMonitorPage({ client, toast }: AppPageProps) {
 
   const deleteDraftsMutation = useMutation({
     mutationFn: async (vars: { ids: string[]; all: boolean }) => {
-      if (vars.all) return client.bugMonitor.bulkDeleteDrafts({ all: true });
-      return client.bugMonitor.bulkDeleteDrafts({ ids: vars.ids });
+      if (vars.all) return client.incidentMonitor.bulkDeleteDrafts({ all: true });
+      return client.incidentMonitor.bulkDeleteDrafts({ ids: vars.ids });
     },
     onSuccess: async (result, vars) => {
       const deleted = Number((result as any)?.deleted || vars.ids.length || 0);
@@ -438,8 +440,8 @@ export function BugMonitorPage({ client, toast }: AppPageProps) {
 
   const deletePostsMutation = useMutation({
     mutationFn: async (vars: { ids: string[]; all: boolean }) => {
-      if (vars.all) return client.bugMonitor.bulkDeletePosts({ all: true });
-      return client.bugMonitor.bulkDeletePosts({ ids: vars.ids });
+      if (vars.all) return client.incidentMonitor.bulkDeletePosts({ all: true });
+      return client.incidentMonitor.bulkDeletePosts({ ids: vars.ids });
     },
     onSuccess: async (result, vars) => {
       const deleted = Number((result as any)?.deleted || vars.ids.length || 0);
@@ -1266,10 +1268,8 @@ export function BugMonitorPage({ client, toast }: AppPageProps) {
                             .map((value) => value.trim())
                             .filter(Boolean);
                           const reason =
-                            window.prompt(
-                              "Publish reason",
-                              "Published from Bug Monitor."
-                            ) || undefined;
+                            window.prompt("Publish reason", "Published from Bug Monitor.") ||
+                            undefined;
                           draftMutation.mutate({
                             action: "publish",
                             draft,

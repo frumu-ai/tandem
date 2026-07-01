@@ -34,23 +34,23 @@ from .types import (
     BrowserInstallResponse,
     BrowserSmokeTestResponse,
     BrowserStatusResponse,
-    BugMonitorAuthorityInventoryResponse,
-    BugMonitorAssessmentReportResponse,
-    BugMonitorAssessmentProbeRunResponse,
-    BugMonitorDeploymentCardsResponse,
-    BugMonitorDestinationConfig,
-    BugMonitorConfigResponse,
-    BugMonitorDraftListResponse,
-    BugMonitorDraftRecord,
-    BugMonitorIncidentListResponse,
-    BugMonitorIncidentRecord,
-    BugMonitorPostListResponse,
-    BugMonitorPostureChecksResponse,
-    BugMonitorRouteConfig,
-    BugMonitorRoutePreviewResponse,
+    IncidentMonitorAuthorityInventoryResponse,
+    IncidentMonitorAssessmentReportResponse,
+    IncidentMonitorAssessmentProbeRunResponse,
+    IncidentMonitorDeploymentCardsResponse,
+    IncidentMonitorDestinationConfig,
+    IncidentMonitorConfigResponse,
+    IncidentMonitorDraftListResponse,
+    IncidentMonitorDraftRecord,
+    IncidentMonitorIncidentListResponse,
+    IncidentMonitorIncidentRecord,
+    IncidentMonitorPostListResponse,
+    IncidentMonitorPostureChecksResponse,
+    IncidentMonitorRouteConfig,
+    IncidentMonitorRoutePreviewResponse,
     CoderGithubProjectInboxResponse,
     CoderGithubProjectIntakeResponse,
-    BugMonitorStatusResponse,
+    IncidentMonitorStatusResponse,
     CoderArtifactsResponse,
     CoderMemoryCandidatesResponse,
     CoderMemoryHitsResponse,
@@ -180,7 +180,7 @@ class TandemClient:
         self.packs = _Packs(self._http)
         self.capabilities = _Capabilities(self._http)
         self.resources = _Resources(self._base_url, self._token, self._http)
-        self.bug_monitor = _BugMonitor(self._http)
+        self.incident_monitor = _IncidentMonitor(self._http)
         self.coder = _Coder(self._http)
         self.agent_teams = _AgentTeams(self._http)
         self.missions = _Missions(self._http)
@@ -425,36 +425,36 @@ class _Workflows:
         return res.json()  # type: ignore[no-any-return]
 
 
-class _BugMonitor:
+class _IncidentMonitor:
     def __init__(self, http: httpx.AsyncClient) -> None:
         self._http = http
 
-    async def get_config(self) -> BugMonitorConfigResponse:
-        res = await self._http.get("/config/bug-monitor")
+    async def get_config(self) -> IncidentMonitorConfigResponse:
+        res = await self._http.get("/config/incident-monitor")
         res.raise_for_status()
-        return BugMonitorConfigResponse.model_validate(res.json())
+        return IncidentMonitorConfigResponse.model_validate(res.json())
 
-    async def patch_config(self, config: dict[str, Any]) -> BugMonitorConfigResponse:
-        res = await self._http.patch("/config/bug-monitor", json=config)
+    async def patch_config(self, config: dict[str, Any]) -> IncidentMonitorConfigResponse:
+        res = await self._http.patch("/config/incident-monitor", json=config)
         res.raise_for_status()
-        return BugMonitorConfigResponse.model_validate(res.json())
+        return IncidentMonitorConfigResponse.model_validate(res.json())
 
-    async def _update_config(self, mutate: Any) -> BugMonitorConfigResponse:
+    async def _update_config(self, mutate: Any) -> IncidentMonitorConfigResponse:
         current = await self.get_config()
-        config = current.bug_monitor.model_dump(mode="json")
+        config = current.incident_monitor.model_dump(mode="json")
         next_config = mutate(config)
-        return await self.patch_config({"bug_monitor": next_config})
+        return await self.patch_config({"incident_monitor": next_config})
 
-    async def list_destinations(self) -> list[BugMonitorDestinationConfig]:
+    async def list_destinations(self) -> list[IncidentMonitorDestinationConfig]:
         current = await self.get_config()
-        return current.bug_monitor.destinations
+        return current.incident_monitor.destinations
 
     async def upsert_destination(
-        self, destination: BugMonitorDestinationConfig | dict[str, Any]
-    ) -> BugMonitorConfigResponse:
+        self, destination: IncidentMonitorDestinationConfig | dict[str, Any]
+    ) -> IncidentMonitorConfigResponse:
         destination_payload = (
             destination.model_dump(mode="json")
-            if isinstance(destination, BugMonitorDestinationConfig)
+            if isinstance(destination, IncidentMonitorDestinationConfig)
             else dict(destination)
         )
         destination_id = str(destination_payload.get("destination_id") or "").strip()
@@ -472,7 +472,7 @@ class _BugMonitor:
 
         return await self._update_config(mutate)
 
-    async def remove_destination(self, destination_id: str) -> BugMonitorConfigResponse:
+    async def remove_destination(self, destination_id: str) -> IncidentMonitorConfigResponse:
         normalized_destination_id = str(destination_id or "").strip()
         if not normalized_destination_id:
             raise ValueError("destination_id is required")
@@ -506,16 +506,16 @@ class _BugMonitor:
 
         return await self._update_config(mutate)
 
-    async def list_routes(self) -> list[BugMonitorRouteConfig]:
+    async def list_routes(self) -> list[IncidentMonitorRouteConfig]:
         current = await self.get_config()
-        return current.bug_monitor.routes
+        return current.incident_monitor.routes
 
     async def upsert_route(
-        self, route: BugMonitorRouteConfig | dict[str, Any]
-    ) -> BugMonitorConfigResponse:
+        self, route: IncidentMonitorRouteConfig | dict[str, Any]
+    ) -> IncidentMonitorConfigResponse:
         route_payload = (
             route.model_dump(mode="json")
-            if isinstance(route, BugMonitorRouteConfig)
+            if isinstance(route, IncidentMonitorRouteConfig)
             else dict(route)
         )
         route_id = str(route_payload.get("route_id") or "").strip()
@@ -533,7 +533,7 @@ class _BugMonitor:
 
         return await self._update_config(mutate)
 
-    async def remove_route(self, route_id: str) -> BugMonitorConfigResponse:
+    async def remove_route(self, route_id: str) -> IncidentMonitorConfigResponse:
         normalized_route_id = str(route_id or "").strip()
         if not normalized_route_id:
             raise ValueError("route_id is required")
@@ -548,15 +548,15 @@ class _BugMonitor:
 
         return await self._update_config(mutate)
 
-    async def get_status(self) -> BugMonitorStatusResponse:
-        res = await self._http.get("/bug-monitor/status")
+    async def get_status(self) -> IncidentMonitorStatusResponse:
+        res = await self._http.get("/incident-monitor/status")
         res.raise_for_status()
-        return BugMonitorStatusResponse.model_validate(res.json())
+        return IncidentMonitorStatusResponse.model_validate(res.json())
 
-    async def get_authority_inventory(self) -> BugMonitorAuthorityInventoryResponse:
-        res = await self._http.get("/bug-monitor/security/authority-inventory")
+    async def get_authority_inventory(self) -> IncidentMonitorAuthorityInventoryResponse:
+        res = await self._http.get("/incident-monitor/security/authority-inventory")
         res.raise_for_status()
-        return BugMonitorAuthorityInventoryResponse.model_validate(res.json())
+        return IncidentMonitorAuthorityInventoryResponse.model_validate(res.json())
 
     async def get_posture_checks(
         self,
@@ -565,7 +565,7 @@ class _BugMonitor:
         rules: Optional[list[str]] = None,
         disabled_rules: Optional[list[str]] = None,
         min_severity: Optional[str] = None,
-    ) -> BugMonitorPostureChecksResponse:
+    ) -> IncidentMonitorPostureChecksResponse:
         params: dict[str, str] = {}
         if mode:
             params["mode"] = mode
@@ -576,11 +576,11 @@ class _BugMonitor:
         if min_severity:
             params["min_severity"] = min_severity
         res = await self._http.get(
-            "/bug-monitor/security/posture-checks",
+            "/incident-monitor/security/posture-checks",
             params=params or None,
         )
         res.raise_for_status()
-        return BugMonitorPostureChecksResponse.model_validate(res.json())
+        return IncidentMonitorPostureChecksResponse.model_validate(res.json())
 
     async def run_assessment_probes(
         self,
@@ -588,7 +588,7 @@ class _BugMonitor:
         mode: Optional[str] = None,
         probes: Optional[list[str]] = None,
         include_draft_suggestions: Optional[bool] = None,
-    ) -> BugMonitorAssessmentProbeRunResponse:
+    ) -> IncidentMonitorAssessmentProbeRunResponse:
         payload: dict[str, Any] = {}
         if mode:
             payload["mode"] = mode
@@ -597,11 +597,11 @@ class _BugMonitor:
         if include_draft_suggestions is not None:
             payload["include_draft_suggestions"] = include_draft_suggestions
         res = await self._http.post(
-            "/bug-monitor/security/assessment-probes",
+            "/incident-monitor/security/assessment-probes",
             json=payload,
         )
         res.raise_for_status()
-        return BugMonitorAssessmentProbeRunResponse.model_validate(res.json())
+        return IncidentMonitorAssessmentProbeRunResponse.model_validate(res.json())
 
     async def generate_assessment_report(
         self,
@@ -616,7 +616,7 @@ class _BugMonitor:
         persist_artifact: Optional[bool] = None,
         route_destination_ids: Optional[list[str]] = None,
         include_raw_payloads: Optional[bool] = None,
-    ) -> BugMonitorAssessmentReportResponse:
+    ) -> IncidentMonitorAssessmentReportResponse:
         payload: dict[str, Any] = {}
         if from_ms is not None:
             payload["from_ms"] = from_ms
@@ -639,11 +639,11 @@ class _BugMonitor:
         if include_raw_payloads is not None:
             payload["include_raw_payloads"] = include_raw_payloads
         res = await self._http.post(
-            "/bug-monitor/security/assessment-report",
+            "/incident-monitor/security/assessment-report",
             json=payload,
         )
         res.raise_for_status()
-        return BugMonitorAssessmentReportResponse.model_validate(res.json())
+        return IncidentMonitorAssessmentReportResponse.model_validate(res.json())
 
     async def generate_deployment_cards(
         self,
@@ -652,7 +652,7 @@ class _BugMonitor:
         metadata: Optional[dict[str, dict[str, Any]]] = None,
         include_markdown: Optional[bool] = None,
         include_raw_inventory: Optional[bool] = None,
-    ) -> BugMonitorDeploymentCardsResponse:
+    ) -> IncidentMonitorDeploymentCardsResponse:
         payload: dict[str, Any] = {}
         if defaults:
             payload["defaults"] = defaults
@@ -663,108 +663,108 @@ class _BugMonitor:
         if include_raw_inventory is not None:
             payload["include_raw_inventory"] = include_raw_inventory
         res = await self._http.post(
-            "/bug-monitor/security/deployment-cards",
+            "/incident-monitor/security/deployment-cards",
             json=payload,
         )
         res.raise_for_status()
-        return BugMonitorDeploymentCardsResponse.model_validate(res.json())
+        return IncidentMonitorDeploymentCardsResponse.model_validate(res.json())
 
-    async def recompute_status(self) -> BugMonitorStatusResponse:
-        res = await self._http.post("/bug-monitor/status/recompute")
+    async def recompute_status(self) -> IncidentMonitorStatusResponse:
+        res = await self._http.post("/incident-monitor/status/recompute")
         res.raise_for_status()
-        return BugMonitorStatusResponse.model_validate(res.json())
+        return IncidentMonitorStatusResponse.model_validate(res.json())
 
     async def pause(self) -> dict[str, Any]:
-        res = await self._http.post("/bug-monitor/pause")
+        res = await self._http.post("/incident-monitor/pause")
         res.raise_for_status()
         return res.json()  # type: ignore[no-any-return]
 
     async def resume(self) -> dict[str, Any]:
-        res = await self._http.post("/bug-monitor/resume")
+        res = await self._http.post("/incident-monitor/resume")
         res.raise_for_status()
         return res.json()  # type: ignore[no-any-return]
 
     async def preview_route(
         self, payload: Optional[dict[str, Any]] = None
-    ) -> BugMonitorRoutePreviewResponse:
-        res = await self._http.post("/bug-monitor/route-preview", json=payload or {})
+    ) -> IncidentMonitorRoutePreviewResponse:
+        res = await self._http.post("/incident-monitor/route-preview", json=payload or {})
         res.raise_for_status()
-        return BugMonitorRoutePreviewResponse.model_validate(res.json())
+        return IncidentMonitorRoutePreviewResponse.model_validate(res.json())
 
     async def debug(self) -> dict[str, Any]:
-        res = await self._http.get("/bug-monitor/debug")
+        res = await self._http.get("/incident-monitor/debug")
         res.raise_for_status()
         return res.json()  # type: ignore[no-any-return]
 
-    async def list_incidents(self, limit: Optional[int] = None) -> BugMonitorIncidentListResponse:
+    async def list_incidents(self, limit: Optional[int] = None) -> IncidentMonitorIncidentListResponse:
         params = {"limit": limit} if limit is not None else {}
-        res = await self._http.get("/bug-monitor/incidents", params=params)
+        res = await self._http.get("/incident-monitor/incidents", params=params)
         res.raise_for_status()
-        return BugMonitorIncidentListResponse.model_validate(res.json())
+        return IncidentMonitorIncidentListResponse.model_validate(res.json())
 
-    async def get_incident(self, incident_id: str) -> BugMonitorIncidentRecord:
-        res = await self._http.get(f"/bug-monitor/incidents/{quote(incident_id)}")
+    async def get_incident(self, incident_id: str) -> IncidentMonitorIncidentRecord:
+        res = await self._http.get(f"/incident-monitor/incidents/{quote(incident_id)}")
         res.raise_for_status()
-        return BugMonitorIncidentRecord.model_validate(res.json().get("incident", {}))
+        return IncidentMonitorIncidentRecord.model_validate(res.json().get("incident", {}))
 
     async def replay_incident(self, incident_id: str, payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-        res = await self._http.post(f"/bug-monitor/incidents/{quote(incident_id)}/replay", json=payload or {})
+        res = await self._http.post(f"/incident-monitor/incidents/{quote(incident_id)}/replay", json=payload or {})
         res.raise_for_status()
         return res.json()  # type: ignore[no-any-return]
 
-    async def list_drafts(self, limit: Optional[int] = None) -> BugMonitorDraftListResponse:
+    async def list_drafts(self, limit: Optional[int] = None) -> IncidentMonitorDraftListResponse:
         params = {"limit": limit} if limit is not None else {}
-        res = await self._http.get("/bug-monitor/drafts", params=params)
+        res = await self._http.get("/incident-monitor/drafts", params=params)
         res.raise_for_status()
-        return BugMonitorDraftListResponse.model_validate(res.json())
+        return IncidentMonitorDraftListResponse.model_validate(res.json())
 
     async def list_posts(
         self, limit: Optional[int] = None, destination_id: Optional[str] = None
-    ) -> BugMonitorPostListResponse:
+    ) -> IncidentMonitorPostListResponse:
         params = {"limit": limit} if limit is not None else {}
         if destination_id:
             params["destination_id"] = destination_id
-        res = await self._http.get("/bug-monitor/posts", params=params)
+        res = await self._http.get("/incident-monitor/posts", params=params)
         res.raise_for_status()
-        return BugMonitorPostListResponse.model_validate(res.json())
+        return IncidentMonitorPostListResponse.model_validate(res.json())
 
-    async def get_draft(self, draft_id: str) -> BugMonitorDraftRecord:
-        res = await self._http.get(f"/bug-monitor/drafts/{quote(draft_id)}")
+    async def get_draft(self, draft_id: str) -> IncidentMonitorDraftRecord:
+        res = await self._http.get(f"/incident-monitor/drafts/{quote(draft_id)}")
         res.raise_for_status()
-        return BugMonitorDraftRecord.model_validate(res.json().get("draft", {}))
+        return IncidentMonitorDraftRecord.model_validate(res.json().get("draft", {}))
 
     async def approve_draft(self, draft_id: str, reason: str = "") -> dict[str, Any]:
-        res = await self._http.post(f"/bug-monitor/drafts/{quote(draft_id)}/approve", json={"reason": reason})
+        res = await self._http.post(f"/incident-monitor/drafts/{quote(draft_id)}/approve", json={"reason": reason})
         res.raise_for_status()
         return res.json()  # type: ignore[no-any-return]
 
     async def deny_draft(self, draft_id: str, reason: str = "") -> dict[str, Any]:
-        res = await self._http.post(f"/bug-monitor/drafts/{quote(draft_id)}/deny", json={"reason": reason})
+        res = await self._http.post(f"/incident-monitor/drafts/{quote(draft_id)}/deny", json={"reason": reason})
         res.raise_for_status()
         return res.json()  # type: ignore[no-any-return]
 
     async def report(self, payload: dict[str, Any]) -> dict[str, Any]:
-        res = await self._http.post("/bug-monitor/report", json=payload)
+        res = await self._http.post("/incident-monitor/report", json=payload)
         res.raise_for_status()
         return res.json()  # type: ignore[no-any-return]
 
     async def create_triage_run(self, draft_id: str) -> dict[str, Any]:
-        res = await self._http.post(f"/bug-monitor/drafts/{quote(draft_id)}/triage-run")
+        res = await self._http.post(f"/incident-monitor/drafts/{quote(draft_id)}/triage-run")
         res.raise_for_status()
         return res.json()  # type: ignore[no-any-return]
 
     async def create_triage_summary(self, draft_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        res = await self._http.post(f"/bug-monitor/drafts/{quote(draft_id)}/triage-summary", json=payload)
+        res = await self._http.post(f"/incident-monitor/drafts/{quote(draft_id)}/triage-summary", json=payload)
         res.raise_for_status()
         return res.json()  # type: ignore[no-any-return]
 
     async def create_issue_draft(self, draft_id: str, payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-        res = await self._http.post(f"/bug-monitor/drafts/{quote(draft_id)}/issue-draft", json=payload or {})
+        res = await self._http.post(f"/incident-monitor/drafts/{quote(draft_id)}/issue-draft", json=payload or {})
         res.raise_for_status()
         return res.json()  # type: ignore[no-any-return]
 
     async def publish_draft(self, draft_id: str, payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-        res = await self._http.post(f"/bug-monitor/drafts/{quote(draft_id)}/publish", json=payload or {})
+        res = await self._http.post(f"/incident-monitor/drafts/{quote(draft_id)}/publish", json=payload or {})
         res.raise_for_status()
         return res.json()  # type: ignore[no-any-return]
 
@@ -779,7 +779,7 @@ class _BugMonitor:
         return await self.publish_draft(draft_id, body)
 
     async def recheck_match(self, draft_id: str, payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-        res = await self._http.post(f"/bug-monitor/drafts/{quote(draft_id)}/recheck-match", json=payload or {})
+        res = await self._http.post(f"/incident-monitor/drafts/{quote(draft_id)}/recheck-match", json=payload or {})
         res.raise_for_status()
         return res.json()  # type: ignore[no-any-return]
 

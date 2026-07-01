@@ -755,9 +755,9 @@ export interface WorkflowHookListResponse {
   count: number;
 }
 
-// ─── Bug Monitor ─────────────────────────────────────────────────────────────
+// ─── Incident Monitor ─────────────────────────────────────────────────────────────
 
-export type BugMonitorDestinationKind =
+export type IncidentMonitorDestinationKind =
   | "github_issue"
   | "linear_issue"
   | "webhook"
@@ -765,8 +765,8 @@ export type BugMonitorDestinationKind =
   | "mcp_tool"
   | "internal_memory";
 
-export type BugMonitorApprovalPolicy = "inherit" | "always" | "high_risk" | "never";
-export type BugMonitorSourceKind =
+export type IncidentMonitorApprovalPolicy = "inherit" | "always" | "high_risk" | "never";
+export type IncidentMonitorSourceKind =
   | "tandem_runtime"
   | "tandem_monitor"
   | "external_app"
@@ -775,10 +775,10 @@ export type BugMonitorSourceKind =
   | "mcp_gateway"
   | "customer_system";
 
-export interface BugMonitorDestinationConfig {
+export interface IncidentMonitorDestinationConfig {
   destination_id: string;
   name: string;
-  kind?: BugMonitorDestinationKind | string;
+  kind?: IncidentMonitorDestinationKind | string;
   enabled?: boolean;
   require_approval?: boolean;
   repo?: string | null;
@@ -795,13 +795,13 @@ export interface BugMonitorDestinationConfig {
   [key: string]: unknown;
 }
 
-export interface BugMonitorRouteConfig {
+export interface IncidentMonitorRouteConfig {
   route_id: string;
   name: string;
   enabled?: boolean;
   priority?: number;
   destination_ids?: string[];
-  approval_policy?: BugMonitorApprovalPolicy | string;
+  approval_policy?: IncidentMonitorApprovalPolicy | string;
   match_event_types?: string[];
   match_sources?: string[];
   match_components?: string[];
@@ -819,7 +819,7 @@ export interface BugMonitorRouteConfig {
   [key: string]: unknown;
 }
 
-export interface BugMonitorSafetyDefaults {
+export interface IncidentMonitorSafetyDefaults {
   require_approval_for_high_risk?: boolean;
   redact_secrets?: boolean;
   block_unready_destinations?: boolean;
@@ -827,9 +827,9 @@ export interface BugMonitorSafetyDefaults {
   [key: string]: unknown;
 }
 
-export interface BugMonitorDestinationReadiness {
+export interface IncidentMonitorDestinationReadiness {
   destination_id: string;
-  kind?: BugMonitorDestinationKind | string;
+  kind?: IncidentMonitorDestinationKind | string;
   enabled?: boolean;
   ready?: boolean;
   publish_ready?: boolean;
@@ -839,7 +839,7 @@ export interface BugMonitorDestinationReadiness {
   [key: string]: unknown;
 }
 
-export interface BugMonitorRoutePreviewMatch {
+export interface IncidentMonitorRoutePreviewMatch {
   route_id?: string | null;
   route_name?: string | null;
   destination_ids?: string[];
@@ -848,10 +848,10 @@ export interface BugMonitorRoutePreviewMatch {
   [key: string]: unknown;
 }
 
-export interface BugMonitorRoutePreviewResponse {
-  matches?: BugMonitorRoutePreviewMatch[];
-  destinations?: BugMonitorDestinationConfig[];
-  readiness?: BugMonitorDestinationReadiness[];
+export interface IncidentMonitorRoutePreviewResponse {
+  matches?: IncidentMonitorRoutePreviewMatch[];
+  destinations?: IncidentMonitorDestinationConfig[];
+  readiness?: IncidentMonitorDestinationReadiness[];
   default_destination_ids?: string[];
   effective_destination_ids?: string[];
   approval_required?: boolean;
@@ -860,7 +860,7 @@ export interface BugMonitorRoutePreviewResponse {
   [key: string]: unknown;
 }
 
-export interface BugMonitorConfigRow {
+export interface IncidentMonitorConfigRow {
   enabled?: boolean;
   paused?: boolean;
   workspace_root?: string | null;
@@ -872,18 +872,18 @@ export interface BugMonitorConfigRow {
   require_approval_for_new_issues?: boolean;
   auto_comment_on_matched_open_issues?: boolean;
   label_mode?: string | null;
-  monitored_projects?: BugMonitorMonitoredProject[];
-  destinations?: BugMonitorDestinationConfig[];
-  routes?: BugMonitorRouteConfig[];
+  monitored_projects?: IncidentMonitorMonitoredProject[];
+  destinations?: IncidentMonitorDestinationConfig[];
+  routes?: IncidentMonitorRouteConfig[];
   default_destination_ids?: string[];
-  safety_defaults?: BugMonitorSafetyDefaults | null;
+  safety_defaults?: IncidentMonitorSafetyDefaults | null;
   [key: string]: unknown;
 }
 
-export interface BugMonitorLogSource {
+export interface IncidentMonitorLogSource {
   source_id?: string;
   path?: string;
-  source_kind?: BugMonitorSourceKind | string | null;
+  source_kind?: IncidentMonitorSourceKind | string | null;
   format?: "auto" | "json" | "plaintext" | string;
   minimum_level?: "error" | "warn" | string;
   watch_interval_seconds?: number;
@@ -899,20 +899,20 @@ export interface BugMonitorLogSource {
   tenant_id?: string | null;
   workspace_id?: string | null;
   event_schema_version?: string | null;
-  approval_policy?: BugMonitorApprovalPolicy | string;
+  approval_policy?: IncidentMonitorApprovalPolicy | string;
   redaction_profile?: string | null;
   retention_profile?: string | null;
   [key: string]: unknown;
 }
 
-export interface BugMonitorMonitoredProject {
+export interface IncidentMonitorMonitoredProject {
   project_id?: string;
   name?: string;
   enabled?: boolean;
   paused?: boolean;
   repo?: string;
   workspace_root?: string;
-  source_kind?: BugMonitorSourceKind | string;
+  source_kind?: IncidentMonitorSourceKind | string;
   mcp_server?: string | null;
   model_policy?: JsonObject | null;
   allowed_destination_ids?: string[];
@@ -921,22 +921,22 @@ export interface BugMonitorMonitoredProject {
   tenant_id?: string | null;
   workspace_id?: string | null;
   event_schema_version?: string | null;
-  approval_policy?: BugMonitorApprovalPolicy | string;
+  approval_policy?: IncidentMonitorApprovalPolicy | string;
   redaction_profile?: string | null;
   retention_profile?: string | null;
   auto_create_new_issues?: boolean;
   require_approval_for_new_issues?: boolean;
   auto_comment_on_matched_open_issues?: boolean;
-  log_sources?: BugMonitorLogSource[];
+  log_sources?: IncidentMonitorLogSource[];
   [key: string]: unknown;
 }
 
-export interface BugMonitorConfigResponse {
-  bug_monitor: BugMonitorConfigRow;
+export interface IncidentMonitorConfigResponse {
+  incident_monitor: IncidentMonitorConfigRow;
 }
 
-export interface BugMonitorStatusRow {
-  config?: BugMonitorConfigRow;
+export interface IncidentMonitorStatusRow {
+  config?: IncidentMonitorConfigRow;
   readiness?: Record<string, boolean>;
   runtime?: JsonObject;
   required_capabilities?: Record<string, boolean>;
@@ -944,8 +944,8 @@ export interface BugMonitorStatusRow {
   resolved_capabilities?: JsonObject[];
   discovered_mcp_tools?: string[];
   selected_server_binding_candidates?: JsonObject[];
-  destinations?: BugMonitorDestinationConfig[];
-  destination_readiness?: BugMonitorDestinationReadiness[];
+  destinations?: IncidentMonitorDestinationConfig[];
+  destination_readiness?: IncidentMonitorDestinationReadiness[];
   binding_source_version?: string | null;
   bindings_last_merged_at_ms?: number | null;
   selected_model?: JsonObject | null;
@@ -956,29 +956,29 @@ export interface BugMonitorStatusRow {
   [key: string]: unknown;
 }
 
-export interface BugMonitorStatusResponse {
-  status: BugMonitorStatusRow;
+export interface IncidentMonitorStatusResponse {
+  status: IncidentMonitorStatusRow;
 }
 
-export interface BugMonitorAuthorityInventoryResponse {
+export interface IncidentMonitorAuthorityInventoryResponse {
   schema_version: number;
   generated_at_ms?: number;
   scope?: JsonObject;
-  inventory: BugMonitorAuthorityInventory;
+  inventory: IncidentMonitorAuthorityInventory;
   counts?: Record<string, number>;
   sensitive_values?: JsonObject;
   [key: string]: unknown;
 }
 
-export interface BugMonitorAuthorityInventory {
-  workflows?: BugMonitorAuthorityWorkflow[];
-  automation_specs?: BugMonitorAuthorityAutomationSpec[];
+export interface IncidentMonitorAuthorityInventory {
+  workflows?: IncidentMonitorAuthorityWorkflow[];
+  automation_specs?: IncidentMonitorAuthorityAutomationSpec[];
   mcp?: JsonObject;
-  bug_monitor?: JsonObject;
-  destinations?: BugMonitorAuthorityDestination[];
-  routes?: BugMonitorAuthorityRoute[];
-  monitored_sources?: BugMonitorAuthorityMonitoredSource[];
-  scoped_intake_keys?: BugMonitorAuthorityIntakeKey[];
+  incident_monitor?: JsonObject;
+  destinations?: IncidentMonitorAuthorityDestination[];
+  routes?: IncidentMonitorAuthorityRoute[];
+  monitored_sources?: IncidentMonitorAuthorityMonitoredSource[];
+  scoped_intake_keys?: IncidentMonitorAuthorityIntakeKey[];
   approval_rules?: JsonObject[];
   pending_approvals?: JsonObject[];
   governance_approval_requests?: JsonObject[];
@@ -987,7 +987,7 @@ export interface BugMonitorAuthorityInventory {
   [key: string]: unknown;
 }
 
-export interface BugMonitorAuthorityWorkflow {
+export interface IncidentMonitorAuthorityWorkflow {
   workflow_id?: string;
   name?: string;
   enabled?: boolean;
@@ -997,7 +997,7 @@ export interface BugMonitorAuthorityWorkflow {
   [key: string]: unknown;
 }
 
-export interface BugMonitorAuthorityAutomationSpec {
+export interface IncidentMonitorAuthorityAutomationSpec {
   automation_id?: string;
   name?: string;
   status?: string;
@@ -1009,10 +1009,10 @@ export interface BugMonitorAuthorityAutomationSpec {
   [key: string]: unknown;
 }
 
-export interface BugMonitorAuthorityDestination {
+export interface IncidentMonitorAuthorityDestination {
   destination_id?: string;
   name?: string;
-  kind?: BugMonitorDestinationKind | string | null;
+  kind?: IncidentMonitorDestinationKind | string | null;
   enabled?: boolean;
   require_approval?: boolean;
   allow_publish?: boolean | null;
@@ -1020,33 +1020,33 @@ export interface BugMonitorAuthorityDestination {
   [key: string]: unknown;
 }
 
-export interface BugMonitorAuthorityRoute {
+export interface IncidentMonitorAuthorityRoute {
   route_id?: string;
   name?: string;
   enabled?: boolean;
   priority?: number;
   destination_ids?: string[];
-  approval_policy?: BugMonitorApprovalPolicy | string | null;
+  approval_policy?: IncidentMonitorApprovalPolicy | string | null;
   match?: JsonObject;
   [key: string]: unknown;
 }
 
-export interface BugMonitorAuthorityMonitoredSource {
+export interface IncidentMonitorAuthorityMonitoredSource {
   project_id?: string;
   source_id?: string | null;
   name?: string;
   enabled?: boolean;
   paused?: boolean;
-  source_kind?: BugMonitorSourceKind | string | null;
+  source_kind?: IncidentMonitorSourceKind | string | null;
   allowed_destination_ids?: string[];
   default_destination_ids?: string[];
   tenant_id?: string | null;
   workspace_id?: string | null;
-  approval_policy?: BugMonitorApprovalPolicy | string | null;
+  approval_policy?: IncidentMonitorApprovalPolicy | string | null;
   [key: string]: unknown;
 }
 
-export interface BugMonitorAuthorityIntakeKey {
+export interface IncidentMonitorAuthorityIntakeKey {
   key_id?: string;
   project_id?: string;
   name?: string;
@@ -1058,7 +1058,7 @@ export interface BugMonitorAuthorityIntakeKey {
   [key: string]: unknown;
 }
 
-export interface BugMonitorPostureChecksOptions {
+export interface IncidentMonitorPostureChecksOptions {
   mode?: "dry_run" | "enabled" | "disabled" | string;
   rules?: string[];
   disabledRules?: string[];
@@ -1067,21 +1067,21 @@ export interface BugMonitorPostureChecksOptions {
   min_severity?: "low" | "medium" | "high" | "critical" | string;
 }
 
-export interface BugMonitorPostureChecksResponse {
+export interface IncidentMonitorPostureChecksResponse {
   schema_version: number;
   generated_at_ms?: number;
   scope?: JsonObject;
   baseline_policy?: JsonObject;
-  rules?: BugMonitorPostureRuleState[];
-  findings: BugMonitorPostureFinding[];
-  counts?: BugMonitorPostureCounts;
+  rules?: IncidentMonitorPostureRuleState[];
+  findings: IncidentMonitorPostureFinding[];
+  counts?: IncidentMonitorPostureCounts;
   authority_inventory?: JsonObject;
   draft_conversion?: JsonObject;
   sensitive_values?: JsonObject;
   [key: string]: unknown;
 }
 
-export interface BugMonitorPostureRuleState {
+export interface IncidentMonitorPostureRuleState {
   rule_id: string;
   category?: string;
   default_severity?: string;
@@ -1090,7 +1090,7 @@ export interface BugMonitorPostureRuleState {
   [key: string]: unknown;
 }
 
-export interface BugMonitorPostureCounts {
+export interface IncidentMonitorPostureCounts {
   findings?: number;
   by_severity?: Record<string, number>;
   by_category?: Record<string, number>;
@@ -1098,7 +1098,7 @@ export interface BugMonitorPostureCounts {
   [key: string]: unknown;
 }
 
-export interface BugMonitorPostureFinding {
+export interface IncidentMonitorPostureFinding {
   finding_id: string;
   fingerprint: string;
   rule_id: string;
@@ -1116,7 +1116,7 @@ export interface BugMonitorPostureFinding {
   [key: string]: unknown;
 }
 
-export interface BugMonitorAssessmentProbeRunInput {
+export interface IncidentMonitorAssessmentProbeRunInput {
   mode?: "dry_run" | "disabled" | string;
   probes?: string[];
   include_draft_suggestions?: boolean;
@@ -1124,13 +1124,13 @@ export interface BugMonitorAssessmentProbeRunInput {
   [key: string]: unknown;
 }
 
-export interface BugMonitorAssessmentProbeRunResponse {
+export interface IncidentMonitorAssessmentProbeRunResponse {
   schema_version: number;
   generated_at_ms?: number;
   scope?: JsonObject;
   probe_policy?: JsonObject;
-  counts?: BugMonitorAssessmentProbeCounts;
-  results: BugMonitorAssessmentProbeResult[];
+  counts?: IncidentMonitorAssessmentProbeCounts;
+  results: IncidentMonitorAssessmentProbeResult[];
   authority_inventory?: JsonObject;
   evidence_pack?: JsonObject;
   draft_conversion?: JsonObject;
@@ -1138,7 +1138,7 @@ export interface BugMonitorAssessmentProbeRunResponse {
   [key: string]: unknown;
 }
 
-export interface BugMonitorAssessmentProbeCounts {
+export interface IncidentMonitorAssessmentProbeCounts {
   results?: number;
   pass?: number;
   fail?: number;
@@ -1148,7 +1148,7 @@ export interface BugMonitorAssessmentProbeCounts {
   [key: string]: unknown;
 }
 
-export interface BugMonitorAssessmentProbeResult {
+export interface IncidentMonitorAssessmentProbeResult {
   probe_id: string;
   target?: JsonObject;
   expected_behavior?: string;
@@ -1165,10 +1165,10 @@ export interface BugMonitorAssessmentProbeResult {
   [key: string]: unknown;
 }
 
-export interface BugMonitorAssessmentReportInput {
+export interface IncidentMonitorAssessmentReportInput {
   from_ms?: number;
   to_ms?: number;
-  source_kind?: BugMonitorSourceKind | string;
+  source_kind?: IncidentMonitorSourceKind | string;
   min_severity?: "low" | "medium" | "high" | "critical" | string;
   probes?: string[];
   include_probe_results?: boolean;
@@ -1184,7 +1184,7 @@ export interface BugMonitorAssessmentReportInput {
   [key: string]: unknown;
 }
 
-export interface BugMonitorAssessmentReportResponse {
+export interface IncidentMonitorAssessmentReportResponse {
   schema_version: number;
   generated_at_ms?: number;
   scope?: JsonObject;
@@ -1211,7 +1211,7 @@ export interface BugMonitorAssessmentReportResponse {
   [key: string]: unknown;
 }
 
-export interface BugMonitorDeploymentCardMetadata {
+export interface IncidentMonitorDeploymentCardMetadata {
   intended_purpose?: string;
   purpose?: string;
   business_owner?: string;
@@ -1230,9 +1230,9 @@ export interface BugMonitorDeploymentCardMetadata {
   [key: string]: unknown;
 }
 
-export interface BugMonitorDeploymentCardsInput {
-  defaults?: BugMonitorDeploymentCardMetadata;
-  metadata?: Record<string, BugMonitorDeploymentCardMetadata>;
+export interface IncidentMonitorDeploymentCardsInput {
+  defaults?: IncidentMonitorDeploymentCardMetadata;
+  metadata?: Record<string, IncidentMonitorDeploymentCardMetadata>;
   include_markdown?: boolean;
   includeMarkdown?: boolean;
   include_raw_inventory?: boolean;
@@ -1240,12 +1240,12 @@ export interface BugMonitorDeploymentCardsInput {
   [key: string]: unknown;
 }
 
-export interface BugMonitorDeploymentCardRecord {
+export interface IncidentMonitorDeploymentCardRecord {
   card_id: string;
   card_kind: string;
   target?: JsonObject;
   system_boundary?: string;
-  source_kind?: BugMonitorSourceKind | string | null;
+  source_kind?: IncidentMonitorSourceKind | string | null;
   intended_purpose?: string | null;
   business_owner?: string | null;
   accountable_team?: string | null;
@@ -1262,13 +1262,13 @@ export interface BugMonitorDeploymentCardRecord {
   [key: string]: unknown;
 }
 
-export interface BugMonitorDeploymentCardsResponse {
+export interface IncidentMonitorDeploymentCardsResponse {
   schema_version: number;
   generated_at_ms?: number;
   scope?: JsonObject;
   card_policy?: JsonObject;
   counts?: JsonObject;
-  cards: BugMonitorDeploymentCardRecord[];
+  cards: IncidentMonitorDeploymentCardRecord[];
   findings: JsonObject[];
   markdown_export?: string | null;
   authority_inventory?: JsonObject;
@@ -1276,7 +1276,7 @@ export interface BugMonitorDeploymentCardsResponse {
   [key: string]: unknown;
 }
 
-export interface BugMonitorIncidentRecord {
+export interface IncidentMonitorIncidentRecord {
   incident_id: string;
   fingerprint?: string;
   event_type?: string;
@@ -1286,7 +1286,7 @@ export interface BugMonitorIncidentRecord {
   title?: string;
   project_id?: string | null;
   log_source_id?: string | null;
-  source_kind?: BugMonitorSourceKind | string | null;
+  source_kind?: IncidentMonitorSourceKind | string | null;
   detail?: string | null;
   excerpt?: string[];
   source?: string | null;
@@ -1323,7 +1323,7 @@ export interface BugMonitorIncidentRecord {
   tenant_id?: string | null;
   workspace_id?: string | null;
   event_schema_version?: string | null;
-  source_approval_policy?: BugMonitorApprovalPolicy | string | null;
+  source_approval_policy?: IncidentMonitorApprovalPolicy | string | null;
   redaction_profile?: string | null;
   retention_profile?: string | null;
   evidence_refs?: string[];
@@ -1331,18 +1331,18 @@ export interface BugMonitorIncidentRecord {
   [key: string]: unknown;
 }
 
-export interface BugMonitorIncidentListResponse {
-  incidents: BugMonitorIncidentRecord[];
+export interface IncidentMonitorIncidentListResponse {
+  incidents: IncidentMonitorIncidentRecord[];
   count: number;
 }
 
-export interface BugMonitorDraftRecord {
+export interface IncidentMonitorDraftRecord {
   draft_id: string;
   fingerprint?: string;
   repo?: string;
   project_id?: string | null;
   log_source_id?: string | null;
-  source_kind?: BugMonitorSourceKind | string | null;
+  source_kind?: IncidentMonitorSourceKind | string | null;
   status?: string;
   created_at_ms?: number;
   approval_granted_at_ms?: number | null;
@@ -1375,7 +1375,7 @@ export interface BugMonitorDraftRecord {
   tenant_id?: string | null;
   workspace_id?: string | null;
   event_schema_version?: string | null;
-  source_approval_policy?: BugMonitorApprovalPolicy | string | null;
+  source_approval_policy?: IncidentMonitorApprovalPolicy | string | null;
   redaction_profile?: string | null;
   retention_profile?: string | null;
   evidence_refs?: string[];
@@ -1384,12 +1384,12 @@ export interface BugMonitorDraftRecord {
   [key: string]: unknown;
 }
 
-export interface BugMonitorDraftListResponse {
-  drafts: BugMonitorDraftRecord[];
+export interface IncidentMonitorDraftListResponse {
+  drafts: IncidentMonitorDraftRecord[];
   count: number;
 }
 
-export interface BugMonitorPostRecord {
+export interface IncidentMonitorPostRecord {
   post_id: string;
   draft_id?: string;
   repo?: string;
@@ -1402,7 +1402,7 @@ export interface BugMonitorPostRecord {
   comment_id?: string | null;
   comment_url?: string | null;
   destination_id?: string | null;
-  destination_kind?: BugMonitorDestinationKind | string | null;
+  destination_kind?: IncidentMonitorDestinationKind | string | null;
   route_id?: string | null;
   route_match_reason?: string | null;
   external_id?: string | null;
@@ -1424,8 +1424,8 @@ export interface BugMonitorPostRecord {
   [key: string]: unknown;
 }
 
-export interface BugMonitorPostListResponse {
-  posts: BugMonitorPostRecord[];
+export interface IncidentMonitorPostListResponse {
+  posts: IncidentMonitorPostRecord[];
   count: number;
 }
 

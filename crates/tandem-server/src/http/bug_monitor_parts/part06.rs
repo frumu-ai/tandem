@@ -739,7 +739,7 @@ pub(super) async fn get_bug_monitor_config(
 ) -> Json<serde_json::Value> {
     let config = state.bug_monitor_config().await;
     Json(json!({
-        "bug_monitor": config
+        "incident_monitor": config
     }))
 }
 
@@ -747,12 +747,12 @@ pub(super) async fn patch_bug_monitor_config(
     State(state): State<AppState>,
     Json(input): Json<BugMonitorConfigInput>,
 ) -> Response {
-    let Some(config) = input.bug_monitor else {
+    let Some(config) = input.incident_monitor else {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "bug_monitor object is required",
-                "code": "BUG_MONITOR_CONFIG_REQUIRED",
+                "error": "incident_monitor object is required",
+                "code": "INCIDENT_MONITOR_CONFIG_REQUIRED",
             })),
         )
             .into_response();
@@ -760,13 +760,13 @@ pub(super) async fn patch_bug_monitor_config(
     match state.put_bug_monitor_config(config).await {
         Ok(saved) => {
             emit_bug_monitor_config_audit(&state, &saved).await;
-            Json(json!({ "bug_monitor": saved })).into_response()
+            Json(json!({ "incident_monitor": saved })).into_response()
         }
         Err(error) => (
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "Invalid bug monitor config",
-                "code": "BUG_MONITOR_CONFIG_INVALID",
+                "error": "Invalid Incident Monitor config",
+                "code": "INCIDENT_MONITOR_CONFIG_INVALID",
                 "detail": error.to_string(),
             })),
         )
@@ -1040,12 +1040,12 @@ pub(super) async fn pause_bug_monitor(State(state): State<AppState>) -> Response
     let mut config = state.bug_monitor_config().await;
     config.paused = true;
     match state.put_bug_monitor_config(config).await {
-        Ok(saved) => Json(json!({ "ok": true, "bug_monitor": saved })).into_response(),
+        Ok(saved) => Json(json!({ "ok": true, "incident_monitor": saved })).into_response(),
         Err(error) => (
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "Failed to pause Bug Monitor",
-                "code": "BUG_MONITOR_PAUSE_FAILED",
+                "error": "Failed to pause Incident Monitor",
+                "code": "INCIDENT_MONITOR_PAUSE_FAILED",
                 "detail": error.to_string(),
             })),
         )
@@ -1057,12 +1057,12 @@ pub(super) async fn resume_bug_monitor(State(state): State<AppState>) -> Respons
     let mut config = state.bug_monitor_config().await;
     config.paused = false;
     match state.put_bug_monitor_config(config).await {
-        Ok(saved) => Json(json!({ "ok": true, "bug_monitor": saved })).into_response(),
+        Ok(saved) => Json(json!({ "ok": true, "incident_monitor": saved })).into_response(),
         Err(error) => (
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "Failed to resume Bug Monitor",
-                "code": "BUG_MONITOR_RESUME_FAILED",
+                "error": "Failed to resume Incident Monitor",
+                "code": "INCIDENT_MONITOR_RESUME_FAILED",
                 "detail": error.to_string(),
             })),
         )
@@ -1305,7 +1305,7 @@ pub(super) async fn report_bug_monitor_intake(
             StatusCode::BAD_REQUEST,
             Json(json!({
                 "error": "project_id is required",
-                "code": "BUG_MONITOR_INTAKE_PROJECT_REQUIRED",
+                "code": "INCIDENT_MONITOR_INTAKE_PROJECT_REQUIRED",
             })),
         )
             .into_response();
@@ -1314,24 +1314,33 @@ pub(super) async fn report_bug_monitor_intake(
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({
-                "error": "Bug Monitor intake key is required",
-                "code": "BUG_MONITOR_INTAKE_KEY_REQUIRED",
+                "error": "Incident Monitor intake key is required",
+                "code": "INCIDENT_MONITOR_INTAKE_KEY_REQUIRED",
             })),
         )
             .into_response();
     };
-    let Some(_key) = state
-        .validate_bug_monitor_intake_key(&raw_key, &project_id, "bug_monitor:report")
-        .await
-    else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({
-                "error": "Bug Monitor intake key is invalid for this project or scope",
-                "code": "BUG_MONITOR_INTAKE_KEY_INVALID",
-            })),
-        )
-            .into_response();
+    let key = state
+        .validate_bug_monitor_intake_key(&raw_key, &project_id, "incident_monitor:report")
+        .await;
+    let _key = match key {
+        Some(key) => key,
+        None => {
+            let legacy_key = state
+                .validate_bug_monitor_intake_key(&raw_key, &project_id, "bug_monitor:report")
+                .await;
+            let Some(key) = legacy_key else {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({
+                        "error": "Incident Monitor intake key is invalid for this project or scope",
+                        "code": "INCIDENT_MONITOR_INTAKE_KEY_INVALID",
+                    })),
+                )
+                    .into_response();
+            };
+            key
+        }
     };
     let config = state.bug_monitor_config().await;
     let Some(project) = config
@@ -1344,7 +1353,7 @@ pub(super) async fn report_bug_monitor_intake(
             StatusCode::BAD_REQUEST,
             Json(json!({
                 "error": "monitored project is not configured",
-                "code": "BUG_MONITOR_INTAKE_PROJECT_UNKNOWN",
+                "code": "INCIDENT_MONITOR_INTAKE_PROJECT_UNKNOWN",
             })),
         )
             .into_response();
@@ -1374,7 +1383,7 @@ pub(super) async fn report_bug_monitor_intake(
             StatusCode::BAD_REQUEST,
             Json(json!({
                 "error": "log source is not configured for monitored project",
-                "code": "BUG_MONITOR_INTAKE_SOURCE_UNKNOWN",
+                "code": "INCIDENT_MONITOR_INTAKE_SOURCE_UNKNOWN",
             })),
         )
             .into_response();
@@ -1525,7 +1534,7 @@ pub(super) async fn create_bug_monitor_intake_key(
             StatusCode::BAD_REQUEST,
             Json(json!({
                 "error": "monitored project is not configured",
-                "code": "BUG_MONITOR_INTAKE_PROJECT_UNKNOWN",
+                "code": "INCIDENT_MONITOR_INTAKE_PROJECT_UNKNOWN",
             })),
         )
             .into_response();
@@ -1535,18 +1544,18 @@ pub(super) async fn create_bug_monitor_intake_key(
             StatusCode::BAD_REQUEST,
             Json(json!({
                 "error": "name is required",
-                "code": "BUG_MONITOR_INTAKE_KEY_NAME_REQUIRED",
+                "code": "INCIDENT_MONITOR_INTAKE_KEY_NAME_REQUIRED",
             })),
         )
             .into_response();
     }
     let raw_key = format!(
-        "tbm_intake_{}{}",
+        "tim_intake_{}{}",
         uuid::Uuid::new_v4().simple(),
         uuid::Uuid::new_v4().simple()
     );
     let scopes = if input.scopes.is_empty() {
-        vec!["bug_monitor:report".to_string()]
+        vec!["incident_monitor:report".to_string()]
     } else {
         input
             .scopes
@@ -1567,15 +1576,15 @@ pub(super) async fn create_bug_monitor_intake_key(
     };
     match state.put_bug_monitor_intake_key(key.clone()).await {
         Ok(mut key) => {
-            emit_bug_monitor_intake_key_audit(&state, "bug_monitor.intake_key.created", &key).await;
+            emit_bug_monitor_intake_key_audit(&state, "incident_monitor.intake_key.created", &key).await;
             key.key_hash = "[redacted]".to_string();
             Json(json!({ "key": key, "raw_key": raw_key })).into_response()
         }
         Err(error) => (
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "Failed to create Bug Monitor intake key",
-                "code": "BUG_MONITOR_INTAKE_KEY_CREATE_FAILED",
+                "error": "Failed to create Incident Monitor intake key",
+                "code": "INCIDENT_MONITOR_INTAKE_KEY_CREATE_FAILED",
                 "detail": error.to_string(),
             })),
         )
@@ -1591,8 +1600,8 @@ pub(super) async fn disable_bug_monitor_intake_key(
         return (
             StatusCode::NOT_FOUND,
             Json(json!({
-                "error": "Bug Monitor intake key not found",
-                "code": "BUG_MONITOR_INTAKE_KEY_NOT_FOUND",
+                "error": "Incident Monitor intake key not found",
+                "code": "INCIDENT_MONITOR_INTAKE_KEY_NOT_FOUND",
             })),
         )
             .into_response();
@@ -1600,7 +1609,7 @@ pub(super) async fn disable_bug_monitor_intake_key(
     key.enabled = false;
     match state.put_bug_monitor_intake_key(key.clone()).await {
         Ok(mut key) => {
-            emit_bug_monitor_intake_key_audit(&state, "bug_monitor.intake_key.disabled", &key)
+            emit_bug_monitor_intake_key_audit(&state, "incident_monitor.intake_key.disabled", &key)
                 .await;
             key.key_hash = "[redacted]".to_string();
             Json(json!({ "key": key })).into_response()
@@ -1608,8 +1617,8 @@ pub(super) async fn disable_bug_monitor_intake_key(
         Err(error) => (
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "Failed to disable Bug Monitor intake key",
-                "code": "BUG_MONITOR_INTAKE_KEY_DISABLE_FAILED",
+                "error": "Failed to disable Incident Monitor intake key",
+                "code": "INCIDENT_MONITOR_INTAKE_KEY_DISABLE_FAILED",
                 "detail": error.to_string(),
             })),
         )

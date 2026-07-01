@@ -341,7 +341,7 @@ The TypeScript SDK also exposes the newer engine surfaces used across the Tandem
 - `client.resources` for key-value resources
 - `client.skills` for validation, routing, evals, compile, and generate flows in addition to list/get/import
 - `client.packs` and `client.capabilities` for pack lifecycle and capability resolution
-- `client.automationsV2`, `client.bugMonitor`, `client.coder`, `client.agentTeams`, `client.missions`, and `client.optimizations` for newer orchestration APIs
+- `client.automationsV2`, `client.incidentMonitor`, `client.coder`, `client.agentTeams`, `client.missions`, and `client.optimizations` for newer orchestration APIs
 
 ```typescript
 const browser = await client.browser.status();
@@ -358,17 +358,17 @@ For actual browser automation, use the standard engine tool execution path with 
 
 Use `client.worktrees.cleanup(...)` for operator-directed repo maintenance only. It wraps `POST /worktree/cleanup`, should usually be called in `dryRun` mode first, and is meant for leaked `.tandem/worktrees` entries after blocked, failed, or restarted repo tasks.
 
-### `client.bugMonitor`
+### `client.incidentMonitor`
 
-Use `client.bugMonitor` when a failure, manual report, or recurring runtime issue should become a governed draft instead of a direct GitHub mutation.
+Use `client.incidentMonitor` when a failure, manual report, or recurring runtime issue should become a governed draft instead of a direct GitHub mutation.
 
 ```typescript
-const status = await client.bugMonitor.getStatus();
-const incidents = await client.bugMonitor.listIncidents({ limit: 10 });
-const drafts = await client.bugMonitor.listDrafts({ limit: 10 });
+const status = await client.incidentMonitor.getStatus();
+const incidents = await client.incidentMonitor.listIncidents({ limit: 10 });
+const drafts = await client.incidentMonitor.listDrafts({ limit: 10 });
 
 if (drafts.drafts[0]) {
-  await client.bugMonitor.createTriageRun(drafts.drafts[0].draft_id);
+  await client.incidentMonitor.createTriageRun(drafts.drafts[0].draft_id);
 }
 ```
 

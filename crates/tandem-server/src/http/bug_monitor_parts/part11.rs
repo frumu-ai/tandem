@@ -30,7 +30,7 @@ pub(super) async fn run_bug_monitor_security_assessment_probes(
         return (
             StatusCode::FORBIDDEN,
             Json(json!({
-                "error": "Bug Monitor assessment probes require an admin API token, not a scoped intake key",
+                "error": "Incident Monitor assessment probes require an admin API token, not a scoped intake key",
                 "code": "BUG_MONITOR_ASSESSMENT_PROBES_ADMIN_REQUIRED",
             })),
         )
@@ -41,7 +41,7 @@ pub(super) async fn run_bug_monitor_security_assessment_probes(
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(json!({
-                    "error": "Bug Monitor assessment probes require the full admin API token",
+                    "error": "Incident Monitor assessment probes require the full admin API token",
                     "code": "BUG_MONITOR_ASSESSMENT_PROBES_ADMIN_REQUIRED",
                 })),
             )
@@ -131,7 +131,7 @@ pub(super) async fn run_bug_monitor_security_assessment_probes(
                 return (
                     status_code,
                     Json(json!({
-                        "error": "Failed to persist Bug Monitor assessment probe evidence pack",
+                        "error": "Failed to persist Incident Monitor assessment probe evidence pack",
                         "code": "BUG_MONITOR_ASSESSMENT_PROBES_EVIDENCE_WRITE_FAILED",
                     })),
                 )
@@ -174,7 +174,7 @@ pub(super) async fn run_bug_monitor_security_assessment_probes(
         "evidence_pack": persisted_payload["evidence_pack"],
         "draft_conversion": {
             "available": true,
-            "method": "submit result.incident_draft_suggestion through the normal Bug Monitor report or draft flow",
+            "method": "submit result.incident_draft_suggestion through the normal Incident Monitor report or draft flow",
             "mutates_state": false,
         },
         "sensitive_values": persisted_payload["authority_inventory"]["sensitive_values"],
@@ -184,7 +184,8 @@ pub(super) async fn run_bug_monitor_security_assessment_probes(
 
 fn bug_monitor_assessment_has_scoped_intake_key_header(headers: &HeaderMap) -> bool {
     headers
-        .get("x-tandem-bug-monitor-intake-key")
+        .get("x-tandem-incident-monitor-intake-key")
+        .or_else(|| headers.get("x-tandem-bug-monitor-intake-key"))
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
         .is_some_and(|value| !value.is_empty())
@@ -518,8 +519,12 @@ fn bug_monitor_assessment_probe_scoped_intake(
         let project_id = bug_monitor_posture_str(key, "project_id").unwrap_or("unknown_project");
         let scopes = bug_monitor_posture_string_array(key, &["scopes"]);
         let report_only = !scopes.is_empty()
-            && scopes.iter().all(|scope| scope == "bug_monitor:report")
-            && scopes.iter().any(|scope| scope == "bug_monitor:report");
+            && scopes
+                .iter()
+                .all(|scope| scope == "incident_monitor:report" || scope == "bug_monitor:report")
+            && scopes
+                .iter()
+                .any(|scope| scope == "incident_monitor:report" || scope == "bug_monitor:report");
         results.push(bug_monitor_assessment_result(
             "scoped_intake_restriction",
             json!({
@@ -527,9 +532,9 @@ fn bug_monitor_assessment_probe_scoped_intake(
                 "id": key_id,
                 "project_id": project_id,
             }),
-            "Scoped intake keys must be report-only and unable to invoke privileged Bug Monitor routes.",
+            "Scoped intake keys must be report-only and unable to invoke privileged Incident Monitor routes.",
             if report_only {
-                "Intake key is scoped to bug_monitor:report; privileged probe routes reject intake-key authentication."
+                "Intake key is scoped to incident_monitor:report; privileged probe routes reject intake-key authentication."
                     .to_string()
             } else {
                 format!(
