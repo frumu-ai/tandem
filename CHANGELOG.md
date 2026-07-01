@@ -123,6 +123,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added an agent-facing Incident Monitor runtime guide for MCP-connected agents,
   SDK users, and public docs consumers, including auth boundaries, safe
   route-preview/triage/publish flow, governance evidence, and failure handling.
+- Added Incident Monitor production governance docs that map deployment cards,
+  authority inventory, posture checks, controlled probes, assessment reports,
+  route receipts, protected audit evidence, and customer-owned policy decisions
+  without overclaiming compliance certification.
 
 ### Changed
 
@@ -159,6 +163,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `x-tandem-incident-monitor-intake-key` header support.
 - Incident Monitor security docs now call out the default secret-redaction and
   retention posture for reports, receipts, and protected audit evidence.
+- Incident Monitor setup, source, reference, and compliance docs now distinguish
+  shipped evidence/export surfaces from deployer-owned retention, escalation,
+  incident-response, and turnkey SIEM integration responsibilities.
 
 ### Fixed
 

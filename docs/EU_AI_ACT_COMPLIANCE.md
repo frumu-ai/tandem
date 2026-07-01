@@ -17,11 +17,12 @@ Tandem is built as governed AI runtime infrastructure rather than a model-only i
 - Tenant context, principals, authority chains, verified tenant context, and secret references in the enterprise contract.
 - Step-level built-in tool and MCP connector scoping.
 - Protected audit envelopes and an admin-gated audit stream.
+- Protected audit ledger/export foundations and governance evidence completeness checks.
 - Runtime tool-policy enforcement for tenant-aware protected actions.
 - Fintech strict-mode policy that classifies protected financial mutations and fails closed unless a matching tenant-scoped approval receipt is verified at tool execution time.
 - Source-available Rust implementation that security and compliance teams can inspect.
 
-Tandem's current coverage is strongest as a control-plane foundation for human oversight, execution traceability, scoped tool access, and protected-action enforcement. The main remaining work is auditor-grade packaging and hardening: tamper-evident audit chains, immutable storage integrations, explicit retention controls, Annex IV documentation templates, Article 50 AI-generated labeling, enterprise identity/RBAC, role-based oversight policy, formal accuracy/robustness metrics, adversarial security testing, and deployer instructions for use.
+Tandem's current coverage is strongest as a control-plane foundation for human oversight, execution traceability, scoped tool access, protected-action enforcement, and customer-reviewable audit evidence. The main remaining work is auditor-grade packaging and hardening: immutable storage integrations, signed evidence bundles where required, explicit retention controls, turnkey SIEM connectors, Annex IV documentation templates, Article 50 AI-generated labeling, enterprise identity/RBAC, role-based oversight policy, formal accuracy/robustness metrics, adversarial security testing, and deployer instructions for use.
 
 ## Scope And Assumptions
 
@@ -40,14 +41,14 @@ Tandem should be assessed per deployment. Depending on packaging and integration
 
 ## Control Coverage Matrix
 
-| AI Act area                                      | Current Tandem support                                                                                                                                                                                                                                           | Current status    | Planned hardening                                                                                                                                                                                                            |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Article 11 - Technical documentation             | Public docs describe runtime architecture, workflow execution, enterprise readiness, logging, QA, and regulated-operation boundaries. Source-available Rust modules expose the engine, automation gates, audit append path, tenant contract, and fintech policy. | Partial           | Annex IV dossier template, system cards, model/provider inventory, intended-purpose statements, architecture diagrams, version history, instructions for use, and per-use-case limitations.                                  |
-| Article 12 - Record-keeping                      | Automation attempt receipts are stored as JSONL with sequence numbers. Protected audit envelopes capture durable required events. Audit stream emits approval, tool-effect, channel capability, and fintech protected-action events.                             | Strong foundation | Cryptographic hash chaining, immutable/WORM storage adapters, retention policies, SIEM export, log integrity verification, clock/source metadata, and Article 12 event taxonomy.                                             |
-| Article 14 - Human oversight                     | Automation V2 supports approval gates with approve, rework, cancel, expiry, reminder, and escalation policy metadata. Runs enter `awaiting_approval`; decisions and expiry outcomes are recorded in gate history. Approvals inbox and channel approval surfaces route decisions through authoritative handlers.          | Strong foundation | Role-based assignment, dual-control approval policies, operator training/competence records, automation-bias UX controls, output interpretation aids, and enterprise policy checks on protected approvals.                   |
-| Article 15 - Accuracy, robustness, cybersecurity | Artifact contracts, validation metadata, repair loops, evaluation framework, scoped tool policies, tenant-aware execution, secret references, and fintech strict-mode fail-closed policy support robustness.                                                     | Partial           | Formal accuracy metrics, benchmark declarations, prompt-injection/adversarial regression suites, data/model poisoning controls where applicable, vulnerability management, incident drills, and lifecycle security evidence. |
-| Article 26 - Deployer obligations                | Tandem can help deployers monitor operation, preserve logs under their control, assign oversight workflows, and suspend or cancel runs.                                                                                                                          | Supportive        | Deployer instructions for use, log retention configuration, incident reporting workflow, operator training evidence, and integration guidance for governance records.                                                        |
-| Article 50 - Transparency for certain AI systems | Tandem already has runtime provenance for generated plans, artifacts, and AI-assisted outputs, but visible standardized UI labeling is not yet systematic across desktop and web surfaces.                                                                       | Gap / planned     | Add visible `AI-Generated` badges to generated text, proposed plans, and artifacts; add accessible labels/tooltips; preserve provenance metadata in exports where practical.                                                 |
+| AI Act area                                      | Current Tandem support                                                                                                                                                                                                                                                                                                                                                          | Current status    | Planned hardening                                                                                                                                                                                                            |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Article 11 - Technical documentation             | Public docs describe runtime architecture, workflow execution, enterprise readiness, logging, QA, and regulated-operation boundaries. Source-available Rust modules expose the engine, automation gates, audit append path, tenant contract, and fintech policy.                                                                                                                | Partial           | Annex IV dossier template, system cards, model/provider inventory, intended-purpose statements, architecture diagrams, version history, instructions for use, and per-use-case limitations.                                  |
+| Article 12 - Record-keeping                      | Automation attempt receipts are stored as JSONL with sequence numbers. Protected audit envelopes capture durable required events. Audit stream emits approval, tool-effect, channel capability, and fintech protected-action events. Protected audit ledger/export foundations and governance evidence export completeness checks provide customer-reviewable evidence packets. | Strong foundation | Immutable/WORM storage adapters, per-tenant retention policies, turnkey SIEM connector integrations, signed bundles, log integrity verification, clock/source metadata, and Article 12 event taxonomy.                       |
+| Article 14 - Human oversight                     | Automation V2 supports approval gates with approve, rework, cancel, expiry, reminder, and escalation policy metadata. Runs enter `awaiting_approval`; decisions and expiry outcomes are recorded in gate history. Approvals inbox and channel approval surfaces route decisions through authoritative handlers.                                                                 | Strong foundation | Role-based assignment, dual-control approval policies, operator training/competence records, automation-bias UX controls, output interpretation aids, and enterprise policy checks on protected approvals.                   |
+| Article 15 - Accuracy, robustness, cybersecurity | Artifact contracts, validation metadata, repair loops, evaluation framework, scoped tool policies, tenant-aware execution, secret references, and fintech strict-mode fail-closed policy support robustness.                                                                                                                                                                    | Partial           | Formal accuracy metrics, benchmark declarations, prompt-injection/adversarial regression suites, data/model poisoning controls where applicable, vulnerability management, incident drills, and lifecycle security evidence. |
+| Article 26 - Deployer obligations                | Tandem can help deployers monitor operation, preserve logs under their control, assign oversight workflows, and suspend or cancel runs.                                                                                                                                                                                                                                         | Supportive        | Deployer instructions for use, log retention configuration, incident reporting workflow, operator training evidence, and integration guidance for governance records.                                                        |
+| Article 50 - Transparency for certain AI systems | Tandem already has runtime provenance for generated plans, artifacts, and AI-assisted outputs, but visible standardized UI labeling is not yet systematic across desktop and web surfaces.                                                                                                                                                                                      | Gap / planned     | Add visible `AI-Generated` badges to generated text, proposed plans, and artifacts; add accessible labels/tooltips; preserve provenance metadata in exports where practical.                                                 |
 
 ## Current Evidence In The Repository
 
@@ -58,6 +59,7 @@ Security and compliance reviewers can inspect the following surfaces:
 - Workflow validation and artifact contracts: `docs/WORKFLOW_RUNTIME.md`
 - Structured logging schema: `docs/LOGGING_SCHEMA.md`
 - Enterprise proof walkthrough: `docs/ENTERPRISE_PROOF_WALKTHROUGH.md`
+- Incident Monitor production governance map: `guide/src/content/docs/incident-monitor/production-governance.md`
 - AI quality assurance: `docs/user/AI_QUALITY_ASSURANCE.md`
 - Tenant, principal, authority chain, verified tenant context, and secret refs: `crates/tandem-enterprise-contract/src/lib.rs`
 - Automation DAG nodes, dependencies, approval gates, run status, and gate history: `crates/tandem-server/src/automation_v2/types.rs`
@@ -113,6 +115,7 @@ Tandem currently records execution evidence through multiple layers:
 - JSONL automation attempt receipts with run ID, node ID, attempt, session ID, sequence, timestamp, event type, and payload.
 - Protected audit envelopes with event ID, durability marker, event type, tenant context, actor, payload, and timestamp.
 - Admin-gated `/audit/stream` NDJSON feed for selected audit-relevant events.
+- Protected audit ledger/export foundations and governance evidence export completeness checks for customer-owned review.
 - Tool-effect and fintech protected-action event mapping.
 - Fintech audit package builder that groups run ID, tenant, actor, tool calls, connector proof, artifacts, approvals, policy decisions, and limitations.
 
@@ -122,9 +125,9 @@ This is a strong foundation for Article 12 traceability. It is not yet a complet
 
 Planned record-keeping hardening includes:
 
-- Hash-chained receipt records with previous-record digest and ledger root digest.
-- Optional signing of protected audit envelopes.
-- Immutable storage adapters such as S3 Object Lock, Azure immutable blobs, GCS retention lock, or customer SIEM/WORM targets.
+- Optional signing of protected audit bundles.
+- Immutable storage adapters such as S3 Object Lock, Azure immutable blobs, GCS retention lock, or customer WORM targets.
+- Turnkey SIEM connector integrations with retry and backpressure handling.
 - Retention and deletion policy controls per tenant and use case.
 - Exportable audit bundles with verification manifests.
 - Stable schema versioning and migration notes for auditors.
@@ -246,11 +249,10 @@ Actions such as autonomous credit decisions, money movement, account freezes, ad
 - Add instructions for deployers and human overseers.
 - Add a public limitations and responsibility matrix.
 
-### Phase 2: Tamper-Evident Audit
+### Phase 2: Immutable Evidence Custody
 
-- Add hash chaining to automation attempt receipts and protected audit envelopes.
-- Add export manifests with ledger root digest and schema version.
-- Add immutable storage and SIEM export adapters.
+- Harden audit exports with signed bundle metadata where required.
+- Add immutable storage and turnkey SIEM connector adapters.
 - Add retention configuration with a minimum six-month deployer baseline where applicable.
 - Add completeness checks for approvals, denials, and protected tool calls.
 
@@ -285,7 +287,7 @@ Actions such as autonomous credit decisions, money movement, account freezes, ad
 
 Tandem has a credible architecture for EU AI Act readiness because it treats AI work as governed runtime execution rather than unstructured model output. Current strengths include human approval gates, durable execution records, tenant-aware control paths, scoped tools, artifact validation, and protected-action enforcement.
 
-The most important implementation work ahead is to convert those primitives into auditor-ready controls: visible AI-generated labeling, tamper-evident logging, immutable export, Annex IV documentation, instructions for use, enterprise identity and policy enforcement, and formal Article 15 assurance evidence.
+The most important implementation work ahead is to convert those primitives into auditor-ready controls: visible AI-generated labeling, immutable evidence custody, signed bundles where required, Annex IV documentation, instructions for use, enterprise identity and policy enforcement, and formal Article 15 assurance evidence.
 
 ## References
 

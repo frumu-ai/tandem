@@ -120,8 +120,8 @@ enterprise hardening includes:
   agent sessions can be audited without silently losing approval boundaries
 
 This does not replace hosted identity administration. OIDC, SCIM, provider ACL
-sync, SIEM export, private sidecar enforcement, and SOC2 evidence remain
-hosted/private control-plane or roadmap work.
+sync, turnkey SIEM connector integrations, private sidecar enforcement, and SOC2
+evidence remain hosted/private control-plane or roadmap work.
 
 ## Organization units
 

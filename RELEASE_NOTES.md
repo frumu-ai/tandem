@@ -163,6 +163,13 @@ The public guide now includes an agent-facing Incident Monitor runtime guide
 that teaches MCP-connected agents and SDK clients the safe readiness,
 route-preview, intake, triage, approval, publish, receipt, and governance
 evidence sequence instead of direct external mutation.
+The guide and compliance starter docs now also include an Incident Monitor
+production governance map. It connects deployment cards, authority inventory,
+posture checks, controlled probes, assessment reports, route previews, publish
+receipts, protected audit evidence, and destination exports to the
+operator-owned decisions needed for production readiness, while separating
+current Tandem evidence from customer-owned retention, escalation,
+incident-response, and turnkey SIEM integration responsibilities.
 The Incident Monitor rename also stays under the CI touched-file-size guard by
 compacting UI rename formatting and moving server service tests into a dedicated
 module.

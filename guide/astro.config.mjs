@@ -75,6 +75,7 @@ export default defineConfig({
             "incident-monitor-external-log-intake",
             "incident-monitor/overview",
             "incident-monitor/agent-runtime-guide",
+            "incident-monitor/production-governance",
             "incident-monitor/destination-router",
             "incident-monitor/external-sources",
             "incident-monitor/destinations",

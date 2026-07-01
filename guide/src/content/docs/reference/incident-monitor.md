@@ -28,9 +28,9 @@ Use it when a workflow failure, recurring runtime error, manual report, safety s
 
 Incident Monitor is intentionally not "report everything immediately to GitHub". It keeps intake, triage, and approval separate so the system can add evidence before anything leaves Tandem.
 
-Incident Monitor is the destination-router evolution of this pipeline. GitHub, Linear, signed webhook, local telemetry, generic MCP tool, and internal memory destinations use the governed router model with source identity, routing, destination readiness, approval, and receipts. See [Incident Monitor Overview](../incident-monitor/overview/) and [Destination Router](../incident-monitor/destination-router/).
+Incident Monitor is the destination-router evolution of this pipeline. GitHub, Linear, signed webhook, local telemetry, generic MCP tool, and internal memory destinations use the governed router model with source identity, routing, destination readiness, approval, and receipts. See [Incident Monitor Overview](../../incident-monitor/overview/) and [Destination Router](../../incident-monitor/destination-router/).
 
-If you are an MCP-connected agent, start with [Incident Monitor Agent Runtime Guide](../incident-monitor/agent-runtime-guide/) before choosing a publish path.
+If you are an MCP-connected agent, start with [Incident Monitor Agent Runtime Guide](../../incident-monitor/agent-runtime-guide/) before choosing a publish path.
 
 ## Control Panel Setup
 
@@ -53,7 +53,7 @@ Use this path when CI, ACA, or another local service writes failures to JSON-lin
 
 On hosted installs, Coder and Incident Monitor share repositories under `/workspace/repos`. Sync the repo from the Coder page first, then set Incident Monitor's local directory to `/workspace/repos/<repo-name>` so triage can inspect the source tree. `/workspace/tandem-data` is runtime state, not source code.
 
-For setup steps, examples, and agent-facing guidance, see [Incident Monitor External Log Intake](../incident-monitor-external-log-intake/).
+For setup steps, examples, and agent-facing guidance, see [Incident Monitor External Log Intake](../../incident-monitor-external-log-intake/).
 
 ## Signed Webhook Destinations
 
@@ -97,6 +97,17 @@ The report includes JSON sections plus a Markdown summary:
 - a non-mutating destination route preview for report export
 
 Reports do not embed raw protected-audit payloads, scoped intake keys, auth headers, webhook secret values, or destination receipt payloads by default. High-assurance deployments should export protected audit evidence to a customer-owned system of record such as SIEM, database, object storage, Linear, GitHub, webhook, telemetry, or an approved MCP destination. Tandem can show what it observed and enforced; it does not independently prove itself safe.
+
+## Production Governance
+
+Use [Incident Monitor Production Governance](../../incident-monitor/production-governance/) to map authority inventory, posture checks, controlled probes, assessment reports, deployment cards, route previews, publish receipts, and protected audit evidence to production readiness controls.
+
+The map separates:
+
+- shipped Tandem evidence surfaces
+- deployment policy that Tandem cannot infer
+- customer-owned retention and external evidence custody
+- incident response and governance drift review responsibilities
 
 ## TypeScript
 
@@ -243,9 +254,10 @@ async with TandemClient(base_url="http://localhost:39731", token="...") as clien
 
 ## Related
 
-- [SDK Overview](../sdk/)
-- [TypeScript SDK](../sdk/typescript/)
-- [Python SDK](../sdk/python/)
-- [Control Panel](../control-panel/)
-- [Incident Monitor Overview](../incident-monitor/overview/)
-- [Incident Monitor Agent Runtime Guide](../incident-monitor/agent-runtime-guide/)
+- [SDK Overview](../../sdk/)
+- [TypeScript SDK](../../sdk/typescript/)
+- [Python SDK](../../sdk/python/)
+- [Control Panel](../../control-panel/)
+- [Incident Monitor Overview](../../incident-monitor/overview/)
+- [Incident Monitor Agent Runtime Guide](../../incident-monitor/agent-runtime-guide/)
+- [Incident Monitor Production Governance](../../incident-monitor/production-governance/)

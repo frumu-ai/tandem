@@ -1,6 +1,6 @@
 # Tandem Enterprise Readiness
 
-This document separates what Tandem can credibly show today from what is still in progress or planned. Tandem is not yet a complete enterprise platform with OIDC, SCIM, SIEM export, SOC2, and private sidecar enforcement. The current proof is the runtime authority foundation those enterprise features will attach to, including tenant-aware policy decisions, governed approvals, scoped memory, protected audit evidence, and initial intra-tenant authority modeling.
+This document separates what Tandem can credibly show today from what is still in progress or planned. Tandem is not yet a complete enterprise platform with OIDC, SCIM, turnkey SIEM connector integrations, SOC2, and private sidecar enforcement. The current proof is the runtime authority foundation those enterprise features will attach to, including tenant-aware policy decisions, governed approvals, scoped memory, protected audit evidence, and initial intra-tenant authority modeling.
 
 ## Available Now
 
@@ -40,7 +40,7 @@ This document separates what Tandem can credibly show today from what is still i
 - **Private enterprise sidecar:** Identity, tenancy, policy, audit, and governance implementation outside the OSS engine.
 - **OIDC and SSO:** Enterprise identity integration in the private control plane/sidecar layer.
 - **SCIM:** User and group provisioning for enterprise directories.
-- **SIEM export:** Splunk, Elastic, Datadog, or compatible audit export paths.
+- **Turnkey SIEM integrations:** Splunk, Elastic, Datadog, or compatible managed audit export paths with connector-level retry/backpressure behavior.
 - **Self-hosted enterprise license:** Commercial packaging around the public runtime plus private enterprise sidecar.
 - **SOC2 and security package:** External audit, security one-pager, threat model, DPA, SLA, and procurement materials.
 - **Fleet/control-plane separation:** Longer-term split between a runtime-local sidecar and enterprise admin/control-plane services.
@@ -49,7 +49,7 @@ This document separates what Tandem can credibly show today from what is still i
 
 Tandem can honestly claim a serious enterprise authority path today:
 
-> The public runtime already carries the primitives enterprise AI work needs: durable runs, tenant-aware records, scoped tools, governed approval gates, initial policy decisions, intra-tenant authority modeling, explicit cross-tenant grant contracts, artifact validation, retrieval/egress controls, protected audit events, and a sidecar-ready contract. Full enterprise identity, hosted RBAC administration, OIDC, SCIM, SIEM export, private sidecar enforcement, and SOC2 are roadmap items, not shipped guarantees.
+> The public runtime already carries the primitives enterprise AI work needs: durable runs, tenant-aware records, scoped tools, governed approval gates, initial policy decisions, intra-tenant authority modeling, explicit cross-tenant grant contracts, artifact validation, retrieval/egress controls, protected audit events, protected audit export foundations, and a sidecar-ready contract. Full enterprise identity, hosted RBAC administration, OIDC, SCIM, turnkey SIEM integrations, private sidecar enforcement, and SOC2 are roadmap items, not shipped guarantees.
 
 Approval gates are runtime control points, not a complete enterprise identity boundary by themselves. For regulated or customer-impacting actions, Tandem should fail closed unless the runtime can verify tenant, policy, approval, proposed-action identity, and capability evidence at the protected tool call. Tandem now has an approval-receipt verifier, a policy decision store, a gate matrix, and protected audit evidence for governed tool calls; enterprise required-mode sidecar enforcement remains roadmap work.
 
@@ -57,7 +57,7 @@ Approval gates are runtime control points, not a complete enterprise identity bo
 
 Fintech compliance and risk operations are a strong proof-sprint fit for Tandem because they need cited artifacts, scoped connectors, protected approvals, tenant-aware records, and replayable audit evidence. A credible first demo is a compliance/risk update brief that reads selected sources, drafts a cited artifact, flags limitations, and pauses before any external or customer-impacting action.
 
-This is not a claim that Tandem is production-ready for regulated fintech deployment. `fintech_strict` is an internal runtime profile marker, not mandatory isolation on its own. Autonomous money movement, account freezes, customer approval, regulatory filings, credit decisions, and risk-rating changes require runtime-verified protected approval/policy evidence and stronger enterprise gates. Required enterprise mode, private sidecar enforcement, OIDC, SCIM, SIEM export, hosted RBAC administration, and SOC2 remain in progress or planned as described above.
+This is not a claim that Tandem is production-ready for regulated fintech deployment. `fintech_strict` is an internal runtime profile marker, not mandatory isolation on its own. Autonomous money movement, account freezes, customer approval, regulatory filings, credit decisions, and risk-rating changes require runtime-verified protected approval/policy evidence and stronger enterprise gates. Required enterprise mode, private sidecar enforcement, OIDC, SCIM, turnkey SIEM integrations, hosted RBAC administration, and SOC2 remain in progress or planned as described above.
 
 ## Related Docs
 
