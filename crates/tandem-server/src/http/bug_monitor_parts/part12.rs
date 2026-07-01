@@ -141,7 +141,9 @@ async fn bug_monitor_assessment_report_payload(
         .list_bug_monitor_incidents(200)
         .await
         .into_iter()
-        .filter(|incident| bug_monitor_assessment_report_incident_matches(incident, input))
+        .filter(|incident| {
+            bug_monitor_assessment_report_incident_matches(incident, &tenant_context, input)
+        })
         .collect::<Vec<_>>();
     let posts = state
         .list_bug_monitor_posts(200)
@@ -363,8 +365,12 @@ fn bug_monitor_assessment_report_posture_policy(
 
 fn bug_monitor_assessment_report_incident_matches(
     incident: &BugMonitorIncidentRecord,
+    tenant_context: &TenantContext,
     input: &BugMonitorAssessmentReportInput,
 ) -> bool {
+    if !bug_monitor_assessment_report_incident_matches_tenant(incident, tenant_context) {
+        return false;
+    }
     if !bug_monitor_assessment_report_time_matches(incident.updated_at_ms, input) {
         return false;
     }
@@ -381,6 +387,15 @@ fn bug_monitor_assessment_report_incident_matches(
         .as_ref()
         .map(BugMonitorSourceKind::as_str)
         .is_some_and(|value| value == source_kind)
+}
+
+fn bug_monitor_assessment_report_incident_matches_tenant(
+    incident: &BugMonitorIncidentRecord,
+    tenant_context: &TenantContext,
+) -> bool {
+    tenant_context.is_local_implicit()
+        || (incident.tenant_id.as_deref() == Some(tenant_context.org_id.as_str())
+            && incident.workspace_id.as_deref() == Some(tenant_context.workspace_id.as_str()))
 }
 
 fn bug_monitor_assessment_report_time_matches(

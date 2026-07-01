@@ -396,6 +396,28 @@ async fn bug_monitor_assessment_report_distinguishes_self_monitoring_audit_expor
         })
         .await
         .expect("external incident");
+    state
+        .put_bug_monitor_incident(crate::BugMonitorIncidentRecord {
+            incident_id: "incident-foreign".to_string(),
+            fingerprint: "fp-foreign".to_string(),
+            event_type: "bug_monitor.destination.failure".to_string(),
+            status: "open".to_string(),
+            repo: "acme/platform".to_string(),
+            workspace_root: ".".to_string(),
+            title: "Foreign tenant incident should stay out".to_string(),
+            source_kind: Some(crate::BugMonitorSourceKind::TandemMonitor),
+            source: Some("bug_monitor".to_string()),
+            risk_level: Some("high".to_string()),
+            risk_category: Some("monitor_health".to_string()),
+            tenant_id: Some("org-foreign".to_string()),
+            workspace_id: Some("workspace-foreign".to_string()),
+            created_at_ms: now,
+            updated_at_ms: now,
+            evidence_refs: vec!["foreign-evidence-ref".to_string()],
+            ..Default::default()
+        })
+        .await
+        .expect("foreign incident");
     crate::audit::append_protected_audit_event(
         &state,
         "bug_monitor.publish.failed",
@@ -435,6 +457,9 @@ async fn bug_monitor_assessment_report_distinguishes_self_monitoring_audit_expor
         .iter()
         .any(|record| record["event_type"].as_str() == Some("bug_monitor.publish.failed")));
     let payload_string = serde_json::to_string(&payload).expect("report json");
+    assert!(!payload_string.contains("Foreign tenant incident should stay out"));
+    assert!(!payload_string.contains("foreign-evidence-ref"));
+    assert!(!payload_string.contains("org-foreign"));
     assert!(!payload_string.contains("super-secret-report-canary"));
     assert!(payload_string.contains("private_value"));
     assert_eq!(payload["evidence_pack"]["persisted"], json!(false));

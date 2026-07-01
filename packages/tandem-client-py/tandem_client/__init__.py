@@ -70,6 +70,7 @@ from .types import (
     BugMonitorAssessmentProbeCounts,
     BugMonitorAssessmentProbeResult,
     BugMonitorAssessmentProbeRunResponse,
+    BugMonitorAssessmentReportResponse,
     BugMonitorConfigResponse,
     BugMonitorConfigRow,
     BugMonitorDestinationConfig,
