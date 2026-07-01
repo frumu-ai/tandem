@@ -3,8 +3,6 @@ use serde_json::Value;
 use tandem_types::ModelSpec;
 
 pub const INCIDENT_MONITOR_LEGACY_GITHUB_DESTINATION_ID: &str = "legacy-github";
-pub const BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID: &str =
-    INCIDENT_MONITOR_LEGACY_GITHUB_DESTINATION_ID;
 
 fn default_incident_monitor_log_format() -> IncidentMonitorLogFormat {
     IncidentMonitorLogFormat::Auto
@@ -1305,42 +1303,6 @@ pub struct IncidentMonitorStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
 }
-
-pub type BugMonitorProviderPreference = IncidentMonitorProviderPreference;
-pub type BugMonitorLabelMode = IncidentMonitorLabelMode;
-pub type BugMonitorDestinationKind = IncidentMonitorDestinationKind;
-pub type BugMonitorApprovalPolicy = IncidentMonitorApprovalPolicy;
-pub type BugMonitorSourceKind = IncidentMonitorSourceKind;
-pub type BugMonitorDestinationConfig = IncidentMonitorDestinationConfig;
-pub type BugMonitorRouteConfig = IncidentMonitorRouteConfig;
-pub type BugMonitorSafetyDefaults = IncidentMonitorSafetyDefaults;
-pub type BugMonitorDestinationReadiness = IncidentMonitorDestinationReadiness;
-pub type BugMonitorRoutePreviewMatch = IncidentMonitorRoutePreviewMatch;
-pub type BugMonitorRoutePreviewResponse = IncidentMonitorRoutePreviewResponse;
-pub type BugMonitorConfig = IncidentMonitorConfig;
-pub type BugMonitorMonitoredProject = IncidentMonitorMonitoredProject;
-pub type BugMonitorLogFormat = IncidentMonitorLogFormat;
-pub type BugMonitorLogMinimumLevel = IncidentMonitorLogMinimumLevel;
-pub type BugMonitorLogStartPosition = IncidentMonitorLogStartPosition;
-pub type BugMonitorLogSource = IncidentMonitorLogSource;
-pub type BugMonitorSourceBinding = IncidentMonitorSourceBinding;
-pub type BugMonitorLogSourceState = IncidentMonitorLogSourceState;
-pub type BugMonitorLogCandidate = IncidentMonitorLogCandidate;
-pub type BugMonitorLogWatcherStatus = IncidentMonitorLogWatcherStatus;
-pub type BugMonitorLogSourceRuntimeStatus = IncidentMonitorLogSourceRuntimeStatus;
-pub type BugMonitorProjectIntakeKey = IncidentMonitorProjectIntakeKey;
-pub type BugMonitorDraftRecord = IncidentMonitorDraftRecord;
-pub type BugMonitorPostRecord = IncidentMonitorPostRecord;
-pub type BugMonitorIncidentRecord = IncidentMonitorIncidentRecord;
-pub type BugMonitorQualityGateResult = IncidentMonitorQualityGateResult;
-pub type BugMonitorQualityGateReport = IncidentMonitorQualityGateReport;
-pub type BugMonitorRuntimeStatus = IncidentMonitorRuntimeStatus;
-pub type BugMonitorSubmission = IncidentMonitorSubmission;
-pub type BugMonitorCapabilityReadiness = IncidentMonitorCapabilityReadiness;
-pub type BugMonitorCapabilityMatch = IncidentMonitorCapabilityMatch;
-pub type BugMonitorBindingCandidate = IncidentMonitorBindingCandidate;
-pub type BugMonitorReadiness = IncidentMonitorReadiness;
-pub type BugMonitorStatus = IncidentMonitorStatus;
 
 fn default_true() -> bool {
     true

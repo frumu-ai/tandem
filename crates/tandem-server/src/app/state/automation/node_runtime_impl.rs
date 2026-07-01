@@ -1197,7 +1197,7 @@ pub(crate) fn write_automation_inline_artifact(
 }
 
 pub(crate) fn automation_node_declared_output_path(node: &AutomationFlowNode) -> Option<String> {
-    if automation_node_is_bug_monitor_context_artifact(node) {
+    if automation_node_is_incident_monitor_context_artifact(node) {
         return None;
     }
     if automation_node_is_handoff_only_structured_json(node) {
@@ -1333,10 +1333,12 @@ pub(crate) fn automation_node_is_handoff_only_structured_json(node: &AutomationF
     structured_json && !automation_node_declares_workspace_writes(node)
 }
 
-pub(crate) fn automation_node_is_bug_monitor_context_artifact(node: &AutomationFlowNode) -> bool {
+pub(crate) fn automation_node_is_incident_monitor_context_artifact(
+    node: &AutomationFlowNode,
+) -> bool {
     node.metadata
         .as_ref()
-        .and_then(|metadata| metadata.get("bug_monitor"))
+        .and_then(|metadata| metadata.get("incident_monitor"))
         .and_then(|metadata| metadata.get("artifact_type"))
         .and_then(Value::as_str)
         .map(str::trim)
@@ -1362,7 +1364,7 @@ pub(crate) fn automation_node_requires_artifact_write_tool(node: &AutomationFlow
 }
 
 pub(crate) fn automation_node_default_output_path(node: &AutomationFlowNode) -> Option<String> {
-    if automation_node_is_bug_monitor_context_artifact(node) {
+    if automation_node_is_incident_monitor_context_artifact(node) {
         return None;
     }
     if automation_node_default_output_path_disabled(node) {

@@ -152,7 +152,7 @@ fn automation_node_task_payload(node: &crate::AutomationFlowNode, output: Option
     if let Some(embedded_payload) = node
         .metadata
         .as_ref()
-        .and_then(|metadata| metadata.get("bug_monitor"))
+        .and_then(|metadata| metadata.get("incident_monitor"))
         .and_then(Value::as_object)
         .and_then(|_| node.metadata.as_ref())
         .and_then(|metadata| metadata.get("builder"))

@@ -630,18 +630,15 @@ export function SettingsPage({
   const [incidentMonitorWorkspaceRoot, setIncidentMonitorWorkspaceRoot] = useState("");
   const [incidentMonitorRepo, setIncidentMonitorRepo] = useState("");
   const [incidentMonitorMcpServer, setIncidentMonitorMcpServer] = useState("");
-  const [incidentMonitorProviderPreference, setIncidentMonitorProviderPreference] =
-    useState("auto");
+  const [incidentMonitorProviderPreference, setIncidentMonitorProviderPreference] = useState("auto");
   const [incidentMonitorProviderId, setIncidentMonitorProviderId] = useState("");
   const [incidentMonitorModelId, setIncidentMonitorModelId] = useState("");
   const [incidentMonitorAutoCreateIssues, setIncidentMonitorAutoCreateIssues] = useState(true);
   const [incidentMonitorRequireApproval, setIncidentMonitorRequireApproval] = useState(false);
   const [incidentMonitorAutoComment, setIncidentMonitorAutoComment] = useState(true);
-  const [incidentMonitorWorkspaceBrowserOpen, setIncidentMonitorWorkspaceBrowserOpen] =
-    useState(false);
+  const [incidentMonitorWorkspaceBrowserOpen, setIncidentMonitorWorkspaceBrowserOpen] = useState(false);
   const [incidentMonitorWorkspaceBrowserDir, setIncidentMonitorWorkspaceBrowserDir] = useState("");
-  const [incidentMonitorWorkspaceBrowserSearch, setIncidentMonitorWorkspaceBrowserSearch] =
-    useState("");
+  const [incidentMonitorWorkspaceBrowserSearch, setIncidentMonitorWorkspaceBrowserSearch] = useState("");
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
 
   const loadIdentityConfig = async () => {
@@ -806,18 +803,11 @@ export function SettingsPage({
     refetchInterval: 15_000,
   });
   const incidentMonitorWorkspaceBrowserQuery = useQuery({
-    queryKey: [
-      "settings",
-      "incident-monitor",
-      "workspace-browser",
-      incidentMonitorWorkspaceBrowserDir,
-    ],
+    queryKey: ["settings", "incident-monitor", "workspace-browser", incidentMonitorWorkspaceBrowserDir],
     enabled: incidentMonitorWorkspaceBrowserOpen && !!incidentMonitorWorkspaceBrowserDir,
     queryFn: () =>
       api(
-        `/api/orchestrator/workspaces/list?dir=${encodeURIComponent(
-          incidentMonitorWorkspaceBrowserDir
-        )}`,
+        `/api/orchestrator/workspaces/list?dir=${encodeURIComponent(incidentMonitorWorkspaceBrowserDir)}`,
         { method: "GET" }
       ),
   });
@@ -938,9 +928,7 @@ export function SettingsPage({
       }),
     onSuccess: async () => {
       toast("ok", "Incident Monitor settings saved.");
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["settings", "incident-monitor"] }),
-      ]);
+      await Promise.all([queryClient.invalidateQueries({ queryKey: ["settings", "incident-monitor"] })]);
     },
     onError: (error: any) => {
       const detail =
@@ -975,9 +963,7 @@ export function SettingsPage({
         }),
       }),
     onSuccess: async (_payload, vars) => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["settings", "incident-monitor"] }),
-      ]);
+      await Promise.all([queryClient.invalidateQueries({ queryKey: ["settings", "incident-monitor"] })]);
       toast("ok", `Incident Monitor draft ${vars.decision === "approve" ? "approved" : "denied"}.`);
     },
     onError: (error: any) => {
@@ -992,9 +978,7 @@ export function SettingsPage({
         method: "POST",
       }),
     onSuccess: async (payload: any) => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["settings", "incident-monitor"] }),
-      ]);
+      await Promise.all([queryClient.invalidateQueries({ queryKey: ["settings", "incident-monitor"] })]);
       toast(
         "ok",
         payload?.deduped
@@ -1014,9 +998,7 @@ export function SettingsPage({
         method: "POST",
       }),
     onSuccess: async (_payload, vars) => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["settings", "incident-monitor"] }),
-      ]);
+      await Promise.all([queryClient.invalidateQueries({ queryKey: ["settings", "incident-monitor"] })]);
       toast("ok", `Incident Monitor ${vars.action === "pause" ? "paused" : "resumed"}.`);
     },
     onError: (error: any) => {
@@ -1031,9 +1013,7 @@ export function SettingsPage({
         method: "POST",
       }),
     onSuccess: async (payload: any) => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["settings", "incident-monitor"] }),
-      ]);
+      await Promise.all([queryClient.invalidateQueries({ queryKey: ["settings", "incident-monitor"] })]);
       toast(
         "ok",
         payload?.deduped
@@ -1053,9 +1033,7 @@ export function SettingsPage({
         method: "POST",
       }),
     onSuccess: async (payload: any) => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["settings", "incident-monitor"] }),
-      ]);
+      await Promise.all([queryClient.invalidateQueries({ queryKey: ["settings", "incident-monitor"] })]);
       toast(
         "ok",
         payload?.action === "comment_issue"
@@ -1400,8 +1378,7 @@ export function SettingsPage({
   const incidentMonitorIncidents = useMemo(
     () =>
       Array.isArray((incidentMonitorIncidentsQuery.data as any)?.incidents)
-        ? ((incidentMonitorIncidentsQuery.data as any).incidents as IncidentMonitorIncidentRow[]) ||
-          []
+        ? ((incidentMonitorIncidentsQuery.data as any).incidents as IncidentMonitorIncidentRow[]) || []
         : [],
     [incidentMonitorIncidentsQuery.data]
   );
@@ -1454,9 +1431,7 @@ export function SettingsPage({
   const connectedChannelCount = channelNames.filter(
     (name) => !!(channelsStatusQuery.data as any)?.[name]?.connected
   ).length;
-  const incidentMonitorWorkspaceDirectories = Array.isArray(
-    incidentMonitorWorkspaceBrowserQuery.data?.directories
-  )
+  const incidentMonitorWorkspaceDirectories = Array.isArray(incidentMonitorWorkspaceBrowserQuery.data?.directories)
     ? incidentMonitorWorkspaceBrowserQuery.data.directories
     : [];
   const incidentMonitorWorkspaceSearchQuery = String(incidentMonitorWorkspaceBrowserSearch || "")
@@ -1471,21 +1446,15 @@ export function SettingsPage({
       return name.includes(incidentMonitorWorkspaceSearchQuery);
     });
   }, [incidentMonitorWorkspaceDirectories, incidentMonitorWorkspaceSearchQuery]);
-  const incidentMonitorWorkspaceParentDir = String(
-    incidentMonitorWorkspaceBrowserQuery.data?.parent || ""
-  ).trim();
-  const incidentMonitorCurrentBrowseDir = String(
-    incidentMonitorWorkspaceBrowserQuery.data?.dir || incidentMonitorWorkspaceBrowserDir || ""
-  ).trim();
+  const incidentMonitorWorkspaceParentDir = String(incidentMonitorWorkspaceBrowserQuery.data?.parent || "").trim();
+  const incidentMonitorCurrentBrowseDir = String(incidentMonitorWorkspaceBrowserQuery.data?.dir || incidentMonitorWorkspaceBrowserDir || "").trim();
 
   useEffect(() => {
     const configPayload = incidentMonitorConfigQuery.data as any;
     const config =
       configPayload?.incident_monitor && typeof configPayload.incident_monitor === "object"
         ? (configPayload.incident_monitor as IncidentMonitorConfigRow)
-        : configPayload?.bug_monitor && typeof configPayload.bug_monitor === "object"
-          ? (configPayload.bug_monitor as IncidentMonitorConfigRow)
-          : {};
+        : {};
     setIncidentMonitorEnabled(!!config.enabled);
     setIncidentMonitorPaused(!!config.paused);
     setIncidentMonitorWorkspaceRoot(String(config.workspace_root || "").trim());

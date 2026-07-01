@@ -136,32 +136,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   creating runs, treats same provider event IDs with different payloads as
   conflicts, and treats same body digests as duplicates without crossing tenant
   boundaries.
-- Control Panel settings now label the router setup as Incident Monitor while
-  keeping the legacy GitHub compatibility path intact.
+- Control Panel settings now label the router setup as Incident Monitor and
+  use the canonical Incident Monitor endpoints and config payloads.
 - Server routes now expose canonical Incident Monitor endpoints under
   `/incident-monitor/*` and `/config/incident-monitor`, with stale legacy aliases
   removed.
 - Renamed shared Incident Monitor contracts to the `tandem-incident-monitor`
-  crate, including canonical runtime event names,
-  evidence refs, persisted data paths, GitHub host trait methods, and the eval
-  fixture CLI, while keeping explicit legacy Rust aliases for staged follow-up
-  migration work.
+  crate, including canonical runtime event names, evidence refs, persisted data
+  paths, GitHub host trait methods, and the eval fixture CLI.
 - TypeScript and Python SDKs now expose canonical Incident Monitor namespaces,
   types, endpoints, and examples through `client.incidentMonitor` and
   `client.incident_monitor`, including `/incident-monitor/*` routes and
   `incident_monitor` config payloads.
 - Control Panel, desktop settings, create-panel templates, docs, examples,
   scripts, and CI workflow labels now use Incident Monitor routes, filenames,
-  labels, and examples while retaining narrow legacy compatibility redirects.
+  labels, and examples, with pre-rename route redirects removed.
 - Incident Monitor scoped intake keys now default to the
   `incident_monitor:report` scope and `tim_intake_` key prefix, with canonical
-  `x-tandem-incident-monitor-intake-key` header support and narrow legacy
-  fallback for existing intake keys.
+  `x-tandem-incident-monitor-intake-key` header support.
 - Incident Monitor security docs now call out the default secret-redaction and
   retention posture for reports, receipts, and protected audit evidence.
 
 ### Fixed
 
+- Trimmed Incident Monitor rename changes under the CI touched-file-size guard,
+  including compacting UI rename formatting and moving server service tests into
+  a dedicated module.
 - Persisted Automation V2 webhook dedupe outcomes so provider retries after a
   server restart can return the original delivery/run correlation instead of
   creating a second run.

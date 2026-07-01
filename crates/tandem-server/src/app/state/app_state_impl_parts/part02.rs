@@ -1,46 +1,46 @@
 impl AppState {
-    pub async fn submit_bug_monitor_draft(
+    pub async fn submit_incident_monitor_draft(
         &self,
-        mut submission: BugMonitorSubmission,
-    ) -> anyhow::Result<BugMonitorDraftRecord> {
-        submission.repo = normalize_bug_monitor_submission_optional(submission.repo);
-        submission.project_id = normalize_bug_monitor_submission_optional(submission.project_id);
+        mut submission: IncidentMonitorSubmission,
+    ) -> anyhow::Result<IncidentMonitorDraftRecord> {
+        submission.repo = normalize_incident_monitor_submission_optional(submission.repo);
+        submission.project_id = normalize_incident_monitor_submission_optional(submission.project_id);
         submission.workspace_root =
-            normalize_bug_monitor_submission_optional(submission.workspace_root);
+            normalize_incident_monitor_submission_optional(submission.workspace_root);
         submission.log_source_id =
-            normalize_bug_monitor_submission_optional(submission.log_source_id);
-        submission.tenant_id = normalize_bug_monitor_submission_optional(submission.tenant_id);
+            normalize_incident_monitor_submission_optional(submission.log_source_id);
+        submission.tenant_id = normalize_incident_monitor_submission_optional(submission.tenant_id);
         submission.workspace_id =
-            normalize_bug_monitor_submission_optional(submission.workspace_id);
+            normalize_incident_monitor_submission_optional(submission.workspace_id);
         submission.event_schema_version =
-            normalize_bug_monitor_submission_optional(submission.event_schema_version);
+            normalize_incident_monitor_submission_optional(submission.event_schema_version);
         submission.redaction_profile =
-            normalize_bug_monitor_submission_optional(submission.redaction_profile);
+            normalize_incident_monitor_submission_optional(submission.redaction_profile);
         submission.retention_profile =
-            normalize_bug_monitor_submission_optional(submission.retention_profile);
-        submission.title = normalize_bug_monitor_submission_optional(submission.title);
-        submission.detail = normalize_bug_monitor_submission_optional(submission.detail);
-        submission.source = normalize_bug_monitor_submission_optional(submission.source);
-        submission.run_id = normalize_bug_monitor_submission_optional(submission.run_id);
-        submission.session_id = normalize_bug_monitor_submission_optional(submission.session_id);
+            normalize_incident_monitor_submission_optional(submission.retention_profile);
+        submission.title = normalize_incident_monitor_submission_optional(submission.title);
+        submission.detail = normalize_incident_monitor_submission_optional(submission.detail);
+        submission.source = normalize_incident_monitor_submission_optional(submission.source);
+        submission.run_id = normalize_incident_monitor_submission_optional(submission.run_id);
+        submission.session_id = normalize_incident_monitor_submission_optional(submission.session_id);
         submission.correlation_id =
-            normalize_bug_monitor_submission_optional(submission.correlation_id);
-        submission.file_name = normalize_bug_monitor_submission_optional(submission.file_name);
-        submission.process = normalize_bug_monitor_submission_optional(submission.process);
-        submission.component = normalize_bug_monitor_submission_optional(submission.component);
-        submission.event = normalize_bug_monitor_submission_optional(submission.event);
-        submission.level = normalize_bug_monitor_submission_optional(submission.level);
-        submission.fingerprint = normalize_bug_monitor_submission_optional(submission.fingerprint);
-        submission.confidence = normalize_bug_monitor_submission_optional(submission.confidence);
-        submission.risk_level = normalize_bug_monitor_submission_optional(submission.risk_level);
-        crate::bug_monitor::safety_context::normalize_submission_safety_context(&mut submission);
+            normalize_incident_monitor_submission_optional(submission.correlation_id);
+        submission.file_name = normalize_incident_monitor_submission_optional(submission.file_name);
+        submission.process = normalize_incident_monitor_submission_optional(submission.process);
+        submission.component = normalize_incident_monitor_submission_optional(submission.component);
+        submission.event = normalize_incident_monitor_submission_optional(submission.event);
+        submission.level = normalize_incident_monitor_submission_optional(submission.level);
+        submission.fingerprint = normalize_incident_monitor_submission_optional(submission.fingerprint);
+        submission.confidence = normalize_incident_monitor_submission_optional(submission.confidence);
+        submission.risk_level = normalize_incident_monitor_submission_optional(submission.risk_level);
+        crate::incident_monitor::safety_context::normalize_submission_safety_context(&mut submission);
         submission.expected_destination =
-            normalize_bug_monitor_submission_optional(submission.expected_destination);
-        submission.route_tags = normalize_bug_monitor_submission_vec(submission.route_tags, 50);
+            normalize_incident_monitor_submission_optional(submission.expected_destination);
+        submission.route_tags = normalize_incident_monitor_submission_vec(submission.route_tags, 50);
         submission.allowed_destination_ids =
-            normalize_bug_monitor_submission_vec(submission.allowed_destination_ids, 50);
+            normalize_incident_monitor_submission_vec(submission.allowed_destination_ids, 50);
         submission.default_destination_ids =
-            normalize_bug_monitor_submission_vec(submission.default_destination_ids, 50);
+            normalize_incident_monitor_submission_vec(submission.default_destination_ids, 50);
         submission.excerpt = submission
             .excerpt
             .into_iter()
@@ -71,21 +71,21 @@ impl AppState {
             submission.expected_destination = Some("incident_monitor_issue_draft".to_string());
         }
 
-        let config = self.bug_monitor_config().await;
+        let config = self.incident_monitor_config().await;
         let repo = submission
             .repo
             .clone()
             .or(config.repo.clone())
-            .ok_or_else(|| anyhow::anyhow!("Bug Monitor repo is not configured"))?;
+            .ok_or_else(|| anyhow::anyhow!("Incident Monitor repo is not configured"))?;
         if !is_valid_owner_repo_slug(&repo) {
-            anyhow::bail!("Bug Monitor repo must be in owner/repo format");
+            anyhow::bail!("Incident Monitor repo must be in owner/repo format");
         }
 
-        let title = bug_monitor_submission_title(&submission);
-        let detail = bug_monitor_submission_detail(&submission);
+        let title = incident_monitor_submission_title(&submission);
+        let detail = incident_monitor_submission_detail(&submission);
 
         let fingerprint = submission.fingerprint.clone().unwrap_or_else(|| {
-            bug_monitor_submission_fingerprint(&[
+            incident_monitor_submission_fingerprint(&[
                 repo.as_str(),
                 title.as_str(),
                 detail.as_deref().unwrap_or(""),
@@ -97,10 +97,10 @@ impl AppState {
         });
         submission.fingerprint = Some(fingerprint.clone());
         let quality_gate =
-            crate::bug_monitor::service::evaluate_bug_monitor_submission_quality(&submission);
+            crate::incident_monitor::service::evaluate_incident_monitor_submission_quality(&submission);
         if !quality_gate.passed {
             anyhow::bail!(
-                "Bug Monitor signal quality gate blocked draft creation: {}",
+                "Incident Monitor signal quality gate blocked draft creation: {}",
                 quality_gate
                     .blocked_reason
                     .clone()
@@ -108,18 +108,18 @@ impl AppState {
             );
         }
 
-        let mut drafts = self.bug_monitor_drafts.write().await;
+        let mut drafts = self.incident_monitor_drafts.write().await;
         if let Some(existing_id) = drafts
             .values()
             .find(|row| {
                 row.repo == repo
                     && row.fingerprint == fingerprint
-                    && crate::bug_monitor::source_identity_matches_draft(row, &submission)
+                    && crate::incident_monitor::source_identity_matches_draft(row, &submission)
             })
             .map(|row| row.draft_id.clone())
         {
             let Some(existing) = drafts.get_mut(&existing_id) else {
-                anyhow::bail!("Bug Monitor draft index changed while deduping");
+                anyhow::bail!("Incident Monitor draft index changed while deduping");
             };
             let mut changed = false;
             if existing.confidence.is_none() && submission.confidence.is_some() {
@@ -175,7 +175,7 @@ impl AppState {
                 existing.retention_profile = submission.retention_profile.clone();
                 changed = true;
             }
-            changed |= merge_bug_monitor_missing_submission_values(
+            changed |= merge_incident_monitor_missing_submission_values(
                 &mut existing.route_tags,
                 &submission.route_tags,
             );
@@ -202,26 +202,26 @@ impl AppState {
             let existing = existing.clone();
             drop(drafts);
             if changed {
-                self.persist_bug_monitor_drafts().await?;
+                self.persist_incident_monitor_drafts().await?;
             }
             return Ok(existing);
         }
 
-        let high_risk = crate::bug_monitor::router::is_high_risk(submission.risk_level.as_deref());
+        let high_risk = crate::incident_monitor::router::is_high_risk(submission.risk_level.as_deref());
         let approval_required = match submission
             .source_approval_policy
             .as_ref()
-            .unwrap_or(&BugMonitorApprovalPolicy::Inherit)
+            .unwrap_or(&IncidentMonitorApprovalPolicy::Inherit)
         {
-            BugMonitorApprovalPolicy::Always => true,
-            BugMonitorApprovalPolicy::HighRisk => high_risk,
-            BugMonitorApprovalPolicy::Never => false,
-            BugMonitorApprovalPolicy::Inherit => {
+            IncidentMonitorApprovalPolicy::Always => true,
+            IncidentMonitorApprovalPolicy::HighRisk => high_risk,
+            IncidentMonitorApprovalPolicy::Never => false,
+            IncidentMonitorApprovalPolicy::Inherit => {
                 config.require_approval_for_new_issues
                     || (config.safety_defaults.require_approval_for_high_risk && high_risk)
             }
         };
-        let draft = BugMonitorDraftRecord {
+        let draft = IncidentMonitorDraftRecord {
             draft_id: format!("failure-draft-{}", uuid::Uuid::new_v4().simple()),
             fingerprint,
             repo,
@@ -260,31 +260,31 @@ impl AppState {
             retention_profile: submission.retention_profile.clone(),
             evidence_refs: submission.evidence_refs.clone(),
             quality_gate: Some(quality_gate),
-            ..crate::bug_monitor::safety_context::draft_defaults_from_submission(&submission)
+            ..crate::incident_monitor::safety_context::draft_defaults_from_submission(&submission)
         };
         drafts.insert(draft.draft_id.clone(), draft.clone());
         drop(drafts);
-        self.persist_bug_monitor_drafts().await?;
+        self.persist_incident_monitor_drafts().await?;
         Ok(draft)
     }
 
-    pub async fn update_bug_monitor_draft_status(
+    pub async fn update_incident_monitor_draft_status(
         &self,
         draft_id: &str,
         next_status: &str,
         reason: Option<&str>,
-    ) -> anyhow::Result<BugMonitorDraftRecord> {
+    ) -> anyhow::Result<IncidentMonitorDraftRecord> {
         let normalized_status = next_status.trim().to_ascii_lowercase();
         if normalized_status != "draft_ready" && normalized_status != "denied" {
-            anyhow::bail!("unsupported Bug Monitor draft status");
+            anyhow::bail!("unsupported Incident Monitor draft status");
         }
 
-        let mut drafts = self.bug_monitor_drafts.write().await;
+        let mut drafts = self.incident_monitor_drafts.write().await;
         let Some(draft) = drafts.get_mut(draft_id) else {
-            anyhow::bail!("Bug Monitor draft not found");
+            anyhow::bail!("Incident Monitor draft not found");
         };
         if !draft.status.eq_ignore_ascii_case("approval_required") {
-            anyhow::bail!("Bug Monitor draft is not waiting for approval");
+            anyhow::bail!("Incident Monitor draft is not waiting for approval");
         }
         draft.status = normalized_status.clone();
         if normalized_status == "draft_ready" {
@@ -303,12 +303,12 @@ impl AppState {
         }
         let updated = draft.clone();
         drop(drafts);
-        self.persist_bug_monitor_drafts().await?;
+        self.persist_incident_monitor_drafts().await?;
 
         let event_name = if normalized_status == "draft_ready" {
-            "bug_monitor.draft.approved"
+            "incident_monitor.draft.approved"
         } else {
-            "bug_monitor.draft.denied"
+            "incident_monitor.draft.denied"
         };
         self.event_bus.publish(EngineEvent::new(
             event_name,
@@ -322,17 +322,17 @@ impl AppState {
         Ok(updated)
     }
 
-    pub async fn bug_monitor_status_snapshot(&self) -> BugMonitorStatus {
+    pub async fn incident_monitor_status_snapshot(&self) -> IncidentMonitorStatus {
         let required_capabilities = vec![
             "github.list_issues".to_string(),
             "github.get_issue".to_string(),
             "github.create_issue".to_string(),
             "github.comment_on_issue".to_string(),
         ];
-        let config = self.bug_monitor_config().await;
-        let drafts = self.bug_monitor_drafts.read().await;
-        let incidents = self.bug_monitor_incidents.read().await;
-        let posts = self.bug_monitor_posts.read().await;
+        let config = self.incident_monitor_config().await;
+        let drafts = self.incident_monitor_drafts.read().await;
+        let incidents = self.incident_monitor_incidents.read().await;
+        let posts = self.incident_monitor_posts.read().await;
         let total_incidents = incidents.len();
         let pending_incidents = incidents
             .values()
@@ -364,20 +364,20 @@ impl AppState {
         drop(drafts);
         drop(incidents);
         drop(posts);
-        let mut runtime = self.bug_monitor_runtime_status.read().await.clone();
+        let mut runtime = self.incident_monitor_runtime_status.read().await.clone();
         runtime.paused = config.paused;
         runtime.total_incidents = total_incidents;
         runtime.pending_incidents = pending_incidents;
         runtime.pending_posts = pending_posts;
 
-        let mut status = BugMonitorStatus {
+        let mut status = IncidentMonitorStatus {
             config: config.clone(),
             runtime,
-            log_watcher: self.bug_monitor_log_watcher_status.read().await.clone(),
+            log_watcher: self.incident_monitor_log_watcher_status.read().await.clone(),
             pending_drafts,
             pending_posts,
             last_activity_at_ms,
-            ..BugMonitorStatus::default()
+            ..IncidentMonitorStatus::default()
         };
         let repo_valid = config
             .repo
@@ -430,28 +430,28 @@ impl AppState {
             .map(|row| row.provider.to_ascii_lowercase())
             .collect::<std::collections::HashSet<_>>();
         let provider_preference = match config.provider_preference {
-            BugMonitorProviderPreference::OfficialGithub => {
+            IncidentMonitorProviderPreference::OfficialGithub => {
                 vec![
                     "mcp".to_string(),
                     "composio".to_string(),
                     "arcade".to_string(),
                 ]
             }
-            BugMonitorProviderPreference::Composio => {
+            IncidentMonitorProviderPreference::Composio => {
                 vec![
                     "composio".to_string(),
                     "mcp".to_string(),
                     "arcade".to_string(),
                 ]
             }
-            BugMonitorProviderPreference::Arcade => {
+            IncidentMonitorProviderPreference::Arcade => {
                 vec![
                     "arcade".to_string(),
                     "mcp".to_string(),
                     "composio".to_string(),
                 ]
             }
-            BugMonitorProviderPreference::Auto => {
+            IncidentMonitorProviderPreference::Auto => {
                 vec![
                     "mcp".to_string(),
                     "composio".to_string(),
@@ -463,7 +463,7 @@ impl AppState {
             .capability_resolver
             .resolve(
                 crate::capability_resolver::CapabilityResolveInput {
-                    workflow_id: Some("bug_monitor".to_string()),
+                    workflow_id: Some("incident_monitor".to_string()),
                     required_capabilities: required_capabilities.clone(),
                     optional_capabilities: Vec::new(),
                     provider_preference,
@@ -504,7 +504,7 @@ impl AppState {
                             })
                         })
                         .unwrap_or(false);
-                    BugMonitorBindingCandidate {
+                    IncidentMonitorBindingCandidate {
                         capability_id: binding.capability_id.clone(),
                         binding_tool_name: binding.tool_name.clone(),
                         aliases: binding.tool_name_aliases.clone(),
@@ -534,7 +534,7 @@ impl AppState {
             status.resolved_capabilities = resolution
                 .resolved
                 .iter()
-                .map(|row| BugMonitorCapabilityMatch {
+                .map(|row| IncidentMonitorCapabilityMatch {
                     capability_id: row.capability_id.clone(),
                     provider: row.provider.clone(),
                     tool_name: row.tool_name.clone(),
@@ -544,14 +544,14 @@ impl AppState {
         } else {
             status.missing_required_capabilities = required_capabilities.clone();
         }
-        status.required_capabilities = BugMonitorCapabilityReadiness {
+        status.required_capabilities = IncidentMonitorCapabilityReadiness {
             github_list_issues: capability_ready("github.list_issues"),
             github_get_issue: capability_ready("github.get_issue"),
             github_create_issue: capability_ready("github.create_issue"),
             github_comment_on_issue: capability_ready("github.comment_on_issue"),
         };
         status.selected_model = selected_model;
-        status.readiness = BugMonitorReadiness {
+        status.readiness = IncidentMonitorReadiness {
             config_valid: repo_valid
                 && selected_server.is_some()
                 && status.required_capabilities.github_list_issues
@@ -609,14 +609,14 @@ impl AppState {
         };
         status.destinations = config.effective_destinations();
         status.destination_readiness =
-            bug_monitor_destination_readiness(&config, &status, &servers);
+            incident_monitor_destination_readiness(&config, &status, &servers);
         status.readiness.destination_ready = status
             .destination_readiness
             .iter()
             .any(|destination| destination.publish_ready);
         if config.enabled {
             if config.paused {
-                status.last_error = Some("Bug monitor monitoring is paused.".to_string());
+                status.last_error = Some("Incident monitor monitoring is paused.".to_string());
             } else if !repo_valid {
                 status.last_error = Some("Target repo is missing or invalid.".to_string());
             } else if selected_server.is_none() {
@@ -625,7 +625,7 @@ impl AppState {
                 status.last_error = Some("Selected MCP server is disconnected.".to_string());
             } else if !selected_model_ready {
                 status.last_error = Some(
-                    "Selected provider/model is unavailable. Bug monitor is fail-closed."
+                    "Selected provider/model is unavailable. Incident monitor is fail-closed."
                         .to_string(),
                 );
             } else if !status.readiness.github_read_ready || !status.readiness.github_write_ready {
@@ -643,24 +643,24 @@ impl AppState {
         status
     }
 
-    pub async fn bug_monitor_status(&self) -> BugMonitorStatus {
+    pub async fn incident_monitor_status(&self) -> IncidentMonitorStatus {
         if let Ok(recovered) =
-            crate::bug_monitor::service::recover_overdue_bug_monitor_triage_runs(self).await
+            crate::incident_monitor::service::recover_overdue_incident_monitor_triage_runs(self).await
         {
             for (draft_id, incident_id) in recovered {
-                let _ = crate::bug_monitor::router::publish_draft(
+                let _ = crate::incident_monitor::router::publish_draft(
                     self,
-                    crate::bug_monitor::router::BugMonitorPublishRequest {
+                    crate::incident_monitor::router::IncidentMonitorPublishRequest {
                         draft_id,
                         incident_id,
-                        mode: crate::bug_monitor_github::PublishMode::Recovery,
+                        mode: crate::incident_monitor_github::PublishMode::Recovery,
                         destination_ids: Vec::new(),
                     },
                 )
                 .await;
             }
         }
-        self.bug_monitor_status_snapshot().await
+        self.incident_monitor_status_snapshot().await
     }
 
     pub async fn load_workflow_runs(&self) -> anyhow::Result<()> {

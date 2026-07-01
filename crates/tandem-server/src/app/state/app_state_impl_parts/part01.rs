@@ -1,12 +1,12 @@
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
-struct BugMonitorLogWatcherStateFile {
+struct IncidentMonitorLogWatcherStateFile {
     #[serde(default)]
     schema_version: u32,
     #[serde(default)]
-    sources: std::collections::HashMap<String, BugMonitorLogSourceState>,
+    sources: std::collections::HashMap<String, IncidentMonitorLogSourceState>,
 }
 
-fn bug_monitor_log_source_state_key(project_id: &str, source_id: &str) -> String {
+fn incident_monitor_log_source_state_key(project_id: &str, source_id: &str) -> String {
     format!("{}/{}", project_id.trim(), source_id.trim())
 }
 
@@ -96,9 +96,9 @@ async fn write_state_file_atomically(path: &PathBuf, payload: String) -> anyhow:
     Ok(())
 }
 
-async fn validate_bug_monitor_monitored_projects(
+async fn validate_incident_monitor_monitored_projects(
     state: &AppState,
-    config: &mut BugMonitorConfig,
+    config: &mut IncidentMonitorConfig,
 ) -> anyhow::Result<()> {
     let needs_mcp_validation = config.monitored_projects.iter().any(|project| {
         project
@@ -127,7 +127,7 @@ async fn validate_bug_monitor_monitored_projects(
             .as_ref()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
-        normalize_bug_monitor_source_binding_values(project);
+        normalize_incident_monitor_source_binding_values(project);
 
         if !is_slug_like(&project.project_id) {
             anyhow::bail!("monitored project id must be ASCII slug-like");
@@ -171,7 +171,7 @@ async fn validate_bug_monitor_monitored_projects(
             crate::http::routines_automations::validate_model_policy(model_policy)
                 .map_err(anyhow::Error::msg)?;
         }
-        validate_bug_monitor_source_binding_destinations(project, &configured_destination_ids)?;
+        validate_incident_monitor_source_binding_destinations(project, &configured_destination_ids)?;
 
         let mut source_ids = std::collections::HashSet::new();
         for source in &mut project.log_sources {
@@ -197,14 +197,14 @@ async fn validate_bug_monitor_monitored_projects(
                     project.project_id
                 );
             }
-            let path_project = BugMonitorMonitoredProject {
+            let path_project = IncidentMonitorMonitoredProject {
                 project_id: project.project_id.clone(),
                 name: project.name.clone(),
                 repo: project.repo.clone(),
                 workspace_root: project.workspace_root.clone(),
-                ..BugMonitorMonitoredProject::default()
+                ..IncidentMonitorMonitoredProject::default()
             };
-            crate::bug_monitor::log_watcher::resolve_log_source_path(&path_project, source)?;
+            crate::incident_monitor::log_watcher::resolve_log_source_path(&path_project, source)?;
             source.watch_interval_seconds = source.watch_interval_seconds.clamp(1, 86_400);
             source.max_bytes_per_poll = source.max_bytes_per_poll.clamp(1_024, 10 * 1024 * 1024);
             source.max_candidates_per_poll = source.max_candidates_per_poll.clamp(1, 200);
@@ -285,27 +285,27 @@ impl AppState {
             context_packs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             optimization_campaigns: Arc::new(RwLock::new(std::collections::HashMap::new())),
             optimization_experiments: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            bug_monitor_config: Arc::new(
-                RwLock::new(config::env::resolve_bug_monitor_env_config()),
+            incident_monitor_config: Arc::new(
+                RwLock::new(config::env::resolve_incident_monitor_env_config()),
             ),
-            bug_monitor_drafts: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            bug_monitor_incidents: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            bug_monitor_posts: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            bug_monitor_log_watcher_state_path:
-                config::paths::resolve_bug_monitor_log_watcher_state_path(),
-            bug_monitor_log_source_states: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            bug_monitor_log_watcher_status: Arc::new(RwLock::new(
-                BugMonitorLogWatcherStatus::default(),
+            incident_monitor_drafts: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            incident_monitor_incidents: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            incident_monitor_posts: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            incident_monitor_log_watcher_state_path:
+                config::paths::resolve_incident_monitor_log_watcher_state_path(),
+            incident_monitor_log_source_states: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            incident_monitor_log_watcher_status: Arc::new(RwLock::new(
+                IncidentMonitorLogWatcherStatus::default(),
             )),
-            bug_monitor_log_evidence_dir: config::paths::resolve_bug_monitor_log_evidence_dir(),
-            bug_monitor_intake_keys: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            bug_monitor_intake_keys_path: config::paths::resolve_bug_monitor_intake_keys_path(),
+            incident_monitor_log_evidence_dir: config::paths::resolve_incident_monitor_log_evidence_dir(),
+            incident_monitor_intake_keys: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            incident_monitor_intake_keys_path: config::paths::resolve_incident_monitor_intake_keys_path(),
             external_actions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             policy_decisions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             goal_capability_learning_store: Arc::new(
                 crate::goal_capability_learning::GoalCapabilityLearningDecisionStore::new(),
             ),
-            bug_monitor_runtime_status: Arc::new(RwLock::new(BugMonitorRuntimeStatus::default())),
+            incident_monitor_runtime_status: Arc::new(RwLock::new(IncidentMonitorRuntimeStatus::default())),
             oauth: crate::app::state::OAuthState::new(),
             workflows: Arc::new(RwLock::new(WorkflowRegistry::default())),
             workflow_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -337,10 +337,10 @@ impl AppState {
             runtime_events_path: config::paths::resolve_runtime_events_path(),
             optimization_campaigns_path: config::paths::resolve_optimization_campaigns_path(),
             optimization_experiments_path: config::paths::resolve_optimization_experiments_path(),
-            bug_monitor_config_path: config::paths::resolve_bug_monitor_config_path(),
-            bug_monitor_drafts_path: config::paths::resolve_bug_monitor_drafts_path(),
-            bug_monitor_incidents_path: config::paths::resolve_bug_monitor_incidents_path(),
-            bug_monitor_posts_path: config::paths::resolve_bug_monitor_posts_path(),
+            incident_monitor_config_path: config::paths::resolve_incident_monitor_config_path(),
+            incident_monitor_drafts_path: config::paths::resolve_incident_monitor_drafts_path(),
+            incident_monitor_incidents_path: config::paths::resolve_incident_monitor_incidents_path(),
+            incident_monitor_posts_path: config::paths::resolve_incident_monitor_posts_path(),
             external_actions_path: config::paths::resolve_external_actions_path(),
             policy_decisions_path: config::paths::resolve_policy_decisions_path(),
             workflow_runs_path: config::paths::resolve_workflow_runs_path(),
@@ -544,12 +544,12 @@ impl AppState {
         let _ = self.load_idempotency_keys().await;
         let _ = self.load_optimization_campaigns().await;
         let _ = self.load_optimization_experiments().await;
-        let _ = self.load_bug_monitor_config().await;
-        let _ = self.load_bug_monitor_drafts().await;
-        let _ = self.load_bug_monitor_incidents().await;
-        let _ = self.load_bug_monitor_posts().await;
-        let _ = self.load_bug_monitor_log_watcher_state().await;
-        let _ = self.load_bug_monitor_intake_keys().await;
+        let _ = self.load_incident_monitor_config().await;
+        let _ = self.load_incident_monitor_drafts().await;
+        let _ = self.load_incident_monitor_incidents().await;
+        let _ = self.load_incident_monitor_posts().await;
+        let _ = self.load_incident_monitor_log_watcher_state().await;
+        let _ = self.load_incident_monitor_intake_keys().await;
         let _ = self.load_external_actions().await;
         let _ = self.load_policy_decisions().await;
         let _ = self.load_workflow_planner_sessions().await;

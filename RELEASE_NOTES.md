@@ -102,23 +102,20 @@ can edit source, destination, route, default destination, and safety-default
 configuration in one place, run route previews before publishing, inspect
 destination readiness badges, filter post receipts by destination, and use
 TypeScript/Python SDK helpers for destination and route CRUD plus
-destination-targeted draft publishing. The legacy GitHub setup remains compatible
-when no explicit router destination is configured.
+destination-targeted draft publishing.
 The server now exposes the same monitor APIs through canonical
-`/incident-monitor/*` and `/config/incident-monitor` routes, and the stale
-`/incident-monitor/*` aliases have been removed.
+`/incident-monitor/*` and `/config/incident-monitor` routes, and the pre-rename
+aliases have been removed.
 Shared Incident Monitor contracts now use the `tandem-incident-monitor` crate
 identity and canonical `incident_monitor`/`incident-monitor` wire names for
 runtime events, evidence refs, persisted data paths, GitHub host methods, and
-the eval fixture CLI. Legacy Rust aliases remain in place so the larger
-server, SDK, and UI migration can land in focused follow-up PRs.
+the eval fixture CLI.
 TypeScript and Python SDKs now use Incident Monitor as the canonical developer
 surface: `client.incidentMonitor`, `client.incident_monitor`,
 `IncidentMonitor*` types, `/incident-monitor/*` endpoints, and
 `incident_monitor` config payloads. Scoped intake keys created through the
 server now default to `incident_monitor:report`, `tim_intake_` key material,
-and the `x-tandem-incident-monitor-intake-key` header while retaining a narrow
-fallback for existing scoped reporters.
+and the `x-tandem-incident-monitor-intake-key` header.
 Incident Monitor security readiness now records redacted protected audit events
 for destination/route config changes, scoped intake-key lifecycle changes, and
 destination-router publish attempts, completions, approval-required outcomes,
@@ -158,10 +155,13 @@ customer-owned systems of record after approval. TypeScript and Python SDKs
 include helpers for the report endpoint.
 Control Panel, desktop settings, create-panel templates, docs, examples,
 scripts, and CI workflow labels now use Incident Monitor routes, filenames,
-labels, and examples while retaining narrow legacy compatibility redirects.
+labels, and examples, with pre-rename redirects removed.
 CI now also runs an Incident Monitor terminology guard over public UI, SDK,
 docs, examples, scripts, and release surfaces so stale public terminology is
 reported with file and line details.
+The Incident Monitor rename also stays under the CI touched-file-size guard by
+compacting UI rename formatting and moving server service tests into a dedicated
+module.
 The SDK destination removal helpers now also drop routes that would otherwise
 be left with no explicit destinations, preventing accidental fallback to the
 default destination set.

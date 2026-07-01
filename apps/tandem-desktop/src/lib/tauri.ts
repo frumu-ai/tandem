@@ -1442,14 +1442,13 @@ export interface CoderMemoryCandidateRecord {
 
 export async function getIncidentMonitorConfig(): Promise<{
   incident_monitor?: IncidentMonitorConfig;
-  bug_monitor?: IncidentMonitorConfig;
 }> {
   return invoke("incident_monitor_get_config");
 }
 
 export async function patchIncidentMonitorConfig(
   config: Record<string, unknown>
-): Promise<{ incident_monitor?: IncidentMonitorConfig; bug_monitor?: IncidentMonitorConfig }> {
+): Promise<{ incident_monitor?: IncidentMonitorConfig }> {
   return invoke("incident_monitor_patch_config", { config });
 }
 

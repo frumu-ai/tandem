@@ -1,4 +1,4 @@
-use crate::{BugMonitorConfig, BugMonitorLabelMode, BugMonitorProviderPreference};
+use crate::{IncidentMonitorConfig, IncidentMonitorLabelMode, IncidentMonitorProviderPreference};
 use serde_json::json;
 use tandem_types::RuntimeAuthMode;
 
@@ -105,7 +105,7 @@ pub(crate) fn resolve_automation_execute_node_timeout_ms() -> u64 {
         .clamp(180_000, 3_600_000)
 }
 
-pub(crate) fn resolve_bug_monitor_env_config() -> BugMonitorConfig {
+pub(crate) fn resolve_incident_monitor_env_config() -> IncidentMonitorConfig {
     fn env_value(new_name: &str, legacy_name: &str) -> Option<String> {
         std::env::var(new_name)
             .ok()
@@ -129,7 +129,7 @@ pub(crate) fn resolve_bug_monitor_env_config() -> BugMonitorConfig {
     }
 
     let provider_preference = match env_value(
-        "TANDEM_BUG_MONITOR_PROVIDER_PREFERENCE",
+        "TANDEM_INCIDENT_MONITOR_PROVIDER_PREFERENCE",
         "TANDEM_FAILURE_REPORTER_PROVIDER_PREFERENCE",
     )
     .unwrap_or_default()
@@ -138,18 +138,18 @@ pub(crate) fn resolve_bug_monitor_env_config() -> BugMonitorConfig {
     .as_str()
     {
         "official_github" | "official-github" | "github" => {
-            BugMonitorProviderPreference::OfficialGithub
+            IncidentMonitorProviderPreference::OfficialGithub
         }
-        "composio" => BugMonitorProviderPreference::Composio,
-        "arcade" => BugMonitorProviderPreference::Arcade,
-        _ => BugMonitorProviderPreference::Auto,
+        "composio" => IncidentMonitorProviderPreference::Composio,
+        "arcade" => IncidentMonitorProviderPreference::Arcade,
+        _ => IncidentMonitorProviderPreference::Auto,
     };
     let provider_id = env_value(
-        "TANDEM_BUG_MONITOR_PROVIDER_ID",
+        "TANDEM_INCIDENT_MONITOR_PROVIDER_ID",
         "TANDEM_FAILURE_REPORTER_PROVIDER_ID",
     );
     let model_id = env_value(
-        "TANDEM_BUG_MONITOR_MODEL_ID",
+        "TANDEM_INCIDENT_MONITOR_MODEL_ID",
         "TANDEM_FAILURE_REPORTER_MODEL_ID",
     );
     let model_policy = match (provider_id, model_id) {
@@ -161,46 +161,49 @@ pub(crate) fn resolve_bug_monitor_env_config() -> BugMonitorConfig {
         })),
         _ => None,
     };
-    BugMonitorConfig {
+    IncidentMonitorConfig {
         enabled: env_bool(
-            "TANDEM_BUG_MONITOR_ENABLED",
+            "TANDEM_INCIDENT_MONITOR_ENABLED",
             "TANDEM_FAILURE_REPORTER_ENABLED",
             false,
         ),
         paused: env_bool(
-            "TANDEM_BUG_MONITOR_PAUSED",
+            "TANDEM_INCIDENT_MONITOR_PAUSED",
             "TANDEM_FAILURE_REPORTER_PAUSED",
             false,
         ),
         workspace_root: env_value(
-            "TANDEM_BUG_MONITOR_WORKSPACE_ROOT",
+            "TANDEM_INCIDENT_MONITOR_WORKSPACE_ROOT",
             "TANDEM_FAILURE_REPORTER_WORKSPACE_ROOT",
         ),
-        repo: env_value("TANDEM_BUG_MONITOR_REPO", "TANDEM_FAILURE_REPORTER_REPO"),
+        repo: env_value(
+            "TANDEM_INCIDENT_MONITOR_REPO",
+            "TANDEM_FAILURE_REPORTER_REPO",
+        ),
         mcp_server: env_value(
-            "TANDEM_BUG_MONITOR_MCP_SERVER",
+            "TANDEM_INCIDENT_MONITOR_MCP_SERVER",
             "TANDEM_FAILURE_REPORTER_MCP_SERVER",
         ),
         provider_preference,
         model_policy,
         auto_create_new_issues: env_bool(
-            "TANDEM_BUG_MONITOR_AUTO_CREATE_NEW_ISSUES",
+            "TANDEM_INCIDENT_MONITOR_AUTO_CREATE_NEW_ISSUES",
             "TANDEM_FAILURE_REPORTER_AUTO_CREATE_NEW_ISSUES",
             true,
         ),
         require_approval_for_new_issues: env_bool(
-            "TANDEM_BUG_MONITOR_REQUIRE_APPROVAL_FOR_NEW_ISSUES",
+            "TANDEM_INCIDENT_MONITOR_REQUIRE_APPROVAL_FOR_NEW_ISSUES",
             "TANDEM_FAILURE_REPORTER_REQUIRE_APPROVAL_FOR_NEW_ISSUES",
             false,
         ),
         auto_comment_on_matched_open_issues: env_bool(
-            "TANDEM_BUG_MONITOR_AUTO_COMMENT_ON_MATCHED_OPEN_ISSUES",
+            "TANDEM_INCIDENT_MONITOR_AUTO_COMMENT_ON_MATCHED_OPEN_ISSUES",
             "TANDEM_FAILURE_REPORTER_AUTO_COMMENT_ON_MATCHED_OPEN_ISSUES",
             true,
         ),
-        label_mode: BugMonitorLabelMode::ReporterOnly,
+        label_mode: IncidentMonitorLabelMode::ReporterOnly,
         triage_timeout_ms: env_value(
-            "TANDEM_BUG_MONITOR_TRIAGE_TIMEOUT_MS",
+            "TANDEM_INCIDENT_MONITOR_TRIAGE_TIMEOUT_MS",
             "TANDEM_FAILURE_REPORTER_TRIAGE_TIMEOUT_MS",
         )
         .as_deref()

@@ -158,12 +158,8 @@ function classifyAutomationSource(row) {
   if (
     metadataSource === "incident_monitor" ||
     metadataSource === "incident_monitor_approval" ||
-    metadataSource === "bug_monitor" ||
-    metadataSource === "bug_monitor_approval" ||
     creatorId === "incident_monitor" ||
-    creatorId === "bug_monitor" ||
-    name.startsWith("incident monitor triage:") ||
-    name.startsWith("bug monitor triage:")
+    name.startsWith("incident monitor triage:")
   ) {
     return { key: "incident_monitor", label: "Incident Monitor" };
   }

@@ -59,10 +59,10 @@ use crate::app::rate_limit::ChannelRateLimiter;
 use crate::app::startup::{StartupSnapshot, StartupState, StartupStatus};
 use crate::automation_v2::governance::GovernanceState;
 use crate::automation_v2::types::*;
-use crate::bug_monitor::types::*;
 use crate::capability_resolver::CapabilityResolver;
 use crate::config::{self, channels::ChannelsConfigFile, webui::WebUiConfig};
 use crate::goal_capability_learning::GoalCapabilityLearningDecisionStore;
+use crate::incident_monitor::types::*;
 use crate::memory::types::{GovernedMemoryRecord, MemoryAuditEvent};
 use crate::pack_manager::PackManager;
 use crate::preset_registry::PresetRegistry;
@@ -206,23 +206,25 @@ pub struct AppState {
         Arc<RwLock<std::collections::HashMap<String, OptimizationCampaignRecord>>>,
     pub optimization_experiments:
         Arc<RwLock<std::collections::HashMap<String, OptimizationExperimentRecord>>>,
-    pub bug_monitor_config: Arc<RwLock<BugMonitorConfig>>,
-    pub bug_monitor_drafts: Arc<RwLock<std::collections::HashMap<String, BugMonitorDraftRecord>>>,
-    pub bug_monitor_incidents:
-        Arc<RwLock<std::collections::HashMap<String, BugMonitorIncidentRecord>>>,
-    pub bug_monitor_posts: Arc<RwLock<std::collections::HashMap<String, BugMonitorPostRecord>>>,
-    pub bug_monitor_log_watcher_state_path: PathBuf,
-    pub bug_monitor_log_source_states:
-        Arc<RwLock<std::collections::HashMap<String, BugMonitorLogSourceState>>>,
-    pub bug_monitor_log_watcher_status: Arc<RwLock<BugMonitorLogWatcherStatus>>,
-    pub bug_monitor_log_evidence_dir: PathBuf,
-    pub bug_monitor_intake_keys:
-        Arc<RwLock<std::collections::HashMap<String, BugMonitorProjectIntakeKey>>>,
-    pub bug_monitor_intake_keys_path: PathBuf,
+    pub incident_monitor_config: Arc<RwLock<IncidentMonitorConfig>>,
+    pub incident_monitor_drafts:
+        Arc<RwLock<std::collections::HashMap<String, IncidentMonitorDraftRecord>>>,
+    pub incident_monitor_incidents:
+        Arc<RwLock<std::collections::HashMap<String, IncidentMonitorIncidentRecord>>>,
+    pub incident_monitor_posts:
+        Arc<RwLock<std::collections::HashMap<String, IncidentMonitorPostRecord>>>,
+    pub incident_monitor_log_watcher_state_path: PathBuf,
+    pub incident_monitor_log_source_states:
+        Arc<RwLock<std::collections::HashMap<String, IncidentMonitorLogSourceState>>>,
+    pub incident_monitor_log_watcher_status: Arc<RwLock<IncidentMonitorLogWatcherStatus>>,
+    pub incident_monitor_log_evidence_dir: PathBuf,
+    pub incident_monitor_intake_keys:
+        Arc<RwLock<std::collections::HashMap<String, IncidentMonitorProjectIntakeKey>>>,
+    pub incident_monitor_intake_keys_path: PathBuf,
     pub external_actions: Arc<RwLock<std::collections::HashMap<String, ExternalActionRecord>>>,
     pub policy_decisions: Arc<RwLock<std::collections::HashMap<String, PolicyDecisionRecord>>>,
     pub goal_capability_learning_store: Arc<GoalCapabilityLearningDecisionStore>,
-    pub bug_monitor_runtime_status: Arc<RwLock<BugMonitorRuntimeStatus>>,
+    pub incident_monitor_runtime_status: Arc<RwLock<IncidentMonitorRuntimeStatus>>,
     pub(crate) oauth: OAuthState,
     pub workflows: Arc<RwLock<WorkflowRegistry>>,
     pub workflow_runs: Arc<RwLock<std::collections::HashMap<String, WorkflowRunRecord>>>,
@@ -251,10 +253,10 @@ pub struct AppState {
     pub runtime_events_path: PathBuf,
     pub optimization_campaigns_path: PathBuf,
     pub optimization_experiments_path: PathBuf,
-    pub bug_monitor_config_path: PathBuf,
-    pub bug_monitor_drafts_path: PathBuf,
-    pub bug_monitor_incidents_path: PathBuf,
-    pub bug_monitor_posts_path: PathBuf,
+    pub incident_monitor_config_path: PathBuf,
+    pub incident_monitor_drafts_path: PathBuf,
+    pub incident_monitor_incidents_path: PathBuf,
+    pub incident_monitor_posts_path: PathBuf,
     pub external_actions_path: PathBuf,
     pub policy_decisions_path: PathBuf,
     pub workflow_runs_path: PathBuf,

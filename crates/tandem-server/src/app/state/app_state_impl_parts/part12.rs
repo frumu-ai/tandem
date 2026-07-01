@@ -1,13 +1,13 @@
-// Bug Monitor draft submission helpers split from part02.rs for the file-size
+// Incident Monitor draft submission helpers split from part02.rs for the file-size
 // gate (same module via include!).
 
-fn normalize_bug_monitor_submission_optional(value: Option<String>) -> Option<String> {
+fn normalize_incident_monitor_submission_optional(value: Option<String>) -> Option<String> {
     value
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
 }
 
-fn normalize_bug_monitor_submission_vec(values: Vec<String>, limit: usize) -> Vec<String> {
+fn normalize_incident_monitor_submission_vec(values: Vec<String>, limit: usize) -> Vec<String> {
     let mut out = Vec::new();
     for value in values {
         let value = value.trim().to_string();
@@ -22,7 +22,7 @@ fn normalize_bug_monitor_submission_vec(values: Vec<String>, limit: usize) -> Ve
     out
 }
 
-fn merge_bug_monitor_missing_submission_values(
+fn merge_incident_monitor_missing_submission_values(
     existing: &mut Vec<String>,
     incoming: &[String],
 ) -> bool {
@@ -37,13 +37,13 @@ fn merge_bug_monitor_missing_submission_values(
 }
 
 fn apply_draft_safety(
-    draft: &mut BugMonitorDraftRecord,
-    submission: &BugMonitorSubmission,
+    draft: &mut IncidentMonitorDraftRecord,
+    submission: &IncidentMonitorSubmission,
 ) -> bool {
-    crate::bug_monitor::safety_context::apply_submission_safety_context_to_draft(draft, submission)
+    crate::incident_monitor::safety_context::apply_submission_safety_context_to_draft(draft, submission)
 }
 
-fn bug_monitor_submission_fingerprint(parts: &[&str]) -> String {
+fn incident_monitor_submission_fingerprint(parts: &[&str]) -> String {
     use std::hash::{Hash, Hasher};
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -53,7 +53,7 @@ fn bug_monitor_submission_fingerprint(parts: &[&str]) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-fn bug_monitor_submission_title(submission: &BugMonitorSubmission) -> String {
+fn incident_monitor_submission_title(submission: &IncidentMonitorSubmission) -> String {
     submission.title.clone().unwrap_or_else(|| {
         if let Some(event) = submission.event.as_ref() {
             format!("Failure detected in {event}")
@@ -69,7 +69,7 @@ fn bug_monitor_submission_title(submission: &BugMonitorSubmission) -> String {
     })
 }
 
-fn bug_monitor_submission_detail(submission: &BugMonitorSubmission) -> Option<String> {
+fn incident_monitor_submission_detail(submission: &IncidentMonitorSubmission) -> Option<String> {
     let mut detail_lines = Vec::new();
     if let Some(source) = submission.source.as_ref() {
         detail_lines.push(format!("source: {source}"));

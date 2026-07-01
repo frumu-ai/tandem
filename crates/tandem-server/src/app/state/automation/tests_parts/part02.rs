@@ -1278,12 +1278,12 @@ fn exact_node_mcp_policy_does_not_offer_discovery_tool() {
 }
 
 #[test]
-fn bug_monitor_downstream_structured_json_nodes_reuse_upstream_source_evidence() {
+fn incident_monitor_downstream_structured_json_nodes_reuse_upstream_source_evidence() {
     let mut inspection = bare_node();
     inspection.node_id = "inspect_failure_report".to_string();
     inspection.metadata = Some(json!({
-        "bug_monitor": {
-            "artifact_type": "bug_monitor_inspection"
+        "incident_monitor": {
+            "artifact_type": "incident_monitor_inspection"
         }
     }));
 
@@ -1291,8 +1291,8 @@ fn bug_monitor_downstream_structured_json_nodes_reuse_upstream_source_evidence()
     research.node_id = "research_likely_root_cause".to_string();
     research.depends_on = vec!["inspect_failure_report".to_string()];
     research.metadata = Some(json!({
-        "bug_monitor": {
-            "artifact_type": "bug_monitor_research"
+        "incident_monitor": {
+            "artifact_type": "incident_monitor_research"
         }
     }));
 
@@ -1307,8 +1307,8 @@ fn bug_monitor_downstream_structured_json_nodes_reuse_upstream_source_evidence()
         summary_guidance: None,
     });
     validation.metadata = Some(json!({
-        "bug_monitor": {
-            "artifact_type": "bug_monitor_validation"
+        "incident_monitor": {
+            "artifact_type": "incident_monitor_validation"
         }
     }));
 

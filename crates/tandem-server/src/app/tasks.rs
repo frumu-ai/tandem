@@ -6,11 +6,11 @@ use tandem_types::{EngineEvent, MessagePartInput, SendMessageRequest, Session, T
 use crate::app::state::{
     derive_status_index_update, extract_persistable_tool_part, truncate_text, AppState,
 };
-use crate::bug_monitor::types::{BugMonitorConfig, BugMonitorIncidentRecord};
 use crate::http::context_runs::{
     append_context_run_event, ensure_session_context_run, session_run_status_to_context,
 };
 use crate::http::context_types::{ContextRunEventAppendInput, ContextRunStatus};
+use crate::incident_monitor::types::{IncidentMonitorConfig, IncidentMonitorIncidentRecord};
 use crate::routines::types::{RoutineHistoryEvent, RoutineRunStatus};
 use crate::runtime_event_log::{
     append_runtime_event_log_row, prune_runtime_event_log, RuntimeEventLogRow,
@@ -984,8 +984,8 @@ pub async fn run_agent_team_supervisor(state: AppState) {
     }
 }
 
-fn is_bug_monitor_candidate_event(event: &EngineEvent) -> bool {
-    if event.event_type.starts_with("bug_monitor.") {
+fn is_incident_monitor_candidate_event(event: &EngineEvent) -> bool {
+    if event.event_type.starts_with("incident_monitor.") {
         return false;
     }
     if is_automation_v2_context_mirror_failure(event) {
@@ -1033,7 +1033,7 @@ fn is_automation_v2_context_mirror_failure(event: &EngineEvent) -> bool {
     })
 }
 
-pub async fn run_bug_monitor(state: AppState) {
+pub async fn run_incident_monitor(state: AppState) {
     let mut wait_ms = 250u64;
     loop {
         let startup = state.startup_snapshot().await;
@@ -1045,16 +1045,17 @@ pub async fn run_bug_monitor(state: AppState) {
                 startup_status = ?startup.status,
                 startup_phase = %startup.phase,
                 attempt_id = %startup.attempt_id,
-                "bug monitor: exiting because startup failed before monitoring began"
+                "incident monitor: exiting because startup failed before monitoring began"
             );
             return;
         }
 
         state
-            .update_bug_monitor_runtime_status(|runtime| {
+            .update_incident_monitor_runtime_status(|runtime| {
                 runtime.monitoring_active = false;
-                runtime.last_runtime_error =
-                    Some("Waiting for runtime readiness before starting bug monitor".to_string());
+                runtime.last_runtime_error = Some(
+                    "Waiting for runtime readiness before starting incident monitor".to_string(),
+                );
             })
             .await;
 
@@ -1063,7 +1064,7 @@ pub async fn run_bug_monitor(state: AppState) {
     }
 
     state
-        .update_bug_monitor_runtime_status(|runtime| {
+        .update_incident_monitor_runtime_status(|runtime| {
             runtime.monitoring_active = false;
             runtime.last_runtime_error = None;
         })
@@ -1072,13 +1073,13 @@ pub async fn run_bug_monitor(state: AppState) {
     loop {
         match rx.recv().await {
             Ok(event) => {
-                if !is_bug_monitor_candidate_event(&event) {
+                if !is_incident_monitor_candidate_event(&event) {
                     continue;
                 }
-                let status = state.bug_monitor_status().await;
+                let status = state.incident_monitor_status().await;
                 if !status.config.enabled || status.config.paused || !status.readiness.repo_valid {
                     state
-                        .update_bug_monitor_runtime_status(|runtime| {
+                        .update_incident_monitor_runtime_status(|runtime| {
                             runtime.monitoring_active = status.config.enabled
                                 && !status.config.paused
                                 && status.readiness.repo_valid;
@@ -1088,12 +1089,16 @@ pub async fn run_bug_monitor(state: AppState) {
                         .await;
                     continue;
                 }
-                match crate::bug_monitor::service::process_event(&state, &event, &status.config)
-                    .await
+                match crate::incident_monitor::service::process_event(
+                    &state,
+                    &event,
+                    &status.config,
+                )
+                .await
                 {
                     Ok(incident) => {
                         state
-                            .update_bug_monitor_runtime_status(|runtime| {
+                            .update_incident_monitor_runtime_status(|runtime| {
                                 runtime.monitoring_active = true;
                                 runtime.paused = status.config.paused;
                                 runtime.last_processed_at_ms = Some(now_ms());
@@ -1106,7 +1111,7 @@ pub async fn run_bug_monitor(state: AppState) {
                     Err(error) => {
                         let detail = truncate_text(&error.to_string(), 500);
                         state
-                            .update_bug_monitor_runtime_status(|runtime| {
+                            .update_incident_monitor_runtime_status(|runtime| {
                                 runtime.monitoring_active = true;
                                 runtime.paused = status.config.paused;
                                 runtime.last_processed_at_ms = Some(now_ms());
@@ -1127,9 +1132,10 @@ pub async fn run_bug_monitor(state: AppState) {
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
                 state
-                    .update_bug_monitor_runtime_status(|runtime| {
-                        runtime.last_runtime_error =
-                            Some(format!("Bug monitor lagged and dropped {count} events."));
+                    .update_incident_monitor_runtime_status(|runtime| {
+                        runtime.last_runtime_error = Some(format!(
+                            "Incident monitor lagged and dropped {count} events."
+                        ));
                     })
                     .await;
             }
@@ -1137,26 +1143,26 @@ pub async fn run_bug_monitor(state: AppState) {
     }
 }
 
-pub(crate) async fn publish_bug_monitor_recovery_draft(
+pub(crate) async fn publish_incident_monitor_recovery_draft(
     state: &AppState,
     draft_id: String,
     incident_id: Option<String>,
-) -> anyhow::Result<crate::bug_monitor_github::PublishOutcome> {
-    crate::bug_monitor::router::publish_draft(
+) -> anyhow::Result<crate::incident_monitor_github::PublishOutcome> {
+    crate::incident_monitor::router::publish_draft(
         state,
-        crate::bug_monitor::router::BugMonitorPublishRequest {
+        crate::incident_monitor::router::IncidentMonitorPublishRequest {
             draft_id,
             incident_id,
-            mode: crate::bug_monitor_github::PublishMode::Recovery,
+            mode: crate::incident_monitor_github::PublishMode::Recovery,
             destination_ids: Vec::new(),
         },
     )
     .await
 }
 
-/// Periodic deadline sweep for Bug Monitor triage runs. Without this
-/// loop, `recover_overdue_bug_monitor_triage_runs` only fires when
-/// something polls `bug_monitor_status` (the status panel, the
+/// Periodic deadline sweep for Incident Monitor triage runs. Without this
+/// loop, `recover_overdue_incident_monitor_triage_runs` only fires when
+/// something polls `incident_monitor_status` (the status panel, the
 /// dashboard, an API caller). On a quiet engine — UI closed, no
 /// outside pollers — an overdue triage just sits there: issue #60
 /// ran 3.95 hours past its 30-minute deadline before anything noticed.
@@ -1164,42 +1170,43 @@ pub(crate) async fn publish_bug_monitor_recovery_draft(
 /// deadline regardless of UI state.
 ///
 /// Concurrency note: `try_mark_triage_timed_out` (called inside
-/// `recover_overdue_bug_monitor_triage_runs`) is an atomic CAS, so
-/// running this loop alongside an on-demand `bug_monitor_status` call
+/// `recover_overdue_incident_monitor_triage_runs`) is an atomic CAS, so
+/// running this loop alongside an on-demand `incident_monitor_status` call
 /// can't double-publish — only one caller wins the status flip per
 /// draft.
-pub async fn run_bug_monitor_recovery_sweep(state: AppState) {
-    if !wait_for_runtime_ready_or_exit(&state, "run_bug_monitor_recovery_sweep").await {
+pub async fn run_incident_monitor_recovery_sweep(state: AppState) {
+    if !wait_for_runtime_ready_or_exit(&state, "run_incident_monitor_recovery_sweep").await {
         return;
     }
     loop {
         tokio::time::sleep(Duration::from_secs(30)).await;
-        let status = state.bug_monitor_status_snapshot().await;
+        let status = state.incident_monitor_status_snapshot().await;
         if !status.config.enabled || status.config.paused {
             continue;
         }
-        let recovered = match crate::bug_monitor::service::recover_overdue_bug_monitor_triage_runs(
-            &state,
-        )
-        .await
-        {
-            Ok(rows) => rows,
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    "bug monitor recovery sweep: recover_overdue failed"
-                );
-                continue;
-            }
-        };
+        let recovered =
+            match crate::incident_monitor::service::recover_overdue_incident_monitor_triage_runs(
+                &state,
+            )
+            .await
+            {
+                Ok(rows) => rows,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "incident monitor recovery sweep: recover_overdue failed"
+                    );
+                    continue;
+                }
+            };
         for (draft_id, incident_id) in recovered {
             if let Err(error) =
-                publish_bug_monitor_recovery_draft(&state, draft_id.clone(), incident_id).await
+                publish_incident_monitor_recovery_draft(&state, draft_id.clone(), incident_id).await
             {
                 tracing::warn!(
                     draft_id = %draft_id,
                     error = %error,
-                    "bug monitor recovery sweep: publish_draft failed"
+                    "incident monitor recovery sweep: publish_draft failed"
                 );
             }
         }
@@ -1283,12 +1290,12 @@ pub async fn run_usage_aggregator(state: AppState) {
     }
 }
 
-async fn process_bug_monitor_event(
+async fn process_incident_monitor_event(
     state: &AppState,
     event: &EngineEvent,
-    config: &BugMonitorConfig,
-) -> anyhow::Result<BugMonitorIncidentRecord> {
-    crate::app::state::process_bug_monitor_event(state, event, config).await
+    config: &IncidentMonitorConfig,
+) -> anyhow::Result<IncidentMonitorIncidentRecord> {
+    crate::app::state::process_incident_monitor_event(state, event, config).await
 }
 
 pub async fn run_routine_scheduler(state: AppState) {
@@ -1733,11 +1740,11 @@ pub async fn run_optimization_scheduler(state: AppState) {
 }
 
 #[cfg(test)]
-mod bug_monitor_candidate_tests {
+mod incident_monitor_candidate_tests {
     use super::*;
 
     #[test]
-    fn bug_monitor_candidate_detection_includes_terminal_failures() {
+    fn incident_monitor_candidate_detection_includes_terminal_failures() {
         for event_type in [
             "context.task.failed",
             "context.task.blocked",
@@ -1752,7 +1759,7 @@ mod bug_monitor_candidate_tests {
             "coder.run.failed",
         ] {
             assert!(
-                is_bug_monitor_candidate_event(&EngineEvent::new(
+                is_incident_monitor_candidate_event(&EngineEvent::new(
                     event_type,
                     serde_json::json!({})
                 )),
@@ -1762,7 +1769,7 @@ mod bug_monitor_candidate_tests {
     }
 
     #[test]
-    fn bug_monitor_candidate_detection_ignores_progress_and_monitor_events() {
+    fn incident_monitor_candidate_detection_ignores_progress_and_monitor_events() {
         for event_type in [
             "context.task.started",
             "context.task.requeued",
@@ -1772,7 +1779,7 @@ mod bug_monitor_candidate_tests {
             "incident_monitor.incident.detected",
         ] {
             assert!(
-                !is_bug_monitor_candidate_event(&EngineEvent::new(
+                !is_incident_monitor_candidate_event(&EngineEvent::new(
                     event_type,
                     serde_json::json!({})
                 )),
@@ -1782,7 +1789,7 @@ mod bug_monitor_candidate_tests {
     }
 
     #[test]
-    fn bug_monitor_candidate_detection_ignores_automation_v2_context_mirror_failures() {
+    fn incident_monitor_candidate_detection_ignores_automation_v2_context_mirror_failures() {
         for event in [
             EngineEvent::new(
                 "context.task.failed",
@@ -1809,7 +1816,7 @@ mod bug_monitor_candidate_tests {
             ),
         ] {
             assert!(
-                !is_bug_monitor_candidate_event(&event),
+                !is_incident_monitor_candidate_event(&event),
                 "{} from automation v2 context mirror should be grouped under automation_v2.run.failed",
                 event.event_type
             );
@@ -1817,8 +1824,8 @@ mod bug_monitor_candidate_tests {
     }
 
     #[test]
-    fn bug_monitor_candidate_detection_keeps_standalone_context_failures() {
-        assert!(is_bug_monitor_candidate_event(&EngineEvent::new(
+    fn incident_monitor_candidate_detection_keeps_standalone_context_failures() {
+        assert!(is_incident_monitor_candidate_event(&EngineEvent::new(
             "context.task.failed",
             serde_json::json!({
                 "source": "context_run",

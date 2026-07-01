@@ -268,31 +268,31 @@ pub(crate) fn resolve_context_packs_path() -> PathBuf {
     default_state_dir().join("context_packs.json")
 }
 
-pub(crate) fn resolve_bug_monitor_config_path() -> PathBuf {
+pub(crate) fn resolve_incident_monitor_config_path() -> PathBuf {
     resolve_canonical_data_file_path("incident-monitor/config.json")
 }
 
-pub(crate) fn resolve_bug_monitor_drafts_path() -> PathBuf {
+pub(crate) fn resolve_incident_monitor_drafts_path() -> PathBuf {
     resolve_canonical_data_file_path("incident-monitor/drafts.json")
 }
 
-pub(crate) fn resolve_bug_monitor_incidents_path() -> PathBuf {
+pub(crate) fn resolve_incident_monitor_incidents_path() -> PathBuf {
     resolve_canonical_data_file_path("incident-monitor/incidents.json")
 }
 
-pub(crate) fn resolve_bug_monitor_posts_path() -> PathBuf {
+pub(crate) fn resolve_incident_monitor_posts_path() -> PathBuf {
     resolve_canonical_data_file_path("incident-monitor/posts.json")
 }
 
-pub(crate) fn resolve_bug_monitor_log_watcher_state_path() -> PathBuf {
+pub(crate) fn resolve_incident_monitor_log_watcher_state_path() -> PathBuf {
     resolve_canonical_data_file_path("incident-monitor/log-watcher-state.json")
 }
 
-pub(crate) fn resolve_bug_monitor_log_evidence_dir() -> PathBuf {
+pub(crate) fn resolve_incident_monitor_log_evidence_dir() -> PathBuf {
     resolve_canonical_data_file_path("incident-monitor/evidence")
 }
 
-pub(crate) fn resolve_bug_monitor_intake_keys_path() -> PathBuf {
+pub(crate) fn resolve_incident_monitor_intake_keys_path() -> PathBuf {
     resolve_canonical_data_file_path("incident-monitor/intake-keys.json")
 }
 
@@ -304,7 +304,7 @@ pub(crate) fn resolve_policy_decisions_path() -> PathBuf {
     resolve_canonical_data_file_path("governance/policy_decisions.json")
 }
 
-pub(crate) fn legacy_failure_reporter_path(file_name: &str) -> PathBuf {
+pub(crate) fn legacy_incident_monitor_path(file_name: &str) -> PathBuf {
     if let Ok(root) = std::env::var("TANDEM_STATE_DIR") {
         let trimmed = root.trim();
         if !trimmed.is_empty() {

@@ -166,10 +166,10 @@ pub async fn test_state() -> AppState {
     state.runtime_events_path = root.join("runtime").join("events.jsonl");
     state.optimization_campaigns_path = root.join("optimization_campaigns.json");
     state.optimization_experiments_path = root.join("optimization_experiments.json");
-    state.bug_monitor_config_path = root.join("bug_monitor_config.json");
-    state.bug_monitor_drafts_path = root.join("bug_monitor_drafts.json");
-    state.bug_monitor_incidents_path = root.join("bug_monitor_incidents.json");
-    state.bug_monitor_posts_path = root.join("bug_monitor_posts.json");
+    state.incident_monitor_config_path = root.join("incident_monitor_config.json");
+    state.incident_monitor_drafts_path = root.join("incident_monitor_drafts.json");
+    state.incident_monitor_incidents_path = root.join("incident_monitor_incidents.json");
+    state.incident_monitor_posts_path = root.join("incident_monitor_posts.json");
     state.external_actions_path = root.join("external_actions.json");
     state.policy_decisions_path = root.join("policy_decisions.json");
     state.workflow_runs_path = root.join("workflow_runs.json");

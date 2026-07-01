@@ -1,11 +1,11 @@
 use super::*;
 
 #[test]
-fn bug_monitor_structured_handoff_with_blocked_inner_status_completes_node() {
+fn incident_monitor_structured_handoff_with_blocked_inner_status_completes_node() {
     let node = AutomationFlowNode {
         knowledge: tandem_orchestrator::KnowledgeBinding::default(),
         node_id: "propose_fix_and_verification".to_string(),
-        agent_id: "bug_monitor_triage_agent".to_string(),
+        agent_id: "incident_monitor_triage_agent".to_string(),
         objective: "Propose a bounded fix and verification plan".to_string(),
         depends_on: Vec::new(),
         input_refs: Vec::new(),
@@ -25,7 +25,7 @@ fn bug_monitor_structured_handoff_with_blocked_inner_status_completes_node() {
                 session_text_recovery: Some("allow".to_string()),
             }),
             schema: None,
-            summary_guidance: Some("Return Bug Monitor fix proposal JSON.".to_string()),
+            summary_guidance: Some("Return Incident Monitor fix proposal JSON.".to_string()),
         }),
         tool_policy: None,
         mcp_policy: None,
@@ -35,19 +35,19 @@ fn bug_monitor_structured_handoff_with_blocked_inner_status_completes_node() {
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
         metadata: Some(json!({
-            "bug_monitor": {
-                "artifact_type": "bug_monitor_fix_proposal",
-                "context_artifact_path": "artifacts/bug_monitor.fix_proposal.json"
+            "incident_monitor": {
+                "artifact_type": "incident_monitor_fix_proposal",
+                "context_artifact_path": "artifacts/incident_monitor.fix_proposal.json"
             }
         })),
     };
     let session_text = serde_json::to_string(&json!([
         {
-            "artifact_kind": "bug_monitor_fix_proposal",
+            "artifact_kind": "incident_monitor_fix_proposal",
             "status": "blocked",
             "summary": "Tool evidence was limited, but the original workflow failure is preserved.",
             "acceptance_criteria": [
-                "A retry preserves the original workflow failure instead of recursively blocking Bug Monitor."
+                "A retry preserves the original workflow failure instead of recursively blocking Incident Monitor."
             ],
             "bounded_next_steps": [
                 "Inspect the workflow validation path if this recurs."

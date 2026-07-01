@@ -190,7 +190,7 @@ pub(super) fn build_router(state: AppState, route_extensions: &[super::RouteRegi
             "/stateful-runtime/runs/{run_id}/snapshots/{snapshot_id}",
             axum::routing::get(super::stateful_runtime_api::get_stateful_run_snapshot),
         );
-    router = super::routes_bug_monitor::apply(router);
+    router = super::routes_incident_monitor::apply(router);
     router = super::routes_external_actions::apply(router);
     router = super::routes_goal_capability_learning::apply(router);
     // ensure modules wired exactly once

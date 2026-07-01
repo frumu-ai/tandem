@@ -1885,7 +1885,7 @@ pub async fn run_automation_v2_run(
                             );
                             // Surface profile relaxation as a top-level
                             // lifecycle event so it appears in run history,
-                            // failure events, and Bug Monitor receipts —
+                            // failure events, and Incident Monitor receipts —
                             // not only inside output["artifact_validation"].
                             if let Some(relaxed_classes) = output
                                 .pointer("/artifact_validation/relaxed_validator_classes")

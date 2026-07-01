@@ -21,8 +21,6 @@ pub struct IncidentMonitorRegressionFixtureOptions {
     pub extra_tags: Vec<String>,
 }
 
-pub type BugMonitorRegressionFixtureOptions = IncidentMonitorRegressionFixtureOptions;
-
 pub fn incident_to_regression_dataset(
     incident: &IncidentMonitorIncidentRecord,
     options: IncidentMonitorRegressionFixtureOptions,

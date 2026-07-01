@@ -3263,9 +3263,7 @@ export function useSettingsPageController({
     const config =
       configPayload?.incident_monitor && typeof configPayload.incident_monitor === "object"
         ? (configPayload.incident_monitor as IncidentMonitorConfigRow)
-        : configPayload?.bug_monitor && typeof configPayload.bug_monitor === "object"
-          ? (configPayload.bug_monitor as IncidentMonitorConfigRow)
-          : {};
+        : {};
     setIncidentMonitorEnabled(!!config.enabled);
     setIncidentMonitorPaused(!!config.paused);
     setIncidentMonitorWorkspaceRoot(String(config.workspace_root || "").trim());

@@ -1666,7 +1666,7 @@ pub(crate) async fn sync_automation_v2_run_blackboard(
         let status = automation_node_task_status(run, &node.node_id, &depends_on);
 
         let output = run.checkpoint.node_outputs.get(&node.node_id);
-        sync_bug_monitor_automation_node_artifact(state, &run_id, automation, run, node, output)
+        sync_incident_monitor_automation_node_artifact(state, &run_id, automation, run, node, output)
             .await?;
         let payload = automation_node_task_payload(node, output);
         let attempt = run

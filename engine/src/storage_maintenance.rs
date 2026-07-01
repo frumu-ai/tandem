@@ -396,32 +396,19 @@ pub(crate) fn migrate_root_feature_storage(
         ("routines.json.bak", "data/routines/routines.json.bak"),
         ("routine_runs.json", "data/routines/routine_runs.json"),
         (
-            "bug_monitor_config.json",
+            "incident_monitor_config.json",
             "data/incident-monitor/config.json",
         ),
         (
-            "bug_monitor_drafts.json",
+            "incident_monitor_drafts.json",
             "data/incident-monitor/drafts.json",
         ),
         (
-            "bug_monitor_incidents.json",
-            "data/incident-monitor/incidents.json",
-        ),
-        ("bug_monitor_posts.json", "data/incident-monitor/posts.json"),
-        (
-            "failure_reporter_config.json",
-            "data/incident-monitor/config.json",
-        ),
-        (
-            "failure_reporter_drafts.json",
-            "data/incident-monitor/drafts.json",
-        ),
-        (
-            "failure_reporter_incidents.json",
+            "incident_monitor_incidents.json",
             "data/incident-monitor/incidents.json",
         ),
         (
-            "failure_reporter_posts.json",
+            "incident_monitor_posts.json",
             "data/incident-monitor/posts.json",
         ),
         (

@@ -13,12 +13,12 @@ pub async fn run_agent_team_supervisor(state: AppState) {
     crate::app::tasks::run_agent_team_supervisor(state).await
 }
 
-pub async fn run_bug_monitor(state: AppState) {
-    crate::app::tasks::run_bug_monitor(state).await
+pub async fn run_incident_monitor(state: AppState) {
+    crate::app::tasks::run_incident_monitor(state).await
 }
 
-pub async fn run_bug_monitor_recovery_sweep(state: AppState) {
-    crate::app::tasks::run_bug_monitor_recovery_sweep(state).await
+pub async fn run_incident_monitor_recovery_sweep(state: AppState) {
+    crate::app::tasks::run_incident_monitor_recovery_sweep(state).await
 }
 
 pub async fn run_usage_aggregator(state: AppState) {
@@ -29,15 +29,15 @@ pub async fn run_optimization_scheduler(state: AppState) {
     crate::app::tasks::run_optimization_scheduler(state).await
 }
 
-pub async fn process_bug_monitor_event(
+pub async fn process_incident_monitor_event(
     state: &AppState,
     event: &EngineEvent,
-    config: &BugMonitorConfig,
-) -> anyhow::Result<BugMonitorIncidentRecord> {
+    config: &IncidentMonitorConfig,
+) -> anyhow::Result<IncidentMonitorIncidentRecord> {
     let submission =
-        crate::bug_monitor::service::build_bug_monitor_submission_from_event(state, config, event)
+        crate::incident_monitor::service::build_incident_monitor_submission_from_event(state, config, event)
             .await?;
-    let duplicate_matches = crate::http::bug_monitor::bug_monitor_failure_pattern_matches(
+    let duplicate_matches = crate::http::incident_monitor::incident_monitor_failure_pattern_matches(
         state,
         submission.repo.as_deref().unwrap_or_default(),
         submission.fingerprint.as_deref().unwrap_or_default(),
@@ -50,7 +50,7 @@ pub async fn process_bug_monitor_event(
     let fingerprint = submission
         .fingerprint
         .clone()
-        .ok_or_else(|| anyhow::anyhow!("bug monitor submission fingerprint missing"))?;
+        .ok_or_else(|| anyhow::anyhow!("incident monitor submission fingerprint missing"))?;
     let default_workspace_root = state.workspace_index.snapshot().await.root;
     let workspace_root = config
         .workspace_root
@@ -58,10 +58,10 @@ pub async fn process_bug_monitor_event(
         .unwrap_or(default_workspace_root);
     let now = now_ms();
     let quality_gate =
-        crate::bug_monitor::service::evaluate_bug_monitor_submission_quality(&submission);
+        crate::incident_monitor::service::evaluate_incident_monitor_submission_quality(&submission);
 
     let existing = state
-        .bug_monitor_incidents
+        .incident_monitor_incidents
         .read()
         .await
         .values()
@@ -105,7 +105,7 @@ pub async fn process_bug_monitor_event(
         if row.blast_radius.is_none() {
             row.blast_radius = submission.blast_radius.clone();
         }
-        merge_bug_monitor_missing_submission_values(
+        merge_incident_monitor_missing_submission_values(
             &mut row.external_correlation_ids,
             &submission.external_correlation_ids,
         );
@@ -124,7 +124,7 @@ pub async fn process_bug_monitor_event(
         }
         row
     } else {
-        BugMonitorIncidentRecord {
+        IncidentMonitorIncidentRecord {
             incident_id: format!("failure-incident-{}", uuid::Uuid::new_v4().simple()),
             fingerprint: fingerprint.clone(),
             event_type: event.event_type.clone(),
@@ -167,19 +167,19 @@ pub async fn process_bug_monitor_event(
             duplicate_summary: None,
             duplicate_matches: None,
             event_payload: Some(event.properties.clone()),
-            ..BugMonitorIncidentRecord::default()
+            ..IncidentMonitorIncidentRecord::default()
         }
     };
-    state.put_bug_monitor_incident(incident.clone()).await?;
+    state.put_incident_monitor_incident(incident.clone()).await?;
 
     if !duplicate_matches.is_empty() {
         incident.status = "duplicate_suppressed".to_string();
         let duplicate_summary =
-            crate::http::bug_monitor::build_bug_monitor_duplicate_summary(&duplicate_matches);
+            crate::http::incident_monitor::build_incident_monitor_duplicate_summary(&duplicate_matches);
         incident.duplicate_summary = Some(duplicate_summary.clone());
         incident.duplicate_matches = Some(duplicate_matches.clone());
         incident.updated_at_ms = now_ms();
-        state.put_bug_monitor_incident(incident.clone()).await?;
+        state.put_incident_monitor_incident(incident.clone()).await?;
         state.event_bus.publish(EngineEvent::new(
             "incident_monitor.incident.duplicate_suppressed",
             serde_json::json!({
@@ -194,7 +194,7 @@ pub async fn process_bug_monitor_event(
         return Ok(incident);
     }
 
-    let draft = match state.submit_bug_monitor_draft(submission).await {
+    let draft = match state.submit_incident_monitor_draft(submission).await {
         Ok(draft) => draft,
         Err(error) => {
             let error_text = error.to_string();
@@ -205,7 +205,7 @@ pub async fn process_bug_monitor_event(
             };
             incident.last_error = Some(truncate_text(&error_text, 500));
             incident.updated_at_ms = now_ms();
-            state.put_bug_monitor_incident(incident.clone()).await?;
+            state.put_incident_monitor_incident(incident.clone()).await?;
             state.event_bus.publish(EngineEvent::new(
                 "incident_monitor.incident.detected",
                 serde_json::json!({
@@ -223,9 +223,9 @@ pub async fn process_bug_monitor_event(
     };
     incident.draft_id = Some(draft.draft_id.clone());
     incident.status = "draft_created".to_string();
-    state.put_bug_monitor_incident(incident.clone()).await?;
+    state.put_incident_monitor_incident(incident.clone()).await?;
 
-    match crate::http::bug_monitor::ensure_bug_monitor_triage_run(
+    match crate::http::incident_monitor::ensure_incident_monitor_triage_run(
         state.clone(),
         &draft.draft_id,
         true,
@@ -247,15 +247,15 @@ pub async fn process_bug_monitor_event(
 
     if let Some(draft_id) = incident.draft_id.clone() {
         let latest_draft = state
-            .get_bug_monitor_draft(&draft_id)
+            .get_incident_monitor_draft(&draft_id)
             .await
             .unwrap_or(draft.clone());
-        match crate::bug_monitor::router::publish_draft(
+        match crate::incident_monitor::router::publish_draft(
             state,
-            crate::bug_monitor::router::BugMonitorPublishRequest {
+            crate::incident_monitor::router::IncidentMonitorPublishRequest {
                 draft_id: draft_id.clone(),
                 incident_id: Some(incident.incident_id.clone()),
-                mode: crate::bug_monitor_github::PublishMode::Auto,
+                mode: crate::incident_monitor_github::PublishMode::Auto,
                 destination_ids: Vec::new(),
             },
         )
@@ -273,8 +273,8 @@ pub async fn process_bug_monitor_event(
                 failed_draft.github_status = Some("github_post_failed".to_string());
                 failed_draft.last_post_error = Some(detail.clone());
                 let evidence_digest = failed_draft.evidence_digest.clone();
-                let _ = state.put_bug_monitor_draft(failed_draft.clone()).await;
-                let _ = crate::bug_monitor::router::record_publish_failure(
+                let _ = state.put_incident_monitor_draft(failed_draft.clone()).await;
+                let _ = crate::incident_monitor::router::record_publish_failure(
                     state,
                     &failed_draft,
                     Some(&incident.incident_id),
@@ -288,7 +288,7 @@ pub async fn process_bug_monitor_event(
     }
 
     incident.updated_at_ms = now_ms();
-    state.put_bug_monitor_incident(incident.clone()).await?;
+    state.put_incident_monitor_incident(incident.clone()).await?;
     state.event_bus.publish(EngineEvent::new(
         "incident_monitor.incident.detected",
         serde_json::json!({

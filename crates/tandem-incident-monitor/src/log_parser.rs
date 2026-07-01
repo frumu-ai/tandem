@@ -17,8 +17,6 @@ pub struct IncidentMonitorLogParseResult {
     pub next_partial_line_offset_start: Option<u64>,
 }
 
-pub type BugMonitorLogParseResult = IncidentMonitorLogParseResult;
-
 #[derive(Debug, Clone)]
 struct ParsedLine {
     text: String,

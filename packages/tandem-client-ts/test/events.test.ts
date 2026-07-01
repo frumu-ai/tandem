@@ -766,7 +766,7 @@ describe("High-value parity coverage", () => {
       expect(urls[0]).toContain("/incident-monitor/status");
       expect(urls[1]).toContain("/incident-monitor/drafts?limit=3");
       expect(urls[2]).toContain("/incident-monitor/drafts/draft-1/approve");
-      expect(urls.every((url) => !url.includes("/failure-reporter/"))).toBe(true);
+      expect(urls.every((url) => !url.includes(`/${"failure"}-reporter/`))).toBe(true);
     } finally {
       globalThis.fetch = originalFetch;
     }

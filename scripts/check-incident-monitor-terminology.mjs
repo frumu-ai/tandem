@@ -9,14 +9,19 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const checkedPaths = [
+  ".env.example",
   ".github/",
   "CHANGELOG.md",
   "RELEASE_NOTES.md",
+  "engine/",
+  "eval_datasets/",
   "package.json",
   "apps/tandem-desktop/src/",
   "apps/tandem-desktop/src-tauri/src/",
   "crates/tandem-eval/",
   "crates/tandem-incident-monitor/",
+  "crates/tandem-runtime/",
+  "crates/tandem-server/",
   "docs/",
   "guide/",
   "packages/create-tandem-panel/",
@@ -44,75 +49,10 @@ const staleTerms = [
   "FailureReporter",
   "failure-reporter",
   "failure_reporter",
+  "tbm_",
 ];
 
-const allowedMatches = [
-  {
-    file: "apps/tandem-desktop/src/lib/tauri.ts",
-    line: /\bbug_monitor\?: IncidentMonitorConfig\b/,
-    reason: "legacy config response hydration fallback",
-  },
-  {
-    file: "apps/tandem-desktop/src/components/settings/IncidentMonitorSettings.tsx",
-    line: /\b(configPayload|response)\.bug_monitor\b/,
-    reason: "legacy config response hydration fallback",
-  },
-  {
-    file: "packages/tandem-control-panel/src/pages/SettingsPageController.ts",
-    line: /\bconfigPayload(\?\.|\.)bug_monitor\b/,
-    reason: "legacy config response hydration fallback",
-  },
-  {
-    file: "packages/create-tandem-panel/template/src/pages/SettingsPage.tsx",
-    line: /\bconfigPayload(\?\.|\.)bug_monitor\b/,
-    reason: "legacy config response hydration fallback",
-  },
-  {
-    file: "packages/tandem-control-panel/src/app/routes.ts",
-    line: /^\s*\["(bug-monitor|failure-reporter)", "incident-monitor"\],$/,
-    reason: "legacy public route redirect",
-  },
-  {
-    file: "packages/create-tandem-panel/template/src/app/routes.ts",
-    line: /^\s*\["(bug-monitor|failure-reporter)", "incident-monitor"\],$/,
-    reason: "legacy public route redirect",
-  },
-  {
-    file: "packages/tandem-client-ts/test/events.test.ts",
-    line: /\/failure-reporter\//,
-    reason: "negative assertion against legacy route use",
-  },
-  {
-    file: "packages/tandem-control-panel/lib/automations/workflow-list.js",
-    line: /(metadataSource|creatorId) === "bug_monitor(_approval)?"|name\.startsWith\("bug monitor triage:"\)/,
-    reason: "classification fallback for already-saved automation records",
-  },
-  {
-    file: "scripts/check-rust-panic-surface.mjs",
-    line: /"crates\/tandem-server\/src\/bug_monitor\/log_watcher\.rs"/,
-    reason: "server-internal module path that remains outside the public-surface rename",
-  },
-  {
-    file: "crates/tandem-incident-monitor/src/types.rs",
-    line: /^pub type BugMonitor[A-Za-z0-9_]+ = IncidentMonitor[A-Za-z0-9_]+;$/,
-    reason: "temporary Rust compatibility alias",
-  },
-  {
-    file: "crates/tandem-incident-monitor/src/log_parser.rs",
-    line: /^pub type BugMonitor[A-Za-z0-9_]+ = IncidentMonitor[A-Za-z0-9_]+;$/,
-    reason: "temporary Rust compatibility alias",
-  },
-  {
-    file: "crates/tandem-eval/src/incident_monitor_regression_fixture.rs",
-    line: /^pub type BugMonitor[A-Za-z0-9_]+ = IncidentMonitor[A-Za-z0-9_]+;$/,
-    reason: "temporary Rust compatibility alias",
-  },
-  {
-    file: "crates/tandem-eval/src/lib.rs",
-    line: /^pub mod bug_monitor_regression_fixture \{$/,
-    reason: "temporary Rust compatibility alias",
-  },
-];
+const allowedMatches = [];
 
 function normalizePath(file) {
   return file.split(path.sep).join("/");

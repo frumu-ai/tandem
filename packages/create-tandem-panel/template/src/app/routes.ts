@@ -27,8 +27,6 @@ const LEGACY_ROUTE_REDIRECTS = new Map<string, RouteId>([
   ["packs", "automations"],
   ["teams", "automations"],
   ["swarm", "orchestrator"],
-  ["bug-monitor", "incident-monitor"],
-  ["failure-reporter", "incident-monitor"],
 ]);
 
 const routeSet = new Set(APP_ROUTES.map(([id]) => id));

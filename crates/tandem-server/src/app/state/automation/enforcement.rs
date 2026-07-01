@@ -1,28 +1,28 @@
 use super::*;
 use serde_json::Value;
 
-fn bug_monitor_triage_artifact_type(node: &AutomationFlowNode) -> Option<&str> {
+fn incident_monitor_triage_artifact_type(node: &AutomationFlowNode) -> Option<&str> {
     node.metadata
         .as_ref()
         .and_then(Value::as_object)
-        .and_then(|metadata| metadata.get("bug_monitor"))
+        .and_then(|metadata| metadata.get("incident_monitor"))
         .and_then(Value::as_object)
-        .and_then(|bug_monitor| bug_monitor.get("artifact_type"))
+        .and_then(|incident_monitor| incident_monitor.get("artifact_type"))
         .and_then(Value::as_str)
 }
 
-fn bug_monitor_triage_artifact_node(node: &AutomationFlowNode) -> bool {
+fn incident_monitor_triage_artifact_node(node: &AutomationFlowNode) -> bool {
     if node.node_id == "inspect_failure_report" {
         return true;
     }
 
-    bug_monitor_triage_artifact_type(node).is_some_and(|artifact_type| {
+    incident_monitor_triage_artifact_type(node).is_some_and(|artifact_type| {
         matches!(
             artifact_type,
-            "bug_monitor_inspection"
-                | "bug_monitor_research"
-                | "bug_monitor_validation"
-                | "bug_monitor_fix_proposal"
+            "incident_monitor_inspection"
+                | "incident_monitor_research"
+                | "incident_monitor_validation"
+                | "incident_monitor_fix_proposal"
         )
     })
 }
@@ -820,7 +820,7 @@ pub(crate) fn automation_node_output_enforcement(
         .as_ref()
         .map(|contract| contract.kind.trim().to_ascii_lowercase())
         .is_some_and(|kind| kind == "code_patch");
-    let is_bug_monitor_triage_artifact = bug_monitor_triage_artifact_node(node);
+    let is_incident_monitor_triage_artifact = incident_monitor_triage_artifact_node(node);
     let contract_kind = node
         .output_contract
         .as_ref()
@@ -868,7 +868,7 @@ pub(crate) fn automation_node_output_enforcement(
             }
         });
     enforcement.validation_profile = Some(validation_profile.clone());
-    if is_bug_monitor_triage_artifact {
+    if is_incident_monitor_triage_artifact {
         enforcement.validation_profile = Some("artifact_only".to_string());
     }
     let is_standup_update = validation_profile == "standup_update";
@@ -1211,7 +1211,7 @@ pub(crate) fn automation_node_output_enforcement(
         }
     }
 
-    if is_bug_monitor_triage_artifact {
+    if is_incident_monitor_triage_artifact {
         if enforcement.validation_profile.as_deref() != Some("artifact_only") {
             enforcement.validation_profile = Some("artifact_only".to_string());
         }
@@ -1243,10 +1243,10 @@ pub(crate) fn automation_node_output_enforcement(
 mod tests {
     use super::*;
 
-    fn bug_monitor_triage_node(artifact_type: &str) -> AutomationFlowNode {
+    fn incident_monitor_triage_node(artifact_type: &str) -> AutomationFlowNode {
         AutomationFlowNode {
             node_id: "inspect_failure_report".to_string(),
-            agent_id: "bug_monitor_triage_agent".to_string(),
+            agent_id: "incident_monitor_triage_agent".to_string(),
             objective: "Inspect failure report".to_string(),
             knowledge: Default::default(),
             depends_on: Vec::new(),
@@ -1280,33 +1280,33 @@ mod tests {
             stage_kind: None,
             gate: None,
             metadata: Some(serde_json::json!({
-                "bug_monitor": {
+                "incident_monitor": {
                     "artifact_type": artifact_type,
                 },
             })),
         }
     }
 
-    fn bug_monitor_inspection_node() -> AutomationFlowNode {
-        bug_monitor_triage_node("bug_monitor_inspection")
+    fn incident_monitor_inspection_node() -> AutomationFlowNode {
+        incident_monitor_triage_node("incident_monitor_inspection")
     }
 
-    fn non_bug_monitor_node() -> AutomationFlowNode {
-        let mut node = bug_monitor_inspection_node();
+    fn non_incident_monitor_node() -> AutomationFlowNode {
+        let mut node = incident_monitor_inspection_node();
         node.node_id = "other_node".to_string();
         node.metadata = None;
         node
     }
 
     #[test]
-    fn bug_monitor_triage_artifacts_stop_concrete_read_gating() {
+    fn incident_monitor_triage_artifacts_stop_concrete_read_gating() {
         for artifact_type in [
-            "bug_monitor_inspection",
-            "bug_monitor_research",
-            "bug_monitor_validation",
-            "bug_monitor_fix_proposal",
+            "incident_monitor_inspection",
+            "incident_monitor_research",
+            "incident_monitor_validation",
+            "incident_monitor_fix_proposal",
         ] {
-            let node = bug_monitor_triage_node(artifact_type);
+            let node = incident_monitor_triage_node(artifact_type);
             let enforcement = automation_node_output_enforcement(&node);
 
             assert_eq!(
@@ -1343,8 +1343,8 @@ mod tests {
     }
 
     #[test]
-    fn non_bug_monitor_node_keeps_read_requirements() {
-        let node = non_bug_monitor_node();
+    fn non_incident_monitor_node_keeps_read_requirements() {
+        let node = non_incident_monitor_node();
         let enforcement = automation_node_output_enforcement(&node);
 
         assert!(enforcement.required_tools.iter().any(|tool| tool == "read"));

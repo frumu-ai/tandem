@@ -11,9 +11,6 @@
 pub mod bootstrap;
 pub mod incident_monitor_regression_fixture;
 
-pub mod bug_monitor_regression_fixture {
-    pub use super::incident_monitor_regression_fixture::*;
-}
 pub(crate) mod cross_tenant_probe;
 pub mod dataset;
 pub mod engine_executor;
