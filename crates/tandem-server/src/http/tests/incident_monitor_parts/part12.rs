@@ -230,6 +230,26 @@ async fn incident_monitor_posture_checks_detects_broad_source_and_missing_tenant
         finding["rule_id"].as_str() == Some("source_readiness_failed")
             && finding["category"].as_str() == Some("source_readiness")
     }));
+    let source_readiness_findings = findings
+        .iter()
+        .filter(|finding| finding["rule_id"].as_str() == Some("source_readiness_failed"))
+        .collect::<Vec<_>>();
+    assert!(
+        source_readiness_findings
+            .iter()
+            .any(|finding| finding["title"]
+                .as_str()
+                .is_some_and(|title| title.contains("source owner"))),
+        "source readiness posture findings should preserve missing source owner: {payload:?}"
+    );
+    assert!(
+        source_readiness_findings
+            .iter()
+            .any(|finding| finding["title"]
+                .as_str()
+                .is_some_and(|title| title.contains("system of record"))),
+        "source readiness posture findings should preserve missing system of record: {payload:?}"
+    );
     assert_posture_fingerprints_are_unique(findings);
 }
 

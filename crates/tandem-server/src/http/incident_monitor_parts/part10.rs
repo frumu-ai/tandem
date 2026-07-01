@@ -464,9 +464,16 @@ fn incident_monitor_posture_check_source_readiness_findings(
     findings: &mut Vec<Value>,
     seen: &mut HashSet<String>,
 ) {
-    for readiness_finding in incident_monitor_posture_array(source, &["readiness", "findings"]) {
+    for (finding_index, readiness_finding) in incident_monitor_posture_array(
+        source,
+        &["readiness", "findings"],
+    )
+    .iter()
+    .enumerate()
+    {
         let source_finding_id =
             incident_monitor_posture_str(readiness_finding, "finding_id").unwrap_or("unknown");
+        let dedupe_key = format!("{source_finding_id}:{finding_index}");
         let severity =
             incident_monitor_posture_str(readiness_finding, "severity").unwrap_or("medium");
         let title = incident_monitor_posture_str(readiness_finding, "title")
@@ -487,7 +494,7 @@ fn incident_monitor_posture_check_source_readiness_findings(
             }
         }
 
-        incident_monitor_posture_push_finding(
+        incident_monitor_posture_push_finding_with_dedupe_key(
             findings,
             seen,
             policy,
@@ -499,6 +506,7 @@ fn incident_monitor_posture_check_source_readiness_findings(
             affected.to_vec(),
             evidence_refs,
             recommendation,
+            &dedupe_key,
         );
     }
 }
@@ -721,6 +729,36 @@ fn incident_monitor_posture_push_finding(
     evidence_refs: Vec<Value>,
     recommendation: &str,
 ) {
+    incident_monitor_posture_push_finding_with_dedupe_key(
+        findings,
+        seen,
+        policy,
+        rule_id,
+        category,
+        severity,
+        title,
+        detail,
+        affected_objects,
+        evidence_refs,
+        recommendation,
+        "",
+    );
+}
+
+fn incident_monitor_posture_push_finding_with_dedupe_key(
+    findings: &mut Vec<Value>,
+    seen: &mut HashSet<String>,
+    policy: &IncidentMonitorPostureRulePolicy,
+    rule_id: &str,
+    category: &str,
+    severity: &str,
+    title: String,
+    detail: String,
+    affected_objects: Vec<Value>,
+    evidence_refs: Vec<Value>,
+    recommendation: &str,
+    dedupe_key: &str,
+) {
     if !policy.rule_enabled(rule_id) || !policy.allows_severity(severity) {
         return;
     }
@@ -729,7 +767,17 @@ fn incident_monitor_posture_push_finding(
         .filter_map(|object| object.get("id").and_then(Value::as_str))
         .collect::<Vec<_>>()
         .join("|");
-    let hash = crate::sha256_hex(&[rule_id, category, severity, affected_key.as_str()]);
+    let hash = if dedupe_key.is_empty() {
+        crate::sha256_hex(&[rule_id, category, severity, affected_key.as_str()])
+    } else {
+        crate::sha256_hex(&[
+            rule_id,
+            category,
+            severity,
+            affected_key.as_str(),
+            dedupe_key,
+        ])
+    };
     let fingerprint = format!("sha256:{hash}");
     if !seen.insert(fingerprint.clone()) {
         return;
