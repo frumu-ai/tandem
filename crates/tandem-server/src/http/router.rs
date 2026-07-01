@@ -168,6 +168,12 @@ pub(super) fn build_router(state: AppState, route_extensions: &[super::RouteRegi
             axum::routing::get(super::stateful_runtime_reliability::get_stateful_run_reliability),
         )
         .route(
+            "/stateful-runtime/runs/{run_id}/observability",
+            axum::routing::get(
+                super::stateful_runtime_observability::get_stateful_run_observability,
+            ),
+        )
+        .route(
             "/stateful-runtime/runs/{run_id}/resume-plan",
             axum::routing::get(super::stateful_runtime_reliability::get_stateful_run_resume_plan)
                 .post(super::stateful_runtime_reliability::apply_stateful_run_resume_plan_action),
