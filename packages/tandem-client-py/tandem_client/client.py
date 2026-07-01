@@ -35,6 +35,7 @@ from .types import (
     BrowserSmokeTestResponse,
     BrowserStatusResponse,
     BugMonitorAuthorityInventoryResponse,
+    BugMonitorAssessmentReportResponse,
     BugMonitorAssessmentProbeRunResponse,
     BugMonitorDestinationConfig,
     BugMonitorConfigResponse,
@@ -600,6 +601,48 @@ class _BugMonitor:
         )
         res.raise_for_status()
         return BugMonitorAssessmentProbeRunResponse.model_validate(res.json())
+
+    async def generate_assessment_report(
+        self,
+        *,
+        from_ms: Optional[int] = None,
+        to_ms: Optional[int] = None,
+        source_kind: Optional[str] = None,
+        min_severity: Optional[str] = None,
+        probes: Optional[list[str]] = None,
+        include_probe_results: Optional[bool] = None,
+        include_draft_suggestions: Optional[bool] = None,
+        persist_artifact: Optional[bool] = None,
+        route_destination_ids: Optional[list[str]] = None,
+        include_raw_payloads: Optional[bool] = None,
+    ) -> BugMonitorAssessmentReportResponse:
+        payload: dict[str, Any] = {}
+        if from_ms is not None:
+            payload["from_ms"] = from_ms
+        if to_ms is not None:
+            payload["to_ms"] = to_ms
+        if source_kind:
+            payload["source_kind"] = source_kind
+        if min_severity:
+            payload["min_severity"] = min_severity
+        if probes:
+            payload["probes"] = probes
+        if include_probe_results is not None:
+            payload["include_probe_results"] = include_probe_results
+        if include_draft_suggestions is not None:
+            payload["include_draft_suggestions"] = include_draft_suggestions
+        if persist_artifact is not None:
+            payload["persist_artifact"] = persist_artifact
+        if route_destination_ids:
+            payload["route_destination_ids"] = route_destination_ids
+        if include_raw_payloads is not None:
+            payload["include_raw_payloads"] = include_raw_payloads
+        res = await self._http.post(
+            "/bug-monitor/security/assessment-report",
+            json=payload,
+        )
+        res.raise_for_status()
+        return BugMonitorAssessmentReportResponse.model_validate(res.json())
 
     async def recompute_status(self) -> BugMonitorStatusResponse:
         res = await self._http.post("/bug-monitor/status/recompute")

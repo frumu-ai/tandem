@@ -693,6 +693,7 @@ BugMonitorDestinationKind = Literal[
 BugMonitorApprovalPolicy = Literal["inherit", "always", "high_risk", "never"]
 BugMonitorSourceKind = Literal[
     "tandem_runtime",
+    "tandem_monitor",
     "external_app",
     "ci",
     "agent_runtime",
@@ -1002,6 +1003,18 @@ class BugMonitorAssessmentProbeRunResponse(BaseModel):
     authority_inventory: Optional[dict[str, Any]] = None
     evidence_pack: Optional[dict[str, Any]] = None
     draft_conversion: Optional[dict[str, Any]] = None
+    sensitive_values: Optional[dict[str, Any]] = None
+
+
+class BugMonitorAssessmentReportResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    schema_version: int
+    generated_at_ms: Optional[int] = None
+    scope: Optional[dict[str, Any]] = None
+    counts: Optional[dict[str, Any]] = None
+    sections: Optional[dict[str, Any]] = None
+    markdown_summary: Optional[str] = None
+    evidence_pack: Optional[dict[str, Any]] = None
     sensitive_values: Optional[dict[str, Any]] = None
 
 

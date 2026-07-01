@@ -82,6 +82,20 @@ The response includes:
 
 The inventory is designed for audit evidence and future posture findings. It returns identifiers and field-presence signals, but omits raw intake keys, key hashes, webhook secret values, auth headers, destination config values, action receipts, and arbitrary metadata values. Scoped intake keys cannot access this endpoint.
 
+## Security Assessment Reports
+
+Use `POST /bug-monitor/security/assessment-report` to generate a redacted Incident Monitor security gap assessment report. The endpoint requires the full admin token, runs read-only posture checks and optional dry-run controlled probes, summarizes incidents and destination receipts, and persists a context-run evidence artifact by default.
+
+The report includes JSON sections plus a Markdown summary:
+
+- assessment scope, monitored sources, authority inventory, destinations, routes, and approval coverage
+- posture findings, controlled probe results, evidence refs, recommendations, residual risk, and follow-up actions
+- Tandem self-monitoring boundaries using `source_kind=tandem_runtime` and `source_kind=tandem_monitor`
+- protected audit export summaries for Bug Monitor route decisions, publish attempts, monitor events, and control failures
+- a non-mutating destination route preview for report export
+
+Reports do not embed raw protected-audit payloads, scoped intake keys, auth headers, webhook secret values, or destination receipt payloads by default. High-assurance deployments should export protected audit evidence to a customer-owned system of record such as SIEM, database, object storage, Linear, GitHub, webhook, telemetry, or an approved MCP destination. Tandem can show what it observed and enforced; it does not independently prove itself safe.
+
 ## TypeScript
 
 ```typescript
@@ -101,6 +115,10 @@ const incidents = await client.bugMonitor.listIncidents({ limit: 20 });
 const drafts = await client.bugMonitor.listDrafts({ limit: 20 });
 const destinations = await client.bugMonitor.listDestinations();
 const authority = await client.bugMonitor.getAuthorityInventory();
+const report = await client.bugMonitor.generateAssessmentReport({
+  source_kind: "tandem_monitor",
+  routeDestinationIds: destinations.map((destination) => destination.destination_id),
+});
 
 if (drafts.drafts[0]) {
   await client.bugMonitor.createTriageRun(drafts.drafts[0].draft_id);
@@ -138,6 +156,10 @@ async with TandemClient(base_url="http://localhost:39731", token="...") as clien
         )
 
     authority = await client.bug_monitor.get_authority_inventory()
+    report = await client.bug_monitor.generate_assessment_report(
+        source_kind="tandem_monitor",
+        route_destination_ids=[destination.destination_id for destination in destinations],
+    )
 
     await client.bug_monitor.report({
         "title": "Workflow failed while establishing GitHub context",
@@ -152,6 +174,7 @@ async with TandemClient(base_url="http://localhost:39731", token="...") as clien
 
 - `getStatus()` / `get_status()`
 - `getAuthorityInventory()` / `get_authority_inventory()`
+- `generateAssessmentReport()` / `generate_assessment_report()`
 - `recomputeStatus()` / `recompute_status()`
 - `pause()` / `pause()`
 - `resume()` / `resume()`

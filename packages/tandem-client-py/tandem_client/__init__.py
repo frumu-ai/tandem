@@ -302,6 +302,7 @@ __all__ = [
     "BugMonitorAssessmentProbeCounts",
     "BugMonitorAssessmentProbeResult",
     "BugMonitorAssessmentProbeRunResponse",
+    "BugMonitorAssessmentReportResponse",
     "BugMonitorPostureRuleState",
     "BugMonitorPostureCounts",
     "BugMonitorPostureFinding",

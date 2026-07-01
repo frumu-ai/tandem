@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { TandemClient } from "../src/client.js";
 import type {
   BugMonitorAuthorityInventoryResponse,
+  BugMonitorAssessmentReportResponse,
   BugMonitorAssessmentProbeRunResponse,
   BugMonitorConfigResponse,
   BugMonitorDestinationConfig,
@@ -463,6 +464,77 @@ describe("Bug Monitor external project public types", () => {
       });
       expect(JSON.parse(calls[0]?.body ?? "{}")).toEqual({
         probes: ["webhook_url_policy"],
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("generates security assessment reports through the SDK helper", async () => {
+    const client = new TandemClient({ baseUrl: "http://localhost:39731", token: "test-token" });
+    const originalFetch = globalThis.fetch;
+    const calls: Array<{ url: string; method: string; body?: string }> = [];
+    const response: BugMonitorAssessmentReportResponse = {
+      schema_version: 1,
+      scope: {
+        source: "bug_monitor_security_gap_assessment_report",
+        read_only: true,
+      },
+      counts: {
+        findings: 1,
+        protected_audit_events: 1,
+      },
+      sections: {
+        self_monitoring_boundary: {
+          source_kinds: ["tandem_runtime", "tandem_monitor"],
+          external_export_required_for_high_assurance: true,
+        },
+        external_audit_export: {
+          existing_ndjson_endpoint: "/audit/export",
+          records: [{ event_type: "bug_monitor.publish.failed" }],
+        },
+      },
+      markdown_summary: "# Incident Monitor Security Gap Assessment",
+      evidence_pack: {
+        persisted: true,
+        context_run_id: "bug-monitor-assessment-report-1",
+      },
+    };
+
+    globalThis.fetch = (async (input, init) => {
+      calls.push({
+        url: String(input),
+        method: String(init?.method ?? "GET"),
+        body: String(init?.body ?? ""),
+      });
+      return new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const report = await client.bugMonitor.generateAssessmentReport({
+        source_kind: "tandem_monitor",
+        includeProbeResults: true,
+        persistArtifact: true,
+        routeDestinationIds: ["audit-webhook"],
+        includeRawPayloads: true,
+      });
+      expect(report.sections?.self_monitoring_boundary?.source_kinds).toContain(
+        "tandem_monitor"
+      );
+      expect(report.markdown_summary).toContain("Security Gap Assessment");
+      expect(calls[0]).toMatchObject({
+        url: "http://localhost:39731/bug-monitor/security/assessment-report",
+        method: "POST",
+      });
+      expect(JSON.parse(calls[0]?.body ?? "{}")).toEqual({
+        source_kind: "tandem_monitor",
+        include_probe_results: true,
+        persist_artifact: true,
+        route_destination_ids: ["audit-webhook"],
+        include_raw_payloads: true,
       });
     } finally {
       globalThis.fetch = originalFetch;

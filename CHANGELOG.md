@@ -103,6 +103,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Probe runs require full API-token/admin context, reject scoped intake keys,
   persist evidence packs as context-run artifacts, emit protected admin audit
   events, and expose TypeScript/Python SDK helpers.
+- Added Incident Monitor security gap assessment reports with JSON and Markdown
+  output, redacted evidence-pack persistence, posture findings, controlled
+  probe results, incident and receipt summaries, Tandem self-monitoring
+  boundaries, protected audit export summaries, non-mutating destination route
+  previews, and TypeScript/Python SDK helpers.
 - Added Incident Monitor AI Agent Security Posture positioning docs with
   buyer-facing packaging, demo narrative, report outline, comparison guidance,
   and explicit boundaries against broad vulnerability-scanner or SIEM claims.

@@ -124,6 +124,15 @@ require full API-token/admin context when token auth is configured, persist
 evidence packs as context-run artifacts, emit admin audit events, and return
 draft-conversion suggestions for failed probes through the TypeScript and
 Python SDKs.
+Incident Monitor security assessment reports now turn the authority inventory,
+posture findings, controlled probes, incidents, destination receipts, and
+protected audit rows into a redacted JSON report plus Markdown summary. Reports
+persist context-run evidence artifacts by default, distinguish Tandem
+self-monitoring (`tandem_runtime` / `tandem_monitor`) from external-system
+monitoring, expose protected audit export summaries without raw payloads, and
+include non-mutating destination route previews so report artifacts can move to
+customer-owned systems of record after approval. TypeScript and Python SDKs
+include helpers for the report endpoint.
 The SDK destination removal helpers now also drop routes that would otherwise
 be left with no explicit destinations, preventing accidental fallback to the
 default destination set.

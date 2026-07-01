@@ -60,55 +60,13 @@ pub(super) async fn run_bug_monitor_security_assessment_probes(
     let status = state.bug_monitor_status_snapshot().await;
     let include_draft_suggestions = input.include_draft_suggestions.unwrap_or(true);
 
-    let mut results = Vec::new();
-    if mode != "disabled" {
-        for probe_id in &selected_probe_ids {
-            match probe_id.as_str() {
-                "approval_required_tool_policy" => bug_monitor_assessment_probe_posture_rule(
-                    &authority_inventory,
-                    "approval_required_tool_policy",
-                    "high_risk_tool_without_approval",
-                    "Approval-required tools must have an agent approval policy or node approval gate.",
-                    "No unapproved approval-required tool policy gaps were found.",
-                    include_draft_suggestions,
-                    &mut results,
-                ),
-                "route_preview_high_risk_approval" => {
-                    bug_monitor_assessment_probe_route_preview_high_risk(
-                        &status,
-                        include_draft_suggestions,
-                        &mut results,
-                    )
-                }
-                "destination_readiness_fail_closed" => {
-                    bug_monitor_assessment_probe_destination_readiness(
-                        &status,
-                        include_draft_suggestions,
-                        &mut results,
-                    )
-                }
-                "scoped_intake_restriction" => bug_monitor_assessment_probe_scoped_intake(
-                    &authority_inventory,
-                    include_draft_suggestions,
-                    &mut results,
-                ),
-                "mcp_tool_allowlist" => {
-                    bug_monitor_assessment_probe_mcp_allowlist(
-                        &authority_inventory,
-                        &status,
-                        include_draft_suggestions,
-                        &mut results,
-                    )
-                }
-                "webhook_url_policy" => bug_monitor_assessment_probe_webhook_url_policy(
-                    &status,
-                    include_draft_suggestions,
-                    &mut results,
-                ),
-                _ => {}
-            }
-        }
-    }
+    let results = bug_monitor_security_assessment_probe_results(
+        &selected_probe_ids,
+        &mode,
+        &authority_inventory,
+        &status,
+        include_draft_suggestions,
+    );
 
     let counts = bug_monitor_assessment_counts(&results);
     let scope = json!({
@@ -230,6 +188,65 @@ fn bug_monitor_assessment_has_scoped_intake_key_header(headers: &HeaderMap) -> b
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
         .is_some_and(|value| !value.is_empty())
+}
+
+fn bug_monitor_security_assessment_probe_results(
+    selected_probe_ids: &[String],
+    mode: &str,
+    authority_inventory: &Value,
+    status: &crate::BugMonitorStatus,
+    include_draft_suggestions: bool,
+) -> Vec<Value> {
+    let mut results = Vec::new();
+    if mode == "disabled" {
+        return results;
+    }
+
+    for probe_id in selected_probe_ids {
+        match probe_id.as_str() {
+            "approval_required_tool_policy" => bug_monitor_assessment_probe_posture_rule(
+                authority_inventory,
+                "approval_required_tool_policy",
+                "high_risk_tool_without_approval",
+                "Approval-required tools must have an agent approval policy or node approval gate.",
+                "No unapproved approval-required tool policy gaps were found.",
+                include_draft_suggestions,
+                &mut results,
+            ),
+            "route_preview_high_risk_approval" => {
+                bug_monitor_assessment_probe_route_preview_high_risk(
+                    status,
+                    include_draft_suggestions,
+                    &mut results,
+                )
+            }
+            "destination_readiness_fail_closed" => {
+                bug_monitor_assessment_probe_destination_readiness(
+                    status,
+                    include_draft_suggestions,
+                    &mut results,
+                )
+            }
+            "scoped_intake_restriction" => bug_monitor_assessment_probe_scoped_intake(
+                authority_inventory,
+                include_draft_suggestions,
+                &mut results,
+            ),
+            "mcp_tool_allowlist" => bug_monitor_assessment_probe_mcp_allowlist(
+                authority_inventory,
+                status,
+                include_draft_suggestions,
+                &mut results,
+            ),
+            "webhook_url_policy" => bug_monitor_assessment_probe_webhook_url_policy(
+                status,
+                include_draft_suggestions,
+                &mut results,
+            ),
+            _ => {}
+        }
+    }
+    results
 }
 
 fn bug_monitor_assessment_probe_posture_rule(

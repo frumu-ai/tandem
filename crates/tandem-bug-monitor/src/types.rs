@@ -75,6 +75,7 @@ pub enum BugMonitorApprovalPolicy {
 #[serde(rename_all = "snake_case")]
 pub enum BugMonitorSourceKind {
     TandemRuntime,
+    TandemMonitor,
     ExternalApp,
     Ci,
     AgentRuntime,
@@ -87,6 +88,7 @@ impl BugMonitorSourceKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::TandemRuntime => "tandem_runtime",
+            Self::TandemMonitor => "tandem_monitor",
             Self::ExternalApp => "external_app",
             Self::Ci => "ci",
             Self::AgentRuntime => "agent_runtime",
