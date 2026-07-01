@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge, EmptyState, LoadingState, PanelCard, Toolbar } from "../../ui/index.tsx";
 import {
@@ -62,6 +62,17 @@ function QueryProblem({ message }: { message: string }) {
       {message}
     </div>
   );
+}
+
+function useNow(intervalMs: number) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setNow(Date.now()), intervalMs);
+    return () => window.clearInterval(interval);
+  }, [intervalMs]);
+
+  return now;
 }
 
 export function WebhookInboxView({ api, navigate, onOpenRun }: RuntimeQueueProps) {
@@ -179,12 +190,13 @@ export function WebhookInboxView({ api, navigate, onOpenRun }: RuntimeQueueProps
 }
 
 export function ApprovalWaitsView({ api, navigate, onOpenRun }: RuntimeQueueProps) {
+  const now = useNow(10000);
   const approvalsQuery = useQuery({
     queryKey: ["stateful-runtime", "approval-waits"],
     queryFn: () => api("/api/engine/approvals/pending"),
     refetchInterval: 5000,
   });
-  const rows = useMemo(() => buildApprovalWaitRows(approvalsQuery.data || {}), [approvalsQuery.data]);
+  const rows = useMemo(() => buildApprovalWaitRows(approvalsQuery.data || {}, { now }), [approvalsQuery.data, now]);
   const summary = useMemo(() => summarizeApprovalWaitRows(rows), [rows]);
   const loading = approvalsQuery.isLoading && !approvalsQuery.data;
 
