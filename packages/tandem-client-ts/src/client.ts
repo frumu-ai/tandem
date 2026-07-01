@@ -78,6 +78,8 @@ import type {
   BugMonitorConfigResponse,
   BugMonitorStatusResponse,
   BugMonitorAuthorityInventoryResponse,
+  BugMonitorAssessmentProbeRunInput,
+  BugMonitorAssessmentProbeRunResponse,
   BugMonitorPostureChecksOptions,
   BugMonitorPostureChecksResponse,
   BugMonitorDestinationConfig,
@@ -854,6 +856,26 @@ class BugMonitor {
     const qs = params.toString() ? `?${params.toString()}` : "";
     return this.req<BugMonitorPostureChecksResponse>(
       `/bug-monitor/security/posture-checks${qs}`
+    );
+  }
+
+  async runAssessmentProbes(
+    input?: BugMonitorAssessmentProbeRunInput
+  ): Promise<BugMonitorAssessmentProbeRunResponse> {
+    const body = { ...(input ?? {}) };
+    if (
+      body.include_draft_suggestions === undefined &&
+      body.includeDraftSuggestions !== undefined
+    ) {
+      body.include_draft_suggestions = body.includeDraftSuggestions;
+    }
+    delete body.includeDraftSuggestions;
+    return this.req<BugMonitorAssessmentProbeRunResponse>(
+      "/bug-monitor/security/assessment-probes",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      }
     );
   }
 

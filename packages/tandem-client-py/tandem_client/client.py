@@ -35,6 +35,7 @@ from .types import (
     BrowserSmokeTestResponse,
     BrowserStatusResponse,
     BugMonitorAuthorityInventoryResponse,
+    BugMonitorAssessmentProbeRunResponse,
     BugMonitorDestinationConfig,
     BugMonitorConfigResponse,
     BugMonitorDraftListResponse,
@@ -578,6 +579,27 @@ class _BugMonitor:
         )
         res.raise_for_status()
         return BugMonitorPostureChecksResponse.model_validate(res.json())
+
+    async def run_assessment_probes(
+        self,
+        *,
+        mode: Optional[str] = None,
+        probes: Optional[list[str]] = None,
+        include_draft_suggestions: Optional[bool] = None,
+    ) -> BugMonitorAssessmentProbeRunResponse:
+        payload: dict[str, Any] = {}
+        if mode:
+            payload["mode"] = mode
+        if probes:
+            payload["probes"] = probes
+        if include_draft_suggestions is not None:
+            payload["include_draft_suggestions"] = include_draft_suggestions
+        res = await self._http.post(
+            "/bug-monitor/security/assessment-probes",
+            json=payload,
+        )
+        res.raise_for_status()
+        return BugMonitorAssessmentProbeRunResponse.model_validate(res.json())
 
     async def recompute_status(self) -> BugMonitorStatusResponse:
         res = await self._http.post("/bug-monitor/status/recompute")
