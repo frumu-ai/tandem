@@ -135,12 +135,81 @@ function queueStatusGroup(row) {
   return statusGroup || category || "unknown";
 }
 
+const WEBHOOK_QUEUE_SIGNAL_KEYS = [
+  "provider_event_kind",
+  "providerEventKind",
+  "provider_event_id",
+  "providerEventID",
+  "providerEventId",
+  "trigger_id",
+  "triggerID",
+  "triggerId",
+  "delivery_id",
+  "deliveryID",
+  "deliveryId",
+  "automation_id",
+  "automationID",
+  "automationId",
+  "idempotency_key",
+  "idempotencyKey",
+  "payload_ref",
+  "payloadRef",
+  "headers_redacted",
+  "headersRedacted",
+];
+
+const WEBHOOK_CORRELATION_SIGNAL_KEYS = [
+  "woken_run_id",
+  "wokenRunID",
+  "wokenRunId",
+  "queued_run_id",
+  "queuedRunID",
+  "queuedRunId",
+  "duplicate_of_run_id",
+  "duplicateOfRunID",
+  "duplicateOfRunId",
+];
+
+const APPROVAL_QUEUE_SIGNAL_KEYS = [
+  "approval_wait",
+  "approvalWait",
+  "approval_request_id",
+  "approvalRequestId",
+  "transition_id",
+  "transitionID",
+  "transitionId",
+  "decision_history",
+  "decisionHistory",
+  "decisions",
+];
+
+function hasQueueSignal(row, keys) {
+  return keys.some((key) => read(row, [key], null) !== null);
+}
+
+function hasWebhookQueueSignal(row) {
+  const raw = row?.raw || {};
+  const correlation = read(row, ["correlation"], null) || read(raw, ["correlation"], null) || {};
+  return (
+    hasQueueSignal(row, WEBHOOK_QUEUE_SIGNAL_KEYS) ||
+    hasQueueSignal(raw, WEBHOOK_QUEUE_SIGNAL_KEYS) ||
+    hasQueueSignal(row, WEBHOOK_CORRELATION_SIGNAL_KEYS) ||
+    hasQueueSignal(raw, WEBHOOK_CORRELATION_SIGNAL_KEYS) ||
+    hasQueueSignal(correlation, WEBHOOK_CORRELATION_SIGNAL_KEYS)
+  );
+}
+
+function hasApprovalQueueSignal(row) {
+  const raw = row?.raw || {};
+  const actionKind = normalizeKey(read(row, ["action_kind", "actionKind"]) || read(raw, ["action_kind", "actionKind"]));
+  if (actionKind === "approval") return true;
+  return hasQueueSignal(row, APPROVAL_QUEUE_SIGNAL_KEYS) || hasQueueSignal(raw, APPROVAL_QUEUE_SIGNAL_KEYS);
+}
+
 function queueSourceGroup(row) {
   const explicit = normalizeKey(row?.sourceGroup || row?.source_group || row?.raw?.source_group || row?.raw?.sourceGroup);
   if (["workflow", "automation", "context"].includes(explicit)) return explicit;
-  if (row?.providerEventKind || row?.triggerId || row?.deliveryId || row?.actionKind === "approval" || row?.transitionId) {
-    return "automation";
-  }
+  if (hasWebhookQueueSignal(row) || hasApprovalQueueSignal(row)) return "automation";
   const text = compact([row?.source, row?.kind, row?.provider, row?.operation, row?.sourceLabel, row?.raw?.source])
     .join(" ")
     .toLowerCase();

@@ -148,6 +148,36 @@ test("stateful queue filters apply tenant, workspace, policy, knowledge, and wai
   );
 });
 
+test("stateful queue source filter classifies webhook and approval row shapes before label fallback", () => {
+  const rows = [
+    {
+      id: "raw-webhook",
+      source: "github",
+      provider: "github",
+      raw: {
+        provider_event_kind: "push",
+        delivery_id: "delivery-1",
+      },
+    },
+    {
+      id: "raw-approval",
+      source: "stateful",
+      raw: {
+        approval_wait: { transition_id: "ship" },
+      },
+    },
+    {
+      id: "context-row",
+      source: "context",
+    },
+  ];
+
+  assert.deepEqual(
+    filterStatefulQueueRows(rows, { source: "automation" }).map((row) => row.id),
+    ["raw-webhook", "raw-approval"]
+  );
+});
+
 test("approval wait rows expose timeout, escalation, transition, and decision history", () => {
   const rows = buildApprovalWaitRows(
     {
