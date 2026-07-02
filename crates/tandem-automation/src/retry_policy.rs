@@ -3,6 +3,7 @@ use serde_json::Value;
 
 pub const RETRY_POLICY_SCHEMA_VERSION: u32 = 1;
 pub const RETRY_POLICY_MAX_ATTEMPTS_CAP: u32 = 10;
+pub const RETRY_BACKOFF_MAX_DELAY_MS: u64 = 24 * 60 * 60 * 1_000;
 
 fn retry_policy_schema_version() -> u32 {
     RETRY_POLICY_SCHEMA_VERSION
@@ -94,12 +95,22 @@ impl RetryBackoffPolicy {
                 self.initial_delay_ms as f64 * self.multiplier.max(1.0).powi(exponent)
             }
         };
+        let raw = if raw.is_finite() {
+            raw
+        } else {
+            RETRY_BACKOFF_MAX_DELAY_MS as f64
+        };
         let capped = if self.max_delay_ms > 0 {
             raw.min(self.max_delay_ms as f64)
         } else {
             raw
         };
-        Some(capped.round().max(0.0) as u64)
+        Some(
+            capped
+                .round()
+                .max(0.0)
+                .min(RETRY_BACKOFF_MAX_DELAY_MS as f64) as u64,
+        )
     }
 }
 
@@ -342,7 +353,8 @@ fn parse_backoff_policy(value: &Value, default: RetryBackoffPolicy) -> RetryBack
     if let Some(max) = number_field(source, &["max_delay_ms", "maxDelayMs"]) {
         backoff.max_delay_ms = max;
     }
-    if let Some(multiplier) = float_field(source, &["multiplier"]) {
+    if let Some(multiplier) = float_field(source, &["multiplier"]).filter(|value| value.is_finite())
+    {
         backoff.multiplier = multiplier.max(1.0);
     }
     if let Some(jitter) = number_field(source, &["jitter_ms", "jitterMs"]) {

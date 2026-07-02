@@ -296,3 +296,65 @@ test("recovery queue rows separate retryable, backoff, dead-lettered, and manual
     manuallyBlocked: 1,
   });
 });
+
+test("recovery queue rows ignore records superseded by a successful replay", () => {
+  const supersededMetadata = {
+    superseded_by_success: true,
+    superseded_by_effect_id: "effect-replayed",
+    superseded_at_ms: 5000,
+  };
+  const rows = buildRecoveryQueueRows({
+    dead_letters: [
+      {
+        dead_letter_id: "dead-superseded",
+        status: "linked_to_compensation",
+        run_id: "run-replayed",
+        metadata: supersededMetadata,
+      },
+      {
+        dead_letter_id: "dead-active",
+        status: "open",
+        run_id: "run-active",
+      },
+    ],
+    compensations: [
+      {
+        compensation_id: "comp-superseded",
+        status: "completed",
+        run_id: "run-replayed",
+        metadata: supersededMetadata,
+      },
+    ],
+  });
+
+  assert.deepEqual(
+    rows.map((row) => row.id),
+    ["dead-active"]
+  );
+});
+
+test("recovery queue rows keep user superseded metadata without internal marker", () => {
+  const rows = buildRecoveryQueueRows({
+    dead_letters: [
+      {
+        dead_letter_id: "dead-user-metadata",
+        status: "open",
+        run_id: "run-active",
+        metadata: { superseded_by_success: true, policy: "user-supplied" },
+      },
+    ],
+    compensations: [
+      {
+        compensation_id: "comp-user-metadata",
+        status: "proposed",
+        run_id: "run-active",
+        metadata: { superseded_by_success: true, policy: "user-supplied" },
+      },
+    ],
+  });
+
+  assert.deepEqual(
+    rows.map((row) => row.id),
+    ["dead-user-metadata", "comp-user-metadata"]
+  );
+});

@@ -3,12 +3,13 @@ use super::*;
 use crate::stateful_runtime::{
     append_stateful_run_event_once_with_next_seq, list_stateful_compensations,
     list_stateful_dead_letters, list_stateful_outbox, list_stateful_tool_effects,
-    mark_compensation_status, mark_dead_letter_disposition, operator_principal,
-    stateful_reliability_path_from_runtime_events_path, stateful_run_from_automation_v2,
-    stateful_run_from_workflow, StatefulCompensationStatus, StatefulDeadLetterStatus,
-    StatefulReliabilityQuery, StatefulRunEventRecord, StatefulWorkflowRunRecord,
-    StatefulWorkflowRunStatus, STATEFUL_RUNTIME_SCHEMA_VERSION,
+    load_stateful_reliability, mark_compensation_status, mark_dead_letter_disposition,
+    operator_principal, stateful_reliability_path_from_runtime_events_path,
+    stateful_run_from_automation_v2, stateful_run_from_workflow, StatefulCompensationStatus,
+    StatefulDeadLetterStatus, StatefulReliabilityQuery, StatefulRunEventRecord,
+    StatefulWorkflowRunRecord, StatefulWorkflowRunStatus, STATEFUL_RUNTIME_SCHEMA_VERSION,
 };
+use serde::Serialize;
 use tandem_types::TenantContext;
 
 const DEFAULT_RELIABILITY_API_LIMIT: usize = 250;
@@ -19,6 +20,21 @@ pub(super) struct StatefulReliabilityListQuery {
     pub run_id: Option<String>,
     pub status: Option<String>,
     pub source_type: Option<String>,
+    pub after_id: Option<String>,
+    #[serde(
+        alias = "after_kind",
+        alias = "afterCollection",
+        alias = "after_collection"
+    )]
+    pub after_collection: Option<String>,
+    #[serde(
+        alias = "before_created_at",
+        alias = "beforeCreatedAtMs",
+        alias = "beforeCreatedAt"
+    )]
+    pub before_created_at_ms: Option<u64>,
+    #[serde(default, alias = "activeRecoveryOnly", alias = "active_only")]
+    pub active_recovery_only: bool,
     pub limit: Option<usize>,
 }
 
@@ -41,6 +57,35 @@ struct RunRecoveryContext {
     last_failure: Option<Value>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReliabilityCollection {
+    Outbox,
+    ToolEffects,
+    DeadLetters,
+    Compensations,
+}
+
+impl ReliabilityCollection {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Outbox => "outbox",
+            Self::ToolEffects => "tool_effects",
+            Self::DeadLetters => "dead_letters",
+            Self::Compensations => "compensations",
+        }
+    }
+
+    fn from_query(value: Option<&str>) -> Option<Self> {
+        match value.map(normalize_choice).as_deref() {
+            Some("outbox") => Some(Self::Outbox),
+            Some("tool_effect" | "tool_effects") => Some(Self::ToolEffects),
+            Some("dead_letter" | "dead_letters") => Some(Self::DeadLetters),
+            Some("compensation" | "compensations") => Some(Self::Compensations),
+            _ => None,
+        }
+    }
+}
+
 pub(super) async fn list_stateful_reliability(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
@@ -48,11 +93,78 @@ pub(super) async fn list_stateful_reliability(
 ) -> Json<Value> {
     let path = stateful_reliability_path_from_runtime_events_path(&state.runtime_events_path);
     let limit = limit(query.limit);
-    let query = reliability_query(&query, limit);
-    let outbox = list_stateful_outbox(&path, &tenant_context, query);
-    let tool_effects = list_stateful_tool_effects(&path, &tenant_context, query);
-    let dead_letters = list_stateful_dead_letters(&path, &tenant_context, query);
-    let compensations = list_stateful_compensations(&path, &tenant_context, query);
+    let cursor_collection = reliability_cursor_collection(&path, &tenant_context, &query, None);
+    let stale_cursor = reliability_cursor_is_stale(&query, cursor_collection);
+    let outbox = if stale_cursor {
+        Vec::new()
+    } else {
+        list_stateful_outbox(
+            &path,
+            &tenant_context,
+            reliability_query(
+                &query,
+                None,
+                limit,
+                cursor_collection,
+                ReliabilityCollection::Outbox,
+            ),
+        )
+    };
+    let tool_effects = if stale_cursor {
+        Vec::new()
+    } else {
+        list_stateful_tool_effects(
+            &path,
+            &tenant_context,
+            reliability_query(
+                &query,
+                None,
+                limit,
+                cursor_collection,
+                ReliabilityCollection::ToolEffects,
+            ),
+        )
+    };
+    let dead_letters = if stale_cursor {
+        Vec::new()
+    } else {
+        list_stateful_dead_letters(
+            &path,
+            &tenant_context,
+            reliability_query(
+                &query,
+                None,
+                limit,
+                cursor_collection,
+                ReliabilityCollection::DeadLetters,
+            ),
+        )
+    };
+    let compensations = if stale_cursor {
+        Vec::new()
+    } else {
+        list_stateful_compensations(
+            &path,
+            &tenant_context,
+            reliability_query(
+                &query,
+                None,
+                limit,
+                cursor_collection,
+                ReliabilityCollection::Compensations,
+            ),
+        )
+    };
+    let pagination = reliability_pagination(
+        query.after_id.as_deref(),
+        cursor_collection,
+        query.before_created_at_ms,
+        limit,
+        &outbox,
+        &tool_effects,
+        &dead_letters,
+        &compensations,
+    );
 
     Json(json!({
         "source": "stateful_runtime_reliability",
@@ -67,6 +179,7 @@ pub(super) async fn list_stateful_reliability(
             "compensations": compensations.len(),
         },
         "limit": limit,
+        "pagination": pagination,
     }))
 }
 
@@ -81,16 +194,79 @@ pub(super) async fn get_stateful_run_reliability(
     };
     let path = stateful_reliability_path_from_runtime_events_path(&state.runtime_events_path);
     let limit = limit(query.limit);
-    let query = StatefulReliabilityQuery {
-        run_id: Some(&run_id),
-        status: query.status.as_deref(),
-        source_type: query.source_type.as_deref(),
-        limit: Some(limit),
+    let cursor_collection =
+        reliability_cursor_collection(&path, &tenant_context, &query, Some(run_id.as_str()));
+    let stale_cursor = reliability_cursor_is_stale(&query, cursor_collection);
+    let outbox = if stale_cursor {
+        Vec::new()
+    } else {
+        list_stateful_outbox(
+            &path,
+            &tenant_context,
+            reliability_query(
+                &query,
+                Some(run_id.as_str()),
+                limit,
+                cursor_collection,
+                ReliabilityCollection::Outbox,
+            ),
+        )
     };
-    let outbox = list_stateful_outbox(&path, &tenant_context, query);
-    let tool_effects = list_stateful_tool_effects(&path, &tenant_context, query);
-    let dead_letters = list_stateful_dead_letters(&path, &tenant_context, query);
-    let compensations = list_stateful_compensations(&path, &tenant_context, query);
+    let tool_effects = if stale_cursor {
+        Vec::new()
+    } else {
+        list_stateful_tool_effects(
+            &path,
+            &tenant_context,
+            reliability_query(
+                &query,
+                Some(run_id.as_str()),
+                limit,
+                cursor_collection,
+                ReliabilityCollection::ToolEffects,
+            ),
+        )
+    };
+    let dead_letters = if stale_cursor {
+        Vec::new()
+    } else {
+        list_stateful_dead_letters(
+            &path,
+            &tenant_context,
+            reliability_query(
+                &query,
+                Some(run_id.as_str()),
+                limit,
+                cursor_collection,
+                ReliabilityCollection::DeadLetters,
+            ),
+        )
+    };
+    let compensations = if stale_cursor {
+        Vec::new()
+    } else {
+        list_stateful_compensations(
+            &path,
+            &tenant_context,
+            reliability_query(
+                &query,
+                Some(run_id.as_str()),
+                limit,
+                cursor_collection,
+                ReliabilityCollection::Compensations,
+            ),
+        )
+    };
+    let pagination = reliability_pagination(
+        query.after_id.as_deref(),
+        cursor_collection,
+        query.before_created_at_ms,
+        limit,
+        &outbox,
+        &tool_effects,
+        &dead_letters,
+        &compensations,
+    );
 
     Json(json!({
         "run_id": run_id,
@@ -106,6 +282,7 @@ pub(super) async fn get_stateful_run_reliability(
             "compensations": compensations.len(),
         },
         "limit": limit,
+        "pagination": pagination,
     }))
     .into_response()
 }
@@ -276,6 +453,9 @@ async fn build_resume_plan(
         run_id: Some(run_id),
         status: None,
         source_type: None,
+        after_id: None,
+        before_created_at_ms: None,
+        active_recovery_only: true,
         limit: Some(limit),
     };
     let effects = list_stateful_tool_effects(&path, tenant_context, query);
@@ -441,14 +621,178 @@ fn operator_choices(
 
 fn reliability_query<'a>(
     query: &'a StatefulReliabilityListQuery,
+    run_id: Option<&'a str>,
     limit: usize,
+    cursor_collection: Option<ReliabilityCollection>,
+    collection: ReliabilityCollection,
 ) -> StatefulReliabilityQuery<'a> {
     StatefulReliabilityQuery {
-        run_id: query.run_id.as_deref(),
+        run_id: run_id.or(query.run_id.as_deref()),
         status: query.status.as_deref(),
         source_type: query.source_type.as_deref(),
+        after_id: (cursor_collection == Some(collection))
+            .then(|| query.after_id.as_deref())
+            .flatten(),
+        before_created_at_ms: query.before_created_at_ms,
+        active_recovery_only: query.active_recovery_only,
         limit: Some(limit),
     }
+}
+
+fn reliability_cursor_collection(
+    path: &std::path::Path,
+    tenant_context: &TenantContext,
+    query: &StatefulReliabilityListQuery,
+    run_id: Option<&str>,
+) -> Option<ReliabilityCollection> {
+    let after_id = query.after_id.as_deref()?.trim();
+    if after_id.is_empty() {
+        return None;
+    }
+    ReliabilityCollection::from_query(query.after_collection.as_deref()).or_else(|| {
+        infer_reliability_cursor_collection(path, tenant_context, query, run_id, after_id)
+    })
+}
+
+fn reliability_cursor_is_stale(
+    query: &StatefulReliabilityListQuery,
+    cursor_collection: Option<ReliabilityCollection>,
+) -> bool {
+    query
+        .after_id
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|after_id| !after_id.is_empty())
+        && cursor_collection.is_none()
+}
+
+fn infer_reliability_cursor_collection(
+    path: &std::path::Path,
+    tenant_context: &TenantContext,
+    query: &StatefulReliabilityListQuery,
+    run_id: Option<&str>,
+    after_id: &str,
+) -> Option<ReliabilityCollection> {
+    let store = load_stateful_reliability(path);
+    let run_id = run_id.or(query.run_id.as_deref());
+    let mut matches = Vec::new();
+    if store.outbox.iter().any(|row| {
+        row.visible_to_tenant(tenant_context)
+            && reliability_option_filter_matches(run_id, row.run_id.as_deref())
+            && reliability_status_matches(query.status.as_deref(), &row.status)
+            && row.outbox_id == after_id
+    }) {
+        matches.push(ReliabilityCollection::Outbox);
+    }
+    if store.tool_effects.iter().any(|row| {
+        row.visible_to_tenant(tenant_context)
+            && reliability_option_filter_matches(run_id, row.run_id.as_deref())
+            && reliability_status_matches(query.status.as_deref(), &row.status)
+            && reliability_option_filter_matches(
+                query.source_type.as_deref(),
+                row.source_kind.as_deref(),
+            )
+            && row.effect_id == after_id
+    }) {
+        matches.push(ReliabilityCollection::ToolEffects);
+    }
+    if store.dead_letters.iter().any(|row| {
+        row.visible_to_tenant(tenant_context)
+            && reliability_option_filter_matches(run_id, row.run_id.as_deref())
+            && reliability_status_matches(query.status.as_deref(), &row.status)
+            && reliability_option_filter_matches(
+                query.source_type.as_deref(),
+                Some(row.source_type.as_str()),
+            )
+            && row.dead_letter_id == after_id
+    }) {
+        matches.push(ReliabilityCollection::DeadLetters);
+    }
+    if store.compensations.iter().any(|row| {
+        row.visible_to_tenant(tenant_context)
+            && reliability_option_filter_matches(run_id, row.run_id.as_deref())
+            && reliability_status_matches(query.status.as_deref(), &row.status)
+            && row.compensation_id == after_id
+    }) {
+        matches.push(ReliabilityCollection::Compensations);
+    }
+    (matches.len() == 1)
+        .then(|| matches.first().copied())
+        .flatten()
+}
+
+fn reliability_option_filter_matches(expected: Option<&str>, actual: Option<&str>) -> bool {
+    let Some(expected) = reliability_filter(expected) else {
+        return true;
+    };
+    actual
+        .map(normalize_choice)
+        .map(|actual| actual == expected)
+        .unwrap_or(false)
+}
+
+fn reliability_status_matches<T: Serialize>(expected: Option<&str>, actual: &T) -> bool {
+    let Some(expected) = reliability_filter(expected) else {
+        return true;
+    };
+    serde_json::to_value(actual)
+        .ok()
+        .and_then(|value| value.as_str().map(normalize_choice))
+        .map(|actual| actual == expected)
+        .unwrap_or(false)
+}
+
+fn reliability_filter(value: Option<&str>) -> Option<String> {
+    let value = normalize_choice(value.unwrap_or_default());
+    (!value.is_empty() && value != "all").then_some(value)
+}
+
+fn reliability_pagination(
+    after_id: Option<&str>,
+    cursor_collection: Option<ReliabilityCollection>,
+    before_created_at_ms: Option<u64>,
+    limit: usize,
+    outbox: &[crate::stateful_runtime::StatefulOutboxRecord],
+    tool_effects: &[crate::stateful_runtime::StatefulToolEffectRecord],
+    dead_letters: &[crate::stateful_runtime::StatefulDeadLetterRecord],
+    compensations: &[crate::stateful_runtime::StatefulCompensationRecord],
+) -> Value {
+    json!({
+        "after_id": after_id,
+        "after_collection": cursor_collection.map(ReliabilityCollection::as_str),
+        "before_created_at_ms": before_created_at_ms,
+        "next": {
+            "outbox": reliability_cursor(outbox, limit, before_created_at_ms, ReliabilityCollection::Outbox, |row| &row.outbox_id),
+            "tool_effects": reliability_cursor(tool_effects, limit, before_created_at_ms, ReliabilityCollection::ToolEffects, |row| &row.effect_id),
+            "dead_letters": reliability_cursor(dead_letters, limit, before_created_at_ms, ReliabilityCollection::DeadLetters, |row| &row.dead_letter_id),
+            "compensations": reliability_cursor(compensations, limit, before_created_at_ms, ReliabilityCollection::Compensations, |row| &row.compensation_id),
+        },
+    })
+}
+
+fn reliability_cursor<T, IdFn>(
+    rows: &[T],
+    limit: usize,
+    before_created_at_ms: Option<u64>,
+    collection: ReliabilityCollection,
+    id: IdFn,
+) -> Option<Value>
+where
+    IdFn: Fn(&T) -> &String,
+{
+    if rows.len() < limit {
+        return None;
+    }
+    rows.last().map(|row| {
+        let mut cursor = json!({
+            "after_id": id(row),
+            "after_collection": collection.as_str(),
+        });
+        if let Some(before_created_at_ms) = before_created_at_ms {
+            cursor["before_created_at_ms"] = json!(before_created_at_ms);
+        }
+        cursor
+    })
 }
 
 fn limit(limit: Option<usize>) -> usize {

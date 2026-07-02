@@ -348,7 +348,7 @@ export function RecoveryQueueView({ api, toast, filters, onFiltersChange, onOpen
   const queryClient = useQueryClient();
   const reliabilityQuery = useQuery({
     queryKey: ["stateful-runtime", "reliability-queue"],
-    queryFn: () => api("/api/engine/stateful-runtime/reliability?limit=240"),
+    queryFn: () => api("/api/engine/stateful-runtime/reliability?limit=240&active_recovery_only=true"),
     refetchInterval: 10000,
   });
   const allRows = useMemo(() => buildRecoveryQueueRows(reliabilityQuery.data || {}), [reliabilityQuery.data]);

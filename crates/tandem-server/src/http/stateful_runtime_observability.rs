@@ -54,6 +54,9 @@ pub(super) async fn get_stateful_run_observability(
         run_id: Some(&run_id),
         status: None,
         source_type: None,
+        after_id: None,
+        before_created_at_ms: None,
+        active_recovery_only: false,
         limit: Some(reliability_limit),
     };
     let waits = list_stateful_waits(
@@ -90,6 +93,14 @@ pub(super) async fn get_stateful_run_observability(
         list_stateful_dead_letters(&reliability_path, &tenant_context, reliability_query);
     let compensations =
         list_stateful_compensations(&reliability_path, &tenant_context, reliability_query);
+    let active_recovery_query = StatefulReliabilityQuery {
+        active_recovery_only: true,
+        ..reliability_query
+    };
+    let active_dead_letters =
+        list_stateful_dead_letters(&reliability_path, &tenant_context, active_recovery_query);
+    let active_compensations =
+        list_stateful_compensations(&reliability_path, &tenant_context, active_recovery_query);
     let policy_decisions = state
         .list_policy_decisions_for_run(&tenant_context, &run_id, reliability_limit)
         .await;
@@ -107,16 +118,16 @@ pub(super) async fn get_stateful_run_observability(
         &policy_decisions,
         &outbox,
         &tool_effects,
-        &dead_letters,
-        &compensations,
+        &active_dead_letters,
+        &active_compensations,
     );
     let operator_actions = operator_actions(
         &run,
         &active_waits,
         &policy_decisions,
         &tool_effects,
-        &dead_letters,
-        &compensations,
+        &active_dead_letters,
+        &active_compensations,
     );
     let event_correlation_ids = event_correlation_ids(&events);
     let latest_event = events.last().map(event_summary);
