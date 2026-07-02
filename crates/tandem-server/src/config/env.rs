@@ -40,6 +40,17 @@ pub(crate) fn resolve_automation_quality_legacy_rollback_enabled() -> bool {
         .unwrap_or(false)
 }
 
+pub(crate) fn resolve_allow_unsigned_dev_webhooks() -> bool {
+    std::env::var("TANDEM_AUTOMATION_WEBHOOK_ALLOW_UNSIGNED_DEV_MODE")
+        .ok()
+        .and_then(|v| match v.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        })
+        .unwrap_or(false)
+}
+
 pub(crate) fn prometheus_metrics_enabled() -> bool {
     std::env::var("TANDEM_OBSERVABILITY_PROMETHEUS_ENABLED")
         .ok()

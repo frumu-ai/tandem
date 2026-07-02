@@ -101,6 +101,7 @@ pub mod workflows;
 pub use app::startup::*;
 pub use app::state::automation::lifecycle::record_automation_lifecycle_event_with_metadata;
 pub use app::state::*;
+pub use app::tasks::run_automation_webhook_retention_reaper;
 pub use app::tasks::run_runtime_event_log_persister;
 pub use app::tasks::run_session_context_run_journaler;
 pub use automation_v2::execution_profile::{

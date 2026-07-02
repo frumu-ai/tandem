@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -14,6 +14,13 @@ use crate::automation_v2::types::*;
 use super::{automation_webhook_delivery_correlation, AppState};
 
 const AUTOMATION_WEBHOOK_EVENT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct AutomationWebhookRetentionPruneReport {
+    pub pruned_events: usize,
+    pub pruned_payloads: usize,
+    pub pruned_deliveries: usize,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AutomationWebhookEventsFile {
@@ -51,6 +58,61 @@ fn automation_webhook_payloads_dir(deliveries_path: &Path) -> PathBuf {
 
 fn new_automation_webhook_event_id() -> String {
     format!("automation-webhook-event-{}", Uuid::new_v4())
+}
+
+fn automation_webhook_payload_path_for_event(
+    payloads_dir: &Path,
+    event: &AutomationWebhookRawEventRecord,
+) -> PathBuf {
+    event
+        .payload_ref
+        .strip_prefix("raw_payloads/")
+        .filter(|file_name| !file_name.contains('/'))
+        .map(|file_name| payloads_dir.join(file_name))
+        .unwrap_or_else(|| payloads_dir.join(format!("{}.body", event.event_id)))
+}
+
+fn automation_webhook_event_is_expired(
+    event: &AutomationWebhookRawEventRecord,
+    now_ms: u64,
+) -> bool {
+    event
+        .retention_policy
+        .delete_after_ms
+        .is_some_and(|delete_after_ms| delete_after_ms <= now_ms)
+}
+
+fn automation_webhook_delivery_is_rejection_only_retention_candidate(
+    delivery: &AutomationWebhookDeliveryRecord,
+    protected_delivery_ids: &HashSet<String>,
+    now_ms: u64,
+) -> bool {
+    if protected_delivery_ids.contains(&delivery.delivery_id) {
+        return false;
+    }
+    if !matches!(
+        delivery.status,
+        AutomationWebhookDeliveryStatus::Rejected
+            | AutomationWebhookDeliveryStatus::Disabled
+            | AutomationWebhookDeliveryStatus::Failed
+    ) {
+        return false;
+    }
+    let retention_ms = AutomationWebhookEventRetentionPolicy::default().raw_payload_retention_ms;
+    delivery
+        .rejected_at_ms
+        .unwrap_or(delivery.received_at_ms)
+        .checked_add(retention_ms)
+        .is_some_and(|delete_after_ms| delete_after_ms <= now_ms)
+}
+
+fn retained_automation_webhook_delivery_ids(
+    events: &HashMap<String, AutomationWebhookRawEventRecord>,
+) -> HashSet<String> {
+    events
+        .values()
+        .filter_map(|event| event.delivery_id.clone())
+        .collect()
 }
 
 fn parse_automation_webhook_events_file(
@@ -122,7 +184,123 @@ async fn write_raw_payload_atomically(path: &Path, payload: &[u8]) -> anyhow::Re
     Ok(())
 }
 
+async fn remove_raw_payload_if_present(path: &Path) -> anyhow::Result<bool> {
+    match fs::remove_file(path).await {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn prune_automation_webhook_events_locked(
+    events_path: &PathBuf,
+    payloads_dir: &Path,
+    events: &mut HashMap<String, AutomationWebhookRawEventRecord>,
+    now_ms: u64,
+) -> anyhow::Result<(AutomationWebhookRetentionPruneReport, HashSet<String>)> {
+    let expired_event_ids = events
+        .iter()
+        .filter(|(_, event)| automation_webhook_event_is_expired(event, now_ms))
+        .map(|(event_id, _)| event_id.clone())
+        .collect::<Vec<_>>();
+    if expired_event_ids.is_empty() {
+        return Ok((
+            AutomationWebhookRetentionPruneReport::default(),
+            HashSet::new(),
+        ));
+    }
+
+    let mut report = AutomationWebhookRetentionPruneReport::default();
+    let mut delivery_ids = HashSet::new();
+    for event_id in expired_event_ids {
+        let Some(event) = events.remove(&event_id) else {
+            continue;
+        };
+        report.pruned_events += 1;
+        if let Some(delivery_id) = event.delivery_id.as_ref() {
+            delivery_ids.insert(delivery_id.clone());
+        }
+        let payload_path = automation_webhook_payload_path_for_event(payloads_dir, &event);
+        if remove_raw_payload_if_present(&payload_path).await? {
+            report.pruned_payloads += 1;
+        }
+    }
+    persist_automation_webhook_events(events_path, events.clone()).await?;
+    Ok((report, delivery_ids))
+}
+
 impl AppState {
+    async fn prune_automation_webhook_deliveries_for_events_locked(
+        &self,
+        delivery_ids: &HashSet<String>,
+    ) -> anyhow::Result<usize> {
+        if delivery_ids.is_empty() {
+            return Ok(0);
+        }
+        let pruned = {
+            let mut deliveries = self.automation_webhook_deliveries.write().await;
+            let before = deliveries.len();
+            deliveries.retain(|delivery_id, _| !delivery_ids.contains(delivery_id));
+            before.saturating_sub(deliveries.len())
+        };
+        if pruned > 0 {
+            self.persist_automation_webhook_deliveries_locked().await?;
+        }
+        Ok(pruned)
+    }
+
+    async fn prune_rejection_only_automation_webhook_deliveries_locked(
+        &self,
+        protected_delivery_ids: &HashSet<String>,
+        now_ms: u64,
+    ) -> anyhow::Result<usize> {
+        let pruned = {
+            let mut deliveries = self.automation_webhook_deliveries.write().await;
+            let before = deliveries.len();
+            deliveries.retain(|_, delivery| {
+                !automation_webhook_delivery_is_rejection_only_retention_candidate(
+                    delivery,
+                    protected_delivery_ids,
+                    now_ms,
+                )
+            });
+            before.saturating_sub(deliveries.len())
+        };
+        if pruned > 0 {
+            self.persist_automation_webhook_deliveries_locked().await?;
+        }
+        Ok(pruned)
+    }
+
+    pub(crate) async fn prune_automation_webhook_retention(
+        &self,
+        now_ms: u64,
+    ) -> anyhow::Result<AutomationWebhookRetentionPruneReport> {
+        let _guard = self.automation_webhook_persistence.lock().await;
+        let events_path = automation_webhook_events_path(&self.automation_webhook_deliveries_path);
+        let payloads_dir =
+            automation_webhook_payloads_dir(&self.automation_webhook_deliveries_path);
+        let mut events = load_automation_webhook_events(&events_path).await?;
+        let (mut report, delivery_ids) = prune_automation_webhook_events_locked(
+            &events_path,
+            &payloads_dir,
+            &mut events,
+            now_ms,
+        )
+        .await?;
+        let protected_delivery_ids = retained_automation_webhook_delivery_ids(&events);
+        report.pruned_deliveries += self
+            .prune_automation_webhook_deliveries_for_events_locked(&delivery_ids)
+            .await?;
+        report.pruned_deliveries += self
+            .prune_rejection_only_automation_webhook_deliveries_locked(
+                &protected_delivery_ids,
+                now_ms,
+            )
+            .await?;
+        Ok(report)
+    }
+
     pub(crate) async fn record_automation_webhook_raw_event(
         &self,
         input: AutomationWebhookRawEventCreateInput,
@@ -137,6 +315,21 @@ impl AppState {
         write_raw_payload_atomically(&payload_path, &input.payload).await?;
 
         let mut events = load_automation_webhook_events(&events_path).await?;
+        let (_report, delivery_ids) = prune_automation_webhook_events_locked(
+            &events_path,
+            &payloads_dir,
+            &mut events,
+            input.received_at_ms,
+        )
+        .await?;
+        self.prune_automation_webhook_deliveries_for_events_locked(&delivery_ids)
+            .await?;
+        let protected_delivery_ids = retained_automation_webhook_delivery_ids(&events);
+        self.prune_rejection_only_automation_webhook_deliveries_locked(
+            &protected_delivery_ids,
+            input.received_at_ms,
+        )
+        .await?;
         let trigger_id = input.trigger.trigger_id.clone();
         let automation_id = input.trigger.automation_id.clone();
         let enterprise_scope = input.trigger.enterprise_scope();

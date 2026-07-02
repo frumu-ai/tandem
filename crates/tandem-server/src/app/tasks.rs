@@ -885,6 +885,39 @@ pub async fn run_runtime_event_log_persister(state: AppState) {
     }
 }
 
+pub async fn run_automation_webhook_retention_reaper(state: AppState) {
+    if !wait_for_runtime_ready_or_exit(&state, "automation_webhook_retention_reaper").await {
+        return;
+    }
+    loop {
+        if state.is_automation_scheduler_stopping() {
+            return;
+        }
+        match state.prune_automation_webhook_retention(now_ms()).await {
+            Ok(report)
+                if report.pruned_events > 0
+                    || report.pruned_payloads > 0
+                    || report.pruned_deliveries > 0 =>
+            {
+                tracing::info!(
+                    pruned_events = report.pruned_events,
+                    pruned_payloads = report.pruned_payloads,
+                    pruned_deliveries = report.pruned_deliveries,
+                    "automation webhook retention reaper pruned expired records"
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "automation webhook retention reaper could not prune expired records"
+                );
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(60 * 60)).await;
+    }
+}
+
 #[cfg(test)]
 mod runtime_event_log_persister_tests {
     use serde_json::json;

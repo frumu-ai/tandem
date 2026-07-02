@@ -621,6 +621,7 @@ const CONFIG_VARS: &[ConfigVar] = &[
     ConfigVar { name: "TANDEM_AUTOMATION_STRICT_RESEARCH_QUALITY", default: "true", notes: "Enable strict automation research quality checks." },
     ConfigVar { name: "TANDEM_AUTOMATION_QUALITY_LEGACY_ROLLBACK", default: "false", notes: "Enable legacy rollback behavior for automation quality checks." },
     ConfigVar { name: "TANDEM_AUTOMATION_EXECUTE_NODE_TIMEOUT_MS", default: "1800000", notes: "Automation node timeout; valid range 180000..=3600000." },
+    ConfigVar { name: "TANDEM_AUTOMATION_WEBHOOK_ALLOW_UNSIGNED_DEV_MODE", default: "false", notes: "Dev/test only opt-in for unsigned automation webhook triggers." },
     ConfigVar { name: "TANDEM_OBSERVABILITY_PROMETHEUS_ENABLED", default: "false", notes: "Enable the authenticated `/metrics` Prometheus endpoint." },
     ConfigVar { name: "TANDEM_SCHEDULER_MODE", default: "multi", notes: "Scheduler mode: single or multi." },
     ConfigVar { name: "TANDEM_SCHEDULER_MAX_CONCURRENT_RUNS", default: "8", notes: "Positive maximum concurrent scheduler runs." },

@@ -358,6 +358,7 @@ pub async fn serve_with_route_extensions(
     let session_part_persister_state = state.clone();
     let session_context_run_journaler_state = state.clone();
     let runtime_event_log_persister_state = state.clone();
+    let automation_webhook_retention_reaper_state = state.clone();
     let status_indexer_state = state.clone();
     let routine_scheduler_state = state.clone();
     let routine_executor_state = state.clone();
@@ -422,6 +423,9 @@ pub async fn serve_with_route_extensions(
     let runtime_event_log_persister = tokio::spawn(crate::run_runtime_event_log_persister(
         runtime_event_log_persister_state,
     ));
+    let automation_webhook_retention_reaper = tokio::spawn(
+        crate::run_automation_webhook_retention_reaper(automation_webhook_retention_reaper_state),
+    );
     let status_indexer = tokio::spawn(crate::run_status_indexer(status_indexer_state));
     let routine_scheduler = tokio::spawn(crate::run_routine_scheduler(routine_scheduler_state));
     let routine_executor = tokio::spawn(crate::run_routine_executor(routine_executor_state));
@@ -609,6 +613,7 @@ pub async fn serve_with_route_extensions(
     session_part_persister.abort();
     session_context_run_journaler.abort();
     runtime_event_log_persister.abort();
+    automation_webhook_retention_reaper.abort();
     status_indexer.abort();
     routine_scheduler.abort();
     routine_executor.abort();

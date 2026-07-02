@@ -102,6 +102,86 @@ async fn create_automation(app: &axum::Router, automation_id: &str) {
 }
 
 #[tokio::test]
+async fn webhook_management_rejects_unsigned_dev_mode_without_server_flag() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    create_automation(&app, "auto-webhook-unsigned").await;
+
+    let create_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "POST",
+            "/automations/v2/auto-webhook-unsigned/webhook-triggers",
+            "org-a",
+            "workspace-a",
+            "actor-a",
+            Some(json!({
+                "name": "Unsigned dev",
+                "provider": "generic",
+                "signature_scheme": "unsigned_dev_mode",
+            })),
+        ))
+        .await
+        .expect("create unsigned webhook");
+    assert_eq!(create_resp.status(), StatusCode::BAD_REQUEST);
+
+    let normal_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "POST",
+            "/automations/v2/auto-webhook-unsigned/webhook-triggers",
+            "org-a",
+            "workspace-a",
+            "actor-a",
+            Some(json!({
+                "name": "Signed webhook",
+                "provider": "generic",
+            })),
+        ))
+        .await
+        .expect("create signed webhook");
+    assert_eq!(normal_resp.status(), StatusCode::OK);
+    let trigger_id = response_json(normal_resp)
+        .await
+        .pointer("/trigger/trigger_id")
+        .and_then(Value::as_str)
+        .expect("trigger id")
+        .to_string();
+
+    let update_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "PATCH",
+            format!("/automations/v2/auto-webhook-unsigned/webhook-triggers/{trigger_id}"),
+            "org-a",
+            "workspace-a",
+            "actor-a",
+            Some(json!({
+                "signature_scheme": "unsigned_dev_mode",
+            })),
+        ))
+        .await
+        .expect("update unsigned webhook");
+    assert_eq!(update_resp.status(), StatusCode::BAD_REQUEST);
+
+    state.set_allow_unsigned_dev_webhooks(true);
+    let allowed_resp = app
+        .oneshot(tenant_request(
+            "PATCH",
+            format!("/automations/v2/auto-webhook-unsigned/webhook-triggers/{trigger_id}"),
+            "org-a",
+            "workspace-a",
+            "actor-a",
+            Some(json!({
+                "signature_scheme": "unsigned_dev_mode",
+            })),
+        ))
+        .await
+        .expect("allowed unsigned update");
+    assert_eq!(allowed_resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn webhook_management_routes_redact_secrets_and_delivery_payloads() {
     let state = test_state().await;
     let app = app_router(state.clone());

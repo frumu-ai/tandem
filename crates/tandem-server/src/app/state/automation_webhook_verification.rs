@@ -12,6 +12,7 @@ const TANDEM_HMAC_SHA256_VERIFIER_ID: &str = "tandem_hmac_sha256_v1";
 const GITHUB_HMAC_SHA256_VERIFIER_ID: &str = "github_hmac_sha256";
 const SHARED_SECRET_HEADER_VERIFIER_ID: &str = "shared_secret_header_v1";
 const UNSIGNED_DEV_MODE_VERIFIER_ID: &str = "unsigned_dev_mode";
+const TANDEM_SIGNED_ALLOW_SELF_FEEDBACK_HEADER: &str = "x-tandem-allow-self-feedback";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AutomationWebhookVerificationError {
@@ -23,6 +24,7 @@ pub(crate) enum AutomationWebhookVerificationError {
     BadSignature,
     MissingSecretMaterial,
     ReplayDetected,
+    UnsignedDevModeDisabled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +58,7 @@ pub(crate) struct AutomationWebhookSignatureHeaders {
     legacy_tandem_hmac_sha256: Option<String>,
     github_hmac_sha256: Option<String>,
     shared_secret: Option<String>,
+    tandem_signed_allow_self_feedback: Option<String>,
 }
 
 impl AutomationWebhookSignatureHeaders {
@@ -70,11 +73,17 @@ impl AutomationWebhookSignatureHeaders {
             legacy_tandem_hmac_sha256: clean_header(legacy_tandem_hmac_sha256),
             github_hmac_sha256: clean_header(github_hmac_sha256),
             shared_secret: clean_header(shared_secret),
+            tandem_signed_allow_self_feedback: None,
         }
     }
 
     pub(crate) fn tandem(signature_header: Option<&str>) -> Self {
         Self::from_headers(signature_header, None, None, None)
+    }
+
+    pub(crate) fn with_tandem_signed_allow_self_feedback(mut self, value: Option<&str>) -> Self {
+        self.tandem_signed_allow_self_feedback = clean_header(value);
+        self
     }
 
     fn tandem_hmac_sha256(&self) -> Option<&str> {
@@ -89,6 +98,10 @@ impl AutomationWebhookSignatureHeaders {
 
     fn shared_secret(&self) -> Option<&str> {
         self.shared_secret.as_deref()
+    }
+
+    fn tandem_signed_allow_self_feedback(&self) -> Option<&str> {
+        self.tandem_signed_allow_self_feedback.as_deref()
     }
 }
 
@@ -157,6 +170,7 @@ impl AutomationWebhookSignatureVerifier for TandemHmacSha256Verifier {
         mac.update(&automation_webhook_signature_payload(
             timestamp_ms,
             context.body,
+            context.headers.tandem_signed_allow_self_feedback(),
         ));
         mac.verify_slice(&signature)
             .map_err(|_| AutomationWebhookVerificationError::BadSignature)?;
@@ -257,7 +271,18 @@ pub(crate) fn automation_webhook_signature_header(
     timestamp_ms: u64,
     body: &[u8],
 ) -> String {
-    let signature = automation_webhook_signature(secret, timestamp_ms, body);
+    let signature = automation_webhook_signature(secret, timestamp_ms, body, None);
+    format!("t={timestamp_ms},v1={signature}")
+}
+
+pub(crate) fn automation_webhook_signature_header_with_signed_allow_self_feedback(
+    secret: &str,
+    timestamp_ms: u64,
+    body: &[u8],
+    allow_self_feedback: &str,
+) -> String {
+    let signature =
+        automation_webhook_signature(secret, timestamp_ms, body, Some(allow_self_feedback.trim()));
     format!("t={timestamp_ms},v1={signature}")
 }
 
@@ -269,18 +294,37 @@ pub(crate) fn github_automation_webhook_signature_header(secret: &str, body: &[u
     format!("sha256={}", hex_encode(&signature))
 }
 
-fn automation_webhook_signature(secret: &str, timestamp_ms: u64, body: &[u8]) -> String {
+fn automation_webhook_signature(
+    secret: &str,
+    timestamp_ms: u64,
+    body: &[u8],
+    allow_self_feedback: Option<&str>,
+) -> String {
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
         .expect("HMAC-SHA256 accepts secrets of any length");
-    mac.update(&automation_webhook_signature_payload(timestamp_ms, body));
+    mac.update(&automation_webhook_signature_payload(
+        timestamp_ms,
+        body,
+        allow_self_feedback,
+    ));
     let signature = mac.finalize().into_bytes();
     hex_encode(&signature)
 }
 
-fn automation_webhook_signature_payload(timestamp_ms: u64, body: &[u8]) -> Vec<u8> {
+fn automation_webhook_signature_payload(
+    timestamp_ms: u64,
+    body: &[u8],
+    allow_self_feedback: Option<&str>,
+) -> Vec<u8> {
     let mut payload = timestamp_ms.to_string().into_bytes();
     payload.push(b'.');
     payload.extend_from_slice(body);
+    if let Some(allow_self_feedback) = allow_self_feedback {
+        payload.extend_from_slice(b"\n");
+        payload.extend_from_slice(TANDEM_SIGNED_ALLOW_SELF_FEEDBACK_HEADER.as_bytes());
+        payload.push(b':');
+        payload.extend_from_slice(allow_self_feedback.as_bytes());
+    }
     payload
 }
 

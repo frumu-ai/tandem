@@ -1,7 +1,8 @@
 use super::*;
 use crate::app::state::{
-    automation_webhook_signature_header, github_automation_webhook_signature_header,
-    AutomationWebhookTriggerCreateInput,
+    automation_webhook_signature_header,
+    automation_webhook_signature_header_with_signed_allow_self_feedback,
+    github_automation_webhook_signature_header, AutomationWebhookTriggerCreateInput,
 };
 use crate::automation_v2::types::{
     AutomationWebhookDedupeResult, AutomationWebhookDeliveryStatus,
@@ -855,7 +856,7 @@ async fn public_automation_webhook_suppresses_tandem_origin_feedback_loop() {
         Some(&crate::AutomationWebhookCorrelationOutcome::Suppressed)
     );
 
-    let allowed_body = json!({
+    let body_only_allowed_body = json!({
             "tandem_origin": {
                 "idempotency_key": idempotency_key,
                 "run_id": source_run.run_id.clone(),
@@ -864,10 +865,12 @@ async fn public_automation_webhook_suppresses_tandem_origin_feedback_loop() {
             "allow_self_feedback": true,
         },
         "ticket": "ticket-123",
+        "attempt": "body-only",
     })
     .to_string()
     .into_bytes();
-    let allowed_resp = app
+    let body_only_allowed_resp = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -876,17 +879,122 @@ async fn public_automation_webhook_suppresses_tandem_origin_feedback_loop() {
                     created.trigger.public_path_token
                 ))
                 .header("content-type", "application/json")
-                .header("x-tandem-webhook-event-id", "evt-feedback-allowed")
+                .header("x-tandem-webhook-event-id", "evt-feedback-body-allowed")
                 .header(
                     "x-tandem-webhook-signature",
-                    automation_webhook_signature_header(&created.secret, now + 1, &allowed_body),
+                    automation_webhook_signature_header(
+                        &created.secret,
+                        now + 1,
+                        &body_only_allowed_body,
+                    ),
                 )
-                .body(Body::from(allowed_body))
+                .body(Body::from(body_only_allowed_body))
                 .expect("request"),
         )
         .await
-        .expect("allowed response");
-    assert_eq!(allowed_resp.status(), StatusCode::ACCEPTED);
+        .expect("body-only allowed response");
+    assert_eq!(body_only_allowed_resp.status(), StatusCode::ACCEPTED);
+    assert_eq!(state.automation_v2_runs.read().await.len(), 2);
+    let deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+        )
+        .await;
+    let body_only_allowed = deliveries
+        .iter()
+        .find(|delivery| delivery.provider_event_id.as_deref() == Some("evt-feedback-body-allowed"))
+        .expect("body-only allowed delivery");
+    assert_eq!(
+        body_only_allowed.status,
+        AutomationWebhookDeliveryStatus::Suppressed
+    );
+    assert_eq!(
+        body_only_allowed
+            .feedback_loop
+            .as_ref()
+            .map(|decision| &decision.outcome),
+        Some(&AutomationWebhookFeedbackLoopOutcome::Suppressed)
+    );
+
+    let unsigned_header_body = json!({
+            "tandem_origin": {
+                "idempotency_key": idempotency_key,
+                "run_id": source_run.run_id.clone(),
+                "node_id": "node-feedback",
+                "resource_id": "ticket-123",
+        },
+        "ticket": "ticket-123",
+        "attempt": "unsigned-header",
+    })
+    .to_string()
+    .into_bytes();
+    let unsigned_header_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/webhooks/automations/{}",
+                    created.trigger.public_path_token
+                ))
+                .header("content-type", "application/json")
+                .header("x-tandem-webhook-event-id", "evt-feedback-unsigned-header")
+                .header("x-tandem-allow-self-feedback", "true")
+                .header(
+                    "x-tandem-webhook-signature",
+                    automation_webhook_signature_header(
+                        &created.secret,
+                        now + 2,
+                        &unsigned_header_body,
+                    ),
+                )
+                .body(Body::from(unsigned_header_body))
+                .expect("request"),
+        )
+        .await
+        .expect("unsigned header response");
+    assert_eq!(unsigned_header_resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(state.automation_v2_runs.read().await.len(), 2);
+
+    let trusted_allowed_body = json!({
+            "tandem_origin": {
+                "idempotency_key": idempotency_key,
+                "run_id": source_run.run_id.clone(),
+                "node_id": "node-feedback",
+                "resource_id": "ticket-123",
+        },
+        "ticket": "ticket-123",
+        "attempt": "trusted-header",
+    })
+    .to_string()
+    .into_bytes();
+    let trusted_allowed_resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/webhooks/automations/{}",
+                    created.trigger.public_path_token
+                ))
+                .header("content-type", "application/json")
+                .header("x-tandem-webhook-event-id", "evt-feedback-header-allowed")
+                .header("x-tandem-allow-self-feedback", "true")
+                .header(
+                    "x-tandem-webhook-signature",
+                    automation_webhook_signature_header_with_signed_allow_self_feedback(
+                        &created.secret,
+                        now + 3,
+                        &trusted_allowed_body,
+                        "true",
+                    ),
+                )
+                .body(Body::from(trusted_allowed_body))
+                .expect("request"),
+        )
+        .await
+        .expect("trusted allowed response");
+    assert_eq!(trusted_allowed_resp.status(), StatusCode::ACCEPTED);
     assert_eq!(state.automation_v2_runs.read().await.len(), 3);
     let deliveries = state
         .list_automation_webhook_deliveries_for_trigger(
@@ -894,13 +1002,18 @@ async fn public_automation_webhook_suppresses_tandem_origin_feedback_loop() {
             &created.trigger.trigger_id,
         )
         .await;
-    let allowed = deliveries
+    let trusted_allowed = deliveries
         .iter()
-        .find(|delivery| delivery.provider_event_id.as_deref() == Some("evt-feedback-allowed"))
-        .expect("allowed delivery");
-    assert_eq!(allowed.status, AutomationWebhookDeliveryStatus::Accepted);
+        .find(|delivery| {
+            delivery.provider_event_id.as_deref() == Some("evt-feedback-header-allowed")
+        })
+        .expect("trusted allowed delivery");
     assert_eq!(
-        allowed
+        trusted_allowed.status,
+        AutomationWebhookDeliveryStatus::Accepted
+    );
+    assert_eq!(
+        trusted_allowed
             .feedback_loop
             .as_ref()
             .map(|decision| &decision.outcome),

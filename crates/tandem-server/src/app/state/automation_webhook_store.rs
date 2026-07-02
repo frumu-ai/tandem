@@ -537,11 +537,35 @@ impl AppState {
         super::write_state_file_atomically(&self.automation_webhook_triggers_path, payload).await
     }
 
-    async fn persist_automation_webhook_deliveries_locked(&self) -> anyhow::Result<()> {
+    pub(crate) async fn persist_automation_webhook_deliveries_locked(&self) -> anyhow::Result<()> {
         let deliveries = self.automation_webhook_deliveries.read().await.clone();
         let payload = serialize_automation_webhook_deliveries_file(deliveries)?;
         ensure_parent_dir(&self.automation_webhook_deliveries_path).await?;
         super::write_state_file_atomically(&self.automation_webhook_deliveries_path, payload).await
+    }
+
+    pub(crate) fn set_allow_unsigned_dev_webhooks(&self, allowed: bool) {
+        self.allow_unsigned_dev_webhooks
+            .store(allowed, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn unsigned_dev_webhooks_allowed(&self) -> bool {
+        self.allow_unsigned_dev_webhooks
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn validate_webhook_signature_scheme_allowed(
+        &self,
+        scheme: AutomationWebhookSignatureScheme,
+    ) -> anyhow::Result<AutomationWebhookSignatureScheme> {
+        if matches!(scheme, AutomationWebhookSignatureScheme::UnsignedDevMode)
+            && !self.unsigned_dev_webhooks_allowed()
+        {
+            anyhow::bail!(
+                "unsigned_dev_mode webhook signature scheme requires an explicit dev/test server flag"
+            );
+        }
+        Ok(scheme)
     }
 
     async fn persist_automation_webhook_secret_material_locked(&self) -> anyhow::Result<()> {
@@ -580,6 +604,9 @@ impl AppState {
             }
         }
 
+        let requested_scheme = self.validate_webhook_signature_scheme_allowed(
+            input.signature_scheme.clone().unwrap_or_default(),
+        )?;
         let _guard = self.automation_webhook_persistence.lock().await;
         let now = now_ms();
         let trigger_id = format!("whtr_{}", Uuid::new_v4().simple());
@@ -613,7 +640,7 @@ impl AppState {
                 .and_then(normalize_automation_webhook_provider_event_kind),
             enabled: input.enabled,
             public_path_token,
-            signature_scheme: input.signature_scheme.unwrap_or_default(),
+            signature_scheme: requested_scheme,
             secret: AutomationWebhookSecretMetadata {
                 secret_ref: secret_ref.clone(),
                 secret_digest,
@@ -847,41 +874,44 @@ impl AppState {
             if !trigger.tenant_matches(tenant_context) || trigger.automation_id != automation_id {
                 anyhow::bail!("webhook trigger tenant or automation mismatch");
             }
+            let mut updated_trigger = trigger.clone();
             if let Some(name) = input.name {
                 let name = name.trim();
                 if name.is_empty() {
                     anyhow::bail!("webhook trigger name is required");
                 }
-                trigger.name = name.to_string();
+                updated_trigger.name = name.to_string();
             }
             if let Some(provider) = input.provider {
                 let provider = normalize_automation_webhook_provider(&provider)
                     .ok_or_else(|| anyhow::anyhow!("webhook provider is required"))?;
-                trigger.provider = provider.clone();
-                if trigger.name.trim().is_empty() {
-                    trigger.name = provider;
+                updated_trigger.provider = provider.clone();
+                if updated_trigger.name.trim().is_empty() {
+                    updated_trigger.name = provider;
                 }
             }
             if let Some(provider_event_kind) = input.provider_event_kind {
-                trigger.provider_event_kind = provider_event_kind
+                updated_trigger.provider_event_kind = provider_event_kind
                     .as_deref()
                     .and_then(normalize_automation_webhook_provider_event_kind);
             }
             if let Some(signature_scheme) = input.signature_scheme {
-                trigger.signature_scheme = signature_scheme;
+                updated_trigger.signature_scheme =
+                    self.validate_webhook_signature_scheme_allowed(signature_scheme)?;
             }
             if let Some(default_data_class) = input.default_data_class {
-                trigger.default_data_class = default_data_class;
+                updated_trigger.default_data_class = default_data_class;
             }
             if let Some(default_risk_tier) = input.default_risk_tier {
-                trigger.default_risk_tier = default_risk_tier;
+                updated_trigger.default_risk_tier = default_risk_tier;
             }
             if let Some(enabled) = input.enabled {
-                trigger.enabled = enabled;
+                updated_trigger.enabled = enabled;
             }
-            trigger.updated_at_ms = now_ms();
-            trigger.updated_by = actor_id;
-            trigger.clone()
+            updated_trigger.updated_at_ms = now_ms();
+            updated_trigger.updated_by = actor_id;
+            *trigger = updated_trigger.clone();
+            updated_trigger
         };
         self.persist_automation_webhook_triggers_locked().await?;
         Ok(updated)
@@ -1732,6 +1762,13 @@ impl AppState {
             .ok_or(AutomationWebhookVerificationError::UnknownTrigger)?;
         if !trigger.enabled {
             return Err(AutomationWebhookVerificationError::DisabledTrigger);
+        }
+        if matches!(
+            trigger.signature_scheme,
+            AutomationWebhookSignatureScheme::UnsignedDevMode
+        ) && !self.unsigned_dev_webhooks_allowed()
+        {
+            return Err(AutomationWebhookVerificationError::UnsignedDevModeDisabled);
         }
         let material = self
             .automation_webhook_secret_material

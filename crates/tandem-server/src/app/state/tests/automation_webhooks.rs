@@ -1,7 +1,8 @@
 use super::*;
 use crate::app::state::{
     automation_webhook_body_digest, automation_webhook_signature_header,
-    AutomationWebhookQueueResult, AutomationWebhookTriggerCreateInput,
+    AutomationWebhookQueueResult, AutomationWebhookRawEventCreateInput,
+    AutomationWebhookSignatureHeaders, AutomationWebhookTriggerCreateInput,
     AutomationWebhookTriggerUpdateInput, AutomationWebhookVerificationError,
 };
 use crate::automation_v2::types::{AutomationEnterpriseScope, AutomationWebhookSignatureScheme};
@@ -25,6 +26,15 @@ async fn insert_test_automation(
         .insert(automation_id.to_string(), automation);
 }
 
+fn raw_payload_path(state: &AppState, event_id: &str) -> std::path::PathBuf {
+    state
+        .automation_webhook_deliveries_path
+        .parent()
+        .expect("webhook deliveries parent")
+        .join("raw_payloads")
+        .join(format!("{event_id}.body"))
+}
+
 fn create_input(
     automation_id: &str,
     tenant_context: TenantContext,
@@ -44,6 +54,83 @@ fn create_input(
         signature_scheme: None,
         enabled: true,
     }
+}
+
+#[tokio::test]
+async fn webhook_unsigned_dev_mode_requires_explicit_server_flag() {
+    let state = ready_test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a");
+    insert_test_automation(&state, "automation-unsigned-dev-mode", &tenant_a).await;
+
+    let mut input = create_input("automation-unsigned-dev-mode", tenant_a.clone());
+    input.signature_scheme = Some(AutomationWebhookSignatureScheme::UnsignedDevMode);
+    let error = match state.create_automation_webhook_trigger(input.clone()).await {
+        Ok(_) => panic!("unsigned dev mode should be blocked by default"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("unsigned_dev_mode"));
+
+    state.set_allow_unsigned_dev_webhooks(true);
+    let created = state
+        .create_automation_webhook_trigger(input)
+        .await
+        .expect("explicitly enabled unsigned dev mode");
+    assert_eq!(
+        created.trigger.signature_scheme,
+        AutomationWebhookSignatureScheme::UnsignedDevMode
+    );
+
+    state.set_allow_unsigned_dev_webhooks(false);
+    let error = state
+        .verify_automation_webhook_request_with_headers(
+            &created.trigger.public_path_token,
+            AutomationWebhookSignatureHeaders::default(),
+            br#"{"ok":true}"#,
+            Some("evt-unsigned-disabled".to_string()),
+            crate::now_ms(),
+            300_000,
+        )
+        .await
+        .expect_err("existing unsigned dev mode trigger should be disabled by server flag");
+    assert_eq!(
+        error,
+        AutomationWebhookVerificationError::UnsignedDevModeDisabled
+    );
+
+    let normal = state
+        .create_automation_webhook_trigger(create_input(
+            "automation-unsigned-dev-mode",
+            tenant_a.clone(),
+        ))
+        .await
+        .expect("normal trigger");
+    let error = state
+        .update_automation_webhook_trigger(
+            &tenant_a,
+            "automation-unsigned-dev-mode",
+            &normal.trigger.trigger_id,
+            AutomationWebhookTriggerUpdateInput {
+                name: Some("Should not stick".to_string()),
+                provider_event_kind: Some(Some("event.updated".to_string())),
+                signature_scheme: Some(AutomationWebhookSignatureScheme::UnsignedDevMode),
+                ..AutomationWebhookTriggerUpdateInput::default()
+            },
+            Some("actor-a".to_string()),
+        )
+        .await
+        .expect_err("unsigned dev mode update should be blocked by default");
+    assert!(error.to_string().contains("unsigned_dev_mode"));
+
+    let unchanged = state
+        .get_automation_webhook_trigger(&tenant_a, &normal.trigger.trigger_id)
+        .await
+        .expect("trigger remains readable after rejected update");
+    assert_eq!(unchanged.name, normal.trigger.name);
+    assert_eq!(
+        unchanged.provider_event_kind,
+        normal.trigger.provider_event_kind
+    );
+    assert_eq!(unchanged.updated_at_ms, normal.trigger.updated_at_ms);
 }
 
 #[tokio::test]
@@ -1028,6 +1115,130 @@ async fn webhook_duplicate_after_restart_uses_persisted_idempotency_outcome() {
         Some(accepted.1.run_id.as_str())
     );
     assert!(restarted.automation_v2_runs.read().await.is_empty());
+}
+
+#[tokio::test]
+async fn webhook_retention_prunes_expired_raw_events_payloads_and_deliveries() {
+    let state = ready_test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a");
+    insert_test_automation(&state, "automation-webhook-retention", &tenant_a).await;
+    let created = state
+        .create_automation_webhook_trigger(create_input(
+            "automation-webhook-retention",
+            tenant_a.clone(),
+        ))
+        .await
+        .expect("create webhook trigger");
+
+    let body = br#"{"retention":true}"#;
+    let now = now_ms();
+    let raw_event = state
+        .record_automation_webhook_raw_event(AutomationWebhookRawEventCreateInput {
+            trigger: created.trigger.clone(),
+            provider_event_id: Some("evt-retention".to_string()),
+            body_digest: automation_webhook_body_digest(body),
+            headers_digest: "headers-digest".to_string(),
+            headers_redacted: json!({"x-tandem-webhook-event-id": "evt-retention"}),
+            content_type: Some("application/json".to_string()),
+            payload: body.to_vec(),
+            received_at_ms: now,
+        })
+        .await
+        .expect("record raw event");
+    let payload_path = raw_payload_path(&state, &raw_event.event_id);
+    assert!(payload_path.exists());
+
+    let signature = automation_webhook_signature_header(&created.secret, now, body);
+    let verified = state
+        .verify_automation_webhook_request(
+            &created.trigger.public_path_token,
+            Some(&signature),
+            body,
+            Some("evt-retention".to_string()),
+            now,
+            300_000,
+        )
+        .await
+        .expect("verified request");
+    let delivery = match state
+        .queue_automation_v2_run_from_webhook_delivery(verified, json!({"retention": true}))
+        .await
+        .expect("accepted outcome")
+    {
+        AutomationWebhookQueueResult::Accepted { delivery, .. } => delivery,
+        other => panic!("expected accepted outcome, got {other:?}"),
+    };
+    state
+        .update_automation_webhook_raw_event_outcome(&tenant_a, &raw_event.event_id, &delivery, now)
+        .await
+        .expect("update raw event outcome")
+        .expect("updated raw event");
+    let stale_rejection = state
+        .record_automation_webhook_rejection(
+            &created.trigger,
+            Some("evt-retention-stale-rejection".to_string()),
+            automation_webhook_body_digest(br#"{"rejected":true}"#),
+            AutomationWebhookDeliveryStatus::Rejected,
+            "bad_signature",
+            now,
+            json!({"rejected": true}),
+            None,
+        )
+        .await
+        .expect("record stale rejection-only delivery");
+    let after_default_retention = now + 31 * 24 * 60 * 60 * 1_000;
+    let recent_rejection = state
+        .record_automation_webhook_rejection(
+            &created.trigger,
+            Some("evt-retention-recent-rejection".to_string()),
+            automation_webhook_body_digest(br#"{"recent":true}"#),
+            AutomationWebhookDeliveryStatus::Rejected,
+            "missing_signature",
+            after_default_retention - 60 * 60 * 1_000,
+            json!({"recent": true}),
+            None,
+        )
+        .await
+        .expect("record recent rejection-only delivery");
+
+    assert_eq!(
+        state
+            .list_automation_webhook_raw_events(&tenant_a, None, None, None, 10)
+            .await
+            .len(),
+        1
+    );
+    assert_eq!(
+        state
+            .list_automation_webhook_deliveries_for_trigger(&tenant_a, &created.trigger.trigger_id)
+            .await
+            .len(),
+        3
+    );
+
+    let report = state
+        .prune_automation_webhook_retention(after_default_retention)
+        .await
+        .expect("prune retention");
+    assert_eq!(report.pruned_events, 1);
+    assert_eq!(report.pruned_payloads, 1);
+    assert_eq!(report.pruned_deliveries, 2);
+    assert!(!payload_path.exists());
+    assert!(state
+        .get_automation_webhook_raw_event(&tenant_a, &raw_event.event_id)
+        .await
+        .expect("get raw event")
+        .is_none());
+    let remaining_deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(&tenant_a, &created.trigger.trigger_id)
+        .await;
+    assert_eq!(remaining_deliveries.len(), 1);
+    assert!(remaining_deliveries
+        .iter()
+        .any(|delivery| delivery.delivery_id == recent_rejection.delivery_id));
+    assert!(!remaining_deliveries
+        .iter()
+        .any(|delivery| delivery.delivery_id == stale_rejection.delivery_id));
 }
 
 #[tokio::test]

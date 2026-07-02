@@ -12,7 +12,9 @@ use crate::app::state::{
     AutomationWebhookRawEventCreateInput, AutomationWebhookSignatureHeaders,
     AutomationWebhookVerificationDecision, AutomationWebhookVerificationError,
 };
-use crate::automation_v2::types::automation_webhook_provider_event_id_headers;
+use crate::automation_v2::types::{
+    automation_webhook_provider_event_id_headers, AutomationWebhookSignatureScheme,
+};
 use crate::{
     AppState, AutomationWebhookDeliveryRecord, AutomationWebhookDeliveryStatus,
     AutomationWebhookRawEventRecord, AutomationWebhookTriggerRecord,
@@ -132,7 +134,8 @@ async fn automation_webhook_intake(
         }
     };
     let sanitized_preview = sanitize_automation_webhook_preview(&payload);
-    let feedback_loop_candidate = automation_webhook_feedback_loop_candidate(&headers, &payload);
+    let feedback_loop_candidate =
+        automation_webhook_feedback_loop_candidate(&headers, &payload, &verified.verification);
 
     match state
         .queue_automation_v2_run_from_webhook_delivery_with_feedback_loop(
@@ -194,6 +197,10 @@ fn signature_headers_from_request(headers: &HeaderMap) -> AutomationWebhookSigna
         header_str(headers, AUTOMATION_WEBHOOK_GITHUB_SIGNATURE_HEADER),
         header_str(headers, AUTOMATION_WEBHOOK_SHARED_SECRET_HEADER),
     )
+    .with_tandem_signed_allow_self_feedback(header_str(
+        headers,
+        AUTOMATION_WEBHOOK_ALLOW_SELF_FEEDBACK_HEADER,
+    ))
 }
 
 async fn advisory_provider_event_id(
@@ -237,26 +244,10 @@ fn json_path_string(value: &Value, path: &[&str]) -> Option<String> {
         .map(|value| value.chars().take(512).collect::<String>())
 }
 
-fn json_path_bool(value: &Value, path: &[&str]) -> bool {
-    let mut current = value;
-    for key in path {
-        let Some(next) = current.get(*key) else {
-            return false;
-        };
-        current = next;
-    }
-    current.as_bool().unwrap_or(false)
-        || current.as_str().is_some_and(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "allow" | "allowed"
-            )
-        })
-}
-
 fn automation_webhook_feedback_loop_candidate(
     headers: &HeaderMap,
     payload: &Value,
+    verification: &AutomationWebhookVerificationDecision,
 ) -> Option<AutomationWebhookFeedbackLoopCandidate> {
     let candidate = AutomationWebhookFeedbackLoopCandidate {
         source_action_id: header_str(headers, AUTOMATION_WEBHOOK_ORIGIN_ACTION_HEADER)
@@ -279,15 +270,20 @@ fn automation_webhook_feedback_loop_candidate(
             .map(str::to_string)
             .or_else(|| json_path_string(payload, &["tandem_origin", "resource_id"]))
             .or_else(|| json_path_string(payload, &["tandemOrigin", "resourceID"])),
-        allow_self_feedback: truthy_header(header_str(
-            headers,
-            AUTOMATION_WEBHOOK_ALLOW_SELF_FEEDBACK_HEADER,
-        )) || json_path_bool(
-            payload,
-            &["tandem_origin", "allow_self_feedback"],
-        ) || json_path_bool(payload, &["tandemOrigin", "allowSelfFeedback"]),
+        allow_self_feedback: signed_tandem_allow_self_feedback_header(headers, verification),
     };
     (!candidate.is_empty()).then_some(candidate)
+}
+
+fn signed_tandem_allow_self_feedback_header(
+    headers: &HeaderMap,
+    verification: &AutomationWebhookVerificationDecision,
+) -> bool {
+    verification.scheme == AutomationWebhookSignatureScheme::HmacSha256V1
+        && truthy_header(header_str(
+            headers,
+            AUTOMATION_WEBHOOK_ALLOW_SELF_FEEDBACK_HEADER,
+        ))
 }
 
 fn provider_event_id_from_headers(
@@ -510,6 +506,10 @@ fn verification_rejection_delivery(
             AutomationWebhookDeliveryStatus::Failed,
             "missing_secret_material",
         )),
+        AutomationWebhookVerificationError::UnsignedDevModeDisabled => Some((
+            AutomationWebhookDeliveryStatus::Rejected,
+            "unsigned_dev_mode_disabled",
+        )),
         AutomationWebhookVerificationError::ReplayDetected => Some((
             AutomationWebhookDeliveryStatus::Duplicate,
             "duplicate_delivery",
@@ -524,7 +524,8 @@ fn verification_error_response(error: &AutomationWebhookVerificationError) -> Re
         | AutomationWebhookVerificationError::MalformedSignature
         | AutomationWebhookVerificationError::StaleTimestamp
         | AutomationWebhookVerificationError::BadSignature
-        | AutomationWebhookVerificationError::MissingSecretMaterial => {
+        | AutomationWebhookVerificationError::MissingSecretMaterial
+        | AutomationWebhookVerificationError::UnsignedDevModeDisabled => {
             webhook_public_response(StatusCode::UNAUTHORIZED, "rejected")
         }
         AutomationWebhookVerificationError::DisabledTrigger => {
