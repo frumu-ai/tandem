@@ -6,6 +6,16 @@ use crate::IncidentMonitorPostRecord;
 
 use super::{test_state_with_path, tmp_resource_file};
 
+#[test]
+fn constant_time_str_eq_matches_only_identical_values() {
+    // TAN-558: secret/token/hash comparisons use a constant-time helper.
+    assert!(crate::constant_time_str_eq("token-abc", "token-abc"));
+    assert!(!crate::constant_time_str_eq("token-abc", "token-abd"));
+    assert!(!crate::constant_time_str_eq("token-abc", "token-abc-longer"));
+    assert!(!crate::constant_time_str_eq("", "x"));
+    assert!(crate::constant_time_str_eq("", ""));
+}
+
 fn sample_post(post_id: &str) -> IncidentMonitorPostRecord {
     IncidentMonitorPostRecord {
         post_id: post_id.to_string(),

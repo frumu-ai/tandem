@@ -547,7 +547,7 @@ impl AppState {
                 .find(|row| {
                     row.enabled
                         && row.project_id == project_id
-                        && row.key_hash == key_hash
+                        && crate::constant_time_str_eq(&row.key_hash, &key_hash)
                         && row.scopes.iter().any(|scope| scope == required_scope)
                 })
                 .cloned()

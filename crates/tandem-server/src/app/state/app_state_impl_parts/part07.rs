@@ -312,6 +312,19 @@ pub fn sha256_hex(parts: &[&str]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Constant-time equality for secrets, tokens, and their hashes. Both inputs are
+/// hashed and the fixed-length digests compared without early exit, so neither
+/// the contents nor the lengths leak through timing.
+pub fn constant_time_str_eq(left: &str, right: &str) -> bool {
+    let left_digest = Sha256::digest(left.as_bytes());
+    let right_digest = Sha256::digest(right.as_bytes());
+    let mut diff = 0u8;
+    for (a, b) in left_digest.iter().zip(right_digest.iter()) {
+        diff |= a ^ b;
+    }
+    diff == 0
+}
+
 fn automation_status_uses_scheduler_capacity(status: &AutomationRunStatus) -> bool {
     matches!(status, AutomationRunStatus::Running)
 }
