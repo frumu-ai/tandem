@@ -1406,6 +1406,15 @@ pub(super) async fn report_incident_monitor_intake(
     if report.source.is_none() {
         report.source = Some(format!("incident_monitor.intake.{source_id}"));
     }
+    // Redact secrets from the free-text fields before they are copied into the
+    // incident record below (its excerpt comes straight from `report`); the draft
+    // fields are redacted inside submit_incident_monitor_draft, but the incident
+    // is built here from the raw report.
+    if config.safety_defaults.redact_secrets {
+        crate::incident_monitor::safety_context::redact_incident_monitor_submission_secrets(
+            &mut report,
+        );
+    }
     match state.submit_incident_monitor_draft(report.clone()).await {
         Ok(draft) => {
             let now = crate::now_ms();

@@ -150,6 +150,31 @@ pub(crate) fn redact_safety_context_text(value: &str) -> String {
         .to_string()
 }
 
+/// Redact secrets from the free-text incident fields that are published
+/// verbatim to destinations (GitHub/Linear/webhook/MCP) and embedded in
+/// assessment reports. Safety-context metadata is scrubbed separately by
+/// `normalize_submission_safety_context`; this covers the reporter/event-supplied
+/// `title`, `detail`, `excerpt`, and `evidence_refs`. Gated by the caller on
+/// `safety_defaults.redact_secrets`.
+pub(crate) fn redact_incident_monitor_submission_secrets(
+    submission: &mut IncidentMonitorSubmission,
+) {
+    if let Some(title) = submission.title.as_ref() {
+        let redacted = redact_safety_context_text(title);
+        submission.title = (!redacted.is_empty()).then_some(redacted);
+    }
+    if let Some(detail) = submission.detail.as_ref() {
+        let redacted = redact_safety_context_text(detail);
+        submission.detail = (!redacted.is_empty()).then_some(redacted);
+    }
+    for line in submission.excerpt.iter_mut() {
+        *line = redact_safety_context_text(line);
+    }
+    for line in submission.evidence_refs.iter_mut() {
+        *line = redact_safety_context_text(line);
+    }
+}
+
 fn normalize_safety_context_optional(value: Option<String>) -> Option<String> {
     value
         .map(|value| redact_safety_context_text(&value))

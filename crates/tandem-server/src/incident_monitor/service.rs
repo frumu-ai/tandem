@@ -853,7 +853,12 @@ pub async fn process_event(
         // failure.
         anyhow::bail!("skipping recursive incident monitor triage event: {reason}");
     }
-    let submission = build_incident_monitor_submission_from_event(state, config, event).await?;
+    let mut submission = build_incident_monitor_submission_from_event(state, config, event).await?;
+    if config.safety_defaults.redact_secrets {
+        crate::incident_monitor::safety_context::redact_incident_monitor_submission_secrets(
+            &mut submission,
+        );
+    }
     let duplicate_matches =
         crate::http::incident_monitor::incident_monitor_failure_pattern_matches(
             state,
