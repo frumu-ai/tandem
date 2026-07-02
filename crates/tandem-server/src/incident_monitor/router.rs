@@ -202,9 +202,14 @@ pub fn build_route_preview(
             reason: Some("requested_destination_override".to_string()),
         }]
     };
+    // Route precedence: matches are sorted by priority (highest first), so the
+    // top match is the winning route. Only its destinations are effective — we
+    // must not union destinations across lower-priority routes, which previously
+    // produced multiple effective destinations and hard-failed every publish for
+    // any event that matched more than one route.
     let mut effective_destination_ids = Vec::new();
-    for preview_match in &matches {
-        for destination_id in &preview_match.destination_ids {
+    if let Some(winning_match) = matches.first() {
+        for destination_id in &winning_match.destination_ids {
             push_unique(&mut effective_destination_ids, destination_id);
         }
     }
@@ -1544,5 +1549,83 @@ mod tests {
                 .and_then(|row| row.reason.as_deref()),
             Some("matched_risk_category")
         );
+    }
+
+    #[test]
+    fn route_preview_prefers_highest_priority_route_over_overlapping_catch_all() {
+        // TAN-543: when more than one route matches, the highest-priority route
+        // wins and its destination is the only effective one. Previously the
+        // matcher unioned destinations across all matching routes, which then
+        // hard-failed every publish for any event that matched an overlapping
+        // catch-all route.
+        let config = IncidentMonitorConfig {
+            destinations: vec![
+                IncidentMonitorDestinationConfig {
+                    destination_id: "security-linear".to_string(),
+                    name: "Security Linear".to_string(),
+                    kind: IncidentMonitorDestinationKind::LinearIssue,
+                    ..IncidentMonitorDestinationConfig::default()
+                },
+                IncidentMonitorDestinationConfig {
+                    destination_id: "legacy-github".to_string(),
+                    name: "Legacy GitHub".to_string(),
+                    kind: IncidentMonitorDestinationKind::GithubIssue,
+                    ..IncidentMonitorDestinationConfig::default()
+                },
+            ],
+            routes: vec![
+                IncidentMonitorRouteConfig {
+                    route_id: "catch-all".to_string(),
+                    name: "Catch all".to_string(),
+                    enabled: true,
+                    priority: 0,
+                    destination_ids: vec!["legacy-github".to_string()],
+                    ..IncidentMonitorRouteConfig::default()
+                },
+                IncidentMonitorRouteConfig {
+                    route_id: "security-risk".to_string(),
+                    name: "Security Risk".to_string(),
+                    enabled: true,
+                    priority: 100,
+                    destination_ids: vec!["security-linear".to_string()],
+                    match_risk_categories: vec!["data_exfiltration".to_string()],
+                    ..IncidentMonitorRouteConfig::default()
+                },
+            ],
+            default_destination_ids: vec!["legacy-github".to_string()],
+            ..IncidentMonitorConfig::default()
+        };
+        let context = build_route_context(
+            None,
+            None,
+            None,
+            None,
+            Some("data_exfiltration"),
+            None,
+            None,
+            None,
+            None,
+            &[],
+            None,
+            None,
+            None,
+        );
+        let destinations = config.effective_destinations();
+        let preview = build_route_preview(&config, &destinations, &[], &[], &context, &[]);
+
+        // Both routes match...
+        assert!(
+            preview.matches.len() >= 2,
+            "both routes should appear as matches: {:?}",
+            preview.matches
+        );
+        // ...but only the higher-priority route's destination is effective.
+        assert_eq!(
+            preview.effective_destination_ids,
+            vec!["security-linear".to_string()]
+        );
+        // A single effective destination satisfies the one-destination phase limit,
+        // so validate_publish_plan no longer hard-fails on overlapping routes.
+        assert_eq!(preview.destinations.len(), 1);
     }
 }
