@@ -32,14 +32,6 @@ fn incident_monitor_intake_key_from_headers(headers: &HeaderMap) -> Option<Strin
     {
         return Some(value.to_string());
     }
-    if let Some(value) = headers
-        .get("x-tandem-incident-monitor-intake-key")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        return Some(value.to_string());
-    }
     let auth = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())?

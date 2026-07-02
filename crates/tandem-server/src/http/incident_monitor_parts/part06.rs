@@ -1320,28 +1320,20 @@ pub(super) async fn report_incident_monitor_intake(
         )
             .into_response();
     };
-    let key = state
+    if state
         .validate_incident_monitor_intake_key(&raw_key, &project_id, "incident_monitor:report")
-        .await;
-    let _key = match key {
-        Some(key) => key,
-        None => {
-            let legacy_key = state
-                .validate_incident_monitor_intake_key(&raw_key, &project_id, "incident_monitor:report")
-                .await;
-            let Some(key) = legacy_key else {
-                return (
-                    StatusCode::UNAUTHORIZED,
-                    Json(json!({
-                        "error": "Incident Monitor intake key is invalid for this project or scope",
-                        "code": "INCIDENT_MONITOR_INTAKE_KEY_INVALID",
-                    })),
-                )
-                    .into_response();
-            };
-            key
-        }
-    };
+        .await
+        .is_none()
+    {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "Incident Monitor intake key is invalid for this project or scope",
+                "code": "INCIDENT_MONITOR_INTAKE_KEY_INVALID",
+            })),
+        )
+            .into_response();
+    }
     let config = state.incident_monitor_config().await;
     let Some(project) = config
         .monitored_projects

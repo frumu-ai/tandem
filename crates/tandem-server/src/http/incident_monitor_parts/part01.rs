@@ -23,7 +23,6 @@ const DEFAULT_INCIDENT_MONITOR_TEMPLATE: &str =
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct IncidentMonitorConfigInput {
     #[serde(default)]
-    #[serde(alias = "incident_monitor")]
     pub incident_monitor: Option<IncidentMonitorConfig>,
 }
 #[derive(Debug, Deserialize, Default)]
