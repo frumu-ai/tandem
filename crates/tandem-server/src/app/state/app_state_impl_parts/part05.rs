@@ -256,6 +256,16 @@ fn automation_run_is_terminal_status(status: &AutomationRunStatus) -> bool {
     )
 }
 
+fn approval_wait_terminal_status_allows_later_settlement(
+    status: &crate::stateful_runtime::StatefulWaitStatus,
+) -> bool {
+    matches!(
+        status,
+        crate::stateful_runtime::StatefulWaitStatus::Escalated
+            | crate::stateful_runtime::StatefulWaitStatus::TimedOut
+    )
+}
+
 #[cfg(test)]
 mod stale_auto_resume_window_tests {
     use super::{
@@ -1137,7 +1147,9 @@ impl AppState {
         .find(|wait| wait.wait_id == approval_wait.wait_id) else {
             return Ok(());
         };
-        if existing.status.is_terminal() {
+        if existing.status.is_terminal()
+            && !approval_wait_terminal_status_allows_later_settlement(&existing.status)
+        {
             return Ok(());
         }
 
@@ -1181,6 +1193,7 @@ impl AppState {
                 "wait_id": &approval_wait.wait_id,
                 "approval_request_id": &approval_wait.approval_request_id,
                 "node_id": &gate.node_id,
+                "previous_wait_status": &existing.status,
                 "wait_status": &wait_status,
                 "run_status": &run.status,
                 "decision": gate_decision.map(|record| record.decision.clone()),
@@ -1195,7 +1208,19 @@ impl AppState {
             )
             .await?;
 
-        if wait_status == crate::stateful_runtime::StatefulWaitStatus::Woken {
+        if approval_wait_terminal_status_allows_later_settlement(&existing.status) {
+            let mut completed = existing.clone();
+            completed.status = wait_status;
+            completed.wake_idempotency_key = Some(completion_key);
+            completed.event_seq = Some(seq);
+            completed.completed_at_ms = Some(run.updated_at_ms);
+            completed.updated_at_ms = run.updated_at_ms;
+            completed.claimed_by = None;
+            completed.claimed_at_ms = None;
+            completed.claim_expires_at_ms = None;
+            let _ =
+                crate::stateful_runtime::upsert_stateful_wait(&paths.waits_path, completed).await?;
+        } else if wait_status == crate::stateful_runtime::StatefulWaitStatus::Woken {
             let _ = crate::stateful_runtime::mark_stateful_wait_woken(
                 &paths.waits_path,
                 &run.tenant_context,

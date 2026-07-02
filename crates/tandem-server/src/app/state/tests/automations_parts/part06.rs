@@ -176,6 +176,104 @@ async fn approval_gate_transition_registers_and_completes_durable_wait() {
 }
 
 #[tokio::test]
+async fn approval_gate_decision_completes_escalated_durable_wait() {
+    let state = ready_test_state().await;
+    let automation = approval_policy_test_automation("auto-gate-escalated-durable-wait");
+    state
+        .put_automation_v2(automation.clone())
+        .await
+        .expect("put automation");
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("create run");
+    let run_id = run.run_id.clone();
+    let requested_at_ms = now_ms();
+    let gate = AutomationPendingGate {
+        node_id: "approval".to_string(),
+        title: "Approval".to_string(),
+        instructions: None,
+        decisions: vec!["approve".to_string(), "cancel".to_string()],
+        rework_targets: Vec::new(),
+        requested_at_ms,
+        upstream_node_ids: Vec::new(),
+        metadata: None,
+        expiry_policy: Some(AutomationGateExpiryPolicy {
+            expires_after_ms: Some(1),
+            on_expiry: Some(AutomationGateExpiryAction::Escalate),
+            escalate_to: Some("risk-lead".to_string()),
+            remind_every_ms: None,
+        }),
+    };
+    state
+        .update_automation_v2_run(&run_id, |row| {
+            crate::app::state::automation::pause_automation_run_for_gate(
+                row,
+                gate.clone(),
+                vec![gate.node_id.clone()],
+            );
+        })
+        .await
+        .expect("pause for approval");
+
+    let paths = crate::stateful_runtime::StatefulRuntimeStoragePaths::from_runtime_events_path(
+        &state.runtime_events_path,
+    );
+    let wait_id = format!("automation_v2:{run_id}:approval:wait");
+    crate::stateful_runtime::mark_stateful_wait_timeout_result(
+        &paths.waits_path,
+        &run.tenant_context,
+        &run_id,
+        &wait_id,
+        "timeout:escalate:test",
+        7,
+        crate::stateful_runtime::StatefulWaitStatus::Escalated,
+        now_ms(),
+    )
+    .await
+    .expect("mark wait escalated")
+    .expect("escalated wait");
+
+    let automation_for_decision = automation.clone();
+    state
+        .update_automation_v2_run(&run_id, |row| {
+            let pending_gate = row.checkpoint.awaiting_gate.clone().expect("pending gate");
+            let _ = crate::app::state::automation::apply_automation_gate_decision(
+                row,
+                &automation_for_decision,
+                &pending_gate,
+                "approve",
+                None,
+                Some(human_reviewer()),
+            );
+        })
+        .await
+        .expect("approve escalated gate");
+
+    let waits = crate::stateful_runtime::list_stateful_waits(
+        &paths.waits_path,
+        &run.tenant_context,
+        crate::stateful_runtime::StatefulWaitQuery {
+            run_id: Some(&run_id),
+            wait_kind: Some(crate::stateful_runtime::StatefulWaitKind::Approval),
+            status: None,
+            limit: None,
+        },
+    );
+    assert_eq!(waits.len(), 1);
+    assert_eq!(
+        waits[0].status,
+        crate::stateful_runtime::StatefulWaitStatus::Woken
+    );
+    let expected_wake_key = format!("approval:{run_id}:approval:{requested_at_ms}:Woken");
+    assert_eq!(
+        waits[0].wake_idempotency_key.as_deref(),
+        Some(expected_wake_key.as_str())
+    );
+    assert_ne!(waits[0].event_seq, Some(7));
+}
+
+#[tokio::test]
 async fn approval_gate_expiry_policy_auto_cancels_with_expired_record() {
     let state = ready_test_state().await;
     let automation = approval_policy_test_automation("auto-gate-expiry-cancel");
