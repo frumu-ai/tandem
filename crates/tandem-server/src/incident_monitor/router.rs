@@ -923,20 +923,6 @@ fn preview_inherited_approval_required(
         || (config.safety_defaults.require_approval_for_high_risk && high_risk)
 }
 
-fn approval_policy_requires(
-    policy: &IncidentMonitorApprovalPolicy,
-    context: &IncidentMonitorRouteContext,
-    destination_requires_approval: bool,
-) -> bool {
-    let high_risk = is_high_risk(context.risk_level.as_deref());
-    match policy {
-        IncidentMonitorApprovalPolicy::Always => true,
-        IncidentMonitorApprovalPolicy::Never => false,
-        IncidentMonitorApprovalPolicy::HighRisk => destination_requires_approval || high_risk,
-        IncidentMonitorApprovalPolicy::Inherit => destination_requires_approval,
-    }
-}
-
 fn is_synthesized_legacy_github_destination(
     config: &IncidentMonitorConfig,
     destination: &IncidentMonitorDestinationConfig,
@@ -1155,17 +1141,12 @@ fn route_preview_approval_required(
     destinations: &[IncidentMonitorDestinationConfig],
     destination_ids: &[String],
 ) -> bool {
-    let destination_requires_approval = destination_ids.iter().any(|destination_id| {
-        destinations
-            .iter()
-            .find(|destination| destination.destination_id == *destination_id)
-            .map(|destination| destination.require_approval)
-            .unwrap_or(false)
-    });
-    if let Some(policy) = explicit_approval_policy(route, context) {
-        return approval_policy_requires(policy, context, destination_requires_approval);
-    }
-    preview_inherited_approval_required(config, context, destination_requires_approval)
+    // Preview must predict the actual publish decision, so delegate to the same
+    // gate the publish path uses. Computing this independently previously let
+    // preview diverge from publish (it counted the synthesized legacy GitHub
+    // destination's require_approval and handled the Inherit policy differently),
+    // so it could show approval as required when publish would not enforce it.
+    route_publish_match_approval_required(config, route, context, destinations, destination_ids)
 }
 
 fn route_match_reason(route: &IncidentMonitorRouteConfig) -> String {
@@ -1700,5 +1681,58 @@ mod tests {
         // A single effective destination satisfies the one-destination phase limit,
         // so validate_publish_plan no longer hard-fails on overlapping routes.
         assert_eq!(preview.destinations.len(), 1);
+    }
+
+    #[test]
+    fn preview_and_publish_approval_decisions_agree() {
+        // TAN-557: the preview approval flag must reflect the publish gate exactly,
+        // across risk levels and approval policies.
+        let destinations = vec![IncidentMonitorDestinationConfig {
+            destination_id: "gh".to_string(),
+            name: "GitHub".to_string(),
+            kind: IncidentMonitorDestinationKind::GithubIssue,
+            require_approval: true,
+            ..IncidentMonitorDestinationConfig::default()
+        }];
+        let config = IncidentMonitorConfig {
+            destinations: destinations.clone(),
+            ..IncidentMonitorConfig::default()
+        };
+        let ids = vec!["gh".to_string()];
+        for policy in [
+            IncidentMonitorApprovalPolicy::Inherit,
+            IncidentMonitorApprovalPolicy::HighRisk,
+            IncidentMonitorApprovalPolicy::Always,
+            IncidentMonitorApprovalPolicy::Never,
+        ] {
+            let route = IncidentMonitorRouteConfig {
+                route_id: "r".to_string(),
+                approval_policy: policy.clone(),
+                destination_ids: ids.clone(),
+                ..IncidentMonitorRouteConfig::default()
+            };
+            for risk in [None, Some("low"), Some("high")] {
+                let context = build_route_context(
+                    None, None, None, risk, None, None, None, None, None, &[], None, None, None,
+                );
+                assert_eq!(
+                    route_preview_approval_required(
+                        Some(&route),
+                        &context,
+                        &config,
+                        &destinations,
+                        &ids
+                    ),
+                    route_publish_match_approval_required(
+                        &config,
+                        Some(&route),
+                        &context,
+                        &destinations,
+                        &ids
+                    ),
+                    "preview must match publish for policy={policy:?} risk={risk:?}"
+                );
+            }
+        }
     }
 }
