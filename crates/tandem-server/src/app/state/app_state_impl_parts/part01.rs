@@ -90,9 +90,22 @@ fn check_file_permissions(_path: &std::path::Path) {
 }
 
 async fn write_state_file_atomically(path: &PathBuf, payload: String) -> anyhow::Result<()> {
+    use tokio::io::AsyncWriteExt;
     let tmp = path.with_extension("tmp");
-    fs::write(&tmp, payload).await?;
+    // Write to a temp file and fsync it before the rename so a crash mid-write
+    // cannot leave a torn/partial file in place of the real state.
+    {
+        let mut file = fs::File::create(&tmp).await?;
+        file.write_all(payload.as_bytes()).await?;
+        file.sync_all().await?;
+    }
     fs::rename(&tmp, path).await?;
+    // fsync the parent directory so the rename itself is durable across a crash.
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = fs::File::open(parent).await {
+            let _ = dir.sync_all().await;
+        }
+    }
     Ok(())
 }
 
