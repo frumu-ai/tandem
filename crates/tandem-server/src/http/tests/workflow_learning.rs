@@ -315,21 +315,7 @@ async fn workflow_learning_candidate_promote_promotes_memory_fact_candidate() {
                 "classification": "internal",
                 "artifact_refs": ["artifact://wflearn-promote/report.md"],
                 "metadata": {
-                    "knowledge_scope_registry": {
-                        "registry_id": "registry-wflearn-promote",
-                        "resource_ref": {
-                            "organization_id": "local",
-                            "workspace_id": "local",
-                            "project_id": "proj-1",
-                            "resource_kind": "source_binding",
-                            "resource_id": "workflow:workflow-promote"
-                        },
-                        "data_class": "internal",
-                        "source_binding_id": "workflow:workflow-promote",
-                        "allowed_write_tiers": ["session"],
-                        "allowed_promotion_tiers": ["project"],
-                        "promotion_requires_approval": true
-                    }
+                    "origin": "legacy_workflow_candidate"
                 }
             })
             .to_string(),
@@ -411,6 +397,24 @@ async fn workflow_learning_candidate_promote_promotes_memory_fact_candidate() {
             .and_then(Value::as_bool),
         Some(true)
     );
+    let db = super::super::skills_memory::open_global_memory_db_for_state(&state)
+        .await
+        .expect("memory db");
+    let source = db
+        .get_global_memory_for_tenant(&source_memory_id, "local", "local", None)
+        .await
+        .expect("source memory lookup")
+        .expect("source memory");
+    let source_scope = source
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("knowledge_scope_registry"))
+        .expect("backfilled workflow knowledge scope");
+    assert_eq!(
+        source_scope["source_binding_id"],
+        "workflow:workflow-promote"
+    );
+    assert_eq!(source_scope["allowed_promotion_tiers"], json!(["project"]));
 
     let missing_req = Request::builder()
         .method("POST")

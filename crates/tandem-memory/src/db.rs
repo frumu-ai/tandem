@@ -82,6 +82,7 @@ pub fn strict_tenant_enforcement_default() -> bool {
 
 include!("memory_database_impl_parts/part01.rs");
 include!("memory_database_impl_parts/part02.rs");
+include!("memory_database_impl_parts/part03.rs");
 
 /// Convert a database row to a MemoryChunk
 fn row_to_chunk(
