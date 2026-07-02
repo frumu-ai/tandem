@@ -1159,6 +1159,26 @@ impl AppState {
         )
         .await?
         .ok_or_else(|| anyhow::anyhow!("stateful webhook wait wake conflict"))?;
+        let _ = self
+            .requeue_automation_v2_run_from_stateful_wait_wake(
+                &woken_wait.run_id,
+                &woken_wait.wait_id,
+                "stateful_runtime.wait.webhook_woken",
+                seq,
+                format!(
+                    "stateful webhook wait `{}` woke from delivery `{delivery_id}`",
+                    woken_wait.wait_id
+                ),
+                json!({
+                    "delivery_id": &delivery_id,
+                    "trigger_id": &trigger.trigger_id,
+                    "provider": &trigger.provider,
+                    "provider_event_kind": &trigger.provider_event_kind,
+                    "provider_event_id": &provider_event_id,
+                    "body_digest": &body_digest,
+                }),
+            )
+            .await;
         let status = StatefulWorkflowRunStatus::Running;
         let phase_state = phase_state_from_status(
             &woken_wait.run_id,

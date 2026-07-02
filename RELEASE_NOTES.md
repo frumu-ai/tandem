@@ -50,6 +50,10 @@ The Automation V2 executor now runs a durable stateful wait scheduler tick that
 claims due waits, recovers missed timer wakeups after downtime, records
 idempotent wake/timeout events and snapshots, and marks timeout cancellations
 or escalations for operator visibility.
+Automation V2 runs now also bridge those durable waits back into the live run
+store: approval gates register and complete stateful approval waits, while
+timer and webhook wait wakes requeue the authoritative automation run so the
+executor can resume after a persisted wake event.
 Stateful runtime event and snapshot read endpoints are now available for
 tenant-filtered replay/debug and future control-panel views.
 Stateful runtime run list and detail endpoints now provide canonical

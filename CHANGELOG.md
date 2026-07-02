@@ -50,6 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a durable stateful wait scheduler tick for timer wakeups and wait
   timeouts, including lease-backed claims, idempotent run events, snapshots,
   timeout cancellation/escalation statuses, and scheduler lag metrics.
+- Added live Automation V2 durable-wait bridging so approval gates register
+  stateful approval waits, complete those waits when the gate settles, and
+  timer/webhook wait wakes requeue the authoritative automation run for resume.
 - Added tenant-filtered stateful runtime event and snapshot read endpoints for
   replay and control-panel consumers.
 - Added canonical stateful runtime run list/detail read endpoints with
