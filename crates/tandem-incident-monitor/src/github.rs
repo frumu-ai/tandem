@@ -179,6 +179,19 @@ pub trait IncidentMonitorGithubHost: Sync {
     fn context_run_events_path(&self, run_id: &str) -> PathBuf;
 }
 
+/// Provider label recorded in a failure receipt for each destination kind.
+fn failure_provider_label(kind: &IncidentMonitorDestinationKind) -> &'static str {
+    match kind {
+        IncidentMonitorDestinationKind::GithubIssue => "github",
+        IncidentMonitorDestinationKind::LinearIssue => "linear",
+        IncidentMonitorDestinationKind::Webhook => "webhook",
+        IncidentMonitorDestinationKind::Telemetry => "telemetry",
+        IncidentMonitorDestinationKind::McpTool => "mcp_tool",
+        IncidentMonitorDestinationKind::InternalMemory => "internal_memory",
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn record_post_failure(
     state: &dyn IncidentMonitorGithubHost,
     draft: &IncidentMonitorDraftRecord,
@@ -186,9 +199,14 @@ pub async fn record_post_failure(
     operation: &str,
     evidence_digest: Option<&str>,
     error: &str,
+    destination_id: &str,
+    destination_kind: IncidentMonitorDestinationKind,
+    route_id: Option<&str>,
+    route_match_reason: Option<&str>,
+    target_repo: &str,
 ) -> anyhow::Result<IncidentMonitorPostRecord> {
     let now = now_ms();
-    let destination = GithubDestinationContext::legacy();
+    let provider = failure_provider_label(&destination_kind);
     let post = IncidentMonitorPostRecord {
         post_id: format!("failure-post-{}", uuid::Uuid::new_v4().simple()),
         draft_id: draft.draft_id.clone(),
@@ -201,10 +219,10 @@ pub async fn record_post_failure(
         issue_url: draft.github_issue_url.clone(),
         comment_id: None,
         comment_url: draft.github_comment_url.clone(),
-        destination_id: Some(destination.destination_id.clone()),
-        destination_kind: Some(IncidentMonitorDestinationKind::GithubIssue),
-        route_id: destination.route_id.clone(),
-        route_match_reason: destination.route_match_reason(),
+        destination_id: Some(destination_id.to_string()),
+        destination_kind: Some(destination_kind),
+        route_id: route_id.map(|value| value.to_string()),
+        route_match_reason: route_match_reason.map(|value| value.to_string()),
         external_id: draft.issue_number.map(|number| number.to_string()),
         external_url: draft
             .github_comment_url
@@ -213,10 +231,10 @@ pub async fn record_post_failure(
         external_title: draft
             .issue_number
             .map(|number| format!("GitHub issue #{number}")),
-        target_ref: Some(draft.repo.clone()),
+        target_ref: Some(target_repo.to_string()),
         receipt: Some(json!({
-            "provider": "github",
-            "destination_id": destination.destination_id,
+            "provider": provider,
+            "destination_id": destination_id,
             "operation": operation,
             "status": "failed",
         })),
@@ -227,8 +245,8 @@ pub async fn record_post_failure(
         evidence_refs: draft.evidence_refs.clone(),
         quality_gate: draft.quality_gate.clone(),
         idempotency_key: build_idempotency_key(
-            INCIDENT_MONITOR_LEGACY_GITHUB_DESTINATION_ID,
-            &draft.repo,
+            destination_id,
+            target_repo,
             &draft.fingerprint,
             operation,
             evidence_digest.unwrap_or(""),

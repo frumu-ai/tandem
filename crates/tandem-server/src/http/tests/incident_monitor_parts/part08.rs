@@ -501,3 +501,67 @@ async fn incident_monitor_webhook_destination_records_timeout_failure_receipt() 
 
     server.abort();
 }
+
+#[tokio::test]
+#[serial_test::serial(incident_monitor_http)]
+async fn incident_monitor_failure_receipt_attributes_actual_destination() {
+    // TAN-552: a failed publish routed to a non-GitHub destination must be
+    // recorded against that destination, not always attributed to legacy GitHub
+    // (which would also risk suppressing a later real GitHub create).
+    let state = test_state().await;
+    state
+        .put_incident_monitor_config(crate::IncidentMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            workspace_root: Some("/tmp/acme".to_string()),
+            destinations: vec![crate::IncidentMonitorDestinationConfig {
+                destination_id: "webhook-primary".to_string(),
+                name: "Primary webhook".to_string(),
+                kind: crate::IncidentMonitorDestinationKind::Webhook,
+                webhook_url: Some("https://example.com/incident-hook".to_string()),
+                ..Default::default()
+            }],
+            default_destination_ids: vec!["webhook-primary".to_string()],
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+
+    let draft = state
+        .submit_incident_monitor_draft(crate::IncidentMonitorSubmission {
+            source: Some("manual".to_string()),
+            title: Some("Webhook destination failure".to_string()),
+            detail: Some("delivery failed".to_string()),
+            risk_level: Some("medium".to_string()),
+            confidence: Some("medium".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("draft");
+
+    let post = crate::incident_monitor::router::record_publish_failure(
+        &state,
+        &draft,
+        None,
+        "auto_post",
+        None,
+        "boom",
+    )
+    .await
+    .expect("record failure");
+
+    assert_eq!(post.destination_id.as_deref(), Some("webhook-primary"));
+    assert_eq!(
+        post.destination_kind,
+        Some(crate::IncidentMonitorDestinationKind::Webhook)
+    );
+    assert!(
+        post.receipt
+            .as_ref()
+            .and_then(|receipt| receipt.get("provider"))
+            .and_then(Value::as_str)
+            == Some("webhook"),
+        "receipt should record the webhook provider: {:?}",
+        post.receipt
+    );
+}

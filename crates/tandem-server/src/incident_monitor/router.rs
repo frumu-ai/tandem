@@ -493,6 +493,7 @@ pub async fn record_publish_failure(
     evidence_digest: Option<&str>,
     error: &str,
 ) -> anyhow::Result<IncidentMonitorPostRecord> {
+    let destination = resolve_failure_destination(state, draft, incident_id).await;
     incident_monitor_github::record_post_failure(
         state,
         draft,
@@ -500,8 +501,80 @@ pub async fn record_publish_failure(
         operation,
         evidence_digest,
         error,
+        &destination.destination_id,
+        destination.destination_kind,
+        destination.route_id.as_deref(),
+        destination.route_match_reason.as_deref(),
+        &destination.target_repo,
     )
     .await
+}
+
+struct FailureDestination {
+    destination_id: String,
+    destination_kind: IncidentMonitorDestinationKind,
+    route_id: Option<String>,
+    route_match_reason: Option<String>,
+    target_repo: String,
+}
+
+/// Re-derive the destination a failed publish was actually routed to, so the
+/// failure receipt is attributed correctly instead of always to legacy GitHub.
+/// Falls back to the legacy GitHub destination when no destination resolves.
+async fn resolve_failure_destination(
+    state: &AppState,
+    draft: &IncidentMonitorDraftRecord,
+    incident_id: Option<&str>,
+) -> FailureDestination {
+    let legacy = || FailureDestination {
+        destination_id: INCIDENT_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string(),
+        destination_kind: IncidentMonitorDestinationKind::GithubIssue,
+        route_id: None,
+        route_match_reason: Some("legacy_github".to_string()),
+        target_repo: draft.repo.clone(),
+    };
+    let incident = match incident_id {
+        Some(id) => state.get_incident_monitor_incident(id).await,
+        None => None,
+    };
+    let status = state.incident_monitor_status_snapshot().await;
+    let context = build_route_context(
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        &[],
+        None,
+        Some(draft),
+        incident.as_ref(),
+    );
+    let context = enrich_route_context_from_sources(&status.config, &context);
+    let preview = build_route_preview(
+        &status.config,
+        &status.destinations,
+        &status.destination_readiness,
+        &status.source_readiness,
+        &context,
+        &[],
+    );
+    match selected_publish_destination(&preview) {
+        Ok(destination) => {
+            let route = preview.matches.first();
+            FailureDestination {
+                destination_id: destination.destination_id.clone(),
+                destination_kind: destination.kind.clone(),
+                route_id: route.and_then(|row| row.route_id.clone()),
+                route_match_reason: route.and_then(|row| row.reason.clone()),
+                target_repo: draft.repo.clone(),
+            }
+        }
+        Err(_) => legacy(),
+    }
 }
 
 pub fn is_high_risk(value: Option<&str>) -> bool {
