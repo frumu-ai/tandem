@@ -1286,3 +1286,95 @@ fn research_citations_validation_accepts_external_research_without_files_reviewe
 
     let _ = std::fs::remove_dir_all(&workspace_root);
 }
+
+// TAN2-8: a graceful shutdown must not fail in-flight runs — it must leave them
+// resumable so startup recovery picks them up (otherwise every rolling deploy
+// silently kills active automations).
+#[tokio::test]
+async fn shutdown_interrupt_keeps_running_run_resumable() {
+    let automation = AutomationV2Spec {
+        automation_id: "auto-shutdown-interrupt-resume".to_string(),
+        name: "Shutdown Interrupt Resume".to_string(),
+        description: None,
+        status: AutomationV2Status::Active,
+        schedule: AutomationV2Schedule {
+            schedule_type: AutomationV2ScheduleType::Manual,
+            cron_expression: None,
+            interval_seconds: None,
+            timezone: "UTC".to_string(),
+            misfire_policy: RoutineMisfirePolicy::RunOnce,
+        },
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        agents: Vec::new(),
+        flow: AutomationFlowSpec { nodes: Vec::new() },
+        execution: AutomationExecutionPolicy {
+            profile: None,
+            max_parallel_agents: Some(1),
+            max_total_runtime_ms: None,
+            max_total_tool_calls: None,
+            max_total_tokens: None,
+            max_total_cost_usd: None,
+        },
+        output_targets: Vec::new(),
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        creator_id: "test".to_string(),
+        workspace_root: None,
+        metadata: None,
+        next_fire_at_ms: None,
+        last_fired_at_ms: None,
+        scope_policy: None,
+        watch_conditions: Vec::new(),
+        handoff_config: None,
+    };
+    let state = ready_test_state().await;
+    state
+        .put_automation_v2(automation.clone())
+        .await
+        .expect("store automation");
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("create run");
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = AutomationRunStatus::Running;
+            row.active_session_ids = vec!["session-shutdown".to_string()];
+            row.latest_session_id = Some("session-shutdown".to_string());
+        })
+        .await
+        .expect("mark running");
+
+    // Graceful shutdown must NOT fail the run.
+    let interrupted = state
+        .interrupt_running_automation_runs_for_shutdown()
+        .await;
+    assert_eq!(interrupted, 1);
+
+    let after = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("run still exists");
+    assert_eq!(
+        after.status,
+        AutomationRunStatus::Running,
+        "shutdown must keep the run resumable, not fail it"
+    );
+    assert!(
+        after
+            .checkpoint
+            .lifecycle_history
+            .iter()
+            .any(|e| e.event == "run_interrupted_shutdown"),
+        "shutdown interruption should be recorded in lifecycle history"
+    );
+
+    // Startup recovery then resumes it (requeues for resume).
+    let recovered = state.recover_in_flight_runs().await;
+    assert_eq!(recovered, 1, "interrupted run should be recovered on restart");
+    let resumed = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("run still exists after recovery");
+    assert_eq!(resumed.status, AutomationRunStatus::Queued);
+}

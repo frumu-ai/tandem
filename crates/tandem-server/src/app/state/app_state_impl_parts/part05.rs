@@ -1403,7 +1403,19 @@ impl AppState {
         }
     }
 
-    pub async fn fail_running_automation_runs_for_shutdown(&self) -> usize {
+    /// Handle in-flight automation runs at graceful shutdown (TAN2-8).
+    ///
+    /// Previously this marked every `Running` run `Failed`, which made a
+    /// graceful shutdown *worse* than a hard crash: startup recovery only
+    /// resumes runs left in `Running`, so shutdown-failed runs became terminal
+    /// and required a manual `/recover` — every rolling deploy silently killed
+    /// paying tenants' active automations.
+    ///
+    /// A run that is still `Running` after the shutdown grace period did not
+    /// finish, so we leave it `Running` (the same recoverable state a crash
+    /// leaves it in) and only record the interruption for observability. On the
+    /// next startup, `recover_in_flight_runs` requeues it for resume.
+    pub async fn interrupt_running_automation_runs_for_shutdown(&self) -> usize {
         let run_ids = self
             .automation_v2_runs
             .read()
@@ -1412,18 +1424,18 @@ impl AppState {
             .filter(|run| matches!(run.status, AutomationRunStatus::Running))
             .map(|run| run.run_id.clone())
             .collect::<Vec<_>>();
-        let mut failed = 0usize;
+        let mut interrupted = 0usize;
         for run_id in run_ids {
-            let detail = "automation run stopped during server shutdown".to_string();
+            let detail =
+                "automation run interrupted by server shutdown; will resume on restart".to_string();
             if let Some(updated_run) = self
                 .update_automation_v2_run(&run_id, |row| {
-                    row.status = AutomationRunStatus::Failed;
-                    row.detail = Some(detail.clone());
-                    row.stop_kind = Some(AutomationStopKind::Shutdown);
-                    row.stop_reason = Some(detail.clone());
+                    // Keep status Running so startup recovery resumes it. Do NOT
+                    // set a terminal status or stop_kind — this run is not
+                    // stopped, only paused by the process going down.
                     automation::record_automation_lifecycle_event(
                         row,
-                        "run_failed_shutdown",
+                        "run_interrupted_shutdown",
                         Some(detail.clone()),
                         Some(AutomationStopKind::Shutdown),
                     );
@@ -1431,18 +1443,18 @@ impl AppState {
                 .await
             {
                 self.append_internal_sweep_protected_audit_event(
-                    "automation_v2.internal_sweep.shutdown_failed_run",
+                    "automation_v2.internal_sweep.shutdown_interrupted_run",
                     &updated_run,
-                    "fail_running_automation_runs_for_shutdown",
-                    "failed_running_run",
+                    "interrupt_running_automation_runs_for_shutdown",
+                    "interrupted_running_run",
                     Some(detail),
-                    json!({ "previous_status": "running" }),
+                    json!({ "previous_status": "running", "outcome": "kept_running_for_resume" }),
                 )
                 .await;
-                failed += 1;
+                interrupted += 1;
             }
         }
-        failed
+        interrupted
     }
 
     pub async fn update_automation_v2_run(
