@@ -315,6 +315,16 @@ fn source_bound_metadata_policy_denial_reason(
         },
         None => return Some("knowledge_scope_data_class_mismatch"),
     };
+    let source_resource_ref = match binding.get("resource_ref") {
+        Some(value) => match serde_json::from_value(value.clone()) {
+            Ok(resource_ref) => resource_ref,
+            Err(_) => return Some("knowledge_scope_source_resource_mismatch"),
+        },
+        None => return Some("knowledge_scope_source_resource_mismatch"),
+    };
+    if !source_bound_resource_ref_matches(&policy.resource_ref, &source_resource_ref) {
+        return Some("knowledge_scope_source_resource_mismatch");
+    }
     source_bound_policy_claim_denial_reason(policy, Some(source_binding_id), data_class)
 }
 
@@ -355,6 +365,23 @@ fn source_bound_policy_claim_denial_reason(
         return Some("knowledge_scope_data_class_mismatch");
     }
     None
+}
+
+fn source_bound_resource_ref_matches(
+    policy_resource_ref: &ResourceRef,
+    source_resource_ref: &ResourceRef,
+) -> bool {
+    policy_resource_ref.organization_id == source_resource_ref.organization_id
+        && policy_resource_ref.workspace_id == source_resource_ref.workspace_id
+        && policy_resource_ref.resource_kind == source_resource_ref.resource_kind
+        && policy_resource_ref.resource_id == source_resource_ref.resource_id
+        && source_resource_ref
+            .project_id
+            .as_ref()
+            .is_none_or(|project_id| policy_resource_ref.project_id.as_ref() == Some(project_id))
+        && policy_resource_ref.parent_path == source_resource_ref.parent_path
+        && policy_resource_ref.branch_id == source_resource_ref.branch_id
+        && policy_resource_ref.path_prefix == source_resource_ref.path_prefix
 }
 
 pub fn knowledge_scope_policy_from_authority_job_context(
@@ -665,7 +692,11 @@ mod tests {
 
     #[test]
     fn source_bound_metadata_write_rejects_mismatched_knowledge_scope_binding() {
-        let mut metadata = policy().metadata_value();
+        let mut policy = policy();
+        policy.resource_ref =
+            ResourceRef::new("org-a", "ws-a", ResourceKind::SourceBinding, "binding-b")
+                .with_project_id("project-a");
+        let mut metadata = policy.metadata_value();
         metadata.as_object_mut().expect("metadata object").insert(
             "enterprise_source_binding".to_string(),
             json!({
@@ -693,6 +724,47 @@ mod tests {
         assert_eq!(
             decision.reason_code,
             "knowledge_scope_source_binding_mismatch"
+        );
+    }
+
+    #[test]
+    fn source_bound_metadata_write_rejects_mismatched_knowledge_scope_resource() {
+        let mut policy = policy();
+        policy.resource_ref = ResourceRef::new(
+            "org-a",
+            "ws-a",
+            ResourceKind::DocumentCollection,
+            "allowed-drive",
+        )
+        .with_project_id("project-a");
+        let mut metadata = policy.metadata_value();
+        metadata.as_object_mut().expect("metadata object").insert(
+            "enterprise_source_binding".to_string(),
+            json!({
+                "binding_id": "binding-a",
+                "connector_id": "manual-upload",
+                "resource_ref": {
+                    "organization_id": "org-a",
+                    "workspace_id": "ws-a",
+                    "project_id": "project-a",
+                    "resource_kind": "document_collection",
+                    "resource_id": "restricted-drive"
+                },
+                "data_class": "confidential",
+                "source_object_id": "source-a"
+            }),
+        );
+        let decision = memory_write_scope_decision(
+            &partition(GovernedMemoryTier::Session),
+            Some(&metadata),
+            1_000,
+        )
+        .expect("write decision");
+
+        assert!(!decision.allowed);
+        assert_eq!(
+            decision.reason_code,
+            "knowledge_scope_source_resource_mismatch"
         );
     }
 

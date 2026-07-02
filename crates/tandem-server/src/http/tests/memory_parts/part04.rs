@@ -175,22 +175,15 @@ async fn retrieval_gateway_without_strict_projection_does_not_expose_source_boun
                 "kind": "fact",
                 "content": "gateway strict projection sentinel payroll note",
                 "classification": "internal",
-                "metadata": {
-                    "enterprise_source_binding": {
-                        "binding_id": "binding-missing-strict",
-                        "connector_id": "manual-upload",
-                        "resource_ref": {
-                            "organization_id": "org-1",
-                            "workspace_id": "ws-1",
-                            "resource_kind": "document_collection",
-                            "resource_id": "binding-missing-strict"
-                        },
-                        "data_class": "internal",
-                        "source_object_id": "source-missing-strict",
-                        "native_object_id": "/imports/missing-strict.md",
-                        "content_hash": "hash-missing-strict"
-                    }
-                },
+                "metadata": source_bound_memory_metadata(
+                    "org-1",
+                    "ws-1",
+                    "proj-1",
+                    "binding-missing-strict",
+                    "binding-missing-strict",
+                    "internal",
+                    "source-missing-strict"
+                ),
                 "capability": capability
             })
             .to_string(),
@@ -289,22 +282,15 @@ async fn retrieval_gateway_enforces_cumulative_result_window() {
                     "kind": "fact",
                     "content": content,
                     "classification": "internal",
-                    "metadata": {
-                        "enterprise_source_binding": {
-                            "binding_id": "binding-volume",
-                            "connector_id": "manual-upload",
-                            "resource_ref": {
-                                "organization_id": "org-1",
-                                "workspace_id": "ws-1",
-                                "resource_kind": "document_collection",
-                                "resource_id": "binding-volume"
-                            },
-                            "data_class": "internal",
-                            "source_object_id": source_object_id,
-                            "native_object_id": format!("/imports/{source_object_id}.md"),
-                            "content_hash": format!("hash-{source_object_id}")
-                        }
-                    },
+                    "metadata": source_bound_memory_metadata(
+                        "org-1",
+                        "ws-1",
+                        "proj-1",
+                        "binding-volume",
+                        "binding-volume",
+                        "internal",
+                        source_object_id
+                    ),
                     "capability": capability
                 })
                 .to_string(),
