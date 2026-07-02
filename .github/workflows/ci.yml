@@ -78,6 +78,9 @@ jobs:
       - name: Typecheck control panel
         run: pnpm -C packages/tandem-control-panel typecheck
 
+      - name: Build control panel
+        run: pnpm -C packages/tandem-control-panel build
+
       - name: Run control panel contract tests
         run: pnpm -C packages/tandem-control-panel test
 

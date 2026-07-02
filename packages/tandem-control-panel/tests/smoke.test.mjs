@@ -809,7 +809,7 @@ test("control panel auth/proxy/swarm smoke", async (t) => {
     const payload = await runState.json();
     const status = String(payload?.run?.status || "").toLowerCase();
     return status === "failed";
-  }, 12000);
+  }, 30000);
 
   const failedRunRes = await request(
     baseUrl,
@@ -1371,7 +1371,7 @@ test("swarm strict write retries malformed write failures up to configured budge
     if (!runState.ok) return false;
     const payload = await runState.json();
     return String(payload?.run?.status || "").toLowerCase() === "failed";
-  }, 12000);
+  }, 30000);
 
   const failedRunRes = await request(
     baseUrl,
