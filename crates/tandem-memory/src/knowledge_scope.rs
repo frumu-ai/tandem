@@ -305,14 +305,17 @@ fn source_bound_metadata_policy_denial_reason(
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    let Some(source_binding_id) = source_binding_id else {
+        return Some("knowledge_scope_source_binding_mismatch");
+    };
     let data_class = match binding.get("data_class") {
         Some(value) => match serde_json::from_value(value.clone()) {
             Ok(data_class) => Some(data_class),
             Err(_) => return Some("knowledge_scope_data_class_mismatch"),
         },
-        None => None,
+        None => return Some("knowledge_scope_data_class_mismatch"),
     };
-    source_bound_policy_claim_denial_reason(policy, source_binding_id, data_class)
+    source_bound_policy_claim_denial_reason(policy, Some(source_binding_id), data_class)
 }
 
 fn source_bound_authority_policy_denial_reason(
@@ -691,5 +694,66 @@ mod tests {
             decision.reason_code,
             "knowledge_scope_source_binding_mismatch"
         );
+    }
+
+    #[test]
+    fn source_bound_metadata_write_rejects_missing_source_binding_id() {
+        let mut metadata = policy().metadata_value();
+        metadata.as_object_mut().expect("metadata object").insert(
+            "enterprise_source_binding".to_string(),
+            json!({
+                "connector_id": "manual-upload",
+                "resource_ref": {
+                    "organization_id": "org-a",
+                    "workspace_id": "ws-a",
+                    "project_id": "project-a",
+                    "resource_kind": "source_binding",
+                    "resource_id": "binding-a"
+                },
+                "data_class": "confidential",
+                "source_object_id": "source-a"
+            }),
+        );
+        let decision = memory_write_scope_decision(
+            &partition(GovernedMemoryTier::Session),
+            Some(&metadata),
+            1_000,
+        )
+        .expect("write decision");
+
+        assert!(!decision.allowed);
+        assert_eq!(
+            decision.reason_code,
+            "knowledge_scope_source_binding_mismatch"
+        );
+    }
+
+    #[test]
+    fn source_bound_metadata_write_rejects_missing_data_class() {
+        let mut metadata = policy().metadata_value();
+        metadata.as_object_mut().expect("metadata object").insert(
+            "enterprise_source_binding".to_string(),
+            json!({
+                "binding_id": "binding-a",
+                "connector_id": "manual-upload",
+                "resource_ref": {
+                    "organization_id": "org-a",
+                    "workspace_id": "ws-a",
+                    "project_id": "project-a",
+                    "resource_kind": "source_binding",
+                    "resource_id": "binding-a"
+                },
+                "source_object_id": "source-a"
+            }),
+        );
+        let decision = memory_write_scope_decision(
+            &partition(GovernedMemoryTier::Session),
+            Some(&metadata),
+            1_000,
+        )
+        .expect("write decision");
+
+        assert!(!decision.allowed);
+        assert_eq!(decision.reason_code, "knowledge_scope_data_class_mismatch");
     }
 }
