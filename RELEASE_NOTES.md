@@ -54,6 +54,10 @@ Timer and webhook wait completions now reserve only the active leased claim
 before durable wake writes, then terminalize the wait with the locked per-run
 event sequence after those writes finish so concurrent completions cannot race
 into duplicate sequence numbers.
+Stateful runtime persistence now hardens wait, reliability, snapshot, and event
+logs for crash recovery: JSON store mutations fail closed by sidelining corrupt
+files, atomic writes sync temp files before rename, and event-log appends repair
+torn JSONL tails before writing the next durable event.
 Automation V2 runs now also bridge those durable waits back into the live run
 store: approval gates register and complete stateful approval waits, while
 timer and webhook wait wakes requeue the authoritative automation run so the

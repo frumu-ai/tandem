@@ -199,6 +199,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   active leased claim before durable wake writes, then terminalize the wait with
   the locked event sequence after those writes finish so duplicate timer/webhook
   wakes cannot race into conflicting per-run sequence numbers.
+- Stateful runtime wait, reliability, snapshot, and event-log writes now fsync
+  durable files, repair torn JSONL event-log tails before appending, and fail
+  closed by moving corrupt wait/reliability stores aside instead of silently
+  overwriting them.
 - Incident Monitor publish and recheck failures now return the full error chain in
   API response details so destination adapter failures expose the underlying
   MCP/provider cause.

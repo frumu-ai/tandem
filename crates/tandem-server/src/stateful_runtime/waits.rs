@@ -1,10 +1,10 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Context;
 use serde_json::{json, Value};
 use tandem_types::TenantContext;
-use tokio::io::AsyncWriteExt;
 
+use super::durable_io::{sideline_corrupt_state_file_sync, write_file_atomically};
 use super::types::{
     StatefulRuntimeScope, StatefulWaitKind, StatefulWaitRecord, StatefulWaitStatus,
     StatefulWaitTimeoutAction, StatefulWaitTimeoutPolicy, StatefulWebhookWaitEvent,
@@ -23,10 +23,7 @@ pub struct StatefulWaitQuery<'a> {
 }
 
 pub fn load_stateful_waits(path: &Path) -> Vec<StatefulWaitRecord> {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let mut rows = match serde_json::from_str::<Vec<StatefulWaitRecord>>(&content) {
+    match read_stateful_waits(path, false) {
         Ok(rows) => rows,
         Err(error) => {
             tracing::warn!(
@@ -36,9 +33,43 @@ pub fn load_stateful_waits(path: &Path) -> Vec<StatefulWaitRecord> {
             );
             Vec::new()
         }
+    }
+}
+
+fn try_load_stateful_waits(path: &Path) -> anyhow::Result<Vec<StatefulWaitRecord>> {
+    read_stateful_waits(path, true)
+}
+
+fn read_stateful_waits(
+    path: &Path,
+    sideline_corrupt: bool,
+) -> anyhow::Result<Vec<StatefulWaitRecord>> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to read stateful wait store {}", path.display()))
+        }
+    };
+    let mut rows = match serde_json::from_str::<Vec<StatefulWaitRecord>>(&content) {
+        Ok(rows) => rows,
+        Err(error) if sideline_corrupt => {
+            return Err(sideline_corrupt_state_file_sync(
+                path,
+                "stateful wait store",
+                error,
+            ));
+        }
+        Err(error) => {
+            anyhow::bail!(
+                "failed to parse stateful wait store {}: {error}",
+                path.display()
+            );
+        }
     };
     sort_waits(&mut rows);
-    rows
+    Ok(rows)
 }
 
 pub fn list_stateful_waits(
@@ -95,7 +126,7 @@ pub async fn upsert_stateful_wait(
     wait: StatefulWaitRecord,
 ) -> anyhow::Result<StatefulWaitRecord> {
     let _guard = STATEFUL_WAIT_STORE_LOCK.lock().await;
-    let mut waits = load_stateful_waits(path);
+    let mut waits = try_load_stateful_waits(path)?;
     match waits
         .iter_mut()
         .find(|existing| wait_identity_matches(existing, &wait))
@@ -117,7 +148,7 @@ pub async fn claim_due_stateful_wait(
     lease_ms: u64,
 ) -> anyhow::Result<Option<StatefulWaitRecord>> {
     let _guard = STATEFUL_WAIT_STORE_LOCK.lock().await;
-    let mut waits = load_stateful_waits(path);
+    let mut waits = try_load_stateful_waits(path)?;
     let Some(wait) = waits.iter_mut().find(|wait| {
         wait.run_id == run_id && wait.wait_id == wait_id && wait.visible_to_tenant(tenant)
     }) else {
@@ -149,7 +180,7 @@ pub async fn claim_matching_stateful_webhook_wait(
     lease_ms: u64,
 ) -> anyhow::Result<Option<StatefulWaitRecord>> {
     let _guard = STATEFUL_WAIT_STORE_LOCK.lock().await;
-    let mut waits = load_stateful_waits(path);
+    let mut waits = try_load_stateful_waits(path)?;
     let Some(wait) = waits.iter_mut().find(|wait| {
         wait.wait_kind == StatefulWaitKind::Webhook
             && wait.visible_to_tenant(tenant)
@@ -182,7 +213,7 @@ pub async fn mark_stateful_wait_woken(
     now_ms: u64,
 ) -> anyhow::Result<Option<StatefulWaitRecord>> {
     let _guard = STATEFUL_WAIT_STORE_LOCK.lock().await;
-    let mut waits = load_stateful_waits(path);
+    let mut waits = try_load_stateful_waits(path)?;
     let Some(wait) = waits.iter_mut().find(|wait| {
         wait.run_id == run_id && wait.wait_id == wait_id && wait.visible_to_tenant(tenant)
     }) else {
@@ -229,7 +260,7 @@ pub async fn mark_stateful_wait_timeout_result(
     }
 
     let _guard = STATEFUL_WAIT_STORE_LOCK.lock().await;
-    let mut waits = load_stateful_waits(path);
+    let mut waits = try_load_stateful_waits(path)?;
     let Some(wait) = waits.iter_mut().find(|wait| {
         wait.run_id == run_id && wait.wait_id == wait_id && wait.visible_to_tenant(tenant)
     }) else {
@@ -313,7 +344,7 @@ pub async fn finish_claimed_stateful_wait_completion(
     }
 
     let _guard = STATEFUL_WAIT_STORE_LOCK.lock().await;
-    let mut waits = load_stateful_waits(path);
+    let mut waits = try_load_stateful_waits(path)?;
     let Some(wait) = waits.iter_mut().find(|wait| {
         wait.run_id == claimed_wait.run_id
             && wait.wait_id == claimed_wait.wait_id
@@ -357,7 +388,7 @@ async fn reserve_claimed_stateful_wait_completion(
     now_ms: u64,
 ) -> anyhow::Result<Option<StatefulWaitRecord>> {
     let _guard = STATEFUL_WAIT_STORE_LOCK.lock().await;
-    let mut waits = load_stateful_waits(path);
+    let mut waits = try_load_stateful_waits(path)?;
     let Some(wait) = waits.iter_mut().find(|wait| {
         wait.run_id == claimed_wait.run_id
             && wait.wait_id == claimed_wait.wait_id
@@ -541,50 +572,16 @@ async fn write_stateful_waits_unlocked(
     path: &Path,
     waits: &[StatefulWaitRecord],
 ) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await.with_context(|| {
-            format!(
-                "failed to create stateful wait store directory {}",
-                parent.display()
-            )
-        })?;
-    }
     let mut sorted = waits.to_vec();
     sort_waits(&mut sorted);
-    let tmp_path = tmp_path_for(path);
-    let mut file = tokio::fs::File::create(&tmp_path).await.with_context(|| {
-        format!(
-            "failed to create stateful wait store {}",
-            tmp_path.display()
-        )
-    })?;
     let content = serde_json::to_vec_pretty(&sorted)?;
-    file.write_all(&content)
-        .await
-        .with_context(|| format!("failed to write stateful wait store {}", tmp_path.display()))?;
-    file.flush()
-        .await
-        .with_context(|| format!("failed to flush stateful wait store {}", tmp_path.display()))?;
-    drop(file);
-    tokio::fs::rename(&tmp_path, path)
-        .await
-        .with_context(|| format!("failed to publish stateful wait store {}", path.display()))?;
-    Ok(())
-}
-
-fn tmp_path_for(path: &Path) -> PathBuf {
-    let mut tmp = path.to_path_buf();
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| format!("{value}.tmp"))
-        .unwrap_or_else(|| "tmp".to_string());
-    tmp.set_extension(extension);
-    tmp
+    write_file_atomically(path, &content, "stateful wait store").await
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use serde_json::json;
     use tandem_types::TenantContext;
     use uuid::Uuid;
@@ -705,6 +702,28 @@ mod tests {
             vec!["wait-a"]
         );
         let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn wait_mutations_sideline_corrupt_store_instead_of_overwriting() {
+        let path = temp_wait_store("stateful-waits-corrupt");
+        std::fs::write(&path, "{not-valid-json").expect("write corrupt wait store");
+        let corrupt_path = path.with_extension("json.corrupt");
+
+        let result = upsert_stateful_wait(
+            &path,
+            timer_wait("wait-a", "run-a", tenant("org-a", "workspace-a"), 1_000),
+        )
+        .await;
+
+        let error = result.expect_err("corrupt store should block mutation");
+        assert!(error.to_string().contains("corrupt store moved"));
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read_to_string(&corrupt_path).expect("read corrupt wait store"),
+            "{not-valid-json"
+        );
+        let _ = tokio::fs::remove_file(corrupt_path).await;
     }
 
     #[tokio::test]

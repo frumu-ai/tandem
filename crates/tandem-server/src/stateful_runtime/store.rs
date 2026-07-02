@@ -5,6 +5,7 @@ use serde_json::Value;
 use tandem_types::TenantContext;
 use tokio::io::AsyncWriteExt;
 
+use super::durable_io::{repair_jsonl_torn_tail, sync_parent_dir, write_file_atomically};
 use super::phases::phase_state_from_status;
 use super::types::{StatefulRunEventRecord, StatefulRunSnapshotRecord};
 
@@ -61,6 +62,7 @@ pub async fn append_stateful_run_event(
             )
         })?;
     }
+    repair_jsonl_torn_tail(path, "stateful run event log").await?;
 
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
@@ -76,6 +78,11 @@ pub async fn append_stateful_run_event(
     file.flush()
         .await
         .with_context(|| format!("failed to flush stateful run event log {}", path.display()))?;
+    file.sync_all()
+        .await
+        .with_context(|| format!("failed to sync stateful run event log {}", path.display()))?;
+    drop(file);
+    sync_parent_dir(path, "stateful run event log").await?;
     Ok(())
 }
 
@@ -245,21 +252,8 @@ pub async fn write_stateful_run_snapshot(
         )
     })?;
     let path = dir.join(format!("{}.json", safe_path_segment(&snapshot.snapshot_id)));
-    let tmp_path = tmp_path_for(&path);
-    let mut file = tokio::fs::File::create(&tmp_path)
-        .await
-        .with_context(|| format!("failed to create stateful snapshot {}", tmp_path.display()))?;
     let content = serde_json::to_vec_pretty(snapshot)?;
-    file.write_all(&content)
-        .await
-        .with_context(|| format!("failed to write stateful snapshot {}", tmp_path.display()))?;
-    file.flush()
-        .await
-        .with_context(|| format!("failed to flush stateful snapshot {}", tmp_path.display()))?;
-    drop(file);
-    tokio::fs::rename(&tmp_path, &path)
-        .await
-        .with_context(|| format!("failed to publish stateful snapshot {}", path.display()))?;
+    write_file_atomically(&path, &content, "stateful snapshot").await?;
     Ok(path)
 }
 
@@ -371,17 +365,6 @@ pub fn read_stateful_run_snapshot_for_run(
 pub fn stateful_run_snapshot_path(root: &Path, run_id: &str, snapshot_id: &str) -> PathBuf {
     root.join(safe_path_segment(run_id))
         .join(format!("{}.json", safe_path_segment(snapshot_id)))
-}
-
-fn tmp_path_for(path: &Path) -> PathBuf {
-    let mut tmp = path.to_path_buf();
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| format!("{value}.tmp"))
-        .unwrap_or_else(|| "tmp".to_string());
-    tmp.set_extension(extension);
-    tmp
 }
 
 fn safe_path_segment(value: &str) -> String {
@@ -527,6 +510,32 @@ mod tests {
         assert_eq!(
             stateful_run_event_seq_by_id(&path, &tenant_a, "run-a", "missing"),
             None
+        );
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn append_repairs_torn_event_log_tail_before_writing() {
+        let path = std::env::temp_dir().join(format!(
+            "stateful-runtime-events-torn-tail-{}.jsonl",
+            Uuid::new_v4()
+        ));
+        let tenant_a = tenant("org-a", "workspace-a");
+        let first = event(1, "run-a", tenant_a.clone());
+        let first_line = serde_json::to_string(&first).expect("serialize first event");
+        std::fs::write(&path, format!("{first_line}\n{{\"partial\":")).expect("write torn log");
+
+        append_stateful_run_event(&path, &event(2, "run-a", tenant_a))
+            .await
+            .expect("append after repair");
+
+        let content = std::fs::read_to_string(&path).expect("read repaired log");
+        assert!(content.ends_with('\n'));
+        assert!(!content.contains("partial"));
+        let rows = load_stateful_run_events(&path);
+        assert_eq!(
+            rows.iter().map(|row| row.seq).collect::<Vec<_>>(),
+            vec![1, 2]
         );
         let _ = tokio::fs::remove_file(path).await;
     }

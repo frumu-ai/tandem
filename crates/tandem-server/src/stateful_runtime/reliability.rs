@@ -4,10 +4,10 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tandem_types::{PrincipalKind, PrincipalRef, TenantContext};
-use tokio::io::AsyncWriteExt;
 
 use crate::routines::types::ExternalActionRecord;
 
+use super::durable_io::{sideline_corrupt_state_file_sync, write_file_atomically};
 use super::types::{StatefulRuntimeScope, STATEFUL_RUNTIME_SCHEMA_VERSION};
 
 static STATEFUL_RELIABILITY_STORE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -312,13 +312,7 @@ pub fn stateful_reliability_path_from_runtime_events_path(runtime_events_path: &
 }
 
 pub fn load_stateful_reliability(path: &Path) -> StatefulReliabilityStoreFile {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return StatefulReliabilityStoreFile {
-            schema_version: STATEFUL_RUNTIME_SCHEMA_VERSION,
-            ..Default::default()
-        };
-    };
-    let mut store = match serde_json::from_str::<StatefulReliabilityStoreFile>(&content) {
+    match read_stateful_reliability(path, false) {
         Ok(store) => store,
         Err(error) => {
             tracing::warn!(
@@ -326,11 +320,58 @@ pub fn load_stateful_reliability(path: &Path) -> StatefulReliabilityStoreFile {
                 error = %error,
                 "skipping invalid stateful reliability store"
             );
-            StatefulReliabilityStoreFile::default()
+            default_stateful_reliability_store()
+        }
+    }
+}
+
+fn try_load_stateful_reliability(path: &Path) -> anyhow::Result<StatefulReliabilityStoreFile> {
+    read_stateful_reliability(path, true)
+}
+
+fn read_stateful_reliability(
+    path: &Path,
+    sideline_corrupt: bool,
+) -> anyhow::Result<StatefulReliabilityStoreFile> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(default_stateful_reliability_store())
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to read stateful reliability store {}",
+                    path.display()
+                )
+            })
+        }
+    };
+    let mut store = match serde_json::from_str::<StatefulReliabilityStoreFile>(&content) {
+        Ok(store) => store,
+        Err(error) if sideline_corrupt => {
+            return Err(sideline_corrupt_state_file_sync(
+                path,
+                "stateful reliability store",
+                error,
+            ));
+        }
+        Err(error) => {
+            anyhow::bail!(
+                "failed to parse stateful reliability store {}: {error}",
+                path.display()
+            );
         }
     };
     sort_reliability_store(&mut store);
-    store
+    Ok(store)
+}
+
+fn default_stateful_reliability_store() -> StatefulReliabilityStoreFile {
+    StatefulReliabilityStoreFile {
+        schema_version: STATEFUL_RUNTIME_SCHEMA_VERSION,
+        ..Default::default()
+    }
 }
 
 pub fn list_stateful_outbox(
@@ -404,7 +445,7 @@ pub async fn upsert_stateful_outbox(
     record: StatefulOutboxRecord,
 ) -> anyhow::Result<StatefulOutboxRecord> {
     let _guard = STATEFUL_RELIABILITY_STORE_LOCK.lock().await;
-    let mut store = load_stateful_reliability(path);
+    let mut store = try_load_stateful_reliability(path)?;
     upsert_by(&mut store.outbox, record.clone(), |row| &row.outbox_id);
     write_stateful_reliability_unlocked(path, &store).await?;
     Ok(record)
@@ -415,7 +456,7 @@ pub async fn upsert_stateful_tool_effect(
     record: StatefulToolEffectRecord,
 ) -> anyhow::Result<StatefulToolEffectRecord> {
     let _guard = STATEFUL_RELIABILITY_STORE_LOCK.lock().await;
-    let mut store = load_stateful_reliability(path);
+    let mut store = try_load_stateful_reliability(path)?;
     upsert_by(&mut store.tool_effects, record.clone(), |row| {
         &row.effect_id
     });
@@ -428,7 +469,7 @@ pub async fn upsert_stateful_dead_letter(
     record: StatefulDeadLetterRecord,
 ) -> anyhow::Result<StatefulDeadLetterRecord> {
     let _guard = STATEFUL_RELIABILITY_STORE_LOCK.lock().await;
-    let mut store = load_stateful_reliability(path);
+    let mut store = try_load_stateful_reliability(path)?;
     upsert_by(&mut store.dead_letters, record.clone(), |row| {
         &row.dead_letter_id
     });
@@ -441,7 +482,7 @@ pub async fn upsert_stateful_compensation(
     record: StatefulCompensationRecord,
 ) -> anyhow::Result<StatefulCompensationRecord> {
     let _guard = STATEFUL_RELIABILITY_STORE_LOCK.lock().await;
-    let mut store = load_stateful_reliability(path);
+    let mut store = try_load_stateful_reliability(path)?;
     upsert_by(&mut store.compensations, record.clone(), |row| {
         &row.compensation_id
     });
@@ -455,7 +496,7 @@ pub async fn record_external_action_reliability_bridge(
     action: &ExternalActionRecord,
 ) -> anyhow::Result<StatefulToolEffectRecord> {
     let _guard = STATEFUL_RELIABILITY_STORE_LOCK.lock().await;
-    let mut store = load_stateful_reliability(path);
+    let mut store = try_load_stateful_reliability(path)?;
     let mut outbox = outbox_from_external_action(scope.clone(), action);
     let mut effect = tool_effect_from_external_action(scope.clone(), action, &outbox);
     outbox.effect_id = Some(effect.effect_id.clone());
@@ -518,7 +559,7 @@ pub async fn mark_dead_letter_disposition(
     now_ms: u64,
 ) -> anyhow::Result<Option<StatefulDeadLetterRecord>> {
     let _guard = STATEFUL_RELIABILITY_STORE_LOCK.lock().await;
-    let mut store = load_stateful_reliability(path);
+    let mut store = try_load_stateful_reliability(path)?;
     let Some(row) = store
         .dead_letters
         .iter_mut()
@@ -545,7 +586,7 @@ pub async fn mark_compensation_status(
     now_ms: u64,
 ) -> anyhow::Result<Option<StatefulCompensationRecord>> {
     let _guard = STATEFUL_RELIABILITY_STORE_LOCK.lock().await;
-    let mut store = load_stateful_reliability(path);
+    let mut store = try_load_stateful_reliability(path)?;
     let Some(row) = store
         .compensations
         .iter_mut()
@@ -564,42 +605,11 @@ async fn write_stateful_reliability_unlocked(
     path: &Path,
     store: &StatefulReliabilityStoreFile,
 ) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await.with_context(|| {
-            format!(
-                "failed to create stateful reliability directory {}",
-                parent.display()
-            )
-        })?;
-    }
     let mut store = store.clone();
     store.schema_version = STATEFUL_RUNTIME_SCHEMA_VERSION;
     sort_reliability_store(&mut store);
-    let tmp_path = tmp_path_for(path);
     let content = serde_json::to_vec_pretty(&store)?;
-    let mut file = tokio::fs::File::create(&tmp_path).await.with_context(|| {
-        format!(
-            "failed to create stateful reliability {}",
-            tmp_path.display()
-        )
-    })?;
-    file.write_all(&content).await.with_context(|| {
-        format!(
-            "failed to write stateful reliability {}",
-            tmp_path.display()
-        )
-    })?;
-    file.flush().await.with_context(|| {
-        format!(
-            "failed to flush stateful reliability {}",
-            tmp_path.display()
-        )
-    })?;
-    drop(file);
-    tokio::fs::rename(&tmp_path, path)
-        .await
-        .with_context(|| format!("failed to publish stateful reliability {}", path.display()))?;
-    Ok(())
+    write_file_atomically(path, &content, "stateful reliability store").await
 }
 
 fn outbox_from_external_action(
@@ -1031,17 +1041,6 @@ fn sort_reliability_store(store: &mut StatefulReliabilityStoreFile) {
         .sort_by(|left, right| right.updated_at_ms.cmp(&left.updated_at_ms));
 }
 
-fn tmp_path_for(path: &Path) -> PathBuf {
-    let mut tmp = path.to_path_buf();
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| format!("{value}.tmp"))
-        .unwrap_or_else(|| "tmp".to_string());
-    tmp.set_extension(extension);
-    tmp
-}
-
 fn short_hash(hash: &str) -> String {
     hash.strip_prefix("sha256:")
         .unwrap_or(hash)
@@ -1134,6 +1133,33 @@ mod tests {
         assert_eq!(receipt["authorization"], "[redacted]");
         assert_eq!(receipt["nested"]["api_key"], "[redacted]");
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn reliability_mutations_sideline_corrupt_store_instead_of_overwriting() {
+        let path = std::env::temp_dir().join(format!(
+            "tandem-stateful-reliability-corrupt-{}.json",
+            Uuid::new_v4()
+        ));
+        std::fs::write(&path, "{not-valid-json").expect("write corrupt reliability store");
+        let corrupt_path = path.with_extension("json.corrupt");
+        let scope = StatefulRuntimeScope::from_tenant_context(tenant("org-a", "workspace-a"));
+
+        let result = record_external_action_reliability_bridge(
+            &path,
+            scope,
+            &action("action-corrupt", "posted", None),
+        )
+        .await;
+
+        let error = result.expect_err("corrupt store should block mutation");
+        assert!(error.to_string().contains("corrupt store moved"));
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read_to_string(&corrupt_path).expect("read corrupt reliability store"),
+            "{not-valid-json"
+        );
+        let _ = std::fs::remove_file(corrupt_path);
     }
 
     #[tokio::test]
