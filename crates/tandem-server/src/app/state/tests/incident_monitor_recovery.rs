@@ -206,11 +206,12 @@ async fn recovery_publish_honors_source_approval_policy() {
 }
 
 #[tokio::test]
-async fn overdue_recovery_stops_after_attempt_cap_for_unpublishable_draft() {
-    // TAN-554: a permanently-unpublishable timed-out draft must stop being
-    // re-surfaced after a bounded number of recovery attempts instead of
-    // churning (and emitting publish/probe events) on every sweep.
-    let state = incident_monitor_recovery_state("incident-monitor-recovery-attempt-cap");
+async fn overdue_recovery_backs_off_between_attempts_but_stays_retryable() {
+    // TAN-554: a still-unpublished timed-out draft must not be re-surfaced (and
+    // re-emit publish/probe events) on every sweep. Instead it backs off
+    // exponentially between attempts, but a transient failure stays retryable —
+    // it is never permanently abandoned after a fixed attempt cap.
+    let state = incident_monitor_recovery_state("incident-monitor-recovery-backoff");
     state
         .put_incident_monitor_config(IncidentMonitorConfig {
             enabled: true,
@@ -222,9 +223,9 @@ async fn overdue_recovery_stops_after_attempt_cap_for_unpublishable_draft() {
         .await
         .expect("put incident monitor config");
 
-    let draft_id = "failure-draft-attempt-cap";
-    let triage_run_id = "automation-v2-run-attempt-cap";
-    let incident_id = "failure-incident-attempt-cap";
+    let draft_id = "failure-draft-backoff";
+    let triage_run_id = "automation-v2-run-backoff";
+    let incident_id = "failure-incident-backoff";
     state
         .put_incident_monitor_draft(timed_out_draft(draft_id, triage_run_id))
         .await
@@ -234,32 +235,66 @@ async fn overdue_recovery_stops_after_attempt_cap_for_unpublishable_draft() {
         .await
         .expect("put incident");
 
-    let mut recovered_rounds = 0;
-    for _ in 0..8 {
-        let recovered = recover_overdue_incident_monitor_triage_runs(&state)
-            .await
-            .expect("recover overdue triage");
-        if recovered.is_empty() {
-            break;
-        }
-        recovered_rounds += 1;
-    }
-
+    // First sweep re-surfaces the draft and schedules the next attempt in the
+    // future (exponential backoff), recording one attempt.
+    let recovered = recover_overdue_incident_monitor_triage_runs(&state)
+        .await
+        .expect("recover overdue triage");
     assert_eq!(
-        recovered_rounds, 5,
-        "recovery should re-surface the draft only up to the attempt cap"
+        recovered,
+        vec![(draft_id.to_string(), Some(incident_id.to_string()))]
     );
     let draft = state
         .get_incident_monitor_draft(draft_id)
         .await
         .expect("draft still present");
-    assert_eq!(draft.recovery_attempts, 5);
+    assert_eq!(draft.recovery_attempts, 1);
+    assert!(
+        draft.next_recovery_at_ms.is_some(),
+        "a re-surfaced draft must schedule its next attempt"
+    );
 
+    // An immediate second sweep is inside the backoff window, so the draft is
+    // not re-surfaced (no churn) and the attempt count is unchanged.
     let recovered = recover_overdue_incident_monitor_triage_runs(&state)
         .await
         .expect("recover overdue triage");
     assert!(
         recovered.is_empty(),
-        "a capped draft must not be re-surfaced again"
+        "a draft inside its backoff window must not be re-surfaced"
+    );
+    assert_eq!(
+        state
+            .get_incident_monitor_draft(draft_id)
+            .await
+            .expect("draft still present")
+            .recovery_attempts,
+        1
+    );
+
+    // Once the backoff elapses (simulated by clearing the schedule), the draft
+    // is retried again — it is never permanently abandoned. The attempt count
+    // keeps climbing so the backoff continues to widen.
+    let mut due = draft.clone();
+    due.next_recovery_at_ms = Some(0);
+    state
+        .put_incident_monitor_draft(due)
+        .await
+        .expect("mark draft due for retry");
+    let recovered = recover_overdue_incident_monitor_triage_runs(&state)
+        .await
+        .expect("recover overdue triage");
+    assert_eq!(
+        recovered,
+        vec![(draft_id.to_string(), Some(incident_id.to_string()))],
+        "a draft past its backoff window stays retryable"
+    );
+    assert_eq!(
+        state
+            .get_incident_monitor_draft(draft_id)
+            .await
+            .expect("draft still present")
+            .recovery_attempts,
+        2
     );
 }

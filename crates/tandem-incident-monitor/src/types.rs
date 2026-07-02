@@ -1070,10 +1070,17 @@ pub struct IncidentMonitorDraftRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_post_error: Option<String>,
     /// Number of times the recovery sweep has re-surfaced this draft after a
-    /// triage timeout. Bounds re-attempts so a permanently-unpublishable draft
-    /// is not re-published (with the associated audit/probe events) every sweep.
+    /// triage timeout. Drives an exponential backoff between re-attempts so a
+    /// stuck draft is not re-published (with the associated audit/probe events)
+    /// on every sweep, while transient failures still eventually retry.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub recovery_attempts: u32,
+    /// Earliest wall-clock time (ms) at which the recovery sweep may re-surface
+    /// this draft again. Set from `recovery_attempts` via exponential backoff so
+    /// transient publish failures self-heal instead of being permanently
+    /// abandoned after a fixed attempt cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_recovery_at_ms: Option<u64>,
 }
 
 fn is_zero_u32(value: &u32) -> bool {

@@ -576,10 +576,61 @@ async fn resolve_failure_destination(
                 destination_kind: destination.kind.clone(),
                 route_id: route.and_then(|row| row.route_id.clone()),
                 route_match_reason: route.and_then(|row| row.reason.clone()),
-                target_repo: draft.repo.clone(),
+                target_repo: failure_destination_target_ref(destination, draft),
             }
         }
         Err(_) => legacy(),
+    }
+}
+
+/// Best-effort target identifier for a failure receipt, matching the reference
+/// each adapter records on a successful publish so a failure is attributed to
+/// the destination it was actually routed to (not always the GitHub repo).
+fn failure_destination_target_ref(
+    destination: &IncidentMonitorDestinationConfig,
+    draft: &IncidentMonitorDraftRecord,
+) -> String {
+    let non_empty = |value: &Option<String>| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    match destination.kind {
+        IncidentMonitorDestinationKind::GithubIssue => {
+            non_empty(&destination.repo).unwrap_or_else(|| draft.repo.clone())
+        }
+        IncidentMonitorDestinationKind::LinearIssue => {
+            match (
+                non_empty(&destination.linear_team),
+                non_empty(&destination.linear_project),
+            ) {
+                (Some(team), Some(project)) => format!("{team}/{project}"),
+                (Some(team), None) => team,
+                (None, Some(project)) => project,
+                (None, None) => destination.destination_id.clone(),
+            }
+        }
+        IncidentMonitorDestinationKind::Webhook => non_empty(&destination.webhook_url)
+            .map(|url| crate::truncate_text(&url, 500))
+            .unwrap_or_else(|| destination.destination_id.clone()),
+        IncidentMonitorDestinationKind::Telemetry => non_empty(&destination.telemetry_path)
+            .map(|path| format!("telemetry:{path}"))
+            .unwrap_or_else(|| destination.destination_id.clone()),
+        IncidentMonitorDestinationKind::InternalMemory => non_empty(&destination.memory_category)
+            .map(|category| format!("memory:{category}"))
+            .unwrap_or_else(|| destination.destination_id.clone()),
+        IncidentMonitorDestinationKind::McpTool => {
+            match (
+                non_empty(&destination.mcp_server),
+                non_empty(&destination.mcp_tool),
+            ) {
+                (Some(server), Some(tool)) => format!("mcp:{server}/{tool}"),
+                (Some(server), None) => format!("mcp:{server}"),
+                _ => destination.destination_id.clone(),
+            }
+        }
     }
 }
 
