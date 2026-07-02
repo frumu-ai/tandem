@@ -90,22 +90,35 @@ fn check_file_permissions(_path: &std::path::Path) {
 }
 
 async fn write_state_file_atomically(path: &PathBuf, payload: String) -> anyhow::Result<()> {
-    use tokio::io::AsyncWriteExt;
-    let tmp = path.with_extension("tmp");
-    // Write to a temp file and fsync it before the rename so a crash mid-write
-    // cannot leave a torn/partial file in place of the real state.
-    {
-        let mut file = fs::File::create(&tmp).await?;
-        file.write_all(payload.as_bytes()).await?;
-        file.sync_all().await?;
-    }
-    fs::rename(&tmp, path).await?;
-    // fsync the parent directory so the rename itself is durable across a crash.
-    if let Some(parent) = path.parent() {
-        if let Ok(dir) = fs::File::open(parent).await {
-            let _ = dir.sync_all().await;
+    // Run the blocking file work (create + fsync + rename + dir fsync) on a
+    // blocking thread. This keeps fsync off the async reactor and, just as
+    // importantly, keeps this helper's async future tiny — it only awaits a
+    // join handle rather than holding open `File`s across several `.await`s.
+    // Callers persist inside large multi-await futures (e.g. the webhook queue),
+    // and an inflated future here compounds into a stack-overflow risk on the
+    // default 2 MiB worker/test stack.
+    let path = path.clone();
+    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        use std::io::Write;
+        let tmp = path.with_extension("tmp");
+        // Write to a temp file and fsync it before the rename so a crash
+        // mid-write cannot leave a torn/partial file in place of the real state.
+        {
+            let mut file = std::fs::File::create(&tmp)?;
+            file.write_all(payload.as_bytes())?;
+            file.sync_all()?;
         }
-    }
+        std::fs::rename(&tmp, &path)?;
+        // fsync the parent directory so the rename itself is durable across a
+        // crash.
+        if let Some(parent) = path.parent() {
+            if let Ok(dir) = std::fs::File::open(parent) {
+                let _ = dir.sync_all();
+            }
+        }
+        Ok(())
+    })
+    .await??;
     Ok(())
 }
 
