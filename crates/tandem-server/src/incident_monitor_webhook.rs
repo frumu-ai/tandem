@@ -649,7 +649,10 @@ async fn send_webhook(
             .post(url.clone())
             .timeout(Duration::from_millis(policy.timeout_ms))
             .header("content-type", "application/json")
-            .header("user-agent", "Tandem-Bug-Monitor/0.6.5")
+            .header(
+                "user-agent",
+                concat!("Tandem-Incident-Monitor/", env!("CARGO_PKG_VERSION")),
+            )
             .header("x-tandem-event", "incident_monitor.incident")
             .header("x-tandem-delivery-id", delivery_id)
             .header("x-tandem-signature", signature)
