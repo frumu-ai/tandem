@@ -337,8 +337,21 @@ fn source_bound_authority_policy_denial_reason(
         .source_binding_id
         .as_deref()
         .map(str::trim)
-        .filter(|value| !value.is_empty());
-    source_bound_policy_claim_denial_reason(policy, source_binding_id, context.data_class)
+        .filter(|value| !value.is_empty())?;
+    let Some(data_class) = context.data_class else {
+        return Some("knowledge_scope_data_class_mismatch");
+    };
+    if let Some(reason) =
+        source_bound_policy_claim_denial_reason(policy, Some(source_binding_id), Some(data_class))
+    {
+        return Some(reason);
+    }
+    if policy.resource_ref.resource_kind != ResourceKind::SourceBinding
+        || policy.resource_ref.resource_id != source_binding_id
+    {
+        return Some("knowledge_scope_source_resource_mismatch");
+    }
+    None
 }
 
 fn source_bound_policy_claim_denial_reason(
@@ -664,6 +677,52 @@ mod tests {
             decision.reason_code,
             "knowledge_scope_source_binding_mismatch"
         );
+    }
+
+    #[test]
+    fn source_bound_authority_write_rejects_wrong_knowledge_scope_resource_kind() {
+        let policy = policy();
+        let metadata = policy.metadata_value();
+        let decision = memory_write_scope_decision_for_context(
+            &partition(GovernedMemoryTier::Session),
+            Some(&metadata),
+            Some(&authority_context(crate::MemoryAuthorityOperation::Write)),
+            1_000,
+        )
+        .expect("write decision");
+
+        assert!(!decision.allowed);
+        assert_eq!(
+            decision.reason_code,
+            "knowledge_scope_source_resource_mismatch"
+        );
+    }
+
+    #[test]
+    fn source_bound_authority_write_rejects_missing_authority_data_class() {
+        let partition = partition(GovernedMemoryTier::Session);
+        let mut context = authority_context(crate::MemoryAuthorityOperation::Write);
+        let policy = knowledge_scope_policy_from_authority_job_context(
+            &partition,
+            &context,
+            "registry-authority",
+            vec![GovernedMemoryTier::Session],
+            vec![GovernedMemoryTier::Project],
+            true,
+        )
+        .expect("policy");
+        context.data_class = None;
+        let metadata = metadata_with_knowledge_scope(None, &policy);
+        let decision = memory_write_scope_decision_for_context(
+            &partition,
+            metadata.as_ref(),
+            Some(&context),
+            1_000,
+        )
+        .expect("write decision");
+
+        assert!(!decision.allowed);
+        assert_eq!(decision.reason_code, "knowledge_scope_data_class_mismatch");
     }
 
     #[test]
