@@ -1,3 +1,5 @@
+use crate::governance::GovernedMemoryTier;
+use crate::knowledge_scope::{metadata_with_knowledge_scope, KnowledgeScopePolicy};
 use crate::manager::MemoryManager;
 use crate::types::{
     MemoryError, MemoryImportFormat, MemoryImportProgress, MemoryImportRequest,
@@ -9,6 +11,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tandem_enterprise_contract::{DataClass, ResourceRef};
 
 const MAX_FILE_SIZE_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -212,6 +215,14 @@ where
                 "native_object_id": indexed_path,
                 "content_hash": content_hash,
             });
+            let policy =
+                source_bound_import_knowledge_scope_policy(request, binding, &indexed_path)?;
+            request_metadata = metadata_with_knowledge_scope(Some(request_metadata), &policy)
+                .ok_or_else(|| {
+                    MemoryError::InvalidConfig(
+                        "failed to attach source-bound import knowledge scope".to_string(),
+                    )
+                })?;
         }
         let store_request = StoreMessageRequest {
             content,
@@ -548,6 +559,58 @@ fn source_object_id(
     )
 }
 
+fn source_bound_import_knowledge_scope_policy(
+    request: &MemoryImportRequest,
+    binding: &MemoryImportSourceBinding,
+    indexed_path: &str,
+) -> Result<KnowledgeScopePolicy, MemoryError> {
+    let resource_ref = serde_json::from_value::<ResourceRef>(binding.resource_ref.clone())
+        .map_err(|error| {
+            MemoryError::InvalidConfig(format!(
+                "source binding resource_ref is invalid for knowledge scope: {error}"
+            ))
+        })?;
+    let data_class =
+        serde_json::from_value::<DataClass>(serde_json::Value::String(binding.data_class.clone()))
+            .map_err(|error| {
+                MemoryError::InvalidConfig(format!(
+                    "source binding data_class is invalid for knowledge scope: {error}"
+                ))
+            })?;
+    let source_object_id = source_object_id(request, binding, indexed_path);
+    Ok(KnowledgeScopePolicy {
+        registry_id: format!("source-bound-import:{source_object_id}"),
+        resource_ref,
+        data_class,
+        collection_id: None,
+        source_binding_id: Some(binding.binding_id.clone()),
+        source_object_id: Some(source_object_id),
+        owner_org_unit_id: None,
+        risk_tier: None,
+        allowed_workflow_phases: Vec::new(),
+        allowed_write_tiers: governed_import_tier(request.tier).into_iter().collect(),
+        allowed_promotion_tiers: governed_import_promotion_tiers(request.tier),
+        retention_expires_at_ms: None,
+        required_trust_label: None,
+        promotion_requires_approval: binding.require_review,
+    })
+}
+
+fn governed_import_tier(tier: MemoryTier) -> Option<GovernedMemoryTier> {
+    match tier {
+        MemoryTier::Session => Some(GovernedMemoryTier::Session),
+        MemoryTier::Project => Some(GovernedMemoryTier::Project),
+        MemoryTier::Global => None,
+    }
+}
+
+fn governed_import_promotion_tiers(tier: MemoryTier) -> Vec<GovernedMemoryTier> {
+    match tier {
+        MemoryTier::Session => vec![GovernedMemoryTier::Project],
+        MemoryTier::Project | MemoryTier::Global => Vec::new(),
+    }
+}
+
 fn source_object_lifecycle_record(
     request: &MemoryImportRequest,
     binding: Option<&MemoryImportSourceBinding>,
@@ -743,7 +806,7 @@ mod tests {
                 binding_id: "binding-finance-docs".to_string(),
                 connector_id: "manual-upload".to_string(),
                 resource_ref: serde_json::json!({
-                    "org_id": "acme",
+                    "organization_id": "acme",
                     "workspace_id": "finance",
                     "resource_kind": "project",
                     "resource_id": "board-pack",
@@ -782,6 +845,31 @@ mod tests {
         assert_eq!(first_record.native_object_id, indexed_path);
         assert_eq!(first_record.resource_ref["resource_id"], "board-pack");
         assert_eq!(first_record.data_class, "financial_record");
+        let chunks = manager.db().get_global_chunks(20).await.unwrap();
+        let imported_chunk = chunks
+            .iter()
+            .find(|chunk| chunk.source_path.as_deref() == Some(indexed_path.as_str()))
+            .expect("imported source-bound chunk");
+        let chunk_metadata = imported_chunk.metadata.as_ref().expect("chunk metadata");
+        let source_binding_metadata = chunk_metadata
+            .get("enterprise_source_binding")
+            .expect("source binding metadata");
+        let knowledge_scope_metadata = chunk_metadata
+            .get("knowledge_scope_registry")
+            .expect("knowledge scope metadata");
+        assert_eq!(
+            knowledge_scope_metadata["resource_ref"],
+            source_binding_metadata["resource_ref"]
+        );
+        assert_eq!(
+            knowledge_scope_metadata["source_binding_id"],
+            source_binding_metadata["binding_id"]
+        );
+        assert_eq!(
+            knowledge_scope_metadata["source_object_id"],
+            source_binding_metadata["source_object_id"]
+        );
+        assert_eq!(knowledge_scope_metadata["data_class"], "financial_record");
         let stable_source_object_id = first_record.source_object_id.clone();
         let first_source_hash = first_record.source_hash.clone();
 
