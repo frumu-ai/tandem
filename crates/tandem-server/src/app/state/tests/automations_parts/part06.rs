@@ -103,6 +103,149 @@ async fn approval_gate_expiry_policy_auto_cancels_with_expired_record() {
 }
 
 #[tokio::test]
+async fn approval_gate_update_registers_stateful_wait_record() {
+    let state = ready_test_state().await;
+    let automation = approval_policy_test_automation("auto-gate-stateful-wait");
+    state
+        .put_automation_v2(automation.clone())
+        .await
+        .expect("put automation");
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("create run");
+    let gate = AutomationPendingGate {
+        node_id: "approval".to_string(),
+        title: "Approval".to_string(),
+        instructions: None,
+        decisions: vec!["approve".to_string(), "cancel".to_string()],
+        rework_targets: Vec::new(),
+        requested_at_ms: now_ms(),
+        upstream_node_ids: Vec::new(),
+        metadata: None,
+        expiry_policy: Some(AutomationGateExpiryPolicy {
+            expires_after_ms: Some(60_000),
+            on_expiry: Some(AutomationGateExpiryAction::Cancel),
+            escalate_to: None,
+            remind_every_ms: None,
+        }),
+    };
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = AutomationRunStatus::AwaitingApproval;
+            row.detail = Some("awaiting approval".to_string());
+            row.checkpoint.pending_nodes = vec![gate.node_id.clone()];
+            row.checkpoint.blocked_nodes = vec![gate.node_id.clone()];
+            row.checkpoint.awaiting_gate = Some(gate.clone());
+        })
+        .await
+        .expect("pause run for gate");
+
+    let paths = crate::stateful_runtime::StatefulRuntimeStoragePaths::from_runtime_events_path(
+        &state.runtime_events_path,
+    );
+    let waits = crate::stateful_runtime::list_stateful_waits(
+        &paths.waits_path,
+        &run.tenant_context,
+        crate::stateful_runtime::StatefulWaitQuery {
+            run_id: Some(&run.run_id),
+            ..crate::stateful_runtime::StatefulWaitQuery::default()
+        },
+    );
+    let wait_ref = tandem_types::ApprovalWaitRef::for_gate(
+        tandem_types::ApprovalSourceKind::AutomationV2,
+        &run.run_id,
+        "approval",
+    );
+
+    assert_eq!(waits.len(), 1);
+    assert_eq!(waits[0].wait_id, wait_ref.wait_id);
+    assert_eq!(waits[0].wait_kind, crate::stateful_runtime::StatefulWaitKind::Approval);
+    assert_eq!(waits[0].status, crate::stateful_runtime::StatefulWaitStatus::Waiting);
+    assert_eq!(
+        waits[0]
+            .timeout_policy
+            .as_ref()
+            .map(|policy| policy.on_timeout.clone()),
+        Some(crate::stateful_runtime::StatefulWaitTimeoutAction::Cancel)
+    );
+}
+
+#[tokio::test]
+async fn stateful_wait_scheduler_cancels_real_approval_run() {
+    let state = ready_test_state().await;
+    let automation = approval_policy_test_automation("auto-gate-stateful-cancel");
+    state
+        .put_automation_v2(automation.clone())
+        .await
+        .expect("put automation");
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("create run");
+    let gate = AutomationPendingGate {
+        node_id: "approval".to_string(),
+        title: "Approval".to_string(),
+        instructions: None,
+        decisions: vec!["approve".to_string(), "cancel".to_string()],
+        rework_targets: Vec::new(),
+        requested_at_ms: now_ms().saturating_sub(10_000),
+        upstream_node_ids: Vec::new(),
+        metadata: None,
+        expiry_policy: Some(AutomationGateExpiryPolicy {
+            expires_after_ms: Some(1),
+            on_expiry: Some(AutomationGateExpiryAction::Cancel),
+            escalate_to: None,
+            remind_every_ms: None,
+        }),
+    };
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = AutomationRunStatus::AwaitingApproval;
+            row.detail = Some("awaiting approval".to_string());
+            row.checkpoint.pending_nodes = vec![gate.node_id.clone()];
+            row.checkpoint.blocked_nodes = vec![gate.node_id.clone()];
+            row.checkpoint.awaiting_gate = Some(gate.clone());
+        })
+        .await
+        .expect("pause run for gate");
+
+    let paths = crate::stateful_runtime::StatefulRuntimeStoragePaths::from_runtime_events_path(
+        &state.runtime_events_path,
+    );
+    let tick =
+        crate::stateful_runtime::process_due_stateful_waits(&paths, now_ms(), Default::default())
+            .await;
+    assert_eq!(tick.completed, 1);
+    for outcome in &tick.outcomes {
+        state
+            .apply_stateful_wait_scheduler_outcome(outcome)
+            .await
+            .expect("apply scheduler outcome");
+    }
+
+    let updated = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("updated run");
+    assert_eq!(updated.status, AutomationRunStatus::Cancelled);
+    assert!(updated.checkpoint.awaiting_gate.is_none());
+    assert_eq!(updated.checkpoint.gate_history.len(), 1);
+    assert_eq!(updated.checkpoint.gate_history[0].decision, "expired");
+
+    let waits = crate::stateful_runtime::list_stateful_waits(
+        &paths.waits_path,
+        &run.tenant_context,
+        crate::stateful_runtime::StatefulWaitQuery {
+            run_id: Some(&run.run_id),
+            status: Some(crate::stateful_runtime::StatefulWaitStatus::Cancelled),
+            ..crate::stateful_runtime::StatefulWaitQuery::default()
+        },
+    );
+    assert_eq!(waits.len(), 1);
+}
+
+#[tokio::test]
 async fn approval_gate_timeout_survives_reload_and_rejects_late_decision() {
     let state = ready_test_state().await;
     let automation = approval_policy_test_automation("auto-gate-timeout-reload");

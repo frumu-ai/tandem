@@ -78,6 +78,15 @@ async fn process_stateful_wait_scheduler_tick(state: &AppState) {
     let tick = process_due_stateful_waits(&paths, crate::util::time::now_ms(), Default::default())
         .await;
     for outcome in &tick.outcomes {
+        if let Err(error) = state.apply_stateful_wait_scheduler_outcome(outcome).await {
+            tracing::warn!(
+                run_id = %outcome.run_id,
+                wait_id = %outcome.wait_id,
+                event_type = %outcome.event_type,
+                error = %error,
+                "failed to apply stateful wait scheduler outcome to automation run"
+            );
+        }
         state.event_bus.publish(EngineEvent::new(
             outcome.event_type.clone(),
             serde_json::json!({
@@ -127,13 +136,13 @@ async fn run_automation_v2_executor_single(state: AppState) {
             .reap_stale_running_automation_runs(STALE_RUNNING_AUTOMATION_RUN_MS)
             .await;
 
+        process_stateful_wait_scheduler_tick(&state).await;
+
         let _ = state.process_awaiting_approval_gate_policies().await;
 
         let _ = state.mark_stale_awaiting_approval_runs().await;
 
         let _ = state.auto_resume_stale_reaped_runs().await;
-
-        process_stateful_wait_scheduler_tick(&state).await;
 
         if active.is_empty() {
             if let Some(run) = state.claim_next_queued_automation_v2_run().await {
@@ -166,13 +175,13 @@ async fn run_automation_v2_executor_multi(state: AppState) {
             .reap_stale_running_automation_runs(STALE_RUNNING_AUTOMATION_RUN_MS)
             .await;
 
+        process_stateful_wait_scheduler_tick(&state).await;
+
         let _ = state.process_awaiting_approval_gate_policies().await;
 
         let _ = state.mark_stale_awaiting_approval_runs().await;
 
         let _ = state.auto_resume_stale_reaped_runs().await;
-
-        process_stateful_wait_scheduler_tick(&state).await;
 
         let capacity = {
             let scheduler = state.automation_scheduler.read().await;

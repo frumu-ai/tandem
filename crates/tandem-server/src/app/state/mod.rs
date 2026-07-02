@@ -87,6 +87,7 @@ mod automation_v2_run_store;
 mod automation_v2_stale_reaper;
 mod automation_v2_startup_recovery;
 mod automation_v2_stateful_projection;
+mod automation_v2_stateful_waits;
 mod automation_webhook_delivery;
 mod automation_webhook_feedback;
 mod automation_webhook_idempotency;

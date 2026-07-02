@@ -1198,8 +1198,8 @@ impl AppState {
         let delivery = automation_webhook_accepted_delivery(
             Some(delivery_id.clone()),
             trigger,
-            provider_event_id,
-            body_digest,
+            provider_event_id.clone(),
+            body_digest.clone(),
             received_at_ms,
             sanitized_preview,
             &verification,
@@ -1211,6 +1211,30 @@ impl AppState {
         let delivery = self
             .record_automation_webhook_delivery_locked(delivery)
             .await?;
+        if let Err(error) = self
+            .queue_automation_v2_run_after_stateful_wait_woken(
+                Some(&woken_wait),
+                &woken_wait.run_id,
+                &woken_wait.wait_id,
+                "stateful_runtime.wait.webhook_woken",
+                json!({
+                    "delivery_id": delivery.delivery_id,
+                    "trigger_id": trigger.trigger_id,
+                    "provider": trigger.provider,
+                    "provider_event_id": provider_event_id,
+                    "body_digest": body_digest,
+                }),
+            )
+            .await
+        {
+            tracing::warn!(
+                run_id = %woken_wait.run_id,
+                wait_id = %woken_wait.wait_id,
+                delivery_id = %delivery.delivery_id,
+                error = %error,
+                "failed to queue automation run after stateful webhook wait wake"
+            );
+        }
         self.event_bus.publish(crate::EngineEvent::new(
             "stateful_runtime.wait.webhook_woken",
             json!({

@@ -475,6 +475,17 @@ impl AppState {
                 }),
             )
             .await;
+            if let Err(error) = self
+                .complete_automation_v2_approval_wait_expired(&updated_run, gate, expires_at_ms)
+                .await
+            {
+                tracing::warn!(
+                    run_id = %updated_run.run_id,
+                    node_id = %gate.node_id,
+                    error = %error,
+                    "failed to complete expired approval stateful wait"
+                );
+            }
             self.event_bus.publish(tandem_types::EngineEvent::new(
                 "approval.gate.expired",
                 json!({
@@ -1032,6 +1043,8 @@ impl AppState {
         let _ = self.persist_automation_v2_runs().await;
         let _ = self.persist_automation_v2_run_status_json(&out).await;
         self.project_automation_v2_stateful_boundaries_or_warn(&out)
+            .await;
+        self.sync_automation_v2_stateful_waits_for_run_or_warn(&out)
             .await;
         if matches!(
             out.status,

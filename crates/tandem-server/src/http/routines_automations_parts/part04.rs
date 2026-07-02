@@ -879,6 +879,23 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
         }),
     )
     .await;
+    if let Err(error) = state
+        .complete_automation_v2_approval_wait_decision(
+            &updated,
+            &gate,
+            &decision,
+            reason.clone(),
+        )
+        .await
+    {
+        tracing::warn!(
+            run_id = %updated.run_id,
+            node_id = %gate.node_id,
+            decision = %decision,
+            error = %error,
+            "failed to complete approval stateful wait after gate decision"
+        );
+    }
     state.event_bus.publish(tandem_types::EngineEvent::new(
         "approval.decision.recorded",
         json!({

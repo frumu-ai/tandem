@@ -1196,3 +1196,111 @@ async fn webhook_queue_serializes_duplicate_delivery_race() {
         .await;
     assert_eq!(deliveries.len(), 2);
 }
+
+#[tokio::test]
+async fn webhook_wake_queues_matching_stateful_wait_run() {
+    let state = ready_test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a");
+    insert_test_automation(&state, "automation-webhook-wait", &tenant_a).await;
+    let created = state
+        .create_automation_webhook_trigger(create_input(
+            "automation-webhook-wait",
+            tenant_a.clone(),
+        ))
+        .await
+        .expect("create webhook trigger");
+    let automation = state
+        .get_automation_v2("automation-webhook-wait")
+        .await
+        .expect("automation");
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("create run");
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            row.status = AutomationRunStatus::Paused;
+            row.pause_reason = Some("waiting for webhook".to_string());
+            row.detail = Some("waiting for webhook".to_string());
+        })
+        .await
+        .expect("pause run");
+
+    let paths = crate::stateful_runtime::StatefulRuntimeStoragePaths::from_runtime_events_path(
+        &state.runtime_events_path,
+    );
+    crate::stateful_runtime::upsert_stateful_wait(
+        &paths.waits_path,
+        crate::stateful_runtime::StatefulWaitRecord {
+            schema_version: 1,
+            wait_id: "wait-webhook".to_string(),
+            run_id: run.run_id.clone(),
+            wait_kind: crate::stateful_runtime::StatefulWaitKind::Webhook,
+            status: crate::stateful_runtime::StatefulWaitStatus::Waiting,
+            scope: crate::stateful_runtime::StatefulRuntimeScope::from_tenant_context(
+                tenant_a.clone(),
+            ),
+            phase_id: None,
+            reason: Some("wait for matching webhook".to_string()),
+            created_at_ms: now_ms(),
+            updated_at_ms: now_ms(),
+            wake_at_ms: None,
+            timeout_policy: None,
+            event_seq: None,
+            wake_idempotency_key: None,
+            claimed_by: None,
+            claimed_at_ms: None,
+            claim_expires_at_ms: None,
+            completed_at_ms: None,
+            metadata: Some(crate::stateful_runtime::stateful_webhook_wait_metadata(
+                crate::stateful_runtime::StatefulWebhookWaitMatch {
+                    trigger_id: Some(created.trigger.trigger_id.clone()),
+                    provider: Some(created.trigger.provider.clone()),
+                    provider_event_kind: created.trigger.provider_event_kind.clone(),
+                    provider_event_id: Some("evt-wait".to_string()),
+                    body_digest: None,
+                    idempotency_key: None,
+                },
+                None,
+            )),
+        },
+    )
+    .await
+    .expect("insert webhook wait");
+
+    let body = br#"{"ok":true}"#;
+    let now = now_ms();
+    let signature = automation_webhook_signature_header(&created.secret, now, body);
+    let verified = state
+        .verify_automation_webhook_request(
+            &created.trigger.public_path_token,
+            Some(&signature),
+            body,
+            Some("evt-wait".to_string()),
+            now,
+            300_000,
+        )
+        .await
+        .expect("verified request");
+    let woken = match state
+        .queue_automation_v2_run_from_webhook_delivery(verified, json!({"ok": true}))
+        .await
+        .expect("queue webhook")
+    {
+        AutomationWebhookQueueResult::Woken { delivery, wait } => (delivery, wait),
+        other => panic!("expected webhook to wake stateful wait, got {other:?}"),
+    };
+    assert_eq!(woken.1.wait_id, "wait-webhook");
+    assert_eq!(woken.0.woken_run_id.as_deref(), Some(run.run_id.as_str()));
+
+    let resumed = state
+        .get_automation_v2_run(&run.run_id)
+        .await
+        .expect("resumed run");
+    assert_eq!(resumed.status, AutomationRunStatus::Queued);
+    assert!(resumed
+        .checkpoint
+        .lifecycle_history
+        .iter()
+        .any(|entry| entry.event == "stateful_wait_woken_requeued"));
+}
