@@ -44,7 +44,7 @@ fn create_input(
         tenant_context,
         owner_principal: None,
         created_by: Some("actor-a".to_string()),
-        owning_org_unit_id: Some("dept-a".to_string()),
+        owning_org_unit_id: None,
         resource_scope: None,
         default_data_class: DataClass::Internal,
         default_risk_tier: None,
@@ -793,6 +793,56 @@ async fn webhook_queue_rejects_trigger_outside_automation_resource_scope() {
     assert_eq!(
         delivery.rejection_reason_code.as_deref(),
         Some("webhook_resource_scope_mismatch")
+    );
+    assert!(delivery.enterprise_scope.is_some());
+    assert!(state.automation_v2_runs.read().await.is_empty());
+}
+
+#[tokio::test]
+async fn webhook_queue_rejects_scoped_trigger_for_unscoped_automation() {
+    let state = ready_test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a");
+    insert_test_automation(&state, "automation-unscoped", &tenant_a).await;
+
+    let mut input = create_input("automation-unscoped", tenant_a.clone());
+    input.owning_org_unit_id = Some("dept-a".to_string());
+    let created = state
+        .create_automation_webhook_trigger(input)
+        .await
+        .expect("create scoped webhook trigger");
+    let body = br#"{"ok":true}"#;
+    let now = now_ms();
+    let signature = automation_webhook_signature_header(&created.secret, now, body);
+    let verified = state
+        .verify_automation_webhook_request(
+            &created.trigger.public_path_token,
+            Some(&signature),
+            body,
+            Some("evt-missing-automation-scope".to_string()),
+            now,
+            300_000,
+        )
+        .await
+        .expect("verified request");
+
+    let outcome = state
+        .queue_automation_v2_run_from_webhook_delivery(verified, json!({"ok": true}))
+        .await
+        .expect("queue outcome");
+    let delivery = match outcome {
+        AutomationWebhookQueueResult::Rejected {
+            delivery,
+            reason_code,
+        } => {
+            assert_eq!(reason_code, "webhook_automation_missing_enterprise_scope");
+            delivery
+        }
+        other => panic!("expected missing automation scope rejection, got {other:?}"),
+    };
+    assert_eq!(delivery.status, AutomationWebhookDeliveryStatus::Rejected);
+    assert_eq!(
+        delivery.rejection_reason_code.as_deref(),
+        Some("webhook_automation_missing_enterprise_scope")
     );
     assert!(delivery.enterprise_scope.is_some());
     assert!(state.automation_v2_runs.read().await.is_empty());

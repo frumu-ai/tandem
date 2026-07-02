@@ -62,6 +62,35 @@ async fn mcp_run_as_interactive_call_uses_current_actor_connection() {
     assert!(audit.contains("\"event_type\":\"mcp.tool.execution\""));
     assert!(audit.contains(&alice_connection_id));
     assert!(!audit.contains("alice-union-token"));
+    let reliability_path =
+        crate::stateful_runtime::stateful_reliability_path_from_runtime_events_path(
+            &state.runtime_events_path,
+        );
+    let reliability = crate::stateful_runtime::load_stateful_reliability(&reliability_path);
+    let receipt = reliability
+        .tool_effects
+        .iter()
+        .find(|effect| {
+            effect.provider.as_deref() == Some("notion")
+                && effect.tool.as_deref() == Some("mcp.notion.alice_search")
+        })
+        .expect("mcp tool effect receipt");
+    assert_eq!(
+        receipt
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.pointer("/run_as/connectionId"))
+            .and_then(Value::as_str),
+        Some(alice_connection_id.as_str())
+    );
+    assert_eq!(
+        receipt
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.pointer("/run_as/principal/type"))
+            .and_then(Value::as_str),
+        Some("human_actor")
+    );
     drop(server);
 }
 

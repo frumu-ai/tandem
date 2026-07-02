@@ -36,6 +36,43 @@ fn automation_v2_run_store_backfills_definition_metadata_from_snapshot() {
     );
 }
 
+#[test]
+fn automation_v2_run_store_backfills_enterprise_scope_metadata_from_snapshot() {
+    let automation = AutomationSpecBuilder::new("automation-enterprise-backfill")
+        .metadata(json!({
+            "resource_access": {
+                "owning_org_unit_id": " Finance "
+            }
+        }))
+        .build();
+    let mut run =
+        AutomationRunBuilder::new("run-enterprise-backfill", "automation-enterprise-backfill")
+            .build();
+    run.automation_snapshot = Some(automation);
+    let raw = json!({
+        "schema_version": AUTOMATION_V2_RUNS_SCHEMA_VERSION,
+        "runs": {
+            "run-enterprise-backfill": run
+        }
+    })
+    .to_string();
+
+    let (runs, upgraded) = parse_automation_v2_runs_file(&raw).expect("parse backfill run");
+    assert!(upgraded);
+    let parsed = runs
+        .get("run-enterprise-backfill")
+        .and_then(|run| run.automation_snapshot.as_ref())
+        .expect("backfilled run snapshot");
+    let scope = parsed.enterprise_scope().expect("enterprise scope");
+
+    assert_eq!(scope.owning_org_unit_id.as_deref(), Some("finance"));
+    assert!(parsed
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("enterprise_scope"))
+        .is_some());
+}
+
 #[tokio::test]
 async fn create_automation_v2_run_records_definition_metadata() {
     use crate::automation_v2::execution_profile::ExecutionProfile;

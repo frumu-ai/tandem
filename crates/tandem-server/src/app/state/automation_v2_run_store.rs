@@ -100,8 +100,9 @@ fn parse_automation_v2_run_entry(
 ) -> anyhow::Result<(AutomationV2RunRecord, bool)> {
     match serde_json::from_value::<AutomationV2RunRecord>(value.clone()) {
         Ok(mut run) => {
-            let backfilled = automation_run_definition_metadata_missing(&run);
+            let mut backfilled = automation_run_definition_metadata_missing(&run);
             ensure_automation_run_definition_metadata(&mut run);
+            backfilled |= stamp_automation_run_enterprise_scope_metadata(&mut run);
             Ok((run, backfilled))
         }
         Err(error) => recover_corrupt_automation_v2_run_entry(run_id_key, value, error.to_string()),
@@ -218,8 +219,9 @@ fn recover_corrupt_automation_v2_run_entry(
             "workflow_definition_snapshot_hash",
         ),
     };
-    let backfilled = automation_run_definition_metadata_missing(&run);
+    let mut backfilled = automation_run_definition_metadata_missing(&run);
     ensure_automation_run_definition_metadata(&mut run);
+    backfilled |= stamp_automation_run_enterprise_scope_metadata(&mut run);
     Ok((run, backfilled))
 }
 
@@ -227,6 +229,15 @@ fn automation_run_definition_metadata_missing(run: &AutomationV2RunRecord) -> bo
     run.automation_snapshot.is_some()
         && (run.workflow_definition_version.is_none()
             || run.workflow_definition_snapshot_hash.is_none())
+}
+
+fn stamp_automation_run_enterprise_scope_metadata(run: &mut AutomationV2RunRecord) -> bool {
+    let Some(snapshot) = run.automation_snapshot.as_mut() else {
+        return false;
+    };
+    let before = snapshot.metadata.clone();
+    snapshot.stamp_enterprise_scope_metadata();
+    snapshot.metadata != before
 }
 
 fn json_string_field(object: &serde_json::Map<String, Value>, field: &str) -> Option<String> {
@@ -300,7 +311,7 @@ fn upgrade_automation_v2_runs_file(
 
 fn upgrade_automation_v2_run_shard(
     from_version: u32,
-    run: AutomationV2RunRecord,
+    mut run: AutomationV2RunRecord,
 ) -> anyhow::Result<AutomationV2RunRecord> {
     let mut current = from_version;
     while current < AUTOMATION_V2_RUNS_SCHEMA_VERSION {
@@ -313,6 +324,8 @@ fn upgrade_automation_v2_run_shard(
             }
         }
     }
+    ensure_automation_run_definition_metadata(&mut run);
+    stamp_automation_run_enterprise_scope_metadata(&mut run);
     Ok(run)
 }
 

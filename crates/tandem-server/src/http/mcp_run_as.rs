@@ -7,6 +7,11 @@ use tandem_types::{
     StrictTenantContext, TenantContext, ToolResult, VerifiedTenantContext,
 };
 
+use crate::stateful_runtime::{
+    stateful_reliability_path_from_runtime_events_path, upsert_stateful_tool_effect,
+    StatefulRuntimeScope, StatefulToolEffectRecord, StatefulToolEffectStatus,
+    STATEFUL_RUNTIME_SCHEMA_VERSION,
+};
 use crate::{now_ms, AppState};
 
 const MCP_CONNECTION_ID_ARG: &str = "__mcp_connection_id";
@@ -169,6 +174,16 @@ async fn call_mcp_tool_for_tenant_with_trusted_context(
     }
 
     append_mcp_tool_execution_audit_event(
+        state,
+        server_name,
+        tool_name,
+        &run_as,
+        context_preflight.as_ref(),
+        phase_preflight.as_ref(),
+        &result,
+    )
+    .await;
+    record_mcp_tool_effect_receipt(
         state,
         server_name,
         tool_name,
@@ -1201,6 +1216,137 @@ async fn append_mcp_tool_execution_audit_event(
         }),
     )
     .await;
+}
+
+async fn record_mcp_tool_effect_receipt(
+    state: &AppState,
+    server_name: &str,
+    tool_name: &str,
+    run_as: &McpRunAsResolution,
+    context_preflight: Option<&McpContextAssertionPreflight>,
+    phase_preflight: Option<&McpPhaseToolAuthorityPreflight>,
+    result: &Result<ToolResult, String>,
+) {
+    let now_ms = now_ms();
+    let operation = mcp_tool_policy_name(server_name, tool_name);
+    let receipt_payload = mcp_tool_receipt_payload(
+        server_name,
+        tool_name,
+        run_as,
+        context_preflight,
+        phase_preflight,
+        result,
+    );
+    let effect_id = format!("mcp-tool-effect-{}", uuid::Uuid::new_v4().simple());
+    let status = if result.is_ok() {
+        StatefulToolEffectStatus::Succeeded
+    } else {
+        StatefulToolEffectStatus::Failed
+    };
+    let receipt_payload_string = receipt_payload.to_string();
+    let status_text = match &status {
+        StatefulToolEffectStatus::Pending => "pending",
+        StatefulToolEffectStatus::Succeeded => "succeeded",
+        StatefulToolEffectStatus::Failed => "failed",
+        StatefulToolEffectStatus::Unknown => "unknown",
+    };
+    let audit_hash =
+        crate::sha256_hex(&[&effect_id, &operation, status_text, &receipt_payload_string]);
+    let record = StatefulToolEffectRecord {
+        schema_version: STATEFUL_RUNTIME_SCHEMA_VERSION,
+        effect_id,
+        outbox_id: None,
+        action_id: None,
+        run_id: phase_preflight.and_then(|preflight| preflight.run_id.clone()),
+        scope: StatefulRuntimeScope::from_tenant_context(run_as.effective_tenant_context.clone()),
+        status,
+        operation: operation.clone(),
+        source_kind: Some("mcp_tool".to_string()),
+        source_id: phase_preflight
+            .and_then(|preflight| preflight.node_id.clone())
+            .or_else(|| Some(format!("{server_name}.{tool_name}"))),
+        node_id: phase_preflight.and_then(|preflight| preflight.node_id.clone()),
+        provider: Some(server_name.to_string()),
+        tool: Some(operation),
+        target: Some(tool_name.to_string()),
+        external_resource: Some(json!({
+            "provider": "mcp",
+            "server_name": server_name,
+            "tool_name": tool_name,
+            "connection_id": run_as.connection_id,
+        })),
+        policy_decision_id: phase_preflight
+            .and_then(|preflight| preflight.decision_id.clone())
+            .or_else(|| context_preflight.and_then(|preflight| preflight.decision_id.clone())),
+        context_assertion_id: context_preflight
+            .and_then(|preflight| preflight.assertion_id.clone()),
+        input_digest: digest_json_value(&run_as.args),
+        output_digest: result.as_ref().ok().and_then(|result| {
+            digest_json_value(&json!({
+                "output": &result.output,
+                "metadata": &result.metadata,
+            }))
+        }),
+        receipt_payload_digest: digest_json_value(&receipt_payload),
+        receipt_payload_redacted: Some(receipt_payload),
+        receipt_pointer: Some(format!("mcp-tool://{server_name}/{tool_name}")),
+        redaction_tier: "safe_ui".to_string(),
+        audit_hash,
+        error: result.as_ref().err().cloned(),
+        compensation_id: None,
+        created_at_ms: now_ms,
+        updated_at_ms: now_ms,
+        metadata: Some(json!({
+            "receipt_source": "mcp_tool_execution",
+            "server_name": server_name,
+            "tool_name": tool_name,
+            "run_as": run_as.audit_payload(),
+            "context_assertion_preflight": context_preflight.map(McpContextAssertionPreflight::audit_payload),
+            "phase_tool_authority": phase_preflight.map(McpPhaseToolAuthorityPreflight::audit_payload),
+            "requested_tenant_context": run_as.requested_tenant_context,
+            "effective_tenant_context": run_as.effective_tenant_context,
+        })),
+    };
+    let reliability_path =
+        stateful_reliability_path_from_runtime_events_path(&state.runtime_events_path);
+    if let Err(error) = upsert_stateful_tool_effect(&reliability_path, record).await {
+        tracing::warn!(
+            "failed to record MCP tool effect receipt for {}.{}: {}",
+            server_name,
+            tool_name,
+            error
+        );
+    }
+}
+
+fn mcp_tool_receipt_payload(
+    server_name: &str,
+    tool_name: &str,
+    run_as: &McpRunAsResolution,
+    context_preflight: Option<&McpContextAssertionPreflight>,
+    phase_preflight: Option<&McpPhaseToolAuthorityPreflight>,
+    result: &Result<ToolResult, String>,
+) -> Value {
+    json!({
+        "status": if result.is_ok() { "completed" } else { "failed" },
+        "server_name": server_name,
+        "tool_name": tool_name,
+        "run_as": run_as.audit_payload(),
+        "context_assertion_preflight": context_preflight.map(McpContextAssertionPreflight::audit_payload),
+        "phase_tool_authority": phase_preflight.map(McpPhaseToolAuthorityPreflight::audit_payload),
+        "output_digest": result.as_ref().ok().and_then(|result| digest_json_value(&json!({
+            "output": &result.output,
+            "metadata": &result.metadata,
+        }))),
+        "error": result.as_ref().err().map(|error| error.as_str()),
+    })
+}
+
+fn digest_json_value(value: &Value) -> Option<String> {
+    Some(format!(
+        "sha256:{}",
+        crate::sha256_hex(&[&value.to_string()])
+    ))
 }
 
 impl McpRunAsResolution {

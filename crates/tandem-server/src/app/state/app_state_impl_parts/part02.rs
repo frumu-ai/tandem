@@ -909,6 +909,9 @@ impl AppState {
         migrate_bundled_studio_research_split_automation(&mut automation);
         canonicalize_automation_output_paths(&mut automation);
         repair_automation_output_contracts(&mut automation);
+        automation.stamp_enterprise_scope_metadata();
+        self.validate_automation_enterprise_delegation_grants(&automation)
+            .await?;
         let _guard = self.automations_v2_persistence.lock().await;
         self.automations_v2
             .write()
@@ -921,6 +924,45 @@ impl AppState {
         self.verify_automation_v2_persisted_locked(&automation.automation_id, true)
             .await?;
         Ok(automation)
+    }
+
+    async fn validate_automation_enterprise_delegation_grants(
+        &self,
+        automation: &AutomationV2Spec,
+    ) -> anyhow::Result<()> {
+        let Some(scope) = automation.enterprise_scope() else {
+            return Ok(());
+        };
+        if scope.delegation_grant_ids.is_empty() {
+            return Ok(());
+        }
+        let tenant_context = automation.tenant_context();
+        let grants = self.enterprise.org_unit_access_grants.read().await;
+        let now_ms = now_ms();
+        for grant_id in &scope.delegation_grant_ids {
+            let Some(grant) = grants.values().find(|grant| {
+                enterprise_delegation_grant_matches_scope(
+                    grant,
+                    &tenant_context,
+                    &scope,
+                    grant_id,
+                    now_ms,
+                )
+            }) else {
+                anyhow::bail!(
+                    "delegation grant `{grant_id}` is not active authority for automation `{}`",
+                    automation.automation_id
+                );
+            };
+            if !grant.permissions.contains(&tandem_types::AccessPermission::Execute) {
+                anyhow::bail!(
+                    "delegation grant `{}` does not include execute authority for automation `{}`",
+                    grant.grant_id,
+                    automation.automation_id
+                );
+            }
+        }
+        Ok(())
     }
 
     pub async fn get_automation_v2(&self, automation_id: &str) -> Option<AutomationV2Spec> {
@@ -1985,4 +2027,64 @@ impl AppState {
         root.insert("last_optimization_apply".to_string(), record);
         Ok(Some(Value::Object(root)))
     }
+}
+
+fn enterprise_delegation_grant_matches_scope(
+    grant: &EnterpriseOrganizationUnitAccessGrant,
+    tenant_context: &TenantContext,
+    scope: &AutomationEnterpriseScope,
+    grant_id: &str,
+    now_ms: u64,
+) -> bool {
+    grant.grant_id.trim() == grant_id.trim()
+        && grant.tenant_context.org_id == tenant_context.org_id
+        && grant.tenant_context.workspace_id == tenant_context.workspace_id
+        && grant.tenant_context.deployment_id == tenant_context.deployment_id
+        && grant.effect == tandem_enterprise_contract::AccessEffect::Allow
+        && grant.is_active_at(now_ms)
+        && enterprise_delegation_grant_org_unit_matches(grant, scope)
+        && enterprise_delegation_grant_resource_matches(grant, scope)
+        && enterprise_delegation_grant_data_classes_match(grant, scope)
+}
+
+fn enterprise_delegation_grant_org_unit_matches(
+    grant: &EnterpriseOrganizationUnitAccessGrant,
+    scope: &AutomationEnterpriseScope,
+) -> bool {
+    let Some(expected) = scope.owning_org_unit_id.as_deref() else {
+        return true;
+    };
+    let Some(expected) = tandem_enterprise_contract::canonical_enterprise_scope_id(expected) else {
+        return false;
+    };
+    let Some(actual) = tandem_enterprise_contract::canonical_enterprise_scope_id(&grant.unit.id)
+    else {
+        return false;
+    };
+    actual == expected || actual.ends_with(&format!("/{expected}"))
+}
+
+fn enterprise_delegation_grant_resource_matches(
+    grant: &EnterpriseOrganizationUnitAccessGrant,
+    scope: &AutomationEnterpriseScope,
+) -> bool {
+    let Some(resource_scope) = scope.resource_scope.as_ref() else {
+        return true;
+    };
+    grant.resource.applies_to(&resource_scope.root)
+        && resource_scope
+            .allowed_resources
+            .iter()
+            .all(|resource| grant.resource.applies_to(resource))
+}
+
+fn enterprise_delegation_grant_data_classes_match(
+    grant: &EnterpriseOrganizationUnitAccessGrant,
+    scope: &AutomationEnterpriseScope,
+) -> bool {
+    scope.data_classes.is_empty()
+        || scope
+            .data_classes
+            .iter()
+            .all(|data_class| grant.data_classes.contains(data_class))
 }

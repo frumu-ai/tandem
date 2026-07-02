@@ -32,6 +32,9 @@ fields visible and resolves matching organization units, active org-unit grants,
 and enabled knowledge source bindings within the same tenant/resource boundary.
 List callers can filter by organization unit, owner principal, root resource,
 policy version, data class, risk tier, delegation grant, and source binding.
+Delegation grant filters and summaries resolve against active org-unit grants in
+the same tenant/resource scope; stale stored grant IDs remain visible as scope
+metadata but are not presented as active authority.
 
 Knowledge reads and writes performed during a resumed run should evaluate the
 saved `resource_scope`, `data_classes`, `policy_version_id`, and

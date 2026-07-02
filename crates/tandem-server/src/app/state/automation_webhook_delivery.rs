@@ -61,7 +61,16 @@ pub(crate) fn automation_webhook_scope_denial_reason(
     automation: &AutomationV2Spec,
 ) -> Option<&'static str> {
     let trigger_scope = trigger.enterprise_scope();
-    let automation_scope = automation.enterprise_scope()?;
+    let trigger_requires_automation_scope = trigger_scope
+        .as_ref()
+        .is_some_and(webhook_trigger_requires_automation_scope);
+    let automation_scope = match automation.enterprise_scope() {
+        Some(scope) => scope,
+        None if trigger_requires_automation_scope => {
+            return Some("webhook_automation_missing_enterprise_scope")
+        }
+        None => return None,
+    };
 
     match (
         automation_scope.owning_org_unit_id.as_deref(),
@@ -90,6 +99,15 @@ pub(crate) fn automation_webhook_scope_denial_reason(
         }
         _ => None,
     }
+}
+
+fn webhook_trigger_requires_automation_scope(scope: &AutomationEnterpriseScope) -> bool {
+    scope.owner_principal.is_some()
+        || scope.owning_org_unit_id.is_some()
+        || scope.resource_scope.is_some()
+        || scope.risk_tier.is_some()
+        || scope.policy_version_id.is_some()
+        || !scope.delegation_grant_ids.is_empty()
 }
 
 fn automation_scope_contains_trigger_scope(

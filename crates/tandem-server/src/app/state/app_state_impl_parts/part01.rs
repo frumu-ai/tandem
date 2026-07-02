@@ -1628,6 +1628,9 @@ impl AppState {
             "loaded automation v2 definitions"
         );
         for automation in merged.values_mut() {
+            let before_enterprise_scope = automation.metadata.clone();
+            automation.stamp_enterprise_scope_metadata();
+            migrated = automation.metadata != before_enterprise_scope || migrated;
             migrated = migrate_bundled_studio_research_split_automation(automation) || migrated;
             migrated = canonicalize_automation_output_paths(automation) || migrated;
             migrated = repair_automation_output_contracts(automation) || migrated;

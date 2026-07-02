@@ -466,13 +466,31 @@ impl AppState {
     }
 
     async fn load_automation_webhook_deliveries_locked(&self) -> anyhow::Result<()> {
-        let deliveries = if self.automation_webhook_deliveries_path.exists() {
+        let mut deliveries = if self.automation_webhook_deliveries_path.exists() {
             let raw = fs::read_to_string(&self.automation_webhook_deliveries_path).await?;
             parse_automation_webhook_deliveries_file(&raw)?
         } else {
             HashMap::new()
         };
+        let triggers = self.automation_webhook_triggers.read().await.clone();
+        let mut upgraded = false;
+        for delivery in deliveries.values_mut() {
+            if delivery.enterprise_scope.is_some() {
+                continue;
+            }
+            let Some(trigger) = triggers.get(&delivery.trigger_id).filter(|trigger| {
+                trigger.automation_id == delivery.automation_id
+                    && trigger.tenant_matches(&delivery.tenant_context)
+            }) else {
+                continue;
+            };
+            delivery.enterprise_scope = trigger.enterprise_scope();
+            upgraded |= delivery.enterprise_scope.is_some();
+        }
         *self.automation_webhook_deliveries.write().await = deliveries;
+        if upgraded {
+            self.persist_automation_webhook_deliveries_locked().await?;
+        }
         Ok(())
     }
 

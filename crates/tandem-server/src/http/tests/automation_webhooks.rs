@@ -9,7 +9,7 @@ use crate::automation_v2::types::{
     AutomationWebhookFeedbackLoopOutcome, AutomationWebhookSignatureScheme,
 };
 use crate::ExternalActionRecord;
-use tandem_types::{DataClass, TenantContext, ToolRiskTier};
+use tandem_types::{DataClass, TenantContext};
 
 fn tenant(org: &str, workspace: &str) -> TenantContext {
     TenantContext::explicit_user_workspace(org, workspace, None, "actor-a")
@@ -57,10 +57,10 @@ fn create_input(
         tenant_context,
         owner_principal: None,
         created_by: Some("actor-a".to_string()),
-        owning_org_unit_id: Some("dept-a".to_string()),
+        owning_org_unit_id: None,
         resource_scope: None,
         default_data_class: DataClass::Internal,
-        default_risk_tier: Some(ToolRiskTier::InternalWrite),
+        default_risk_tier: None,
         name: Some("Generic webhook".to_string()),
         provider: "generic".to_string(),
         provider_event_kind: Some("event.created".to_string()),
