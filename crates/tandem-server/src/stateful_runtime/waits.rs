@@ -228,12 +228,17 @@ pub async fn mark_stateful_wait_woken(
     if wait.status.is_terminal() {
         return Ok(None);
     }
+    if wait_has_active_claim(wait, now_ms) {
+        return Ok(None);
+    }
 
     wait.status = StatefulWaitStatus::Woken;
     wait.wake_idempotency_key = Some(wake_idempotency_key.to_string());
     wait.event_seq = Some(event_seq);
     wait.completed_at_ms = Some(now_ms);
     wait.updated_at_ms = now_ms;
+    wait.claimed_by = None;
+    wait.claimed_at_ms = None;
     wait.claim_expires_at_ms = None;
     let woken = wait.clone();
     write_stateful_waits_unlocked(path, &waits).await?;
@@ -275,12 +280,17 @@ pub async fn mark_stateful_wait_timeout_result(
     if wait.status.is_terminal() {
         return Ok(None);
     }
+    if wait_has_active_claim(wait, now_ms) {
+        return Ok(None);
+    }
 
     wait.status = status;
     wait.wake_idempotency_key = Some(timeout_idempotency_key.to_string());
     wait.event_seq = Some(event_seq);
     wait.completed_at_ms = Some(now_ms);
     wait.updated_at_ms = now_ms;
+    wait.claimed_by = None;
+    wait.claimed_at_ms = None;
     wait.claim_expires_at_ms = None;
     let completed = wait.clone();
     write_stateful_waits_unlocked(path, &waits).await?;
@@ -433,6 +443,10 @@ fn claimed_wait_matches_current_claim(
         && wait.claimed_by == claimed_wait.claimed_by
         && wait.claimed_at_ms == claimed_wait.claimed_at_ms
         && wait.claim_expires_at_ms == claimed_wait.claim_expires_at_ms
+}
+
+fn wait_has_active_claim(wait: &StatefulWaitRecord, now_ms: u64) -> bool {
+    wait.status == StatefulWaitStatus::Claimed && wait.claim_is_active_at(now_ms)
 }
 
 pub fn stateful_webhook_wait_metadata(
@@ -958,17 +972,6 @@ mod tests {
         )
         .await
         .expect("insert wait");
-        claim_due_stateful_wait(
-            &path,
-            &tenant_a,
-            "run-a",
-            "wait-a",
-            "scheduler-a",
-            1_500,
-            500,
-        )
-        .await
-        .expect("claim wait");
 
         let woken =
             mark_stateful_wait_woken(&path, &tenant_a, "run-a", "wait-a", "wake-key", 42, 1_600)
@@ -996,6 +999,66 @@ mod tests {
         .await
         .expect("conflicting wake")
         .is_none());
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn direct_completion_does_not_override_active_claim() {
+        let path = temp_wait_store("stateful-waits-active-claim-completion");
+        let tenant_a = tenant("org-a", "workspace-a");
+        upsert_stateful_wait(
+            &path,
+            timer_wait("wait-a", "run-a", tenant_a.clone(), 1_000),
+        )
+        .await
+        .expect("insert wait");
+        claim_due_stateful_wait(
+            &path,
+            &tenant_a,
+            "run-a",
+            "wait-a",
+            "scheduler-a",
+            1_500,
+            500,
+        )
+        .await
+        .expect("claim wait")
+        .expect("claimed wait");
+
+        assert!(mark_stateful_wait_woken(
+            &path, &tenant_a, "run-a", "wait-a", "wake-key", 42, 1_600
+        )
+        .await
+        .expect("direct wake completion")
+        .is_none());
+        assert!(mark_stateful_wait_timeout_result(
+            &path,
+            &tenant_a,
+            "run-a",
+            "wait-a",
+            "timeout-key",
+            43,
+            StatefulWaitStatus::TimedOut,
+            1_700
+        )
+        .await
+        .expect("direct timeout completion")
+        .is_none());
+
+        let wait = list_stateful_waits(
+            &path,
+            &tenant_a,
+            StatefulWaitQuery {
+                run_id: Some("run-a"),
+                ..StatefulWaitQuery::default()
+            },
+        )
+        .into_iter()
+        .next()
+        .expect("wait remains");
+        assert_eq!(wait.status, StatefulWaitStatus::Claimed);
+        assert_eq!(wait.claimed_by.as_deref(), Some("scheduler-a"));
+        assert_eq!(wait.event_seq, None);
         let _ = tokio::fs::remove_file(path).await;
     }
 

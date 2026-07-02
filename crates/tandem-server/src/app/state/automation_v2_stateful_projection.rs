@@ -1,9 +1,12 @@
 use super::*;
 
+use std::collections::HashMap;
+
 use crate::app::state::automation::lifecycle::automation_lifecycle_event_counts_as_activity;
 use crate::stateful_runtime::{
     append_stateful_run_event_once_with_next_seq, phase_state_from_status,
-    stable_definition_snapshot_hash, stateful_run_from_automation_v2, write_stateful_run_snapshot,
+    query_stateful_run_events, read_stateful_run_snapshot_for_run, stable_definition_snapshot_hash,
+    stateful_run_from_automation_v2, write_stateful_run_snapshot, StatefulRunEventQuery,
     StatefulRunEventRecord, StatefulRunSnapshotRecord, StatefulRuntimeStoragePaths,
     StatefulWaitKind, StatefulWorkflowRunKind,
 };
@@ -42,33 +45,61 @@ pub(crate) async fn project_automation_v2_stateful_boundaries_to_paths(
 
     let stateful_run = stateful_run_from_automation_v2(run);
     let scope = stateful_run.scope.clone();
-    let mut projected = 0usize;
-    for (index, lifecycle) in run.checkpoint.lifecycle_history.iter().enumerate() {
-        let event_id = automation_lifecycle_stateful_event_id(run, index, lifecycle);
-        let phase_id = lifecycle_phase_id(run, lifecycle);
-        let wait_kind = lifecycle_wait_kind(run, lifecycle);
-        let event = StatefulRunEventRecord {
-            schema_version: 1,
-            event_id: event_id.clone(),
-            run_id: run.run_id.clone(),
-            seq: 0,
-            event_type: format!("stateful_runtime.automation_v2.{}", lifecycle.event),
-            occurred_at_ms: lifecycle.recorded_at_ms,
-            scope: scope.clone(),
-            actor: None,
-            phase_id: phase_id.clone(),
-            phase_transition: None,
-            wait_kind,
-            causation_id: lifecycle_causation_id(lifecycle),
-            correlation_id: Some(run.automation_id.clone()),
-            payload: automation_lifecycle_event_payload(run, index, lifecycle),
-        };
-        let (_appended, seq) = append_stateful_run_event_once_with_next_seq(
+    let mut projected_events = projected_lifecycle_events_by_id(
+        run,
+        query_stateful_run_events(
             &paths.run_events_path,
             &run.tenant_context,
-            &event,
-        )
-        .await?;
+            StatefulRunEventQuery {
+                run_id: &run.run_id,
+                after_seq: None,
+                before_seq: None,
+                limit: None,
+                tail: false,
+            },
+        ),
+    );
+    let mut projected = 0usize;
+    for (index, lifecycle) in run.checkpoint.lifecycle_history.iter().enumerate() {
+        let stable_event_id = automation_lifecycle_stateful_event_id(run, lifecycle);
+        let phase_id = lifecycle_phase_id(run, lifecycle);
+        let wait_kind = lifecycle_wait_kind(run, lifecycle);
+        let (event_id, seq, mut materialized) =
+            match projected_events.get(&stable_event_id).cloned() {
+                Some(projected_event) => (projected_event.event_id, projected_event.seq, false),
+                None => {
+                    let event = StatefulRunEventRecord {
+                        schema_version: 1,
+                        event_id: stable_event_id.clone(),
+                        run_id: run.run_id.clone(),
+                        seq: 0,
+                        event_type: format!("stateful_runtime.automation_v2.{}", lifecycle.event),
+                        occurred_at_ms: lifecycle.recorded_at_ms,
+                        scope: scope.clone(),
+                        actor: None,
+                        phase_id: phase_id.clone(),
+                        phase_transition: None,
+                        wait_kind,
+                        causation_id: lifecycle_causation_id(lifecycle),
+                        correlation_id: Some(run.automation_id.clone()),
+                        payload: automation_lifecycle_event_payload(run, index, lifecycle),
+                    };
+                    let (appended, seq) = append_stateful_run_event_once_with_next_seq(
+                        &paths.run_events_path,
+                        &run.tenant_context,
+                        &event,
+                    )
+                    .await?;
+                    projected_events.insert(
+                        stable_event_id.clone(),
+                        ProjectedLifecycleEvent {
+                            event_id: stable_event_id.clone(),
+                            seq,
+                        },
+                    );
+                    (stable_event_id, seq, appended)
+                }
+            };
 
         let snapshot = automation_lifecycle_snapshot(
             run,
@@ -79,8 +110,20 @@ pub(crate) async fn project_automation_v2_stateful_boundaries_to_paths(
             event_id,
             phase_id,
         );
-        write_stateful_run_snapshot(&paths.snapshots_root, &snapshot).await?;
-        projected += 1;
+        if read_stateful_run_snapshot_for_run(
+            &paths.snapshots_root,
+            &run.tenant_context,
+            &run.run_id,
+            &snapshot.snapshot_id,
+        )?
+        .is_none()
+        {
+            write_stateful_run_snapshot(&paths.snapshots_root, &snapshot).await?;
+            materialized = true;
+        }
+        if materialized {
+            projected += 1;
+        }
     }
 
     Ok(projected)
@@ -88,15 +131,94 @@ pub(crate) async fn project_automation_v2_stateful_boundaries_to_paths(
 
 fn automation_lifecycle_stateful_event_id(
     run: &AutomationV2RunRecord,
-    index: usize,
     lifecycle: &AutomationLifecycleRecord,
 ) -> String {
+    let identity = json!({
+        "run_id": &run.run_id,
+        "automation_id": &run.automation_id,
+        "event": &lifecycle.event,
+        "recorded_at_ms": lifecycle.recorded_at_ms,
+        "reason": &lifecycle.reason,
+        "stop_kind": &lifecycle.stop_kind,
+        "metadata": &lifecycle.metadata,
+    });
+    let digest = stable_definition_snapshot_hash(&identity);
     format!(
         "automation-v2-lifecycle-{}-{}-{}",
         run.run_id,
-        index,
-        safe_event_component(&lifecycle.event)
+        safe_event_component(&lifecycle.event),
+        short_digest_component(&digest),
     )
+}
+
+fn short_digest_component(digest: &str) -> String {
+    digest
+        .strip_prefix("sha256:")
+        .unwrap_or(digest)
+        .chars()
+        .take(24)
+        .collect()
+}
+
+#[derive(Clone)]
+struct ProjectedLifecycleEvent {
+    event_id: String,
+    seq: u64,
+}
+
+fn projected_lifecycle_events_by_id(
+    run: &AutomationV2RunRecord,
+    events: Vec<StatefulRunEventRecord>,
+) -> HashMap<String, ProjectedLifecycleEvent> {
+    let mut projected = HashMap::new();
+    for event in events {
+        let projected_event = ProjectedLifecycleEvent {
+            event_id: event.event_id.clone(),
+            seq: event.seq,
+        };
+        projected.insert(event.event_id.clone(), projected_event.clone());
+        if let Some(stable_id) = projected_lifecycle_event_stable_alias(run, &event) {
+            projected.entry(stable_id).or_insert(projected_event);
+        }
+    }
+    projected
+}
+
+fn projected_lifecycle_event_stable_alias(
+    run: &AutomationV2RunRecord,
+    event: &StatefulRunEventRecord,
+) -> Option<String> {
+    let lifecycle_event = event
+        .event_type
+        .strip_prefix("stateful_runtime.automation_v2.")?
+        .to_string();
+    if event.correlation_id.as_deref() != Some(run.automation_id.as_str()) {
+        return None;
+    }
+    let reason = event
+        .payload
+        .get("reason")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let stop_kind = event
+        .payload
+        .get("stop_kind")
+        .cloned()
+        .filter(|value| !value.is_null())
+        .and_then(|value| serde_json::from_value(value).ok());
+    let metadata = event
+        .payload
+        .get("metadata")
+        .cloned()
+        .filter(|value| !value.is_null());
+    let lifecycle = AutomationLifecycleRecord {
+        event: lifecycle_event,
+        recorded_at_ms: event.occurred_at_ms,
+        reason,
+        stop_kind,
+        metadata,
+    };
+    Some(automation_lifecycle_stateful_event_id(run, &lifecycle))
 }
 
 fn safe_event_component(value: &str) -> String {
@@ -313,7 +435,9 @@ mod tests {
         AutomationExecutionPolicy, AutomationFlowSpec, AutomationRunCheckpoint,
         AutomationV2Schedule, AutomationV2ScheduleType, AutomationV2Spec, AutomationV2Status,
     };
-    use crate::stateful_runtime::{list_stateful_run_snapshots, query_stateful_run_events};
+    use crate::stateful_runtime::{
+        list_stateful_run_snapshots, query_stateful_run_events, stateful_run_snapshot_path,
+    };
     use tandem_types::TenantContext;
     use uuid::Uuid;
 
@@ -500,12 +624,34 @@ mod tests {
         );
         let run = run_with_lifecycle();
 
-        project_automation_v2_stateful_boundaries_to_paths(&paths, &run)
+        let first_projected = project_automation_v2_stateful_boundaries_to_paths(&paths, &run)
             .await
             .expect("first projection");
-        project_automation_v2_stateful_boundaries_to_paths(&paths, &run)
+        assert_eq!(first_projected, 2);
+
+        let snapshots = list_stateful_run_snapshots(
+            &paths.snapshots_root,
+            &run.tenant_context,
+            &run.run_id,
+            None,
+        );
+        let mut preserved_snapshot = snapshots[0].clone();
+        preserved_snapshot.metadata = Some(json!({ "preserved": true }));
+        let preserved_path = stateful_run_snapshot_path(
+            &paths.snapshots_root,
+            &run.run_id,
+            &preserved_snapshot.snapshot_id,
+        );
+        std::fs::write(
+            &preserved_path,
+            serde_json::to_vec_pretty(&preserved_snapshot).expect("serialize preserved snapshot"),
+        )
+        .expect("write preserved snapshot");
+
+        let second_projected = project_automation_v2_stateful_boundaries_to_paths(&paths, &run)
             .await
             .expect("second projection");
+        assert_eq!(second_projected, 0);
 
         let events = query_stateful_run_events(
             &paths.run_events_path,
@@ -526,7 +672,68 @@ mod tests {
             None,
         );
         assert_eq!(snapshots.len(), 2);
+        assert_eq!(snapshots[0].metadata, Some(json!({ "preserved": true })));
 
         let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    #[test]
+    fn lifecycle_event_ids_do_not_depend_on_history_position() {
+        let run = run_with_lifecycle();
+        let node_completed = run.checkpoint.lifecycle_history[1].clone();
+        let original_id = automation_lifecycle_stateful_event_id(&run, &node_completed);
+
+        let mut shifted = run.clone();
+        shifted.checkpoint.lifecycle_history.insert(
+            0,
+            AutomationLifecycleRecord {
+                event: "run_created".to_string(),
+                recorded_at_ms: 100,
+                reason: Some("created".to_string()),
+                stop_kind: None,
+                metadata: Some(json!({ "source": "test" })),
+            },
+        );
+
+        assert_eq!(
+            original_id,
+            automation_lifecycle_stateful_event_id(&shifted, &node_completed)
+        );
+    }
+
+    #[test]
+    fn projected_event_aliases_recognize_legacy_index_ids() {
+        let run = run_with_lifecycle();
+        let lifecycle_index = 1usize;
+        let lifecycle = &run.checkpoint.lifecycle_history[lifecycle_index];
+        let stable_id = automation_lifecycle_stateful_event_id(&run, lifecycle);
+        let legacy_id = format!(
+            "automation-v2-lifecycle-{}-{}-{}",
+            run.run_id,
+            lifecycle_index,
+            safe_event_component(&lifecycle.event)
+        );
+        let event = StatefulRunEventRecord {
+            schema_version: 1,
+            event_id: legacy_id.clone(),
+            run_id: run.run_id.clone(),
+            seq: 7,
+            event_type: format!("stateful_runtime.automation_v2.{}", lifecycle.event),
+            occurred_at_ms: lifecycle.recorded_at_ms,
+            scope: stateful_run_from_automation_v2(&run).scope,
+            actor: None,
+            phase_id: lifecycle_phase_id(&run, lifecycle),
+            phase_transition: None,
+            wait_kind: lifecycle_wait_kind(&run, lifecycle),
+            causation_id: lifecycle_causation_id(lifecycle),
+            correlation_id: Some(run.automation_id.clone()),
+            payload: automation_lifecycle_event_payload(&run, lifecycle_index, lifecycle),
+        };
+
+        let aliases = projected_lifecycle_events_by_id(&run, vec![event]);
+        let projected = aliases.get(&stable_id).expect("stable alias");
+
+        assert_eq!(projected.event_id, legacy_id);
+        assert_eq!(projected.seq, 7);
     }
 }

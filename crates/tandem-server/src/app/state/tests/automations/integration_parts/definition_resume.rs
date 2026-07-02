@@ -83,7 +83,7 @@ async fn restart_recovery_projects_resume_boundary_with_definition_metadata() {
 }
 
 #[tokio::test]
-async fn restart_recovery_fails_definition_snapshot_hash_mismatch() {
+async fn restart_recovery_uses_persisted_snapshot_when_snapshot_hash_mismatch() {
     let workspace_root = restart_test_workspace("tandem-restart-definition-mismatch");
     let state = ready_test_state().await;
     let automation = consequential_restart_automation(
@@ -119,22 +119,28 @@ async fn restart_recovery_fails_definition_snapshot_hash_mismatch() {
 
     let (reloaded, recovered) = reload_automation_state_after_restart(&state).await;
     assert_eq!(recovered, 1);
-    assert!(reloaded
-        .claim_specific_automation_v2_run(&run.run_id)
-        .await
-        .is_none());
     let recovered_run = reloaded
         .get_automation_v2_run(&run.run_id)
         .await
         .expect("mismatched recovered run");
     let golden = restart_resume_golden(&recovered_run);
 
-    assert_eq!(golden.status, AutomationRunStatus::Failed);
-    assert_eq!(golden.stop_kind, Some(AutomationStopKind::ServerRestart));
+    assert_eq!(golden.status, AutomationRunStatus::Queued);
+    assert_eq!(golden.stop_kind, None);
     assert_eq!(
         golden.detail.as_deref(),
-        Some("automation run interrupted by server restart; definition snapshot hash mismatch")
+        Some(
+            "automation run queued for resume after server restart; repairable node(s): send_customer_update"
+        )
     );
-    assert!(golden.node_outputs.is_empty());
+    assert_eq!(
+        recovered_run
+            .checkpoint
+            .node_outputs
+            .get("send_customer_update")
+            .and_then(|output| output.get("blocker_category"))
+            .and_then(Value::as_str),
+        Some("server_restart_interrupted")
+    );
     let _ = std::fs::remove_dir_all(&workspace_root);
 }
