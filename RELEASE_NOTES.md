@@ -76,6 +76,9 @@ source resource, source binding, and data class being written or promoted.
 Source-bound manual imports now stamp imported chunks with that matching
 registry metadata so governed workflow-phase reads can authorize imported
 source chunks instead of hiding them as unregistered source-bound memory.
+Promotion checks also preserve that source-resource registry shape when
+validated source-binding metadata is present, while authority-only scope claims
+still require a `source_binding` registry resource.
 Automation V2 runs now also bridge those durable waits back into the live run
 store: approval gates register and complete stateful approval waits, while
 timer and webhook wait wakes requeue the authoritative automation run so the

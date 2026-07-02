@@ -222,6 +222,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `knowledge_scope_registry` metadata so workflow-phase reads can authorize
   imported source chunks through the registered source resource instead of
   hiding them as unregistered source-bound memory.
+- Source-bound memory promotion checks now allow validated source-binding
+  metadata to use the actual bound source resource in `knowledge_scope_registry`
+  while keeping the stricter `source_binding` resource requirement for
+  authority-only scope claims.
 - Backend CI now runs the touched-file size gate before dependency installation
   and Rust lint/build work so oversized files fail fast instead of burning the
   full backend job first.

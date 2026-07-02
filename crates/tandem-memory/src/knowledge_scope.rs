@@ -289,10 +289,15 @@ fn source_bound_policy_denial_reason(
     metadata: Option<&Value>,
     authority_job_context: Option<&MemoryAuthorityJobContext>,
 ) -> Option<&'static str> {
+    let has_source_binding_metadata = metadata_has_enterprise_source_binding(metadata);
     if let Some(reason) = source_bound_metadata_policy_denial_reason(policy, metadata) {
         return Some(reason);
     }
-    source_bound_authority_policy_denial_reason(policy, authority_job_context)
+    source_bound_authority_policy_denial_reason(
+        policy,
+        authority_job_context,
+        !has_source_binding_metadata,
+    )
 }
 
 fn source_bound_metadata_policy_denial_reason(
@@ -331,6 +336,7 @@ fn source_bound_metadata_policy_denial_reason(
 fn source_bound_authority_policy_denial_reason(
     policy: &KnowledgeScopePolicy,
     authority_job_context: Option<&MemoryAuthorityJobContext>,
+    require_authority_resource_ref: bool,
 ) -> Option<&'static str> {
     let context = authority_job_context?;
     let source_binding_id = context
@@ -338,16 +344,21 @@ fn source_bound_authority_policy_denial_reason(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())?;
-    let Some(data_class) = context.data_class else {
-        return Some("knowledge_scope_data_class_mismatch");
+    let data_class = match context.data_class {
+        Some(data_class) => Some(data_class),
+        None if require_authority_resource_ref => {
+            return Some("knowledge_scope_data_class_mismatch");
+        }
+        None => None,
     };
     if let Some(reason) =
-        source_bound_policy_claim_denial_reason(policy, Some(source_binding_id), Some(data_class))
+        source_bound_policy_claim_denial_reason(policy, Some(source_binding_id), data_class)
     {
         return Some(reason);
     }
-    if policy.resource_ref.resource_kind != ResourceKind::SourceBinding
-        || policy.resource_ref.resource_id != source_binding_id
+    if require_authority_resource_ref
+        && (policy.resource_ref.resource_kind != ResourceKind::SourceBinding
+            || policy.resource_ref.resource_id != source_binding_id)
     {
         return Some("knowledge_scope_source_resource_mismatch");
     }
@@ -825,6 +836,53 @@ mod tests {
             decision.reason_code,
             "knowledge_scope_source_resource_mismatch"
         );
+    }
+
+    #[test]
+    fn source_bound_metadata_promotion_allows_valid_source_resource_with_authority() {
+        let mut policy = policy();
+        policy.resource_ref = ResourceRef::new(
+            "org-a",
+            "ws-a",
+            ResourceKind::DocumentCollection,
+            "restricted-drive",
+        )
+        .with_project_id("project-a");
+        let mut metadata = policy.metadata_value();
+        metadata.as_object_mut().expect("metadata object").insert(
+            "enterprise_source_binding".to_string(),
+            json!({
+                "binding_id": "binding-a",
+                "connector_id": "manual-upload",
+                "resource_ref": {
+                    "organization_id": "org-a",
+                    "workspace_id": "ws-a",
+                    "project_id": "project-a",
+                    "resource_kind": "document_collection",
+                    "resource_id": "restricted-drive"
+                },
+                "data_class": "confidential",
+                "source_object_id": "source-a"
+            }),
+        );
+        let review = PromotionReview {
+            required: true,
+            reviewer_id: Some("reviewer-a".to_string()),
+            approval_id: Some("approval-a".to_string()),
+        };
+
+        let decision = memory_promotion_scope_decision_for_context(
+            &partition(GovernedMemoryTier::Session),
+            GovernedMemoryTier::Project,
+            &review,
+            Some(&metadata),
+            Some(&authority_context(crate::MemoryAuthorityOperation::Promote)),
+            1_000,
+        )
+        .expect("promotion decision");
+
+        assert!(decision.allowed);
+        assert_eq!(decision.reason_code, "knowledge_promotion_scope_allowed");
     }
 
     #[test]
