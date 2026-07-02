@@ -84,6 +84,83 @@ async fn mcp_phase_tool_authority_allows_same_scope_and_records_policy() {
 }
 
 #[tokio::test]
+async fn mcp_phase_tool_authority_enterprise_override_blocks_local_allow() {
+    let state = test_state().await;
+    let (endpoint, server) = spawn_fake_notion_oauth_mcp_server().await;
+    state
+        .mcp
+        .add_or_update("notion".to_string(), endpoint, HashMap::new(), true)
+        .await;
+    let tenant =
+        tandem_types::TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "alice");
+    state
+        .mcp
+        .set_bearer_token_for_tenant("notion", "alice-union-token", &tenant)
+        .await
+        .expect("store tenant token");
+    state
+        .mcp
+        .refresh_for_tenant("notion", &tenant)
+        .await
+        .expect("refresh tenant tools");
+    state.enterprise.policy_rules.write().await.insert(
+        "enterprise-phase-tool-deny".to_string(),
+        tandem_enterprise_contract::EnterprisePolicyRule::new(
+            "enterprise-phase-tool-deny",
+            "enterprise-phase-tool-floor",
+            tandem_enterprise_contract::EnterprisePolicyScopeLevel::Enterprise,
+            tandem_enterprise_contract::EnterprisePolicyEffect::Deny,
+        )
+        .with_tenant_context(tenant.clone())
+        .with_workflow_phase("research")
+        .with_tool_patterns(vec!["mcp.notion.*".to_string()])
+        .with_reason(
+            "enterprise_phase_tool_floor",
+            "enterprise policy denies phase MCP tools",
+        ),
+    );
+    let verified = verified_mcp_execute_context(
+        &tenant,
+        tandem_types::PrincipalRef::human_user("alice").with_tenant_actor_id("alice"),
+        "assertion-phase-tool-enterprise-deny",
+    );
+
+    let err = crate::http::mcp::call_mcp_tool_for_tenant_with_verified_context(
+        &state,
+        "notion",
+        "alice_search",
+        json!({
+            "query": "roadmap",
+            "__phase_tool_authority": {
+                "phase": "research",
+                "allowed_tools": ["mcp.notion.alice_search"],
+                "run_id": "run-phase-enterprise-deny",
+                "automation_id": "automation-phase",
+                "node_id": "node-research",
+                "session_id": "session-phase",
+                "message_id": "message-phase"
+            }
+        }),
+        &tenant,
+        Some(&verified),
+    )
+    .await
+    .expect_err("enterprise policy must override phase tool allow");
+
+    assert!(err.contains("ToolDenied { reason: PhaseToolAuthority }"));
+    assert!(err.contains("enterprise policy denies phase MCP tools"));
+    let decisions = state
+        .list_policy_decisions_for_run(&tenant, "run-phase-enterprise-deny", 50)
+        .await;
+    let decision = decisions
+        .iter()
+        .find(|decision| decision.reason_code == "enterprise_phase_tool_floor")
+        .expect("enterprise phase tool decision");
+    assert_eq!(decision.decision, tandem_types::PolicyDecisionEffect::Deny);
+    drop(server);
+}
+
+#[tokio::test]
 async fn mcp_bridge_derives_phase_authority_from_dispatch_context() {
     let state = test_state().await;
     let (endpoint, server) = spawn_fake_notion_oauth_mcp_server().await;

@@ -524,7 +524,7 @@ async fn enforce_mcp_context_assertion_preflight(
     let resource = mcp_tool_resource_ref(effective_tenant_context, server_name, tool_name);
     let Some(strict_context) = strict_context else {
         let reason = "missing_verified_tenant_context";
-        let decision_id = record_mcp_context_assertion_decision(
+        let decision_record = record_mcp_context_assertion_decision(
             state,
             effective_tenant_context,
             server_name,
@@ -537,6 +537,9 @@ async fn enforce_mcp_context_assertion_preflight(
             None,
         )
         .await;
+        let decision_id = decision_record
+            .as_ref()
+            .map(|record| record.decision_id.clone());
         append_mcp_context_assertion_denial_audit_event(
             state,
             effective_tenant_context,
@@ -556,7 +559,7 @@ async fn enforce_mcp_context_assertion_preflight(
 
     if !tenant_context_matches(&strict_context.tenant_context, effective_tenant_context) {
         let reason = "verified_tenant_context_mismatch";
-        let decision_id = record_mcp_context_assertion_decision(
+        let decision_record = record_mcp_context_assertion_decision(
             state,
             effective_tenant_context,
             server_name,
@@ -569,6 +572,9 @@ async fn enforce_mcp_context_assertion_preflight(
             None,
         )
         .await;
+        let decision_id = decision_record
+            .as_ref()
+            .map(|record| record.decision_id.clone());
         append_mcp_context_assertion_denial_audit_event(
             state,
             effective_tenant_context,
@@ -597,7 +603,7 @@ async fn enforce_mcp_context_assertion_preflight(
     } else {
         PolicyDecisionEffect::Deny
     };
-    let decision_id = record_mcp_context_assertion_decision(
+    let decision_record = record_mcp_context_assertion_decision(
         state,
         effective_tenant_context,
         server_name,
@@ -610,6 +616,9 @@ async fn enforce_mcp_context_assertion_preflight(
         evaluation.grant_id.clone(),
     )
     .await;
+    let decision_id = decision_record
+        .as_ref()
+        .map(|record| record.decision_id.clone());
 
     if evaluation.decision != AccessDecision::Allow {
         append_mcp_context_assertion_denial_audit_event(
@@ -627,6 +636,27 @@ async fn enforce_mcp_context_assertion_preflight(
         return Err(format!(
             "ToolDenied {{ reason: ContextAssertion }}: blocked MCP tool `{server_name}.{tool_name}` because context assertion evaluation returned `{}`.",
             evaluation.reason
+        ));
+    }
+    if let Some(record) = decision_record
+        .as_ref()
+        .filter(|record| !matches!(record.decision, PolicyDecisionEffect::Allow))
+    {
+        append_mcp_context_assertion_denial_audit_event(
+            state,
+            effective_tenant_context,
+            server_name,
+            tool_name,
+            &resource,
+            decision_id.as_deref(),
+            &record.reason,
+            Some(strict_context),
+            record.grant_id.as_deref(),
+        )
+        .await;
+        return Err(format!(
+            "ToolDenied {{ reason: ContextAssertion }}: blocked MCP tool `{server_name}.{tool_name}` because enterprise policy resolved to `{:?}`: {}.",
+            record.decision, record.reason
         ));
     }
 
@@ -672,7 +702,7 @@ async fn enforce_mcp_phase_tool_authority(
         )
     };
     let resource = mcp_tool_resource_ref(&run_as.effective_tenant_context, server_name, tool_name);
-    let decision_id = record_mcp_phase_tool_authority_decision(
+    let decision_record = record_mcp_phase_tool_authority_decision(
         state,
         server_name,
         tool_name,
@@ -685,14 +715,29 @@ async fn enforce_mcp_phase_tool_authority(
         &requested_tool,
     )
     .await;
+    let decision_id = decision_record
+        .as_ref()
+        .map(|record| record.decision_id.clone());
+    let resolved_effect = decision_record
+        .as_ref()
+        .map(|record| record.decision)
+        .unwrap_or(effect);
+    let resolved_reason_code = decision_record
+        .as_ref()
+        .map(|record| record.reason_code.clone())
+        .unwrap_or_else(|| reason_code.clone());
+    let resolved_reason = decision_record
+        .as_ref()
+        .map(|record| record.reason.clone())
+        .unwrap_or_else(|| reason.clone());
     let preflight = McpPhaseToolAuthorityPreflight {
         decision_id,
         phase: authority.phase.clone(),
         requested_tool,
         allowed_tools: authority.allowed_tools.clone(),
-        decision: effect,
-        reason_code: reason_code.clone(),
-        reason: reason.clone(),
+        decision: resolved_effect,
+        reason_code: resolved_reason_code,
+        reason: resolved_reason,
         run_id: authority.run_id.clone(),
         automation_id: authority.automation_id.clone(),
         node_id: authority.node_id.clone(),
@@ -701,7 +746,7 @@ async fn enforce_mcp_phase_tool_authority(
         policy_id: authority.policy_id.clone(),
     };
 
-    if !allowed {
+    if !matches!(preflight.decision, PolicyDecisionEffect::Allow) {
         append_mcp_phase_tool_authority_denial_audit_event(
             state,
             &run_as.effective_tenant_context,
@@ -711,7 +756,8 @@ async fn enforce_mcp_phase_tool_authority(
         )
         .await;
         return Err(format!(
-            "ToolDenied {{ reason: PhaseToolAuthority }}: blocked MCP tool `{server_name}.{tool_name}` because {reason}."
+            "ToolDenied {{ reason: PhaseToolAuthority }}: blocked MCP tool `{server_name}.{tool_name}` because {}.",
+            preflight.reason
         ));
     }
 
@@ -860,7 +906,7 @@ async fn record_mcp_context_assertion_decision(
     effect: PolicyDecisionEffect,
     reason: &str,
     grant_id: Option<String>,
-) -> Option<String> {
+) -> Option<PolicyDecisionRecord> {
     let decision_id = format!("policy_decision_{}", uuid::Uuid::new_v4().simple());
     let actor_id = strict_context
         .and_then(|context| context.principal.tenant_actor_id.clone())
@@ -905,7 +951,7 @@ async fn record_mcp_context_assertion_decision(
         }),
     };
     match state.record_policy_decision(record).await {
-        Ok(record) => Some(record.decision_id),
+        Ok(record) => Some(record),
         Err(error) => {
             tracing::warn!("failed to record MCP context assertion decision: {error:?}");
             None
@@ -925,7 +971,7 @@ async fn record_mcp_phase_tool_authority_decision(
     reason_code: &str,
     reason: &str,
     requested_tool: &str,
-) -> Option<String> {
+) -> Option<PolicyDecisionRecord> {
     let decision_id = format!("policy_decision_{}", uuid::Uuid::new_v4().simple());
     let record = PolicyDecisionRecord {
         decision_id: decision_id.clone(),
@@ -966,7 +1012,7 @@ async fn record_mcp_phase_tool_authority_decision(
         }),
     };
     match state.record_policy_decision(record).await {
-        Ok(record) => Some(record.decision_id),
+        Ok(record) => Some(record),
         Err(error) => {
             tracing::warn!("failed to record MCP phase tool authority decision: {error:?}");
             None
