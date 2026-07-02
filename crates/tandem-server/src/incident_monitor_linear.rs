@@ -118,7 +118,36 @@ pub async fn publish_draft(
         None => None,
     };
     let evidence_digest = compute_evidence_digest(&draft, incident.as_ref());
-    draft.evidence_digest = Some(evidence_digest.clone());
+
+    // Resolve the current matching issue up front: it drives both the
+    // duplicate short-circuit and the create/comment decision, and its state is
+    // what distinguishes a live duplicate from a recurrence after close.
+    let matched_issue = find_matching_linear_issue(
+        state,
+        &tools,
+        destination.team()?,
+        destination.project()?,
+        &draft,
+        &evidence_digest,
+    )
+    .await
+    .context("match existing Linear issue for Incident Monitor draft")?;
+
+    // When the match is terminal (completed/canceled), namespace the idempotency
+    // to that closed issue so the recurrence gets a fresh create key instead of
+    // colliding with the closed issue's key and being suppressed.
+    let publish_evidence_digest = match matched_issue.as_ref() {
+        Some(issue) if linear_issue_is_terminal(issue) => {
+            let anchor = issue
+                .identifier
+                .clone()
+                .or_else(|| issue.id.clone())
+                .unwrap_or_default();
+            sha256_hex(&[evidence_digest.as_str(), "recurrence", anchor.as_str()])
+        }
+        _ => evidence_digest.clone(),
+    };
+    draft.evidence_digest = Some(publish_evidence_digest.clone());
 
     if mode != PublishMode::RecheckOnly {
         if let Some(existing) = successful_post_for_draft(
@@ -130,14 +159,23 @@ pub async fn publish_draft(
         )
         .await
         {
-            apply_existing_linear_post_to_draft(&mut draft, &existing);
-            mirror_linear_post_as_external_action(state, &draft, &existing).await;
-            let draft = state.put_incident_monitor_draft(draft).await?;
-            return Ok(PublishOutcome {
-                action: "skip_duplicate".to_string(),
-                draft,
-                post: Some(existing),
+            // Only a genuine duplicate — the still-open issue that this prior post
+            // created — should short-circuit. If that issue was completed/canceled,
+            // or a newer open issue now matches, fall through so the recurrence
+            // creates or comments on the correct live issue.
+            let is_live_duplicate = matched_issue.as_ref().is_some_and(|issue| {
+                !linear_issue_is_terminal(issue) && linear_post_references_issue(&existing, issue)
             });
+            if is_live_duplicate {
+                apply_existing_linear_post_to_draft(&mut draft, &existing);
+                mirror_linear_post_as_external_action(state, &draft, &existing).await;
+                let draft = state.put_incident_monitor_draft(draft).await?;
+                return Ok(PublishOutcome {
+                    action: "skip_duplicate".to_string(),
+                    draft,
+                    post: Some(existing),
+                });
+            }
         }
     }
 
@@ -169,17 +207,6 @@ pub async fn publish_draft(
             None => None,
         }
     };
-
-    let matched_issue = find_matching_linear_issue(
-        state,
-        &tools,
-        destination.team()?,
-        destination.project()?,
-        &draft,
-        &evidence_digest,
-    )
-    .await
-    .context("match existing Linear issue for Incident Monitor draft")?;
 
     if mode == PublishMode::RecheckOnly {
         if let Some(issue) = matched_issue {
@@ -228,12 +255,20 @@ pub async fn publish_draft(
         &config,
         draft,
         incident.as_ref(),
-        &evidence_digest,
+        &publish_evidence_digest,
         issue_draft.as_ref(),
         &destination,
         &target_ref,
     )
     .await
+}
+
+/// Whether a post record refers to the given Linear issue (by URL, then id).
+fn linear_post_references_issue(post: &IncidentMonitorPostRecord, issue: &LinearIssue) -> bool {
+    let same = |a: &Option<String>, b: &Option<String>| matches!((a, b), (Some(a), Some(b)) if a == b);
+    same(&post.external_url, &issue.url)
+        || same(&post.external_id, &issue.identifier)
+        || same(&post.external_id, &issue.id)
 }
 
 async fn create_linear_issue_from_draft(
@@ -1512,5 +1547,24 @@ mod linear_recurrence_tests {
             select_matching_linear_issue(vec![closed], &marker, "evidence-x", "failure", "fp-1");
         assert!(picked.as_ref().map(linear_issue_is_terminal).unwrap_or(false));
         assert_eq!(picked.and_then(|issue| issue.identifier), Some("T-9".to_string()));
+    }
+
+    #[test]
+    fn post_references_issue_matches_by_url_or_id() {
+        // TAN-551: the duplicate short-circuit only fires when the prior post
+        // points at the currently-matched (still-open) issue.
+        let open = issue("T-8", "", Some("In Progress"), Some("started"));
+        let mut post = IncidentMonitorPostRecord {
+            external_url: Some("https://linear.app/acme/issue/T-8".to_string()),
+            ..Default::default()
+        };
+        // The post's external_id is not set yet and its url doesn't match.
+        assert!(!linear_post_references_issue(&post, &open));
+        // Matches once the post's external_id lines up with the issue identifier.
+        post.external_id = Some("T-8".to_string());
+        assert!(linear_post_references_issue(&post, &open));
+        // A post pointing at a different issue does not match.
+        let other = issue("T-9", "", Some("In Progress"), Some("started"));
+        assert!(!linear_post_references_issue(&post, &other));
     }
 }

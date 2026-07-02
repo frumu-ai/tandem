@@ -262,7 +262,13 @@ pub fn build_route_preview(
             )),
         }
     }
-    let approval_required = matches.iter().any(|row| row.approval_required);
+    // Approval reflects the winning match only — the same match whose
+    // destinations are effective — so a non-selected lower-priority route can't
+    // flip the preview's approval flag.
+    let approval_required = matches
+        .first()
+        .map(|row| row.approval_required)
+        .unwrap_or(false);
 
     IncidentMonitorRoutePreviewResponse {
         matches,
@@ -850,21 +856,26 @@ fn route_publish_approval_required(
     context: &IncidentMonitorRouteContext,
     destinations: &[IncidentMonitorDestinationConfig],
 ) -> bool {
-    preview.matches.iter().any(|preview_match| {
-        let route = preview_match.route_id.as_deref().and_then(|route_id| {
-            config
-                .routes
-                .iter()
-                .find(|route| route.route_id == route_id)
-        });
-        route_publish_match_approval_required(
-            config,
-            route,
-            context,
-            destinations,
-            &preview_match.destination_ids,
-        )
-    })
+    // Only the winning (highest-priority) match selects destinations, so the
+    // approval decision must come from that match alone. Iterating every match
+    // would let a lower-priority route that no longer selects any destination
+    // (e.g. a catch-all with approval_policy: Always) force approval.
+    let Some(preview_match) = preview.matches.first() else {
+        return false;
+    };
+    let route = preview_match.route_id.as_deref().and_then(|route_id| {
+        config
+            .routes
+            .iter()
+            .find(|route| route.route_id == route_id)
+    });
+    route_publish_match_approval_required(
+        config,
+        route,
+        context,
+        destinations,
+        &preview_match.destination_ids,
+    )
 }
 
 fn route_publish_match_approval_required(
