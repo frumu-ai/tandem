@@ -96,7 +96,7 @@ fn policy_decision_permission(decision: &PolicyDecisionRecord) -> Option<AccessP
     .or_else(|| decision.resource.as_ref().map(|_| AccessPermission::Read))
 }
 
-fn policy_decision_input(decision: &PolicyDecisionRecord) -> EnterprisePolicyInput {
+fn policy_decision_input_base(decision: &PolicyDecisionRecord) -> EnterprisePolicyInput {
     let mut input = EnterprisePolicyInput::new(decision.tenant_context.clone());
     if let Some(org_unit_id) = policy_decision_org_unit_id(decision) {
         input = input.with_org_unit_id(org_unit_id);
@@ -113,13 +113,101 @@ fn policy_decision_input(decision: &PolicyDecisionRecord) -> EnterprisePolicyInp
     if let Some(permission) = policy_decision_permission(decision) {
         input = input.with_permission(permission);
     }
-    if let Some(data_class) = decision.data_classes.first().copied() {
-        input = input.with_data_class(data_class);
-    }
     if let Some(tool) = decision.tool.clone() {
         input = input.with_tool(tool);
     }
     input
+}
+
+fn policy_decision_inputs(decision: &PolicyDecisionRecord) -> Vec<EnterprisePolicyInput> {
+    let input = policy_decision_input_base(decision);
+    if decision.data_classes.is_empty() {
+        return vec![input];
+    }
+    decision
+        .data_classes
+        .iter()
+        .copied()
+        .map(|data_class| input.clone().with_data_class(data_class))
+        .collect()
+}
+
+fn enterprise_policy_effect_priority(effect: EnterprisePolicyEffect) -> u8 {
+    match effect {
+        EnterprisePolicyEffect::Allow => 0,
+        EnterprisePolicyEffect::ApprovalRequired => 1,
+        EnterprisePolicyEffect::Deny => 2,
+    }
+}
+
+fn effective_policy_snapshot_priority(
+    snapshot: &tandem_enterprise_contract::EffectivePolicySnapshot,
+) -> (u8, u8, u64, u64, String) {
+    let Some(source) = snapshot.decision_source.as_ref() else {
+        return (
+            enterprise_policy_effect_priority(snapshot.effect),
+            0,
+            0,
+            snapshot.resolved_at_ms,
+            String::new(),
+        );
+    };
+    (
+        enterprise_policy_effect_priority(snapshot.effect),
+        source.scope_level.inheritance_rank(),
+        source.version,
+        snapshot.resolved_at_ms,
+        source.rule_id.clone(),
+    )
+}
+
+fn select_effective_policy_snapshot(
+    snapshots: Vec<tandem_enterprise_contract::EffectivePolicySnapshot>,
+) -> Option<tandem_enterprise_contract::EffectivePolicySnapshot> {
+    snapshots
+        .into_iter()
+        .max_by_key(effective_policy_snapshot_priority)
+}
+
+fn authority_decision_from_policy_record(
+    mut decision: AuthorityDecision,
+    record: &PolicyDecisionRecord,
+) -> AuthorityDecision {
+    decision.effect = match record.decision {
+        PolicyDecisionEffect::Allow => AuthorityEffect::Allow,
+        PolicyDecisionEffect::Deny | PolicyDecisionEffect::ApprovalRequired => AuthorityEffect::Deny,
+    };
+    decision.reason_code = record.reason_code.clone();
+    decision.reason = record.reason.clone();
+    decision.grant_id = record.grant_id.clone();
+    decision
+}
+
+fn gate_outcome_from_policy_record(
+    mut outcome: GateOutcome,
+    record: &PolicyDecisionRecord,
+) -> GateOutcome {
+    outcome.effect = record.decision;
+    outcome.reason_code = record.reason_code.clone();
+    outcome.reason = record.reason.clone();
+    match record.decision {
+        PolicyDecisionEffect::Allow | PolicyDecisionEffect::Deny => {
+            outcome.reviewer_eligibility = tandem_types::ReviewerEligibility::None;
+            outcome.approval_ttl_ms = 0;
+        }
+        PolicyDecisionEffect::ApprovalRequired => {
+            if matches!(
+                outcome.reviewer_eligibility,
+                tandem_types::ReviewerEligibility::None
+            ) {
+                outcome.reviewer_eligibility = tandem_types::ReviewerEligibility::ElevatedReviewer;
+            }
+            if outcome.approval_ttl_ms == 0 {
+                outcome.approval_ttl_ms = tandem_types::ELEVATED_APPROVAL_TTL_MS;
+            }
+        }
+    }
+    outcome
 }
 
 fn runtime_policy_rule_for_decision(decision: &PolicyDecisionRecord) -> EnterprisePolicyRule {
@@ -907,6 +995,9 @@ impl AppState {
         &self,
         decision: &PolicyDecisionRecord,
     ) -> tandem_enterprise_contract::EffectivePolicySnapshot {
+        if let Err(error) = self.load_enterprise_policy_rules_if_needed().await {
+            tracing::warn!("failed to load enterprise policy rules for resolver: {error:?}");
+        }
         let mut rules = self
             .enterprise
             .policy_rules
@@ -916,8 +1007,32 @@ impl AppState {
             .cloned()
             .collect::<Vec<_>>();
         rules.push(runtime_policy_rule_for_decision(decision));
-        EnterprisePolicyResolver::new(rules)
-            .resolve(&policy_decision_input(decision), decision.created_at_ms)
+        let resolver = EnterprisePolicyResolver::new(rules);
+        let snapshots = policy_decision_inputs(decision)
+            .iter()
+            .map(|input| resolver.resolve(input, decision.created_at_ms))
+            .collect::<Vec<_>>();
+        select_effective_policy_snapshot(snapshots).unwrap_or_else(|| {
+            resolver.resolve(
+                &policy_decision_input_base(decision),
+                decision.created_at_ms,
+            )
+        })
+    }
+
+    async fn load_enterprise_policy_rules_if_needed(&self) -> anyhow::Result<()> {
+        if !self.enterprise.policy_rules.read().await.is_empty() {
+            return Ok(());
+        }
+        if !self.enterprise.policy_rules_path.exists() {
+            return Ok(());
+        }
+        check_file_permissions(&self.enterprise.policy_rules_path);
+        let bytes = fs::read(&self.enterprise.policy_rules_path).await?;
+        let registry: std::collections::HashMap<String, EnterprisePolicyRule> =
+            serde_json::from_slice(&bytes)?;
+        *self.enterprise.policy_rules.write().await = registry;
+        Ok(())
     }
 
     fn intra_tenant_context_matches(
@@ -995,10 +1110,15 @@ impl AppState {
             .build_intra_tenant_authority_graph(tenant_context, direct_grants)
             .await;
         let decision = graph.evaluate(request, now_ms);
-        let decision_id = self
+        let recorded = self
             .record_intra_tenant_authority_decision(tenant_context, request, &decision, now_ms)
             .await;
-        (decision, decision_id)
+        let resolved_decision = recorded
+            .as_ref()
+            .map(|record| authority_decision_from_policy_record(decision.clone(), record))
+            .unwrap_or(decision);
+        let decision_id = recorded.map(|record| record.decision_id);
+        (resolved_decision, decision_id)
     }
 
     async fn record_intra_tenant_authority_decision(
@@ -1007,7 +1127,7 @@ impl AppState {
         request: &AuthorityAccessRequest,
         decision: &AuthorityDecision,
         now_ms: u64,
-    ) -> Option<String> {
+    ) -> Option<PolicyDecisionRecord> {
         let effect = match decision.effect {
             AuthorityEffect::Allow => PolicyDecisionEffect::Allow,
             AuthorityEffect::Deny => PolicyDecisionEffect::Deny,
@@ -1050,28 +1170,32 @@ impl AppState {
             metadata,
         };
         let recorded = match self.record_policy_decision(record).await {
-            Ok(record) => Some(record.decision_id),
+            Ok(record) => Some(record),
             Err(error) => {
                 tracing::warn!("failed to record intra-tenant authority decision: {error:?}");
                 None
             }
         };
+        let audit_decision = recorded
+            .as_ref()
+            .map(|record| authority_decision_from_policy_record(decision.clone(), record))
+            .unwrap_or_else(|| decision.clone());
 
-        if decision.is_deny() {
+        if audit_decision.is_deny() {
             if let Err(error) = crate::audit::append_protected_audit_event(
                 self,
                 "authority.access.denied",
                 tenant_context,
                 actor_id,
                 serde_json::json!({
-                    "decision_id": recorded,
+                    "decision_id": recorded.as_ref().map(|record| record.decision_id.as_str()),
                     "principal": request.principal,
                     "resource": request.resource,
                     "permission": request.permission,
                     "data_class": request.data_class,
-                    "reason_code": decision.reason_code,
-                    "grant_id": decision.grant_id,
-                    "source_principal": decision.source_principal,
+                    "reason_code": audit_decision.reason_code,
+                    "grant_id": audit_decision.grant_id,
+                    "source_principal": audit_decision.source_principal,
                 }),
             )
             .await
@@ -1101,10 +1225,15 @@ impl AppState {
         now_ms: u64,
     ) -> (GateOutcome, Option<String>) {
         let outcome = ApprovalGateMatrix::strict_default().resolve(request);
-        let decision_id = self
+        let recorded = self
             .record_action_gate_decision(tenant_context, request, &outcome, tool, actor_id, now_ms)
             .await;
-        (outcome, decision_id)
+        let resolved_outcome = recorded
+            .as_ref()
+            .map(|record| gate_outcome_from_policy_record(outcome.clone(), record))
+            .unwrap_or(outcome);
+        let decision_id = recorded.map(|record| record.decision_id);
+        (resolved_outcome, decision_id)
     }
 
     async fn record_action_gate_decision(
@@ -1115,7 +1244,7 @@ impl AppState {
         tool: Option<String>,
         actor_id: Option<String>,
         now_ms: u64,
-    ) -> Option<String> {
+    ) -> Option<PolicyDecisionRecord> {
         let decision_id = format!("policy_decision_{}", uuid::Uuid::new_v4().simple());
         let data_classes = request
             .data_class
@@ -1152,17 +1281,21 @@ impl AppState {
             metadata,
         };
         let recorded = match self.record_policy_decision(record).await {
-            Ok(record) => Some(record.decision_id),
+            Ok(record) => Some(record),
             Err(error) => {
                 tracing::warn!("failed to record approval gate decision: {error:?}");
                 None
             }
         };
+        let audit_outcome = recorded
+            .as_ref()
+            .map(|record| gate_outcome_from_policy_record(outcome.clone(), record))
+            .unwrap_or_else(|| outcome.clone());
 
         // Approval-required and deny outcomes are consequential gate events and
         // must leave durable, tenant-attributed audit evidence.
-        if !outcome.is_allowed() {
-            let event_type = if outcome.is_denied() {
+        if !audit_outcome.is_allowed() {
+            let event_type = if audit_outcome.is_denied() {
                 "approval.gate.denied"
             } else {
                 "approval.gate.approval_required"
@@ -1173,14 +1306,14 @@ impl AppState {
                 tenant_context,
                 actor_id,
                 serde_json::json!({
-                    "decision_id": recorded,
+                    "decision_id": recorded.as_ref().map(|record| record.decision_id.as_str()),
                     "risk_tier": request.risk_tier.map(|tier| tier.as_str()),
                     "data_class": request.data_class,
                     "external_customer_facing": request.external_customer_facing,
-                    "effect": outcome.effect,
-                    "reviewer_eligibility": outcome.reviewer_eligibility.as_str(),
-                    "approval_ttl_ms": outcome.approval_ttl_ms,
-                    "reason_code": outcome.reason_code,
+                    "effect": audit_outcome.effect,
+                    "reviewer_eligibility": audit_outcome.reviewer_eligibility.as_str(),
+                    "approval_ttl_ms": audit_outcome.approval_ttl_ms,
+                    "reason_code": audit_outcome.reason_code,
                 }),
             )
             .await

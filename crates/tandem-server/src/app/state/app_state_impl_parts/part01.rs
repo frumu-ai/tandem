@@ -171,10 +171,7 @@ async fn validate_incident_monitor_monitored_projects(
             crate::http::routines_automations::validate_model_policy(model_policy)
                 .map_err(anyhow::Error::msg)?;
         }
-        validate_incident_monitor_source_binding_destinations(
-            project,
-            &configured_destination_ids,
-        )?;
+        validate_incident_monitor_source_binding_destinations(project, &configured_destination_ids)?;
 
         let mut source_ids = std::collections::HashSet::new();
         for source in &mut project.log_sources {
@@ -288,33 +285,27 @@ impl AppState {
             context_packs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             optimization_campaigns: Arc::new(RwLock::new(std::collections::HashMap::new())),
             optimization_experiments: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            incident_monitor_config: Arc::new(RwLock::new(
-                config::env::resolve_incident_monitor_env_config(),
-            )),
+            incident_monitor_config: Arc::new(
+                RwLock::new(config::env::resolve_incident_monitor_env_config()),
+            ),
             incident_monitor_drafts: Arc::new(RwLock::new(std::collections::HashMap::new())),
             incident_monitor_incidents: Arc::new(RwLock::new(std::collections::HashMap::new())),
             incident_monitor_posts: Arc::new(RwLock::new(std::collections::HashMap::new())),
             incident_monitor_log_watcher_state_path:
                 config::paths::resolve_incident_monitor_log_watcher_state_path(),
-            incident_monitor_log_source_states: Arc::new(RwLock::new(
-                std::collections::HashMap::new(),
-            )),
+            incident_monitor_log_source_states: Arc::new(RwLock::new(std::collections::HashMap::new())),
             incident_monitor_log_watcher_status: Arc::new(RwLock::new(
                 IncidentMonitorLogWatcherStatus::default(),
             )),
-            incident_monitor_log_evidence_dir:
-                config::paths::resolve_incident_monitor_log_evidence_dir(),
+            incident_monitor_log_evidence_dir: config::paths::resolve_incident_monitor_log_evidence_dir(),
             incident_monitor_intake_keys: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            incident_monitor_intake_keys_path:
-                config::paths::resolve_incident_monitor_intake_keys_path(),
+            incident_monitor_intake_keys_path: config::paths::resolve_incident_monitor_intake_keys_path(),
             external_actions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             policy_decisions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             goal_capability_learning_store: Arc::new(
                 crate::goal_capability_learning::GoalCapabilityLearningDecisionStore::new(),
             ),
-            incident_monitor_runtime_status: Arc::new(RwLock::new(
-                IncidentMonitorRuntimeStatus::default(),
-            )),
+            incident_monitor_runtime_status: Arc::new(RwLock::new(IncidentMonitorRuntimeStatus::default())),
             oauth: crate::app::state::OAuthState::new(),
             workflows: Arc::new(RwLock::new(WorkflowRegistry::default())),
             workflow_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -336,8 +327,8 @@ impl AppState {
             automation_v2_runs_path: config::paths::resolve_automation_v2_runs_path(),
             automation_v2_runs_archive_path: config::paths::resolve_automation_v2_runs_archive_path(
             ),
-            automation_webhook_triggers_path:
-                config::paths::resolve_automation_webhook_triggers_path(),
+            automation_webhook_triggers_path: config::paths::resolve_automation_webhook_triggers_path(
+            ),
             automation_webhook_deliveries_path:
                 config::paths::resolve_automation_webhook_deliveries_path(),
             automation_webhook_secret_material_path:
@@ -348,8 +339,7 @@ impl AppState {
             optimization_experiments_path: config::paths::resolve_optimization_experiments_path(),
             incident_monitor_config_path: config::paths::resolve_incident_monitor_config_path(),
             incident_monitor_drafts_path: config::paths::resolve_incident_monitor_drafts_path(),
-            incident_monitor_incidents_path: config::paths::resolve_incident_monitor_incidents_path(
-            ),
+            incident_monitor_incidents_path: config::paths::resolve_incident_monitor_incidents_path(),
             incident_monitor_posts_path: config::paths::resolve_incident_monitor_posts_path(),
             external_actions_path: config::paths::resolve_external_actions_path(),
             policy_decisions_path: config::paths::resolve_policy_decisions_path(),
@@ -541,7 +531,6 @@ impl AppState {
         let _ = self.load_enterprise_org_unit_access_grants().await;
         let _ = self.load_enterprise_cross_tenant_grants().await;
         let _ = self.load_enterprise_source_bindings().await;
-        let _ = self.load_enterprise_policy_rules().await;
         let _ = self.load_enterprise_connectors().await;
         let _ = self.load_enterprise_ingestion_jobs().await;
         let _ = self.load_enterprise_ingestion_quarantines().await;
@@ -659,20 +648,6 @@ impl AppState {
         let registry: std::collections::HashMap<String, tandem_enterprise_contract::SourceBinding> =
             serde_json::from_slice(&bytes)?;
         *self.enterprise.source_bindings.write().await = registry;
-        Ok(())
-    }
-
-    pub async fn load_enterprise_policy_rules(&self) -> anyhow::Result<()> {
-        if !self.enterprise.policy_rules_path.exists() {
-            return Ok(());
-        }
-        check_file_permissions(&self.enterprise.policy_rules_path);
-        let bytes = fs::read(&self.enterprise.policy_rules_path).await?;
-        let registry: std::collections::HashMap<
-            String,
-            tandem_enterprise_contract::EnterprisePolicyRule,
-        > = serde_json::from_slice(&bytes)?;
-        *self.enterprise.policy_rules.write().await = registry;
         Ok(())
     }
 

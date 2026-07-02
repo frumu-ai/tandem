@@ -209,9 +209,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   casing drift cannot silently bypass deny rules or hide stateful runtime
   org-unit summaries and active grants.
 - Runtime policy decision recording now resolves through the enterprise policy
-  inheritance resolver, loading `enterprise/policy_rules.json` and preserving
-  inherited decision sources for replay instead of only writing single-source
-  fallback snapshots.
+  inheritance resolver, loading `enterprise/policy_rules.json`, evaluating every
+  recorded data class, enforcing the resolved result in gate and authority
+  helpers, and preserving inherited decision sources for replay instead of only
+  writing single-source fallback snapshots.
+- Backend CI now runs the touched-file size gate before dependency installation
+  and Rust lint/build work so oversized files fail fast instead of burning the
+  full backend job first.
 - Incident Monitor publish and recheck failures now return the full error chain in
   API response details so destination adapter failures expose the underlying
   MCP/provider cause.

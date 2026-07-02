@@ -2,7 +2,8 @@ use super::*;
 
 use tandem_enterprise_contract::authority::{fixtures, AuthorityAccessRequest};
 use tandem_enterprise_contract::{
-    AccessPermission, DataClass, OrganizationUnit, OrganizationUnitAccessGrant,
+    AccessPermission, DataClass, EnterprisePolicyEffect, EnterprisePolicyRule,
+    EnterprisePolicyScopeLevel, OrganizationUnit, OrganizationUnitAccessGrant,
     OrganizationUnitMembership, ScopedGrant,
 };
 
@@ -177,6 +178,60 @@ async fn finance_actor_allowed_records_but_denied_engineering_secret() {
         d.decision == tandem_types::PolicyDecisionEffect::Allow
             && d.resource.as_ref().map(|r| r.resource_id.as_str()) == Some("finance-ledger")
     }));
+}
+
+#[tokio::test]
+async fn enterprise_policy_override_blocks_locally_allowed_intra_tenant_access() {
+    let state = test_state().await;
+    let fixture = seed_acme_authority(&state).await;
+    state.enterprise.policy_rules.write().await.insert(
+        "enterprise-finance-ledger-deny".to_string(),
+        EnterprisePolicyRule::new(
+            "enterprise-finance-ledger-deny",
+            "enterprise-finance-floor",
+            EnterprisePolicyScopeLevel::Enterprise,
+            EnterprisePolicyEffect::Deny,
+        )
+        .with_tenant_context(fixture.tenant_context.clone())
+        .with_resource(fixture.finance_ledger.clone())
+        .with_data_classes(vec![DataClass::FinancialRecord])
+        .with_reason(
+            "enterprise_finance_ledger_floor",
+            "enterprise policy denies finance ledger access",
+        ),
+    );
+
+    let (decision, decision_id) = state
+        .enforce_intra_tenant_access(
+            &fixture.tenant_context,
+            &read_request(
+                &fixture.finance_analyst,
+                &fixture.finance_ledger,
+                DataClass::FinancialRecord,
+            ),
+            Vec::new(),
+            fixtures::BASE_NOW_MS,
+        )
+        .await;
+
+    assert!(decision.is_deny());
+    assert_eq!(decision.reason_code, "enterprise_finance_ledger_floor");
+    let decision_id = decision_id.expect("decision recorded");
+    let decisions = state
+        .list_policy_decisions(&fixture.tenant_context, 50)
+        .await;
+    let recorded = decisions
+        .iter()
+        .find(|d| d.decision_id == decision_id)
+        .expect("recorded policy decision");
+    assert_eq!(recorded.decision, tandem_types::PolicyDecisionEffect::Deny);
+    assert_eq!(recorded.reason_code, "enterprise_finance_ledger_floor");
+
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .expect("protected audit file");
+    assert!(audit.contains("\"event_type\":\"authority.access.denied\""));
+    assert!(audit.contains("enterprise_finance_ledger_floor"));
 }
 
 #[tokio::test]

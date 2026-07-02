@@ -65,7 +65,9 @@ IDs are normalized for matching so case drift cannot suppress deny rules or hide
 stateful runtime org-unit summaries and active grants.
 Runtime policy decisions now consume that resolver directly: the server loads
 `enterprise/policy_rules.json`, resolves each recorded policy decision through
-the enterprise inheritance model, and stores inherited sources for replay.
+the enterprise inheritance model across every recorded data class, enforces the
+resolved result in gate and authority helpers, and stores inherited sources for
+replay.
 Automation V2 runs now also bridge those durable waits back into the live run
 store: approval gates register and complete stateful approval waits, while
 timer and webhook wait wakes requeue the authoritative automation run so the

@@ -1,5 +1,8 @@
 use super::*;
 
+use tandem_enterprise_contract::{
+    EnterprisePolicyEffect, EnterprisePolicyRule, EnterprisePolicyScopeLevel,
+};
 use tandem_types::{
     approval_authorizes_execution, DataClass, GateRequest, PolicyDecisionEffect,
     ReviewerEligibility, ToolRiskTier,
@@ -109,6 +112,54 @@ async fn low_risk_action_auto_allows_without_audit() {
         .await
         .unwrap_or_default();
     assert!(!audit.contains("approval.gate"));
+}
+
+#[tokio::test]
+async fn enterprise_policy_override_blocks_locally_allowed_action_gate() {
+    let state = test_state().await;
+    let tenant = tenant();
+    state.enterprise.policy_rules.write().await.insert(
+        "enterprise-bank-tool-deny".to_string(),
+        EnterprisePolicyRule::new(
+            "enterprise-bank-tool-deny",
+            "enterprise-bank-floor",
+            EnterprisePolicyScopeLevel::Enterprise,
+            EnterprisePolicyEffect::Deny,
+        )
+        .with_tenant_context(tenant.clone())
+        .with_tool_patterns(vec!["mcp.bank.*".to_string()])
+        .with_reason(
+            "enterprise_bank_tool_floor",
+            "enterprise policy denies bank tool access",
+        ),
+    );
+
+    let (outcome, decision_id) = state
+        .enforce_action_gate(
+            &tenant,
+            &GateRequest::new(Some(ToolRiskTier::ReadDiscover), Some(DataClass::Internal)),
+            Some("mcp.bank.release_funds".to_string()),
+            Some("agent-fin".to_string()),
+            1_000,
+        )
+        .await;
+
+    assert!(outcome.is_denied());
+    assert_eq!(outcome.reason_code, "enterprise_bank_tool_floor");
+    let decision_id = decision_id.expect("decision recorded");
+    let decisions = state.list_policy_decisions(&tenant, 50).await;
+    let recorded = decisions
+        .iter()
+        .find(|d| d.decision_id == decision_id)
+        .expect("recorded policy decision");
+    assert_eq!(recorded.decision, PolicyDecisionEffect::Deny);
+    assert_eq!(recorded.reason_code, "enterprise_bank_tool_floor");
+
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .expect("protected audit file");
+    assert!(audit.contains("\"event_type\":\"approval.gate.denied\""));
+    assert!(audit.contains("enterprise_bank_tool_floor"));
 }
 
 #[tokio::test]
