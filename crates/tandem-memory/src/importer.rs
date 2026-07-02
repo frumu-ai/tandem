@@ -112,16 +112,19 @@ where
                             let next_content_hash = sha256_hex(content.as_bytes());
                             let next_source_hash =
                                 scoped_source_hash(&next_content_hash, &indexed_path, binding);
+                            let metadata_context = ImportFileMetadataContext {
+                                canonical_root: &canonical_root,
+                                namespace: &namespace,
+                                relative_path: &relative_path,
+                                indexed_path: &indexed_path,
+                                path: &path,
+                                content_hash: &next_content_hash,
+                            };
                             backfill_source_bound_import_metadata(
                                 db,
                                 request,
                                 binding,
-                                &canonical_root,
-                                &namespace,
-                                &relative_path,
-                                &indexed_path,
-                                &path,
-                                &next_content_hash,
+                                &metadata_context,
                             )
                             .await?;
                             content_hash = Some(next_content_hash);
@@ -184,18 +187,16 @@ where
                 )
                 .await?;
                 if let Some(binding) = request.source_binding.as_ref() {
-                    backfill_source_bound_import_metadata(
-                        db,
-                        request,
-                        binding,
-                        &canonical_root,
-                        &namespace,
-                        &relative_path,
-                        &indexed_path,
-                        &path,
-                        &content_hash,
-                    )
-                    .await?;
+                    let metadata_context = ImportFileMetadataContext {
+                        canonical_root: &canonical_root,
+                        namespace: &namespace,
+                        relative_path: &relative_path,
+                        indexed_path: &indexed_path,
+                        path: &path,
+                        content_hash: &content_hash,
+                    };
+                    backfill_source_bound_import_metadata(db, request, binding, &metadata_context)
+                        .await?;
                 }
                 if let Some(record) = source_object_lifecycle_record(
                     request,
@@ -237,16 +238,16 @@ where
             continue;
         }
 
-        let request_metadata = import_file_metadata(
-            request,
-            request.source_binding.as_ref(),
-            &canonical_root,
-            &namespace,
-            &relative_path,
-            &indexed_path,
-            &path,
-            &content_hash,
-        )?;
+        let metadata_context = ImportFileMetadataContext {
+            canonical_root: &canonical_root,
+            namespace: &namespace,
+            relative_path: &relative_path,
+            indexed_path: &indexed_path,
+            path: &path,
+            content_hash: &content_hash,
+        };
+        let request_metadata =
+            import_file_metadata(request, request.source_binding.as_ref(), &metadata_context)?;
         let store_request = StoreMessageRequest {
             content,
             tier: request.tier,
@@ -619,22 +620,26 @@ fn source_bound_import_knowledge_scope_policy(
     })
 }
 
+struct ImportFileMetadataContext<'a> {
+    canonical_root: &'a Path,
+    namespace: &'a str,
+    relative_path: &'a str,
+    indexed_path: &'a str,
+    path: &'a Path,
+    content_hash: &'a str,
+}
+
 fn import_file_metadata(
     request: &MemoryImportRequest,
     binding: Option<&MemoryImportSourceBinding>,
-    canonical_root: &Path,
-    namespace: &str,
-    relative_path: &str,
-    indexed_path: &str,
-    path: &Path,
-    content_hash: &str,
+    context: &ImportFileMetadataContext<'_>,
 ) -> Result<serde_json::Value, MemoryError> {
     let mut request_metadata = serde_json::json!({
-        "path": relative_path,
-        "filename": path.file_name().and_then(|name| name.to_str()).unwrap_or(""),
+        "path": context.relative_path,
+        "filename": context.path.file_name().and_then(|name| name.to_str()).unwrap_or(""),
         "import_format": request.format.to_string(),
-        "import_root": canonical_root.display().to_string(),
-        "import_namespace": namespace,
+        "import_root": context.canonical_root.display().to_string(),
+        "import_namespace": context.namespace,
     });
     if let Some(binding) = binding {
         request_metadata["enterprise_source_binding"] = serde_json::json!({
@@ -642,11 +647,12 @@ fn import_file_metadata(
             "connector_id": binding.connector_id,
             "resource_ref": binding.resource_ref,
             "data_class": binding.data_class,
-            "source_object_id": source_object_id(request, binding, indexed_path),
-            "native_object_id": indexed_path,
-            "content_hash": content_hash,
+            "source_object_id": source_object_id(request, binding, context.indexed_path),
+            "native_object_id": context.indexed_path,
+            "content_hash": context.content_hash,
         });
-        let policy = source_bound_import_knowledge_scope_policy(request, binding, indexed_path)?;
+        let policy =
+            source_bound_import_knowledge_scope_policy(request, binding, context.indexed_path)?;
         request_metadata = metadata_with_knowledge_scope(Some(request_metadata), &policy)
             .ok_or_else(|| {
                 MemoryError::InvalidConfig(
@@ -657,33 +663,18 @@ fn import_file_metadata(
     Ok(request_metadata)
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn backfill_source_bound_import_metadata(
     db: &crate::db::MemoryDatabase,
     request: &MemoryImportRequest,
     binding: &MemoryImportSourceBinding,
-    canonical_root: &Path,
-    namespace: &str,
-    relative_path: &str,
-    indexed_path: &str,
-    path: &Path,
-    content_hash: &str,
+    context: &ImportFileMetadataContext<'_>,
 ) -> Result<(), MemoryError> {
-    let metadata = import_file_metadata(
-        request,
-        Some(binding),
-        canonical_root,
-        namespace,
-        relative_path,
-        indexed_path,
-        path,
-        content_hash,
-    )?;
+    let metadata = import_file_metadata(request, Some(binding), context)?;
     db.update_file_chunks_metadata_by_path_for_tenant(
         request.tier,
         request.session_id.as_deref(),
         request.project_id.as_deref(),
-        indexed_path,
+        context.indexed_path,
         &request.tenant_scope,
         &metadata,
     )
