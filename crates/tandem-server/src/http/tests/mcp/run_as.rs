@@ -66,6 +66,69 @@ async fn mcp_run_as_interactive_call_uses_current_actor_connection() {
 }
 
 #[tokio::test]
+async fn mcp_run_as_enterprise_policy_override_blocks_context_assertion_allow() {
+    let state = test_state().await;
+    let (endpoint, server) = spawn_fake_notion_oauth_mcp_server().await;
+    state
+        .mcp
+        .add_or_update("notion".to_string(), endpoint, HashMap::new(), true)
+        .await;
+    let alice =
+        tandem_types::TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "alice");
+    state
+        .mcp
+        .set_bearer_token_for_tenant("notion", "alice-union-token", &alice)
+        .await
+        .expect("store alice token");
+    state
+        .mcp
+        .refresh_for_tenant("notion", &alice)
+        .await
+        .expect("refresh alice tools");
+    state.enterprise.policy_rules.write().await.insert(
+        "enterprise-mcp-context-deny".to_string(),
+        tandem_enterprise_contract::EnterprisePolicyRule::new(
+            "enterprise-mcp-context-deny",
+            "enterprise-mcp-floor",
+            tandem_enterprise_contract::EnterprisePolicyScopeLevel::Enterprise,
+            tandem_enterprise_contract::EnterprisePolicyEffect::Deny,
+        )
+        .with_tenant_context(alice.clone())
+        .with_tool_patterns(vec!["mcp.notion.*".to_string()])
+        .with_reason(
+            "enterprise_mcp_context_floor",
+            "enterprise policy denies MCP execution",
+        ),
+    );
+    let verified = verified_mcp_execute_context(
+        &alice,
+        tandem_types::PrincipalRef::human_user("alice").with_tenant_actor_id("alice"),
+        "assertion-alice-enterprise-deny",
+    );
+
+    let err = crate::http::mcp::call_mcp_tool_for_tenant_with_verified_context(
+        &state,
+        "notion",
+        "alice_search",
+        json!({ "query": "roadmap" }),
+        &alice,
+        Some(&verified),
+    )
+    .await
+    .expect_err("enterprise policy must override context assertion allow");
+
+    assert!(err.contains("ToolDenied { reason: ContextAssertion }"));
+    assert!(err.contains("enterprise policy denies MCP execution"));
+    let decisions = state.list_policy_decisions(&alice, 100).await;
+    let decision = decisions
+        .iter()
+        .find(|decision| decision.reason_code == "enterprise_mcp_context_floor")
+        .expect("enterprise override policy decision");
+    assert_eq!(decision.decision, tandem_types::PolicyDecisionEffect::Deny);
+    drop(server);
+}
+
+#[tokio::test]
 async fn mcp_run_as_denies_explicit_tenant_without_context_assertion() {
     let state = test_state().await;
     let alice =

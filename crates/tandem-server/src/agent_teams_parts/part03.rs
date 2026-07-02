@@ -679,6 +679,9 @@ fn extract_session_id(event: &EngineEvent) -> Option<String> {
 mod fintech_policy_tests {
     use super::*;
     use serde_json::json;
+    use tandem_enterprise_contract::{
+        EnterprisePolicyEffect, EnterprisePolicyRule, EnterprisePolicyScopeLevel,
+    };
     use tandem_types::{AuthorityChain, HumanActor, RequestPrincipal, TenantContext};
 
     fn fintech_test_automation(metadata: Value) -> crate::AutomationV2Spec {
@@ -772,10 +775,8 @@ mod fintech_policy_tests {
 
     async fn fintech_policy_state(metadata: Value) -> AppState {
         let mut state = AppState::new_starting("test".to_string(), true);
-        state.policy_decisions_path = std::env::temp_dir().join(format!(
-            "tandem-policy-decisions-{}.json",
-            Uuid::new_v4()
-        ));
+        state.policy_decisions_path =
+            std::env::temp_dir().join(format!("tandem-policy-decisions-{}.json", Uuid::new_v4()));
         let automation = fintech_test_automation(metadata);
         let run = fintech_test_run(automation);
         state
@@ -900,10 +901,7 @@ mod fintech_policy_tests {
         assert_eq!(stored.decision, PolicyDecisionEffect::ApprovalRequired);
         assert_eq!(stored.reason_code, "approval_required_unverified");
         assert_eq!(stored.tool.as_deref(), Some("mcp.bank.release_funds"));
-        assert_eq!(
-            stored.risk_tier.as_deref(),
-            Some("money_movement_contract")
-        );
+        assert_eq!(stored.risk_tier.as_deref(), Some("money_movement_contract"));
     }
 
     #[tokio::test]
@@ -944,10 +942,74 @@ mod fintech_policy_tests {
             .expect("stored policy decision");
         assert_eq!(stored.decision, PolicyDecisionEffect::Allow);
         assert_eq!(stored.reason_code, "matching_approval_receipt");
-        assert_eq!(stored.approval_id.as_deref(), Some("approve_protected_action"));
         assert_eq!(
-            stored.risk_tier.as_deref(),
-            Some("money_movement_contract")
+            stored.approval_id.as_deref(),
+            Some("approve_protected_action")
+        );
+        assert_eq!(stored.risk_tier.as_deref(), Some("money_movement_contract"));
+    }
+
+    #[tokio::test]
+    async fn fintech_strict_enterprise_override_blocks_approved_receipt() {
+        let state = fintech_policy_state(json!({"runtime_profile": "fintech_strict"})).await;
+        state.enterprise.policy_rules.write().await.insert(
+            "enterprise-fintech-deny".to_string(),
+            EnterprisePolicyRule::new(
+                "enterprise-fintech-deny",
+                "enterprise-fintech-floor",
+                EnterprisePolicyScopeLevel::Enterprise,
+                EnterprisePolicyEffect::Deny,
+            )
+            .with_tenant_context(TenantContext::local_implicit())
+            .with_tool_patterns(vec!["mcp.bank.*".to_string()])
+            .with_reason(
+                "enterprise_fintech_floor",
+                "enterprise policy denies fintech protected actions",
+            ),
+        );
+        let args = json!({"account_id": "acct-1", "amount": 10});
+        add_fintech_approval_receipt(
+            &state,
+            "mcp.bank.release_funds",
+            &args,
+            "money_movement",
+            None,
+            None,
+        )
+        .await;
+        let hook = ServerToolPolicyHook::new(state.clone());
+
+        let decision = hook
+            .evaluate_tool(ToolPolicyContext {
+                session_id: "session-fintech".to_string(),
+                message_id: "message-1".to_string(),
+                tenant_context: None,
+                verified_tenant_context: None,
+                tool: "mcp.bank.release_funds".to_string(),
+                args,
+            })
+            .await
+            .expect("policy decision");
+
+        assert!(!decision.allowed);
+        assert!(decision
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("enterprise_fintech_floor"));
+        let decision_id = decision
+            .policy_decision_id
+            .as_deref()
+            .expect("policy decision id");
+        let stored = state
+            .get_policy_decision(decision_id)
+            .await
+            .expect("stored policy decision");
+        assert_eq!(stored.decision, PolicyDecisionEffect::Deny);
+        assert_eq!(stored.reason_code, "enterprise_fintech_floor");
+        assert_eq!(
+            stored.policy_id.as_deref(),
+            Some("enterprise-fintech-floor")
         );
     }
 
@@ -1340,10 +1402,16 @@ mod fintech_policy_tests {
             .get_policy_decision(decision_id)
             .await
             .expect("stored policy decision");
-        assert_eq!(stored.policy_id.as_deref(), Some("workflow_phase_tool_authority"));
+        assert_eq!(
+            stored.policy_id.as_deref(),
+            Some("workflow_phase_tool_authority")
+        );
         assert_eq!(stored.reason_code, "phase_tool_not_allowed");
         assert_eq!(stored.decision, PolicyDecisionEffect::Deny);
-        assert_eq!(stored.run_id.as_deref(), Some("automation-v2-run-phase-tools"));
+        assert_eq!(
+            stored.run_id.as_deref(),
+            Some("automation-v2-run-phase-tools")
+        );
         assert_eq!(stored.node_id.as_deref(), Some("phase-research"));
         assert_eq!(stored.metadata["phase_tool_authority"]["phase"], "research");
 

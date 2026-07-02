@@ -1,6 +1,9 @@
 use super::*;
 
 use crate::app::state::governance::UnavailableGovernanceEngine;
+use tandem_enterprise_contract::{
+    DataClass, EnterprisePolicyEffect, EnterprisePolicyRule, EnterprisePolicyScopeLevel,
+};
 use tandem_types::{PolicyDecisionEffect, PolicyDecisionRecord, TenantContext};
 
 fn tenant(org_id: &str, workspace_id: &str, actor_id: &str) -> TenantContext {
@@ -136,6 +139,108 @@ async fn policy_decisions_route_filters_run_and_tenant_before_limit() {
     assert_eq!(
         payload["policy_decisions"][0]["decision_id"],
         json!("decision-a-target-run")
+    );
+}
+
+#[tokio::test]
+async fn policy_decision_records_use_enterprise_policy_resolver() {
+    let state = test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a", "user-a");
+    state.enterprise.policy_rules.write().await.insert(
+        "enterprise-finance-deny".to_string(),
+        EnterprisePolicyRule::new(
+            "enterprise-finance-deny",
+            "enterprise-finance-floor",
+            EnterprisePolicyScopeLevel::Enterprise,
+            EnterprisePolicyEffect::Deny,
+        )
+        .with_tenant_context(tenant_a.clone())
+        .with_tool_patterns(vec!["mcp.bank.*".to_string()])
+        .with_reason(
+            "enterprise_finance_floor",
+            "enterprise policy denies finance tool access",
+        ),
+    );
+
+    let mut decision = policy_decision("decision-local-allow", tenant_a.clone(), "run-target", 100);
+    decision.decision = PolicyDecisionEffect::Allow;
+    decision.reason_code = "local_policy_allow".to_string();
+    decision.reason = "local tool authority allowed the request".to_string();
+
+    let recorded = state
+        .record_policy_decision(decision)
+        .await
+        .expect("record policy decision");
+
+    assert_eq!(recorded.decision, PolicyDecisionEffect::Deny);
+    assert_eq!(
+        recorded.policy_id.as_deref(),
+        Some("enterprise-finance-floor")
+    );
+    assert_eq!(recorded.reason_code, "enterprise_finance_floor");
+    let snapshot = recorded
+        .effective_policy_snapshot()
+        .expect("effective policy snapshot");
+    assert_eq!(snapshot.effect, EnterprisePolicyEffect::Deny);
+    assert_eq!(snapshot.inherited_sources.len(), 2);
+    assert_eq!(
+        snapshot
+            .decision_source
+            .as_ref()
+            .map(|source| source.rule_id.as_str()),
+        Some("enterprise-finance-deny")
+    );
+    assert!(
+        snapshot
+            .inherited_sources
+            .iter()
+            .any(|source| source.rule_id == "fintech_strict:decision-local-allow"),
+        "runtime fallback source should be retained for replay"
+    );
+}
+
+#[tokio::test]
+async fn policy_decision_resolver_matches_every_recorded_data_class() {
+    let state = test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a", "user-a");
+    state.enterprise.policy_rules.write().await.insert(
+        "enterprise-financial-record-deny".to_string(),
+        EnterprisePolicyRule::new(
+            "enterprise-financial-record-deny",
+            "enterprise-data-floor",
+            EnterprisePolicyScopeLevel::Enterprise,
+            EnterprisePolicyEffect::Deny,
+        )
+        .with_tenant_context(tenant_a.clone())
+        .with_data_classes(vec![DataClass::FinancialRecord])
+        .with_reason(
+            "enterprise_financial_record_floor",
+            "enterprise policy denies financial record access",
+        ),
+    );
+
+    let mut decision = policy_decision("decision-multi-class", tenant_a, "run-target", 100);
+    decision.decision = PolicyDecisionEffect::Allow;
+    decision.data_classes = vec![DataClass::CustomerData, DataClass::FinancialRecord];
+    decision.reason_code = "local_policy_allow".to_string();
+    decision.reason = "local tool authority allowed the request".to_string();
+
+    let recorded = state
+        .record_policy_decision(decision)
+        .await
+        .expect("record policy decision");
+
+    assert_eq!(recorded.decision, PolicyDecisionEffect::Deny);
+    assert_eq!(recorded.reason_code, "enterprise_financial_record_floor");
+    let snapshot = recorded
+        .effective_policy_snapshot()
+        .expect("effective policy snapshot");
+    assert_eq!(
+        snapshot
+            .decision_source
+            .as_ref()
+            .map(|source| source.rule_id.as_str()),
+        Some("enterprise-financial-record-deny")
     );
 }
 

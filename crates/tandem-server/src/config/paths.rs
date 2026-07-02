@@ -89,6 +89,10 @@ pub(crate) fn resolve_enterprise_source_bindings_path() -> PathBuf {
     resolve_canonical_data_file_path("enterprise/source_bindings.json")
 }
 
+pub(crate) fn resolve_enterprise_policy_rules_path() -> PathBuf {
+    resolve_canonical_data_file_path("enterprise/policy_rules.json")
+}
+
 pub(crate) fn resolve_enterprise_connectors_path() -> PathBuf {
     resolve_canonical_data_file_path("enterprise/connectors.json")
 }

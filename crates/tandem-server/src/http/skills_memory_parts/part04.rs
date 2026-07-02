@@ -176,7 +176,7 @@ async fn memory_promote_impl_with_verified(
         StatusCode::FORBIDDEN
     })?;
     if !scope_decision.allowed {
-        let policy_decision_id = record_memory_promotion_policy_decision(
+        let policy_decision = record_memory_promotion_policy_decision(
             state,
             tenant_context,
             &request,
@@ -190,6 +190,9 @@ async fn memory_promote_impl_with_verified(
             Some(&source_outcome),
         )
         .await;
+        let policy_decision_id = policy_decision
+            .as_ref()
+            .map(|record| record.decision_id.clone());
         let linkage = memory_linkage(&source);
         append_memory_audit(
             &state,
@@ -247,7 +250,7 @@ async fn memory_promote_impl_with_verified(
         });
     }
     if let Some(reason) = promotion_outcome_block_reason(&request, &source) {
-        let policy_decision_id = record_memory_promotion_policy_decision(
+        let policy_decision = record_memory_promotion_policy_decision(
             state,
             tenant_context,
             &request,
@@ -261,6 +264,9 @@ async fn memory_promote_impl_with_verified(
             Some(&source_outcome),
         )
         .await;
+        let policy_decision_id = policy_decision
+            .as_ref()
+            .map(|record| record.decision_id.clone());
         let linkage = memory_linkage(&source);
         append_memory_audit(
             &state,
@@ -334,7 +340,7 @@ async fn memory_promote_impl_with_verified(
     }
     let linkage = memory_linkage(&source);
     if scrub_report.status == ScrubStatus::Blocked {
-        let policy_decision_id = record_memory_promotion_policy_decision(
+        let policy_decision = record_memory_promotion_policy_decision(
             state,
             tenant_context,
             &request,
@@ -351,6 +357,9 @@ async fn memory_promote_impl_with_verified(
             Some(&source_outcome),
         )
         .await;
+        let policy_decision_id = policy_decision
+            .as_ref()
+            .map(|record| record.decision_id.clone());
         append_memory_audit(
             &state,
             tenant_context,
@@ -408,7 +417,7 @@ async fn memory_promote_impl_with_verified(
         });
     }
     let new_id = source.id.clone();
-    let policy_decision_id = record_memory_promotion_policy_decision(
+    let policy_decision = record_memory_promotion_policy_decision(
         state,
         tenant_context,
         &request,
@@ -422,6 +431,68 @@ async fn memory_promote_impl_with_verified(
         Some(&source_outcome),
     )
     .await;
+    let policy_decision_id = policy_decision
+        .as_ref()
+        .map(|record| record.decision_id.clone());
+    if let Some(record) = policy_decision
+        .as_ref()
+        .filter(|record| !matches!(record.decision, tandem_types::PolicyDecisionEffect::Allow))
+    {
+        append_memory_audit(
+            &state,
+            tenant_context,
+            crate::MemoryAuditEvent {
+                audit_id: audit_id.clone(),
+                action: "memory_promote".to_string(),
+                run_id: request.run_id.clone(),
+                tenant_context: tenant_context.clone(),
+                memory_id: None,
+                source_memory_id: Some(source_memory_id.clone()),
+                to_tier: Some(request.to_tier),
+                partition_key: partition_key.clone(),
+                actor: capability.subject,
+                status: "blocked".to_string(),
+                detail: Some(format!(
+                    "{} policy_decision_id={}{}",
+                    record.reason,
+                    policy_decision_id.clone().unwrap_or_default(),
+                    memory_linkage_detail(&linkage)
+                )),
+                created_at_ms: now,
+            },
+        )
+        .await?;
+        publish_tenant_event(
+            state,
+            tenant_context,
+            "memory.promote",
+            json!({
+                "runID": request.run_id,
+                "sourceMemoryID": source_memory_id,
+                "toTier": request.to_tier,
+                "partitionKey": partition_key,
+                "status": "blocked",
+                "kind": memory_kind_label(&source.source_type),
+                "classification": memory_classification_label(source.metadata.as_ref()),
+                "artifactRefs": memory_artifact_refs(source.metadata.as_ref()),
+                "visibility": source.visibility,
+                "scrubStatus": scrub_report.status,
+                "sourceOutcome": source_outcome,
+                "policyDecisionID": policy_decision_id,
+                "linkage": linkage,
+                "detail": record.reason,
+                "auditID": audit_id,
+            }),
+        );
+        return Ok(MemoryPromoteResponse {
+            promoted: false,
+            new_memory_id: None,
+            to_tier: request.to_tier,
+            scrub_report,
+            audit_id,
+            policy_decision_id,
+        });
+    }
     let governance = MemoryPromotionGovernanceEvidence {
         audit_id: audit_id.clone(),
         policy_decision_id: policy_decision_id.clone(),
@@ -587,7 +658,7 @@ async fn record_memory_promotion_policy_decision(
     reason_code: &str,
     reason: &str,
     source_outcome: Option<&Value>,
-) -> Option<String> {
+) -> Option<tandem_types::PolicyDecisionRecord> {
     let decision_id = format!("policy_decision_{}", Uuid::new_v4().simple());
     let data_class = source.and_then(|record| {
         let target = MemorySourceAccessTarget::from_metadata(record.metadata.as_ref());
@@ -632,7 +703,7 @@ async fn record_memory_promotion_policy_decision(
         metadata,
     };
     match state.record_policy_decision(record).await {
-        Ok(record) => Some(record.decision_id),
+        Ok(record) => Some(record),
         Err(error) => {
             tracing::warn!("failed to record memory promotion policy decision: {error:?}");
             None
@@ -725,12 +796,12 @@ pub(super) async fn memory_search(
     };
     let source_access_filter =
         crate::memory::read_policy::governed_memory_read_filter_with_workflow_phase(
-        crate::config::env::resolve_runtime_auth_mode(),
-        verified_tenant_context.as_deref(),
-        request.retrieval_gateway.is_some(),
-        crate::now_ms(),
-        request.workflow_phase.as_deref(),
-    );
+            crate::config::env::resolve_runtime_auth_mode(),
+            verified_tenant_context.as_deref(),
+            request.retrieval_gateway.is_some(),
+            crate::now_ms(),
+            request.workflow_phase.as_deref(),
+        );
     let strict_source_projection_active = source_access_filter.is_some();
     let (hits, gateway_budget_exhausted) = if scopes_used.is_empty() {
         (Vec::new(), false)

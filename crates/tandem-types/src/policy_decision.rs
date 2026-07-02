@@ -63,10 +63,18 @@ impl PolicyDecisionEffect {
             Self::ApprovalRequired => EnterprisePolicyEffect::ApprovalRequired,
         }
     }
+
+    pub fn from_enterprise_effect(effect: EnterprisePolicyEffect) -> Self {
+        match effect {
+            EnterprisePolicyEffect::Allow => Self::Allow,
+            EnterprisePolicyEffect::Deny => Self::Deny,
+            EnterprisePolicyEffect::ApprovalRequired => Self::ApprovalRequired,
+        }
+    }
 }
 
 impl PolicyDecisionRecord {
-    pub fn with_effective_policy_defaults(mut self) -> Self {
+    pub fn with_effective_policy_defaults(self) -> Self {
         if self.effective_policy_snapshot().is_some() {
             return self;
         }
@@ -94,6 +102,10 @@ impl PolicyDecisionRecord {
         snapshot.reason_code = self.reason_code.clone();
         snapshot.reason = self.reason.clone();
         snapshot.approval_id = self.approval_id.clone();
+        self.with_effective_policy_snapshot(snapshot)
+    }
+
+    pub fn with_effective_policy_snapshot(mut self, snapshot: EffectivePolicySnapshot) -> Self {
         let snapshot_value =
             serde_json::to_value(snapshot).unwrap_or_else(|_| Value::Object(Map::new()));
         let mut metadata = match self.metadata {
@@ -108,6 +120,19 @@ impl PolicyDecisionRecord {
         metadata.insert(EFFECTIVE_POLICY_METADATA_KEY.to_string(), snapshot_value);
         self.metadata = Value::Object(metadata);
         self
+    }
+
+    pub fn apply_effective_policy_snapshot(mut self, snapshot: EffectivePolicySnapshot) -> Self {
+        self.decision = PolicyDecisionEffect::from_enterprise_effect(snapshot.effect);
+        self.reason_code = snapshot.reason_code.clone();
+        self.reason = snapshot.reason.clone();
+        self.policy_id = snapshot
+            .decision_source
+            .as_ref()
+            .map(|source| source.policy_id.clone())
+            .or_else(|| Some("enterprise_policy_resolver".to_string()));
+        self.approval_id = snapshot.approval_id.clone();
+        self.with_effective_policy_snapshot(snapshot)
     }
 
     fn default_effective_policy_scope_level(&self) -> EnterprisePolicyScopeLevel {

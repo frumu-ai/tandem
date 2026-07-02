@@ -364,7 +364,7 @@ async fn evaluate_fintech_strict_tool_policy(
             let reason =
                 "tool denied by runtime policy: session tenant context does not match automation run tenant context"
                     .to_string();
-            let policy_decision_id = record_runtime_policy_decision(
+            let policy_decision = record_runtime_policy_decision(
                 state,
                 &run,
                 session_id,
@@ -377,6 +377,9 @@ async fn evaluate_fintech_strict_tool_policy(
                 json!({"runtime_profile": FINTECH_STRICT_PROFILE}),
             )
             .await;
+            let policy_decision_id = policy_decision
+                .as_ref()
+                .map(|record| record.decision_id.clone());
             return Some(ToolPolicyDecision {
                 allowed: false,
                 reason: Some(reason),
@@ -395,7 +398,7 @@ async fn evaluate_fintech_strict_tool_policy(
             verified_tenant_context,
             crate::now_ms(),
         ) {
-            let policy_decision_id = record_runtime_policy_decision(
+            let policy_decision = record_runtime_policy_decision(
                 state,
                 &run,
                 session_id,
@@ -408,6 +411,9 @@ async fn evaluate_fintech_strict_tool_policy(
                 json!({"runtime_profile": FINTECH_STRICT_PROFILE}),
             )
             .await;
+            let policy_decision_id = policy_decision
+                .as_ref()
+                .map(|record| record.decision_id.clone());
             return Some(ToolPolicyDecision {
                 allowed: false,
                 reason: Some(reason),
@@ -460,7 +466,7 @@ async fn evaluate_fintech_strict_tool_policy(
                     }),
                 ));
             }
-            let policy_decision_id = record_runtime_policy_decision(
+            let policy_decision = record_runtime_policy_decision(
                 state,
                 &run,
                 session_id,
@@ -480,7 +486,7 @@ async fn evaluate_fintech_strict_tool_policy(
                 }),
             )
             .await;
-            if policy_decision_id.is_none() {
+            let Some(policy_decision) = policy_decision else {
                 return Some(ToolPolicyDecision {
                     allowed: false,
                     reason: Some(
@@ -488,6 +494,17 @@ async fn evaluate_fintech_strict_tool_policy(
                             .to_string(),
                     ),
                     policy_decision_id: None,
+                });
+            };
+            let policy_decision_id = Some(policy_decision.decision_id.clone());
+            if !matches!(policy_decision.decision, PolicyDecisionEffect::Allow) {
+                return Some(ToolPolicyDecision {
+                    allowed: false,
+                    reason: Some(format!(
+                        "tool blocked by enterprise policy ({}): {}",
+                        policy_decision.reason_code, policy_decision.reason
+                    )),
+                    policy_decision_id,
                 });
             }
             return Some(ToolPolicyDecision {
@@ -558,7 +575,7 @@ async fn evaluate_fintech_strict_tool_policy(
         FintechToolPolicyClassification::BlockedUnknownMutation => reason.clone(),
         FintechToolPolicyClassification::Safe => reason.clone(),
     };
-    let policy_decision_id = record_runtime_policy_decision(
+    let policy_decision = record_runtime_policy_decision(
         state,
         &run,
         session_id,
@@ -578,6 +595,9 @@ async fn evaluate_fintech_strict_tool_policy(
         }),
     )
     .await;
+    let policy_decision_id = policy_decision
+        .as_ref()
+        .map(|record| record.decision_id.clone());
 
     Some(ToolPolicyDecision {
         allowed: false,
@@ -598,7 +618,7 @@ async fn record_runtime_policy_decision(
     reason: &str,
     approval: Option<&Value>,
     metadata: Value,
-) -> Option<String> {
+) -> Option<PolicyDecisionRecord> {
     let decision_id = format!("policy_decision_{}", Uuid::new_v4().simple());
     let approval_id = approval
         .and_then(|value| value.get("approval_id").or_else(|| value.get("approvalID")))
@@ -644,7 +664,7 @@ async fn record_runtime_policy_decision(
         metadata,
     };
     match state.record_policy_decision(record).await {
-        Ok(record) => Some(record.decision_id),
+        Ok(record) => Some(record),
         Err(error) => {
             tracing::warn!("failed to record policy decision: {error:?}");
             None
@@ -992,8 +1012,7 @@ impl ToolPolicyHook for ServerToolPolicyHook {
             // gate matrix. Only enforces under strict runtime auth modes so
             // local/single-tenant deployments remain a no-op.
             if runtime_auth_mode_requires_verified_tool_context(runtime_auth_mode) {
-                if let Some(decision) =
-                    evaluate_action_gate_tool_policy(&state, &ctx, &tool).await
+                if let Some(decision) = evaluate_action_gate_tool_policy(&state, &ctx, &tool).await
                 {
                     return Ok(decision);
                 }

@@ -10,6 +10,249 @@ fn automation_v2_definition_is_context_recovered(automation: &AutomationV2Spec) 
         == Some("context_run")
 }
 
+fn policy_decision_scope_level(decision: &PolicyDecisionRecord) -> EnterprisePolicyScopeLevel {
+    if policy_decision_workflow_phase(decision).is_some() {
+        EnterprisePolicyScopeLevel::Phase
+    } else if decision.resource.is_some() {
+        EnterprisePolicyScopeLevel::Resource
+    } else if decision.automation_id.is_some()
+        || decision.node_id.is_some()
+        || decision.run_id.is_some()
+    {
+        EnterprisePolicyScopeLevel::Workflow
+    } else if policy_decision_org_unit_id(decision).is_some() {
+        EnterprisePolicyScopeLevel::OrgUnit
+    } else {
+        EnterprisePolicyScopeLevel::Tenant
+    }
+}
+
+fn policy_decision_metadata_string(
+    decision: &PolicyDecisionRecord,
+    pointers: &[&str],
+) -> Option<String> {
+    pointers.iter().find_map(|pointer| {
+        decision
+            .metadata
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn policy_decision_org_unit_id(decision: &PolicyDecisionRecord) -> Option<String> {
+    policy_decision_metadata_string(
+        decision,
+        &[
+            "/enterprise_scope/owning_org_unit_id",
+            "/enterprise_scope/owningOrgUnitId",
+            "/resource_access/owning_org_unit_id",
+            "/resourceAccess/owningOrgUnitId",
+            "/automation_webhook/owning_org_unit_id",
+            "/automationWebhook/owningOrgUnitId",
+            "/org_unit_id",
+            "/orgUnitId",
+        ],
+    )
+}
+
+fn policy_decision_workflow_id(decision: &PolicyDecisionRecord) -> Option<String> {
+    decision
+        .automation_id
+        .clone()
+        .or_else(|| decision.run_id.clone())
+}
+
+fn policy_decision_workflow_phase(decision: &PolicyDecisionRecord) -> Option<String> {
+    policy_decision_metadata_string(
+        decision,
+        &[
+            "/phase_tool_authority/phase",
+            "/workflow_phase",
+            "/workflowPhase",
+            "/builder/phase",
+            "/runtime/phase",
+        ],
+    )
+}
+
+fn policy_decision_permission(decision: &PolicyDecisionRecord) -> Option<AccessPermission> {
+    [
+        "/authority/permission",
+        "/permission",
+        "/context_assertion/permission",
+        "/memory_promotion/permission",
+    ]
+    .iter()
+    .find_map(|pointer| {
+        decision
+            .metadata
+            .pointer(pointer)
+            .and_then(|value| serde_json::from_value::<AccessPermission>(value.clone()).ok())
+    })
+    .or_else(|| decision.tool.as_ref().map(|_| AccessPermission::Execute))
+    .or_else(|| decision.resource.as_ref().map(|_| AccessPermission::Read))
+}
+
+fn policy_decision_input_base(decision: &PolicyDecisionRecord) -> EnterprisePolicyInput {
+    let mut input = EnterprisePolicyInput::new(decision.tenant_context.clone());
+    if let Some(org_unit_id) = policy_decision_org_unit_id(decision) {
+        input = input.with_org_unit_id(org_unit_id);
+    }
+    if let Some(resource) = decision.resource.clone() {
+        input = input.with_resource(resource);
+    }
+    if let Some(workflow_id) = policy_decision_workflow_id(decision) {
+        input = input.with_workflow_id(workflow_id);
+    }
+    if let Some(workflow_phase) = policy_decision_workflow_phase(decision) {
+        input = input.with_workflow_phase(workflow_phase);
+    }
+    if let Some(permission) = policy_decision_permission(decision) {
+        input = input.with_permission(permission);
+    }
+    if let Some(tool) = decision.tool.clone() {
+        input = input.with_tool(tool);
+    }
+    input
+}
+
+fn policy_decision_inputs(decision: &PolicyDecisionRecord) -> Vec<EnterprisePolicyInput> {
+    let input = policy_decision_input_base(decision);
+    if decision.data_classes.is_empty() {
+        return vec![input];
+    }
+    decision
+        .data_classes
+        .iter()
+        .copied()
+        .map(|data_class| input.clone().with_data_class(data_class))
+        .collect()
+}
+
+fn enterprise_policy_effect_priority(effect: EnterprisePolicyEffect) -> u8 {
+    match effect {
+        EnterprisePolicyEffect::Allow => 0,
+        EnterprisePolicyEffect::ApprovalRequired => 1,
+        EnterprisePolicyEffect::Deny => 2,
+    }
+}
+
+fn effective_policy_snapshot_priority(
+    snapshot: &tandem_enterprise_contract::EffectivePolicySnapshot,
+) -> (u8, u8, u64, u64, String) {
+    let Some(source) = snapshot.decision_source.as_ref() else {
+        return (
+            enterprise_policy_effect_priority(snapshot.effect),
+            0,
+            0,
+            snapshot.resolved_at_ms,
+            String::new(),
+        );
+    };
+    (
+        enterprise_policy_effect_priority(snapshot.effect),
+        source.scope_level.inheritance_rank(),
+        source.version,
+        snapshot.resolved_at_ms,
+        source.rule_id.clone(),
+    )
+}
+
+fn select_effective_policy_snapshot(
+    snapshots: Vec<tandem_enterprise_contract::EffectivePolicySnapshot>,
+) -> Option<tandem_enterprise_contract::EffectivePolicySnapshot> {
+    snapshots
+        .into_iter()
+        .max_by_key(effective_policy_snapshot_priority)
+}
+
+fn authority_decision_from_policy_record(
+    mut decision: AuthorityDecision,
+    record: &PolicyDecisionRecord,
+) -> AuthorityDecision {
+    decision.effect = match record.decision {
+        PolicyDecisionEffect::Allow => AuthorityEffect::Allow,
+        PolicyDecisionEffect::Deny | PolicyDecisionEffect::ApprovalRequired => AuthorityEffect::Deny,
+    };
+    decision.reason_code = record.reason_code.clone();
+    decision.reason = record.reason.clone();
+    decision.grant_id = record.grant_id.clone();
+    decision
+}
+
+fn gate_outcome_from_policy_record(
+    mut outcome: GateOutcome,
+    record: &PolicyDecisionRecord,
+) -> GateOutcome {
+    outcome.effect = record.decision;
+    outcome.reason_code = record.reason_code.clone();
+    outcome.reason = record.reason.clone();
+    match record.decision {
+        PolicyDecisionEffect::Allow | PolicyDecisionEffect::Deny => {
+            outcome.reviewer_eligibility = tandem_types::ReviewerEligibility::None;
+            outcome.approval_ttl_ms = 0;
+        }
+        PolicyDecisionEffect::ApprovalRequired => {
+            if matches!(
+                outcome.reviewer_eligibility,
+                tandem_types::ReviewerEligibility::None
+            ) {
+                outcome.reviewer_eligibility = tandem_types::ReviewerEligibility::ElevatedReviewer;
+            }
+            if outcome.approval_ttl_ms == 0 {
+                outcome.approval_ttl_ms = tandem_types::ELEVATED_APPROVAL_TTL_MS;
+            }
+        }
+    }
+    outcome
+}
+
+fn runtime_policy_rule_for_decision(decision: &PolicyDecisionRecord) -> EnterprisePolicyRule {
+    let policy_id = decision
+        .policy_id
+        .clone()
+        .unwrap_or_else(|| "runtime_policy_decision".to_string());
+    let mut rule = EnterprisePolicyRule::new(
+        format!("{policy_id}:{}", decision.decision_id),
+        policy_id,
+        policy_decision_scope_level(decision),
+        decision.decision.enterprise_effect(),
+    )
+    .with_tenant_context(decision.tenant_context.clone())
+    .with_reason(decision.reason_code.clone(), decision.reason.clone())
+    .with_updated_at_ms(decision.created_at_ms)
+    .with_overridable(true);
+
+    if let Some(org_unit_id) = policy_decision_org_unit_id(decision) {
+        rule = rule.with_org_unit_id(org_unit_id);
+    }
+    if let Some(resource) = decision.resource.clone() {
+        rule = rule.with_resource(resource);
+    }
+    if let Some(workflow_id) = policy_decision_workflow_id(decision) {
+        rule = rule.with_workflow_id(workflow_id);
+    }
+    if let Some(workflow_phase) = policy_decision_workflow_phase(decision) {
+        rule = rule.with_workflow_phase(workflow_phase);
+    }
+    if let Some(permission) = policy_decision_permission(decision) {
+        rule = rule.with_permissions(vec![permission]);
+    }
+    if !decision.data_classes.is_empty() {
+        rule = rule.with_data_classes(decision.data_classes.clone());
+    }
+    if let Some(tool) = decision.tool.clone() {
+        rule = rule.with_tool_patterns(vec![tool]);
+    }
+    if let Some(approval_id) = decision.approval_id.clone() {
+        rule = rule.with_approval_id(approval_id);
+    }
+    rule
+}
+
 impl AppState {
     async fn recover_automation_definitions_from_run_snapshots(&self) -> anyhow::Result<usize> {
         let runs = self
@@ -173,7 +416,9 @@ impl AppState {
         self.incident_monitor_log_source_states
             .read()
             .await
-            .get(&incident_monitor_log_source_state_key(project_id, source_id))
+            .get(&incident_monitor_log_source_state_key(
+                project_id, source_id,
+            ))
             .cloned()
     }
 
@@ -181,8 +426,10 @@ impl AppState {
         &self,
         source_state: IncidentMonitorLogSourceState,
     ) -> anyhow::Result<IncidentMonitorLogSourceState> {
-        let key =
-            incident_monitor_log_source_state_key(&source_state.project_id, &source_state.source_id);
+        let key = incident_monitor_log_source_state_key(
+            &source_state.project_id,
+            &source_state.source_id,
+        );
         self.incident_monitor_log_source_states
             .write()
             .await
@@ -297,9 +544,10 @@ impl AppState {
             return Ok(());
         };
         let raw = fs::read_to_string(path).await?;
-        let parsed =
-            serde_json::from_str::<std::collections::HashMap<String, IncidentMonitorDraftRecord>>(&raw)
-                .unwrap_or_default();
+        let parsed = serde_json::from_str::<
+            std::collections::HashMap<String, IncidentMonitorDraftRecord>,
+        >(&raw)
+        .unwrap_or_default();
         *self.incident_monitor_drafts.write().await = parsed;
         Ok(())
     }
@@ -382,9 +630,10 @@ impl AppState {
             return Ok(());
         };
         let raw = fs::read_to_string(path).await?;
-        let parsed =
-            serde_json::from_str::<std::collections::HashMap<String, IncidentMonitorPostRecord>>(&raw)
-                .unwrap_or_default();
+        let parsed = serde_json::from_str::<
+            std::collections::HashMap<String, IncidentMonitorPostRecord>,
+        >(&raw)
+        .unwrap_or_default();
         *self.incident_monitor_posts.write().await = parsed;
         Ok(())
     }
@@ -451,7 +700,10 @@ impl AppState {
         Ok(())
     }
 
-    pub async fn list_incident_monitor_incidents(&self, limit: usize) -> Vec<IncidentMonitorIncidentRecord> {
+    pub async fn list_incident_monitor_incidents(
+        &self,
+        limit: usize,
+    ) -> Vec<IncidentMonitorIncidentRecord> {
         let mut rows = self
             .incident_monitor_incidents
             .read()
@@ -516,7 +768,10 @@ impl AppState {
         Ok(removed)
     }
 
-    pub async fn list_incident_monitor_posts(&self, limit: usize) -> Vec<IncidentMonitorPostRecord> {
+    pub async fn list_incident_monitor_posts(
+        &self,
+        limit: usize,
+    ) -> Vec<IncidentMonitorPostRecord> {
         let mut rows = self
             .incident_monitor_posts
             .read()
@@ -552,8 +807,15 @@ impl AppState {
         rows
     }
 
-    pub async fn get_incident_monitor_post(&self, post_id: &str) -> Option<IncidentMonitorPostRecord> {
-        self.incident_monitor_posts.read().await.get(post_id).cloned()
+    pub async fn get_incident_monitor_post(
+        &self,
+        post_id: &str,
+    ) -> Option<IncidentMonitorPostRecord> {
+        self.incident_monitor_posts
+            .read()
+            .await
+            .get(post_id)
+            .cloned()
     }
 
     pub async fn put_incident_monitor_post(
@@ -691,18 +953,19 @@ impl AppState {
     }
 
     pub async fn get_policy_decision(&self, decision_id: &str) -> Option<PolicyDecisionRecord> {
-        self.policy_decisions
-            .read()
-            .await
-            .get(decision_id)
-            .cloned()
+        self.policy_decisions.read().await.get(decision_id).cloned()
     }
 
     pub async fn record_policy_decision(
         &self,
         decision: PolicyDecisionRecord,
     ) -> anyhow::Result<PolicyDecisionRecord> {
-        let decision = decision.with_effective_policy_defaults();
+        let decision = if decision.effective_policy_snapshot().is_some() {
+            decision
+        } else {
+            let snapshot = self.resolve_effective_policy_snapshot(&decision).await;
+            decision.apply_effective_policy_snapshot(snapshot)
+        };
         {
             let mut guard = self.policy_decisions.write().await;
             guard.insert(decision.decision_id.clone(), decision.clone());
@@ -728,7 +991,54 @@ impl AppState {
         Ok(decision)
     }
 
-    fn intra_tenant_context_matches(candidate: &TenantContext, tenant_context: &TenantContext) -> bool {
+    async fn resolve_effective_policy_snapshot(
+        &self,
+        decision: &PolicyDecisionRecord,
+    ) -> tandem_enterprise_contract::EffectivePolicySnapshot {
+        if let Err(error) = self.load_enterprise_policy_rules_if_needed().await {
+            tracing::warn!("failed to load enterprise policy rules for resolver: {error:?}");
+        }
+        let mut rules = self
+            .enterprise
+            .policy_rules
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        rules.push(runtime_policy_rule_for_decision(decision));
+        let resolver = EnterprisePolicyResolver::new(rules);
+        let snapshots = policy_decision_inputs(decision)
+            .iter()
+            .map(|input| resolver.resolve(input, decision.created_at_ms))
+            .collect::<Vec<_>>();
+        select_effective_policy_snapshot(snapshots).unwrap_or_else(|| {
+            resolver.resolve(
+                &policy_decision_input_base(decision),
+                decision.created_at_ms,
+            )
+        })
+    }
+
+    async fn load_enterprise_policy_rules_if_needed(&self) -> anyhow::Result<()> {
+        if !self.enterprise.policy_rules.read().await.is_empty() {
+            return Ok(());
+        }
+        if !self.enterprise.policy_rules_path.exists() {
+            return Ok(());
+        }
+        check_file_permissions(&self.enterprise.policy_rules_path);
+        let bytes = fs::read(&self.enterprise.policy_rules_path).await?;
+        let registry: std::collections::HashMap<String, EnterprisePolicyRule> =
+            serde_json::from_slice(&bytes)?;
+        *self.enterprise.policy_rules.write().await = registry;
+        Ok(())
+    }
+
+    fn intra_tenant_context_matches(
+        candidate: &TenantContext,
+        tenant_context: &TenantContext,
+    ) -> bool {
         candidate.org_id == tenant_context.org_id
             && candidate.workspace_id == tenant_context.workspace_id
             && candidate.deployment_id == tenant_context.deployment_id
@@ -744,7 +1054,8 @@ impl AppState {
         direct_grants: Vec<ScopedGrant>,
     ) -> IntraTenantAuthorityGraph {
         let units = self
-            .enterprise.org_units
+            .enterprise
+            .org_units
             .read()
             .await
             .values()
@@ -752,7 +1063,8 @@ impl AppState {
             .cloned()
             .collect::<Vec<_>>();
         let memberships = self
-            .enterprise.org_unit_memberships
+            .enterprise
+            .org_unit_memberships
             .read()
             .await
             .values()
@@ -762,11 +1074,14 @@ impl AppState {
             .cloned()
             .collect::<Vec<_>>();
         let unit_access_grants = self
-            .enterprise.org_unit_access_grants
+            .enterprise
+            .org_unit_access_grants
             .read()
             .await
             .values()
-            .filter(|grant| Self::intra_tenant_context_matches(&grant.tenant_context, tenant_context))
+            .filter(|grant| {
+                Self::intra_tenant_context_matches(&grant.tenant_context, tenant_context)
+            })
             .cloned()
             .collect::<Vec<_>>();
 
@@ -795,10 +1110,15 @@ impl AppState {
             .build_intra_tenant_authority_graph(tenant_context, direct_grants)
             .await;
         let decision = graph.evaluate(request, now_ms);
-        let decision_id = self
+        let recorded = self
             .record_intra_tenant_authority_decision(tenant_context, request, &decision, now_ms)
             .await;
-        (decision, decision_id)
+        let resolved_decision = recorded
+            .as_ref()
+            .map(|record| authority_decision_from_policy_record(decision.clone(), record))
+            .unwrap_or(decision);
+        let decision_id = recorded.map(|record| record.decision_id);
+        (resolved_decision, decision_id)
     }
 
     async fn record_intra_tenant_authority_decision(
@@ -807,7 +1127,7 @@ impl AppState {
         request: &AuthorityAccessRequest,
         decision: &AuthorityDecision,
         now_ms: u64,
-    ) -> Option<String> {
+    ) -> Option<PolicyDecisionRecord> {
         let effect = match decision.effect {
             AuthorityEffect::Allow => PolicyDecisionEffect::Allow,
             AuthorityEffect::Deny => PolicyDecisionEffect::Deny,
@@ -850,28 +1170,32 @@ impl AppState {
             metadata,
         };
         let recorded = match self.record_policy_decision(record).await {
-            Ok(record) => Some(record.decision_id),
+            Ok(record) => Some(record),
             Err(error) => {
                 tracing::warn!("failed to record intra-tenant authority decision: {error:?}");
                 None
             }
         };
+        let audit_decision = recorded
+            .as_ref()
+            .map(|record| authority_decision_from_policy_record(decision.clone(), record))
+            .unwrap_or_else(|| decision.clone());
 
-        if decision.is_deny() {
+        if audit_decision.is_deny() {
             if let Err(error) = crate::audit::append_protected_audit_event(
                 self,
                 "authority.access.denied",
                 tenant_context,
                 actor_id,
                 serde_json::json!({
-                    "decision_id": recorded,
+                    "decision_id": recorded.as_ref().map(|record| record.decision_id.as_str()),
                     "principal": request.principal,
                     "resource": request.resource,
                     "permission": request.permission,
                     "data_class": request.data_class,
-                    "reason_code": decision.reason_code,
-                    "grant_id": decision.grant_id,
-                    "source_principal": decision.source_principal,
+                    "reason_code": audit_decision.reason_code,
+                    "grant_id": audit_decision.grant_id,
+                    "source_principal": audit_decision.source_principal,
                 }),
             )
             .await
@@ -901,10 +1225,15 @@ impl AppState {
         now_ms: u64,
     ) -> (GateOutcome, Option<String>) {
         let outcome = ApprovalGateMatrix::strict_default().resolve(request);
-        let decision_id = self
+        let recorded = self
             .record_action_gate_decision(tenant_context, request, &outcome, tool, actor_id, now_ms)
             .await;
-        (outcome, decision_id)
+        let resolved_outcome = recorded
+            .as_ref()
+            .map(|record| gate_outcome_from_policy_record(outcome.clone(), record))
+            .unwrap_or(outcome);
+        let decision_id = recorded.map(|record| record.decision_id);
+        (resolved_outcome, decision_id)
     }
 
     async fn record_action_gate_decision(
@@ -915,9 +1244,12 @@ impl AppState {
         tool: Option<String>,
         actor_id: Option<String>,
         now_ms: u64,
-    ) -> Option<String> {
+    ) -> Option<PolicyDecisionRecord> {
         let decision_id = format!("policy_decision_{}", uuid::Uuid::new_v4().simple());
-        let data_classes = request.data_class.map(|class| vec![class]).unwrap_or_default();
+        let data_classes = request
+            .data_class
+            .map(|class| vec![class])
+            .unwrap_or_default();
         let metadata = serde_json::json!({
             "gate": {
                 "reviewer_eligibility": outcome.reviewer_eligibility.as_str(),
@@ -949,17 +1281,21 @@ impl AppState {
             metadata,
         };
         let recorded = match self.record_policy_decision(record).await {
-            Ok(record) => Some(record.decision_id),
+            Ok(record) => Some(record),
             Err(error) => {
                 tracing::warn!("failed to record approval gate decision: {error:?}");
                 None
             }
         };
+        let audit_outcome = recorded
+            .as_ref()
+            .map(|record| gate_outcome_from_policy_record(outcome.clone(), record))
+            .unwrap_or_else(|| outcome.clone());
 
         // Approval-required and deny outcomes are consequential gate events and
         // must leave durable, tenant-attributed audit evidence.
-        if !outcome.is_allowed() {
-            let event_type = if outcome.is_denied() {
+        if !audit_outcome.is_allowed() {
+            let event_type = if audit_outcome.is_denied() {
                 "approval.gate.denied"
             } else {
                 "approval.gate.approval_required"
@@ -970,14 +1306,14 @@ impl AppState {
                 tenant_context,
                 actor_id,
                 serde_json::json!({
-                    "decision_id": recorded,
+                    "decision_id": recorded.as_ref().map(|record| record.decision_id.as_str()),
                     "risk_tier": request.risk_tier.map(|tier| tier.as_str()),
                     "data_class": request.data_class,
                     "external_customer_facing": request.external_customer_facing,
-                    "effect": outcome.effect,
-                    "reviewer_eligibility": outcome.reviewer_eligibility.as_str(),
-                    "approval_ttl_ms": outcome.approval_ttl_ms,
-                    "reason_code": outcome.reason_code,
+                    "effect": audit_outcome.effect,
+                    "reviewer_eligibility": audit_outcome.reviewer_eligibility.as_str(),
+                    "approval_ttl_ms": audit_outcome.approval_ttl_ms,
+                    "reason_code": audit_outcome.reason_code,
                 }),
             )
             .await
@@ -1133,7 +1469,11 @@ impl AppState {
         if let Some(tenant_context) = action
             .metadata
             .as_ref()
-            .and_then(|metadata| metadata.get("tenant_context").or_else(|| metadata.get("tenantContext")))
+            .and_then(|metadata| {
+                metadata
+                    .get("tenant_context")
+                    .or_else(|| metadata.get("tenantContext"))
+            })
             .cloned()
             .and_then(|value| serde_json::from_value::<TenantContext>(value).ok())
         {
@@ -1186,7 +1526,10 @@ impl AppState {
         guard.clone()
     }
 
-    pub async fn list_incident_monitor_drafts(&self, limit: usize) -> Vec<IncidentMonitorDraftRecord> {
+    pub async fn list_incident_monitor_drafts(
+        &self,
+        limit: usize,
+    ) -> Vec<IncidentMonitorDraftRecord> {
         let mut rows = self
             .incident_monitor_drafts
             .read()
@@ -1199,8 +1542,15 @@ impl AppState {
         rows
     }
 
-    pub async fn get_incident_monitor_draft(&self, draft_id: &str) -> Option<IncidentMonitorDraftRecord> {
-        self.incident_monitor_drafts.read().await.get(draft_id).cloned()
+    pub async fn get_incident_monitor_draft(
+        &self,
+        draft_id: &str,
+    ) -> Option<IncidentMonitorDraftRecord> {
+        self.incident_monitor_drafts
+            .read()
+            .await
+            .get(draft_id)
+            .cloned()
     }
 
     pub async fn put_incident_monitor_draft(
