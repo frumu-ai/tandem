@@ -145,11 +145,13 @@ async fn incident_monitor_assessment_report_payload(
             incident_monitor_assessment_report_incident_matches(incident, &tenant_context, input)
         })
         .collect::<Vec<_>>();
+    // Tenant filter is applied inside the listing, before the recency cap, so a
+    // scoped report can't lose the caller tenant's receipts to newer receipts
+    // from other tenants (TAN-546).
     let posts = state
-        .list_incident_monitor_posts(200)
+        .list_incident_monitor_posts_for_tenant(&tenant_context, 200)
         .await
         .into_iter()
-        .filter(|post| incident_monitor_assessment_report_post_matches_tenant(post, &tenant_context))
         .filter(|post| incident_monitor_assessment_report_time_matches(post.updated_at_ms, input))
         .collect::<Vec<_>>();
     let audit_events = crate::audit::load_protected_audit_events_for_tenant(state, &tenant_context)
@@ -386,20 +388,6 @@ fn incident_monitor_assessment_report_incident_matches_tenant(
     tenant_context.is_local_implicit()
         || (incident.tenant_id.as_deref() == Some(tenant_context.org_id.as_str())
             && incident.workspace_id.as_deref() == Some(tenant_context.workspace_id.as_str()))
-}
-
-/// TAN-546: keep destination receipts inside the tenant boundary. Mirrors the
-/// incident matcher — single-tenant/local deployments include everything, but a
-/// tenant-scoped report only surfaces receipts explicitly stamped for that
-/// tenant/workspace. Legacy receipts with no tenant stamp are excluded from a
-/// scoped report rather than leaked across the boundary.
-fn incident_monitor_assessment_report_post_matches_tenant(
-    post: &IncidentMonitorPostRecord,
-    tenant_context: &TenantContext,
-) -> bool {
-    tenant_context.is_local_implicit()
-        || (post.tenant_id.as_deref() == Some(tenant_context.org_id.as_str())
-            && post.workspace_id.as_deref() == Some(tenant_context.workspace_id.as_str()))
 }
 
 fn incident_monitor_assessment_report_time_matches(

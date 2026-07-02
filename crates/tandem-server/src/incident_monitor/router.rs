@@ -268,6 +268,19 @@ pub fn build_route_preview(
     // with a `Source ...` prefix so validate_publish_plan can enforce them
     // independently of the destination-readiness gate.
     if config.safety_defaults.block_unready_sources {
+        // Fail closed when a bound project/source has no readiness evidence at
+        // all (e.g. the draft's log_source_id was renamed/removed after triage,
+        // so no row matches): an empty selection must not be treated as ready.
+        if context.project_id.is_some() && selected_source_readiness.is_empty() {
+            let label = context
+                .log_source_id
+                .as_deref()
+                .or(context.project_id.as_deref())
+                .unwrap_or("source");
+            blocked_reasons.push(format!(
+                "Source `{label}` is not data-ready: no readiness evidence for the bound source"
+            ));
+        }
         for row in &selected_source_readiness {
             if row.ready {
                 continue;

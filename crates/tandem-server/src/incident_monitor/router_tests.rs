@@ -591,3 +591,69 @@ fn block_unready_sources_gates_publish_on_not_ready_source() {
         "with the gate off the same not-ready source must still publish"
     );
 }
+
+#[test]
+fn block_unready_sources_fails_closed_when_no_readiness_row_matches() {
+    // TAN-544 review: with the gate on, a bound project/source that has no
+    // matching readiness row (e.g. the source was renamed/removed after triage)
+    // must fail closed instead of publishing with no readiness evidence.
+    let draft = IncidentMonitorDraftRecord {
+        draft_id: "d1".to_string(),
+        fingerprint: "fp".to_string(),
+        repo: "acme/app".to_string(),
+        project_id: Some("payments".to_string()),
+        log_source_id: Some("ci".to_string()),
+        ..IncidentMonitorDraftRecord::default()
+    };
+    let context = build_route_context(
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        &[],
+        None,
+        Some(&draft),
+        None,
+    );
+    let gated = source_gate_config(true);
+    let destinations = gated.effective_destinations();
+    let destination_readiness = destinations
+        .iter()
+        .map(|destination| IncidentMonitorDestinationReadiness {
+            destination_id: destination.destination_id.clone(),
+            kind: destination.kind.clone(),
+            enabled: true,
+            publish_ready: true,
+            ..IncidentMonitorDestinationReadiness::default()
+        })
+        .collect::<Vec<_>>();
+
+    // No source readiness rows at all for the bound project/source.
+    let preview = build_route_preview(
+        &gated,
+        &destinations,
+        &destination_readiness,
+        &[],
+        &context,
+        &[],
+    );
+    assert!(
+        preview
+            .blocked_reasons
+            .iter()
+            .any(|reason| reason.contains("no readiness evidence")),
+        "missing readiness must fail closed: {:?}",
+        preview.blocked_reasons
+    );
+    assert!(validate_publish_plan(
+        &gated,
+        &preview,
+        incident_monitor_github::PublishMode::ManualPublish
+    )
+    .is_err());
+}

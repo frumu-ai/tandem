@@ -931,6 +931,34 @@ impl AppState {
         rows
     }
 
+    /// TAN-546: list receipts belonging to a tenant, applying the tenant
+    /// predicate *before* the recency cap so a tenant's own receipts can't be
+    /// crowded out of a scoped report by newer receipts from other tenants.
+    /// Local/implicit callers see everything (single-tenant deployments).
+    pub async fn list_incident_monitor_posts_for_tenant(
+        &self,
+        tenant_context: &TenantContext,
+        limit: usize,
+    ) -> Vec<IncidentMonitorPostRecord> {
+        let local = tenant_context.is_local_implicit();
+        let mut rows = self
+            .incident_monitor_posts
+            .read()
+            .await
+            .values()
+            .filter(|post| {
+                local
+                    || (post.tenant_id.as_deref() == Some(tenant_context.org_id.as_str())
+                        && post.workspace_id.as_deref()
+                            == Some(tenant_context.workspace_id.as_str()))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+        rows.truncate(limit.clamp(1, 200));
+        rows
+    }
+
     pub async fn list_incident_monitor_posts_by_destination(
         &self,
         limit: usize,

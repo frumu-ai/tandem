@@ -433,16 +433,22 @@ fn apply_existing_local_post_to_draft(
 /// Resolve the telemetry sink file. Absolute operator paths are honored as-is;
 /// a relative path is anchored under the incident-monitor data directory rather
 /// than the process working directory, keeping writes inside the state tree.
+/// A redundant leading `incident-monitor/` (e.g. the default
+/// `incident-monitor/telemetry`) is stripped first so the base isn't nested
+/// twice into `<state>/incident-monitor/incident-monitor/telemetry`.
 fn resolve_telemetry_sink_path(state: &AppState, configured: &str) -> std::path::PathBuf {
     let path = std::path::Path::new(configured);
     if path.is_absolute() {
         return path.to_path_buf();
     }
-    state
-        .incident_monitor_log_evidence_dir
-        .parent()
-        .map(|base| base.join(path))
-        .unwrap_or_else(|| path.to_path_buf())
+    let Some(base) = state.incident_monitor_log_evidence_dir.parent() else {
+        return path.to_path_buf();
+    };
+    // `base` is the incident-monitor data dir, so a path already prefixed with
+    // `incident-monitor/` (the default `incident-monitor/telemetry`) would nest
+    // it twice; drop that leading component.
+    let relative = path.strip_prefix("incident-monitor").unwrap_or(path);
+    base.join(relative)
 }
 
 /// Append a telemetry record as a JSON line to the resolved sink file, creating
