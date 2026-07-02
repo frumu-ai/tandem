@@ -1299,26 +1299,54 @@ fn split_owner_repo(repo: &str) -> anyhow::Result<(&str, &str)> {
     Ok((owner, repo_name))
 }
 
+/// Page size and page cap for the duplicate-detection issue scan. Without
+/// pagination only the first page of issues was scanned, so a fingerprint match
+/// on an issue past the first 100 was missed and a duplicate issue was created.
+/// `state` is intentionally left unset: the configured GitHub MCP tool lists both
+/// open and closed issues when it is omitted (and rejects a REST-style `all`).
+const GITHUB_LIST_ISSUES_PER_PAGE: u64 = 100;
+const GITHUB_LIST_ISSUES_MAX_PAGES: u64 = 10;
+
 async fn call_list_issues(
     state: &dyn IncidentMonitorGithubHost,
     tools: &GithubToolSet,
     (owner, repo): &(&str, &str),
 ) -> anyhow::Result<Vec<GithubIssue>> {
-    let result = state
-        .call_mcp_tool(
-            &tools.server_name,
-            &tools.list_issues,
-            github_list_issues_payload(owner, repo),
-        )
-        .await?;
-    Ok(extract_issues_from_tool_result(&result))
+    let mut all = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for page in 1..=GITHUB_LIST_ISSUES_MAX_PAGES {
+        let result = state
+            .call_mcp_tool(
+                &tools.server_name,
+                &tools.list_issues,
+                github_list_issues_payload(owner, repo, page),
+            )
+            .await?;
+        let issues = extract_issues_from_tool_result(&result);
+        let returned = issues.len() as u64;
+        let mut added = 0u64;
+        for issue in issues {
+            if seen.insert(issue.number) {
+                all.push(issue);
+                added += 1;
+            }
+        }
+        // Stop on the last (short) page, or when a page adds nothing new — the
+        // latter guards against MCP servers that ignore pagination and keep
+        // returning the first page.
+        if returned < GITHUB_LIST_ISSUES_PER_PAGE || added == 0 {
+            break;
+        }
+    }
+    Ok(all)
 }
 
-fn github_list_issues_payload(owner: &str, repo: &str) -> Value {
+fn github_list_issues_payload(owner: &str, repo: &str, page: u64) -> Value {
     json!({
         "owner": owner,
         "repo": repo,
-        "perPage": 100
+        "perPage": GITHUB_LIST_ISSUES_PER_PAGE,
+        "page": page
     })
 }
 
