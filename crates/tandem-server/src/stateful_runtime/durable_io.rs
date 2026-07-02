@@ -2,6 +2,7 @@ use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 pub async fn write_file_atomically(
@@ -83,6 +84,33 @@ pub async fn repair_jsonl_torn_tail(path: &Path, store_label: &str) -> anyhow::R
         .rposition(|byte| *byte == b'\n')
         .map(|index| index + 1)
         .unwrap_or(0);
+    let tail = &content[repaired_len..];
+    if serde_json::from_slice::<Value>(tail).is_ok() {
+        tracing::warn!(
+            path = %path.display(),
+            store = store_label,
+            "repairing JSONL tail by appending missing newline"
+        );
+        file.seek(SeekFrom::End(0))
+            .await
+            .with_context(|| format!("failed to seek {store_label} {}", path.display()))?;
+        file.write_all(b"\n").await.with_context(|| {
+            format!(
+                "failed to append missing newline to {store_label} {}",
+                path.display()
+            )
+        })?;
+        file.flush()
+            .await
+            .with_context(|| format!("failed to flush {store_label} {}", path.display()))?;
+        file.sync_all()
+            .await
+            .with_context(|| format!("failed to sync repaired {store_label} {}", path.display()))?;
+        drop(file);
+        sync_parent_dir(path, store_label).await?;
+        return Ok(());
+    }
+
     let truncated_bytes = content.len().saturating_sub(repaired_len);
 
     tracing::warn!(

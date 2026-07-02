@@ -541,6 +541,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn append_preserves_complete_tail_event_without_newline() {
+        let path = std::env::temp_dir().join(format!(
+            "stateful-runtime-events-complete-tail-{}.jsonl",
+            Uuid::new_v4()
+        ));
+        let tenant_a = tenant("org-a", "workspace-a");
+        let first_line =
+            serde_json::to_string(&event(1, "run-a", tenant_a.clone())).expect("serialize first");
+        let second_line =
+            serde_json::to_string(&event(2, "run-a", tenant_a.clone())).expect("serialize second");
+        std::fs::write(&path, format!("{first_line}\n{second_line}"))
+            .expect("write missing newline log");
+
+        append_stateful_run_event(&path, &event(3, "run-a", tenant_a))
+            .await
+            .expect("append after newline repair");
+
+        let content = std::fs::read_to_string(&path).expect("read repaired log");
+        assert!(content.ends_with('\n'));
+        assert!(content.contains("\"event_id\":\"event-2\""));
+        let rows = load_stateful_run_events(&path);
+        assert_eq!(
+            rows.iter().map(|row| row.seq).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
     async fn append_once_uses_event_id_as_idempotency_key() {
         let path = std::env::temp_dir().join(format!(
             "stateful-runtime-events-once-{}.jsonl",
