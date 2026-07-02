@@ -265,7 +265,8 @@ pub async fn publish_draft(
 
 /// Whether a post record refers to the given Linear issue (by URL, then id).
 fn linear_post_references_issue(post: &IncidentMonitorPostRecord, issue: &LinearIssue) -> bool {
-    let same = |a: &Option<String>, b: &Option<String>| matches!((a, b), (Some(a), Some(b)) if a == b);
+    let same =
+        |a: &Option<String>, b: &Option<String>| matches!((a, b), (Some(a), Some(b)) if a == b);
     same(&post.external_url, &issue.url)
         || same(&post.external_id, &issue.identifier)
         || same(&post.external_id, &issue.id)
@@ -1507,7 +1508,12 @@ mod linear_recurrence_tests {
             Some("In Progress"),
             Some("completed")
         )));
-        assert!(linear_issue_is_terminal(&issue("T-2", "", None, Some("canceled"))));
+        assert!(linear_issue_is_terminal(&issue(
+            "T-2",
+            "",
+            None,
+            Some("canceled")
+        )));
         assert!(!linear_issue_is_terminal(&issue(
             "T-3",
             "",
@@ -1518,8 +1524,18 @@ mod linear_recurrence_tests {
 
     #[test]
     fn terminal_detection_falls_back_to_state_name() {
-        assert!(linear_issue_is_terminal(&issue("T-1", "", Some("Done"), None)));
-        assert!(linear_issue_is_terminal(&issue("T-2", "", Some("Canceled"), None)));
+        assert!(linear_issue_is_terminal(&issue(
+            "T-1",
+            "",
+            Some("Done"),
+            None
+        )));
+        assert!(linear_issue_is_terminal(&issue(
+            "T-2",
+            "",
+            Some("Canceled"),
+            None
+        )));
         assert!(!linear_issue_is_terminal(&issue(
             "T-3",
             "",
@@ -1534,9 +1550,17 @@ mod linear_recurrence_tests {
         let marker = fingerprint_marker("fp-1");
         let closed = issue("T-9", &marker, Some("Done"), Some("completed"));
         let open = issue("T-8", &marker, Some("In Progress"), Some("started"));
-        let picked =
-            select_matching_linear_issue(vec![closed, open], &marker, "evidence-x", "failure", "fp-1");
-        assert_eq!(picked.and_then(|issue| issue.identifier), Some("T-8".to_string()));
+        let picked = select_matching_linear_issue(
+            vec![closed, open],
+            &marker,
+            "evidence-x",
+            "failure",
+            "fp-1",
+        );
+        assert_eq!(
+            picked.and_then(|issue| issue.identifier),
+            Some("T-8".to_string())
+        );
     }
 
     #[test]
@@ -1545,8 +1569,14 @@ mod linear_recurrence_tests {
         let closed = issue("T-9", &marker, Some("Canceled"), Some("canceled"));
         let picked =
             select_matching_linear_issue(vec![closed], &marker, "evidence-x", "failure", "fp-1");
-        assert!(picked.as_ref().map(linear_issue_is_terminal).unwrap_or(false));
-        assert_eq!(picked.and_then(|issue| issue.identifier), Some("T-9".to_string()));
+        assert!(picked
+            .as_ref()
+            .map(linear_issue_is_terminal)
+            .unwrap_or(false));
+        assert_eq!(
+            picked.and_then(|issue| issue.identifier),
+            Some("T-9".to_string())
+        );
     }
 
     #[test]

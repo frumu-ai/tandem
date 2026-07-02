@@ -11,7 +11,10 @@ fn constant_time_str_eq_matches_only_identical_values() {
     // TAN-558: secret/token/hash comparisons use a constant-time helper.
     assert!(crate::constant_time_str_eq("token-abc", "token-abc"));
     assert!(!crate::constant_time_str_eq("token-abc", "token-abd"));
-    assert!(!crate::constant_time_str_eq("token-abc", "token-abc-longer"));
+    assert!(!crate::constant_time_str_eq(
+        "token-abc",
+        "token-abc-longer"
+    ));
     assert!(!crate::constant_time_str_eq("", "x"));
     assert!(crate::constant_time_str_eq("", ""));
 }
@@ -50,7 +53,10 @@ async fn incident_monitor_posts_round_trip_persists_atomically() {
     // The persisted file is valid JSON and the temp file used for the atomic
     // write did not linger.
     assert!(posts_path.exists());
-    assert!(!posts_path.with_extension("tmp").exists(), "temp file leaked");
+    assert!(
+        !posts_path.with_extension("tmp").exists(),
+        "temp file leaked"
+    );
 
     // A fresh state pointed at the same file rehydrates the receipt.
     let mut reloaded = test_state_with_path(tmp_resource_file("im-posts-roundtrip-2"));

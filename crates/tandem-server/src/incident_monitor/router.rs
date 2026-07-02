@@ -1724,7 +1724,19 @@ mod tests {
             };
             for risk in [None, Some("low"), Some("high")] {
                 let context = build_route_context(
-                    None, None, None, risk, None, None, None, None, None, &[], None, None, None,
+                    None,
+                    None,
+                    None,
+                    risk,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &[],
+                    None,
+                    None,
+                    None,
                 );
                 assert_eq!(
                     route_preview_approval_required(
