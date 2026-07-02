@@ -665,16 +665,31 @@ function reliabilityRow(kind, row, index) {
   };
 }
 
+function supersededBySuccess(row) {
+  const metadata = read(row, ["metadata"], {}) || {};
+  const markedSuccess = boolValue(read(metadata, ["superseded_by_success", "supersededBySuccess"], false), false);
+  const effectId = stringValue(read(metadata, ["superseded_by_effect_id", "supersededByEffectId"]));
+  const supersededAt = read(metadata, ["superseded_at_ms", "supersededAtMs"], null);
+  const hasTimestamp = supersededAt !== null && supersededAt !== undefined && Number.isFinite(Number(supersededAt));
+  return markedSuccess && Boolean(effectId) && hasTimestamp;
+}
+
+function activeRecoveryRecords(input, key) {
+  return toArray(input, key).filter((row) => !supersededBySuccess(row));
+}
+
 function buildRecoveryQueueRows(payload = {}) {
   const rows = [
-    ...toArray(payload?.outbox, "outbox").map((row, index) => reliabilityRow("outbox", row, index)),
-    ...toArray(payload?.tool_effects || payload?.toolEffects, "tool_effects").map((row, index) =>
+    ...activeRecoveryRecords(payload?.outbox, "outbox").map((row, index) => reliabilityRow("outbox", row, index)),
+    ...activeRecoveryRecords(payload?.tool_effects || payload?.toolEffects, "tool_effects").map((row, index) =>
       reliabilityRow("tool_effect", row, index)
     ),
-    ...toArray(payload?.dead_letters || payload?.deadLetters, "dead_letters").map((row, index) =>
+    ...activeRecoveryRecords(payload?.dead_letters || payload?.deadLetters, "dead_letters").map((row, index) =>
       reliabilityRow("dead_letter", row, index)
     ),
-    ...toArray(payload?.compensations, "compensations").map((row, index) => reliabilityRow("compensation", row, index)),
+    ...activeRecoveryRecords(payload?.compensations, "compensations").map((row, index) =>
+      reliabilityRow("compensation", row, index)
+    ),
   ];
   return rows.sort((a, b) => b.updatedAtMs - a.updatedAtMs);
 }

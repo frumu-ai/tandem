@@ -11,10 +11,10 @@ use crate::stateful_runtime::{
     upsert_stateful_tool_effect, upsert_stateful_wait, write_stateful_run_snapshot,
     StatefulCompensationRecord, StatefulCompensationStatus, StatefulDeadLetterRecord,
     StatefulDeadLetterStatus, StatefulOutboxRecord, StatefulOutboxStatus, StatefulRecoveryOption,
-    StatefulRunEventRecord, StatefulRunSnapshotRecord, StatefulRuntimeScope,
-    StatefulRuntimeStoragePaths, StatefulToolEffectRecord, StatefulToolEffectStatus,
-    StatefulWaitKind, StatefulWaitRecord, StatefulWaitStatus, StatefulWorkflowPhase,
-    StatefulWorkflowRunStatus, STATEFUL_RUNTIME_SCHEMA_VERSION,
+    StatefulReliabilityStoreFile, StatefulRunEventRecord, StatefulRunSnapshotRecord,
+    StatefulRuntimeScope, StatefulRuntimeStoragePaths, StatefulToolEffectRecord,
+    StatefulToolEffectStatus, StatefulWaitKind, StatefulWaitRecord, StatefulWaitStatus,
+    StatefulWorkflowPhase, StatefulWorkflowRunStatus, STATEFUL_RUNTIME_SCHEMA_VERSION,
 };
 use serde_json::{json, Value};
 use tandem_types::{
@@ -333,6 +333,222 @@ async fn stateful_runtime_enterprise_scope_filters_are_tenant_scoped() {
 }
 
 #[tokio::test]
+async fn stateful_runtime_reliability_cursor_only_pages_matching_collection() {
+    let state = test_state().await;
+    let tenant_a = tenant("org-cursor-a", "workspace-a", "operator-a");
+    let run_id = "run-reliability-cursor";
+    let reliability_path =
+        stateful_reliability_path_from_runtime_events_path(&state.runtime_events_path);
+    let scope_a = scoped_runtime(&tenant_a, "finance", "repo-finance", "grant-finance");
+
+    state
+        .automation_v2_runs
+        .write()
+        .await
+        .insert(run_id.to_string(), automation_run(run_id, tenant_a.clone()));
+    upsert_stateful_outbox(
+        &reliability_path,
+        outbox_record("outbox-cursor", run_id, scope_a.clone()),
+    )
+    .await
+    .expect("outbox");
+    upsert_stateful_tool_effect(
+        &reliability_path,
+        tool_effect_record("effect-cursor", run_id, scope_a.clone()),
+    )
+    .await
+    .expect("tool effect");
+    upsert_stateful_compensation(
+        &reliability_path,
+        compensation_record("comp-cursor", "effect-cursor", run_id, scope_a.clone()),
+    )
+    .await
+    .expect("compensation");
+    let mut newer_dead_letter = dead_letter_record("dead-newer", run_id, scope_a.clone());
+    newer_dead_letter.created_at_ms = 2_000;
+    newer_dead_letter.updated_at_ms = 2_000;
+    upsert_stateful_dead_letter(&reliability_path, newer_dead_letter)
+        .await
+        .expect("newer dead letter");
+    let mut older_dead_letter = dead_letter_record("dead-older", run_id, scope_a);
+    older_dead_letter.created_at_ms = 1_000;
+    older_dead_letter.updated_at_ms = 1_000;
+    upsert_stateful_dead_letter(&reliability_path, older_dead_letter)
+        .await
+        .expect("older dead letter");
+
+    let first_page = get_json(
+        state.clone(),
+        format!("/stateful-runtime/runs/{run_id}/reliability?limit=1"),
+        &tenant_a,
+    )
+    .await;
+    assert_eq!(
+        first_page["pagination"]["next"]["dead_letters"]["after_collection"],
+        json!("dead_letters")
+    );
+    let after_id = first_page["pagination"]["next"]["dead_letters"]["after_id"]
+        .as_str()
+        .expect("dead-letter cursor")
+        .to_string();
+    assert_eq!(after_id, "dead-newer");
+
+    let second_page = get_json(
+        state.clone(),
+        format!("/stateful-runtime/runs/{run_id}/reliability?limit=1&after_id={after_id}"),
+        &tenant_a,
+    )
+    .await;
+    assert_eq!(
+        second_page["pagination"]["after_collection"],
+        json!("dead_letters")
+    );
+    assert_eq!(second_page["counts"]["outbox"], json!(1));
+    assert_eq!(second_page["counts"]["tool_effects"], json!(1));
+    assert_eq!(second_page["counts"]["compensations"], json!(1));
+    assert_eq!(second_page["counts"]["dead_letters"], json!(1));
+    assert_eq!(
+        second_page["dead_letters"][0]["dead_letter_id"],
+        json!("dead-older")
+    );
+
+    let stale_page = get_json(
+        state,
+        format!("/stateful-runtime/runs/{run_id}/reliability?limit=1&after_id=dead-missing"),
+        &tenant_a,
+    )
+    .await;
+    assert_eq!(stale_page["counts"]["outbox"], json!(0));
+    assert_eq!(stale_page["counts"]["tool_effects"], json!(0));
+    assert_eq!(stale_page["counts"]["compensations"], json!(0));
+    assert_eq!(stale_page["counts"]["dead_letters"], json!(0));
+}
+
+#[tokio::test]
+async fn stateful_runtime_reliability_cursor_infers_anchor_beyond_first_page() {
+    let state = test_state().await;
+    let tenant_a = tenant("org-cursor-deep-a", "workspace-a", "operator-a");
+    let run_id = "run-reliability-cursor-deep";
+    let reliability_path =
+        stateful_reliability_path_from_runtime_events_path(&state.runtime_events_path);
+    let scope_a = scoped_runtime(&tenant_a, "finance", "repo-finance", "grant-finance");
+
+    state
+        .automation_v2_runs
+        .write()
+        .await
+        .insert(run_id.to_string(), automation_run(run_id, tenant_a.clone()));
+    let dead_letters = (0..1_005)
+        .map(|index| {
+            let mut row = dead_letter_record(&format!("dead-{index:04}"), run_id, scope_a.clone());
+            row.created_at_ms = index as u64;
+            row.updated_at_ms = index as u64;
+            row
+        })
+        .collect::<Vec<_>>();
+    let store = StatefulReliabilityStoreFile {
+        schema_version: STATEFUL_RUNTIME_SCHEMA_VERSION,
+        outbox: Vec::new(),
+        tool_effects: Vec::new(),
+        dead_letters,
+        compensations: Vec::new(),
+    };
+    std::fs::create_dir_all(
+        reliability_path
+            .parent()
+            .expect("reliability store parent path"),
+    )
+    .expect("create reliability store parent");
+    std::fs::write(
+        &reliability_path,
+        serde_json::to_vec_pretty(&store).expect("store json"),
+    )
+    .expect("write reliability store");
+
+    let page = get_json(
+        state,
+        format!("/stateful-runtime/runs/{run_id}/reliability?limit=1&after_id=dead-0004"),
+        &tenant_a,
+    )
+    .await;
+
+    assert_eq!(
+        page["pagination"]["after_collection"],
+        json!("dead_letters")
+    );
+    assert_eq!(page["counts"]["dead_letters"], json!(1));
+    assert_eq!(
+        page["dead_letters"][0]["dead_letter_id"],
+        json!("dead-0003")
+    );
+}
+
+#[tokio::test]
+async fn stateful_runtime_reliability_cursor_preserves_created_time_bound() {
+    let state = test_state().await;
+    let tenant_a = tenant("org-cursor-window-a", "workspace-a", "operator-a");
+    let run_id = "run-reliability-cursor-window";
+    let reliability_path =
+        stateful_reliability_path_from_runtime_events_path(&state.runtime_events_path);
+    let scope_a = scoped_runtime(&tenant_a, "finance", "repo-finance", "grant-finance");
+
+    state
+        .automation_v2_runs
+        .write()
+        .await
+        .insert(run_id.to_string(), automation_run(run_id, tenant_a.clone()));
+    let mut first_in_window = dead_letter_record("dead-window-first", run_id, scope_a.clone());
+    first_in_window.created_at_ms = 3_000;
+    first_in_window.updated_at_ms = 9_000;
+    let mut outside_window = dead_letter_record("dead-outside-window", run_id, scope_a.clone());
+    outside_window.created_at_ms = 5_000;
+    outside_window.updated_at_ms = 8_500;
+    let mut second_in_window = dead_letter_record("dead-window-second", run_id, scope_a);
+    second_in_window.created_at_ms = 2_000;
+    second_in_window.updated_at_ms = 8_000;
+    for row in [first_in_window, outside_window, second_in_window] {
+        upsert_stateful_dead_letter(&reliability_path, row)
+            .await
+            .expect("dead letter");
+    }
+
+    let first_page = get_json(
+        state.clone(),
+        format!("/stateful-runtime/runs/{run_id}/reliability?limit=1&before_created_at_ms=4000"),
+        &tenant_a,
+    )
+    .await;
+    assert_eq!(
+        first_page["dead_letters"][0]["dead_letter_id"],
+        json!("dead-window-first")
+    );
+    let cursor = &first_page["pagination"]["next"]["dead_letters"];
+    assert_eq!(cursor["before_created_at_ms"], json!(4_000));
+    let after_id = cursor["after_id"].as_str().expect("after id");
+    let after_collection = cursor["after_collection"]
+        .as_str()
+        .expect("after collection");
+    let before_created_at_ms = cursor["before_created_at_ms"]
+        .as_u64()
+        .expect("created-time bound");
+
+    let second_page = get_json(
+        state,
+        format!(
+            "/stateful-runtime/runs/{run_id}/reliability?limit=1&after_id={after_id}&after_collection={after_collection}&before_created_at_ms={before_created_at_ms}"
+        ),
+        &tenant_a,
+    )
+    .await;
+
+    assert_eq!(second_page["counts"]["dead_letters"], json!(1));
+    assert_eq!(
+        second_page["dead_letters"][0]["dead_letter_id"],
+        json!("dead-window-second")
+    );
+}
+
+#[tokio::test]
 async fn stateful_runtime_resume_plan_surfaces_partial_failure_without_cross_tenant_rows() {
     let state = test_state().await;
     let tenant_a = tenant("org-recovery-a", "workspace-a", "operator-a");
@@ -384,6 +600,25 @@ async fn stateful_runtime_resume_plan_surfaces_partial_failure_without_cross_ten
     )
     .await
     .expect("compensation");
+    let mut superseded_dead_letter = dead_letter_record("dead-superseded", run_id, scope_a.clone());
+    superseded_dead_letter.metadata = Some(json!({
+        "superseded_by_success": true,
+        "superseded_by_effect_id": "effect-sent",
+        "superseded_at_ms": 3_000,
+    }));
+    upsert_stateful_dead_letter(&reliability_path, superseded_dead_letter)
+        .await
+        .expect("superseded dead letter");
+    let mut superseded_compensation =
+        compensation_record("comp-superseded", "effect-sent", run_id, scope_a.clone());
+    superseded_compensation.metadata = Some(json!({
+        "superseded_by_success": true,
+        "superseded_by_effect_id": "effect-sent",
+        "superseded_at_ms": 3_000,
+    }));
+    upsert_stateful_compensation(&reliability_path, superseded_compensation)
+        .await
+        .expect("superseded compensation");
     upsert_stateful_compensation(
         &reliability_path,
         compensation_record("comp-hidden", "effect-hidden", run_id, scope_b),
@@ -410,6 +645,149 @@ async fn stateful_runtime_resume_plan_surfaces_partial_failure_without_cross_ten
         .iter()
         .any(|choice| choice["choice"] == "resume_from_checkpoint"));
     assert_payload_excludes_hidden_runtime_rows(&plan);
+    let body = plan.to_string();
+    assert!(!body.contains("dead-superseded"), "{body}");
+    assert!(!body.contains("comp-superseded"), "{body}");
+}
+
+#[tokio::test]
+async fn stateful_runtime_resume_plan_filters_superseded_recovery_rows_before_limit() {
+    let state = test_state().await;
+    let tenant_a = tenant("org-recovery-a", "workspace-a", "operator-a");
+    let run_id = "run-superseded-before-limit";
+    let reliability_path =
+        stateful_reliability_path_from_runtime_events_path(&state.runtime_events_path);
+    let scope_a = scoped_runtime(&tenant_a, "finance", "repo-finance", "grant-finance");
+
+    state
+        .automation_v2_runs
+        .write()
+        .await
+        .insert(run_id.to_string(), automation_run(run_id, tenant_a.clone()));
+
+    let mut active_dead_letter = dead_letter_record("dead-active", run_id, scope_a.clone());
+    active_dead_letter.created_at_ms = 1_000;
+    active_dead_letter.updated_at_ms = 1_000;
+    upsert_stateful_dead_letter(&reliability_path, active_dead_letter)
+        .await
+        .expect("active dead letter");
+    let mut superseded_dead_letter =
+        dead_letter_record("dead-superseded-newer", run_id, scope_a.clone());
+    superseded_dead_letter.created_at_ms = 2_000;
+    superseded_dead_letter.updated_at_ms = 2_000;
+    superseded_dead_letter.metadata = Some(json!({
+        "superseded_by_success": true,
+        "superseded_by_effect_id": "effect-replayed",
+        "superseded_at_ms": 3_000,
+    }));
+    upsert_stateful_dead_letter(&reliability_path, superseded_dead_letter)
+        .await
+        .expect("superseded dead letter");
+
+    let mut active_compensation =
+        compensation_record("comp-active", "effect-active", run_id, scope_a.clone());
+    active_compensation.created_at_ms = 1_000;
+    active_compensation.updated_at_ms = 1_000;
+    upsert_stateful_compensation(&reliability_path, active_compensation)
+        .await
+        .expect("active compensation");
+    let mut superseded_compensation =
+        compensation_record("comp-superseded-newer", "effect-replayed", run_id, scope_a);
+    superseded_compensation.created_at_ms = 2_000;
+    superseded_compensation.updated_at_ms = 2_000;
+    superseded_compensation.metadata = Some(json!({
+        "superseded_by_success": true,
+        "superseded_by_effect_id": "effect-replayed",
+        "superseded_at_ms": 3_000,
+    }));
+    upsert_stateful_compensation(&reliability_path, superseded_compensation)
+        .await
+        .expect("superseded compensation");
+
+    let plan = get_json(
+        state,
+        format!("/stateful-runtime/runs/{run_id}/resume-plan?limit=1"),
+        &tenant_a,
+    )
+    .await;
+    assert_eq!(plan["audit_summary"]["dead_letter_count"], json!(1));
+    assert_eq!(
+        plan["audit_summary"]["pending_compensation_count"],
+        json!(1)
+    );
+    assert_eq!(plan["dead_letters"][0]["dead_letter_id"], "dead-active");
+    assert_eq!(
+        plan["pending_compensations"][0]["compensation_id"],
+        "comp-active"
+    );
+    let body = plan.to_string();
+    assert!(!body.contains("dead-superseded-newer"), "{body}");
+    assert!(!body.contains("comp-superseded-newer"), "{body}");
+}
+
+#[tokio::test]
+async fn stateful_runtime_reliability_active_recovery_filters_superseded_rows_before_limit() {
+    let state = test_state().await;
+    let tenant_a = tenant("org-reliability-active-a", "workspace-a", "operator-a");
+    let run_id = "run-active-recovery-before-limit";
+    let reliability_path =
+        stateful_reliability_path_from_runtime_events_path(&state.runtime_events_path);
+    let scope_a = scoped_runtime(&tenant_a, "finance", "repo-finance", "grant-finance");
+
+    let mut active_dead_letter = dead_letter_record("dead-active", run_id, scope_a.clone());
+    active_dead_letter.created_at_ms = 1_000;
+    active_dead_letter.updated_at_ms = 1_000;
+    upsert_stateful_dead_letter(&reliability_path, active_dead_letter)
+        .await
+        .expect("active dead letter");
+    let mut superseded_dead_letter =
+        dead_letter_record("dead-superseded-newer", run_id, scope_a.clone());
+    superseded_dead_letter.created_at_ms = 2_000;
+    superseded_dead_letter.updated_at_ms = 2_000;
+    superseded_dead_letter.metadata = Some(json!({
+        "superseded_by_success": true,
+        "superseded_by_effect_id": "effect-replayed",
+        "superseded_at_ms": 3_000,
+    }));
+    upsert_stateful_dead_letter(&reliability_path, superseded_dead_letter)
+        .await
+        .expect("superseded dead letter");
+
+    let mut active_compensation =
+        compensation_record("comp-active", "effect-active", run_id, scope_a.clone());
+    active_compensation.created_at_ms = 1_000;
+    active_compensation.updated_at_ms = 1_000;
+    upsert_stateful_compensation(&reliability_path, active_compensation)
+        .await
+        .expect("active compensation");
+    let mut superseded_compensation =
+        compensation_record("comp-superseded-newer", "effect-replayed", run_id, scope_a);
+    superseded_compensation.created_at_ms = 2_000;
+    superseded_compensation.updated_at_ms = 2_000;
+    superseded_compensation.metadata = Some(json!({
+        "superseded_by_success": true,
+        "superseded_by_effect_id": "effect-replayed",
+        "superseded_at_ms": 3_000,
+    }));
+    upsert_stateful_compensation(&reliability_path, superseded_compensation)
+        .await
+        .expect("superseded compensation");
+
+    let page = get_json(
+        state,
+        "/stateful-runtime/reliability?limit=1&active_recovery_only=true",
+        &tenant_a,
+    )
+    .await;
+
+    assert_eq!(
+        page["dead_letters"][0]["dead_letter_id"],
+        json!("dead-active")
+    );
+    assert_eq!(
+        page["compensations"][0]["compensation_id"],
+        json!("comp-active")
+    );
 }
 
 fn assert_payload_excludes_hidden_runtime_rows(payload: &Value) {

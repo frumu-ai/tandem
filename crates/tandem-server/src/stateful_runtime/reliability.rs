@@ -13,6 +13,7 @@ use super::types::{StatefulRuntimeScope, STATEFUL_RUNTIME_SCHEMA_VERSION};
 static STATEFUL_RELIABILITY_STORE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 const DEFAULT_RELIABILITY_LIMIT: usize = 250;
+const MAX_RELIABILITY_LIMIT: usize = 1_000;
 
 #[derive(Debug, Clone)]
 pub struct StatefulReliabilityStoragePaths {
@@ -304,6 +305,9 @@ pub struct StatefulReliabilityQuery<'a> {
     pub run_id: Option<&'a str>,
     pub status: Option<&'a str>,
     pub source_type: Option<&'a str>,
+    pub after_id: Option<&'a str>,
+    pub before_created_at_ms: Option<u64>,
+    pub active_recovery_only: bool,
     pub limit: Option<usize>,
 }
 
@@ -386,6 +390,13 @@ pub fn list_stateful_outbox(
         .filter(|row| option_filter_matches(query.run_id, row.run_id.as_deref()))
         .filter(|row| status_matches(query.status, &row.status))
         .collect::<Vec<_>>();
+    apply_reliability_cursor(
+        &mut rows,
+        query.after_id,
+        query.before_created_at_ms,
+        |row| &row.outbox_id,
+        |row| row.created_at_ms,
+    );
     apply_limit(&mut rows, query.limit);
     rows
 }
@@ -403,6 +414,13 @@ pub fn list_stateful_tool_effects(
         .filter(|row| status_matches(query.status, &row.status))
         .filter(|row| option_filter_matches(query.source_type, row.source_kind.as_deref()))
         .collect::<Vec<_>>();
+    apply_reliability_cursor(
+        &mut rows,
+        query.after_id,
+        query.before_created_at_ms,
+        |row| &row.effect_id,
+        |row| row.created_at_ms,
+    );
     apply_limit(&mut rows, query.limit);
     rows
 }
@@ -420,6 +438,16 @@ pub fn list_stateful_dead_letters(
         .filter(|row| status_matches(query.status, &row.status))
         .filter(|row| option_filter_matches(query.source_type, Some(row.source_type.as_str())))
         .collect::<Vec<_>>();
+    if query.active_recovery_only {
+        rows.retain(|row| !metadata_superseded_by_success(row.metadata.as_ref()));
+    }
+    apply_reliability_cursor(
+        &mut rows,
+        query.after_id,
+        query.before_created_at_ms,
+        |row| &row.dead_letter_id,
+        |row| row.created_at_ms,
+    );
     apply_limit(&mut rows, query.limit);
     rows
 }
@@ -436,6 +464,16 @@ pub fn list_stateful_compensations(
         .filter(|row| option_filter_matches(query.run_id, row.run_id.as_deref()))
         .filter(|row| status_matches(query.status, &row.status))
         .collect::<Vec<_>>();
+    if query.active_recovery_only {
+        rows.retain(|row| !metadata_superseded_by_success(row.metadata.as_ref()));
+    }
+    apply_reliability_cursor(
+        &mut rows,
+        query.after_id,
+        query.before_created_at_ms,
+        |row| &row.compensation_id,
+        |row| row.created_at_ms,
+    );
     apply_limit(&mut rows, query.limit);
     rows
 }
@@ -517,7 +555,7 @@ pub async fn record_external_action_reliability_bridge(
         upsert_by(&mut store.dead_letters, dead_letter, |row| {
             &row.dead_letter_id
         });
-    } else {
+    } else if effect.status == StatefulToolEffectStatus::Succeeded {
         clear_stale_failure_rows_for_effect(&mut store, &effect, &outbox);
     }
 
@@ -534,18 +572,108 @@ fn clear_stale_failure_rows_for_effect(
     effect: &StatefulToolEffectRecord,
     outbox: &StatefulOutboxRecord,
 ) {
-    store.dead_letters.retain(|row| {
-        !(row.scope == effect.scope
+    store.dead_letters.retain_mut(|row| {
+        let matches_effect = row.scope == effect.scope
             && row.run_id == effect.run_id
             && row.source_type == "tool_effect"
-            && row.source_id == effect.effect_id)
+            && row.source_id == effect.effect_id;
+        if !matches_effect {
+            return true;
+        }
+        if dead_letter_is_pristine(row) {
+            return false;
+        }
+        mark_reliability_row_superseded_by_success(
+            &mut row.metadata,
+            effect,
+            Some(outbox.outbox_id.as_str()),
+        );
+        row.updated_at_ms = row.updated_at_ms.max(effect.updated_at_ms);
+        true
     });
-    store.compensations.retain(|row| {
-        !(row.scope == effect.scope
+    store.compensations.retain_mut(|row| {
+        let matches_effect = row.scope == effect.scope
             && row.run_id == effect.run_id
             && (row.target_effect_id.as_deref() == Some(effect.effect_id.as_str())
-                || row.outbox_id.as_deref() == Some(outbox.outbox_id.as_str())))
+                || row.outbox_id.as_deref() == Some(outbox.outbox_id.as_str()));
+        if !matches_effect {
+            return true;
+        }
+        if compensation_is_pristine(row) {
+            return false;
+        }
+        mark_reliability_row_superseded_by_success(
+            &mut row.metadata,
+            effect,
+            Some(outbox.outbox_id.as_str()),
+        );
+        row.updated_at_ms = row.updated_at_ms.max(effect.updated_at_ms);
+        true
     });
+}
+
+fn dead_letter_is_pristine(row: &StatefulDeadLetterRecord) -> bool {
+    row.status == StatefulDeadLetterStatus::Open
+        && row.operator_disposition.is_none()
+        && row.disposition_reason.is_none()
+        && row.disposition_actor.is_none()
+        && row.disposition_at_ms.is_none()
+}
+
+fn compensation_is_pristine(row: &StatefulCompensationRecord) -> bool {
+    row.status == StatefulCompensationStatus::Proposed && row.receipt_effect_id.is_none()
+}
+
+fn mark_reliability_row_superseded_by_success(
+    metadata: &mut Option<Value>,
+    effect: &StatefulToolEffectRecord,
+    outbox_id: Option<&str>,
+) {
+    let mut object = match metadata.take() {
+        Some(Value::Object(object)) => object,
+        Some(value) => {
+            let mut object = Map::new();
+            object.insert("previous_metadata".to_string(), value);
+            object
+        }
+        None => Map::new(),
+    };
+    object.insert("superseded_by_success".to_string(), Value::Bool(true));
+    object.insert(
+        "superseded_by_effect_id".to_string(),
+        Value::String(effect.effect_id.clone()),
+    );
+    object.insert(
+        "superseded_at_ms".to_string(),
+        Value::Number(effect.updated_at_ms.into()),
+    );
+    if let Some(outbox_id) = outbox_id {
+        object.insert(
+            "superseded_by_outbox_id".to_string(),
+            Value::String(outbox_id.to_string()),
+        );
+    }
+    *metadata = Some(Value::Object(object));
+}
+
+fn metadata_superseded_by_success(metadata: Option<&Value>) -> bool {
+    let Some(metadata) = metadata else {
+        return false;
+    };
+    let marked_success = metadata
+        .get("superseded_by_success")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let has_effect_id = metadata
+        .get("superseded_by_effect_id")
+        .and_then(Value::as_str)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    let has_timestamp = metadata
+        .get("superseded_at_ms")
+        .and_then(Value::as_u64)
+        .is_some();
+    marked_success && has_effect_id && has_timestamp
 }
 
 pub async fn mark_dead_letter_disposition(
@@ -820,7 +948,7 @@ fn outbox_status_from_action(action: &ExternalActionRecord) -> StatefulOutboxSta
         StatefulToolEffectStatus::Succeeded => StatefulOutboxStatus::Sent,
         StatefulToolEffectStatus::Failed => StatefulOutboxStatus::Failed,
         StatefulToolEffectStatus::Pending => StatefulOutboxStatus::Pending,
-        StatefulToolEffectStatus::Unknown => StatefulOutboxStatus::Sent,
+        StatefulToolEffectStatus::Unknown => StatefulOutboxStatus::Pending,
     }
 }
 
@@ -1012,8 +1140,31 @@ fn apply_limit<T>(rows: &mut Vec<T>, limit: Option<usize>) {
     rows.truncate(
         limit
             .unwrap_or(DEFAULT_RELIABILITY_LIMIT)
-            .clamp(1, DEFAULT_RELIABILITY_LIMIT),
+            .clamp(1, MAX_RELIABILITY_LIMIT),
     );
+}
+
+fn apply_reliability_cursor<T, IdFn, CreatedAtFn>(
+    rows: &mut Vec<T>,
+    after_id: Option<&str>,
+    before_created_at_ms: Option<u64>,
+    id: IdFn,
+    created_at_ms: CreatedAtFn,
+) where
+    IdFn: Fn(&T) -> &String,
+    CreatedAtFn: Fn(&T) -> u64,
+{
+    if let Some(after_id) = after_id.map(str::trim).filter(|value| !value.is_empty()) {
+        match rows.iter().position(|row| id(row) == after_id) {
+            Some(index) => {
+                rows.drain(..=index);
+            }
+            None => rows.clear(),
+        }
+    }
+    if let Some(before_created_at_ms) = before_created_at_ms {
+        rows.retain(|row| created_at_ms(row) < before_created_at_ms);
+    }
 }
 
 fn upsert_by<T, F>(rows: &mut Vec<T>, record: T, id: F)
@@ -1103,6 +1254,81 @@ mod tests {
             })),
             created_at_ms: 1_000,
             updated_at_ms: 2_000,
+        }
+    }
+
+    fn compensation_metadata(attempt: u64) -> Value {
+        json!({
+            "automationRunID": "run-a",
+            "nodeID": "node-a",
+            "attempt": attempt,
+            "compensation": {
+                "type": "operator_review",
+                "approval_required": true,
+                "rollback_instruction": "remove the posted message"
+            }
+        })
+    }
+
+    fn superseded_metadata(effect_id: &str) -> Value {
+        json!({
+            "superseded_by_success": true,
+            "superseded_by_effect_id": effect_id,
+            "superseded_at_ms": 9_000,
+        })
+    }
+
+    fn dead_letter_record(
+        scope: StatefulRuntimeScope,
+        run_id: &str,
+        index: usize,
+    ) -> StatefulDeadLetterRecord {
+        StatefulDeadLetterRecord {
+            schema_version: STATEFUL_RUNTIME_SCHEMA_VERSION,
+            dead_letter_id: format!("dead-letter-{index:04}"),
+            source_type: "tool_effect".to_string(),
+            source_id: format!("effect-{index:04}"),
+            run_id: Some(run_id.to_string()),
+            scope,
+            reason: "provider timeout".to_string(),
+            status: StatefulDeadLetterStatus::Open,
+            recovery_options: vec![StatefulRecoveryOption::Retry],
+            payload_pointer: None,
+            compensation_id: None,
+            attempts: 1,
+            created_at_ms: index as u64,
+            updated_at_ms: index as u64,
+            operator_disposition: None,
+            disposition_reason: None,
+            disposition_actor: None,
+            disposition_at_ms: None,
+            metadata: None,
+        }
+    }
+
+    fn compensation_record(
+        scope: StatefulRuntimeScope,
+        run_id: &str,
+        index: usize,
+    ) -> StatefulCompensationRecord {
+        StatefulCompensationRecord {
+            schema_version: STATEFUL_RUNTIME_SCHEMA_VERSION,
+            compensation_id: format!("compensation-{index:04}"),
+            run_id: Some(run_id.to_string()),
+            scope,
+            status: StatefulCompensationStatus::AwaitingApproval,
+            compensation_type: "operator_review".to_string(),
+            target_effect_id: Some(format!("effect-{index:04}")),
+            outbox_id: Some(format!("outbox-{index:04}")),
+            approval_required: true,
+            policy_decision_id: None,
+            rollback_instruction: Some("remove the posted message".to_string()),
+            forward_fix_instruction: None,
+            receipt_effect_id: None,
+            attempts: 0,
+            created_at_ms: index as u64,
+            updated_at_ms: index as u64,
+            metadata: None,
         }
     }
 
@@ -1254,28 +1480,10 @@ mod tests {
         let scope = StatefulRuntimeScope::from_tenant_context(tenant("org-a", "workspace-a"));
         let mut failed = action("action-replay-failed", "failed", Some("provider timeout"));
         failed.idempotency_key = Some("idem-run-a-node-a-send".to_string());
-        failed.metadata = Some(json!({
-            "automationRunID": "run-a",
-            "nodeID": "node-a",
-            "attempt": 1,
-            "compensation": {
-                "type": "operator_review",
-                "approval_required": true,
-                "rollback_instruction": "remove the posted message"
-            }
-        }));
+        failed.metadata = Some(compensation_metadata(1));
         let mut succeeded = action("action-replay-succeeded", "posted", None);
         succeeded.idempotency_key = failed.idempotency_key.clone();
-        succeeded.metadata = Some(json!({
-            "automationRunID": "run-a",
-            "nodeID": "node-a",
-            "attempt": 2,
-            "compensation": {
-                "type": "operator_review",
-                "approval_required": true,
-                "rollback_instruction": "remove the posted message"
-            }
-        }));
+        succeeded.metadata = Some(compensation_metadata(2));
         succeeded.updated_at_ms = 3_000;
         succeeded.receipt = Some(json!({
             "result": {"status": "posted"}
@@ -1307,6 +1515,308 @@ mod tests {
             store.tool_effects[0].action_id.as_deref(),
             Some("action-replay-succeeded")
         );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn external_action_success_replay_preserves_operator_recovery_rows() {
+        let path = std::env::temp_dir().join(format!(
+            "tandem-stateful-reliability-{}.json",
+            Uuid::new_v4()
+        ));
+        let tenant_a = tenant("org-a", "workspace-a");
+        let scope = StatefulRuntimeScope::from_tenant_context(tenant_a.clone());
+        let mut failed = action(
+            "action-replay-operator-failed",
+            "failed",
+            Some("provider timeout"),
+        );
+        failed.idempotency_key = Some("idem-run-a-node-a-operator".to_string());
+        failed.metadata = Some(compensation_metadata(1));
+        let mut succeeded = action("action-replay-operator-succeeded", "posted", None);
+        succeeded.idempotency_key = failed.idempotency_key.clone();
+        succeeded.metadata = failed.metadata.clone();
+        succeeded.updated_at_ms = 7_000;
+
+        record_external_action_reliability_bridge(&path, scope.clone(), &failed)
+            .await
+            .expect("failed bridge");
+        let failed_store = load_stateful_reliability(&path);
+        let dead_letter_id = failed_store.dead_letters[0].dead_letter_id.clone();
+        let compensation_id = failed_store.compensations[0].compensation_id.clone();
+
+        mark_compensation_status(
+            &path,
+            &tenant_a,
+            &compensation_id,
+            StatefulCompensationStatus::Completed,
+            4_000,
+        )
+        .await
+        .expect("mark compensation complete");
+        mark_dead_letter_disposition(
+            &path,
+            &tenant_a,
+            &dead_letter_id,
+            StatefulDeadLetterStatus::LinkedToCompensation,
+            "linked_to_compensation",
+            Some("compensation completed".to_string()),
+            operator_principal(Some("operator-a")),
+            5_000,
+        )
+        .await
+        .expect("mark dead letter disposition");
+
+        let replay_effect = record_external_action_reliability_bridge(&path, scope, &succeeded)
+            .await
+            .expect("success bridge");
+
+        let store = load_stateful_reliability(&path);
+        assert_eq!(
+            store.dead_letters[0].status,
+            StatefulDeadLetterStatus::LinkedToCompensation
+        );
+        assert_eq!(
+            store.compensations[0].status,
+            StatefulCompensationStatus::Completed
+        );
+        assert_eq!(
+            store.compensations[0]
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("superseded_by_effect_id"))
+                .and_then(Value::as_str),
+            Some(replay_effect.effect_id.as_str())
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn external_action_unknown_replay_preserves_operator_recovery_rows() {
+        let path = std::env::temp_dir().join(format!(
+            "tandem-stateful-reliability-{}.json",
+            Uuid::new_v4()
+        ));
+        let tenant_a = tenant("org-a", "workspace-a");
+        let scope = StatefulRuntimeScope::from_tenant_context(tenant_a.clone());
+        let mut failed = action(
+            "action-replay-unknown-failed",
+            "failed",
+            Some("provider timeout"),
+        );
+        failed.idempotency_key = Some("idem-run-a-node-a-unknown".to_string());
+        failed.metadata = Some(compensation_metadata(1));
+        let mut unknown = action("action-replay-unknown", "provider_acknowledged", None);
+        unknown.idempotency_key = failed.idempotency_key.clone();
+        unknown.metadata = failed.metadata.clone();
+        unknown.updated_at_ms = 7_000;
+
+        record_external_action_reliability_bridge(&path, scope.clone(), &failed)
+            .await
+            .expect("failed bridge");
+        let failed_store = load_stateful_reliability(&path);
+        let dead_letter_id = failed_store.dead_letters[0].dead_letter_id.clone();
+        let compensation_id = failed_store.compensations[0].compensation_id.clone();
+
+        mark_compensation_status(
+            &path,
+            &tenant_a,
+            &compensation_id,
+            StatefulCompensationStatus::AwaitingApproval,
+            4_000,
+        )
+        .await
+        .expect("mark compensation awaiting approval");
+        mark_dead_letter_disposition(
+            &path,
+            &tenant_a,
+            &dead_letter_id,
+            StatefulDeadLetterStatus::RetryRequested,
+            "retry_requested",
+            Some("retry after provider recovers".to_string()),
+            operator_principal(Some("operator-a")),
+            5_000,
+        )
+        .await
+        .expect("mark dead letter disposition");
+
+        let replay_effect = record_external_action_reliability_bridge(&path, scope, &unknown)
+            .await
+            .expect("unknown bridge");
+
+        assert_eq!(replay_effect.status, StatefulToolEffectStatus::Unknown);
+        let store = load_stateful_reliability(&path);
+        assert_eq!(store.outbox[0].status, StatefulOutboxStatus::Pending);
+        assert_eq!(
+            store.dead_letters[0].status,
+            StatefulDeadLetterStatus::RetryRequested
+        );
+        assert_eq!(
+            store.compensations[0].status,
+            StatefulCompensationStatus::AwaitingApproval
+        );
+        assert_eq!(
+            store.dead_letters[0]
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("superseded_by_success"))
+                .and_then(Value::as_bool),
+            None
+        );
+        assert_eq!(
+            store.compensations[0]
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("superseded_by_success"))
+                .and_then(Value::as_bool),
+            None
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn reliability_lists_page_beyond_default_limit() {
+        let path = std::env::temp_dir().join(format!(
+            "tandem-stateful-reliability-{}.json",
+            Uuid::new_v4()
+        ));
+        let tenant_a = tenant("org-a", "workspace-a");
+        let scope = StatefulRuntimeScope::from_tenant_context(tenant_a.clone());
+        let mut store = default_stateful_reliability_store();
+        store.dead_letters = (0..1_050)
+            .map(|index| dead_letter_record(scope.clone(), "run-a", index))
+            .collect();
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&store).expect("serialize reliability store"),
+        )
+        .expect("write reliability store");
+
+        let first_page = list_stateful_dead_letters(
+            &path,
+            &tenant_a,
+            StatefulReliabilityQuery {
+                limit: Some(300),
+                ..Default::default()
+            },
+        );
+        assert_eq!(first_page.len(), 300);
+        assert_eq!(first_page[0].dead_letter_id, "dead-letter-1049");
+        assert_eq!(first_page[299].dead_letter_id, "dead-letter-0750");
+
+        let capped_page = list_stateful_dead_letters(
+            &path,
+            &tenant_a,
+            StatefulReliabilityQuery {
+                limit: Some(1_500),
+                ..Default::default()
+            },
+        );
+        assert_eq!(capped_page.len(), 1_000);
+
+        let cursor_page = list_stateful_dead_letters(
+            &path,
+            &tenant_a,
+            StatefulReliabilityQuery {
+                before_created_at_ms: Some(750),
+                limit: Some(5),
+                ..Default::default()
+            },
+        );
+        assert_eq!(cursor_page[0].dead_letter_id, "dead-letter-0749");
+        let after_id = cursor_page[2].dead_letter_id.as_str();
+        let before_created_at_ms = cursor_page[2].created_at_ms;
+
+        let after_page = list_stateful_dead_letters(
+            &path,
+            &tenant_a,
+            StatefulReliabilityQuery {
+                after_id: Some(after_id),
+                before_created_at_ms: Some(before_created_at_ms),
+                limit: Some(2),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            after_page
+                .iter()
+                .map(|row| row.dead_letter_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["dead-letter-0746", "dead-letter-0745"]
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn active_recovery_lists_filter_superseded_rows_before_limit() {
+        let path = std::env::temp_dir().join(format!(
+            "tandem-stateful-reliability-{}.json",
+            Uuid::new_v4()
+        ));
+        let tenant_a = tenant("org-a", "workspace-a");
+        let scope = StatefulRuntimeScope::from_tenant_context(tenant_a.clone());
+        let mut store = default_stateful_reliability_store();
+        store.dead_letters = vec![
+            dead_letter_record(scope.clone(), "run-a", 1),
+            dead_letter_record(scope.clone(), "run-a", 3),
+            dead_letter_record(scope.clone(), "run-a", 4),
+        ];
+        store.compensations = vec![
+            compensation_record(scope.clone(), "run-a", 1),
+            compensation_record(scope.clone(), "run-a", 2),
+            compensation_record(scope.clone(), "run-a", 3),
+        ];
+        for row in store.dead_letters.iter_mut().skip(1) {
+            row.metadata = Some(superseded_metadata("effect-replayed"));
+        }
+        for row in store.compensations.iter_mut().skip(1) {
+            row.metadata = Some(superseded_metadata("effect-replayed"));
+        }
+        let mut user_metadata_dead_letter = dead_letter_record(scope.clone(), "run-a", 2);
+        user_metadata_dead_letter.metadata = Some(json!({
+            "superseded_by_success": true,
+            "policy": "user-supplied"
+        }));
+        store.dead_letters.push(user_metadata_dead_letter);
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&store).expect("serialize reliability store"),
+        )
+        .expect("write reliability store");
+
+        let unfiltered = list_stateful_dead_letters(
+            &path,
+            &tenant_a,
+            StatefulReliabilityQuery {
+                limit: Some(1),
+                ..Default::default()
+            },
+        );
+        assert_eq!(unfiltered[0].dead_letter_id, "dead-letter-0004");
+
+        let active_dead_letters = list_stateful_dead_letters(
+            &path,
+            &tenant_a,
+            StatefulReliabilityQuery {
+                active_recovery_only: true,
+                limit: Some(1),
+                ..Default::default()
+            },
+        );
+        assert_eq!(active_dead_letters.len(), 1);
+        assert_eq!(active_dead_letters[0].dead_letter_id, "dead-letter-0002");
+        let active_compensations = list_stateful_compensations(
+            &path,
+            &tenant_a,
+            StatefulReliabilityQuery {
+                active_recovery_only: true,
+                limit: Some(1),
+                ..Default::default()
+            },
+        );
+        assert_eq!(active_compensations.len(), 1);
+        assert_eq!(active_compensations[0].compensation_id, "compensation-0001");
+
         let _ = std::fs::remove_file(path);
     }
 

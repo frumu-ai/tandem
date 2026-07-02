@@ -212,6 +212,82 @@ async fn run_observability_falls_back_to_run_level_active_wait() {
 }
 
 #[tokio::test]
+async fn run_observability_keeps_superseded_recovery_history_out_of_operator_summary() {
+    let state = test_state().await;
+    let tenant = tenant(
+        "org-observability-superseded",
+        "workspace-recovery",
+        "operator-a",
+    );
+    let run_id = "run-observability-superseded";
+    let reliability_path =
+        stateful_reliability_path_from_runtime_events_path(&state.runtime_events_path);
+    let scope = StatefulRuntimeScope::from_tenant_context(tenant.clone());
+    let mut run = automation_run(run_id, tenant.clone());
+    run.status = AutomationRunStatus::Running;
+    state
+        .automation_v2_runs
+        .write()
+        .await
+        .insert(run_id.to_string(), run);
+
+    let mut superseded_dead_letter = dead_letter(run_id, scope.clone());
+    superseded_dead_letter.metadata = Some(json!({
+        "superseded_by_success": true,
+        "superseded_by_effect_id": "effect-replayed",
+        "superseded_at_ms": 3_000,
+    }));
+    upsert_stateful_dead_letter(&reliability_path, superseded_dead_letter)
+        .await
+        .expect("upsert superseded dead letter");
+    let mut superseded_compensation = compensation(run_id, scope);
+    superseded_compensation.metadata = Some(json!({
+        "superseded_by_success": true,
+        "superseded_by_effect_id": "effect-replayed",
+        "superseded_at_ms": 3_000,
+    }));
+    upsert_stateful_compensation(&reliability_path, superseded_compensation)
+        .await
+        .expect("upsert superseded compensation");
+
+    let response = app_router(state)
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/stateful-runtime/runs/{run_id}/observability"))
+                .header("x-tandem-org-id", tenant.org_id.as_str())
+                .header("x-tandem-workspace-id", tenant.workspace_id.as_str())
+                .header("x-tandem-actor-id", "operator-a")
+                .body(Body::empty())
+                .expect("observability request"),
+        )
+        .await
+        .expect("observability response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = response_json(response).await;
+    assert_eq!(payload["counts"]["dead_letters"], json!(1));
+    assert_eq!(payload["counts"]["compensations"], json!(1));
+    assert_eq!(
+        payload["reliability"]["dead_letters"][0]["dead_letter_id"],
+        json!("dead-letter-observability")
+    );
+    assert_eq!(
+        payload["reliability"]["compensations"][0]["compensation_id"],
+        json!("compensation-observability")
+    );
+    assert_eq!(payload["operator_summary"]["is_blocked"], json!(false));
+    assert!(payload["operator_summary"]["blocking_reasons"]
+        .as_array()
+        .expect("blocking reasons")
+        .is_empty());
+    assert!(payload["operator_summary"]["allowed_actions"]
+        .as_array()
+        .expect("allowed actions")
+        .is_empty());
+}
+
+#[tokio::test]
 async fn run_observability_tails_protected_audit_events() {
     let state = test_state().await;
     let tenant = tenant("org-observability-audit", "workspace-audit", "operator-a");

@@ -2,6 +2,7 @@ use serde_json::json;
 
 use crate::{
     RetryBackoffPolicy, RetryBackoffStrategy, RetryDecisionInput, RetryPolicy, RetryTerminalMode,
+    RETRY_BACKOFF_MAX_DELAY_MS,
 };
 
 #[test]
@@ -104,4 +105,36 @@ fn provider_default_backoff_matches_existing_escalation() {
     assert_eq!(backoff.delay_ms_for_attempt(1), Some(2_000));
     assert_eq!(backoff.delay_ms_for_attempt(2), Some(5_000));
     assert_eq!(backoff.delay_ms_for_attempt(3), Some(8_000));
+}
+
+#[test]
+fn retry_backoff_clamps_overflow_to_hard_ceiling() {
+    let backoff = RetryBackoffPolicy {
+        strategy: RetryBackoffStrategy::Exponential,
+        initial_delay_ms: 1_000,
+        max_delay_ms: 0,
+        multiplier: 1.0e308,
+        jitter_ms: None,
+    };
+
+    assert_eq!(
+        backoff.delay_ms_for_attempt(10),
+        Some(RETRY_BACKOFF_MAX_DELAY_MS)
+    );
+}
+
+#[test]
+fn retry_backoff_treats_non_finite_multiplier_as_hard_ceiling() {
+    let backoff = RetryBackoffPolicy {
+        strategy: RetryBackoffStrategy::Exponential,
+        initial_delay_ms: 1_000,
+        max_delay_ms: 0,
+        multiplier: f64::INFINITY,
+        jitter_ms: None,
+    };
+
+    assert_eq!(
+        backoff.delay_ms_for_attempt(2),
+        Some(RETRY_BACKOFF_MAX_DELAY_MS)
+    );
 }
