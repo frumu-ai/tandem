@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use tandem_enterprise_contract::{
     ConnectorInstance as EnterpriseConnectorInstance,
-    CrossTenantGrantRecord as EnterpriseCrossTenantGrantRecord,
+    CrossTenantGrantRecord as EnterpriseCrossTenantGrantRecord, EnterprisePolicyRule,
     IngestionJob as EnterpriseIngestionJob, IngestionQuarantine as EnterpriseIngestionQuarantine,
     OrganizationUnit as EnterpriseOrganizationUnit,
     OrganizationUnitAccessGrant as EnterpriseOrganizationUnitAccessGrant,
@@ -45,6 +45,8 @@ pub struct EnterpriseState {
     pub cross_tenant_grants_path: PathBuf,
     pub source_bindings: Arc<RwLock<HashMap<String, EnterpriseSourceBinding>>>,
     pub source_bindings_path: PathBuf,
+    pub policy_rules: Arc<RwLock<HashMap<String, EnterprisePolicyRule>>>,
+    pub policy_rules_path: PathBuf,
     pub connectors: Arc<RwLock<HashMap<String, EnterpriseConnectorInstance>>>,
     pub connectors_path: PathBuf,
     pub ingestion_jobs: Arc<RwLock<HashMap<String, EnterpriseIngestionJob>>>,
@@ -70,6 +72,8 @@ impl EnterpriseState {
             cross_tenant_grants_path: config::paths::resolve_enterprise_cross_tenant_grants_path(),
             source_bindings: Arc::new(RwLock::new(HashMap::new())),
             source_bindings_path: config::paths::resolve_enterprise_source_bindings_path(),
+            policy_rules: Arc::new(RwLock::new(HashMap::new())),
+            policy_rules_path: config::paths::resolve_enterprise_policy_rules_path(),
             connectors: Arc::new(RwLock::new(HashMap::new())),
             connectors_path: config::paths::resolve_enterprise_connectors_path(),
             ingestion_jobs: Arc::new(RwLock::new(HashMap::new())),

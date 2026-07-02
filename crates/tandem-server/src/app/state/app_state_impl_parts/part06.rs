@@ -10,6 +10,161 @@ fn automation_v2_definition_is_context_recovered(automation: &AutomationV2Spec) 
         == Some("context_run")
 }
 
+fn policy_decision_scope_level(decision: &PolicyDecisionRecord) -> EnterprisePolicyScopeLevel {
+    if policy_decision_workflow_phase(decision).is_some() {
+        EnterprisePolicyScopeLevel::Phase
+    } else if decision.resource.is_some() {
+        EnterprisePolicyScopeLevel::Resource
+    } else if decision.automation_id.is_some()
+        || decision.node_id.is_some()
+        || decision.run_id.is_some()
+    {
+        EnterprisePolicyScopeLevel::Workflow
+    } else if policy_decision_org_unit_id(decision).is_some() {
+        EnterprisePolicyScopeLevel::OrgUnit
+    } else {
+        EnterprisePolicyScopeLevel::Tenant
+    }
+}
+
+fn policy_decision_metadata_string(
+    decision: &PolicyDecisionRecord,
+    pointers: &[&str],
+) -> Option<String> {
+    pointers.iter().find_map(|pointer| {
+        decision
+            .metadata
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn policy_decision_org_unit_id(decision: &PolicyDecisionRecord) -> Option<String> {
+    policy_decision_metadata_string(
+        decision,
+        &[
+            "/enterprise_scope/owning_org_unit_id",
+            "/enterprise_scope/owningOrgUnitId",
+            "/resource_access/owning_org_unit_id",
+            "/resourceAccess/owningOrgUnitId",
+            "/automation_webhook/owning_org_unit_id",
+            "/automationWebhook/owningOrgUnitId",
+            "/org_unit_id",
+            "/orgUnitId",
+        ],
+    )
+}
+
+fn policy_decision_workflow_id(decision: &PolicyDecisionRecord) -> Option<String> {
+    decision
+        .automation_id
+        .clone()
+        .or_else(|| decision.run_id.clone())
+}
+
+fn policy_decision_workflow_phase(decision: &PolicyDecisionRecord) -> Option<String> {
+    policy_decision_metadata_string(
+        decision,
+        &[
+            "/phase_tool_authority/phase",
+            "/workflow_phase",
+            "/workflowPhase",
+            "/builder/phase",
+            "/runtime/phase",
+        ],
+    )
+}
+
+fn policy_decision_permission(decision: &PolicyDecisionRecord) -> Option<AccessPermission> {
+    [
+        "/authority/permission",
+        "/permission",
+        "/context_assertion/permission",
+        "/memory_promotion/permission",
+    ]
+    .iter()
+    .find_map(|pointer| {
+        decision
+            .metadata
+            .pointer(pointer)
+            .and_then(|value| serde_json::from_value::<AccessPermission>(value.clone()).ok())
+    })
+    .or_else(|| decision.tool.as_ref().map(|_| AccessPermission::Execute))
+    .or_else(|| decision.resource.as_ref().map(|_| AccessPermission::Read))
+}
+
+fn policy_decision_input(decision: &PolicyDecisionRecord) -> EnterprisePolicyInput {
+    let mut input = EnterprisePolicyInput::new(decision.tenant_context.clone());
+    if let Some(org_unit_id) = policy_decision_org_unit_id(decision) {
+        input = input.with_org_unit_id(org_unit_id);
+    }
+    if let Some(resource) = decision.resource.clone() {
+        input = input.with_resource(resource);
+    }
+    if let Some(workflow_id) = policy_decision_workflow_id(decision) {
+        input = input.with_workflow_id(workflow_id);
+    }
+    if let Some(workflow_phase) = policy_decision_workflow_phase(decision) {
+        input = input.with_workflow_phase(workflow_phase);
+    }
+    if let Some(permission) = policy_decision_permission(decision) {
+        input = input.with_permission(permission);
+    }
+    if let Some(data_class) = decision.data_classes.first().copied() {
+        input = input.with_data_class(data_class);
+    }
+    if let Some(tool) = decision.tool.clone() {
+        input = input.with_tool(tool);
+    }
+    input
+}
+
+fn runtime_policy_rule_for_decision(decision: &PolicyDecisionRecord) -> EnterprisePolicyRule {
+    let policy_id = decision
+        .policy_id
+        .clone()
+        .unwrap_or_else(|| "runtime_policy_decision".to_string());
+    let mut rule = EnterprisePolicyRule::new(
+        format!("{policy_id}:{}", decision.decision_id),
+        policy_id,
+        policy_decision_scope_level(decision),
+        decision.decision.enterprise_effect(),
+    )
+    .with_tenant_context(decision.tenant_context.clone())
+    .with_reason(decision.reason_code.clone(), decision.reason.clone())
+    .with_updated_at_ms(decision.created_at_ms)
+    .with_overridable(true);
+
+    if let Some(org_unit_id) = policy_decision_org_unit_id(decision) {
+        rule = rule.with_org_unit_id(org_unit_id);
+    }
+    if let Some(resource) = decision.resource.clone() {
+        rule = rule.with_resource(resource);
+    }
+    if let Some(workflow_id) = policy_decision_workflow_id(decision) {
+        rule = rule.with_workflow_id(workflow_id);
+    }
+    if let Some(workflow_phase) = policy_decision_workflow_phase(decision) {
+        rule = rule.with_workflow_phase(workflow_phase);
+    }
+    if let Some(permission) = policy_decision_permission(decision) {
+        rule = rule.with_permissions(vec![permission]);
+    }
+    if !decision.data_classes.is_empty() {
+        rule = rule.with_data_classes(decision.data_classes.clone());
+    }
+    if let Some(tool) = decision.tool.clone() {
+        rule = rule.with_tool_patterns(vec![tool]);
+    }
+    if let Some(approval_id) = decision.approval_id.clone() {
+        rule = rule.with_approval_id(approval_id);
+    }
+    rule
+}
+
 impl AppState {
     async fn recover_automation_definitions_from_run_snapshots(&self) -> anyhow::Result<usize> {
         let runs = self
@@ -173,7 +328,9 @@ impl AppState {
         self.incident_monitor_log_source_states
             .read()
             .await
-            .get(&incident_monitor_log_source_state_key(project_id, source_id))
+            .get(&incident_monitor_log_source_state_key(
+                project_id, source_id,
+            ))
             .cloned()
     }
 
@@ -181,8 +338,10 @@ impl AppState {
         &self,
         source_state: IncidentMonitorLogSourceState,
     ) -> anyhow::Result<IncidentMonitorLogSourceState> {
-        let key =
-            incident_monitor_log_source_state_key(&source_state.project_id, &source_state.source_id);
+        let key = incident_monitor_log_source_state_key(
+            &source_state.project_id,
+            &source_state.source_id,
+        );
         self.incident_monitor_log_source_states
             .write()
             .await
@@ -297,9 +456,10 @@ impl AppState {
             return Ok(());
         };
         let raw = fs::read_to_string(path).await?;
-        let parsed =
-            serde_json::from_str::<std::collections::HashMap<String, IncidentMonitorDraftRecord>>(&raw)
-                .unwrap_or_default();
+        let parsed = serde_json::from_str::<
+            std::collections::HashMap<String, IncidentMonitorDraftRecord>,
+        >(&raw)
+        .unwrap_or_default();
         *self.incident_monitor_drafts.write().await = parsed;
         Ok(())
     }
@@ -382,9 +542,10 @@ impl AppState {
             return Ok(());
         };
         let raw = fs::read_to_string(path).await?;
-        let parsed =
-            serde_json::from_str::<std::collections::HashMap<String, IncidentMonitorPostRecord>>(&raw)
-                .unwrap_or_default();
+        let parsed = serde_json::from_str::<
+            std::collections::HashMap<String, IncidentMonitorPostRecord>,
+        >(&raw)
+        .unwrap_or_default();
         *self.incident_monitor_posts.write().await = parsed;
         Ok(())
     }
@@ -451,7 +612,10 @@ impl AppState {
         Ok(())
     }
 
-    pub async fn list_incident_monitor_incidents(&self, limit: usize) -> Vec<IncidentMonitorIncidentRecord> {
+    pub async fn list_incident_monitor_incidents(
+        &self,
+        limit: usize,
+    ) -> Vec<IncidentMonitorIncidentRecord> {
         let mut rows = self
             .incident_monitor_incidents
             .read()
@@ -516,7 +680,10 @@ impl AppState {
         Ok(removed)
     }
 
-    pub async fn list_incident_monitor_posts(&self, limit: usize) -> Vec<IncidentMonitorPostRecord> {
+    pub async fn list_incident_monitor_posts(
+        &self,
+        limit: usize,
+    ) -> Vec<IncidentMonitorPostRecord> {
         let mut rows = self
             .incident_monitor_posts
             .read()
@@ -552,8 +719,15 @@ impl AppState {
         rows
     }
 
-    pub async fn get_incident_monitor_post(&self, post_id: &str) -> Option<IncidentMonitorPostRecord> {
-        self.incident_monitor_posts.read().await.get(post_id).cloned()
+    pub async fn get_incident_monitor_post(
+        &self,
+        post_id: &str,
+    ) -> Option<IncidentMonitorPostRecord> {
+        self.incident_monitor_posts
+            .read()
+            .await
+            .get(post_id)
+            .cloned()
     }
 
     pub async fn put_incident_monitor_post(
@@ -691,18 +865,19 @@ impl AppState {
     }
 
     pub async fn get_policy_decision(&self, decision_id: &str) -> Option<PolicyDecisionRecord> {
-        self.policy_decisions
-            .read()
-            .await
-            .get(decision_id)
-            .cloned()
+        self.policy_decisions.read().await.get(decision_id).cloned()
     }
 
     pub async fn record_policy_decision(
         &self,
         decision: PolicyDecisionRecord,
     ) -> anyhow::Result<PolicyDecisionRecord> {
-        let decision = decision.with_effective_policy_defaults();
+        let decision = if decision.effective_policy_snapshot().is_some() {
+            decision
+        } else {
+            let snapshot = self.resolve_effective_policy_snapshot(&decision).await;
+            decision.apply_effective_policy_snapshot(snapshot)
+        };
         {
             let mut guard = self.policy_decisions.write().await;
             guard.insert(decision.decision_id.clone(), decision.clone());
@@ -728,7 +903,27 @@ impl AppState {
         Ok(decision)
     }
 
-    fn intra_tenant_context_matches(candidate: &TenantContext, tenant_context: &TenantContext) -> bool {
+    async fn resolve_effective_policy_snapshot(
+        &self,
+        decision: &PolicyDecisionRecord,
+    ) -> tandem_enterprise_contract::EffectivePolicySnapshot {
+        let mut rules = self
+            .enterprise
+            .policy_rules
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        rules.push(runtime_policy_rule_for_decision(decision));
+        EnterprisePolicyResolver::new(rules)
+            .resolve(&policy_decision_input(decision), decision.created_at_ms)
+    }
+
+    fn intra_tenant_context_matches(
+        candidate: &TenantContext,
+        tenant_context: &TenantContext,
+    ) -> bool {
         candidate.org_id == tenant_context.org_id
             && candidate.workspace_id == tenant_context.workspace_id
             && candidate.deployment_id == tenant_context.deployment_id
@@ -744,7 +939,8 @@ impl AppState {
         direct_grants: Vec<ScopedGrant>,
     ) -> IntraTenantAuthorityGraph {
         let units = self
-            .enterprise.org_units
+            .enterprise
+            .org_units
             .read()
             .await
             .values()
@@ -752,7 +948,8 @@ impl AppState {
             .cloned()
             .collect::<Vec<_>>();
         let memberships = self
-            .enterprise.org_unit_memberships
+            .enterprise
+            .org_unit_memberships
             .read()
             .await
             .values()
@@ -762,11 +959,14 @@ impl AppState {
             .cloned()
             .collect::<Vec<_>>();
         let unit_access_grants = self
-            .enterprise.org_unit_access_grants
+            .enterprise
+            .org_unit_access_grants
             .read()
             .await
             .values()
-            .filter(|grant| Self::intra_tenant_context_matches(&grant.tenant_context, tenant_context))
+            .filter(|grant| {
+                Self::intra_tenant_context_matches(&grant.tenant_context, tenant_context)
+            })
             .cloned()
             .collect::<Vec<_>>();
 
@@ -917,7 +1117,10 @@ impl AppState {
         now_ms: u64,
     ) -> Option<String> {
         let decision_id = format!("policy_decision_{}", uuid::Uuid::new_v4().simple());
-        let data_classes = request.data_class.map(|class| vec![class]).unwrap_or_default();
+        let data_classes = request
+            .data_class
+            .map(|class| vec![class])
+            .unwrap_or_default();
         let metadata = serde_json::json!({
             "gate": {
                 "reviewer_eligibility": outcome.reviewer_eligibility.as_str(),
@@ -1133,7 +1336,11 @@ impl AppState {
         if let Some(tenant_context) = action
             .metadata
             .as_ref()
-            .and_then(|metadata| metadata.get("tenant_context").or_else(|| metadata.get("tenantContext")))
+            .and_then(|metadata| {
+                metadata
+                    .get("tenant_context")
+                    .or_else(|| metadata.get("tenantContext"))
+            })
             .cloned()
             .and_then(|value| serde_json::from_value::<TenantContext>(value).ok())
         {
@@ -1186,7 +1393,10 @@ impl AppState {
         guard.clone()
     }
 
-    pub async fn list_incident_monitor_drafts(&self, limit: usize) -> Vec<IncidentMonitorDraftRecord> {
+    pub async fn list_incident_monitor_drafts(
+        &self,
+        limit: usize,
+    ) -> Vec<IncidentMonitorDraftRecord> {
         let mut rows = self
             .incident_monitor_drafts
             .read()
@@ -1199,8 +1409,15 @@ impl AppState {
         rows
     }
 
-    pub async fn get_incident_monitor_draft(&self, draft_id: &str) -> Option<IncidentMonitorDraftRecord> {
-        self.incident_monitor_drafts.read().await.get(draft_id).cloned()
+    pub async fn get_incident_monitor_draft(
+        &self,
+        draft_id: &str,
+    ) -> Option<IncidentMonitorDraftRecord> {
+        self.incident_monitor_drafts
+            .read()
+            .await
+            .get(draft_id)
+            .cloned()
     }
 
     pub async fn put_incident_monitor_draft(
