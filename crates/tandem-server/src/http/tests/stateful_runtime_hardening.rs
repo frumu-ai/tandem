@@ -344,6 +344,91 @@ async fn stateful_runtime_enterprise_scope_filters_are_tenant_scoped() {
 }
 
 #[tokio::test]
+async fn stateful_runtime_delegation_filter_requires_stored_grant_id() {
+    let state = test_state().await;
+    let tenant_a = tenant("org-enterprise-a", "workspace-a", "operator-a");
+    seed_runtime_delegation_grant(
+        &state,
+        &tenant_a,
+        "finance",
+        "repo-finance",
+        "grant-finance",
+    )
+    .await;
+    let mut scope = enterprise_scope(
+        "org-enterprise-a",
+        "workspace-a",
+        "finance",
+        "repo-finance",
+        "grant-finance",
+    );
+    scope
+        .as_object_mut()
+        .expect("enterprise scope object")
+        .insert("delegation_grant_ids".to_string(), json!([]));
+    insert_workflow_run(
+        &state,
+        workflow_run("run-without-grant", tenant_a.clone(), scope),
+    )
+    .await;
+
+    let payload = get_json(
+        state,
+        "/stateful-runtime/runs?delegation_grant_id=grant-finance",
+        &tenant_a,
+    )
+    .await;
+    assert_eq!(payload["count"], json!(0));
+}
+
+#[tokio::test]
+async fn stateful_runtime_grant_only_scope_resolves_active_authority() {
+    let state = test_state().await;
+    let tenant_a = tenant("org-enterprise-a", "workspace-a", "operator-a");
+    seed_runtime_delegation_grant(
+        &state,
+        &tenant_a,
+        "finance",
+        "repo-finance",
+        "grant-finance",
+    )
+    .await;
+    let mut scope = enterprise_scope(
+        "org-enterprise-a",
+        "workspace-a",
+        "finance",
+        "repo-finance",
+        "grant-finance",
+    );
+    scope
+        .as_object_mut()
+        .expect("enterprise scope object")
+        .remove("owning_org_unit_id");
+    insert_workflow_run(
+        &state,
+        workflow_run("run-grant-only", tenant_a.clone(), scope),
+    )
+    .await;
+
+    let payload = get_json(
+        state,
+        "/stateful-runtime/runs?delegation_grant_id=grant-finance&resource_kind=repository&resource_id=repo-finance",
+        &tenant_a,
+    )
+    .await;
+    assert_eq!(payload["count"], json!(1));
+    assert_eq!(payload["runs"][0]["run"]["run_id"], json!("run-grant-only"));
+    assert_eq!(
+        payload["runs"][0]["enterprise_scope"]["delegation_grant_authority"]["status"],
+        json!("active")
+    );
+    assert_eq!(
+        payload["runs"][0]["enterprise_scope"]["delegation_grant_authority"]["missing_grant_ids"],
+        json!([])
+    );
+}
+
+#[tokio::test]
 async fn stateful_runtime_reliability_cursor_only_pages_matching_collection() {
     let state = test_state().await;
     let tenant_a = tenant("org-cursor-a", "workspace-a", "operator-a");

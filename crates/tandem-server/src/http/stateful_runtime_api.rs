@@ -510,9 +510,9 @@ fn active_org_unit_grants_for_scope<'a>(
     catalog: &'a EnterpriseScopeCatalog,
     scope: &crate::stateful_runtime::StatefulRuntimeScope,
 ) -> Vec<&'a OrganizationUnitAccessGrant> {
-    let Some(org_unit_id) = scope.owning_org_unit_id.as_deref() else {
+    if scope.owning_org_unit_id.is_none() && scope.delegation_grant_ids.is_empty() {
         return Vec::new();
-    };
+    }
     let now = crate::util::time::now_ms();
     let mut grants = catalog
         .org_unit_access_grants
@@ -520,7 +520,11 @@ fn active_org_unit_grants_for_scope<'a>(
         .filter(|grant| {
             tenant_matches(&grant.tenant_context, &scope.tenant_context)
                 && grant.effect == AccessEffect::Allow
-                && principal_matches_org_unit_id(&grant.unit, org_unit_id)
+                && scope
+                    .owning_org_unit_id
+                    .as_deref()
+                    .map(|org_unit_id| principal_matches_org_unit_id(&grant.unit, org_unit_id))
+                    .unwrap_or(true)
                 && grant.is_active_at(now)
                 && delegation_grant_ids_authorize_scope(scope, grant)
                 && scope
@@ -827,6 +831,13 @@ fn delegation_grant_filter_matches(
     let Some(expected) = normalized_filter(expected) else {
         return true;
     };
+    if !scope
+        .delegation_grant_ids
+        .iter()
+        .any(|grant_id| normalize_filter_value(grant_id) == expected)
+    {
+        return false;
+    }
     active_org_unit_grants_for_scope(catalog, scope)
         .iter()
         .any(|grant| normalize_filter_value(&grant.grant_id) == expected)
