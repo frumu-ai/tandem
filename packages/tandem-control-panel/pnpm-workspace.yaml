@@ -1,3 +1,6 @@
+packages:
+  - .
+
 allowBuilds:
   '@frumu/tandem': true
 minimumReleaseAgeExclude:
