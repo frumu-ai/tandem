@@ -319,6 +319,14 @@ async fn publish_local_record(
         evidence_digest,
     )
     .await?;
+    // TAN-556: actually persist the telemetry record to the configured sink
+    // before reporting the publish as posted, so `record_telemetry` isn't a
+    // receipt-only no-op. A write failure surfaces as a publish failure rather
+    // than a false success.
+    if destination.kind == IncidentMonitorDestinationKind::Telemetry {
+        let sink = resolve_telemetry_sink_path(state, &destination.telemetry_path());
+        persist_incident_monitor_telemetry(&sink, &receipt).await?;
+    }
     let response_excerpt = receipt
         .get("summary")
         .and_then(Value::as_str)
@@ -422,6 +430,50 @@ fn apply_existing_local_post_to_draft(
     draft.last_post_error = None;
 }
 
+/// Resolve the telemetry sink file. Absolute operator paths are honored as-is;
+/// a relative path is anchored under the incident-monitor data directory rather
+/// than the process working directory, keeping writes inside the state tree.
+fn resolve_telemetry_sink_path(state: &AppState, configured: &str) -> std::path::PathBuf {
+    let path = std::path::Path::new(configured);
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    state
+        .incident_monitor_log_evidence_dir
+        .parent()
+        .map(|base| base.join(path))
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
+/// Append a telemetry record as a JSON line to the resolved sink file, creating
+/// parent directories as needed (TAN-556).
+async fn persist_incident_monitor_telemetry(
+    path: &std::path::Path,
+    receipt: &Value,
+) -> anyhow::Result<()> {
+    use anyhow::Context;
+    use tokio::io::AsyncWriteExt;
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("create telemetry sink directory {}", parent.display()))?;
+        }
+    }
+    let mut line = serde_json::to_string(receipt)?;
+    line.push('\n');
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await
+        .with_context(|| format!("open telemetry sink {}", path.display()))?;
+    file.write_all(line.as_bytes())
+        .await
+        .with_context(|| format!("append telemetry record to {}", path.display()))?;
+    Ok(())
+}
+
 async fn build_receipt(
     state: &AppState,
     draft: &IncidentMonitorDraftRecord,
@@ -481,6 +533,10 @@ async fn build_receipt(
                 "operation": "store_memory_summary",
                 "status": "posted",
                 "stored": true,
+                // TAN-556: the durable record is the incident-monitor post/receipt
+                // store — name it explicitly so `stored` isn't read as a claim
+                // about a separate memory subsystem that isn't written.
+                "storage_backend": "incident_monitor_posts",
                 "record_id": record_id,
                 "memory_ref": record_id,
                 "category": category,

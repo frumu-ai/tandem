@@ -151,6 +151,21 @@ async fn incident_monitor_telemetry_destination_records_filters_and_skips_duplic
         .expect("post id")
         .to_string();
 
+    // TAN-556: the telemetry record is actually written to the sink, not just
+    // acknowledged by the receipt. The relative path resolves under the
+    // incident-monitor data dir.
+    let telemetry_sink = state
+        .incident_monitor_log_evidence_dir
+        .parent()
+        .expect("evidence dir parent")
+        .join("incidents");
+    let telemetry_contents =
+        std::fs::read_to_string(&telemetry_sink).expect("telemetry sink written");
+    assert!(
+        telemetry_contents.contains("incident_monitor_telemetry"),
+        "telemetry sink should contain the record: {telemetry_contents}"
+    );
+
     let (second_status, second_payload) =
         publish_incident_monitor_local_draft(app.clone(), &draft_id).await;
     assert_eq!(second_status, StatusCode::OK, "{second_payload:?}");

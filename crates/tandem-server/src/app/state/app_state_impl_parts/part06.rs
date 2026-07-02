@@ -74,6 +74,40 @@ fn resolve_incident_monitor_state_read_path(
     None
 }
 
+/// Delete incident-monitor log-evidence artifact files older than `cutoff_ms`
+/// (by mtime), walking the project/source subdirectories. Best-effort: I/O
+/// errors on individual entries are skipped so one unreadable file can't stall
+/// retention pruning (TAN-556).
+async fn prune_incident_monitor_evidence_dir(dir: &std::path::Path, cutoff_ms: u64) -> usize {
+    let mut removed = 0usize;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let mut entries = match fs::read_dir(&current).await {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            let Ok(metadata) = entry.metadata().await else {
+                continue;
+            };
+            if metadata.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let Ok(modified) = metadata.modified() else {
+                continue;
+            };
+            if let Ok(elapsed) = modified.duration_since(std::time::UNIX_EPOCH) {
+                if (elapsed.as_millis() as u64) < cutoff_ms && fs::remove_file(&path).await.is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+    }
+    removed
+}
+
 fn policy_decision_scope_level(decision: &PolicyDecisionRecord) -> EnterprisePolicyScopeLevel {
     if policy_decision_workflow_phase(decision).is_some() {
         EnterprisePolicyScopeLevel::Phase
@@ -720,6 +754,47 @@ impl AppState {
             serde_json::to_string_pretty(&*guard)?
         };
         write_state_file_atomically(&self.incident_monitor_posts_path, payload).await
+    }
+
+    /// TAN-556: enforce `safety_defaults.retention_days` by pruning receipts,
+    /// incidents and log-evidence artifacts older than the retention window.
+    /// Returns `(posts, incidents, artifacts)` removed. A window of 0 (unset)
+    /// prunes nothing.
+    pub async fn prune_incident_monitor_retention(
+        &self,
+        retention_days: u64,
+    ) -> anyhow::Result<(usize, usize, usize)> {
+        if retention_days == 0 {
+            return Ok((0, 0, 0));
+        }
+        let cutoff = crate::now_ms()
+            .saturating_sub(retention_days.saturating_mul(24 * 60 * 60 * 1_000));
+
+        let removed_posts = {
+            let mut guard = self.incident_monitor_posts.write().await;
+            let before = guard.len();
+            guard.retain(|_, post| post.updated_at_ms >= cutoff);
+            before - guard.len()
+        };
+        if removed_posts > 0 {
+            self.persist_incident_monitor_posts().await?;
+        }
+
+        let removed_incidents = {
+            let mut guard = self.incident_monitor_incidents.write().await;
+            let before = guard.len();
+            guard.retain(|_, incident| incident.updated_at_ms >= cutoff);
+            before - guard.len()
+        };
+        if removed_incidents > 0 {
+            self.persist_incident_monitor_incidents().await?;
+        }
+
+        let removed_artifacts =
+            prune_incident_monitor_evidence_dir(&self.incident_monitor_log_evidence_dir, cutoff)
+                .await;
+
+        Ok((removed_posts, removed_incidents, removed_artifacts))
     }
 
     pub async fn load_external_actions(&self) -> anyhow::Result<()> {

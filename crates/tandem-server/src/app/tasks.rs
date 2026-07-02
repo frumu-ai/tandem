@@ -1217,6 +1217,31 @@ pub async fn run_incident_monitor_recovery_sweep(state: AppState) {
         if !status.config.enabled || status.config.paused {
             continue;
         }
+        // TAN-556: enforce the retention window (receipts / incidents / evidence
+        // artifacts) on the same sweep so old data doesn't accumulate unbounded.
+        if let Some(retention_days) = status
+            .config
+            .safety_defaults
+            .retention_days
+            .filter(|days| *days > 0)
+        {
+            match state.prune_incident_monitor_retention(retention_days).await {
+                Ok((posts, incidents, artifacts)) if posts + incidents + artifacts > 0 => {
+                    tracing::info!(
+                        posts,
+                        incidents,
+                        artifacts,
+                        retention_days,
+                        "incident monitor retention sweep pruned stale data"
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    "incident monitor retention sweep failed to prune stale data"
+                ),
+            }
+        }
         let recovered =
             match crate::incident_monitor::service::recover_overdue_incident_monitor_triage_runs(
                 &state,
