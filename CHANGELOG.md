@@ -211,8 +211,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime policy decision recording now resolves through the enterprise policy
   inheritance resolver, loading `enterprise/policy_rules.json`, evaluating every
   recorded data class, enforcing the resolved result in gate and authority
-  helpers, and preserving inherited decision sources for replay instead of only
-  writing single-source fallback snapshots.
+  helpers plus fintech protected-action receipt checks, and preserving inherited
+  decision sources for replay instead of only writing single-source fallback
+  snapshots.
 - Backend CI now runs the touched-file size gate before dependency installation
   and Rust lint/build work so oversized files fail fast instead of burning the
   full backend job first.
