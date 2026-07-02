@@ -869,10 +869,25 @@ impl AppState {
             .cloned()
     }
 
+    /// TAN-546: stamp a publish receipt with the tenant/workspace of its draft
+    /// so tenant-scoped assessment reports can filter receipts the same way they
+    /// filter incidents and audit events. Only fills gaps — an adapter that
+    /// already set the fields wins, and single-tenant drafts leave them None.
+    async fn stamp_incident_monitor_post_tenant(&self, post: &mut IncidentMonitorPostRecord) {
+        if post.tenant_id.is_some() || post.workspace_id.is_some() {
+            return;
+        }
+        if let Some(draft) = self.get_incident_monitor_draft(&post.draft_id).await {
+            post.tenant_id = draft.tenant_id.clone();
+            post.workspace_id = draft.workspace_id.clone();
+        }
+    }
+
     pub async fn put_incident_monitor_post(
         &self,
-        post: IncidentMonitorPostRecord,
+        mut post: IncidentMonitorPostRecord,
     ) -> anyhow::Result<IncidentMonitorPostRecord> {
+        self.stamp_incident_monitor_post_tenant(&mut post).await;
         self.incident_monitor_posts
             .write()
             .await
@@ -883,8 +898,9 @@ impl AppState {
 
     pub async fn try_claim_incident_monitor_post_idempotency(
         &self,
-        post: IncidentMonitorPostRecord,
+        mut post: IncidentMonitorPostRecord,
     ) -> anyhow::Result<(bool, IncidentMonitorPostRecord)> {
+        self.stamp_incident_monitor_post_tenant(&mut post).await;
         let now = crate::now_ms();
         let pending_claim_ttl_ms = 10 * 60 * 1000;
         let result = {

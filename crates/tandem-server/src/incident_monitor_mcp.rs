@@ -492,6 +492,8 @@ fn pending_mcp_tool_post(
     IncidentMonitorPostRecord {
         post_id: format!("failure-post-{}", uuid::Uuid::new_v4().simple()),
         draft_id: draft.draft_id.clone(),
+        tenant_id: draft.tenant_id.clone(),
+        workspace_id: draft.workspace_id.clone(),
         incident_id: incident.map(|row| row.incident_id.clone()),
         fingerprint: draft.fingerprint.clone(),
         repo: draft.repo.clone(),

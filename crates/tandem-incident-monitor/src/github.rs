@@ -210,6 +210,8 @@ pub async fn record_post_failure(
     let post = IncidentMonitorPostRecord {
         post_id: format!("failure-post-{}", uuid::Uuid::new_v4().simple()),
         draft_id: draft.draft_id.clone(),
+        tenant_id: draft.tenant_id.clone(),
+        workspace_id: draft.workspace_id.clone(),
         incident_id: incident_id.map(|value| value.to_string()),
         fingerprint: draft.fingerprint.clone(),
         repo: draft.repo.clone(),
@@ -465,6 +467,8 @@ pub async fn publish_draft(
             let post = IncidentMonitorPostRecord {
                 post_id: format!("failure-post-{}", uuid::Uuid::new_v4().simple()),
                 draft_id: draft.draft_id.clone(),
+                tenant_id: draft.tenant_id.clone(),
+                workspace_id: draft.workspace_id.clone(),
                 incident_id: incident.as_ref().map(|row| row.incident_id.clone()),
                 fingerprint: draft.fingerprint.clone(),
                 repo: draft.repo.clone(),
@@ -668,6 +672,8 @@ async fn create_issue_from_draft(
     let claim = IncidentMonitorPostRecord {
         post_id: format!("failure-post-{}", uuid::Uuid::new_v4().simple()),
         draft_id: draft.draft_id.clone(),
+        tenant_id: draft.tenant_id.clone(),
+        workspace_id: draft.workspace_id.clone(),
         incident_id: incident.map(|row| row.incident_id.clone()),
         fingerprint: draft.fingerprint.clone(),
         repo: target_repo.to_string(),

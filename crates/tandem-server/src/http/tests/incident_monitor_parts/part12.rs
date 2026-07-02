@@ -603,3 +603,89 @@ fn assert_posture_fingerprints_are_unique(findings: &[Value]) {
         );
     }
 }
+
+#[tokio::test]
+#[serial_test::serial(incident_monitor_http)]
+async fn incident_monitor_assessment_report_scopes_destination_receipts_by_tenant() {
+    // TAN-546: a tenant-scoped assessment report must not surface another
+    // tenant's destination receipts (external_url / target_ref / repo), the
+    // same way it already scopes incidents and audit events.
+    let state = test_state().await;
+    state.set_api_token(Some("tk_admin".to_string())).await;
+    let now = crate::now_ms();
+
+    // Two drafts in two different tenants; receipts inherit the draft's tenant.
+    for (suffix, org, workspace) in [
+        ("a", "org-a", "workspace-a"),
+        ("b", "org-b", "workspace-b"),
+    ] {
+        state
+            .put_incident_monitor_draft(crate::IncidentMonitorDraftRecord {
+                draft_id: format!("draft-{suffix}"),
+                fingerprint: format!("fp-{suffix}"),
+                repo: format!("acme/{suffix}-repo"),
+                tenant_id: Some(org.to_string()),
+                workspace_id: Some(workspace.to_string()),
+                created_at_ms: now,
+                ..Default::default()
+            })
+            .await
+            .expect("draft");
+        state
+            .put_incident_monitor_post(crate::IncidentMonitorPostRecord {
+                post_id: format!("post-{suffix}"),
+                draft_id: format!("draft-{suffix}"),
+                fingerprint: format!("fp-{suffix}"),
+                repo: format!("acme/{suffix}-repo"),
+                operation: "create_issue".to_string(),
+                status: "posted".to_string(),
+                destination_kind: Some(crate::IncidentMonitorDestinationKind::GithubIssue),
+                external_url: Some(format!("https://github.com/acme/{suffix}-repo/issues/1")),
+                target_ref: Some(format!("acme/{suffix}-repo")),
+                idempotency_key: format!("idem-{suffix}"),
+                created_at_ms: now,
+                updated_at_ms: now,
+                ..Default::default()
+            })
+            .await
+            .expect("post");
+    }
+
+    // The receipt persisted for tenant A must carry A's tenant stamp.
+    let stored_a = state
+        .list_incident_monitor_posts(10)
+        .await
+        .into_iter()
+        .find(|post| post.post_id == "post-a")
+        .expect("stored post a");
+    assert_eq!(stored_a.tenant_id.as_deref(), Some("org-a"));
+    assert_eq!(stored_a.workspace_id.as_deref(), Some("workspace-a"));
+
+    let app = app_router(state);
+    let payload = post_incident_monitor_assessment_report(
+        app,
+        "/incident-monitor/security/assessment-report",
+        json!({}),
+        Some(("org-a", "workspace-a", "security-admin", "tk_admin")),
+    )
+    .await;
+
+    let receipts = payload["sections"]["destination_receipts"]["receipts"]
+        .as_array()
+        .expect("receipts array");
+    assert_eq!(
+        receipts.len(),
+        1,
+        "tenant-scoped report must include only the caller tenant's receipt: {receipts:?}"
+    );
+    assert_eq!(
+        payload["sections"]["destination_receipts"]["counts"]["receipts"],
+        json!(1)
+    );
+    // Nothing belonging to tenant B may leak anywhere in the report body.
+    let serialized = payload.to_string();
+    assert!(
+        !serialized.contains("b-repo"),
+        "tenant B receipt target leaked into tenant A report"
+    );
+}

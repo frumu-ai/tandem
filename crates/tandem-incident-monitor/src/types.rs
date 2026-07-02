@@ -1147,6 +1147,14 @@ pub struct IncidentMonitorPostRecord {
     pub response_excerpt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Tenant/workspace this receipt belongs to, stamped at publish so a
+    /// tenant-scoped assessment report can filter receipts the same way it
+    /// already filters incidents and audit events (TAN-546). `None` on legacy
+    /// records predating this field / in single-tenant deployments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
 }
