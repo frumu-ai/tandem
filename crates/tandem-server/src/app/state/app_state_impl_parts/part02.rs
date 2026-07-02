@@ -72,6 +72,11 @@ impl AppState {
         }
 
         let config = self.incident_monitor_config().await;
+        if config.safety_defaults.redact_secrets {
+            crate::incident_monitor::safety_context::redact_incident_monitor_submission_secrets(
+                &mut submission,
+            );
+        }
         let repo = submission
             .repo
             .clone()

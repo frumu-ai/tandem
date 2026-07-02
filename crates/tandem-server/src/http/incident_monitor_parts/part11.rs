@@ -891,7 +891,7 @@ fn incident_monitor_assessment_request_has_api_token(headers: &HeaderMap, requir
         .get("x-agent-token")
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
-        .is_some_and(|value| value == required)
+        .is_some_and(|value| crate::constant_time_str_eq(value, required))
     {
         return true;
     }
@@ -899,7 +899,7 @@ fn incident_monitor_assessment_request_has_api_token(headers: &HeaderMap, requir
         .get("x-tandem-token")
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
-        .is_some_and(|value| value == required)
+        .is_some_and(|value| crate::constant_time_str_eq(value, required))
     {
         return true;
     }
@@ -913,5 +913,5 @@ fn incident_monitor_assessment_request_has_api_token(headers: &HeaderMap, requir
                 .or_else(|| value.strip_prefix("bearer "))
         })
         .map(str::trim)
-        .is_some_and(|value| value == required)
+        .is_some_and(|value| crate::constant_time_str_eq(value, required))
 }

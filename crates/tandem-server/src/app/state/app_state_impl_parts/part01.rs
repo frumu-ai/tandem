@@ -89,13 +89,6 @@ fn check_file_permissions(_path: &std::path::Path) {
     // Windows DACL permissions are checked less frequently in this context.
 }
 
-async fn write_state_file_atomically(path: &PathBuf, payload: String) -> anyhow::Result<()> {
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, payload).await?;
-    fs::rename(&tmp, path).await?;
-    Ok(())
-}
-
 async fn validate_incident_monitor_monitored_projects(
     state: &AppState,
     config: &mut IncidentMonitorConfig,

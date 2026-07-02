@@ -13,8 +13,15 @@ const checkedPaths = [
   ".github/",
   "CHANGELOG.md",
   "RELEASE_NOTES.md",
+  "README.md",
+  "README.zh-CN.md",
   "engine/",
   "eval_datasets/",
+  "examples/",
+  "agent-templates/",
+  "contracts/",
+  "manifests/",
+  "specs/",
   "package.json",
   "apps/tandem-desktop/src/",
   "apps/tandem-desktop/src-tauri/src/",
@@ -22,6 +29,8 @@ const checkedPaths = [
   "crates/tandem-incident-monitor/",
   "crates/tandem-runtime/",
   "crates/tandem-server/",
+  "crates/tandem-types/",
+  "crates/tandem-wire/",
   "docs/",
   "guide/",
   "packages/create-tandem-panel/",
@@ -35,24 +44,33 @@ const ignoredPathParts = new Set([".git", ".turbo", "dist", "node_modules", "tar
 
 const ignoredFiles = new Set(["scripts/check-incident-monitor-terminology.mjs"]);
 
+// Canonical, lowercased patterns. Matching is case-insensitive so mixed-case
+// residuals like `Tandem-Bug-Monitor` are caught via `bug-monitor`.
 const staleTerms = [
-  "Bug Monitor",
-  "Bug monitor",
   "bug monitor",
-  "BugMonitor",
-  "bugMonitor",
+  "bugmonitor",
   "bug_monitor",
   "bug-monitor",
-  "Failure Reporter",
-  "Failure reporter",
   "failure reporter",
-  "FailureReporter",
+  "failurereporter",
   "failure-reporter",
   "failure_reporter",
   "tbm_",
 ];
 
-const allowedMatches = [];
+const allowedMatches = [
+  // `TANDEM_FAILURE_REPORTER_*` are legacy environment-variable names read only
+  // as backward-compatible fallbacks (see env_value(new, legacy)); they are an
+  // intentional compatibility surface, not stale terminology to rename.
+  {
+    file: "crates/tandem-server/src/config/env.rs",
+    line: /TANDEM_FAILURE_REPORTER_/,
+  },
+  {
+    file: "crates/tandem-server/src/config/engine.rs",
+    line: /TANDEM_FAILURE_REPORTER_/,
+  },
+];
 
 function normalizePath(file) {
   return file.split(path.sep).join("/");
@@ -79,11 +97,13 @@ function readTrackedFiles() {
 }
 
 function lineContainsStaleTerm(line) {
-  return staleTerms.some((term) => line.includes(term));
+  const lowered = line.toLowerCase();
+  return staleTerms.some((term) => lowered.includes(term));
 }
 
 function pathContainsStaleTerm(file) {
-  return staleTerms.some((term) => file.includes(term));
+  const lowered = file.toLowerCase();
+  return staleTerms.some((term) => lowered.includes(term));
 }
 
 function isAllowed(file, line) {

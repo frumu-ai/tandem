@@ -18,6 +18,21 @@ fn incident_monitor_triage_timeout_deadline_ms(created_at_ms: u64, timeout_ms: u
 
 const INCIDENT_MONITOR_TRIAGE_AUTOMATION_PREFIX: &str = "automation-v2-incident-monitor-triage-";
 const INCIDENT_MONITOR_TRIAGE_AGENT_ROLE: &str = "incident_monitor_triage_agent";
+/// Base delay before a timed-out draft is re-surfaced for another recovery
+/// attempt. Doubles per attempt (see `incident_monitor_recovery_backoff_ms`).
+const INCIDENT_MONITOR_RECOVERY_BACKOFF_BASE_MS: u64 = 30_000;
+/// Ceiling on the recovery backoff so a stuck draft is still retried roughly
+/// hourly (transient failures self-heal) without churning every sweep.
+const INCIDENT_MONITOR_RECOVERY_BACKOFF_MAX_MS: u64 = 3_600_000;
+
+/// Exponential backoff for re-surfacing a timed-out draft: 30s, 60s, 120s, ...
+/// capped at one hour. `attempts` is the number of recovery attempts already
+/// made (0 for the first).
+fn incident_monitor_recovery_backoff_ms(attempts: u32) -> u64 {
+    INCIDENT_MONITOR_RECOVERY_BACKOFF_BASE_MS
+        .saturating_mul(2u64.saturating_pow(attempts.min(20)))
+        .min(INCIDENT_MONITOR_RECOVERY_BACKOFF_MAX_MS)
+}
 
 /// Strip per-run identifiers from a failure reason before fingerprinting
 /// so that recurrences of the same logical failure dedup correctly.
@@ -319,8 +334,28 @@ pub async fn recover_overdue_incident_monitor_triage_runs(
             continue;
         }
         if draft_is_triage_timed_out(&draft) {
+            if let Some(next_recovery_at_ms) = draft.next_recovery_at_ms {
+                if now < next_recovery_at_ms {
+                    // Still inside the exponential-backoff window from the last
+                    // attempt; skip this sweep instead of re-publishing (and
+                    // emitting publish/probe audit events) every tick. The draft
+                    // stays retryable so a transient failure self-heals.
+                    continue;
+                }
+            }
             let incident_id =
                 incident_monitor_incident_for_draft(state, &draft.draft_id, &triage_run_id).await;
+            let mut updated = draft.clone();
+            let backoff_ms = incident_monitor_recovery_backoff_ms(updated.recovery_attempts);
+            updated.recovery_attempts = updated.recovery_attempts.saturating_add(1);
+            updated.next_recovery_at_ms = Some(now.saturating_add(backoff_ms));
+            if let Err(error) = state.put_incident_monitor_draft(updated).await {
+                tracing::warn!(
+                    draft_id = %draft.draft_id,
+                    error = %error,
+                    "failed to persist incident monitor recovery attempt count",
+                );
+            }
             recovered.push((draft.draft_id.clone(), incident_id));
             continue;
         }
@@ -853,7 +888,12 @@ pub async fn process_event(
         // failure.
         anyhow::bail!("skipping recursive incident monitor triage event: {reason}");
     }
-    let submission = build_incident_monitor_submission_from_event(state, config, event).await?;
+    let mut submission = build_incident_monitor_submission_from_event(state, config, event).await?;
+    if config.safety_defaults.redact_secrets {
+        crate::incident_monitor::safety_context::redact_incident_monitor_submission_secrets(
+            &mut submission,
+        );
+    }
     let duplicate_matches =
         crate::http::incident_monitor::incident_monitor_failure_pattern_matches(
             state,

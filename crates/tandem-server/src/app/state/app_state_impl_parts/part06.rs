@@ -10,6 +10,38 @@ fn automation_v2_definition_is_context_recovered(automation: &AutomationV2Spec) 
         == Some("context_run")
 }
 
+/// Move an unparseable incident-monitor state file aside instead of silently
+/// discarding it. Loads run at startup with their errors ignored, so without
+/// this a corrupt file would be replaced by an empty default on the next
+/// persist — losing publish receipts / idempotency keys and re-filing duplicate
+/// external issues. Quarantining preserves the original bytes for recovery and
+/// logs loudly, while the caller continues with empty in-memory state.
+async fn quarantine_corrupt_incident_monitor_state(
+    path: &std::path::Path,
+    kind: &str,
+    error: &serde_json::Error,
+) {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("incident_monitor_state.json");
+    let quarantined = path.with_file_name(format!("{file_name}.corrupt-{}", now_ms()));
+    match fs::rename(path, &quarantined).await {
+        Ok(()) => tracing::error!(
+            path = %path.display(),
+            quarantined = %quarantined.display(),
+            error = %error,
+            "incident monitor {kind} state failed to parse; quarantined the corrupt file and continued with empty state"
+        ),
+        Err(rename_error) => tracing::error!(
+            path = %path.display(),
+            error = %error,
+            rename_error = %rename_error,
+            "incident monitor {kind} state failed to parse and could not be quarantined; leaving the file in place to avoid overwriting recoverable data"
+        ),
+    }
+}
+
 fn policy_decision_scope_level(decision: &PolicyDecisionRecord) -> EnterprisePolicyScopeLevel {
     if policy_decision_workflow_phase(decision).is_some() {
         EnterprisePolicyScopeLevel::Phase
@@ -328,9 +360,14 @@ impl AppState {
             return Ok(());
         };
         check_file_permissions(&path);
-        let raw = fs::read_to_string(path).await?;
-        let parsed = serde_json::from_str::<IncidentMonitorConfig>(&raw)
-            .unwrap_or_else(|_| config::env::resolve_incident_monitor_env_config());
+        let raw = fs::read_to_string(&path).await?;
+        let parsed = match serde_json::from_str::<IncidentMonitorConfig>(&raw) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                quarantine_corrupt_incident_monitor_state(&path, "config", &error).await;
+                config::env::resolve_incident_monitor_env_config()
+            }
+        };
         *self.incident_monitor_config.write().await = parsed;
         Ok(())
     }
@@ -343,8 +380,7 @@ impl AppState {
             let guard = self.incident_monitor_config.read().await;
             serde_json::to_string_pretty(&*guard)?
         };
-        fs::write(&self.incident_monitor_config_path, payload).await?;
-        Ok(())
+        write_state_file_atomically(&self.incident_monitor_config_path, payload).await
     }
 
     pub async fn incident_monitor_config(&self) -> IncidentMonitorConfig {
@@ -511,7 +547,7 @@ impl AppState {
                 .find(|row| {
                     row.enabled
                         && row.project_id == project_id
-                        && row.key_hash == key_hash
+                        && crate::constant_time_str_eq(&row.key_hash, &key_hash)
                         && row.scopes.iter().any(|scope| scope == required_scope)
                 })
                 .cloned()
@@ -543,11 +579,17 @@ impl AppState {
         } else {
             return Ok(());
         };
-        let raw = fs::read_to_string(path).await?;
-        let parsed = serde_json::from_str::<
+        let raw = fs::read_to_string(&path).await?;
+        let parsed = match serde_json::from_str::<
             std::collections::HashMap<String, IncidentMonitorDraftRecord>,
         >(&raw)
-        .unwrap_or_default();
+        {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                quarantine_corrupt_incident_monitor_state(&path, "drafts", &error).await;
+                std::collections::HashMap::new()
+            }
+        };
         *self.incident_monitor_drafts.write().await = parsed;
         Ok(())
     }
@@ -560,8 +602,7 @@ impl AppState {
             let guard = self.incident_monitor_drafts.read().await;
             serde_json::to_string_pretty(&*guard)?
         };
-        fs::write(&self.incident_monitor_drafts_path, payload).await?;
-        Ok(())
+        write_state_file_atomically(&self.incident_monitor_drafts_path, payload).await
     }
 
     pub async fn load_incident_monitor_incidents(&self) -> anyhow::Result<()> {
@@ -586,11 +627,17 @@ impl AppState {
         } else {
             return Ok(());
         };
-        let raw = fs::read_to_string(path).await?;
-        let parsed = serde_json::from_str::<
+        let raw = fs::read_to_string(&path).await?;
+        let parsed = match serde_json::from_str::<
             std::collections::HashMap<String, IncidentMonitorIncidentRecord>,
         >(&raw)
-        .unwrap_or_default();
+        {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                quarantine_corrupt_incident_monitor_state(&path, "incidents", &error).await;
+                std::collections::HashMap::new()
+            }
+        };
         *self.incident_monitor_incidents.write().await = parsed;
         Ok(())
     }
@@ -603,8 +650,7 @@ impl AppState {
             let guard = self.incident_monitor_incidents.read().await;
             serde_json::to_string_pretty(&*guard)?
         };
-        fs::write(&self.incident_monitor_incidents_path, payload).await?;
-        Ok(())
+        write_state_file_atomically(&self.incident_monitor_incidents_path, payload).await
     }
 
     pub async fn load_incident_monitor_posts(&self) -> anyhow::Result<()> {
@@ -629,11 +675,17 @@ impl AppState {
         } else {
             return Ok(());
         };
-        let raw = fs::read_to_string(path).await?;
-        let parsed = serde_json::from_str::<
+        let raw = fs::read_to_string(&path).await?;
+        let parsed = match serde_json::from_str::<
             std::collections::HashMap<String, IncidentMonitorPostRecord>,
         >(&raw)
-        .unwrap_or_default();
+        {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                quarantine_corrupt_incident_monitor_state(&path, "posts", &error).await;
+                std::collections::HashMap::new()
+            }
+        };
         *self.incident_monitor_posts.write().await = parsed;
         Ok(())
     }
@@ -646,8 +698,7 @@ impl AppState {
             let guard = self.incident_monitor_posts.read().await;
             serde_json::to_string_pretty(&*guard)?
         };
-        fs::write(&self.incident_monitor_posts_path, payload).await?;
-        Ok(())
+        write_state_file_atomically(&self.incident_monitor_posts_path, payload).await
     }
 
     pub async fn load_external_actions(&self) -> anyhow::Result<()> {

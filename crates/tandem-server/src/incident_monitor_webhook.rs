@@ -27,6 +27,11 @@ const MIN_TIMEOUT_MS: u64 = 250;
 const MAX_TIMEOUT_MS: u64 = 15_000;
 const DEFAULT_MAX_ATTEMPTS: u64 = 2;
 const MAX_ATTEMPTS: u64 = 3;
+/// Maximum number of publish-trigger attempts (recovery sweeps / auto-post) for
+/// a webhook delivery before it is terminally suppressed. Webhook delivery is
+/// idempotent (each request carries an idempotency key), so a transient failure
+/// is retried on the next trigger rather than permanently suppressed after one.
+const WEBHOOK_MAX_PUBLISH_ATTEMPTS: usize = 5;
 const DEFAULT_PAYLOAD_BYTE_LIMIT: usize = 64 * 1024;
 const MAX_PAYLOAD_BYTE_LIMIT: usize = 256 * 1024;
 const DEFAULT_RESPONSE_BYTE_LIMIT: usize = 4 * 1024;
@@ -271,28 +276,42 @@ pub async fn publish_draft(
     }
 
     if !matches!(mode, PublishMode::ManualPublish) {
-        if let Some(previous) = latest_failed_webhook_post_for_draft(
+        let failed_posts = failed_webhook_posts_for_draft(
             state,
             &draft,
             &destination.destination_id,
             &target_ref,
             &evidence_digest,
         )
-        .await
-        {
-            let detail = format!(
-                "suppressed webhook publish for fingerprint {} after previous post attempt {} failed",
-                draft.fingerprint, previous.post_id
-            );
-            draft.status = "webhook_post_failed".to_string();
-            draft.github_status = Some("webhook_post_failed".to_string());
-            draft.last_post_error = Some(truncate_text(&detail, 500));
-            let draft = state.put_incident_monitor_draft(draft).await?;
-            return Ok(PublishOutcome {
-                action: "webhook_retry_suppressed".to_string(),
-                draft,
-                post: Some(previous),
-            });
+        .await;
+        if let Some(previous) = failed_posts.first() {
+            // Webhook delivery is idempotent, so a transient failure should be
+            // retried on the next publish trigger rather than permanently
+            // suppressed. Give up only on a non-retryable failure (e.g. 4xx or a
+            // configuration problem) or after a bounded number of attempts.
+            let exhausted = failed_posts.len() >= WEBHOOK_MAX_PUBLISH_ATTEMPTS;
+            if should_suppress_webhook_retry(&failed_posts) {
+                let reason = if exhausted {
+                    format!("exhausted {} publish attempts", failed_posts.len())
+                } else {
+                    "the last failure was not retryable".to_string()
+                };
+                let detail = format!(
+                    "suppressed webhook publish for fingerprint {} because {reason} (last attempt {})",
+                    draft.fingerprint, previous.post_id
+                );
+                draft.status = "webhook_post_failed".to_string();
+                draft.github_status = Some("webhook_post_failed".to_string());
+                draft.last_post_error = Some(truncate_text(&detail, 500));
+                let previous = previous.clone();
+                let draft = state.put_incident_monitor_draft(draft).await?;
+                return Ok(PublishOutcome {
+                    action: "webhook_retry_suppressed".to_string(),
+                    draft,
+                    post: Some(previous),
+                });
+            }
+            // Otherwise fall through and retry the (idempotent) delivery.
         }
     }
 
@@ -649,7 +668,10 @@ async fn send_webhook(
             .post(url.clone())
             .timeout(Duration::from_millis(policy.timeout_ms))
             .header("content-type", "application/json")
-            .header("user-agent", "Tandem-Bug-Monitor/0.6.5")
+            .header(
+                "user-agent",
+                concat!("Tandem-Incident-Monitor/", env!("CARGO_PKG_VERSION")),
+            )
             .header("x-tandem-event", "incident_monitor.incident")
             .header("x-tandem-delivery-id", delivery_id)
             .header("x-tandem-signature", signature)
@@ -1188,13 +1210,13 @@ async fn successful_post_by_idempotency(
     rows.into_iter().next()
 }
 
-async fn latest_failed_webhook_post_for_draft(
+async fn failed_webhook_posts_for_draft(
     state: &AppState,
     draft: &IncidentMonitorDraftRecord,
     destination_id: &str,
     target_ref: &str,
     evidence_digest: &str,
-) -> Option<IncidentMonitorPostRecord> {
+) -> Vec<IncidentMonitorPostRecord> {
     let mut rows = state
         .incident_monitor_posts
         .read()
@@ -1212,7 +1234,35 @@ async fn latest_failed_webhook_post_for_draft(
         .cloned()
         .collect::<Vec<_>>();
     rows.sort_by_key(|post| std::cmp::Reverse(post.updated_at_ms));
-    rows.into_iter().next()
+    rows
+}
+
+/// Whether the final send attempt of a failed webhook post was retryable
+/// (transient). Unknown/missing metadata is treated as retryable — the retry is
+/// still bounded by `WEBHOOK_MAX_PUBLISH_ATTEMPTS`.
+fn webhook_post_last_attempt_retryable(post: &IncidentMonitorPostRecord) -> bool {
+    post.receipt
+        .as_ref()
+        .and_then(|receipt| receipt.get("attempts"))
+        .and_then(Value::as_array)
+        .and_then(|attempts| attempts.last())
+        .and_then(|attempt| attempt.get("retryable"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
+
+/// Decide whether to terminally suppress a webhook redelivery given the prior
+/// failed posts (most-recent first). No prior failure → do not suppress; a
+/// non-retryable last failure or an exhausted attempt budget → suppress;
+/// otherwise allow another idempotent retry.
+fn should_suppress_webhook_retry(failed_posts: &[IncidentMonitorPostRecord]) -> bool {
+    match failed_posts.first() {
+        None => false,
+        Some(previous) => {
+            !webhook_post_last_attempt_retryable(previous)
+                || failed_posts.len() >= WEBHOOK_MAX_PUBLISH_ATTEMPTS
+        }
+    }
 }
 
 async fn successful_post_for_draft(
@@ -1410,5 +1460,52 @@ async fn mirror_webhook_post_as_external_action(
             post.post_id,
             error
         );
+    }
+}
+
+#[cfg(test)]
+mod webhook_retry_tests {
+    use super::*;
+
+    fn failed_post(retryable: Option<bool>) -> IncidentMonitorPostRecord {
+        let attempt = match retryable {
+            Some(value) => json!({ "attempt": 1, "retryable": value }),
+            None => json!({ "attempt": 1 }),
+        };
+        IncidentMonitorPostRecord {
+            status: "failed".to_string(),
+            operation: WEBHOOK_OPERATION.to_string(),
+            receipt: Some(json!({ "attempts": [attempt] })),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn no_prior_failures_does_not_suppress() {
+        assert!(!should_suppress_webhook_retry(&[]));
+    }
+
+    #[test]
+    fn single_retryable_failure_is_retried() {
+        // TAN-550: one transient failure must not permanently suppress delivery.
+        assert!(!should_suppress_webhook_retry(&[failed_post(Some(true))]));
+    }
+
+    #[test]
+    fn unknown_retryability_defaults_to_retry() {
+        assert!(!should_suppress_webhook_retry(&[failed_post(None)]));
+    }
+
+    #[test]
+    fn non_retryable_failure_suppresses_immediately() {
+        assert!(should_suppress_webhook_retry(&[failed_post(Some(false))]));
+    }
+
+    #[test]
+    fn exhausted_attempt_budget_suppresses() {
+        let posts: Vec<_> = (0..WEBHOOK_MAX_PUBLISH_ATTEMPTS)
+            .map(|_| failed_post(Some(true)))
+            .collect();
+        assert!(should_suppress_webhook_retry(&posts));
     }
 }

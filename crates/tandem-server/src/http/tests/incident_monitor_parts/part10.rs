@@ -329,8 +329,10 @@ async fn incident_monitor_mcp_tool_destination_publishes_mapped_payload_and_skip
             .get("arguments")
             .and_then(|row| row.get("detail"))
             .and_then(Value::as_str)
-            .is_some_and(|value| value.contains("SECRET_TOKEN_123")),
-        "tool arguments should receive the explicit admin mapping: {call_rows:?}"
+            .is_some_and(|value| {
+                value.contains("[redacted]") && !value.contains("SECRET_TOKEN_123")
+            }),
+        "outbound MCP tool arguments must be redacted, not carry raw secrets (TAN-540): {call_rows:?}"
     );
     drop(call_rows);
 

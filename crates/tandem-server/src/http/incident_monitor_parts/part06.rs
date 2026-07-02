@@ -1320,28 +1320,20 @@ pub(super) async fn report_incident_monitor_intake(
         )
             .into_response();
     };
-    let key = state
+    if state
         .validate_incident_monitor_intake_key(&raw_key, &project_id, "incident_monitor:report")
-        .await;
-    let _key = match key {
-        Some(key) => key,
-        None => {
-            let legacy_key = state
-                .validate_incident_monitor_intake_key(&raw_key, &project_id, "incident_monitor:report")
-                .await;
-            let Some(key) = legacy_key else {
-                return (
-                    StatusCode::UNAUTHORIZED,
-                    Json(json!({
-                        "error": "Incident Monitor intake key is invalid for this project or scope",
-                        "code": "INCIDENT_MONITOR_INTAKE_KEY_INVALID",
-                    })),
-                )
-                    .into_response();
-            };
-            key
-        }
-    };
+        .await
+        .is_none()
+    {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "Incident Monitor intake key is invalid for this project or scope",
+                "code": "INCIDENT_MONITOR_INTAKE_KEY_INVALID",
+            })),
+        )
+            .into_response();
+    }
     let config = state.incident_monitor_config().await;
     let Some(project) = config
         .monitored_projects
@@ -1405,6 +1397,15 @@ pub(super) async fn report_incident_monitor_intake(
     report.retention_profile = binding.retention_profile.clone();
     if report.source.is_none() {
         report.source = Some(format!("incident_monitor.intake.{source_id}"));
+    }
+    // Redact secrets from the free-text fields before they are copied into the
+    // incident record below (its excerpt comes straight from `report`); the draft
+    // fields are redacted inside submit_incident_monitor_draft, but the incident
+    // is built here from the raw report.
+    if config.safety_defaults.redact_secrets {
+        crate::incident_monitor::safety_context::redact_incident_monitor_submission_secrets(
+            &mut report,
+        );
     }
     match state.submit_incident_monitor_draft(report.clone()).await {
         Ok(draft) => {

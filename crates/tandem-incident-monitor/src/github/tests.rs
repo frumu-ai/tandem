@@ -23,10 +23,11 @@ fn build_issue_body_includes_hidden_markers() {
 
 #[test]
 fn github_copilot_issue_payloads_match_current_schema() {
-    let list_payload = github_list_issues_payload("frumu-ai", "tandem");
+    let list_payload = github_list_issues_payload("frumu-ai", "tandem", 1);
     assert_eq!(list_payload["owner"], "frumu-ai");
     assert_eq!(list_payload["repo"], "tandem");
     assert_eq!(list_payload["perPage"], 100);
+    assert_eq!(list_payload["page"], 1);
     assert!(
         list_payload.get("state").is_none(),
         "GitHub Copilot MCP accepts OPEN/CLOSED only; omitting state lists both"

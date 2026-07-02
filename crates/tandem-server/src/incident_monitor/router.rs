@@ -202,9 +202,14 @@ pub fn build_route_preview(
             reason: Some("requested_destination_override".to_string()),
         }]
     };
+    // Route precedence: matches are sorted by priority (highest first), so the
+    // top match is the winning route. Only its destinations are effective — we
+    // must not union destinations across lower-priority routes, which previously
+    // produced multiple effective destinations and hard-failed every publish for
+    // any event that matched more than one route.
     let mut effective_destination_ids = Vec::new();
-    for preview_match in &matches {
-        for destination_id in &preview_match.destination_ids {
+    if let Some(winning_match) = matches.first() {
+        for destination_id in &winning_match.destination_ids {
             push_unique(&mut effective_destination_ids, destination_id);
         }
     }
@@ -257,7 +262,13 @@ pub fn build_route_preview(
             )),
         }
     }
-    let approval_required = matches.iter().any(|row| row.approval_required);
+    // Approval reflects the winning match only — the same match whose
+    // destinations are effective — so a non-selected lower-priority route can't
+    // flip the preview's approval flag.
+    let approval_required = matches
+        .first()
+        .map(|row| row.approval_required)
+        .unwrap_or(false);
 
     IncidentMonitorRoutePreviewResponse {
         matches,
@@ -488,6 +499,7 @@ pub async fn record_publish_failure(
     evidence_digest: Option<&str>,
     error: &str,
 ) -> anyhow::Result<IncidentMonitorPostRecord> {
+    let destination = resolve_failure_destination(state, draft, incident_id).await;
     incident_monitor_github::record_post_failure(
         state,
         draft,
@@ -495,8 +507,131 @@ pub async fn record_publish_failure(
         operation,
         evidence_digest,
         error,
+        &destination.destination_id,
+        destination.destination_kind,
+        destination.route_id.as_deref(),
+        destination.route_match_reason.as_deref(),
+        &destination.target_repo,
     )
     .await
+}
+
+struct FailureDestination {
+    destination_id: String,
+    destination_kind: IncidentMonitorDestinationKind,
+    route_id: Option<String>,
+    route_match_reason: Option<String>,
+    target_repo: String,
+}
+
+/// Re-derive the destination a failed publish was actually routed to, so the
+/// failure receipt is attributed correctly instead of always to legacy GitHub.
+/// Falls back to the legacy GitHub destination when no destination resolves.
+async fn resolve_failure_destination(
+    state: &AppState,
+    draft: &IncidentMonitorDraftRecord,
+    incident_id: Option<&str>,
+) -> FailureDestination {
+    let legacy = || FailureDestination {
+        destination_id: INCIDENT_MONITOR_LEGACY_GITHUB_DESTINATION_ID.to_string(),
+        destination_kind: IncidentMonitorDestinationKind::GithubIssue,
+        route_id: None,
+        route_match_reason: Some("legacy_github".to_string()),
+        target_repo: draft.repo.clone(),
+    };
+    let incident = match incident_id {
+        Some(id) => state.get_incident_monitor_incident(id).await,
+        None => None,
+    };
+    let status = state.incident_monitor_status_snapshot().await;
+    let context = build_route_context(
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        &[],
+        None,
+        Some(draft),
+        incident.as_ref(),
+    );
+    let context = enrich_route_context_from_sources(&status.config, &context);
+    let preview = build_route_preview(
+        &status.config,
+        &status.destinations,
+        &status.destination_readiness,
+        &status.source_readiness,
+        &context,
+        &[],
+    );
+    match selected_publish_destination(&preview) {
+        Ok(destination) => {
+            let route = preview.matches.first();
+            FailureDestination {
+                destination_id: destination.destination_id.clone(),
+                destination_kind: destination.kind.clone(),
+                route_id: route.and_then(|row| row.route_id.clone()),
+                route_match_reason: route.and_then(|row| row.reason.clone()),
+                target_repo: failure_destination_target_ref(destination, draft),
+            }
+        }
+        Err(_) => legacy(),
+    }
+}
+
+/// Best-effort target identifier for a failure receipt, matching the reference
+/// each adapter records on a successful publish so a failure is attributed to
+/// the destination it was actually routed to (not always the GitHub repo).
+fn failure_destination_target_ref(
+    destination: &IncidentMonitorDestinationConfig,
+    draft: &IncidentMonitorDraftRecord,
+) -> String {
+    let non_empty = |value: &Option<String>| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    match destination.kind {
+        IncidentMonitorDestinationKind::GithubIssue => {
+            non_empty(&destination.repo).unwrap_or_else(|| draft.repo.clone())
+        }
+        IncidentMonitorDestinationKind::LinearIssue => {
+            match (
+                non_empty(&destination.linear_team),
+                non_empty(&destination.linear_project),
+            ) {
+                (Some(team), Some(project)) => format!("{team}/{project}"),
+                (Some(team), None) => team,
+                (None, Some(project)) => project,
+                (None, None) => destination.destination_id.clone(),
+            }
+        }
+        IncidentMonitorDestinationKind::Webhook => non_empty(&destination.webhook_url)
+            .map(|url| crate::truncate_text(&url, 500))
+            .unwrap_or_else(|| destination.destination_id.clone()),
+        IncidentMonitorDestinationKind::Telemetry => non_empty(&destination.telemetry_path)
+            .map(|path| format!("telemetry:{path}"))
+            .unwrap_or_else(|| destination.destination_id.clone()),
+        IncidentMonitorDestinationKind::InternalMemory => non_empty(&destination.memory_category)
+            .map(|category| format!("memory:{category}"))
+            .unwrap_or_else(|| destination.destination_id.clone()),
+        IncidentMonitorDestinationKind::McpTool => {
+            match (
+                non_empty(&destination.mcp_server),
+                non_empty(&destination.mcp_tool),
+            ) {
+                (Some(server), Some(tool)) => format!("mcp:{server}/{tool}"),
+                (Some(server), None) => format!("mcp:{server}"),
+                _ => destination.destination_id.clone(),
+            }
+        }
+    }
 }
 
 pub fn is_high_risk(value: Option<&str>) -> bool {
@@ -772,21 +907,26 @@ fn route_publish_approval_required(
     context: &IncidentMonitorRouteContext,
     destinations: &[IncidentMonitorDestinationConfig],
 ) -> bool {
-    preview.matches.iter().any(|preview_match| {
-        let route = preview_match.route_id.as_deref().and_then(|route_id| {
-            config
-                .routes
-                .iter()
-                .find(|route| route.route_id == route_id)
-        });
-        route_publish_match_approval_required(
-            config,
-            route,
-            context,
-            destinations,
-            &preview_match.destination_ids,
-        )
-    })
+    // Only the winning (highest-priority) match selects destinations, so the
+    // approval decision must come from that match alone. Iterating every match
+    // would let a lower-priority route that no longer selects any destination
+    // (e.g. a catch-all with approval_policy: Always) force approval.
+    let Some(preview_match) = preview.matches.first() else {
+        return false;
+    };
+    let route = preview_match.route_id.as_deref().and_then(|route_id| {
+        config
+            .routes
+            .iter()
+            .find(|route| route.route_id == route_id)
+    });
+    route_publish_match_approval_required(
+        config,
+        route,
+        context,
+        destinations,
+        &preview_match.destination_ids,
+    )
 }
 
 fn route_publish_match_approval_required(
@@ -843,20 +983,6 @@ fn preview_inherited_approval_required(
     config.require_approval_for_new_issues
         || destination_requires_approval
         || (config.safety_defaults.require_approval_for_high_risk && high_risk)
-}
-
-fn approval_policy_requires(
-    policy: &IncidentMonitorApprovalPolicy,
-    context: &IncidentMonitorRouteContext,
-    destination_requires_approval: bool,
-) -> bool {
-    let high_risk = is_high_risk(context.risk_level.as_deref());
-    match policy {
-        IncidentMonitorApprovalPolicy::Always => true,
-        IncidentMonitorApprovalPolicy::Never => false,
-        IncidentMonitorApprovalPolicy::HighRisk => destination_requires_approval || high_risk,
-        IncidentMonitorApprovalPolicy::Inherit => destination_requires_approval,
-    }
 }
 
 fn is_synthesized_legacy_github_destination(
@@ -1077,17 +1203,12 @@ fn route_preview_approval_required(
     destinations: &[IncidentMonitorDestinationConfig],
     destination_ids: &[String],
 ) -> bool {
-    let destination_requires_approval = destination_ids.iter().any(|destination_id| {
-        destinations
-            .iter()
-            .find(|destination| destination.destination_id == *destination_id)
-            .map(|destination| destination.require_approval)
-            .unwrap_or(false)
-    });
-    if let Some(policy) = explicit_approval_policy(route, context) {
-        return approval_policy_requires(policy, context, destination_requires_approval);
-    }
-    preview_inherited_approval_required(config, context, destination_requires_approval)
+    // Preview must predict the actual publish decision, so delegate to the same
+    // gate the publish path uses. Computing this independently previously let
+    // preview diverge from publish (it counted the synthesized legacy GitHub
+    // destination's require_approval and handled the Inherit policy differently),
+    // so it could show approval as required when publish would not enforce it.
+    route_publish_match_approval_required(config, route, context, destinations, destination_ids)
 }
 
 fn route_match_reason(route: &IncidentMonitorRouteConfig) -> String {
@@ -1544,5 +1665,148 @@ mod tests {
                 .and_then(|row| row.reason.as_deref()),
             Some("matched_risk_category")
         );
+    }
+
+    #[test]
+    fn route_preview_prefers_highest_priority_route_over_overlapping_catch_all() {
+        // TAN-543: when more than one route matches, the highest-priority route
+        // wins and its destination is the only effective one. Previously the
+        // matcher unioned destinations across all matching routes, which then
+        // hard-failed every publish for any event that matched an overlapping
+        // catch-all route.
+        let config = IncidentMonitorConfig {
+            destinations: vec![
+                IncidentMonitorDestinationConfig {
+                    destination_id: "security-linear".to_string(),
+                    name: "Security Linear".to_string(),
+                    kind: IncidentMonitorDestinationKind::LinearIssue,
+                    ..IncidentMonitorDestinationConfig::default()
+                },
+                IncidentMonitorDestinationConfig {
+                    destination_id: "legacy-github".to_string(),
+                    name: "Legacy GitHub".to_string(),
+                    kind: IncidentMonitorDestinationKind::GithubIssue,
+                    ..IncidentMonitorDestinationConfig::default()
+                },
+            ],
+            routes: vec![
+                IncidentMonitorRouteConfig {
+                    route_id: "catch-all".to_string(),
+                    name: "Catch all".to_string(),
+                    enabled: true,
+                    priority: 0,
+                    destination_ids: vec!["legacy-github".to_string()],
+                    ..IncidentMonitorRouteConfig::default()
+                },
+                IncidentMonitorRouteConfig {
+                    route_id: "security-risk".to_string(),
+                    name: "Security Risk".to_string(),
+                    enabled: true,
+                    priority: 100,
+                    destination_ids: vec!["security-linear".to_string()],
+                    match_risk_categories: vec!["data_exfiltration".to_string()],
+                    ..IncidentMonitorRouteConfig::default()
+                },
+            ],
+            default_destination_ids: vec!["legacy-github".to_string()],
+            ..IncidentMonitorConfig::default()
+        };
+        let context = build_route_context(
+            None,
+            None,
+            None,
+            None,
+            Some("data_exfiltration"),
+            None,
+            None,
+            None,
+            None,
+            &[],
+            None,
+            None,
+            None,
+        );
+        let destinations = config.effective_destinations();
+        let preview = build_route_preview(&config, &destinations, &[], &[], &context, &[]);
+
+        // Both routes match...
+        assert!(
+            preview.matches.len() >= 2,
+            "both routes should appear as matches: {:?}",
+            preview.matches
+        );
+        // ...but only the higher-priority route's destination is effective.
+        assert_eq!(
+            preview.effective_destination_ids,
+            vec!["security-linear".to_string()]
+        );
+        // A single effective destination satisfies the one-destination phase limit,
+        // so validate_publish_plan no longer hard-fails on overlapping routes.
+        assert_eq!(preview.destinations.len(), 1);
+    }
+
+    #[test]
+    fn preview_and_publish_approval_decisions_agree() {
+        // TAN-557: the preview approval flag must reflect the publish gate exactly,
+        // across risk levels and approval policies.
+        let destinations = vec![IncidentMonitorDestinationConfig {
+            destination_id: "gh".to_string(),
+            name: "GitHub".to_string(),
+            kind: IncidentMonitorDestinationKind::GithubIssue,
+            require_approval: true,
+            ..IncidentMonitorDestinationConfig::default()
+        }];
+        let config = IncidentMonitorConfig {
+            destinations: destinations.clone(),
+            ..IncidentMonitorConfig::default()
+        };
+        let ids = vec!["gh".to_string()];
+        for policy in [
+            IncidentMonitorApprovalPolicy::Inherit,
+            IncidentMonitorApprovalPolicy::HighRisk,
+            IncidentMonitorApprovalPolicy::Always,
+            IncidentMonitorApprovalPolicy::Never,
+        ] {
+            let route = IncidentMonitorRouteConfig {
+                route_id: "r".to_string(),
+                approval_policy: policy.clone(),
+                destination_ids: ids.clone(),
+                ..IncidentMonitorRouteConfig::default()
+            };
+            for risk in [None, Some("low"), Some("high")] {
+                let context = build_route_context(
+                    None,
+                    None,
+                    None,
+                    risk,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &[],
+                    None,
+                    None,
+                    None,
+                );
+                assert_eq!(
+                    route_preview_approval_required(
+                        Some(&route),
+                        &context,
+                        &config,
+                        &destinations,
+                        &ids
+                    ),
+                    route_publish_match_approval_required(
+                        &config,
+                        Some(&route),
+                        &context,
+                        &destinations,
+                        &ids
+                    ),
+                    "preview must match publish for policy={policy:?} risk={risk:?}"
+                );
+            }
+        }
     }
 }

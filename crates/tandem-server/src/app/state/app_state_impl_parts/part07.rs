@@ -29,280 +29,6 @@ pub async fn run_optimization_scheduler(state: AppState) {
     crate::app::tasks::run_optimization_scheduler(state).await
 }
 
-pub async fn process_incident_monitor_event(
-    state: &AppState,
-    event: &EngineEvent,
-    config: &IncidentMonitorConfig,
-) -> anyhow::Result<IncidentMonitorIncidentRecord> {
-    let submission =
-        crate::incident_monitor::service::build_incident_monitor_submission_from_event(state, config, event)
-            .await?;
-    let duplicate_matches = crate::http::incident_monitor::incident_monitor_failure_pattern_matches(
-        state,
-        submission.repo.as_deref().unwrap_or_default(),
-        submission.fingerprint.as_deref().unwrap_or_default(),
-        submission.title.as_deref(),
-        submission.detail.as_deref(),
-        &submission.excerpt,
-        3,
-    )
-    .await;
-    let fingerprint = submission
-        .fingerprint
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("incident monitor submission fingerprint missing"))?;
-    let default_workspace_root = state.workspace_index.snapshot().await.root;
-    let workspace_root = config
-        .workspace_root
-        .clone()
-        .unwrap_or(default_workspace_root);
-    let now = now_ms();
-    let quality_gate =
-        crate::incident_monitor::service::evaluate_incident_monitor_submission_quality(&submission);
-
-    let existing = state
-        .incident_monitor_incidents
-        .read()
-        .await
-        .values()
-        .find(|row| row.fingerprint == fingerprint)
-        .cloned();
-
-    let mut incident = if let Some(mut row) = existing {
-        row.occurrence_count = row.occurrence_count.saturating_add(1);
-        row.updated_at_ms = now;
-        row.last_seen_at_ms = Some(now);
-        if row.excerpt.is_empty() {
-            row.excerpt = submission.excerpt.clone();
-        }
-        if row.confidence.is_none() {
-            row.confidence = submission.confidence.clone();
-        }
-        if row.risk_level.is_none() {
-            row.risk_level = submission.risk_level.clone();
-        }
-        if row.actor.is_none() {
-            row.actor = submission.actor.clone();
-        }
-        if row.model.is_none() {
-            row.model = submission.model.clone();
-        }
-        if row.tool_name.is_none() {
-            row.tool_name = submission.tool_name.clone();
-        }
-        if row.action.is_none() {
-            row.action = submission.action.clone();
-        }
-        if row.policy.is_none() {
-            row.policy = submission.policy.clone();
-        }
-        if row.approval_state.is_none() {
-            row.approval_state = submission.approval_state.clone();
-        }
-        if row.risk_category.is_none() {
-            row.risk_category = submission.risk_category.clone();
-        }
-        if row.blast_radius.is_none() {
-            row.blast_radius = submission.blast_radius.clone();
-        }
-        merge_incident_monitor_missing_submission_values(
-            &mut row.external_correlation_ids,
-            &submission.external_correlation_ids,
-        );
-        if row.expected_destination.is_none() {
-            row.expected_destination = submission.expected_destination.clone();
-        }
-        row.quality_gate = Some(quality_gate.clone());
-        for evidence_ref in &submission.evidence_refs {
-            if !row
-                .evidence_refs
-                .iter()
-                .any(|existing| existing == evidence_ref)
-            {
-                row.evidence_refs.push(evidence_ref.clone());
-            }
-        }
-        row
-    } else {
-        IncidentMonitorIncidentRecord {
-            incident_id: format!("failure-incident-{}", uuid::Uuid::new_v4().simple()),
-            fingerprint: fingerprint.clone(),
-            event_type: event.event_type.clone(),
-            status: "queued".to_string(),
-            repo: submission.repo.clone().unwrap_or_default(),
-            workspace_root,
-            title: submission
-                .title
-                .clone()
-                .unwrap_or_else(|| format!("Failure detected in {}", event.event_type)),
-            detail: submission.detail.clone(),
-            excerpt: submission.excerpt.clone(),
-            source: submission.source.clone(),
-            run_id: submission.run_id.clone(),
-            session_id: submission.session_id.clone(),
-            correlation_id: submission.correlation_id.clone(),
-            component: submission.component.clone(),
-            level: submission.level.clone(),
-            occurrence_count: 1,
-            created_at_ms: now,
-            updated_at_ms: now,
-            last_seen_at_ms: Some(now),
-            draft_id: None,
-            triage_run_id: None,
-            last_error: None,
-            confidence: submission.confidence.clone(),
-            risk_level: submission.risk_level.clone(),
-            actor: submission.actor.clone(),
-            model: submission.model.clone(),
-            tool_name: submission.tool_name.clone(),
-            action: submission.action.clone(),
-            policy: submission.policy.clone(),
-            approval_state: submission.approval_state.clone(),
-            risk_category: submission.risk_category.clone(),
-            blast_radius: submission.blast_radius.clone(),
-            external_correlation_ids: submission.external_correlation_ids.clone(),
-            expected_destination: submission.expected_destination.clone(),
-            evidence_refs: submission.evidence_refs.clone(),
-            quality_gate: Some(quality_gate.clone()),
-            duplicate_summary: None,
-            duplicate_matches: None,
-            event_payload: Some(event.properties.clone()),
-            ..IncidentMonitorIncidentRecord::default()
-        }
-    };
-    state.put_incident_monitor_incident(incident.clone()).await?;
-
-    if !duplicate_matches.is_empty() {
-        incident.status = "duplicate_suppressed".to_string();
-        let duplicate_summary =
-            crate::http::incident_monitor::build_incident_monitor_duplicate_summary(&duplicate_matches);
-        incident.duplicate_summary = Some(duplicate_summary.clone());
-        incident.duplicate_matches = Some(duplicate_matches.clone());
-        incident.updated_at_ms = now_ms();
-        state.put_incident_monitor_incident(incident.clone()).await?;
-        state.event_bus.publish(EngineEvent::new(
-            "incident_monitor.incident.duplicate_suppressed",
-            serde_json::json!({
-                "incident_id": incident.incident_id,
-                "fingerprint": incident.fingerprint,
-                "eventType": incident.event_type,
-                "status": incident.status,
-                "duplicate_summary": duplicate_summary,
-                "duplicate_matches": duplicate_matches,
-            }),
-        ));
-        return Ok(incident);
-    }
-
-    let draft = match state.submit_incident_monitor_draft(submission).await {
-        Ok(draft) => draft,
-        Err(error) => {
-            let error_text = error.to_string();
-            incident.status = if error_text.contains("signal quality gate") {
-                "quality_gate_blocked".to_string()
-            } else {
-                "draft_failed".to_string()
-            };
-            incident.last_error = Some(truncate_text(&error_text, 500));
-            incident.updated_at_ms = now_ms();
-            state.put_incident_monitor_incident(incident.clone()).await?;
-            state.event_bus.publish(EngineEvent::new(
-                "incident_monitor.incident.detected",
-                serde_json::json!({
-                    "incident_id": incident.incident_id,
-                    "fingerprint": incident.fingerprint,
-                    "eventType": incident.event_type,
-                    "draft_id": incident.draft_id,
-                    "triage_run_id": incident.triage_run_id,
-                    "status": incident.status,
-                    "detail": incident.last_error,
-                }),
-            ));
-            return Ok(incident);
-        }
-    };
-    incident.draft_id = Some(draft.draft_id.clone());
-    incident.status = "draft_created".to_string();
-    state.put_incident_monitor_incident(incident.clone()).await?;
-
-    match crate::http::incident_monitor::ensure_incident_monitor_triage_run(
-        state.clone(),
-        &draft.draft_id,
-        true,
-    )
-    .await
-    {
-        Ok((updated_draft, _run_id, _deduped)) => {
-            incident.triage_run_id = updated_draft.triage_run_id.clone();
-            if incident.triage_run_id.is_some() {
-                incident.status = "triage_queued".to_string();
-            }
-            incident.last_error = None;
-        }
-        Err(error) => {
-            incident.status = "draft_created".to_string();
-            incident.last_error = Some(truncate_text(&error.to_string(), 500));
-        }
-    }
-
-    if let Some(draft_id) = incident.draft_id.clone() {
-        let latest_draft = state
-            .get_incident_monitor_draft(&draft_id)
-            .await
-            .unwrap_or(draft.clone());
-        match crate::incident_monitor::router::publish_draft(
-            state,
-            crate::incident_monitor::router::IncidentMonitorPublishRequest {
-                draft_id: draft_id.clone(),
-                incident_id: Some(incident.incident_id.clone()),
-                mode: crate::incident_monitor_github::PublishMode::Auto,
-                destination_ids: Vec::new(),
-            },
-        )
-        .await
-        {
-            Ok(outcome) => {
-                incident.status = outcome.action;
-                incident.last_error = None;
-            }
-            Err(error) => {
-                let detail = truncate_text(&error.to_string(), 500);
-                incident.last_error = Some(detail.clone());
-                let mut failed_draft = latest_draft;
-                failed_draft.status = "github_post_failed".to_string();
-                failed_draft.github_status = Some("github_post_failed".to_string());
-                failed_draft.last_post_error = Some(detail.clone());
-                let evidence_digest = failed_draft.evidence_digest.clone();
-                let _ = state.put_incident_monitor_draft(failed_draft.clone()).await;
-                let _ = crate::incident_monitor::router::record_publish_failure(
-                    state,
-                    &failed_draft,
-                    Some(&incident.incident_id),
-                    "auto_post",
-                    evidence_digest.as_deref(),
-                    &detail,
-                )
-                .await;
-            }
-        }
-    }
-
-    incident.updated_at_ms = now_ms();
-    state.put_incident_monitor_incident(incident.clone()).await?;
-    state.event_bus.publish(EngineEvent::new(
-        "incident_monitor.incident.detected",
-        serde_json::json!({
-            "incident_id": incident.incident_id,
-            "fingerprint": incident.fingerprint,
-            "eventType": incident.event_type,
-            "draft_id": incident.draft_id,
-            "triage_run_id": incident.triage_run_id,
-            "status": incident.status,
-        }),
-    ));
-    Ok(incident)
-}
-
 pub fn sha256_hex(parts: &[&str]) -> String {
     let mut hasher = Sha256::new();
     for part in parts {
@@ -310,6 +36,55 @@ pub fn sha256_hex(parts: &[&str]) -> String {
         hasher.update([0u8]);
     }
     format!("{:x}", hasher.finalize())
+}
+
+/// Constant-time equality for secrets, tokens, and their hashes. Both inputs are
+/// hashed and the fixed-length digests compared without early exit, so neither
+/// the contents nor the lengths leak through timing.
+pub fn constant_time_str_eq(left: &str, right: &str) -> bool {
+    let left_digest = Sha256::digest(left.as_bytes());
+    let right_digest = Sha256::digest(right.as_bytes());
+    let mut diff = 0u8;
+    for (a, b) in left_digest.iter().zip(right_digest.iter()) {
+        diff |= a ^ b;
+    }
+    diff == 0
+}
+
+/// Durably write `payload` to `path` via a temp file + fsync + atomic rename.
+/// The blocking file work runs on a blocking thread, which keeps fsync off the
+/// async reactor and, just as importantly, keeps this helper's async future
+/// tiny — it only awaits a join handle rather than holding open `File`s across
+/// several `.await`s. Callers persist inside large multi-await futures (e.g. the
+/// webhook queue), so an inflated future here compounds into a stack-overflow
+/// risk on the default 2 MiB worker/test stack.
+async fn write_state_file_atomically(
+    path: &std::path::PathBuf,
+    payload: String,
+) -> anyhow::Result<()> {
+    let path = path.clone();
+    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        use std::io::Write;
+        let tmp = path.with_extension("tmp");
+        // Write to a temp file and fsync it before the rename so a crash
+        // mid-write cannot leave a torn/partial file in place of the real state.
+        {
+            let mut file = std::fs::File::create(&tmp)?;
+            file.write_all(payload.as_bytes())?;
+            file.sync_all()?;
+        }
+        std::fs::rename(&tmp, &path)?;
+        // fsync the parent directory so the rename itself is durable across a
+        // crash.
+        if let Some(parent) = path.parent() {
+            if let Ok(dir) = std::fs::File::open(parent) {
+                let _ = dir.sync_all();
+            }
+        }
+        Ok(())
+    })
+    .await??;
+    Ok(())
 }
 
 fn automation_status_uses_scheduler_capacity(status: &AutomationRunStatus) -> bool {

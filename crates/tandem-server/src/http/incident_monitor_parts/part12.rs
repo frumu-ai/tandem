@@ -308,7 +308,7 @@ async fn incident_monitor_assessment_report_payload(
                 "source_kind": "tandem_monitor",
                 "claim": "Tandem produces governed, exportable evidence of observed behavior, policy decisions, incidents, destination attempts, and monitor health; it does not prove itself safe.",
                 "customer_owned_systems": ["siem", "database", "object_storage", "linear", "github", "webhook", "telemetry", "mcp_tool"],
-                "existing_ndjson_endpoint": "/audit/export",
+                "existing_ndjson_endpoint": "/audit/ledger/export",
                 "report_endpoint": "/incident-monitor/security/assessment-report",
                 "route_preview": route_preview,
                 "records": audit_export_rows,

@@ -1323,14 +1323,6 @@ pub async fn run_usage_aggregator(state: AppState) {
     }
 }
 
-async fn process_incident_monitor_event(
-    state: &AppState,
-    event: &EngineEvent,
-    config: &IncidentMonitorConfig,
-) -> anyhow::Result<IncidentMonitorIncidentRecord> {
-    crate::app::state::process_incident_monitor_event(state, event, config).await
-}
-
 pub async fn run_routine_scheduler(state: AppState) {
     if !wait_for_runtime_ready_or_exit(&state, "routine_scheduler").await {
         return;
