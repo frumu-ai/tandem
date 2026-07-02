@@ -201,6 +201,11 @@ pub fn memory_write_scope_decision_for_context(
             "legacy_memory_write_without_knowledge_scope",
         ));
     };
+    if let Some(reason) =
+        source_bound_policy_denial_reason(&policy, metadata, authority_job_context)
+    {
+        return Ok(KnowledgeScopeDecision::deny(reason));
+    }
     Ok(policy.write_decision(partition, now_ms))
 }
 
@@ -239,6 +244,11 @@ pub fn memory_promotion_scope_decision_for_context(
             "legacy_memory_promotion_without_knowledge_scope",
         ));
     };
+    if let Some(reason) =
+        source_bound_policy_denial_reason(&policy, source_metadata, authority_job_context)
+    {
+        return Ok(KnowledgeScopeDecision::deny(reason));
+    }
     Ok(policy.promotion_decision(partition, to_tier, review, now_ms))
 }
 
@@ -272,6 +282,76 @@ fn source_bound_scope_required(
 ) -> bool {
     metadata_has_enterprise_source_binding(metadata)
         || source_bound_authority_context(authority_job_context)
+}
+
+fn source_bound_policy_denial_reason(
+    policy: &KnowledgeScopePolicy,
+    metadata: Option<&Value>,
+    authority_job_context: Option<&MemoryAuthorityJobContext>,
+) -> Option<&'static str> {
+    if let Some(reason) = source_bound_metadata_policy_denial_reason(policy, metadata) {
+        return Some(reason);
+    }
+    source_bound_authority_policy_denial_reason(policy, authority_job_context)
+}
+
+fn source_bound_metadata_policy_denial_reason(
+    policy: &KnowledgeScopePolicy,
+    metadata: Option<&Value>,
+) -> Option<&'static str> {
+    let binding = metadata?.get("enterprise_source_binding")?;
+    let source_binding_id = binding
+        .get("binding_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let data_class = match binding.get("data_class") {
+        Some(value) => match serde_json::from_value(value.clone()) {
+            Ok(data_class) => Some(data_class),
+            Err(_) => return Some("knowledge_scope_data_class_mismatch"),
+        },
+        None => None,
+    };
+    source_bound_policy_claim_denial_reason(policy, source_binding_id, data_class)
+}
+
+fn source_bound_authority_policy_denial_reason(
+    policy: &KnowledgeScopePolicy,
+    authority_job_context: Option<&MemoryAuthorityJobContext>,
+) -> Option<&'static str> {
+    let context = authority_job_context?;
+    let source_binding_id = context
+        .source_binding_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    source_bound_policy_claim_denial_reason(policy, source_binding_id, context.data_class)
+}
+
+fn source_bound_policy_claim_denial_reason(
+    policy: &KnowledgeScopePolicy,
+    source_binding_id: Option<&str>,
+    data_class: Option<DataClass>,
+) -> Option<&'static str> {
+    if let Some(source_binding_id) = source_binding_id {
+        let policy_source_binding_id = policy
+            .source_binding_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if policy_source_binding_id != Some(source_binding_id) {
+            return Some("knowledge_scope_source_binding_mismatch");
+        }
+        if policy.resource_ref.resource_kind == ResourceKind::SourceBinding
+            && policy.resource_ref.resource_id != source_binding_id
+        {
+            return Some("knowledge_scope_source_binding_mismatch");
+        }
+    }
+    if data_class.is_some_and(|data_class| policy.data_class != data_class) {
+        return Some("knowledge_scope_data_class_mismatch");
+    }
+    None
 }
 
 pub fn knowledge_scope_policy_from_authority_job_context(
@@ -534,5 +614,82 @@ mod tests {
 
         assert!(decision.allowed);
         assert_eq!(decision.reason_code, "knowledge_write_scope_allowed");
+    }
+
+    #[test]
+    fn source_bound_authority_write_rejects_mismatched_knowledge_scope_binding() {
+        let mut policy = policy();
+        policy.source_binding_id = Some("binding-b".to_string());
+        let metadata = policy.metadata_value();
+        let decision = memory_write_scope_decision_for_context(
+            &partition(GovernedMemoryTier::Session),
+            Some(&metadata),
+            Some(&authority_context(crate::MemoryAuthorityOperation::Write)),
+            1_000,
+        )
+        .expect("write decision");
+
+        assert!(!decision.allowed);
+        assert_eq!(
+            decision.reason_code,
+            "knowledge_scope_source_binding_mismatch"
+        );
+    }
+
+    #[test]
+    fn source_bound_authority_promotion_rejects_mismatched_knowledge_scope_data_class() {
+        let mut policy = policy();
+        policy.data_class = DataClass::Internal;
+        let metadata = policy.metadata_value();
+        let review = PromotionReview {
+            required: true,
+            reviewer_id: Some("reviewer-a".to_string()),
+            approval_id: Some("approval-a".to_string()),
+        };
+        let decision = memory_promotion_scope_decision_for_context(
+            &partition(GovernedMemoryTier::Session),
+            GovernedMemoryTier::Project,
+            &review,
+            Some(&metadata),
+            Some(&authority_context(crate::MemoryAuthorityOperation::Promote)),
+            1_000,
+        )
+        .expect("promotion decision");
+
+        assert!(!decision.allowed);
+        assert_eq!(decision.reason_code, "knowledge_scope_data_class_mismatch");
+    }
+
+    #[test]
+    fn source_bound_metadata_write_rejects_mismatched_knowledge_scope_binding() {
+        let mut metadata = policy().metadata_value();
+        metadata.as_object_mut().expect("metadata object").insert(
+            "enterprise_source_binding".to_string(),
+            json!({
+                "binding_id": "binding-b",
+                "connector_id": "manual-upload",
+                "resource_ref": {
+                    "organization_id": "org-a",
+                    "workspace_id": "ws-a",
+                    "project_id": "project-a",
+                    "resource_kind": "source_binding",
+                    "resource_id": "binding-b"
+                },
+                "data_class": "confidential",
+                "source_object_id": "source-b"
+            }),
+        );
+        let decision = memory_write_scope_decision(
+            &partition(GovernedMemoryTier::Session),
+            Some(&metadata),
+            1_000,
+        )
+        .expect("write decision");
+
+        assert!(!decision.allowed);
+        assert_eq!(
+            decision.reason_code,
+            "knowledge_scope_source_binding_mismatch"
+        );
     }
 }

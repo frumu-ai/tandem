@@ -216,7 +216,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of only writing single-source fallback snapshots.
 - Knowledge-scope governance now requires registered source-bound scope for
   workflow-phase memory retrieval and blocks source-bound memory writes or
-  promotions that omit explicit `knowledge_scope_registry` metadata.
+  promotions that omit explicit `knowledge_scope_registry` metadata or provide
+  a registry for a different source binding or data class.
 - Backend CI now runs the touched-file size gate before dependency installation
   and Rust lint/build work so oversized files fail fast instead of burning the
   full backend job first.
