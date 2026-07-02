@@ -89,14 +89,28 @@ pub(crate) fn compute_audit_envelope_hash(envelope: &ProtectedAuditEnvelope) -> 
     format!("{:x}", Sha256::digest(json.as_bytes()))
 }
 
-async fn protected_audit_lock_for(path: &std::path::Path) -> Arc<tokio::sync::Mutex<()>> {
-    static LOCKS: OnceLock<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
-        OnceLock::new();
+/// Cached tail of the ledger for a given path, guarded by the per-path append
+/// lock. Lets `append_protected_audit_event` derive the next `seq`/`prev_hash`
+/// without re-reading and re-parsing the whole file on every append (which made
+/// appends O(n) and ledger growth O(n²)). `None` means "not yet seeded this
+/// process"; the first append for a path seeds it by reading the file once.
+#[derive(Clone)]
+struct LastAuditRecord {
+    seq: u64,
+    record_hash: String,
+}
+
+async fn protected_audit_lock_for(
+    path: &std::path::Path,
+) -> Arc<tokio::sync::Mutex<Option<LastAuditRecord>>> {
+    static LOCKS: OnceLock<
+        tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<Option<LastAuditRecord>>>>>,
+    > = OnceLock::new();
     let map = LOCKS.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
     let mut guard = map.lock().await;
     guard
         .entry(path.to_string_lossy().to_string())
-        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(None)))
         .clone()
 }
 
@@ -160,14 +174,30 @@ pub async fn append_protected_audit_event(
     }
 
     let audit_lock = protected_audit_lock_for(&path).await;
-    let _guard = audit_lock.lock().await;
+    let mut tail = audit_lock.lock().await;
 
-    let last = read_last_protected_audit_record(&path).await;
-    let next_seq = last.as_ref().map(|e| e.seq).unwrap_or(0).saturating_add(1);
-    let prev_hash = last
-        .as_ref()
-        .filter(|e| !e.record_hash.is_empty())
-        .map(|e| e.record_hash.clone());
+    // Seed the cached tail from disk once per process (cold cache); thereafter
+    // the last seq/hash is carried in memory under this same lock, so appends
+    // do not re-read the whole ledger.
+    if tail.is_none() {
+        *tail = Some(match read_last_protected_audit_record(&path).await {
+            Some(e) => LastAuditRecord {
+                seq: e.seq,
+                record_hash: e.record_hash,
+            },
+            None => LastAuditRecord {
+                seq: 0,
+                record_hash: String::new(),
+            },
+        });
+    }
+    let last = tail.as_ref().expect("audit tail seeded above");
+    let next_seq = last.seq.saturating_add(1);
+    let prev_hash = if last.record_hash.is_empty() {
+        None
+    } else {
+        Some(last.record_hash.clone())
+    };
 
     let mut row = ProtectedAuditEnvelope {
         event_id: Uuid::new_v4().to_string(),
@@ -192,6 +222,17 @@ pub async fn append_protected_audit_event(
         .await?;
     file.write_all(b"\n").await?;
     file.flush().await?;
+    // Crash-durability: flush() only pushes to the OS page cache. A durable
+    // audit event must survive power loss, so fsync the data+metadata before
+    // reporting success. Only advance the cached tail once the bytes are
+    // durably on disk, so a failed sync doesn't desync the cache from the file.
+    if matches!(row.durability, AuditDurability::DurableRequired) {
+        file.sync_all().await?;
+    }
+    *tail = Some(LastAuditRecord {
+        seq: row.seq,
+        record_hash: row.record_hash.clone(),
+    });
     Ok(())
 }
 

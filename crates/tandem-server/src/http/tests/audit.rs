@@ -256,6 +256,43 @@ async fn protected_audit_query_filters_by_tenant_context() {
 }
 
 #[tokio::test]
+async fn protected_audit_appends_build_verifiable_chain() {
+    // Exercises the cached-tail append path (TAN2-10) across many appends: the
+    // seq/prev_hash must chain correctly without re-reading the file each time,
+    // and the resulting ledger must verify (data is fsynced before we advance
+    // the cache).
+    let state = test_state().await;
+    let tenant = tandem_types::TenantContext::explicit(
+        "org-chain",
+        "workspace-chain",
+        Some("chain-user".to_string()),
+    );
+    for i in 0..25u64 {
+        crate::audit::append_protected_audit_event(
+            &state,
+            "test.chain_event",
+            &tenant,
+            Some("chain-actor".to_string()),
+            json!({ "i": i }),
+        )
+        .await
+        .expect("append chain event");
+    }
+
+    let result = crate::audit::verify_protected_audit_ledger(&state.protected_audit_path).await;
+    assert!(result.valid, "ledger should verify: {result:?}");
+    assert_eq!(result.record_count, 25);
+    assert_eq!(result.hashed_record_count, 25);
+    assert!(result.root_hash.is_some());
+
+    // The last record's seq reflects all appends, proving the cache advanced.
+    let events = crate::audit::load_protected_audit_events_for_tenant(&state, &tenant).await;
+    assert_eq!(events.len(), 25);
+    let max_seq = events.iter().map(|e| e.seq).max().unwrap_or(0);
+    assert_eq!(max_seq, 25);
+}
+
+#[tokio::test]
 async fn protected_audit_query_filters_by_denial_event_type() {
     let state = test_state().await;
     let app = app_router(state.clone());
