@@ -95,6 +95,30 @@ pub(super) async fn auth_gate(
         )
             .into_response();
     }
+
+    // Per-tenant inbound rate limiting (TAN2-11). Enforced only once the tenant
+    // context has been resolved, so the quota is keyed to the actual tenant.
+    // Disabled by default; controlled by TANDEM_TENANT_RATE_LIMIT_PER_MIN.
+    let limiter = super::tenant_rate_limit::global();
+    if limiter.is_enabled() {
+        if let Some(tenant) = request.extensions().get::<TenantContext>() {
+            let key = super::tenant_rate_limit::tenant_key(&tenant.org_id, &tenant.workspace_id);
+            if let super::tenant_rate_limit::RateDecision::Limited { retry_after_secs } =
+                limiter.check(&key, crate::now_ms())
+            {
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [(header::RETRY_AFTER, retry_after_secs.to_string())],
+                    Json(ErrorEnvelope::new(
+                        "Rate limit exceeded for tenant",
+                        ErrorCode::RateLimited,
+                    )),
+                )
+                    .into_response();
+            }
+        }
+    }
+
     next.run(request).await
 }
 
