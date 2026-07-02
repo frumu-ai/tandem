@@ -131,6 +131,9 @@ pub async fn claim_due_stateful_wait(
     wait.claimed_by = Some(claimant_id.to_string());
     wait.claimed_at_ms = Some(now_ms);
     wait.claim_expires_at_ms = Some(now_ms.saturating_add(lease_ms.max(1)));
+    wait.wake_idempotency_key = None;
+    wait.event_seq = None;
+    wait.completed_at_ms = None;
     wait.updated_at_ms = now_ms;
     let claimed = wait.clone();
     write_stateful_waits_unlocked(path, &waits).await?;
@@ -160,6 +163,9 @@ pub async fn claim_matching_stateful_webhook_wait(
     wait.claimed_by = Some(claimant_id.to_string());
     wait.claimed_at_ms = Some(now_ms);
     wait.claim_expires_at_ms = Some(now_ms.saturating_add(lease_ms.max(1)));
+    wait.wake_idempotency_key = None;
+    wait.event_seq = None;
+    wait.completed_at_ms = None;
     wait.updated_at_ms = now_ms;
     let claimed = wait.clone();
     write_stateful_waits_unlocked(path, &waits).await?;
@@ -257,12 +263,11 @@ pub async fn begin_claimed_stateful_wait_wake_completion(
     wake_idempotency_key: &str,
     now_ms: u64,
 ) -> anyhow::Result<Option<StatefulWaitRecord>> {
-    complete_claimed_stateful_wait(
+    reserve_claimed_stateful_wait_completion(
         path,
         tenant,
         claimed_wait,
         wake_idempotency_key,
-        StatefulWaitStatus::Woken,
         now_ms,
     )
     .await
@@ -284,55 +289,71 @@ pub async fn begin_claimed_stateful_wait_timeout_completion(
     ) {
         anyhow::bail!("invalid stateful wait timeout result status: {status:?}");
     }
-    complete_claimed_stateful_wait(
+    reserve_claimed_stateful_wait_completion(
         path,
         tenant,
         claimed_wait,
         timeout_idempotency_key,
-        status,
         now_ms,
     )
     .await
 }
 
-pub async fn attach_stateful_wait_completion_event_seq(
+pub async fn finish_claimed_stateful_wait_completion(
     path: &Path,
     tenant: &TenantContext,
-    run_id: &str,
-    wait_id: &str,
+    claimed_wait: &StatefulWaitRecord,
     completion_idempotency_key: &str,
     event_seq: u64,
+    status: StatefulWaitStatus,
     now_ms: u64,
 ) -> anyhow::Result<Option<StatefulWaitRecord>> {
+    if !status.is_terminal() {
+        anyhow::bail!("invalid stateful wait completion status: {status:?}");
+    }
+
     let _guard = STATEFUL_WAIT_STORE_LOCK.lock().await;
     let mut waits = load_stateful_waits(path);
     let Some(wait) = waits.iter_mut().find(|wait| {
-        wait.run_id == run_id && wait.wait_id == wait_id && wait.visible_to_tenant(tenant)
+        wait.run_id == claimed_wait.run_id
+            && wait.wait_id == claimed_wait.wait_id
+            && wait.visible_to_tenant(tenant)
     }) else {
         return Ok(None);
     };
-    if !wait.status.is_terminal()
+    if wait.status == status {
+        return Ok(
+            (wait.wake_idempotency_key.as_deref() == Some(completion_idempotency_key)
+                && wait.event_seq == Some(event_seq))
+            .then(|| wait.clone()),
+        );
+    }
+    if wait.status.is_terminal() {
+        return Ok(None);
+    }
+    if !claimed_wait_matches_current_claim(wait, claimed_wait)
         || wait.wake_idempotency_key.as_deref() != Some(completion_idempotency_key)
     {
         return Ok(None);
     }
-    if let Some(existing_seq) = wait.event_seq {
-        return Ok((existing_seq == event_seq).then(|| wait.clone()));
-    }
 
+    wait.status = status;
     wait.event_seq = Some(event_seq);
+    wait.completed_at_ms = Some(now_ms);
     wait.updated_at_ms = now_ms;
+    wait.claimed_by = None;
+    wait.claimed_at_ms = None;
+    wait.claim_expires_at_ms = None;
     let completed = wait.clone();
     write_stateful_waits_unlocked(path, &waits).await?;
     Ok(Some(completed))
 }
 
-async fn complete_claimed_stateful_wait(
+async fn reserve_claimed_stateful_wait_completion(
     path: &Path,
     tenant: &TenantContext,
     claimed_wait: &StatefulWaitRecord,
     completion_idempotency_key: &str,
-    status: StatefulWaitStatus,
     now_ms: u64,
 ) -> anyhow::Result<Option<StatefulWaitRecord>> {
     let _guard = STATEFUL_WAIT_STORE_LOCK.lock().await;
@@ -345,30 +366,23 @@ async fn complete_claimed_stateful_wait(
         return Ok(None);
     };
 
-    if wait.status == status {
+    if wait.status.is_terminal() {
         return Ok(
             (wait.wake_idempotency_key.as_deref() == Some(completion_idempotency_key))
                 .then(|| wait.clone()),
         );
     }
-    if wait.status.is_terminal() {
-        return Ok(None);
-    }
     if !claimed_wait_matches_active_wait(wait, claimed_wait, now_ms) {
         return Ok(None);
     }
 
-    wait.status = status;
     wait.wake_idempotency_key = Some(completion_idempotency_key.to_string());
     wait.event_seq = None;
-    wait.completed_at_ms = Some(now_ms);
+    wait.completed_at_ms = None;
     wait.updated_at_ms = now_ms;
-    wait.claimed_by = None;
-    wait.claimed_at_ms = None;
-    wait.claim_expires_at_ms = None;
-    let completed = wait.clone();
+    let reserved = wait.clone();
     write_stateful_waits_unlocked(path, &waits).await?;
-    Ok(Some(completed))
+    Ok(Some(reserved))
 }
 
 fn claimed_wait_matches_active_wait(
@@ -376,9 +390,15 @@ fn claimed_wait_matches_active_wait(
     claimed_wait: &StatefulWaitRecord,
     now_ms: u64,
 ) -> bool {
+    claimed_wait_matches_current_claim(wait, claimed_wait) && wait.claim_is_active_at(now_ms)
+}
+
+fn claimed_wait_matches_current_claim(
+    wait: &StatefulWaitRecord,
+    claimed_wait: &StatefulWaitRecord,
+) -> bool {
     wait.status == StatefulWaitStatus::Claimed
         && claimed_wait.status == StatefulWaitStatus::Claimed
-        && wait.claim_is_active_at(now_ms)
         && wait.claimed_by == claimed_wait.claimed_by
         && wait.claimed_at_ms == claimed_wait.claimed_at_ms
         && wait.claim_expires_at_ms == claimed_wait.claim_expires_at_ms
@@ -1003,27 +1023,65 @@ mod tests {
         .expect("expired claim")
         .is_none());
 
-        let woken = begin_claimed_stateful_wait_wake_completion(
+        let reserved = begin_claimed_stateful_wait_wake_completion(
             &path, &tenant_a, &claimed, "wake-key", 1_700,
         )
         .await
-        .expect("wake claimed wait")
-        .expect("woken record");
-        assert_eq!(woken.status, StatefulWaitStatus::Woken);
-        assert_eq!(woken.event_seq, None);
-        assert!(woken.claimed_by.is_none());
-        assert!(woken.claimed_at_ms.is_none());
-        assert!(woken.claim_expires_at_ms.is_none());
+        .expect("reserve claimed wait completion")
+        .expect("reserved record");
+        assert_eq!(reserved.status, StatefulWaitStatus::Claimed);
+        assert_eq!(reserved.wake_idempotency_key.as_deref(), Some("wake-key"));
+        assert_eq!(reserved.event_seq, None);
+        assert_eq!(reserved.claimed_by.as_deref(), Some("scheduler-a"));
+        assert_eq!(reserved.claimed_at_ms, Some(1_500));
+        assert_eq!(reserved.claim_expires_at_ms, Some(2_000));
 
-        let attached = attach_stateful_wait_completion_event_seq(
-            &path, &tenant_a, "run-a", "wait-a", "wake-key", 42, 1_750,
+        let reclaimed = claim_due_stateful_wait(
+            &path,
+            &tenant_a,
+            "run-a",
+            "wait-a",
+            "scheduler-b",
+            2_000,
+            500,
         )
         .await
-        .expect("attach event seq")
-        .expect("attached wait");
-        assert_eq!(attached.event_seq, Some(42));
-        assert!(attach_stateful_wait_completion_event_seq(
-            &path, &tenant_a, "run-a", "wait-a", "wake-key", 43, 1_800
+        .expect("reclaim reserved wait")
+        .expect("reclaimed wait");
+        assert_eq!(reclaimed.claimed_by.as_deref(), Some("scheduler-b"));
+        assert_eq!(reclaimed.wake_idempotency_key, None);
+
+        let reserved = begin_claimed_stateful_wait_wake_completion(
+            &path, &tenant_a, &reclaimed, "wake-key", 2_100,
+        )
+        .await
+        .expect("reserve reclaimed wait completion")
+        .expect("reserved reclaimed record");
+        let completed = finish_claimed_stateful_wait_completion(
+            &path,
+            &tenant_a,
+            &reserved,
+            "wake-key",
+            42,
+            StatefulWaitStatus::Woken,
+            2_150,
+        )
+        .await
+        .expect("finish completion")
+        .expect("completed wait");
+        assert_eq!(completed.status, StatefulWaitStatus::Woken);
+        assert_eq!(completed.event_seq, Some(42));
+        assert!(completed.claimed_by.is_none());
+        assert!(completed.claimed_at_ms.is_none());
+        assert!(completed.claim_expires_at_ms.is_none());
+        assert!(finish_claimed_stateful_wait_completion(
+            &path,
+            &tenant_a,
+            &reserved,
+            "wake-key",
+            43,
+            StatefulWaitStatus::Woken,
+            2_200
         )
         .await
         .expect("conflicting event seq")

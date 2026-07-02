@@ -12,8 +12,8 @@ use super::types::{
     StatefulWaitTimeoutAction, StatefulWorkflowRunStatus,
 };
 use super::waits::{
-    attach_stateful_wait_completion_event_seq, begin_claimed_stateful_wait_timeout_completion,
-    begin_claimed_stateful_wait_wake_completion, claim_due_stateful_wait, due_stateful_waits,
+    begin_claimed_stateful_wait_timeout_completion, begin_claimed_stateful_wait_wake_completion,
+    claim_due_stateful_wait, due_stateful_waits, finish_claimed_stateful_wait_completion,
 };
 
 pub const STATEFUL_WAIT_SCHEDULER_CLAIMANT: &str = "stateful-wait-scheduler";
@@ -225,7 +225,7 @@ async fn complete_claimed_wait(
     let event_id = format!("stateful-wait-{completion_key}");
     let lag_ms = now_ms.saturating_sub(action.due_at_ms());
     let wait_status = action.wait_status();
-    let completed = if wait_status == StatefulWaitStatus::Woken {
+    let reserved = if wait_status == StatefulWaitStatus::Woken {
         begin_claimed_stateful_wait_wake_completion(
             &paths.waits_path,
             &wait.scope.tenant_context,
@@ -277,17 +277,6 @@ async fn complete_claimed_wait(
         &event,
     )
     .await?;
-    let completed = attach_stateful_wait_completion_event_seq(
-        &paths.waits_path,
-        &wait.scope.tenant_context,
-        &wait.run_id,
-        &wait.wait_id,
-        &completion_key,
-        seq,
-        now_ms,
-    )
-    .await?
-    .unwrap_or(completed);
 
     let run_status = action.run_status();
     let phase_state =
@@ -318,6 +307,17 @@ async fn complete_claimed_wait(
         })),
     };
     write_stateful_run_snapshot(&paths.snapshots_root, &snapshot).await?;
+    let completed = finish_claimed_stateful_wait_completion(
+        &paths.waits_path,
+        &wait.scope.tenant_context,
+        &reserved,
+        &completion_key,
+        seq,
+        wait_status.clone(),
+        now_ms,
+    )
+    .await?
+    .ok_or_else(|| anyhow::anyhow!("stateful wait completion conflict"))?;
 
     Ok(StatefulWaitSchedulerOutcome {
         run_id: completed.run_id,

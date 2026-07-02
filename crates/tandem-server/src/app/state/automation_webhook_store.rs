@@ -13,11 +13,11 @@ use uuid::Uuid;
 
 use crate::automation_v2::types::*;
 use crate::stateful_runtime::{
-    append_stateful_run_event_once_with_next_seq, attach_stateful_wait_completion_event_seq,
-    begin_claimed_stateful_wait_wake_completion, claim_matching_stateful_webhook_wait,
+    append_stateful_run_event_once_with_next_seq, begin_claimed_stateful_wait_wake_completion,
+    claim_matching_stateful_webhook_wait, finish_claimed_stateful_wait_completion,
     phase_state_from_status, write_stateful_run_snapshot, StatefulRunEventRecord,
     StatefulRunSnapshotRecord, StatefulRuntimeScope, StatefulRuntimeStoragePaths, StatefulWaitKind,
-    StatefulWaitRecord, StatefulWebhookWaitEvent, StatefulWorkflowRunKind,
+    StatefulWaitRecord, StatefulWaitStatus, StatefulWebhookWaitEvent, StatefulWorkflowRunKind,
     StatefulWorkflowRunStatus,
 };
 use crate::util::time::now_ms;
@@ -1062,7 +1062,7 @@ impl AppState {
         let delivery_id = new_automation_webhook_delivery_id();
         let wake_key = stateful_webhook_wake_key(&claimed_wait, &wait_event);
         let event_id = format!("stateful-webhook-wake-{wake_key}");
-        let woken_wait = begin_claimed_stateful_wait_wake_completion(
+        let reserved_wait = begin_claimed_stateful_wait_wake_completion(
             &paths.waits_path,
             &trigger.tenant_context,
             &claimed_wait,
@@ -1106,26 +1106,15 @@ impl AppState {
             &event,
         )
         .await?;
-        let woken_wait = attach_stateful_wait_completion_event_seq(
-            &paths.waits_path,
-            &trigger.tenant_context,
-            &claimed_wait.run_id,
-            &claimed_wait.wait_id,
-            &wake_key,
-            seq,
-            received_at_ms,
-        )
-        .await?
-        .unwrap_or(woken_wait);
         let _ = self
             .requeue_automation_v2_run_from_stateful_wait_wake(
-                &woken_wait.run_id,
-                &woken_wait.wait_id,
+                &reserved_wait.run_id,
+                &reserved_wait.wait_id,
                 "stateful_runtime.wait.webhook_woken",
                 seq,
                 format!(
                     "stateful webhook wait `{}` woke from delivery `{delivery_id}`",
-                    woken_wait.wait_id
+                    reserved_wait.wait_id
                 ),
                 json!({
                     "delivery_id": &delivery_id,
@@ -1139,15 +1128,15 @@ impl AppState {
             .await;
         let status = StatefulWorkflowRunStatus::Running;
         let phase_state = phase_state_from_status(
-            &woken_wait.run_id,
+            &reserved_wait.run_id,
             &status,
             received_at_ms,
-            woken_wait.phase_id.as_deref(),
+            reserved_wait.phase_id.as_deref(),
         );
         let snapshot = StatefulRunSnapshotRecord {
             schema_version: 1,
             snapshot_id: format!("stateful-webhook-wake-{delivery_id}"),
-            run_id: woken_wait.run_id.clone(),
+            run_id: reserved_wait.run_id.clone(),
             seq,
             created_at_ms: received_at_ms,
             scope,
@@ -1155,7 +1144,7 @@ impl AppState {
             phase: phase_state.phase,
             phase_history: phase_state.phase_history,
             allowed_next_phases: phase_state.allowed_next_phases,
-            phase_id: woken_wait.phase_id.clone(),
+            phase_id: reserved_wait.phase_id.clone(),
             source_record_kind: Some(StatefulWorkflowRunKind::AutomationV2),
             checkpoint: None,
             payload_digest: Some(body_digest.clone()),
@@ -1168,7 +1157,7 @@ impl AppState {
                 "provider": &trigger.provider,
                 "provider_event_id": &provider_event_id,
                 "body_digest": &body_digest,
-                "wait_id": &woken_wait.wait_id,
+                "wait_id": &reserved_wait.wait_id,
             })),
         };
         write_stateful_run_snapshot(&paths.snapshots_root, &snapshot).await?;
@@ -1182,13 +1171,24 @@ impl AppState {
             sanitized_preview,
             &verification,
             primary_idempotency.as_ref(),
-            Some(woken_wait.run_id.clone()),
-            Some(woken_wait.wait_id.clone()),
+            Some(reserved_wait.run_id.clone()),
+            Some(reserved_wait.wait_id.clone()),
             feedback_loop,
         );
         let delivery = self
             .record_automation_webhook_delivery_locked(delivery)
             .await?;
+        let woken_wait = finish_claimed_stateful_wait_completion(
+            &paths.waits_path,
+            &trigger.tenant_context,
+            &reserved_wait,
+            &wake_key,
+            seq,
+            StatefulWaitStatus::Woken,
+            received_at_ms,
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("stateful webhook wait wake conflict"))?;
         self.event_bus.publish(crate::EngineEvent::new(
             "stateful_runtime.wait.webhook_woken",
             json!({
