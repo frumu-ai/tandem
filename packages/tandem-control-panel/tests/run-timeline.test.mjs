@@ -89,6 +89,25 @@ test("run timeline orders persisted pages and exposes the next sequence cursor",
   assert.equal(runTimelinePageEventCount({ rows: [{ seq: 1 }] }), 1);
 });
 
+test("run timeline limits keep the newest entries", () => {
+  const entries = buildRunTimeline({
+    persistedPages: [
+      {
+        run_id: "run-a",
+        events: [1, 2, 3, 4, 5].map((seq) =>
+          runtimeRow({ event_id: `evt-${seq}`, seq, occurred_at_ms: 1_000 + seq })
+        ),
+      },
+    ],
+    limit: 2,
+  });
+
+  assert.deepEqual(
+    entries.map((entry) => entry.sequence),
+    [4, 5]
+  );
+});
+
 test("run timeline dedupes live and persisted copies by canonical event id", () => {
   const liveCopy = {
     type: "workflow.run.started",

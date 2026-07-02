@@ -136,6 +136,11 @@ function queueStatusGroup(row) {
 }
 
 function queueSourceGroup(row) {
+  const explicit = normalizeKey(row?.sourceGroup || row?.source_group || row?.raw?.source_group || row?.raw?.sourceGroup);
+  if (["workflow", "automation", "context"].includes(explicit)) return explicit;
+  if (row?.providerEventKind || row?.triggerId || row?.deliveryId || row?.actionKind === "approval" || row?.transitionId) {
+    return "automation";
+  }
   const text = compact([row?.source, row?.kind, row?.provider, row?.operation, row?.sourceLabel, row?.raw?.source])
     .join(" ")
     .toLowerCase();
@@ -370,6 +375,7 @@ function buildWebhookInboxRows(payload = {}) {
       statusLabel: titleCase(status),
       statusTone: statusTone(status),
       statusGroup: webhookStatusGroup(status),
+      sourceGroup: "automation",
       provider: stringValue(read(row, ["provider"]), "unknown"),
       providerEventKind: stringValue(read(row, ["provider_event_kind", "providerEventKind"]), "event"),
       providerEventId: stringValue(read(row, ["provider_event_id", "providerEventID", "providerEventId"])),
@@ -476,6 +482,7 @@ function buildApprovalWaitRows(payload = {}, options = {}) {
         status,
         statusLabel: titleCase(status),
         statusTone: statusTone(status),
+        sourceGroup: "automation",
         source: stringValue(read(row, ["source"]), "stateful"),
         runId,
         runRoute: runRoute(runId),

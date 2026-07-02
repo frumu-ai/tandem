@@ -142,6 +142,10 @@ test("stateful queue filters apply tenant, workspace, policy, knowledge, and wai
     filterStatefulQueueRows(rows, { status: "waiting", wait: "ship" }).map((row) => row.id),
     ["approval-prod"]
   );
+  assert.deepEqual(
+    filterStatefulQueueRows(rows, { source: "automation" }).map((row) => row.id),
+    ["evt-prod", "evt-sandbox", "approval-prod"]
+  );
 });
 
 test("approval wait rows expose timeout, escalation, transition, and decision history", () => {
