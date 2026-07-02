@@ -957,7 +957,7 @@ fn validation_blocks_read_only_source_mutations_without_retry() {
         std::fs::read(&source_path).expect("snapshot source file"),
     );
 
-    std::fs::write(&source_path, "export const routes = ['bug-monitor'];\n")
+    std::fs::write(&source_path, "export const routes = ['incident-monitor'];\n")
         .expect("mutate source file");
 
     let mut node = bare_node();
@@ -1671,11 +1671,11 @@ fn fintech_compliance_brief_validation_rejects_unproven_citation() {
 }
 
 #[test]
-fn bug_monitor_context_artifacts_do_not_require_workspace_output_paths() {
+fn incident_monitor_context_artifacts_do_not_require_workspace_output_paths() {
     let node = AutomationFlowNode {
         knowledge: tandem_orchestrator::KnowledgeBinding::default(),
         node_id: "research_likely_root_cause".to_string(),
-        agent_id: "bug_monitor_triage_agent".to_string(),
+        agent_id: "incident_monitor_triage_agent".to_string(),
         objective: "Research the failure".to_string(),
         depends_on: Vec::new(),
         input_refs: Vec::new(),
@@ -1695,11 +1695,11 @@ fn bug_monitor_context_artifacts_do_not_require_workspace_output_paths() {
         gate: None,
         metadata: Some(json!({
             "builder": {
-                "output_path": ".tandem/artifacts/bug_monitor.research.json"
+                "output_path": ".tandem/artifacts/incident_monitor.research.json"
             },
-            "bug_monitor": {
-                "artifact_type": "bug_monitor_research",
-                "context_artifact_path": "artifacts/bug_monitor.research.json"
+            "incident_monitor": {
+                "artifact_type": "incident_monitor_research",
+                "context_artifact_path": "artifacts/incident_monitor.research.json"
             }
         })),
     };
@@ -1712,7 +1712,7 @@ fn bug_monitor_context_artifacts_do_not_require_workspace_output_paths() {
 }
 
 #[test]
-fn bug_monitor_recovery_rejects_mcp_inventory_json() {
+fn incident_monitor_recovery_rejects_mcp_inventory_json() {
     let payload = json!({
         "connected_server_names": ["githubcopilot"],
         "registered_tools": ["mcp.githubcopilot.get_me"],
@@ -1721,12 +1721,12 @@ fn bug_monitor_recovery_rejects_mcp_inventory_json() {
 
     assert!(!super::recoverable_json_matches_required_output(
         &payload,
-        ".tandem/artifacts/bug_monitor.research.json"
+        ".tandem/artifacts/incident_monitor.research.json"
     ));
 }
 
 #[test]
-fn bug_monitor_recovery_accepts_matching_research_artifact_json() {
+fn incident_monitor_recovery_accepts_matching_research_artifact_json() {
     let payload = json!({
         "status": "completed",
         "research_summary": {
@@ -1740,7 +1740,7 @@ fn bug_monitor_recovery_accepts_matching_research_artifact_json() {
 
     assert!(super::recoverable_json_matches_required_output(
         &payload,
-        ".tandem/artifacts/bug_monitor.research.json"
+        ".tandem/artifacts/incident_monitor.research.json"
     ));
 }
 

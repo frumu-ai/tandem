@@ -75,7 +75,7 @@ Long-lived dogfooding regressions live in
 `eval_datasets/dogfooding_regressions.yaml`. Each case is an eval-runner test
 case tagged `dogfooding_regression` and should include:
 
-- `automation_spec.config.source_issue` or `source: bug_monitor`
+- `automation_spec.config.source_issue` or `source: incident_monitor`
 - `automation_spec.config.historical_failure_signature`
 - `automation_spec.config.expected_guardrail`
 - validators that name the protected bug class, not just the surface symptom
@@ -95,13 +95,13 @@ The scheduled `Dogfooding Regression Fixtures` GitHub Actions workflow runs the
 same dataset nightly through the deterministic stub engine path and can be
 triggered manually.
 
-## Bug Monitor Scaffold Command
+## Incident Monitor Scaffold Command
 
-When Bug Monitor produces an incident JSON export, scaffold a replay dataset
+When Incident Monitor produces an incident JSON export, scaffold a replay dataset
 with:
 
 ```bash
-cargo run -p tandem-eval --bin bug-monitor-fixture -- \
+cargo run -p tandem-eval --bin incident-monitor-fixture -- \
   --incident /tmp/incident.json \
   --output eval_datasets/regressions/dogfood_006.yaml \
   --id dogfood_006_short_name \

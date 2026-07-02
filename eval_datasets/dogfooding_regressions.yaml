@@ -51,28 +51,28 @@ test_cases:
         - "build_required"
         - "stub_fallback_absent"
 
-  - id: "dogfood_002_bug_monitor_triage_self_recursion"
-    description: "Bug Monitor triage failures must not recursively spawn triage-of-triage workflows"
+  - id: "dogfood_002_incident_monitor_triage_self_recursion"
+    description: "Incident Monitor triage failures must not recursively spawn triage-of-triage workflows"
     priority: 1
     enabled: true
     tags:
       - "dogfooding_regression"
-      - "bug_monitor"
+      - "incident_monitor"
       - "workflow_policy"
     automation_spec:
-      name: "dogfood_bug_monitor_triage_self_recursion"
+      name: "dogfood_incident_monitor_triage_self_recursion"
       nodes:
         - id: "triage_recursion_guard"
           node_type: "workflow_policy"
-          objective: "Classify failures from automation-v2-bug-monitor-triage-* as terminal triage recovery, not as new incidents"
+          objective: "Classify failures from automation-v2-incident-monitor-triage-* as terminal triage recovery, not as new incidents"
           output_contract: "JSON with skipped_recursive_triage, incident_status, and fallback_publish_path"
       validators:
         - "dogfooding_fixture_schema"
         - "recursive_triage_guard"
       config:
-        source: "bug_monitor"
-        historical_failure_signature: "bug monitor triage failure could trigger another bug monitor triage run"
-        expected_guardrail: "triage automation prefix and bug_monitor_triage_agent role are recognized as self-originating"
+        source: "incident_monitor"
+        historical_failure_signature: "incident monitor triage failure could trigger another incident monitor triage run"
+        expected_guardrail: "triage automation prefix and incident_monitor_triage_agent role are recognized as self-originating"
     expected_output:
       artifact_status: "blocked"
       required_validators:

@@ -55,7 +55,6 @@ use crate::{
 pub(crate) mod approvals;
 mod audit_stream;
 mod automation_projection_runtime;
-pub(crate) mod bug_monitor;
 mod capabilities;
 pub(crate) mod channel_automation_drafts;
 mod channel_enrollment;
@@ -74,6 +73,7 @@ mod external_actions;
 mod global;
 mod goal_capability_learning;
 pub(crate) mod governance;
+pub(crate) mod incident_monitor;
 mod marketplace;
 pub(crate) mod mcp;
 mod mcp_connection_inventory;
@@ -96,7 +96,6 @@ mod router;
 mod routes_approvals;
 mod routes_automation_webhook_management;
 mod routes_automation_webhooks;
-mod routes_bug_monitor;
 mod routes_capabilities;
 mod routes_channel_automation_drafts;
 mod routes_coder;
@@ -106,6 +105,7 @@ mod routes_external_actions;
 mod routes_global;
 mod routes_goal_capability_learning;
 mod routes_governance;
+mod routes_incident_monitor;
 mod routes_marketplace;
 mod routes_mcp;
 mod routes_mission_builder;
@@ -368,9 +368,9 @@ pub async fn serve_with_route_extensions(
     let workflow_dispatcher_state = state.clone();
     let agent_team_supervisor_state = state.clone();
     let global_memory_ingestor_state = state.clone();
-    let bug_monitor_state = state.clone();
-    let bug_monitor_log_watcher_state = state.clone();
-    let bug_monitor_recovery_sweep_state = state.clone();
+    let incident_monitor_state = state.clone();
+    let incident_monitor_log_watcher_state = state.clone();
+    let incident_monitor_recovery_sweep_state = state.clone();
     let governance_health_state = state.clone();
     let approval_outbound_state = state.clone();
     let mcp_bootstrap_state = state.clone();
@@ -440,12 +440,14 @@ pub async fn serve_with_route_extensions(
     let agent_team_supervisor = tokio::spawn(crate::run_agent_team_supervisor(
         agent_team_supervisor_state,
     ));
-    let bug_monitor = tokio::spawn(crate::run_bug_monitor(bug_monitor_state));
-    let bug_monitor_log_watcher = tokio::spawn(
-        crate::bug_monitor::log_watcher::run_bug_monitor_log_watcher(bug_monitor_log_watcher_state),
+    let incident_monitor = tokio::spawn(crate::run_incident_monitor(incident_monitor_state));
+    let incident_monitor_log_watcher = tokio::spawn(
+        crate::incident_monitor::log_watcher::run_incident_monitor_log_watcher(
+            incident_monitor_log_watcher_state,
+        ),
     );
-    let bug_monitor_recovery_sweep = tokio::spawn(crate::run_bug_monitor_recovery_sweep(
-        bug_monitor_recovery_sweep_state,
+    let incident_monitor_recovery_sweep = tokio::spawn(crate::run_incident_monitor_recovery_sweep(
+        incident_monitor_recovery_sweep_state,
     ));
     let global_memory_ingestor =
         tokio::spawn(run_global_memory_ingestor(global_memory_ingestor_state));
@@ -616,9 +618,9 @@ pub async fn serve_with_route_extensions(
     optimization_scheduler.abort();
     workflow_dispatcher.abort();
     agent_team_supervisor.abort();
-    bug_monitor.abort();
-    bug_monitor_log_watcher.abort();
-    bug_monitor_recovery_sweep.abort();
+    incident_monitor.abort();
+    incident_monitor_log_watcher.abort();
+    incident_monitor_recovery_sweep.abort();
     global_memory_ingestor.abort();
     approval_outbound_cancel.store(true, Ordering::Relaxed);
     let approval_outbound_shutdown_timeout =

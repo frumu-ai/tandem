@@ -10,7 +10,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const defaultTargets = [
   "crates/tandem-server/src/app/state/approval_message_map.rs",
   "crates/tandem-server/src/pack_manager.rs",
-  "crates/tandem-server/src/bug_monitor/log_watcher.rs",
+  "crates/tandem-server/src/incident_monitor/log_watcher.rs",
 ];
 
 const args = process.argv.slice(2);

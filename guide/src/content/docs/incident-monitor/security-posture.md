@@ -42,7 +42,7 @@ Security posture mode should be described as a layer on top of the existing Tand
 - Incident Monitor: passive intake, triage, routing, destination readiness, approvals, receipts, and remediation routing.
 - Security posture assessment: read-only authority inventory, posture rules, controlled checks, evidence reports, and remediation issues.
 
-The first posture primitive is the read-only authority inventory at `GET /bug-monitor/security/authority-inventory`. It summarizes workflows, Automation V2 specs, agent/tool/MCP policy, Incident Monitor destinations and routes, monitored sources, scoped intake keys, approvals, policy decisions, and recent external publish surfaces without exposing raw secrets or credentials.
+The first posture primitive is the read-only authority inventory at `GET /incident-monitor/security/authority-inventory`. It summarizes workflows, Automation V2 specs, agent/tool/MCP policy, Incident Monitor destinations and routes, monitored sources, scoped intake keys, approvals, policy decisions, and recent external publish surfaces without exposing raw secrets or credentials.
 
 ## What Tandem detects
 
@@ -52,6 +52,7 @@ Tandem can detect and report gaps that are visible from governed runtime configu
 - MCP servers or tools exposed without a narrow allowlist
 - external mutation destinations that do not require approval
 - workflows, sources, or automations missing tenant/workspace context
+- monitored sources missing data-readiness metadata, lineage, freshness, schema drift review, authorization, redaction, or retention coverage
 - monitored sources that can report incidents without an allowed destination policy
 - publish destinations without clear receipt, audit, redaction, or retention posture
 - broad tool policies where a narrower scope is expected
@@ -95,6 +96,7 @@ Safe probe categories:
 
 - approval gate enforcement
 - route preview and destination readiness
+- source readiness warnings surfaced by route preview
 - scoped intake key limits
 - tool policy enforcement
 - tenant/workspace context boundaries
@@ -137,16 +139,18 @@ Security posture mode should be packaged as an enterprise governance capability,
 
 The package boundary should track governance value: who can see authority, who can assess it, who can approve controlled checks, and where reports can be exported.
 
+For production rollout, pair this page with [Production Governance](../production-governance/). That page maps authority inventory, posture checks, probes, assessment reports, deployment cards, receipts, and protected audit evidence to the operator-owned policy decisions needed before external publish routes are trusted.
+
 ## Comparison
 
-| Category | What it covers | Tandem relationship |
-| --- | --- | --- |
-| SAST | Static source-code vulnerability patterns | Complementary. Tandem focuses on runtime agent authority, routes, approvals, and tool/destination surfaces. |
-| DAST | Runtime web/app security testing | Complementary. Tandem should not probe customer apps unless checks are explicitly authorized and bounded. |
-| SIEM | Centralized security event collection and correlation | Complementary. Tandem can export evidence and incidents, but does not replace the customer's SIEM. |
-| CSPM | Cloud posture and infrastructure configuration | Complementary. Tandem assesses AI-agent governance surfaces, not full cloud account posture. |
-| EDR | Endpoint detection and response | Complementary. Tandem does not claim host-level malware or endpoint compromise detection. |
-| Workflow automation | Task execution and integrations | Tandem adds governed runtime controls, authority inventory, approvals, evidence, and incident routing for AI agents using real tools. |
+| Category            | What it covers                                        | Tandem relationship                                                                                                                   |
+| ------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| SAST                | Static source-code vulnerability patterns             | Complementary. Tandem focuses on runtime agent authority, routes, approvals, and tool/destination surfaces.                           |
+| DAST                | Runtime web/app security testing                      | Complementary. Tandem should not probe customer apps unless checks are explicitly authorized and bounded.                             |
+| SIEM                | Centralized security event collection and correlation | Complementary. Tandem can export evidence and incidents, but does not replace the customer's SIEM.                                    |
+| CSPM                | Cloud posture and infrastructure configuration        | Complementary. Tandem assesses AI-agent governance surfaces, not full cloud account posture.                                          |
+| EDR                 | Endpoint detection and response                       | Complementary. Tandem does not claim host-level malware or endpoint compromise detection.                                             |
+| Workflow automation | Task execution and integrations                       | Tandem adds governed runtime controls, authority inventory, approvals, evidence, and incident routing for AI agents using real tools. |
 
 ## Self-monitoring boundary
 
@@ -155,3 +159,9 @@ Tandem can monitor its own runtime, but it is the runtime and control layer, not
 Self-monitoring should focus on Tandem incidents, route decisions, publish attempts, approval decisions, monitor config changes, policy decisions, and audit export. Enterprise deployments should keep a customer-owned external audit export path so Tandem's own incidents are not trapped inside the system being assessed.
 
 Do not state that Tandem self-monitoring proves Tandem is safe. State that Tandem records evidence about its own governance controls and can export that evidence for customer-owned review.
+
+## Related
+
+- [Production Governance](../production-governance/)
+- [Agent Runtime Guide](../agent-runtime-guide/)
+- [Setup Checklist](../setup-checklist/)

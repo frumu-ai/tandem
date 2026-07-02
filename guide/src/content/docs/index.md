@@ -81,8 +81,8 @@ _You want to build custom clients, connect external tools via MCP, or programmat
 - **[Engine Authentication For Agents](./engine-authentication-for-agents/)** — Get the token, authorize calls, and connect agents safely.
 - **[Autonomous Coding Agents with GitHub Projects](./autonomous-coding-agents-github-projects/)** — Build coding agents on Tandem's engine-native GitHub MCP path.
 - **[Coding Tasks With Tandem](./coding-tasks-with-tandem/)** — Learn the execution contract for worktrees, diffs, commits, and verification.
-- **[Bug Monitor And Issue Reporter](./reference/bug-monitor/)** — Turn failures and operator findings into governed drafts, approvals, and published issues.
-- **[Bug Monitor External Log Intake](./bug-monitor-external-log-intake/)** — Teach agents and operators how to connect external project logs, scoped intake keys, and reset/replay debug actions.
+- **[Incident Monitor Reference](./reference/incident-monitor/)** — Turn failures and operator findings into governed drafts, approvals, receipts, and destination publishes.
+- **[Incident Monitor External Log Intake](./incident-monitor-external-log-intake/)** — Teach agents and operators how to connect external project logs, scoped intake keys, and reset/replay debug actions.
 - **[WebMCP for Agents](./webmcp-for-agents/)** — Expose local HTTP APIs to your agents.
 - **[Browser Setup and Testing](./browser-setup-and-testing/)** — Build, install, validate, and incorporate `tandem-browser`.
 - **SDKs:** Integrate Tandem into your own codebases using our official libraries.

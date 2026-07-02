@@ -663,7 +663,7 @@ describe("High-value parity coverage", () => {
     expect(client.browser).toBeTruthy();
     expect(client.storage).toBeTruthy();
     expect(client.workflows).toBeTruthy();
-    expect(client.bugMonitor).toBeTruthy();
+    expect(client.incidentMonitor).toBeTruthy();
   });
 
   it("hits browser status and install endpoints", async () => {
@@ -747,7 +747,7 @@ describe("High-value parity coverage", () => {
     }
   });
 
-  it("uses canonical bug monitor routes", async () => {
+  it("uses canonical incident monitor routes", async () => {
     const client = new TandemClient({ baseUrl: "http://localhost:39731", token: "test-token" });
     const originalFetch = globalThis.fetch;
     const urls: string[] = [];
@@ -760,13 +760,13 @@ describe("High-value parity coverage", () => {
     }) as typeof fetch;
 
     try {
-      await client.bugMonitor.getStatus();
-      await client.bugMonitor.listDrafts({ limit: 3 });
-      await client.bugMonitor.approveDraft("draft-1", "yes");
-      expect(urls[0]).toContain("/bug-monitor/status");
-      expect(urls[1]).toContain("/bug-monitor/drafts?limit=3");
-      expect(urls[2]).toContain("/bug-monitor/drafts/draft-1/approve");
-      expect(urls.every((url) => !url.includes("/failure-reporter/"))).toBe(true);
+      await client.incidentMonitor.getStatus();
+      await client.incidentMonitor.listDrafts({ limit: 3 });
+      await client.incidentMonitor.approveDraft("draft-1", "yes");
+      expect(urls[0]).toContain("/incident-monitor/status");
+      expect(urls[1]).toContain("/incident-monitor/drafts?limit=3");
+      expect(urls[2]).toContain("/incident-monitor/drafts/draft-1/approve");
+      expect(urls.every((url) => !url.includes(`/${"failure"}-reporter/`))).toBe(true);
     } finally {
       globalThis.fetch = originalFetch;
     }

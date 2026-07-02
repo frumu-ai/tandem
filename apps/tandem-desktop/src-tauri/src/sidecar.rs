@@ -4614,23 +4614,23 @@ impl SidecarManager {
         self.handle_response(response).await
     }
 
-    pub async fn bug_monitor_get_config(&self) -> Result<serde_json::Value> {
+    pub async fn incident_monitor_get_config(&self) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
-        let url = format!("{}/config/bug-monitor", self.base_url().await?);
+        let url = format!("{}/config/incident-monitor", self.base_url().await?);
         let response = self.http_client.get(&url).send().await.map_err(|e| {
-            TandemError::Sidecar(format!("Failed to load Bug Monitor config: {}", e))
+            TandemError::Sidecar(format!("Failed to load Incident Monitor config: {}", e))
         })?;
         self.handle_response(response).await
     }
 
-    pub async fn bug_monitor_patch_config(
+    pub async fn incident_monitor_patch_config(
         &self,
         config: serde_json::Value,
     ) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
-        let url = format!("{}/config/bug-monitor", self.base_url().await?);
+        let url = format!("{}/config/incident-monitor", self.base_url().await?);
         let body = serde_json::json!({
-            "bug_monitor": config,
+            "incident_monitor": config,
         });
         let response = self
             .http_client
@@ -4639,45 +4639,55 @@ impl SidecarManager {
             .send()
             .await
             .map_err(|e| {
-                TandemError::Sidecar(format!("Failed to save Bug Monitor config: {}", e))
+                TandemError::Sidecar(format!("Failed to save Incident Monitor config: {}", e))
             })?;
         self.handle_response(response).await
     }
 
-    pub async fn bug_monitor_get_status(&self) -> Result<serde_json::Value> {
+    pub async fn incident_monitor_get_status(&self) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
-        let url = format!("{}/bug-monitor/status", self.base_url().await?);
+        let url = format!("{}/incident-monitor/status", self.base_url().await?);
         let response = self.http_client.get(&url).send().await.map_err(|e| {
-            TandemError::Sidecar(format!("Failed to load Bug Monitor status: {}", e))
+            TandemError::Sidecar(format!("Failed to load Incident Monitor status: {}", e))
         })?;
         self.handle_response(response).await
     }
 
-    pub async fn bug_monitor_list_drafts(&self, limit: Option<usize>) -> Result<serde_json::Value> {
+    pub async fn incident_monitor_list_drafts(
+        &self,
+        limit: Option<usize>,
+    ) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
-        let url = format!("{}/bug-monitor/drafts", self.base_url().await?);
+        let url = format!("{}/incident-monitor/drafts", self.base_url().await?);
         let mut request = self.http_client.get(&url);
         if let Some(limit) = limit {
             request = request.query(&[("limit", limit)]);
         }
         let response = request.send().await.map_err(|e| {
-            TandemError::Sidecar(format!("Failed to load Bug Monitor drafts: {}", e))
+            TandemError::Sidecar(format!("Failed to load Incident Monitor drafts: {}", e))
         })?;
         self.handle_response(response).await
     }
 
-    pub async fn bug_monitor_get_draft(&self, draft_id: &str) -> Result<serde_json::Value> {
+    pub async fn incident_monitor_get_draft(&self, draft_id: &str) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
-        let url = format!("{}/bug-monitor/drafts/{}", self.base_url().await?, draft_id);
+        let url = format!(
+            "{}/incident-monitor/drafts/{}",
+            self.base_url().await?,
+            draft_id
+        );
         let response = self.http_client.get(&url).send().await.map_err(|e| {
-            TandemError::Sidecar(format!("Failed to load Bug Monitor draft: {}", e))
+            TandemError::Sidecar(format!("Failed to load Incident Monitor draft: {}", e))
         })?;
         self.handle_response(response).await
     }
 
-    pub async fn bug_monitor_report(&self, report: serde_json::Value) -> Result<serde_json::Value> {
+    pub async fn incident_monitor_report(
+        &self,
+        report: serde_json::Value,
+    ) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
-        let url = format!("{}/bug-monitor/report", self.base_url().await?);
+        let url = format!("{}/incident-monitor/report", self.base_url().await?);
         let body = serde_json::json!({
             "report": report,
         });
@@ -4688,19 +4698,19 @@ impl SidecarManager {
             .send()
             .await
             .map_err(|e| {
-                TandemError::Sidecar(format!("Failed to submit Bug Monitor draft: {}", e))
+                TandemError::Sidecar(format!("Failed to submit Incident Monitor draft: {}", e))
             })?;
         self.handle_response(response).await
     }
 
-    pub async fn bug_monitor_approve_draft(
+    pub async fn incident_monitor_approve_draft(
         &self,
         draft_id: &str,
         reason: Option<String>,
     ) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
         let url = format!(
-            "{}/bug-monitor/drafts/{}/approve",
+            "{}/incident-monitor/drafts/{}/approve",
             self.base_url().await?,
             draft_id
         );
@@ -4711,19 +4721,19 @@ impl SidecarManager {
             .send()
             .await
             .map_err(|e| {
-                TandemError::Sidecar(format!("Failed to approve Bug Monitor draft: {}", e))
+                TandemError::Sidecar(format!("Failed to approve Incident Monitor draft: {}", e))
             })?;
         self.handle_response(response).await
     }
 
-    pub async fn bug_monitor_deny_draft(
+    pub async fn incident_monitor_deny_draft(
         &self,
         draft_id: &str,
         reason: Option<String>,
     ) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
         let url = format!(
-            "{}/bug-monitor/drafts/{}/deny",
+            "{}/incident-monitor/drafts/{}/deny",
             self.base_url().await?,
             draft_id
         );
@@ -4734,20 +4744,26 @@ impl SidecarManager {
             .send()
             .await
             .map_err(|e| {
-                TandemError::Sidecar(format!("Failed to deny Bug Monitor draft: {}", e))
+                TandemError::Sidecar(format!("Failed to deny Incident Monitor draft: {}", e))
             })?;
         self.handle_response(response).await
     }
 
-    pub async fn bug_monitor_create_triage_run(&self, draft_id: &str) -> Result<serde_json::Value> {
+    pub async fn incident_monitor_create_triage_run(
+        &self,
+        draft_id: &str,
+    ) -> Result<serde_json::Value> {
         self.check_circuit_breaker().await?;
         let url = format!(
-            "{}/bug-monitor/drafts/{}/triage-run",
+            "{}/incident-monitor/drafts/{}/triage-run",
             self.base_url().await?,
             draft_id
         );
         let response = self.http_client.post(&url).send().await.map_err(|e| {
-            TandemError::Sidecar(format!("Failed to create Bug Monitor triage run: {}", e))
+            TandemError::Sidecar(format!(
+                "Failed to create Incident Monitor triage run: {}",
+                e
+            ))
         })?;
         self.handle_response(response).await
     }

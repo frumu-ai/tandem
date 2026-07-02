@@ -74,24 +74,32 @@ import type {
   WorkflowRunListResponse,
   WorkflowHookRecord,
   WorkflowHookListResponse,
-  BugMonitorConfigRow,
-  BugMonitorConfigResponse,
-  BugMonitorStatusResponse,
-  BugMonitorAuthorityInventoryResponse,
-  BugMonitorDestinationConfig,
-  BugMonitorRouteConfig,
-  BugMonitorIncidentRecord,
-  BugMonitorIncidentListResponse,
-  BugMonitorDraftRecord,
-  BugMonitorDraftListResponse,
-  BugMonitorPostListResponse,
-  BugMonitorRoutePreviewResponse,
-  BugMonitorIntakeKeyCreateInput,
-  BugMonitorIntakeKeyCreateResponse,
-  BugMonitorIntakeKeyDisableResponse,
-  BugMonitorIntakeKeyListResponse,
-  BugMonitorLogSourceReplayResponse,
-  BugMonitorLogSourceResetResponse,
+  IncidentMonitorConfigRow,
+  IncidentMonitorConfigResponse,
+  IncidentMonitorStatusResponse,
+  IncidentMonitorAuthorityInventoryResponse,
+  IncidentMonitorAssessmentReportInput,
+  IncidentMonitorAssessmentReportResponse,
+  IncidentMonitorAssessmentProbeRunInput,
+  IncidentMonitorAssessmentProbeRunResponse,
+  IncidentMonitorDeploymentCardsInput,
+  IncidentMonitorDeploymentCardsResponse,
+  IncidentMonitorPostureChecksOptions,
+  IncidentMonitorPostureChecksResponse,
+  IncidentMonitorDestinationConfig,
+  IncidentMonitorRouteConfig,
+  IncidentMonitorIncidentRecord,
+  IncidentMonitorIncidentListResponse,
+  IncidentMonitorDraftRecord,
+  IncidentMonitorDraftListResponse,
+  IncidentMonitorPostListResponse,
+  IncidentMonitorRoutePreviewResponse,
+  IncidentMonitorIntakeKeyCreateInput,
+  IncidentMonitorIntakeKeyCreateResponse,
+  IncidentMonitorIntakeKeyDisableResponse,
+  IncidentMonitorIntakeKeyListResponse,
+  IncidentMonitorLogSourceReplayResponse,
+  IncidentMonitorLogSourceResetResponse,
   CoderGithubProjectInboxResponse,
   CoderGithubProjectIntakeResponse,
   CoderRunRecord,
@@ -347,8 +355,8 @@ export class TandemClient {
   readonly worktrees: Worktrees;
   /** Workflow registry, runs, and hooks */
   readonly workflows: Workflows;
-  /** Bug monitor incident and draft operations */
-  readonly bugMonitor: BugMonitor;
+  /** Incident Monitor routing, incident, and draft operations */
+  readonly incidentMonitor: IncidentMonitor;
   /** Coder workflow runs and artifacts */
   readonly coder: Coder;
   /** Agent team orchestration */
@@ -385,7 +393,7 @@ export class TandemClient {
     this.storage = new Storage(req);
     this.worktrees = new Worktrees(req);
     this.workflows = new Workflows(this.baseUrl, getToken, req);
-    this.bugMonitor = new BugMonitor(req);
+    this.incidentMonitor = new IncidentMonitor(req);
     this.coder = new Coder(req);
     this.agentTeams = new AgentTeams(req);
     this.missions = new Missions(req);
@@ -735,40 +743,40 @@ class Workflows {
   }
 }
 
-class BugMonitor {
+class IncidentMonitor {
   constructor(private req: TandemClient["_request"]) {}
 
-  async getConfig(): Promise<BugMonitorConfigResponse> {
-    return this.req<BugMonitorConfigResponse>("/config/bug-monitor");
+  async getConfig(): Promise<IncidentMonitorConfigResponse> {
+    return this.req<IncidentMonitorConfigResponse>("/config/incident-monitor");
   }
 
-  async patchConfig(config: JsonObject): Promise<BugMonitorConfigResponse> {
+  async patchConfig(config: JsonObject): Promise<IncidentMonitorConfigResponse> {
     const body =
-      config && typeof config === "object" && "bug_monitor" in config
+      config && typeof config === "object" && "incident_monitor" in config
         ? config
-        : { bug_monitor: config };
-    return this.req<BugMonitorConfigResponse>("/config/bug-monitor", {
+        : { incident_monitor: config };
+    return this.req<IncidentMonitorConfigResponse>("/config/incident-monitor", {
       method: "PATCH",
       body: JSON.stringify(body),
     });
   }
 
   private async updateConfig(
-    mutate: (config: BugMonitorConfigRow) => BugMonitorConfigRow
-  ): Promise<BugMonitorConfigResponse> {
+    mutate: (config: IncidentMonitorConfigRow) => IncidentMonitorConfigRow
+  ): Promise<IncidentMonitorConfigResponse> {
     const current = await this.getConfig();
-    const next = mutate({ ...(current.bug_monitor ?? {}) });
+    const next = mutate({ ...(current.incident_monitor ?? {}) });
     return this.patchConfig(next as JsonObject);
   }
 
-  async listDestinations(): Promise<BugMonitorDestinationConfig[]> {
+  async listDestinations(): Promise<IncidentMonitorDestinationConfig[]> {
     const current = await this.getConfig();
-    return current.bug_monitor.destinations ?? [];
+    return current.incident_monitor.destinations ?? [];
   }
 
   async upsertDestination(
-    destination: BugMonitorDestinationConfig
-  ): Promise<BugMonitorConfigResponse> {
+    destination: IncidentMonitorDestinationConfig
+  ): Promise<IncidentMonitorConfigResponse> {
     const destinationId = String(destination.destination_id || "").trim();
     if (!destinationId) throw new Error("destination.destination_id is required");
     return this.updateConfig((config) => {
@@ -779,7 +787,7 @@ class BugMonitor {
     });
   }
 
-  async removeDestination(destinationId: string): Promise<BugMonitorConfigResponse> {
+  async removeDestination(destinationId: string): Promise<IncidentMonitorConfigResponse> {
     const normalizedDestinationId = String(destinationId || "").trim();
     if (!normalizedDestinationId) throw new Error("destinationId is required");
     return this.updateConfig((config) => ({
@@ -802,12 +810,12 @@ class BugMonitor {
     }));
   }
 
-  async listRoutes(): Promise<BugMonitorRouteConfig[]> {
+  async listRoutes(): Promise<IncidentMonitorRouteConfig[]> {
     const current = await this.getConfig();
-    return current.bug_monitor.routes ?? [];
+    return current.incident_monitor.routes ?? [];
   }
 
-  async upsertRoute(route: BugMonitorRouteConfig): Promise<BugMonitorConfigResponse> {
+  async upsertRoute(route: IncidentMonitorRouteConfig): Promise<IncidentMonitorConfigResponse> {
     const routeId = String(route.route_id || "").trim();
     if (!routeId) throw new Error("route.route_id is required");
     return this.updateConfig((config) => {
@@ -818,7 +826,7 @@ class BugMonitor {
     });
   }
 
-  async removeRoute(routeId: string): Promise<BugMonitorConfigResponse> {
+  async removeRoute(routeId: string): Promise<IncidentMonitorConfigResponse> {
     const normalizedRouteId = String(routeId || "").trim();
     if (!normalizedRouteId) throw new Error("routeId is required");
     return this.updateConfig((config) => ({
@@ -829,55 +837,148 @@ class BugMonitor {
     }));
   }
 
-  async getStatus(): Promise<BugMonitorStatusResponse> {
-    return this.req<BugMonitorStatusResponse>("/bug-monitor/status");
+  async getStatus(): Promise<IncidentMonitorStatusResponse> {
+    return this.req<IncidentMonitorStatusResponse>("/incident-monitor/status");
   }
 
-  async getAuthorityInventory(): Promise<BugMonitorAuthorityInventoryResponse> {
-    return this.req<BugMonitorAuthorityInventoryResponse>(
-      "/bug-monitor/security/authority-inventory"
+  async getAuthorityInventory(): Promise<IncidentMonitorAuthorityInventoryResponse> {
+    return this.req<IncidentMonitorAuthorityInventoryResponse>(
+      "/incident-monitor/security/authority-inventory"
     );
   }
 
-  async recomputeStatus(): Promise<BugMonitorStatusResponse> {
-    return this.req<BugMonitorStatusResponse>("/bug-monitor/status/recompute", {
+  async getPostureChecks(
+    options?: IncidentMonitorPostureChecksOptions
+  ): Promise<IncidentMonitorPostureChecksResponse> {
+    const params = new URLSearchParams();
+    if (options?.mode) params.set("mode", options.mode);
+    if (options?.rules?.length) params.set("rules", options.rules.join(","));
+    const disabledRules = options?.disabledRules ?? options?.disabled_rules;
+    if (disabledRules?.length) params.set("disabled_rules", disabledRules.join(","));
+    const minSeverity = options?.minSeverity ?? options?.min_severity;
+    if (minSeverity) params.set("min_severity", minSeverity);
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    return this.req<IncidentMonitorPostureChecksResponse>(
+      `/incident-monitor/security/posture-checks${qs}`
+    );
+  }
+
+  async runAssessmentProbes(
+    input?: IncidentMonitorAssessmentProbeRunInput
+  ): Promise<IncidentMonitorAssessmentProbeRunResponse> {
+    const body = { ...(input ?? {}) };
+    if (
+      body.include_draft_suggestions === undefined &&
+      body.includeDraftSuggestions !== undefined
+    ) {
+      body.include_draft_suggestions = body.includeDraftSuggestions;
+    }
+    delete body.includeDraftSuggestions;
+    return this.req<IncidentMonitorAssessmentProbeRunResponse>(
+      "/incident-monitor/security/assessment-probes",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      }
+    );
+  }
+
+  async generateAssessmentReport(
+    input?: IncidentMonitorAssessmentReportInput
+  ): Promise<IncidentMonitorAssessmentReportResponse> {
+    const body = { ...(input ?? {}) };
+    if (body.include_probe_results === undefined && body.includeProbeResults !== undefined) {
+      body.include_probe_results = body.includeProbeResults;
+    }
+    if (
+      body.include_draft_suggestions === undefined &&
+      body.includeDraftSuggestions !== undefined
+    ) {
+      body.include_draft_suggestions = body.includeDraftSuggestions;
+    }
+    if (body.persist_artifact === undefined && body.persistArtifact !== undefined) {
+      body.persist_artifact = body.persistArtifact;
+    }
+    if (body.route_destination_ids === undefined && body.routeDestinationIds !== undefined) {
+      body.route_destination_ids = body.routeDestinationIds;
+    }
+    if (body.include_raw_payloads === undefined && body.includeRawPayloads !== undefined) {
+      body.include_raw_payloads = body.includeRawPayloads;
+    }
+    delete body.includeProbeResults;
+    delete body.includeDraftSuggestions;
+    delete body.persistArtifact;
+    delete body.routeDestinationIds;
+    delete body.includeRawPayloads;
+    return this.req<IncidentMonitorAssessmentReportResponse>(
+      "/incident-monitor/security/assessment-report",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      }
+    );
+  }
+
+  async generateDeploymentCards(
+    input?: IncidentMonitorDeploymentCardsInput
+  ): Promise<IncidentMonitorDeploymentCardsResponse> {
+    const body = { ...(input ?? {}) };
+    if (body.include_markdown === undefined && body.includeMarkdown !== undefined) {
+      body.include_markdown = body.includeMarkdown;
+    }
+    if (body.include_raw_inventory === undefined && body.includeRawInventory !== undefined) {
+      body.include_raw_inventory = body.includeRawInventory;
+    }
+    delete body.includeMarkdown;
+    delete body.includeRawInventory;
+    return this.req<IncidentMonitorDeploymentCardsResponse>(
+      "/incident-monitor/security/deployment-cards",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      }
+    );
+  }
+
+  async recomputeStatus(): Promise<IncidentMonitorStatusResponse> {
+    return this.req<IncidentMonitorStatusResponse>("/incident-monitor/status/recompute", {
       method: "POST",
     });
   }
 
   async pause(): Promise<JsonObject> {
-    return this.req<JsonObject>("/bug-monitor/pause", { method: "POST" });
+    return this.req<JsonObject>("/incident-monitor/pause", { method: "POST" });
   }
 
   async resume(): Promise<JsonObject> {
-    return this.req<JsonObject>("/bug-monitor/resume", { method: "POST" });
+    return this.req<JsonObject>("/incident-monitor/resume", { method: "POST" });
   }
 
   async debug(): Promise<JsonObject> {
-    return this.req<JsonObject>("/bug-monitor/debug");
+    return this.req<JsonObject>("/incident-monitor/debug");
   }
 
-  async previewRoute(input?: JsonObject): Promise<BugMonitorRoutePreviewResponse> {
-    return this.req<BugMonitorRoutePreviewResponse>("/bug-monitor/route-preview", {
+  async previewRoute(input?: JsonObject): Promise<IncidentMonitorRoutePreviewResponse> {
+    return this.req<IncidentMonitorRoutePreviewResponse>("/incident-monitor/route-preview", {
       method: "POST",
       body: JSON.stringify(input ?? {}),
     });
   }
 
-  async listIncidents(options?: { limit?: number }): Promise<BugMonitorIncidentListResponse> {
+  async listIncidents(options?: { limit?: number }): Promise<IncidentMonitorIncidentListResponse> {
     const qs = options?.limit !== undefined ? `?limit=${options.limit}` : "";
-    return this.req<BugMonitorIncidentListResponse>(`/bug-monitor/incidents${qs}`);
+    return this.req<IncidentMonitorIncidentListResponse>(`/incident-monitor/incidents${qs}`);
   }
 
-  async getIncident(id: string): Promise<BugMonitorIncidentRecord> {
-    const raw = await this.req<{ incident?: BugMonitorIncidentRecord }>(
-      `/bug-monitor/incidents/${encodeURIComponent(id)}`
+  async getIncident(id: string): Promise<IncidentMonitorIncidentRecord> {
+    const raw = await this.req<{ incident?: IncidentMonitorIncidentRecord }>(
+      `/incident-monitor/incidents/${encodeURIComponent(id)}`
     );
-    return raw.incident ?? ({} as BugMonitorIncidentRecord);
+    return raw.incident ?? ({} as IncidentMonitorIncidentRecord);
   }
 
   async replayIncident(id: string, payload?: JsonObject): Promise<JsonObject> {
-    return this.req<JsonObject>(`/bug-monitor/incidents/${encodeURIComponent(id)}/replay`, {
+    return this.req<JsonObject>(`/incident-monitor/incidents/${encodeURIComponent(id)}/replay`, {
       method: "POST",
       body: JSON.stringify(payload ?? {}),
     });
@@ -885,7 +986,7 @@ class BugMonitor {
 
   async deleteIncident(id: string): Promise<{ ok?: boolean; deleted?: number }> {
     return this.req<{ ok?: boolean; deleted?: number }>(
-      `/bug-monitor/incidents/${encodeURIComponent(id)}`,
+      `/incident-monitor/incidents/${encodeURIComponent(id)}`,
       { method: "DELETE" }
     );
   }
@@ -894,7 +995,7 @@ class BugMonitor {
     ids?: string[];
     all?: boolean;
   }): Promise<{ ok?: boolean; deleted?: number }> {
-    return this.req<{ ok?: boolean; deleted?: number }>("/bug-monitor/incidents/bulk-delete", {
+    return this.req<{ ok?: boolean; deleted?: number }>("/incident-monitor/incidents/bulk-delete", {
       method: "POST",
       body: JSON.stringify(payload),
     });
@@ -902,7 +1003,7 @@ class BugMonitor {
 
   async deleteDraft(id: string): Promise<{ ok?: boolean; deleted?: number }> {
     return this.req<{ ok?: boolean; deleted?: number }>(
-      `/bug-monitor/drafts/${encodeURIComponent(id)}`,
+      `/incident-monitor/drafts/${encodeURIComponent(id)}`,
       { method: "DELETE" }
     );
   }
@@ -911,7 +1012,7 @@ class BugMonitor {
     ids?: string[];
     all?: boolean;
   }): Promise<{ ok?: boolean; deleted?: number }> {
-    return this.req<{ ok?: boolean; deleted?: number }>("/bug-monitor/drafts/bulk-delete", {
+    return this.req<{ ok?: boolean; deleted?: number }>("/incident-monitor/drafts/bulk-delete", {
       method: "POST",
       body: JSON.stringify(payload),
     });
@@ -919,7 +1020,7 @@ class BugMonitor {
 
   async deletePost(id: string): Promise<{ ok?: boolean; deleted?: number }> {
     return this.req<{ ok?: boolean; deleted?: number }>(
-      `/bug-monitor/posts/${encodeURIComponent(id)}`,
+      `/incident-monitor/posts/${encodeURIComponent(id)}`,
       { method: "DELETE" }
     );
   }
@@ -928,46 +1029,46 @@ class BugMonitor {
     ids?: string[];
     all?: boolean;
   }): Promise<{ ok?: boolean; deleted?: number }> {
-    return this.req<{ ok?: boolean; deleted?: number }>("/bug-monitor/posts/bulk-delete", {
+    return this.req<{ ok?: boolean; deleted?: number }>("/incident-monitor/posts/bulk-delete", {
       method: "POST",
       body: JSON.stringify(payload),
     });
   }
 
-  async listDrafts(options?: { limit?: number }): Promise<BugMonitorDraftListResponse> {
+  async listDrafts(options?: { limit?: number }): Promise<IncidentMonitorDraftListResponse> {
     const qs = options?.limit !== undefined ? `?limit=${options.limit}` : "";
-    return this.req<BugMonitorDraftListResponse>(`/bug-monitor/drafts${qs}`);
+    return this.req<IncidentMonitorDraftListResponse>(`/incident-monitor/drafts${qs}`);
   }
 
   async listPosts(options?: {
     limit?: number;
     destinationId?: string;
     destination_id?: string;
-  }): Promise<BugMonitorPostListResponse> {
+  }): Promise<IncidentMonitorPostListResponse> {
     const params = new URLSearchParams();
     if (options?.limit !== undefined) params.set("limit", String(options.limit));
     const destinationId = options?.destination_id ?? options?.destinationId;
     if (destinationId) params.set("destination_id", destinationId);
     const qs = params.toString() ? `?${params.toString()}` : "";
-    return this.req<BugMonitorPostListResponse>(`/bug-monitor/posts${qs}`);
+    return this.req<IncidentMonitorPostListResponse>(`/incident-monitor/posts${qs}`);
   }
 
-  async listIntakeKeys(): Promise<BugMonitorIntakeKeyListResponse> {
-    return this.req<BugMonitorIntakeKeyListResponse>("/bug-monitor/intake/keys");
+  async listIntakeKeys(): Promise<IncidentMonitorIntakeKeyListResponse> {
+    return this.req<IncidentMonitorIntakeKeyListResponse>("/incident-monitor/intake/keys");
   }
 
   async createIntakeKey(
-    input: BugMonitorIntakeKeyCreateInput
-  ): Promise<BugMonitorIntakeKeyCreateResponse> {
-    return this.req<BugMonitorIntakeKeyCreateResponse>("/bug-monitor/intake/keys", {
+    input: IncidentMonitorIntakeKeyCreateInput
+  ): Promise<IncidentMonitorIntakeKeyCreateResponse> {
+    return this.req<IncidentMonitorIntakeKeyCreateResponse>("/incident-monitor/intake/keys", {
       method: "POST",
       body: JSON.stringify(input),
     });
   }
 
-  async disableIntakeKey(id: string): Promise<BugMonitorIntakeKeyDisableResponse> {
-    return this.req<BugMonitorIntakeKeyDisableResponse>(
-      `/bug-monitor/intake/keys/${encodeURIComponent(id)}/disable`,
+  async disableIntakeKey(id: string): Promise<IncidentMonitorIntakeKeyDisableResponse> {
+    return this.req<IncidentMonitorIntakeKeyDisableResponse>(
+      `/incident-monitor/intake/keys/${encodeURIComponent(id)}/disable`,
       { method: "POST" }
     );
   }
@@ -975,9 +1076,9 @@ class BugMonitor {
   async resetLogSourceOffset(
     projectId: string,
     sourceId: string
-  ): Promise<BugMonitorLogSourceResetResponse> {
-    return this.req<BugMonitorLogSourceResetResponse>(
-      `/bug-monitor/log-sources/${encodeURIComponent(projectId)}/${encodeURIComponent(
+  ): Promise<IncidentMonitorLogSourceResetResponse> {
+    return this.req<IncidentMonitorLogSourceResetResponse>(
+      `/incident-monitor/log-sources/${encodeURIComponent(projectId)}/${encodeURIComponent(
         sourceId
       )}/reset-offset`,
       { method: "POST" }
@@ -987,31 +1088,31 @@ class BugMonitor {
   async replayLatestLogSourceCandidate(
     projectId: string,
     sourceId: string
-  ): Promise<BugMonitorLogSourceReplayResponse> {
-    return this.req<BugMonitorLogSourceReplayResponse>(
-      `/bug-monitor/log-sources/${encodeURIComponent(projectId)}/${encodeURIComponent(
+  ): Promise<IncidentMonitorLogSourceReplayResponse> {
+    return this.req<IncidentMonitorLogSourceReplayResponse>(
+      `/incident-monitor/log-sources/${encodeURIComponent(projectId)}/${encodeURIComponent(
         sourceId
       )}/replay-latest`,
       { method: "POST" }
     );
   }
 
-  async getDraft(id: string): Promise<BugMonitorDraftRecord> {
-    const raw = await this.req<{ draft?: BugMonitorDraftRecord }>(
-      `/bug-monitor/drafts/${encodeURIComponent(id)}`
+  async getDraft(id: string): Promise<IncidentMonitorDraftRecord> {
+    const raw = await this.req<{ draft?: IncidentMonitorDraftRecord }>(
+      `/incident-monitor/drafts/${encodeURIComponent(id)}`
     );
-    return raw.draft ?? ({} as BugMonitorDraftRecord);
+    return raw.draft ?? ({} as IncidentMonitorDraftRecord);
   }
 
   async approveDraft(id: string, reason?: string): Promise<JsonObject> {
-    return this.req<JsonObject>(`/bug-monitor/drafts/${encodeURIComponent(id)}/approve`, {
+    return this.req<JsonObject>(`/incident-monitor/drafts/${encodeURIComponent(id)}/approve`, {
       method: "POST",
       body: JSON.stringify({ reason }),
     });
   }
 
   async denyDraft(id: string, reason?: string): Promise<JsonObject> {
-    return this.req<JsonObject>(`/bug-monitor/drafts/${encodeURIComponent(id)}/deny`, {
+    return this.req<JsonObject>(`/incident-monitor/drafts/${encodeURIComponent(id)}/deny`, {
       method: "POST",
       body: JSON.stringify({ reason }),
     });
@@ -1020,34 +1121,34 @@ class BugMonitor {
   async report(payload: JsonObject): Promise<JsonObject> {
     const body =
       payload && typeof payload === "object" && "report" in payload ? payload : { report: payload };
-    return this.req<JsonObject>("/bug-monitor/report", {
+    return this.req<JsonObject>("/incident-monitor/report", {
       method: "POST",
       body: JSON.stringify(body),
     });
   }
 
   async createTriageRun(id: string): Promise<JsonObject> {
-    return this.req<JsonObject>(`/bug-monitor/drafts/${encodeURIComponent(id)}/triage-run`, {
+    return this.req<JsonObject>(`/incident-monitor/drafts/${encodeURIComponent(id)}/triage-run`, {
       method: "POST",
     });
   }
 
   async createTriageSummary(id: string, payload: JsonObject): Promise<JsonObject> {
-    return this.req<JsonObject>(`/bug-monitor/drafts/${encodeURIComponent(id)}/triage-summary`, {
+    return this.req<JsonObject>(`/incident-monitor/drafts/${encodeURIComponent(id)}/triage-summary`, {
       method: "POST",
       body: JSON.stringify(payload),
     });
   }
 
   async createIssueDraft(id: string, payload?: JsonObject): Promise<JsonObject> {
-    return this.req<JsonObject>(`/bug-monitor/drafts/${encodeURIComponent(id)}/issue-draft`, {
+    return this.req<JsonObject>(`/incident-monitor/drafts/${encodeURIComponent(id)}/issue-draft`, {
       method: "POST",
       body: JSON.stringify(payload ?? {}),
     });
   }
 
   async publishDraft(id: string, payload?: JsonObject): Promise<JsonObject> {
-    return this.req<JsonObject>(`/bug-monitor/drafts/${encodeURIComponent(id)}/publish`, {
+    return this.req<JsonObject>(`/incident-monitor/drafts/${encodeURIComponent(id)}/publish`, {
       method: "POST",
       body: JSON.stringify(payload ?? {}),
     });
@@ -1065,7 +1166,7 @@ class BugMonitor {
   }
 
   async recheckMatch(id: string, payload?: JsonObject): Promise<JsonObject> {
-    return this.req<JsonObject>(`/bug-monitor/drafts/${encodeURIComponent(id)}/recheck-match`, {
+    return this.req<JsonObject>(`/incident-monitor/drafts/${encodeURIComponent(id)}/recheck-match`, {
       method: "POST",
       body: JSON.stringify(payload ?? {}),
     });

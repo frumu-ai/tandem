@@ -64,18 +64,18 @@ pub mod automation_v2;
 pub mod benchmarking;
 #[cfg(feature = "browser")]
 pub mod browser;
-pub mod bug_monitor;
-pub mod bug_monitor_github;
-pub mod bug_monitor_linear;
-pub mod bug_monitor_local;
-pub mod bug_monitor_mcp;
-pub mod bug_monitor_webhook;
 pub mod capability_resolver;
 pub mod config;
 pub mod eval_support;
 pub mod failures;
 pub mod goal_capability_learning;
 pub mod http;
+pub mod incident_monitor;
+pub mod incident_monitor_github;
+pub mod incident_monitor_linear;
+pub mod incident_monitor_local;
+pub mod incident_monitor_mcp;
+pub mod incident_monitor_webhook;
 pub mod mcp_catalog;
 pub mod mcp_catalog_generated;
 pub mod memory;
@@ -115,7 +115,6 @@ pub use automation_v2::execution_profile::{
 pub use automation_v2::types::*;
 #[cfg(feature = "browser")]
 pub use browser::*;
-pub use bug_monitor::types::*;
 pub use config::channels::*;
 pub use config::engine::{config_reference_markdown, EngineConfigOptions, EngineConfigReport};
 pub use failures::{
@@ -123,6 +122,7 @@ pub use failures::{
     FailureContext,
 };
 pub use http::*;
+pub use incident_monitor::types::*;
 pub use memory::types::*;
 pub use optimization::*;
 pub use routines::errors::*;

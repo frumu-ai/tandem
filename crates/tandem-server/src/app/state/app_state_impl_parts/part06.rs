@@ -62,56 +62,56 @@ impl AppState {
         Ok(recovered)
     }
 
-    pub async fn load_bug_monitor_config(&self) -> anyhow::Result<()> {
-        let path = if self.bug_monitor_config_path.exists() {
-            self.bug_monitor_config_path.clone()
+    pub async fn load_incident_monitor_config(&self) -> anyhow::Result<()> {
+        let path = if self.incident_monitor_config_path.exists() {
+            self.incident_monitor_config_path.clone()
         } else if let Some(path) =
-            config::paths::resolve_legacy_root_file_path("bug_monitor_config.json")
+            config::paths::resolve_legacy_root_file_path("incident_monitor_config.json")
         {
             if path.exists() {
                 path
-            } else if config::paths::legacy_failure_reporter_path("failure_reporter_config.json")
+            } else if config::paths::legacy_incident_monitor_path("incident_monitor_config.json")
                 .exists()
             {
-                config::paths::legacy_failure_reporter_path("failure_reporter_config.json")
+                config::paths::legacy_incident_monitor_path("incident_monitor_config.json")
             } else {
                 return Ok(());
             }
-        } else if config::paths::legacy_failure_reporter_path("failure_reporter_config.json")
+        } else if config::paths::legacy_incident_monitor_path("incident_monitor_config.json")
             .exists()
         {
-            config::paths::legacy_failure_reporter_path("failure_reporter_config.json")
+            config::paths::legacy_incident_monitor_path("incident_monitor_config.json")
         } else {
             return Ok(());
         };
         check_file_permissions(&path);
         let raw = fs::read_to_string(path).await?;
-        let parsed = serde_json::from_str::<BugMonitorConfig>(&raw)
-            .unwrap_or_else(|_| config::env::resolve_bug_monitor_env_config());
-        *self.bug_monitor_config.write().await = parsed;
+        let parsed = serde_json::from_str::<IncidentMonitorConfig>(&raw)
+            .unwrap_or_else(|_| config::env::resolve_incident_monitor_env_config());
+        *self.incident_monitor_config.write().await = parsed;
         Ok(())
     }
 
-    pub async fn persist_bug_monitor_config(&self) -> anyhow::Result<()> {
-        if let Some(parent) = self.bug_monitor_config_path.parent() {
+    pub async fn persist_incident_monitor_config(&self) -> anyhow::Result<()> {
+        if let Some(parent) = self.incident_monitor_config_path.parent() {
             fs::create_dir_all(parent).await?;
         }
         let payload = {
-            let guard = self.bug_monitor_config.read().await;
+            let guard = self.incident_monitor_config.read().await;
             serde_json::to_string_pretty(&*guard)?
         };
-        fs::write(&self.bug_monitor_config_path, payload).await?;
+        fs::write(&self.incident_monitor_config_path, payload).await?;
         Ok(())
     }
 
-    pub async fn bug_monitor_config(&self) -> BugMonitorConfig {
-        self.bug_monitor_config.read().await.clone()
+    pub async fn incident_monitor_config(&self) -> IncidentMonitorConfig {
+        self.incident_monitor_config.read().await.clone()
     }
 
-    pub async fn put_bug_monitor_config(
+    pub async fn put_incident_monitor_config(
         &self,
-        mut config: BugMonitorConfig,
-    ) -> anyhow::Result<BugMonitorConfig> {
+        mut config: IncidentMonitorConfig,
+    ) -> anyhow::Result<IncidentMonitorConfig> {
         config.workspace_root = config
             .workspace_root
             .as_ref()
@@ -132,102 +132,102 @@ impl AppState {
             crate::http::routines_automations::validate_model_policy(model_policy)
                 .map_err(anyhow::Error::msg)?;
         }
-        validate_bug_monitor_monitored_projects(self, &mut config).await?;
+        validate_incident_monitor_monitored_projects(self, &mut config).await?;
         config.updated_at_ms = now_ms();
-        *self.bug_monitor_config.write().await = config.clone();
-        self.persist_bug_monitor_config().await?;
+        *self.incident_monitor_config.write().await = config.clone();
+        self.persist_incident_monitor_config().await?;
         Ok(config)
     }
 
-    pub async fn load_bug_monitor_log_watcher_state(&self) -> anyhow::Result<()> {
-        if !self.bug_monitor_log_watcher_state_path.exists() {
+    pub async fn load_incident_monitor_log_watcher_state(&self) -> anyhow::Result<()> {
+        if !self.incident_monitor_log_watcher_state_path.exists() {
             return Ok(());
         }
-        check_file_permissions(&self.bug_monitor_log_watcher_state_path);
-        let raw = fs::read_to_string(&self.bug_monitor_log_watcher_state_path).await?;
+        check_file_permissions(&self.incident_monitor_log_watcher_state_path);
+        let raw = fs::read_to_string(&self.incident_monitor_log_watcher_state_path).await?;
         let parsed =
-            serde_json::from_str::<BugMonitorLogWatcherStateFile>(&raw).unwrap_or_default();
-        *self.bug_monitor_log_source_states.write().await = parsed.sources;
+            serde_json::from_str::<IncidentMonitorLogWatcherStateFile>(&raw).unwrap_or_default();
+        *self.incident_monitor_log_source_states.write().await = parsed.sources;
         Ok(())
     }
 
-    pub async fn persist_bug_monitor_log_watcher_state(&self) -> anyhow::Result<()> {
-        if let Some(parent) = self.bug_monitor_log_watcher_state_path.parent() {
+    pub async fn persist_incident_monitor_log_watcher_state(&self) -> anyhow::Result<()> {
+        if let Some(parent) = self.incident_monitor_log_watcher_state_path.parent() {
             fs::create_dir_all(parent).await?;
         }
         let payload = {
-            let guard = self.bug_monitor_log_source_states.read().await;
-            serde_json::to_string_pretty(&BugMonitorLogWatcherStateFile {
+            let guard = self.incident_monitor_log_source_states.read().await;
+            serde_json::to_string_pretty(&IncidentMonitorLogWatcherStateFile {
                 schema_version: 1,
                 sources: guard.clone(),
             })?
         };
-        write_state_file_atomically(&self.bug_monitor_log_watcher_state_path, payload).await
+        write_state_file_atomically(&self.incident_monitor_log_watcher_state_path, payload).await
     }
 
-    pub async fn get_bug_monitor_log_source_state(
+    pub async fn get_incident_monitor_log_source_state(
         &self,
         project_id: &str,
         source_id: &str,
-    ) -> Option<BugMonitorLogSourceState> {
-        self.bug_monitor_log_source_states
+    ) -> Option<IncidentMonitorLogSourceState> {
+        self.incident_monitor_log_source_states
             .read()
             .await
-            .get(&bug_monitor_log_source_state_key(project_id, source_id))
+            .get(&incident_monitor_log_source_state_key(project_id, source_id))
             .cloned()
     }
 
-    pub async fn put_bug_monitor_log_source_state(
+    pub async fn put_incident_monitor_log_source_state(
         &self,
-        source_state: BugMonitorLogSourceState,
-    ) -> anyhow::Result<BugMonitorLogSourceState> {
+        source_state: IncidentMonitorLogSourceState,
+    ) -> anyhow::Result<IncidentMonitorLogSourceState> {
         let key =
-            bug_monitor_log_source_state_key(&source_state.project_id, &source_state.source_id);
-        self.bug_monitor_log_source_states
+            incident_monitor_log_source_state_key(&source_state.project_id, &source_state.source_id);
+        self.incident_monitor_log_source_states
             .write()
             .await
             .insert(key, source_state.clone());
-        self.persist_bug_monitor_log_watcher_state().await?;
+        self.persist_incident_monitor_log_watcher_state().await?;
         Ok(source_state)
     }
 
-    pub async fn update_bug_monitor_log_watcher_status(
+    pub async fn update_incident_monitor_log_watcher_status(
         &self,
-        update: impl FnOnce(&mut BugMonitorLogWatcherStatus),
-    ) -> BugMonitorLogWatcherStatus {
-        let mut guard = self.bug_monitor_log_watcher_status.write().await;
+        update: impl FnOnce(&mut IncidentMonitorLogWatcherStatus),
+    ) -> IncidentMonitorLogWatcherStatus {
+        let mut guard = self.incident_monitor_log_watcher_status.write().await;
         update(&mut guard);
         guard.clone()
     }
 
-    pub async fn load_bug_monitor_intake_keys(&self) -> anyhow::Result<()> {
-        if !self.bug_monitor_intake_keys_path.exists() {
+    pub async fn load_incident_monitor_intake_keys(&self) -> anyhow::Result<()> {
+        if !self.incident_monitor_intake_keys_path.exists() {
             return Ok(());
         }
-        check_file_permissions(&self.bug_monitor_intake_keys_path);
-        let raw = fs::read_to_string(&self.bug_monitor_intake_keys_path).await?;
+        check_file_permissions(&self.incident_monitor_intake_keys_path);
+        let raw = fs::read_to_string(&self.incident_monitor_intake_keys_path).await?;
         let parsed = serde_json::from_str::<
-            std::collections::HashMap<String, BugMonitorProjectIntakeKey>,
+            std::collections::HashMap<String, IncidentMonitorProjectIntakeKey>,
         >(&raw)
         .unwrap_or_default();
-        *self.bug_monitor_intake_keys.write().await = parsed;
+        *self.incident_monitor_intake_keys.write().await = parsed;
         Ok(())
     }
 
-    pub async fn persist_bug_monitor_intake_keys(&self) -> anyhow::Result<()> {
-        if let Some(parent) = self.bug_monitor_intake_keys_path.parent() {
+    pub async fn persist_incident_monitor_intake_keys(&self) -> anyhow::Result<()> {
+        if let Some(parent) = self.incident_monitor_intake_keys_path.parent() {
             fs::create_dir_all(parent).await?;
         }
         let payload = {
-            let guard = self.bug_monitor_intake_keys.read().await;
+            let guard = self.incident_monitor_intake_keys.read().await;
             serde_json::to_string_pretty(&*guard)?
         };
-        write_state_file_atomically(&self.bug_monitor_intake_keys_path, payload).await
+        write_state_file_atomically(&self.incident_monitor_intake_keys_path, payload).await
     }
 
-    pub async fn list_bug_monitor_intake_keys(&self) -> Vec<BugMonitorProjectIntakeKey> {
+    pub async fn list_incident_monitor_intake_keys(&self) -> Vec<IncidentMonitorProjectIntakeKey> {
         let mut rows = self
-            .bug_monitor_intake_keys
+            .incident_monitor_intake_keys
             .read()
             .await
             .values()
@@ -237,27 +237,27 @@ impl AppState {
         rows
     }
 
-    pub async fn put_bug_monitor_intake_key(
+    pub async fn put_incident_monitor_intake_key(
         &self,
-        key: BugMonitorProjectIntakeKey,
-    ) -> anyhow::Result<BugMonitorProjectIntakeKey> {
-        self.bug_monitor_intake_keys
+        key: IncidentMonitorProjectIntakeKey,
+    ) -> anyhow::Result<IncidentMonitorProjectIntakeKey> {
+        self.incident_monitor_intake_keys
             .write()
             .await
             .insert(key.key_id.clone(), key.clone());
-        self.persist_bug_monitor_intake_keys().await?;
+        self.persist_incident_monitor_intake_keys().await?;
         Ok(key)
     }
 
-    pub async fn validate_bug_monitor_intake_key(
+    pub async fn validate_incident_monitor_intake_key(
         &self,
         raw_key: &str,
         project_id: &str,
         required_scope: &str,
-    ) -> Option<BugMonitorProjectIntakeKey> {
+    ) -> Option<IncidentMonitorProjectIntakeKey> {
         let key_hash = crate::sha256_hex(&[raw_key.trim()]);
         let mut matched = {
-            self.bug_monitor_intake_keys
+            self.incident_monitor_intake_keys
                 .read()
                 .await
                 .values()
@@ -270,134 +270,134 @@ impl AppState {
                 .cloned()
         }?;
         matched.last_used_at_ms = Some(now_ms());
-        let _ = self.put_bug_monitor_intake_key(matched.clone()).await;
+        let _ = self.put_incident_monitor_intake_key(matched.clone()).await;
         Some(matched)
     }
 
-    pub async fn load_bug_monitor_drafts(&self) -> anyhow::Result<()> {
-        let path = if self.bug_monitor_drafts_path.exists() {
-            self.bug_monitor_drafts_path.clone()
+    pub async fn load_incident_monitor_drafts(&self) -> anyhow::Result<()> {
+        let path = if self.incident_monitor_drafts_path.exists() {
+            self.incident_monitor_drafts_path.clone()
         } else if let Some(path) =
-            config::paths::resolve_legacy_root_file_path("bug_monitor_drafts.json")
+            config::paths::resolve_legacy_root_file_path("incident_monitor_drafts.json")
         {
             if path.exists() {
                 path
-            } else if config::paths::legacy_failure_reporter_path("failure_reporter_drafts.json")
+            } else if config::paths::legacy_incident_monitor_path("incident_monitor_drafts.json")
                 .exists()
             {
-                config::paths::legacy_failure_reporter_path("failure_reporter_drafts.json")
+                config::paths::legacy_incident_monitor_path("incident_monitor_drafts.json")
             } else {
                 return Ok(());
             }
-        } else if config::paths::legacy_failure_reporter_path("failure_reporter_drafts.json")
+        } else if config::paths::legacy_incident_monitor_path("incident_monitor_drafts.json")
             .exists()
         {
-            config::paths::legacy_failure_reporter_path("failure_reporter_drafts.json")
+            config::paths::legacy_incident_monitor_path("incident_monitor_drafts.json")
         } else {
             return Ok(());
         };
         let raw = fs::read_to_string(path).await?;
         let parsed =
-            serde_json::from_str::<std::collections::HashMap<String, BugMonitorDraftRecord>>(&raw)
+            serde_json::from_str::<std::collections::HashMap<String, IncidentMonitorDraftRecord>>(&raw)
                 .unwrap_or_default();
-        *self.bug_monitor_drafts.write().await = parsed;
+        *self.incident_monitor_drafts.write().await = parsed;
         Ok(())
     }
 
-    pub async fn persist_bug_monitor_drafts(&self) -> anyhow::Result<()> {
-        if let Some(parent) = self.bug_monitor_drafts_path.parent() {
+    pub async fn persist_incident_monitor_drafts(&self) -> anyhow::Result<()> {
+        if let Some(parent) = self.incident_monitor_drafts_path.parent() {
             fs::create_dir_all(parent).await?;
         }
         let payload = {
-            let guard = self.bug_monitor_drafts.read().await;
+            let guard = self.incident_monitor_drafts.read().await;
             serde_json::to_string_pretty(&*guard)?
         };
-        fs::write(&self.bug_monitor_drafts_path, payload).await?;
+        fs::write(&self.incident_monitor_drafts_path, payload).await?;
         Ok(())
     }
 
-    pub async fn load_bug_monitor_incidents(&self) -> anyhow::Result<()> {
-        let path = if self.bug_monitor_incidents_path.exists() {
-            self.bug_monitor_incidents_path.clone()
+    pub async fn load_incident_monitor_incidents(&self) -> anyhow::Result<()> {
+        let path = if self.incident_monitor_incidents_path.exists() {
+            self.incident_monitor_incidents_path.clone()
         } else if let Some(path) =
-            config::paths::resolve_legacy_root_file_path("bug_monitor_incidents.json")
+            config::paths::resolve_legacy_root_file_path("incident_monitor_incidents.json")
         {
             if path.exists() {
                 path
-            } else if config::paths::legacy_failure_reporter_path("failure_reporter_incidents.json")
+            } else if config::paths::legacy_incident_monitor_path("incident_monitor_incidents.json")
                 .exists()
             {
-                config::paths::legacy_failure_reporter_path("failure_reporter_incidents.json")
+                config::paths::legacy_incident_monitor_path("incident_monitor_incidents.json")
             } else {
                 return Ok(());
             }
-        } else if config::paths::legacy_failure_reporter_path("failure_reporter_incidents.json")
+        } else if config::paths::legacy_incident_monitor_path("incident_monitor_incidents.json")
             .exists()
         {
-            config::paths::legacy_failure_reporter_path("failure_reporter_incidents.json")
+            config::paths::legacy_incident_monitor_path("incident_monitor_incidents.json")
         } else {
             return Ok(());
         };
         let raw = fs::read_to_string(path).await?;
         let parsed = serde_json::from_str::<
-            std::collections::HashMap<String, BugMonitorIncidentRecord>,
+            std::collections::HashMap<String, IncidentMonitorIncidentRecord>,
         >(&raw)
         .unwrap_or_default();
-        *self.bug_monitor_incidents.write().await = parsed;
+        *self.incident_monitor_incidents.write().await = parsed;
         Ok(())
     }
 
-    pub async fn persist_bug_monitor_incidents(&self) -> anyhow::Result<()> {
-        if let Some(parent) = self.bug_monitor_incidents_path.parent() {
+    pub async fn persist_incident_monitor_incidents(&self) -> anyhow::Result<()> {
+        if let Some(parent) = self.incident_monitor_incidents_path.parent() {
             fs::create_dir_all(parent).await?;
         }
         let payload = {
-            let guard = self.bug_monitor_incidents.read().await;
+            let guard = self.incident_monitor_incidents.read().await;
             serde_json::to_string_pretty(&*guard)?
         };
-        fs::write(&self.bug_monitor_incidents_path, payload).await?;
+        fs::write(&self.incident_monitor_incidents_path, payload).await?;
         Ok(())
     }
 
-    pub async fn load_bug_monitor_posts(&self) -> anyhow::Result<()> {
-        let path = if self.bug_monitor_posts_path.exists() {
-            self.bug_monitor_posts_path.clone()
+    pub async fn load_incident_monitor_posts(&self) -> anyhow::Result<()> {
+        let path = if self.incident_monitor_posts_path.exists() {
+            self.incident_monitor_posts_path.clone()
         } else if let Some(path) =
-            config::paths::resolve_legacy_root_file_path("bug_monitor_posts.json")
+            config::paths::resolve_legacy_root_file_path("incident_monitor_posts.json")
         {
             if path.exists() {
                 path
-            } else if config::paths::legacy_failure_reporter_path("failure_reporter_posts.json")
+            } else if config::paths::legacy_incident_monitor_path("incident_monitor_posts.json")
                 .exists()
             {
-                config::paths::legacy_failure_reporter_path("failure_reporter_posts.json")
+                config::paths::legacy_incident_monitor_path("incident_monitor_posts.json")
             } else {
                 return Ok(());
             }
-        } else if config::paths::legacy_failure_reporter_path("failure_reporter_posts.json")
+        } else if config::paths::legacy_incident_monitor_path("incident_monitor_posts.json")
             .exists()
         {
-            config::paths::legacy_failure_reporter_path("failure_reporter_posts.json")
+            config::paths::legacy_incident_monitor_path("incident_monitor_posts.json")
         } else {
             return Ok(());
         };
         let raw = fs::read_to_string(path).await?;
         let parsed =
-            serde_json::from_str::<std::collections::HashMap<String, BugMonitorPostRecord>>(&raw)
+            serde_json::from_str::<std::collections::HashMap<String, IncidentMonitorPostRecord>>(&raw)
                 .unwrap_or_default();
-        *self.bug_monitor_posts.write().await = parsed;
+        *self.incident_monitor_posts.write().await = parsed;
         Ok(())
     }
 
-    pub async fn persist_bug_monitor_posts(&self) -> anyhow::Result<()> {
-        if let Some(parent) = self.bug_monitor_posts_path.parent() {
+    pub async fn persist_incident_monitor_posts(&self) -> anyhow::Result<()> {
+        if let Some(parent) = self.incident_monitor_posts_path.parent() {
             fs::create_dir_all(parent).await?;
         }
         let payload = {
-            let guard = self.bug_monitor_posts.read().await;
+            let guard = self.incident_monitor_posts.read().await;
             serde_json::to_string_pretty(&*guard)?
         };
-        fs::write(&self.bug_monitor_posts_path, payload).await?;
+        fs::write(&self.incident_monitor_posts_path, payload).await?;
         Ok(())
     }
 
@@ -451,9 +451,9 @@ impl AppState {
         Ok(())
     }
 
-    pub async fn list_bug_monitor_incidents(&self, limit: usize) -> Vec<BugMonitorIncidentRecord> {
+    pub async fn list_incident_monitor_incidents(&self, limit: usize) -> Vec<IncidentMonitorIncidentRecord> {
         let mut rows = self
-            .bug_monitor_incidents
+            .incident_monitor_incidents
             .read()
             .await
             .values()
@@ -464,33 +464,33 @@ impl AppState {
         rows
     }
 
-    pub async fn get_bug_monitor_incident(
+    pub async fn get_incident_monitor_incident(
         &self,
         incident_id: &str,
-    ) -> Option<BugMonitorIncidentRecord> {
-        self.bug_monitor_incidents
+    ) -> Option<IncidentMonitorIncidentRecord> {
+        self.incident_monitor_incidents
             .read()
             .await
             .get(incident_id)
             .cloned()
     }
 
-    pub async fn put_bug_monitor_incident(
+    pub async fn put_incident_monitor_incident(
         &self,
-        incident: BugMonitorIncidentRecord,
-    ) -> anyhow::Result<BugMonitorIncidentRecord> {
-        self.bug_monitor_incidents
+        incident: IncidentMonitorIncidentRecord,
+    ) -> anyhow::Result<IncidentMonitorIncidentRecord> {
+        self.incident_monitor_incidents
             .write()
             .await
             .insert(incident.incident_id.clone(), incident.clone());
-        self.persist_bug_monitor_incidents().await?;
+        self.persist_incident_monitor_incidents().await?;
         Ok(incident)
     }
 
-    pub async fn delete_bug_monitor_incidents(&self, ids: &[String]) -> anyhow::Result<usize> {
+    pub async fn delete_incident_monitor_incidents(&self, ids: &[String]) -> anyhow::Result<usize> {
         let mut removed = 0usize;
         {
-            let mut guard = self.bug_monitor_incidents.write().await;
+            let mut guard = self.incident_monitor_incidents.write().await;
             for id in ids {
                 if guard.remove(id).is_some() {
                     removed += 1;
@@ -498,27 +498,27 @@ impl AppState {
             }
         }
         if removed > 0 {
-            self.persist_bug_monitor_incidents().await?;
+            self.persist_incident_monitor_incidents().await?;
         }
         Ok(removed)
     }
 
-    pub async fn clear_bug_monitor_incidents(&self) -> anyhow::Result<usize> {
+    pub async fn clear_incident_monitor_incidents(&self) -> anyhow::Result<usize> {
         let removed = {
-            let mut guard = self.bug_monitor_incidents.write().await;
+            let mut guard = self.incident_monitor_incidents.write().await;
             let count = guard.len();
             guard.clear();
             count
         };
         if removed > 0 {
-            self.persist_bug_monitor_incidents().await?;
+            self.persist_incident_monitor_incidents().await?;
         }
         Ok(removed)
     }
 
-    pub async fn list_bug_monitor_posts(&self, limit: usize) -> Vec<BugMonitorPostRecord> {
+    pub async fn list_incident_monitor_posts(&self, limit: usize) -> Vec<IncidentMonitorPostRecord> {
         let mut rows = self
-            .bug_monitor_posts
+            .incident_monitor_posts
             .read()
             .await
             .values()
@@ -529,20 +529,20 @@ impl AppState {
         rows
     }
 
-    pub async fn list_bug_monitor_posts_by_destination(
+    pub async fn list_incident_monitor_posts_by_destination(
         &self,
         limit: usize,
         destination_id: &str,
-    ) -> Vec<BugMonitorPostRecord> {
+    ) -> Vec<IncidentMonitorPostRecord> {
         let mut rows = self
-            .bug_monitor_posts
+            .incident_monitor_posts
             .read()
             .await
             .values()
             .filter(|row| {
                 row.destination_id
                     .as_deref()
-                    .unwrap_or(BUG_MONITOR_LEGACY_GITHUB_DESTINATION_ID)
+                    .unwrap_or(INCIDENT_MONITOR_LEGACY_GITHUB_DESTINATION_ID)
                     == destination_id
             })
             .cloned()
@@ -552,30 +552,30 @@ impl AppState {
         rows
     }
 
-    pub async fn get_bug_monitor_post(&self, post_id: &str) -> Option<BugMonitorPostRecord> {
-        self.bug_monitor_posts.read().await.get(post_id).cloned()
+    pub async fn get_incident_monitor_post(&self, post_id: &str) -> Option<IncidentMonitorPostRecord> {
+        self.incident_monitor_posts.read().await.get(post_id).cloned()
     }
 
-    pub async fn put_bug_monitor_post(
+    pub async fn put_incident_monitor_post(
         &self,
-        post: BugMonitorPostRecord,
-    ) -> anyhow::Result<BugMonitorPostRecord> {
-        self.bug_monitor_posts
+        post: IncidentMonitorPostRecord,
+    ) -> anyhow::Result<IncidentMonitorPostRecord> {
+        self.incident_monitor_posts
             .write()
             .await
             .insert(post.post_id.clone(), post.clone());
-        self.persist_bug_monitor_posts().await?;
+        self.persist_incident_monitor_posts().await?;
         Ok(post)
     }
 
-    pub async fn try_claim_bug_monitor_post_idempotency(
+    pub async fn try_claim_incident_monitor_post_idempotency(
         &self,
-        post: BugMonitorPostRecord,
-    ) -> anyhow::Result<(bool, BugMonitorPostRecord)> {
+        post: IncidentMonitorPostRecord,
+    ) -> anyhow::Result<(bool, IncidentMonitorPostRecord)> {
         let now = crate::now_ms();
         let pending_claim_ttl_ms = 10 * 60 * 1000;
         let result = {
-            let mut guard = self.bug_monitor_posts.write().await;
+            let mut guard = self.incident_monitor_posts.write().await;
             if let Some(existing) = guard
                 .values()
                 .find(|row| {
@@ -593,15 +593,15 @@ impl AppState {
             }
         };
         if result.0 {
-            self.persist_bug_monitor_posts().await?;
+            self.persist_incident_monitor_posts().await?;
         }
         Ok(result)
     }
 
-    pub async fn delete_bug_monitor_posts(&self, ids: &[String]) -> anyhow::Result<usize> {
+    pub async fn delete_incident_monitor_posts(&self, ids: &[String]) -> anyhow::Result<usize> {
         let mut removed = 0usize;
         {
-            let mut guard = self.bug_monitor_posts.write().await;
+            let mut guard = self.incident_monitor_posts.write().await;
             for id in ids {
                 if guard.remove(id).is_some() {
                     removed += 1;
@@ -609,20 +609,20 @@ impl AppState {
             }
         }
         if removed > 0 {
-            self.persist_bug_monitor_posts().await?;
+            self.persist_incident_monitor_posts().await?;
         }
         Ok(removed)
     }
 
-    pub async fn clear_bug_monitor_posts(&self) -> anyhow::Result<usize> {
+    pub async fn clear_incident_monitor_posts(&self) -> anyhow::Result<usize> {
         let removed = {
-            let mut guard = self.bug_monitor_posts.write().await;
+            let mut guard = self.incident_monitor_posts.write().await;
             let count = guard.len();
             guard.clear();
             count
         };
         if removed > 0 {
-            self.persist_bug_monitor_posts().await?;
+            self.persist_incident_monitor_posts().await?;
         }
         Ok(removed)
     }
@@ -1177,18 +1177,18 @@ impl AppState {
         crate::stateful_runtime::StatefulRuntimeScope::local_implicit()
     }
 
-    pub async fn update_bug_monitor_runtime_status(
+    pub async fn update_incident_monitor_runtime_status(
         &self,
-        update: impl FnOnce(&mut BugMonitorRuntimeStatus),
-    ) -> BugMonitorRuntimeStatus {
-        let mut guard = self.bug_monitor_runtime_status.write().await;
+        update: impl FnOnce(&mut IncidentMonitorRuntimeStatus),
+    ) -> IncidentMonitorRuntimeStatus {
+        let mut guard = self.incident_monitor_runtime_status.write().await;
         update(&mut guard);
         guard.clone()
     }
 
-    pub async fn list_bug_monitor_drafts(&self, limit: usize) -> Vec<BugMonitorDraftRecord> {
+    pub async fn list_incident_monitor_drafts(&self, limit: usize) -> Vec<IncidentMonitorDraftRecord> {
         let mut rows = self
-            .bug_monitor_drafts
+            .incident_monitor_drafts
             .read()
             .await
             .values()
@@ -1199,26 +1199,26 @@ impl AppState {
         rows
     }
 
-    pub async fn get_bug_monitor_draft(&self, draft_id: &str) -> Option<BugMonitorDraftRecord> {
-        self.bug_monitor_drafts.read().await.get(draft_id).cloned()
+    pub async fn get_incident_monitor_draft(&self, draft_id: &str) -> Option<IncidentMonitorDraftRecord> {
+        self.incident_monitor_drafts.read().await.get(draft_id).cloned()
     }
 
-    pub async fn put_bug_monitor_draft(
+    pub async fn put_incident_monitor_draft(
         &self,
-        draft: BugMonitorDraftRecord,
-    ) -> anyhow::Result<BugMonitorDraftRecord> {
-        self.bug_monitor_drafts
+        draft: IncidentMonitorDraftRecord,
+    ) -> anyhow::Result<IncidentMonitorDraftRecord> {
+        self.incident_monitor_drafts
             .write()
             .await
             .insert(draft.draft_id.clone(), draft.clone());
-        self.persist_bug_monitor_drafts().await?;
+        self.persist_incident_monitor_drafts().await?;
         Ok(draft)
     }
 
-    pub async fn delete_bug_monitor_drafts(&self, ids: &[String]) -> anyhow::Result<usize> {
+    pub async fn delete_incident_monitor_drafts(&self, ids: &[String]) -> anyhow::Result<usize> {
         let mut removed = 0usize;
         {
-            let mut guard = self.bug_monitor_drafts.write().await;
+            let mut guard = self.incident_monitor_drafts.write().await;
             for id in ids {
                 if guard.remove(id).is_some() {
                     removed += 1;
@@ -1226,20 +1226,20 @@ impl AppState {
             }
         }
         if removed > 0 {
-            self.persist_bug_monitor_drafts().await?;
+            self.persist_incident_monitor_drafts().await?;
         }
         Ok(removed)
     }
 
-    pub async fn clear_bug_monitor_drafts(&self) -> anyhow::Result<usize> {
+    pub async fn clear_incident_monitor_drafts(&self) -> anyhow::Result<usize> {
         let removed = {
-            let mut guard = self.bug_monitor_drafts.write().await;
+            let mut guard = self.incident_monitor_drafts.write().await;
             let count = guard.len();
             guard.clear();
             count
         };
         if removed > 0 {
-            self.persist_bug_monitor_drafts().await?;
+            self.persist_incident_monitor_drafts().await?;
         }
         Ok(removed)
     }

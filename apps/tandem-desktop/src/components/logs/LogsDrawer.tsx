@@ -19,7 +19,7 @@ import { cn } from "@/lib/utils";
 import {
   listAppLogFiles,
   onLogStreamEvent,
-  reportBugMonitorIssue,
+  reportIncidentMonitorIssue,
   startLogStream,
   stopLogStream,
   type LogFileInfo,
@@ -610,7 +610,7 @@ export function LogsDrawer({
           : selectedLine.parsed.process?.trim()
             ? `Failure detected in ${selectedLine.parsed.process}`
             : "Failure report from desktop logs";
-      const response = await reportBugMonitorIssue({
+      const response = await reportIncidentMonitorIssue({
         title,
         source: "desktop_logs",
         file_name: selectedFile,
@@ -622,9 +622,9 @@ export function LogsDrawer({
         session_id: selectedLine.parsed.session_id ?? null,
         excerpt,
       });
-      showToast(`Bug Monitor draft ready: ${response.draft.draft_id}`);
+      showToast(`Incident Monitor draft ready: ${response.draft.draft_id}`);
     } catch (error) {
-      showToast(error instanceof Error ? error.message : "Failed to create Bug Monitor draft");
+      showToast(error instanceof Error ? error.message : "Failed to create Incident Monitor draft");
     } finally {
       setReporting(false);
     }

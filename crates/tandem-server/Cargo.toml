@@ -54,7 +54,7 @@ tandem-providers = { path = "../tandem-providers", version = "0.6.4" }
 tandem-runtime = { path = "../tandem-runtime", version = "0.6.4" }
 tandem-tools = { path = "../tandem-tools", version = "0.6.4" }
 tandem-automation = { path = "../tandem-automation", version = "0.6.4" }
-tandem-bug-monitor = { path = "../tandem-bug-monitor", version = "0.6.4" }
+tandem-incident-monitor = { path = "../tandem-incident-monitor", version = "0.6.4" }
 tandem-skills = { path = "../tandem-skills", version = "0.6.4" }
 tandem-memory = { path = "../tandem-memory", version = "0.6.4" }
 tandem-orchestrator = { path = "../tandem-orchestrator", version = "0.6.4" }

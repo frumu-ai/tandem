@@ -33,7 +33,7 @@ import { MemoryStats } from "./MemoryStats";
 import { LogsDrawer } from "@/components/logs";
 import { LanguageSettings } from "./LanguageSettings";
 import { ConnectionsSettings } from "./ConnectionsSettings";
-import { BugMonitorSettings } from "./BugMonitorSettings";
+import { IncidentMonitorSettings } from "./IncidentMonitorSettings";
 import { ProvidersSettings } from "./ProvidersSettings";
 import {
   providerAuthReady,
@@ -1961,7 +1961,7 @@ export function Settings({
         {/* Memory Stats */}
         <MemoryStats />
 
-        <BugMonitorSettings
+        <IncidentMonitorSettings
           providerCatalogModels={providerCatalogModels}
           onOpenMcpSettings={onOpenMcpSettings}
         />

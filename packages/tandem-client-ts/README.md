@@ -200,8 +200,8 @@ The TypeScript SDK already includes the newer engine surfaces that have landed a
 - `client.resources` for key-value resources
 - `client.skills` for list/get/import plus validation, routing, evals, compile, and generate flows
 - `client.packs` and `client.capabilities` for pack lifecycle and capability resolution
-- `client.automationsV2`, `client.bugMonitor`, `client.coder`, `client.agentTeams`, and `client.missions` for newer orchestration APIs
-- For the Bug Monitor flow, see [Bug Monitor And Issue Reporter](https://docs.tandem.ac/reference/bug-monitor/)
+- `client.automationsV2`, `client.incidentMonitor`, `client.coder`, `client.agentTeams`, and `client.missions` for newer orchestration APIs
+- For the Incident Monitor flow, see [Incident Monitor](https://docs.tandem.ac/incident-monitor/overview/)
 
 ```typescript
 const browser = await client.browser.status();
@@ -213,23 +213,23 @@ const skillCatalog = await client.skills.catalog();
 
 Storage archive cleanup and root JSON migration are local maintenance operations. Run them with the engine CLI, for example `tandem-engine storage cleanup --dry-run --context-runs --json`.
 
-### `client.bugMonitor`
+### `client.incidentMonitor`
 
-`client.bugMonitor` includes external-project log intake helpers for project-scoped reporters and watched log sources:
+`client.incidentMonitor` includes external-project log intake helpers for project-scoped reporters, watched log sources, and governed destination routing:
 
 ```typescript
-const keys = await client.bugMonitor.listIntakeKeys();
-const created = await client.bugMonitor.createIntakeKey({
+const keys = await client.incidentMonitor.listIntakeKeys();
+const created = await client.incidentMonitor.createIntakeKey({
   project_id: "external-demo",
   name: "CI reporter",
-  scopes: ["bug_monitor:report"],
+  scopes: ["incident_monitor:report"],
 });
 
 console.log(created.raw_key); // Store this once; Tandem only keeps the hash.
 
-await client.bugMonitor.disableIntakeKey(keys.keys[0].key_id);
-await client.bugMonitor.resetLogSourceOffset("external-demo", "service-jsonl");
-const replay = await client.bugMonitor.replayLatestLogSourceCandidate(
+await client.incidentMonitor.disableIntakeKey(keys.keys[0].key_id);
+await client.incidentMonitor.resetLogSourceOffset("external-demo", "service-jsonl");
+const replay = await client.incidentMonitor.replayLatestLogSourceCandidate(
   "external-demo",
   "service-jsonl"
 );

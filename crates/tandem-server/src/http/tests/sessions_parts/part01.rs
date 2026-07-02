@@ -1580,7 +1580,7 @@ async fn session_listing_filters_chat_source_from_automation_source() {
 
     let automation = Session::new(
         Some(
-            "Automation automation-v2-bug-monitor-triage-failure-draft-1 / inspect_failure_report"
+            "Automation automation-v2-incident-monitor-triage-failure-draft-1 / inspect_failure_report"
                 .to_string(),
         ),
         Some(".".to_string()),

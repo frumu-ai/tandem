@@ -18,13 +18,13 @@ pub async fn context_run_effective_started_at_ms(
     Ok(run.started_at_ms.unwrap_or(run.created_at_ms))
 }
 
-/// Diagnostic snapshot of a context run at the moment the bug-monitor
+/// Diagnostic snapshot of a context run at the moment the incident-monitor
 /// triage deadline fires. Returns enough state for the resulting
 /// GitHub issue (and any human reading 10 timeout issues in a row) to
 /// see _where_ the triage was when it timed out — which step was
 /// active, how stale the run was, what the final status was —
 /// without needing to dig through JSONL event logs.
-pub async fn bug_monitor_triage_timeout_diagnostics(
+pub async fn incident_monitor_triage_timeout_diagnostics(
     state: &AppState,
     run_id: &str,
     timeout_ms: u64,
@@ -86,7 +86,7 @@ pub async fn bug_monitor_triage_timeout_diagnostics(
 /// Render the diagnostics object as a markdown-friendly multi-line
 /// string suitable for embedding in `last_post_error` or in an issue
 /// body section.
-pub fn format_bug_monitor_triage_timeout_diagnostics(value: &serde_json::Value) -> String {
+pub fn format_incident_monitor_triage_timeout_diagnostics(value: &serde_json::Value) -> String {
     let mut lines = Vec::new();
     let push_kv = |lines: &mut Vec<String>, key: &str, value: &str| {
         lines.push(format!("{key}: {value}"));

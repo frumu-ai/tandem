@@ -44,7 +44,7 @@ CRATES=(
   "crates/tandem-repo-intelligence"
   "crates/tandem-tools"
   "crates/tandem-core"
-  "crates/tandem-bug-monitor"
+  "crates/tandem-incident-monitor"
   "crates/tandem-browser"
   "crates/tandem-runtime"
   "crates/tandem-channels"

@@ -10,7 +10,7 @@ const DEFAULT_WORKFLOW_SORT_MODE = WORKFLOW_SORT_MODES[0].value;
 const WORKFLOW_LIBRARY_SOURCE_FILTERS = [
   { value: "user_created", label: "User" },
   { value: "agent_created", label: "Agent" },
-  { value: "bug_monitor", label: "Bug Monitor" },
+  { value: "incident_monitor", label: "Incident Monitor" },
   { value: "system", label: "System" },
 ];
 
@@ -24,7 +24,7 @@ const DEFAULT_WORKFLOW_LIBRARY_FILTERS = {
   sources: {
     user_created: true,
     agent_created: true,
-    bug_monitor: false,
+    incident_monitor: false,
     system: false,
   },
   statuses: {
@@ -35,7 +35,9 @@ const DEFAULT_WORKFLOW_LIBRARY_FILTERS = {
 };
 
 function normalizeWorkflowSortMode(raw) {
-  const value = String(raw || "").trim().toLowerCase();
+  const value = String(raw || "")
+    .trim()
+    .toLowerCase();
   if (WORKFLOW_SORT_MODES.some((mode) => mode.value === value)) return value;
   return DEFAULT_WORKFLOW_SORT_MODE;
 }
@@ -45,7 +47,9 @@ function getAutomationId(row) {
 }
 
 function getAutomationName(row) {
-  return String(row?.name || row?.title || row?.label || getAutomationId(row) || "Automation").trim();
+  return String(
+    row?.name || row?.title || row?.label || getAutomationId(row) || "Automation"
+  ).trim();
 }
 
 function toNumber(value) {
@@ -146,16 +150,18 @@ function automationMetadataSource(row) {
 
 function classifyAutomationSource(row) {
   const metadataSource = automationMetadataSource(row);
-  const creatorId = normalizeFilterValue(row?.creator_id || row?.creatorId || row?.created_by || row?.createdBy);
+  const creatorId = normalizeFilterValue(
+    row?.creator_id || row?.creatorId || row?.created_by || row?.createdBy
+  );
   const name = getAutomationName(row).toLowerCase();
 
   if (
-    metadataSource === "bug_monitor" ||
-    metadataSource === "bug_monitor_approval" ||
-    creatorId === "bug_monitor" ||
-    name.startsWith("bug monitor triage:")
+    metadataSource === "incident_monitor" ||
+    metadataSource === "incident_monitor_approval" ||
+    creatorId === "incident_monitor" ||
+    name.startsWith("incident monitor triage:")
   ) {
-    return { key: "bug_monitor", label: "Bug Monitor" };
+    return { key: "incident_monitor", label: "Incident Monitor" };
   }
 
   if (
@@ -269,7 +275,9 @@ function sortWorkflowAutomations(rows, options = {}) {
     options.favoriteAutomationIds instanceof Set
       ? options.favoriteAutomationIds
       : new Set(normalizeFavoriteAutomationIds(options.favoriteAutomationIds));
-  return Array.isArray(rows) ? [...rows].sort((left, right) => compareAutomationRows(left, right, sortMode, favoriteSet)) : [];
+  return Array.isArray(rows)
+    ? [...rows].sort((left, right) => compareAutomationRows(left, right, sortMode, favoriteSet))
+    : [];
 }
 
 export {

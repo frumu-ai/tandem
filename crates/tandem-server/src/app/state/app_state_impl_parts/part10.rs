@@ -1,11 +1,11 @@
-// Bug Monitor destination readiness helpers split from part02.rs for the
+// Incident Monitor destination readiness helpers split from part02.rs for the
 // touched-file size gate.
 
-fn bug_monitor_destination_readiness(
-    config: &BugMonitorConfig,
-    status: &BugMonitorStatus,
+fn incident_monitor_destination_readiness(
+    config: &IncidentMonitorConfig,
+    status: &IncidentMonitorStatus,
     servers: &std::collections::HashMap<String, tandem_runtime::McpServer>,
-) -> Vec<BugMonitorDestinationReadiness> {
+) -> Vec<IncidentMonitorDestinationReadiness> {
     status
         .destinations
         .iter()
@@ -16,17 +16,17 @@ fn bug_monitor_destination_readiness(
                 config.require_approval_for_new_issues || destination.require_approval;
 
             if !config.enabled {
-                missing.push("Bug Monitor is disabled".to_string());
+                missing.push("Incident Monitor is disabled".to_string());
             }
             if config.paused {
-                missing.push("Bug Monitor is paused".to_string());
+                missing.push("Incident Monitor is paused".to_string());
             }
             if !destination.enabled {
                 missing.push("Destination is disabled".to_string());
             }
 
             let publish_ready = match destination.kind {
-                BugMonitorDestinationKind::GithubIssue => {
+                IncidentMonitorDestinationKind::GithubIssue => {
                     let destination_repo = destination.repo.as_deref().or(config.repo.as_deref());
                     let destination_repo_valid = destination_repo
                         .map(is_valid_owner_repo_slug)
@@ -70,7 +70,7 @@ fn bug_monitor_destination_readiness(
                         && status.readiness.github_read_ready
                         && status.readiness.github_write_ready
                 }
-                BugMonitorDestinationKind::LinearIssue => {
+                IncidentMonitorDestinationKind::LinearIssue => {
                     let team_valid = destination
                         .linear_team
                         .as_deref()
@@ -131,15 +131,15 @@ fn bug_monitor_destination_readiness(
                         && linear_list_ready
                         && linear_create_ready
                 }
-                BugMonitorDestinationKind::Webhook => {
+                IncidentMonitorDestinationKind::Webhook => {
                     let (webhook_ready, webhook_missing, webhook_detail) =
-                        crate::bug_monitor_webhook::webhook_destination_readiness(destination);
+                        crate::incident_monitor_webhook::webhook_destination_readiness(destination);
                     missing.extend(webhook_missing);
                     detail = webhook_detail;
 
                     config.enabled && !config.paused && destination.enabled && webhook_ready
                 }
-                BugMonitorDestinationKind::Telemetry => {
+                IncidentMonitorDestinationKind::Telemetry => {
                     if destination
                         .telemetry_path
                         .as_deref()
@@ -155,9 +155,9 @@ fn bug_monitor_destination_readiness(
                             .as_deref()
                             .is_some_and(|value| value.trim().is_empty())
                 }
-                BugMonitorDestinationKind::McpTool => {
+                IncidentMonitorDestinationKind::McpTool => {
                     let (mcp_ready, mcp_missing, mcp_detail) =
-                        crate::bug_monitor_mcp::mcp_tool_destination_readiness(
+                        crate::incident_monitor_mcp::mcp_tool_destination_readiness(
                             config,
                             destination,
                             servers,
@@ -167,14 +167,14 @@ fn bug_monitor_destination_readiness(
 
                     config.enabled && !config.paused && destination.enabled && mcp_ready
                 }
-                BugMonitorDestinationKind::InternalMemory => {
+                IncidentMonitorDestinationKind::InternalMemory => {
                     let category = destination
                         .memory_category
                         .as_deref()
                         .map(str::trim)
                         .filter(|value| !value.is_empty())
                         .unwrap_or("failure_pattern");
-                    if !crate::bug_monitor_local::is_supported_memory_category(category) {
+                    if !crate::incident_monitor_local::is_supported_memory_category(category) {
                         missing.push(
                             "Memory category must be failure_pattern, recurrence, policy_gap, or safety_risk"
                                 .to_string(),
@@ -183,7 +183,7 @@ fn bug_monitor_destination_readiness(
                     config.enabled
                         && !config.paused
                         && destination.enabled
-                        && crate::bug_monitor_local::is_supported_memory_category(category)
+                        && crate::incident_monitor_local::is_supported_memory_category(category)
                 }
                 _ => {
                     detail = Some(
@@ -195,7 +195,7 @@ fn bug_monitor_destination_readiness(
                 }
             };
 
-            BugMonitorDestinationReadiness {
+            IncidentMonitorDestinationReadiness {
                 destination_id: destination.destination_id.clone(),
                 kind: destination.kind.clone(),
                 enabled: destination.enabled,

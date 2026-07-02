@@ -7,11 +7,11 @@ import { renderMarkdownSafe } from "../lib/markdown";
 import { ProviderModelSelector } from "../components/ProviderModelSelector";
 import { McpToolAllowlistEditor } from "../components/McpToolAllowlistEditor";
 import {
-  BugMonitorExternalProjectsPanel,
-  type BugMonitorLogWatcherStatusDraft,
-  type BugMonitorMonitoredProjectDraft,
-  type BugMonitorProjectIntakeKeyDraft,
-} from "../components/BugMonitorExternalProjectsPanel";
+  IncidentMonitorExternalProjectsPanel,
+  type IncidentMonitorLogWatcherStatusDraft,
+  type IncidentMonitorMonitoredProjectDraft,
+  type IncidentMonitorProjectIntakeKeyDraft,
+} from "../components/IncidentMonitorExternalProjectsPanel";
 import { normalizeMcpNamespaceSegment } from "../features/mcp/mcpTools";
 export { normalizeMcpNamespaceSegment };
 import {
@@ -82,7 +82,7 @@ function repoNameFromSlug(repo: string): string {
   return parts[parts.length - 1] || "";
 }
 
-function suggestedBugMonitorWorkspaceRoot(repo: string): string {
+function suggestedIncidentMonitorWorkspaceRoot(repo: string): string {
   const repoName = repoNameFromSlug(repo);
   return repoName ? `${HOSTED_CODER_REPO_ROOT}/${repoName}` : HOSTED_CODER_REPO_ROOT;
 }
@@ -97,9 +97,9 @@ export function hostedWorkspaceDirectoryHint(path: string): string {
   return "";
 }
 
-function bugMonitorWorkspaceSetupWarning(workspaceRoot: string, repo: string): string {
+function incidentMonitorWorkspaceSetupWarning(workspaceRoot: string, repo: string): string {
   const root = String(workspaceRoot || "").trim();
-  if (!root) return "Select the synced repo folder before enabling hosted Bug Monitor triage.";
+  if (!root) return "Select the synced repo folder before enabling hosted Incident Monitor triage.";
   if (root === HOSTED_CODER_REPO_ROOT) {
     return `Select the repo folder under ${HOSTED_CODER_REPO_ROOT}, not the parent folder.`;
   }
@@ -107,7 +107,7 @@ function bugMonitorWorkspaceSetupWarning(workspaceRoot: string, repo: string): s
     return `Select the repo folder under ${HOSTED_CODER_COMPAT_REPO_ROOT}, not the parent folder.`;
   }
   if (root === HOSTED_TANDEM_DATA_ROOT || root.startsWith(`${HOSTED_TANDEM_DATA_ROOT}/`)) {
-    return `${HOSTED_TANDEM_DATA_ROOT} stores runtime state. Bug Monitor needs the source checkout under ${HOSTED_CODER_REPO_ROOT}.`;
+    return `${HOSTED_TANDEM_DATA_ROOT} stores runtime state. Incident Monitor needs the source checkout under ${HOSTED_CODER_REPO_ROOT}.`;
   }
   const repoName = repoNameFromSlug(repo);
   if (
@@ -208,7 +208,7 @@ type SettingsSection =
   | "theme"
   | "channels"
   | "mcp"
-  | "bug_monitor"
+  | "incident_monitor"
   | "browser"
   | "maintenance";
 
@@ -222,7 +222,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   "theme",
   "channels",
   "mcp",
-  "bug_monitor",
+  "incident_monitor",
   "browser",
   "maintenance",
 ];
@@ -334,7 +334,7 @@ type SearchTestResponse = {
   } | null;
 };
 
-type BugMonitorConfigRow = {
+type IncidentMonitorConfigRow = {
   enabled?: boolean;
   paused?: boolean;
   workspace_root?: string | null;
@@ -351,15 +351,15 @@ type BugMonitorConfigRow = {
   require_approval_for_new_issues?: boolean;
   auto_comment_on_matched_open_issues?: boolean;
   label_mode?: string | null;
-  monitored_projects?: BugMonitorMonitoredProjectDraft[];
+  monitored_projects?: IncidentMonitorMonitoredProjectDraft[];
   destinations?: Array<Record<string, any>>;
   routes?: Array<Record<string, any>>;
   default_destination_ids?: string[];
   safety_defaults?: Record<string, any> | null;
 };
 
-type BugMonitorStatusRow = {
-  config?: BugMonitorConfigRow;
+type IncidentMonitorStatusRow = {
+  config?: IncidentMonitorConfigRow;
   readiness?: Record<string, boolean>;
   runtime?: {
     monitoring_active?: boolean;
@@ -370,7 +370,7 @@ type BugMonitorStatusRow = {
     last_incident_event_type?: string | null;
     last_runtime_error?: string | null;
   };
-  log_watcher?: BugMonitorLogWatcherStatusDraft;
+  log_watcher?: IncidentMonitorLogWatcherStatusDraft;
   required_capabilities?: Record<string, boolean>;
   missing_required_capabilities?: string[];
   resolved_capabilities?: Array<{
@@ -400,7 +400,7 @@ type BugMonitorStatusRow = {
   last_error?: string | null;
 };
 
-type BugMonitorIncidentRow = {
+type IncidentMonitorIncidentRow = {
   incident_id: string;
   fingerprint: string;
   event_type: string;
@@ -418,7 +418,7 @@ type BugMonitorIncidentRow = {
   last_error?: string | null;
 };
 
-type BugMonitorDraftRow = {
+type IncidentMonitorDraftRow = {
   draft_id: string;
   fingerprint: string;
   repo: string;
@@ -438,7 +438,7 @@ type BugMonitorDraftRow = {
   last_post_error?: string | null;
 };
 
-type BugMonitorPostRow = {
+type IncidentMonitorPostRow = {
   post_id: string;
   draft_id: string;
   repo: string;
@@ -1205,7 +1205,11 @@ export function useSettingsPageController({
   const [activeSection, setActiveSection] = useState<SettingsSection>(
     () =>
       settingsSectionFromHash() ||
-      (providerStatus?.needsOnboarding ? "providers" : navigation?.acaMode ? "navigation" : "install")
+      (providerStatus?.needsOnboarding
+        ? "providers"
+        : navigation?.acaMode
+          ? "navigation"
+          : "install")
   );
   const [navigationVisibilityDraft, setNavigationVisibilityDraft] = useState<NavigationVisibility>(
     () => navigation?.routeVisibility || getDefaultNavigationVisibility(!!navigation?.acaMode)
@@ -1266,47 +1270,52 @@ export function useSettingsPageController({
   const [mcpEditingName, setMcpEditingName] = useState("");
   const [mcpModalTab, setMcpModalTab] = useState<"manual" | "catalog">("manual");
   const [mcpCatalogSearch, setMcpCatalogSearch] = useState("");
-  const [bugMonitorEnabled, setBugMonitorEnabled] = useState(false);
-  const [bugMonitorPaused, setBugMonitorPaused] = useState(false);
-  const [bugMonitorWorkspaceRoot, setBugMonitorWorkspaceRoot] = useState("");
-  const [bugMonitorRepo, setBugMonitorRepo] = useState("");
-  const [bugMonitorMcpServer, setBugMonitorMcpServer] = useState("");
-  const [bugMonitorProviderPreference, setBugMonitorProviderPreference] = useState("auto");
-  const [bugMonitorProviderId, setBugMonitorProviderId] = useState("");
-  const [bugMonitorModelId, setBugMonitorModelId] = useState("");
-  const [bugMonitorAutoCreateIssues, setBugMonitorAutoCreateIssues] = useState(true);
-  const [bugMonitorRequireApproval, setBugMonitorRequireApproval] = useState(false);
-  const [bugMonitorAutoComment, setBugMonitorAutoComment] = useState(true);
-  const [bugMonitorMonitoredProjectsJson, setBugMonitorMonitoredProjectsJson] = useState("[]");
-  const [bugMonitorMonitoredProjectsError, setBugMonitorMonitoredProjectsError] = useState("");
-  const [bugMonitorDestinationsJson, setBugMonitorDestinationsJson] = useState("[]");
-  const [bugMonitorRoutesJson, setBugMonitorRoutesJson] = useState("[]");
-  const [bugMonitorDefaultDestinationsText, setBugMonitorDefaultDestinationsText] = useState("");
-  const [bugMonitorSafetyDefaultsJson, setBugMonitorSafetyDefaultsJson] = useState("{}");
-  const [bugMonitorRoutingConfigError, setBugMonitorRoutingConfigError] = useState("");
-  const [bugMonitorRoutePreviewJson, setBugMonitorRoutePreviewJson] = useState(
+  const [incidentMonitorEnabled, setIncidentMonitorEnabled] = useState(false);
+  const [incidentMonitorPaused, setIncidentMonitorPaused] = useState(false);
+  const [incidentMonitorWorkspaceRoot, setIncidentMonitorWorkspaceRoot] = useState("");
+  const [incidentMonitorRepo, setIncidentMonitorRepo] = useState("");
+  const [incidentMonitorMcpServer, setIncidentMonitorMcpServer] = useState("");
+  const [incidentMonitorProviderPreference, setIncidentMonitorProviderPreference] =
+    useState("auto");
+  const [incidentMonitorProviderId, setIncidentMonitorProviderId] = useState("");
+  const [incidentMonitorModelId, setIncidentMonitorModelId] = useState("");
+  const [incidentMonitorAutoCreateIssues, setIncidentMonitorAutoCreateIssues] = useState(true);
+  const [incidentMonitorRequireApproval, setIncidentMonitorRequireApproval] = useState(false);
+  const [incidentMonitorAutoComment, setIncidentMonitorAutoComment] = useState(true);
+  const [incidentMonitorMonitoredProjectsJson, setIncidentMonitorMonitoredProjectsJson] =
+    useState("[]");
+  const [incidentMonitorMonitoredProjectsError, setIncidentMonitorMonitoredProjectsError] =
+    useState("");
+  const [incidentMonitorDestinationsJson, setIncidentMonitorDestinationsJson] = useState("[]");
+  const [incidentMonitorRoutesJson, setIncidentMonitorRoutesJson] = useState("[]");
+  const [incidentMonitorDefaultDestinationsText, setIncidentMonitorDefaultDestinationsText] =
+    useState("");
+  const [incidentMonitorSafetyDefaultsJson, setIncidentMonitorSafetyDefaultsJson] = useState("{}");
+  const [incidentMonitorRoutingConfigError, setIncidentMonitorRoutingConfigError] = useState("");
+  const [incidentMonitorRoutePreviewJson, setIncidentMonitorRoutePreviewJson] = useState(
     JSON.stringify({ source: "manual", risk_level: "medium" }, null, 2)
   );
-  const [bugMonitorRoutePreviewError, setBugMonitorRoutePreviewError] = useState("");
-  const [bugMonitorRoutePreviewResult, setBugMonitorRoutePreviewResult] = useState<any | null>(
-    null
-  );
-  const [bugMonitorCreatedIntakeKey, setBugMonitorCreatedIntakeKey] = useState("");
-  const [bugMonitorDisablingIntakeKeyId, setBugMonitorDisablingIntakeKeyId] = useState("");
-  const [bugMonitorResettingSourceKey, setBugMonitorResettingSourceKey] = useState("");
-  const [bugMonitorReplayingSourceKey, setBugMonitorReplayingSourceKey] = useState("");
-  const [bugMonitorLogSourceActionResult, setBugMonitorLogSourceActionResult] = useState<Record<
-    string,
-    unknown
-  > | null>(null);
+  const [incidentMonitorRoutePreviewError, setIncidentMonitorRoutePreviewError] = useState("");
+  const [incidentMonitorRoutePreviewResult, setIncidentMonitorRoutePreviewResult] = useState<
+    any | null
+  >(null);
+  const [incidentMonitorCreatedIntakeKey, setIncidentMonitorCreatedIntakeKey] = useState("");
+  const [incidentMonitorDisablingIntakeKeyId, setIncidentMonitorDisablingIntakeKeyId] =
+    useState("");
+  const [incidentMonitorResettingSourceKey, setIncidentMonitorResettingSourceKey] = useState("");
+  const [incidentMonitorReplayingSourceKey, setIncidentMonitorReplayingSourceKey] = useState("");
+  const [incidentMonitorLogSourceActionResult, setIncidentMonitorLogSourceActionResult] =
+    useState<Record<string, unknown> | null>(null);
   const [worktreeCleanupRepoRoot, setWorktreeCleanupRepoRoot] = useState("");
   const [worktreeCleanupDryRun, setWorktreeCleanupDryRun] = useState(false);
   const [worktreeCleanupPulse, setWorktreeCleanupPulse] = useState(0);
   const [worktreeCleanupResult, setWorktreeCleanupResult] =
     useState<WorktreeCleanupResponse | null>(null);
-  const [bugMonitorWorkspaceBrowserOpen, setBugMonitorWorkspaceBrowserOpen] = useState(false);
-  const [bugMonitorWorkspaceBrowserDir, setBugMonitorWorkspaceBrowserDir] = useState("");
-  const [bugMonitorWorkspaceBrowserSearch, setBugMonitorWorkspaceBrowserSearch] = useState("");
+  const [incidentMonitorWorkspaceBrowserOpen, setIncidentMonitorWorkspaceBrowserOpen] =
+    useState(false);
+  const [incidentMonitorWorkspaceBrowserDir, setIncidentMonitorWorkspaceBrowserDir] = useState("");
+  const [incidentMonitorWorkspaceBrowserSearch, setIncidentMonitorWorkspaceBrowserSearch] =
+    useState("");
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
   const codexAuthInputRef = useRef<HTMLInputElement | null>(null);
   const [codexAuthFileName, setCodexAuthFileName] = useState("");
@@ -1350,7 +1359,7 @@ export function useSettingsPageController({
   useEffect(() => {
     if (currentRoute === "mcp") setActiveSection("mcp");
     if (currentRoute === "channels") setActiveSection("channels");
-    if (currentRoute === "bug-monitor") setActiveSection("bug_monitor");
+    if (currentRoute === "incident-monitor") setActiveSection("incident_monitor");
   }, [currentRoute]);
 
   useEffect(() => {
@@ -1420,7 +1429,7 @@ export function useSettingsPageController({
   const providerCatalogEnabled =
     activeSection === "providers" ||
     activeSection === "channels" ||
-    activeSection === "bug_monitor";
+    activeSection === "incident_monitor";
 
   const providersCatalog = useQuery({
     queryKey: ["settings", "providers", "catalog"],
@@ -1632,60 +1641,65 @@ export function useSettingsPageController({
     queryFn: () => api("/api/engine/mcp/catalog", { method: "GET" }).catch(() => null),
     refetchInterval: 60_000,
   });
-  const bugMonitorConfigQuery = useQuery({
-    queryKey: ["settings", "bug-monitor", "config"],
+  const incidentMonitorConfigQuery = useQuery({
+    queryKey: ["settings", "incident-monitor", "config"],
     queryFn: () =>
-      api("/api/engine/config/bug-monitor", { method: "GET" }).catch(() => ({
-        bug_monitor: {},
+      api("/api/engine/config/incident-monitor", { method: "GET" }).catch(() => ({
+        incident_monitor: {},
       })),
   });
-  const bugMonitorStatusQuery = useQuery({
-    queryKey: ["settings", "bug-monitor", "status"],
+  const incidentMonitorStatusQuery = useQuery({
+    queryKey: ["settings", "incident-monitor", "status"],
     queryFn: () =>
-      api("/api/engine/bug-monitor/status", { method: "GET" }).catch(() => ({
+      api("/api/engine/incident-monitor/status", { method: "GET" }).catch(() => ({
         status: {},
       })),
     refetchInterval: 10_000,
   });
-  const bugMonitorDraftsQuery = useQuery({
-    queryKey: ["settings", "bug-monitor", "drafts"],
+  const incidentMonitorDraftsQuery = useQuery({
+    queryKey: ["settings", "incident-monitor", "drafts"],
     queryFn: () =>
-      api("/api/engine/bug-monitor/drafts?limit=10", { method: "GET" }).catch(() => ({
+      api("/api/engine/incident-monitor/drafts?limit=10", { method: "GET" }).catch(() => ({
         drafts: [],
       })),
     refetchInterval: 15_000,
   });
-  const bugMonitorIncidentsQuery = useQuery({
-    queryKey: ["settings", "bug-monitor", "incidents"],
+  const incidentMonitorIncidentsQuery = useQuery({
+    queryKey: ["settings", "incident-monitor", "incidents"],
     queryFn: () =>
-      api("/api/engine/bug-monitor/incidents?limit=10", { method: "GET" }).catch(() => ({
+      api("/api/engine/incident-monitor/incidents?limit=10", { method: "GET" }).catch(() => ({
         incidents: [],
       })),
     refetchInterval: 10_000,
   });
-  const bugMonitorPostsQuery = useQuery({
-    queryKey: ["settings", "bug-monitor", "posts"],
+  const incidentMonitorPostsQuery = useQuery({
+    queryKey: ["settings", "incident-monitor", "posts"],
     queryFn: () =>
-      api("/api/engine/bug-monitor/posts?limit=10", { method: "GET" }).catch(() => ({
+      api("/api/engine/incident-monitor/posts?limit=10", { method: "GET" }).catch(() => ({
         posts: [],
       })),
     refetchInterval: 15_000,
   });
-  const bugMonitorIntakeKeysQuery = useQuery({
-    queryKey: ["settings", "bug-monitor", "intake-keys"],
+  const incidentMonitorIntakeKeysQuery = useQuery({
+    queryKey: ["settings", "incident-monitor", "intake-keys"],
     queryFn: () =>
-      api("/api/engine/bug-monitor/intake/keys", { method: "GET" }).catch(() => ({
+      api("/api/engine/incident-monitor/intake/keys", { method: "GET" }).catch(() => ({
         keys: [],
       })),
     refetchInterval: 30_000,
   });
-  const bugMonitorWorkspaceBrowserQuery = useQuery({
-    queryKey: ["settings", "bug-monitor", "workspace-browser", bugMonitorWorkspaceBrowserDir],
-    enabled: bugMonitorWorkspaceBrowserOpen && !!bugMonitorWorkspaceBrowserDir,
+  const incidentMonitorWorkspaceBrowserQuery = useQuery({
+    queryKey: [
+      "settings",
+      "incident-monitor",
+      "workspace-browser",
+      incidentMonitorWorkspaceBrowserDir,
+    ],
+    enabled: incidentMonitorWorkspaceBrowserOpen && !!incidentMonitorWorkspaceBrowserDir,
     queryFn: () =>
       api(
         `/api/orchestrator/workspaces/list?dir=${encodeURIComponent(
-          bugMonitorWorkspaceBrowserDir
+          incidentMonitorWorkspaceBrowserDir
         )}`,
         { method: "GET" }
       ),
@@ -1803,39 +1817,39 @@ export function useSettingsPageController({
     },
     onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
   });
-  const saveBugMonitorMutation = useMutation({
+  const saveIncidentMonitorMutation = useMutation({
     mutationFn: async () => {
-      let monitoredProjects: BugMonitorMonitoredProjectDraft[] = [];
+      let monitoredProjects: IncidentMonitorMonitoredProjectDraft[] = [];
       let destinations: Array<Record<string, any>> = [];
       let routes: Array<Record<string, any>> = [];
       let safetyDefaults: Record<string, any> = {};
       try {
-        const parsed = JSON.parse(bugMonitorMonitoredProjectsJson || "[]");
+        const parsed = JSON.parse(incidentMonitorMonitoredProjectsJson || "[]");
         if (!Array.isArray(parsed)) {
           throw new Error("monitored_projects must be a JSON array");
         }
-        monitoredProjects = parsed as BugMonitorMonitoredProjectDraft[];
-        setBugMonitorMonitoredProjectsError("");
+        monitoredProjects = parsed as IncidentMonitorMonitoredProjectDraft[];
+        setIncidentMonitorMonitoredProjectsError("");
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "monitored_projects JSON is invalid";
-        setBugMonitorMonitoredProjectsError(message);
+        setIncidentMonitorMonitoredProjectsError(message);
         throw new Error(message);
       }
       try {
-        const parsedDestinations = JSON.parse(bugMonitorDestinationsJson || "[]");
+        const parsedDestinations = JSON.parse(incidentMonitorDestinationsJson || "[]");
         if (!Array.isArray(parsedDestinations)) {
           throw new Error("destinations must be a JSON array");
         }
         destinations = parsedDestinations as Array<Record<string, any>>;
 
-        const parsedRoutes = JSON.parse(bugMonitorRoutesJson || "[]");
+        const parsedRoutes = JSON.parse(incidentMonitorRoutesJson || "[]");
         if (!Array.isArray(parsedRoutes)) {
           throw new Error("routes must be a JSON array");
         }
         routes = parsedRoutes as Array<Record<string, any>>;
 
-        const parsedSafetyDefaults = JSON.parse(bugMonitorSafetyDefaultsJson || "{}");
+        const parsedSafetyDefaults = JSON.parse(incidentMonitorSafetyDefaultsJson || "{}");
         if (
           !parsedSafetyDefaults ||
           typeof parsedSafetyDefaults !== "object" ||
@@ -1844,39 +1858,39 @@ export function useSettingsPageController({
           throw new Error("safety_defaults must be a JSON object");
         }
         safetyDefaults = parsedSafetyDefaults as Record<string, any>;
-        setBugMonitorRoutingConfigError("");
+        setIncidentMonitorRoutingConfigError("");
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Incident Monitor router JSON is invalid";
-        setBugMonitorRoutingConfigError(message);
+        setIncidentMonitorRoutingConfigError(message);
         throw new Error(message);
       }
-      const defaultDestinationIds = String(bugMonitorDefaultDestinationsText || "")
+      const defaultDestinationIds = String(incidentMonitorDefaultDestinationsText || "")
         .split(/[\s,]+/)
         .map((value) => value.trim())
         .filter(Boolean);
-      return api("/api/engine/config/bug-monitor", {
+      return api("/api/engine/config/incident-monitor", {
         method: "PATCH",
         body: JSON.stringify({
-          bug_monitor: {
-            enabled: bugMonitorEnabled,
-            paused: bugMonitorPaused,
-            workspace_root: String(bugMonitorWorkspaceRoot || "").trim() || null,
-            repo: String(bugMonitorRepo || "").trim() || null,
-            mcp_server: String(bugMonitorMcpServer || "").trim() || null,
-            provider_preference: String(bugMonitorProviderPreference || "auto").trim(),
+          incident_monitor: {
+            enabled: incidentMonitorEnabled,
+            paused: incidentMonitorPaused,
+            workspace_root: String(incidentMonitorWorkspaceRoot || "").trim() || null,
+            repo: String(incidentMonitorRepo || "").trim() || null,
+            mcp_server: String(incidentMonitorMcpServer || "").trim() || null,
+            provider_preference: String(incidentMonitorProviderPreference || "auto").trim(),
             model_policy:
-              bugMonitorProviderId && bugMonitorModelId
+              incidentMonitorProviderId && incidentMonitorModelId
                 ? {
                     default_model: {
-                      provider_id: bugMonitorProviderId,
-                      model_id: bugMonitorModelId,
+                      provider_id: incidentMonitorProviderId,
+                      model_id: incidentMonitorModelId,
                     },
                   }
                 : null,
-            auto_create_new_issues: bugMonitorAutoCreateIssues,
-            require_approval_for_new_issues: bugMonitorRequireApproval,
-            auto_comment_on_matched_open_issues: bugMonitorAutoComment,
+            auto_create_new_issues: incidentMonitorAutoCreateIssues,
+            require_approval_for_new_issues: incidentMonitorRequireApproval,
+            auto_comment_on_matched_open_issues: incidentMonitorAutoComment,
             label_mode: "reporter_only",
             monitored_projects: monitoredProjects,
             destinations,
@@ -1888,8 +1902,10 @@ export function useSettingsPageController({
       });
     },
     onSuccess: async () => {
-      toast("ok", "Bug Monitor settings saved.");
-      await Promise.all([queryClient.invalidateQueries({ queryKey: ["settings", "bug-monitor"] })]);
+      toast("ok", "Incident Monitor settings saved.");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["settings", "incident-monitor"] }),
+      ]);
     },
     onError: (error: any) => {
       const detail =
@@ -1897,43 +1913,43 @@ export function useSettingsPageController({
       toast("err", detail);
     },
   });
-  const bugMonitorRoutePreviewMutation = useMutation({
+  const incidentMonitorRoutePreviewMutation = useMutation({
     mutationFn: async () => {
       try {
-        const parsed = JSON.parse(bugMonitorRoutePreviewJson || "{}");
+        const parsed = JSON.parse(incidentMonitorRoutePreviewJson || "{}");
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
           throw new Error("Route preview input must be a JSON object");
         }
-        setBugMonitorRoutePreviewError("");
-        return api("/api/engine/bug-monitor/route-preview", {
+        setIncidentMonitorRoutePreviewError("");
+        return api("/api/engine/incident-monitor/route-preview", {
           method: "POST",
           body: JSON.stringify(parsed),
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : "Route preview JSON is invalid";
-        setBugMonitorRoutePreviewError(message);
+        setIncidentMonitorRoutePreviewError(message);
         throw new Error(message);
       }
     },
     onSuccess: (payload) => {
-      setBugMonitorRoutePreviewResult(payload);
+      setIncidentMonitorRoutePreviewResult(payload);
       toast("ok", "Incident Monitor route preview updated.");
     },
     onError: (error: any) => {
       const detail =
         error instanceof Error ? error.message : String(error?.detail || error?.error || error);
-      setBugMonitorRoutePreviewError(detail);
+      setIncidentMonitorRoutePreviewError(detail);
       toast("err", detail);
     },
   });
-  const refreshBugMonitorBindingsMutation = useMutation({
+  const refreshIncidentMonitorBindingsMutation = useMutation({
     mutationFn: async () =>
       api("/api/engine/capabilities/bindings/refresh-builtins", {
         method: "POST",
       }),
     onSuccess: async () => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["settings", "bug-monitor"] }),
+        queryClient.invalidateQueries({ queryKey: ["settings", "incident-monitor"] }),
         queryClient.invalidateQueries({ queryKey: ["settings", "mcp"] }),
       ]);
       toast("ok", "Capability bindings refreshed from built-ins.");
@@ -1944,21 +1960,21 @@ export function useSettingsPageController({
       toast("err", detail);
     },
   });
-  const createBugMonitorIntakeKeyMutation = useMutation({
+  const createIncidentMonitorIntakeKeyMutation = useMutation({
     mutationFn: async (input: { project_id: string; name: string }) =>
-      api("/api/engine/bug-monitor/intake/keys", {
+      api("/api/engine/incident-monitor/intake/keys", {
         method: "POST",
         body: JSON.stringify({
           project_id: input.project_id,
           name: input.name,
-          scopes: ["bug_monitor:report"],
+          scopes: ["incident_monitor:report"],
         }),
       }),
     onSuccess: async (payload: any) => {
-      setBugMonitorCreatedIntakeKey(String(payload?.raw_key || ""));
-      toast("ok", "Bug Monitor intake key created.");
+      setIncidentMonitorCreatedIntakeKey(String(payload?.raw_key || ""));
+      toast("ok", "Incident Monitor intake key created.");
       await queryClient.invalidateQueries({
-        queryKey: ["settings", "bug-monitor", "intake-keys"],
+        queryKey: ["settings", "incident-monitor", "intake-keys"],
       });
     },
     onError: (error: any) => {
@@ -1967,17 +1983,17 @@ export function useSettingsPageController({
       toast("err", detail);
     },
   });
-  const disableBugMonitorIntakeKeyMutation = useMutation({
+  const disableIncidentMonitorIntakeKeyMutation = useMutation({
     mutationFn: async (keyId: string) => {
-      setBugMonitorDisablingIntakeKeyId(keyId);
-      return api(`/api/engine/bug-monitor/intake/keys/${encodeURIComponent(keyId)}/disable`, {
+      setIncidentMonitorDisablingIntakeKeyId(keyId);
+      return api(`/api/engine/incident-monitor/intake/keys/${encodeURIComponent(keyId)}/disable`, {
         method: "POST",
       });
     },
     onSuccess: async () => {
-      toast("ok", "Bug Monitor intake key disabled.");
+      toast("ok", "Incident Monitor intake key disabled.");
       await queryClient.invalidateQueries({
-        queryKey: ["settings", "bug-monitor", "intake-keys"],
+        queryKey: ["settings", "incident-monitor", "intake-keys"],
       });
     },
     onError: (error: any) => {
@@ -1985,21 +2001,21 @@ export function useSettingsPageController({
         error instanceof Error ? error.message : String(error?.detail || error?.error || error);
       toast("err", detail);
     },
-    onSettled: () => setBugMonitorDisablingIntakeKeyId(""),
+    onSettled: () => setIncidentMonitorDisablingIntakeKeyId(""),
   });
-  const resetBugMonitorLogSourceMutation = useMutation({
+  const resetIncidentMonitorLogSourceMutation = useMutation({
     mutationFn: async (input: { project_id: string; source_id: string }) => {
       const rowKey = `${input.project_id || "project"}::${input.source_id || "source"}`;
-      setBugMonitorResettingSourceKey(rowKey);
+      setIncidentMonitorResettingSourceKey(rowKey);
       return api(
-        `/api/engine/bug-monitor/log-sources/${encodeURIComponent(
+        `/api/engine/incident-monitor/log-sources/${encodeURIComponent(
           input.project_id
         )}/${encodeURIComponent(input.source_id)}/reset-offset`,
         { method: "POST" }
       );
     },
     onSuccess: async (payload: any) => {
-      setBugMonitorLogSourceActionResult({
+      setIncidentMonitorLogSourceActionResult({
         action: "reset-offset",
         project_id: payload?.project_id,
         source_id: payload?.source_id,
@@ -2007,29 +2023,29 @@ export function useSettingsPageController({
         path: payload?.state?.path,
         updated_at_ms: payload?.state?.updated_at_ms,
       });
-      toast("ok", "Bug Monitor log source offset reset.");
-      await queryClient.invalidateQueries({ queryKey: ["settings", "bug-monitor"] });
+      toast("ok", "Incident Monitor log source offset reset.");
+      await queryClient.invalidateQueries({ queryKey: ["settings", "incident-monitor"] });
     },
     onError: (error: any) => {
       const detail =
         error instanceof Error ? error.message : String(error?.detail || error?.error || error);
       toast("err", detail);
     },
-    onSettled: () => setBugMonitorResettingSourceKey(""),
+    onSettled: () => setIncidentMonitorResettingSourceKey(""),
   });
-  const replayBugMonitorLogSourceMutation = useMutation({
+  const replayIncidentMonitorLogSourceMutation = useMutation({
     mutationFn: async (input: { project_id: string; source_id: string }) => {
       const rowKey = `${input.project_id || "project"}::${input.source_id || "source"}`;
-      setBugMonitorReplayingSourceKey(rowKey);
+      setIncidentMonitorReplayingSourceKey(rowKey);
       return api(
-        `/api/engine/bug-monitor/log-sources/${encodeURIComponent(
+        `/api/engine/incident-monitor/log-sources/${encodeURIComponent(
           input.project_id
         )}/${encodeURIComponent(input.source_id)}/replay-latest`,
         { method: "POST" }
       );
     },
     onSuccess: async (payload: any) => {
-      setBugMonitorLogSourceActionResult({
+      setIncidentMonitorLogSourceActionResult({
         action: "replay-latest",
         project_id: payload?.project_id,
         source_id: payload?.source_id,
@@ -2038,27 +2054,29 @@ export function useSettingsPageController({
         draft_id: payload?.draft?.draft_id,
         draft_status: payload?.draft?.status,
       });
-      toast("ok", "Bug Monitor latest log candidate replayed.");
-      await queryClient.invalidateQueries({ queryKey: ["settings", "bug-monitor"] });
+      toast("ok", "Incident Monitor latest log candidate replayed.");
+      await queryClient.invalidateQueries({ queryKey: ["settings", "incident-monitor"] });
     },
     onError: (error: any) => {
       const detail =
         error instanceof Error ? error.message : String(error?.detail || error?.error || error);
       toast("err", detail);
     },
-    onSettled: () => setBugMonitorReplayingSourceKey(""),
+    onSettled: () => setIncidentMonitorReplayingSourceKey(""),
   });
-  const bugMonitorDraftDecisionMutation = useMutation({
+  const incidentMonitorDraftDecisionMutation = useMutation({
     mutationFn: async ({ draftId, decision }: { draftId: string; decision: "approve" | "deny" }) =>
-      api(`/api/engine/bug-monitor/drafts/${encodeURIComponent(draftId)}/${decision}`, {
+      api(`/api/engine/incident-monitor/drafts/${encodeURIComponent(draftId)}/${decision}`, {
         method: "POST",
         body: JSON.stringify({
           reason: `${decision}d from control panel settings`,
         }),
       }),
     onSuccess: async (_payload, vars) => {
-      await Promise.all([queryClient.invalidateQueries({ queryKey: ["settings", "bug-monitor"] })]);
-      toast("ok", `Bug Monitor draft ${vars.decision === "approve" ? "approved" : "denied"}.`);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["settings", "incident-monitor"] }),
+      ]);
+      toast("ok", `Incident Monitor draft ${vars.decision === "approve" ? "approved" : "denied"}.`);
     },
     onError: (error: any) => {
       const detail =
@@ -2066,18 +2084,20 @@ export function useSettingsPageController({
       toast("err", detail);
     },
   });
-  const bugMonitorTriageRunMutation = useMutation({
+  const incidentMonitorTriageRunMutation = useMutation({
     mutationFn: async ({ draftId }: { draftId: string }) =>
-      api(`/api/engine/bug-monitor/drafts/${encodeURIComponent(draftId)}/triage-run`, {
+      api(`/api/engine/incident-monitor/drafts/${encodeURIComponent(draftId)}/triage-run`, {
         method: "POST",
       }),
     onSuccess: async (payload: any) => {
-      await Promise.all([queryClient.invalidateQueries({ queryKey: ["settings", "bug-monitor"] })]);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["settings", "incident-monitor"] }),
+      ]);
       toast(
         "ok",
         payload?.deduped
-          ? `Bug Monitor triage run already exists: ${payload?.run?.run_id || "unknown"}`
-          : `Bug Monitor triage run created: ${payload?.run?.run_id || "unknown"}`
+          ? `Incident Monitor triage run already exists: ${payload?.run?.run_id || "unknown"}`
+          : `Incident Monitor triage run created: ${payload?.run?.run_id || "unknown"}`
       );
     },
     onError: (error: any) => {
@@ -2086,14 +2106,16 @@ export function useSettingsPageController({
       toast("err", detail);
     },
   });
-  const bugMonitorPauseResumeMutation = useMutation({
+  const incidentMonitorPauseResumeMutation = useMutation({
     mutationFn: async ({ action }: { action: "pause" | "resume" }) =>
-      api(`/api/engine/bug-monitor/${action}`, {
+      api(`/api/engine/incident-monitor/${action}`, {
         method: "POST",
       }),
     onSuccess: async (_payload, vars) => {
-      await Promise.all([queryClient.invalidateQueries({ queryKey: ["settings", "bug-monitor"] })]);
-      toast("ok", `Bug Monitor ${vars.action === "pause" ? "paused" : "resumed"}.`);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["settings", "incident-monitor"] }),
+      ]);
+      toast("ok", `Incident Monitor ${vars.action === "pause" ? "paused" : "resumed"}.`);
     },
     onError: (error: any) => {
       const detail =
@@ -2101,18 +2123,20 @@ export function useSettingsPageController({
       toast("err", detail);
     },
   });
-  const bugMonitorReplayIncidentMutation = useMutation({
+  const incidentMonitorReplayIncidentMutation = useMutation({
     mutationFn: async ({ incidentId }: { incidentId: string }) =>
-      api(`/api/engine/bug-monitor/incidents/${encodeURIComponent(incidentId)}/replay`, {
+      api(`/api/engine/incident-monitor/incidents/${encodeURIComponent(incidentId)}/replay`, {
         method: "POST",
       }),
     onSuccess: async (payload: any) => {
-      await Promise.all([queryClient.invalidateQueries({ queryKey: ["settings", "bug-monitor"] })]);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["settings", "incident-monitor"] }),
+      ]);
       toast(
         "ok",
         payload?.deduped
-          ? `Bug Monitor triage run already exists: ${payload?.run?.run_id || "unknown"}`
-          : `Bug Monitor replay queued triage: ${payload?.run?.run_id || "unknown"}`
+          ? `Incident Monitor triage run already exists: ${payload?.run?.run_id || "unknown"}`
+          : `Incident Monitor replay queued triage: ${payload?.run?.run_id || "unknown"}`
       );
     },
     onError: (error: any) => {
@@ -2121,18 +2145,20 @@ export function useSettingsPageController({
       toast("err", detail);
     },
   });
-  const bugMonitorPublishDraftMutation = useMutation({
+  const incidentMonitorPublishDraftMutation = useMutation({
     mutationFn: async ({ draftId }: { draftId: string }) =>
-      api(`/api/engine/bug-monitor/drafts/${encodeURIComponent(draftId)}/publish`, {
+      api(`/api/engine/incident-monitor/drafts/${encodeURIComponent(draftId)}/publish`, {
         method: "POST",
       }),
     onSuccess: async (payload: any) => {
-      await Promise.all([queryClient.invalidateQueries({ queryKey: ["settings", "bug-monitor"] })]);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["settings", "incident-monitor"] }),
+      ]);
       toast(
         "ok",
         payload?.action === "comment_issue"
-          ? `Bug Monitor commented on issue #${payload?.draft?.issue_number || "unknown"}.`
-          : `Bug Monitor published issue #${payload?.draft?.issue_number || "unknown"}.`
+          ? `Incident Monitor commented on issue #${payload?.draft?.issue_number || "unknown"}.`
+          : `Incident Monitor published issue #${payload?.draft?.issue_number || "unknown"}.`
       );
     },
     onError: (error: any) => {
@@ -2141,13 +2167,15 @@ export function useSettingsPageController({
       toast("err", detail);
     },
   });
-  const bugMonitorRecheckMatchMutation = useMutation({
+  const incidentMonitorRecheckMatchMutation = useMutation({
     mutationFn: async ({ draftId }: { draftId: string }) =>
-      api(`/api/engine/bug-monitor/drafts/${encodeURIComponent(draftId)}/recheck-match`, {
+      api(`/api/engine/incident-monitor/drafts/${encodeURIComponent(draftId)}/recheck-match`, {
         method: "POST",
       }),
     onSuccess: async (payload: any) => {
-      await Promise.all([queryClient.invalidateQueries({ queryKey: ["settings", "bug-monitor"] })]);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["settings", "incident-monitor"] }),
+      ]);
       toast(
         "ok",
         `GitHub match result: ${String(payload?.action || "rechecked").replaceAll("_", " ")}.`
@@ -3070,114 +3098,119 @@ export function useSettingsPageController({
       .slice(0, 36);
   }, [mcpCatalog.servers, mcpCatalogSearch]);
   const connectedMcpCount = mcpServers.filter((server) => server.connected).length;
-  const bugMonitorStatus = useMemo(
-    () => ((bugMonitorStatusQuery.data as any)?.status || {}) as BugMonitorStatusRow,
-    [bugMonitorStatusQuery.data]
+  const incidentMonitorStatus = useMemo(
+    () => ((incidentMonitorStatusQuery.data as any)?.status || {}) as IncidentMonitorStatusRow,
+    [incidentMonitorStatusQuery.data]
   );
-  const bugMonitorMonitoredProjects = useMemo(() => {
+  const incidentMonitorMonitoredProjects = useMemo(() => {
     try {
-      const parsed = JSON.parse(bugMonitorMonitoredProjectsJson || "[]");
-      if (Array.isArray(parsed)) return parsed as BugMonitorMonitoredProjectDraft[];
+      const parsed = JSON.parse(incidentMonitorMonitoredProjectsJson || "[]");
+      if (Array.isArray(parsed)) return parsed as IncidentMonitorMonitoredProjectDraft[];
     } catch {
       // The inline editor shows the parse error; keep rendering the last saved config.
     }
-    return Array.isArray(bugMonitorStatus.config?.monitored_projects)
-      ? bugMonitorStatus.config.monitored_projects
+    return Array.isArray(incidentMonitorStatus.config?.monitored_projects)
+      ? incidentMonitorStatus.config.monitored_projects
       : [];
-  }, [bugMonitorMonitoredProjectsJson, bugMonitorStatus.config?.monitored_projects]);
-  const bugMonitorDestinations = useMemo(() => {
+  }, [incidentMonitorMonitoredProjectsJson, incidentMonitorStatus.config?.monitored_projects]);
+  const incidentMonitorDestinations = useMemo(() => {
     try {
-      const parsed = JSON.parse(bugMonitorDestinationsJson || "[]");
+      const parsed = JSON.parse(incidentMonitorDestinationsJson || "[]");
       if (Array.isArray(parsed)) return parsed as Array<Record<string, any>>;
     } catch {
       // The inline editor shows the parse error; keep rendering the last saved config.
     }
-    if (Array.isArray(bugMonitorStatus.destinations)) return bugMonitorStatus.destinations;
-    return Array.isArray(bugMonitorStatus.config?.destinations)
-      ? bugMonitorStatus.config.destinations
+    if (Array.isArray(incidentMonitorStatus.destinations))
+      return incidentMonitorStatus.destinations;
+    return Array.isArray(incidentMonitorStatus.config?.destinations)
+      ? incidentMonitorStatus.config.destinations
       : [];
   }, [
-    bugMonitorDestinationsJson,
-    bugMonitorStatus.config?.destinations,
-    bugMonitorStatus.destinations,
+    incidentMonitorDestinationsJson,
+    incidentMonitorStatus.config?.destinations,
+    incidentMonitorStatus.destinations,
   ]);
-  const bugMonitorRoutes = useMemo(() => {
+  const incidentMonitorRoutes = useMemo(() => {
     try {
-      const parsed = JSON.parse(bugMonitorRoutesJson || "[]");
+      const parsed = JSON.parse(incidentMonitorRoutesJson || "[]");
       if (Array.isArray(parsed)) return parsed as Array<Record<string, any>>;
     } catch {
       // The inline editor shows the parse error; keep rendering the last saved config.
     }
-    return Array.isArray(bugMonitorStatus.config?.routes) ? bugMonitorStatus.config.routes : [];
-  }, [bugMonitorRoutesJson, bugMonitorStatus.config?.routes]);
-  const bugMonitorDestinationReadiness = useMemo(
+    return Array.isArray(incidentMonitorStatus.config?.routes)
+      ? incidentMonitorStatus.config.routes
+      : [];
+  }, [incidentMonitorRoutesJson, incidentMonitorStatus.config?.routes]);
+  const incidentMonitorDestinationReadiness = useMemo(
     () =>
-      Array.isArray(bugMonitorStatus.destination_readiness)
-        ? bugMonitorStatus.destination_readiness
+      Array.isArray(incidentMonitorStatus.destination_readiness)
+        ? incidentMonitorStatus.destination_readiness
         : [],
-    [bugMonitorStatus.destination_readiness]
+    [incidentMonitorStatus.destination_readiness]
   );
-  const bugMonitorLogWatcher = useMemo(
-    () => (bugMonitorStatus.log_watcher || {}) as BugMonitorLogWatcherStatusDraft,
-    [bugMonitorStatus.log_watcher]
+  const incidentMonitorLogWatcher = useMemo(
+    () => (incidentMonitorStatus.log_watcher || {}) as IncidentMonitorLogWatcherStatusDraft,
+    [incidentMonitorStatus.log_watcher]
   );
-  const bugMonitorDrafts = useMemo(
+  const incidentMonitorDrafts = useMemo(
     () =>
-      Array.isArray((bugMonitorDraftsQuery.data as any)?.drafts)
-        ? ((bugMonitorDraftsQuery.data as any).drafts as BugMonitorDraftRow[]) || []
+      Array.isArray((incidentMonitorDraftsQuery.data as any)?.drafts)
+        ? ((incidentMonitorDraftsQuery.data as any).drafts as IncidentMonitorDraftRow[]) || []
         : [],
-    [bugMonitorDraftsQuery.data]
+    [incidentMonitorDraftsQuery.data]
   );
-  const bugMonitorIncidents = useMemo(
+  const incidentMonitorIncidents = useMemo(
     () =>
-      Array.isArray((bugMonitorIncidentsQuery.data as any)?.incidents)
-        ? ((bugMonitorIncidentsQuery.data as any).incidents as BugMonitorIncidentRow[]) || []
+      Array.isArray((incidentMonitorIncidentsQuery.data as any)?.incidents)
+        ? ((incidentMonitorIncidentsQuery.data as any).incidents as IncidentMonitorIncidentRow[]) ||
+          []
         : [],
-    [bugMonitorIncidentsQuery.data]
+    [incidentMonitorIncidentsQuery.data]
   );
-  const bugMonitorPosts = useMemo(
+  const incidentMonitorPosts = useMemo(
     () =>
-      Array.isArray((bugMonitorPostsQuery.data as any)?.posts)
-        ? ((bugMonitorPostsQuery.data as any).posts as BugMonitorPostRow[]) || []
+      Array.isArray((incidentMonitorPostsQuery.data as any)?.posts)
+        ? ((incidentMonitorPostsQuery.data as any).posts as IncidentMonitorPostRow[]) || []
         : [],
-    [bugMonitorPostsQuery.data]
+    [incidentMonitorPostsQuery.data]
   );
-  const bugMonitorIntakeKeys = useMemo(
+  const incidentMonitorIntakeKeys = useMemo(
     () =>
-      Array.isArray((bugMonitorIntakeKeysQuery.data as any)?.keys)
-        ? ((bugMonitorIntakeKeysQuery.data as any).keys as BugMonitorProjectIntakeKeyDraft[]) || []
+      Array.isArray((incidentMonitorIntakeKeysQuery.data as any)?.keys)
+        ? ((incidentMonitorIntakeKeysQuery.data as any)
+            .keys as IncidentMonitorProjectIntakeKeyDraft[]) || []
         : [],
-    [bugMonitorIntakeKeysQuery.data]
+    [incidentMonitorIntakeKeysQuery.data]
   );
-  const selectedBugMonitorServer = useMemo(
+  const selectedIncidentMonitorServer = useMemo(
     () =>
       mcpServers.find(
         (server) =>
           server.name.toLowerCase() ===
-          String(bugMonitorMcpServer || "")
+          String(incidentMonitorMcpServer || "")
             .trim()
             .toLowerCase()
       ) || null,
-    [bugMonitorMcpServer, mcpServers]
+    [incidentMonitorMcpServer, mcpServers]
   );
-  const selectedBugMonitorProvider = useMemo(
+  const selectedIncidentMonitorProvider = useMemo(
     () =>
       providers.find(
         (provider: any) =>
           String(provider?.id || "").toLowerCase() ===
-          String(bugMonitorProviderId || "")
+          String(incidentMonitorProviderId || "")
             .trim()
             .toLowerCase()
       ) || null,
-    [bugMonitorProviderId, providers]
+    [incidentMonitorProviderId, providers]
   );
-  const bugMonitorProviderModels = useMemo(() => {
+  const incidentMonitorProviderModels = useMemo(() => {
     const modelMap =
-      selectedBugMonitorProvider && typeof selectedBugMonitorProvider === "object"
-        ? selectedBugMonitorProvider.models || {}
+      selectedIncidentMonitorProvider && typeof selectedIncidentMonitorProvider === "object"
+        ? selectedIncidentMonitorProvider.models || {}
         : {};
     return Object.keys(modelMap).sort((a, b) => a.localeCompare(b));
-  }, [selectedBugMonitorProvider]);
+  }, [selectedIncidentMonitorProvider]);
   const browserIssues = Array.isArray(browserStatus.data?.blocking_issues)
     ? browserStatus.data?.blocking_issues || []
     : [];
@@ -3190,67 +3223,73 @@ export function useSettingsPageController({
   const connectedChannelCount = CHANNEL_NAMES.filter(
     (name) => !!(channelsStatusQuery.data as any)?.[name]?.connected
   ).length;
-  const bugMonitorWorkspaceDirectories = Array.isArray(
-    bugMonitorWorkspaceBrowserQuery.data?.directories
+  const incidentMonitorWorkspaceDirectories = Array.isArray(
+    incidentMonitorWorkspaceBrowserQuery.data?.directories
   )
-    ? bugMonitorWorkspaceBrowserQuery.data.directories
+    ? incidentMonitorWorkspaceBrowserQuery.data.directories
     : [];
-  const bugMonitorWorkspaceSearchQuery = String(bugMonitorWorkspaceBrowserSearch || "")
+  const incidentMonitorWorkspaceSearchQuery = String(incidentMonitorWorkspaceBrowserSearch || "")
     .trim()
     .toLowerCase();
-  const filteredBugMonitorWorkspaceDirectories = useMemo(() => {
-    if (!bugMonitorWorkspaceSearchQuery) return bugMonitorWorkspaceDirectories;
-    return bugMonitorWorkspaceDirectories.filter((entry: any) => {
+  const filteredIncidentMonitorWorkspaceDirectories = useMemo(() => {
+    if (!incidentMonitorWorkspaceSearchQuery) return incidentMonitorWorkspaceDirectories;
+    return incidentMonitorWorkspaceDirectories.filter((entry: any) => {
       const name = String(entry?.name || entry?.path || "")
         .trim()
         .toLowerCase();
-      return name.includes(bugMonitorWorkspaceSearchQuery);
+      return name.includes(incidentMonitorWorkspaceSearchQuery);
     });
-  }, [bugMonitorWorkspaceDirectories, bugMonitorWorkspaceSearchQuery]);
-  const bugMonitorWorkspaceParentDir = String(
-    bugMonitorWorkspaceBrowserQuery.data?.parent || ""
+  }, [incidentMonitorWorkspaceDirectories, incidentMonitorWorkspaceSearchQuery]);
+  const incidentMonitorWorkspaceParentDir = String(
+    incidentMonitorWorkspaceBrowserQuery.data?.parent || ""
   ).trim();
-  const bugMonitorCurrentBrowseDir = String(
-    bugMonitorWorkspaceBrowserQuery.data?.dir || bugMonitorWorkspaceBrowserDir || ""
+  const incidentMonitorCurrentBrowseDir = String(
+    incidentMonitorWorkspaceBrowserQuery.data?.dir || incidentMonitorWorkspaceBrowserDir || ""
   ).trim();
-  const bugMonitorSuggestedWorkspaceRoot = useMemo(
-    () => suggestedBugMonitorWorkspaceRoot(bugMonitorRepo),
-    [bugMonitorRepo]
+  const incidentMonitorSuggestedWorkspaceRoot = useMemo(
+    () => suggestedIncidentMonitorWorkspaceRoot(incidentMonitorRepo),
+    [incidentMonitorRepo]
   );
-  const bugMonitorWorkspaceRootHint = hostedWorkspaceDirectoryHint(bugMonitorWorkspaceRoot);
-  const bugMonitorWorkspaceSetupWarningText = bugMonitorWorkspaceSetupWarning(
-    bugMonitorWorkspaceRoot,
-    bugMonitorRepo
+  const incidentMonitorWorkspaceRootHint = hostedWorkspaceDirectoryHint(
+    incidentMonitorWorkspaceRoot
+  );
+  const incidentMonitorWorkspaceSetupWarningText = incidentMonitorWorkspaceSetupWarning(
+    incidentMonitorWorkspaceRoot,
+    incidentMonitorRepo
   );
 
   useEffect(() => {
+    const configPayload = incidentMonitorConfigQuery.data as any;
     const config =
-      (bugMonitorConfigQuery.data as any)?.bug_monitor &&
-      typeof (bugMonitorConfigQuery.data as any)?.bug_monitor === "object"
-        ? ((bugMonitorConfigQuery.data as any).bug_monitor as BugMonitorConfigRow)
+      configPayload?.incident_monitor && typeof configPayload.incident_monitor === "object"
+        ? (configPayload.incident_monitor as IncidentMonitorConfigRow)
         : {};
-    setBugMonitorEnabled(!!config.enabled);
-    setBugMonitorPaused(!!config.paused);
-    setBugMonitorWorkspaceRoot(String(config.workspace_root || "").trim());
-    setBugMonitorRepo(String(config.repo || "").trim());
-    setBugMonitorMcpServer(String(config.mcp_server || "").trim());
-    setBugMonitorProviderPreference(String(config.provider_preference || "auto").trim() || "auto");
-    setBugMonitorProviderId(String(config.model_policy?.default_model?.provider_id || "").trim());
-    setBugMonitorModelId(String(config.model_policy?.default_model?.model_id || "").trim());
-    setBugMonitorAutoCreateIssues(config.auto_create_new_issues !== false);
-    setBugMonitorRequireApproval(!!config.require_approval_for_new_issues);
-    setBugMonitorAutoComment(config.auto_comment_on_matched_open_issues !== false);
+    setIncidentMonitorEnabled(!!config.enabled);
+    setIncidentMonitorPaused(!!config.paused);
+    setIncidentMonitorWorkspaceRoot(String(config.workspace_root || "").trim());
+    setIncidentMonitorRepo(String(config.repo || "").trim());
+    setIncidentMonitorMcpServer(String(config.mcp_server || "").trim());
+    setIncidentMonitorProviderPreference(
+      String(config.provider_preference || "auto").trim() || "auto"
+    );
+    setIncidentMonitorProviderId(
+      String(config.model_policy?.default_model?.provider_id || "").trim()
+    );
+    setIncidentMonitorModelId(String(config.model_policy?.default_model?.model_id || "").trim());
+    setIncidentMonitorAutoCreateIssues(config.auto_create_new_issues !== false);
+    setIncidentMonitorRequireApproval(!!config.require_approval_for_new_issues);
+    setIncidentMonitorAutoComment(config.auto_comment_on_matched_open_issues !== false);
     const monitoredProjects = Array.isArray(config.monitored_projects)
       ? config.monitored_projects
       : [];
-    setBugMonitorMonitoredProjectsJson(JSON.stringify(monitoredProjects, null, 2));
-    setBugMonitorMonitoredProjectsError("");
-    setBugMonitorDestinationsJson(JSON.stringify(config.destinations || [], null, 2));
-    setBugMonitorRoutesJson(JSON.stringify(config.routes || [], null, 2));
-    setBugMonitorDefaultDestinationsText((config.default_destination_ids || []).join(", "));
-    setBugMonitorSafetyDefaultsJson(JSON.stringify(config.safety_defaults || {}, null, 2));
-    setBugMonitorRoutingConfigError("");
-  }, [bugMonitorConfigQuery.data]);
+    setIncidentMonitorMonitoredProjectsJson(JSON.stringify(monitoredProjects, null, 2));
+    setIncidentMonitorMonitoredProjectsError("");
+    setIncidentMonitorDestinationsJson(JSON.stringify(config.destinations || [], null, 2));
+    setIncidentMonitorRoutesJson(JSON.stringify(config.routes || [], null, 2));
+    setIncidentMonitorDefaultDestinationsText((config.default_destination_ids || []).join(", "));
+    setIncidentMonitorSafetyDefaultsJson(JSON.stringify(config.safety_defaults || {}, null, 2));
+    setIncidentMonitorRoutingConfigError("");
+  }, [incidentMonitorConfigQuery.data]);
 
   useEffect(() => {
     const config =
@@ -3362,10 +3401,10 @@ export function useSettingsPageController({
     setMcpModalOpen(true);
   };
 
-  const copyBugMonitorDebugPayload = async () => {
-    const payload = await api("/api/engine/bug-monitor/debug", { method: "GET" });
+  const copyIncidentMonitorDebugPayload = async () => {
+    const payload = await api("/api/engine/incident-monitor/debug", { method: "GET" });
     await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
-    toast("ok", "Bug Monitor debug payload copied.");
+    toast("ok", "Incident Monitor debug payload copied.");
   };
 
   const worktreeCleanupPendingMessages = [
@@ -3458,7 +3497,7 @@ export function useSettingsPageController({
     { id: "theme", label: "Themes", icon: "paint-bucket" },
     { id: "channels", label: "Channels", icon: "message-circle" },
     { id: "mcp", label: "MCP", icon: "plug-zap" },
-    { id: "bug_monitor", label: "Incident Monitor", icon: "bug-play" },
+    { id: "incident_monitor", label: "Incident Monitor", icon: "shield-alert" },
     { id: "browser", label: "Browser", icon: "monitor-cog" },
     { id: "maintenance", label: "Maintenance", icon: "wrench" },
   ];
@@ -3537,23 +3576,23 @@ export function useSettingsPageController({
     else renderIcons();
   }, [
     activeSection,
-    bugMonitorEnabled,
-    bugMonitorPaused,
-    bugMonitorWorkspaceRoot,
-    bugMonitorMcpServer,
-    bugMonitorStatus.readiness?.runtime_ready,
-    bugMonitorStatus.runtime?.monitoring_active,
-    bugMonitorStatus.runtime?.paused,
-    bugMonitorStatus.runtime?.pending_incidents,
-    bugMonitorStatus.pending_drafts,
-    bugMonitorDrafts.length,
-    bugMonitorIncidents.length,
-    refreshBugMonitorBindingsMutation.isPending,
-    bugMonitorPauseResumeMutation.isPending,
-    bugMonitorDraftDecisionMutation.isPending,
-    bugMonitorReplayIncidentMutation.isPending,
-    bugMonitorTriageRunMutation.isPending,
-    saveBugMonitorMutation.isPending,
+    incidentMonitorEnabled,
+    incidentMonitorPaused,
+    incidentMonitorWorkspaceRoot,
+    incidentMonitorMcpServer,
+    incidentMonitorStatus.readiness?.runtime_ready,
+    incidentMonitorStatus.runtime?.monitoring_active,
+    incidentMonitorStatus.runtime?.paused,
+    incidentMonitorStatus.runtime?.pending_incidents,
+    incidentMonitorStatus.pending_drafts,
+    incidentMonitorDrafts.length,
+    incidentMonitorIncidents.length,
+    refreshIncidentMonitorBindingsMutation.isPending,
+    incidentMonitorPauseResumeMutation.isPending,
+    incidentMonitorDraftDecisionMutation.isPending,
+    incidentMonitorReplayIncidentMutation.isPending,
+    incidentMonitorTriageRunMutation.isPending,
+    saveIncidentMonitorMutation.isPending,
     mcpActionMutation.isPending,
     saveSearchSettingsMutation.isPending,
   ]);
@@ -3573,67 +3612,67 @@ export function useSettingsPageController({
     browserRecommendations: browserRecommendations,
     browserSmokeResult: browserSmokeResult,
     browserStatus: browserStatus,
-    bugMonitorAutoComment: bugMonitorAutoComment,
-    bugMonitorAutoCreateIssues: bugMonitorAutoCreateIssues,
-    bugMonitorConfigQuery: bugMonitorConfigQuery,
-    bugMonitorCreatedIntakeKey: bugMonitorCreatedIntakeKey,
-    bugMonitorCurrentBrowseDir: bugMonitorCurrentBrowseDir,
-    bugMonitorDefaultDestinationsText: bugMonitorDefaultDestinationsText,
-    bugMonitorDestinationReadiness: bugMonitorDestinationReadiness,
-    bugMonitorDestinations: bugMonitorDestinations,
-    bugMonitorDestinationsJson: bugMonitorDestinationsJson,
-    bugMonitorDisablingIntakeKeyId: bugMonitorDisablingIntakeKeyId,
-    bugMonitorDraftDecisionMutation: bugMonitorDraftDecisionMutation,
-    bugMonitorDrafts: bugMonitorDrafts,
-    bugMonitorDraftsQuery: bugMonitorDraftsQuery,
-    bugMonitorEnabled: bugMonitorEnabled,
-    bugMonitorIncidents: bugMonitorIncidents,
-    bugMonitorIncidentsQuery: bugMonitorIncidentsQuery,
-    bugMonitorIntakeKeys: bugMonitorIntakeKeys,
-    bugMonitorIntakeKeysQuery: bugMonitorIntakeKeysQuery,
-    bugMonitorLogSourceActionResult: bugMonitorLogSourceActionResult,
-    bugMonitorLogWatcher: bugMonitorLogWatcher,
-    bugMonitorMcpServer: bugMonitorMcpServer,
-    bugMonitorModelId: bugMonitorModelId,
-    bugMonitorMonitoredProjects: bugMonitorMonitoredProjects,
-    bugMonitorMonitoredProjectsError: bugMonitorMonitoredProjectsError,
-    bugMonitorMonitoredProjectsJson: bugMonitorMonitoredProjectsJson,
-    bugMonitorPauseResumeMutation: bugMonitorPauseResumeMutation,
-    bugMonitorPaused: bugMonitorPaused,
-    bugMonitorPosts: bugMonitorPosts,
-    bugMonitorPostsQuery: bugMonitorPostsQuery,
-    bugMonitorProviderId: bugMonitorProviderId,
-    bugMonitorProviderModels: bugMonitorProviderModels,
-    bugMonitorProviderPreference: bugMonitorProviderPreference,
-    bugMonitorPublishDraftMutation: bugMonitorPublishDraftMutation,
-    bugMonitorRecheckMatchMutation: bugMonitorRecheckMatchMutation,
-    bugMonitorReplayIncidentMutation: bugMonitorReplayIncidentMutation,
-    bugMonitorReplayingSourceKey: bugMonitorReplayingSourceKey,
-    bugMonitorRepo: bugMonitorRepo,
-    bugMonitorRequireApproval: bugMonitorRequireApproval,
-    bugMonitorResettingSourceKey: bugMonitorResettingSourceKey,
-    bugMonitorRoutePreviewError: bugMonitorRoutePreviewError,
-    bugMonitorRoutePreviewJson: bugMonitorRoutePreviewJson,
-    bugMonitorRoutePreviewMutation: bugMonitorRoutePreviewMutation,
-    bugMonitorRoutePreviewResult: bugMonitorRoutePreviewResult,
-    bugMonitorRoutes: bugMonitorRoutes,
-    bugMonitorRoutesJson: bugMonitorRoutesJson,
-    bugMonitorRoutingConfigError: bugMonitorRoutingConfigError,
-    bugMonitorSafetyDefaultsJson: bugMonitorSafetyDefaultsJson,
-    bugMonitorStatus: bugMonitorStatus,
-    bugMonitorStatusQuery: bugMonitorStatusQuery,
-    bugMonitorSuggestedWorkspaceRoot: bugMonitorSuggestedWorkspaceRoot,
-    bugMonitorTriageRunMutation: bugMonitorTriageRunMutation,
-    bugMonitorWorkspaceBrowserDir: bugMonitorWorkspaceBrowserDir,
-    bugMonitorWorkspaceBrowserOpen: bugMonitorWorkspaceBrowserOpen,
-    bugMonitorWorkspaceBrowserQuery: bugMonitorWorkspaceBrowserQuery,
-    bugMonitorWorkspaceBrowserSearch: bugMonitorWorkspaceBrowserSearch,
-    bugMonitorWorkspaceDirectories: bugMonitorWorkspaceDirectories,
-    bugMonitorWorkspaceParentDir: bugMonitorWorkspaceParentDir,
-    bugMonitorWorkspaceRoot: bugMonitorWorkspaceRoot,
-    bugMonitorWorkspaceRootHint: bugMonitorWorkspaceRootHint,
-    bugMonitorWorkspaceSearchQuery: bugMonitorWorkspaceSearchQuery,
-    bugMonitorWorkspaceSetupWarningText: bugMonitorWorkspaceSetupWarningText,
+    incidentMonitorAutoComment: incidentMonitorAutoComment,
+    incidentMonitorAutoCreateIssues: incidentMonitorAutoCreateIssues,
+    incidentMonitorConfigQuery: incidentMonitorConfigQuery,
+    incidentMonitorCreatedIntakeKey: incidentMonitorCreatedIntakeKey,
+    incidentMonitorCurrentBrowseDir: incidentMonitorCurrentBrowseDir,
+    incidentMonitorDefaultDestinationsText: incidentMonitorDefaultDestinationsText,
+    incidentMonitorDestinationReadiness: incidentMonitorDestinationReadiness,
+    incidentMonitorDestinations: incidentMonitorDestinations,
+    incidentMonitorDestinationsJson: incidentMonitorDestinationsJson,
+    incidentMonitorDisablingIntakeKeyId: incidentMonitorDisablingIntakeKeyId,
+    incidentMonitorDraftDecisionMutation: incidentMonitorDraftDecisionMutation,
+    incidentMonitorDrafts: incidentMonitorDrafts,
+    incidentMonitorDraftsQuery: incidentMonitorDraftsQuery,
+    incidentMonitorEnabled: incidentMonitorEnabled,
+    incidentMonitorIncidents: incidentMonitorIncidents,
+    incidentMonitorIncidentsQuery: incidentMonitorIncidentsQuery,
+    incidentMonitorIntakeKeys: incidentMonitorIntakeKeys,
+    incidentMonitorIntakeKeysQuery: incidentMonitorIntakeKeysQuery,
+    incidentMonitorLogSourceActionResult: incidentMonitorLogSourceActionResult,
+    incidentMonitorLogWatcher: incidentMonitorLogWatcher,
+    incidentMonitorMcpServer: incidentMonitorMcpServer,
+    incidentMonitorModelId: incidentMonitorModelId,
+    incidentMonitorMonitoredProjects: incidentMonitorMonitoredProjects,
+    incidentMonitorMonitoredProjectsError: incidentMonitorMonitoredProjectsError,
+    incidentMonitorMonitoredProjectsJson: incidentMonitorMonitoredProjectsJson,
+    incidentMonitorPauseResumeMutation: incidentMonitorPauseResumeMutation,
+    incidentMonitorPaused: incidentMonitorPaused,
+    incidentMonitorPosts: incidentMonitorPosts,
+    incidentMonitorPostsQuery: incidentMonitorPostsQuery,
+    incidentMonitorProviderId: incidentMonitorProviderId,
+    incidentMonitorProviderModels: incidentMonitorProviderModels,
+    incidentMonitorProviderPreference: incidentMonitorProviderPreference,
+    incidentMonitorPublishDraftMutation: incidentMonitorPublishDraftMutation,
+    incidentMonitorRecheckMatchMutation: incidentMonitorRecheckMatchMutation,
+    incidentMonitorReplayIncidentMutation: incidentMonitorReplayIncidentMutation,
+    incidentMonitorReplayingSourceKey: incidentMonitorReplayingSourceKey,
+    incidentMonitorRepo: incidentMonitorRepo,
+    incidentMonitorRequireApproval: incidentMonitorRequireApproval,
+    incidentMonitorResettingSourceKey: incidentMonitorResettingSourceKey,
+    incidentMonitorRoutePreviewError: incidentMonitorRoutePreviewError,
+    incidentMonitorRoutePreviewJson: incidentMonitorRoutePreviewJson,
+    incidentMonitorRoutePreviewMutation: incidentMonitorRoutePreviewMutation,
+    incidentMonitorRoutePreviewResult: incidentMonitorRoutePreviewResult,
+    incidentMonitorRoutes: incidentMonitorRoutes,
+    incidentMonitorRoutesJson: incidentMonitorRoutesJson,
+    incidentMonitorRoutingConfigError: incidentMonitorRoutingConfigError,
+    incidentMonitorSafetyDefaultsJson: incidentMonitorSafetyDefaultsJson,
+    incidentMonitorStatus: incidentMonitorStatus,
+    incidentMonitorStatusQuery: incidentMonitorStatusQuery,
+    incidentMonitorSuggestedWorkspaceRoot: incidentMonitorSuggestedWorkspaceRoot,
+    incidentMonitorTriageRunMutation: incidentMonitorTriageRunMutation,
+    incidentMonitorWorkspaceBrowserDir: incidentMonitorWorkspaceBrowserDir,
+    incidentMonitorWorkspaceBrowserOpen: incidentMonitorWorkspaceBrowserOpen,
+    incidentMonitorWorkspaceBrowserQuery: incidentMonitorWorkspaceBrowserQuery,
+    incidentMonitorWorkspaceBrowserSearch: incidentMonitorWorkspaceBrowserSearch,
+    incidentMonitorWorkspaceDirectories: incidentMonitorWorkspaceDirectories,
+    incidentMonitorWorkspaceParentDir: incidentMonitorWorkspaceParentDir,
+    incidentMonitorWorkspaceRoot: incidentMonitorWorkspaceRoot,
+    incidentMonitorWorkspaceRootHint: incidentMonitorWorkspaceRootHint,
+    incidentMonitorWorkspaceSearchQuery: incidentMonitorWorkspaceSearchQuery,
+    incidentMonitorWorkspaceSetupWarningText: incidentMonitorWorkspaceSetupWarningText,
     channelDefaultModel: channelDefaultModel,
     channelDrafts: channelDrafts,
     channelDraftsHydratedRef: channelDraftsHydratedRef,
@@ -3653,8 +3692,8 @@ export function useSettingsPageController({
     connectedChannelCount: connectedChannelCount,
     connectedMcpCount: connectedMcpCount,
     connectedProviderCount: connectedProviderCount,
-    copyBugMonitorDebugPayload: copyBugMonitorDebugPayload,
-    createBugMonitorIntakeKeyMutation: createBugMonitorIntakeKeyMutation,
+    copyIncidentMonitorDebugPayload: copyIncidentMonitorDebugPayload,
+    createIncidentMonitorIntakeKeyMutation: createIncidentMonitorIntakeKeyMutation,
     customConfiguredProviders: customConfiguredProviders,
     customProviderApiKey: customProviderApiKey,
     customProviderFormOpen: customProviderFormOpen,
@@ -3666,9 +3705,9 @@ export function useSettingsPageController({
     defaultNavigationVisibility: defaultNavigationVisibility,
     deleteChannelMutation: deleteChannelMutation,
     diagnosticsOpen: diagnosticsOpen,
-    disableBugMonitorIntakeKeyMutation: disableBugMonitorIntakeKeyMutation,
+    disableIncidentMonitorIntakeKeyMutation: disableIncidentMonitorIntakeKeyMutation,
     disconnectProviderOAuthMutation: disconnectProviderOAuthMutation,
-    filteredBugMonitorWorkspaceDirectories: filteredBugMonitorWorkspaceDirectories,
+    filteredIncidentMonitorWorkspaceDirectories: filteredIncidentMonitorWorkspaceDirectories,
     filteredMcpCatalog: filteredMcpCatalog,
     getCodexDefaultModelId: getCodexDefaultModelId,
     githubMcpGuideOpen: githubMcpGuideOpen,
@@ -3731,12 +3770,12 @@ export function useSettingsPageController({
     queryClient: queryClient,
     refreshIdentityStatus: refreshIdentityStatus,
     refreshProviderStatus: refreshProviderStatus,
-    refreshBugMonitorBindingsMutation: refreshBugMonitorBindingsMutation,
-    replayBugMonitorLogSourceMutation: replayBugMonitorLogSourceMutation,
+    refreshIncidentMonitorBindingsMutation: refreshIncidentMonitorBindingsMutation,
+    replayIncidentMonitorLogSourceMutation: replayIncidentMonitorLogSourceMutation,
     resetNavigationSections: resetNavigationSections,
-    resetBugMonitorLogSourceMutation: resetBugMonitorLogSourceMutation,
+    resetIncidentMonitorLogSourceMutation: resetIncidentMonitorLogSourceMutation,
     rootRef: rootRef,
-    saveBugMonitorMutation: saveBugMonitorMutation,
+    saveIncidentMonitorMutation: saveIncidentMonitorMutation,
     saveChannelMutation: saveChannelMutation,
     saveChannelToolPreferencesMutation: saveChannelToolPreferencesMutation,
     saveCustomProviderMutation: saveCustomProviderMutation,
@@ -3757,42 +3796,42 @@ export function useSettingsPageController({
     searchTestResult: searchTestResult,
     searchTimeoutMs: searchTimeoutMs,
     sectionTabs: sectionTabs,
-    selectedBugMonitorProvider: selectedBugMonitorProvider,
-    selectedBugMonitorServer: selectedBugMonitorServer,
+    selectedIncidentMonitorProvider: selectedIncidentMonitorProvider,
+    selectedIncidentMonitorServer: selectedIncidentMonitorServer,
     setActiveSection: selectActiveSection,
     setApiKeyMutation: setApiKeyMutation,
     setBotAvatarUrl: setBotAvatarUrl,
     setBotControlPanelAlias: setBotControlPanelAlias,
     setBotName: setBotName,
     setBrowserSmokeResult: setBrowserSmokeResult,
-    setBugMonitorAutoComment: setBugMonitorAutoComment,
-    setBugMonitorAutoCreateIssues: setBugMonitorAutoCreateIssues,
-    setBugMonitorCreatedIntakeKey: setBugMonitorCreatedIntakeKey,
-    setBugMonitorDefaultDestinationsText: setBugMonitorDefaultDestinationsText,
-    setBugMonitorDestinationsJson: setBugMonitorDestinationsJson,
-    setBugMonitorDisablingIntakeKeyId: setBugMonitorDisablingIntakeKeyId,
-    setBugMonitorEnabled: setBugMonitorEnabled,
-    setBugMonitorLogSourceActionResult: setBugMonitorLogSourceActionResult,
-    setBugMonitorMcpServer: setBugMonitorMcpServer,
-    setBugMonitorModelId: setBugMonitorModelId,
-    setBugMonitorMonitoredProjectsError: setBugMonitorMonitoredProjectsError,
-    setBugMonitorMonitoredProjectsJson: setBugMonitorMonitoredProjectsJson,
-    setBugMonitorPaused: setBugMonitorPaused,
-    setBugMonitorProviderId: setBugMonitorProviderId,
-    setBugMonitorProviderPreference: setBugMonitorProviderPreference,
-    setBugMonitorReplayingSourceKey: setBugMonitorReplayingSourceKey,
-    setBugMonitorRepo: setBugMonitorRepo,
-    setBugMonitorRequireApproval: setBugMonitorRequireApproval,
-    setBugMonitorResettingSourceKey: setBugMonitorResettingSourceKey,
-    setBugMonitorRoutePreviewError: setBugMonitorRoutePreviewError,
-    setBugMonitorRoutePreviewJson: setBugMonitorRoutePreviewJson,
-    setBugMonitorRoutingConfigError: setBugMonitorRoutingConfigError,
-    setBugMonitorRoutesJson: setBugMonitorRoutesJson,
-    setBugMonitorSafetyDefaultsJson: setBugMonitorSafetyDefaultsJson,
-    setBugMonitorWorkspaceBrowserDir: setBugMonitorWorkspaceBrowserDir,
-    setBugMonitorWorkspaceBrowserOpen: setBugMonitorWorkspaceBrowserOpen,
-    setBugMonitorWorkspaceBrowserSearch: setBugMonitorWorkspaceBrowserSearch,
-    setBugMonitorWorkspaceRoot: setBugMonitorWorkspaceRoot,
+    setIncidentMonitorAutoComment: setIncidentMonitorAutoComment,
+    setIncidentMonitorAutoCreateIssues: setIncidentMonitorAutoCreateIssues,
+    setIncidentMonitorCreatedIntakeKey: setIncidentMonitorCreatedIntakeKey,
+    setIncidentMonitorDefaultDestinationsText: setIncidentMonitorDefaultDestinationsText,
+    setIncidentMonitorDestinationsJson: setIncidentMonitorDestinationsJson,
+    setIncidentMonitorDisablingIntakeKeyId: setIncidentMonitorDisablingIntakeKeyId,
+    setIncidentMonitorEnabled: setIncidentMonitorEnabled,
+    setIncidentMonitorLogSourceActionResult: setIncidentMonitorLogSourceActionResult,
+    setIncidentMonitorMcpServer: setIncidentMonitorMcpServer,
+    setIncidentMonitorModelId: setIncidentMonitorModelId,
+    setIncidentMonitorMonitoredProjectsError: setIncidentMonitorMonitoredProjectsError,
+    setIncidentMonitorMonitoredProjectsJson: setIncidentMonitorMonitoredProjectsJson,
+    setIncidentMonitorPaused: setIncidentMonitorPaused,
+    setIncidentMonitorProviderId: setIncidentMonitorProviderId,
+    setIncidentMonitorProviderPreference: setIncidentMonitorProviderPreference,
+    setIncidentMonitorReplayingSourceKey: setIncidentMonitorReplayingSourceKey,
+    setIncidentMonitorRepo: setIncidentMonitorRepo,
+    setIncidentMonitorRequireApproval: setIncidentMonitorRequireApproval,
+    setIncidentMonitorResettingSourceKey: setIncidentMonitorResettingSourceKey,
+    setIncidentMonitorRoutePreviewError: setIncidentMonitorRoutePreviewError,
+    setIncidentMonitorRoutePreviewJson: setIncidentMonitorRoutePreviewJson,
+    setIncidentMonitorRoutingConfigError: setIncidentMonitorRoutingConfigError,
+    setIncidentMonitorRoutesJson: setIncidentMonitorRoutesJson,
+    setIncidentMonitorSafetyDefaultsJson: setIncidentMonitorSafetyDefaultsJson,
+    setIncidentMonitorWorkspaceBrowserDir: setIncidentMonitorWorkspaceBrowserDir,
+    setIncidentMonitorWorkspaceBrowserOpen: setIncidentMonitorWorkspaceBrowserOpen,
+    setIncidentMonitorWorkspaceBrowserSearch: setIncidentMonitorWorkspaceBrowserSearch,
+    setIncidentMonitorWorkspaceRoot: setIncidentMonitorWorkspaceRoot,
     setChannelDrafts: setChannelDrafts,
     setChannelToolScopeOpen: setChannelToolScopeOpen,
     setChannelToolScopeSelection: setChannelToolScopeSelection,

@@ -7803,25 +7803,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tandem-bug-monitor"
-version = "0.6.4"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "regex",
- "serde",
- "serde_json",
- "sha2",
- "tandem-core",
- "tandem-types",
- "tempfile",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "tandem-channels"
 version = "0.6.4"
 dependencies = [
@@ -7873,6 +7854,14 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "tandem-data-boundary"
+version = "0.6.4"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -7940,8 +7929,8 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "tandem-bug-monitor",
  "tandem-core",
+ "tandem-incident-monitor",
  "tandem-memory",
  "tandem-observability",
  "tandem-orchestrator",
@@ -7972,6 +7961,25 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "tandem-incident-monitor"
+version = "0.6.4"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tandem-core",
+ "tandem-types",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -8133,11 +8141,11 @@ dependencies = [
  "sha2",
  "tandem-automation",
  "tandem-browser",
- "tandem-bug-monitor",
  "tandem-channels",
  "tandem-core",
  "tandem-enterprise-contract",
  "tandem-governance-engine",
+ "tandem-incident-monitor",
  "tandem-memory",
  "tandem-observability",
  "tandem-orchestrator",

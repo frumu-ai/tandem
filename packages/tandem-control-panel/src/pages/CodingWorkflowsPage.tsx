@@ -1107,7 +1107,7 @@ export function CodingWorkflowsPage({
                     {String(repoSyncResult.repo.commit).slice(0, 7)}
                   </div>
                   <div className="rounded-xl border border-sky-500/20 bg-sky-500/10 p-2 text-sky-100">
-                    Bug Monitor should use this checkout as its local directory when reporting
+                    Incident Monitor should use this checkout as its local directory when reporting
                     issues for this repo.
                   </div>
                 </div>

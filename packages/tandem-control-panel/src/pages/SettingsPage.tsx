@@ -3,7 +3,7 @@ import { AnimatedPage, SplitView, StaggerGroup } from "../ui/index.tsx";
 import { SettingsPageNavigationProvidersSections } from "./SettingsPageNavigationProvidersSections";
 import { SettingsPageSearchIdentityThemeSections } from "./SettingsPageSearchIdentityThemeSections";
 import { SettingsPageChannelsMcpSections } from "./SettingsPageChannelsMcpSections";
-import { SettingsPageBugMonitorSections } from "./SettingsPageBugMonitorSections";
+import { SettingsPageIncidentMonitorSections } from "./SettingsPageIncidentMonitorSections";
 import { SettingsPageMaintenanceBrowserSections } from "./SettingsPageMaintenanceBrowserSections";
 import { SettingsPageOverlays } from "./SettingsPageOverlays";
 import type { AppPageProps } from "./pageTypes";
@@ -38,7 +38,7 @@ export function SettingsPage(props: AppPageProps) {
               <SettingsPageNavigationProvidersSections controller={controller} />
               <SettingsPageSearchIdentityThemeSections controller={controller} />
               <SettingsPageChannelsMcpSections controller={controller} />
-              <SettingsPageBugMonitorSections controller={controller} />
+              <SettingsPageIncidentMonitorSections controller={controller} />
               <SettingsPageMaintenanceBrowserSections controller={controller} />
             </StaggerGroup>
           }

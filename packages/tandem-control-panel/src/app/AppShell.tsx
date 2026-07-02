@@ -68,8 +68,8 @@ const ROUTE_META: Record<string, { title: string; subtitle: string }> = {
     title: "Channels",
     subtitle: "Chat integrations, tool scope, and channel configuration.",
   },
-  "bug-monitor": {
-    title: "Bug Monitor",
+  "incident-monitor": {
+    title: "Incident Monitor",
     subtitle: "Issue detection, draft review, and GitHub publishing controls.",
   },
   packs: {
@@ -135,7 +135,7 @@ export function AppShell({
     providerBadge: string;
     providerText: string;
     activeRuns: number;
-    bugMonitor?: {
+    incidentMonitor?: {
       enabled: boolean;
       monitoringActive: boolean;
       paused: boolean;
@@ -174,11 +174,11 @@ export function AppShell({
     navRoutes,
     currentRoute,
     mobileNavOpen,
-    statusBar.bugMonitor?.enabled,
-    statusBar.bugMonitor?.monitoringActive,
-    statusBar.bugMonitor?.paused,
-    statusBar.bugMonitor?.pendingIncidents,
-    statusBar.bugMonitor?.blocked,
+    statusBar.incidentMonitor?.enabled,
+    statusBar.incidentMonitor?.monitoringActive,
+    statusBar.incidentMonitor?.paused,
+    statusBar.incidentMonitor?.pendingIncidents,
+    statusBar.incidentMonitor?.blocked,
     statusBar.approvals?.pendingCount,
     statusBar.approvals?.checking,
   ]);
@@ -196,43 +196,43 @@ export function AppShell({
     () => navRoutes.find(([id]) => id === currentRoute) || null,
     [currentRoute, navRoutes]
   );
-  const bugMonitorState = useMemo(() => {
-    const monitor = statusBar.bugMonitor;
+  const incidentMonitorState = useMemo(() => {
+    const monitor = statusBar.incidentMonitor;
     if (!monitor?.enabled) return null;
     if (monitor.blocked) {
       return {
         toneClass: "blocked",
-        label: "Bug Monitor blocked",
+        label: "Incident Monitor blocked",
         shortLabel: "Blocked",
       };
     }
     if (monitor.paused) {
       return {
         toneClass: "paused",
-        label: "Bug Monitor paused",
+        label: "Incident Monitor paused",
         shortLabel: "Paused",
       };
     }
     if (monitor.pendingIncidents > 0) {
       return {
         toneClass: "incidents",
-        label: `Bug Monitor incidents: ${monitor.pendingIncidents}`,
+        label: `Incident Monitor incidents: ${monitor.pendingIncidents}`,
         shortLabel: `${monitor.pendingIncidents} incident${monitor.pendingIncidents === 1 ? "" : "s"}`,
       };
     }
     if (monitor.monitoringActive) {
       return {
         toneClass: "watching",
-        label: "Bug Monitor watching",
+        label: "Incident Monitor watching",
         shortLabel: "Watching",
       };
     }
     return {
       toneClass: "ready",
-      label: "Bug Monitor ready",
+      label: "Incident Monitor ready",
       shortLabel: "Ready",
     };
-  }, [statusBar.bugMonitor]);
+  }, [statusBar.incidentMonitor]);
   const pendingApprovalCount = Math.max(0, Number(statusBar.approvals?.pendingCount || 0));
   const approvalLabel = `${pendingApprovalCount} approval${
     pendingApprovalCount === 1 ? "" : "s"
@@ -347,26 +347,26 @@ export function AppShell({
                 <span className="tcp-badge tcp-badge-ghost">idle</span>
               )}
             </div>
-            {bugMonitorState ? (
+            {incidentMonitorState ? (
               <div className="tcp-context-stat">
-                <span className="tcp-subtle text-xs">Bug Monitor</span>
+                <span className="tcp-subtle text-xs">Incident Monitor</span>
                 <button
                   type="button"
-                  className={`tcp-bug-monitor-pill ${bugMonitorState.toneClass}`}
+                  className={`tcp-incident-monitor-pill ${incidentMonitorState.toneClass}`}
                   disabled={navigationLocked}
                   title={
-                    statusBar.bugMonitor?.lastError
-                      ? `${bugMonitorState.label}: ${statusBar.bugMonitor.lastError}`
-                      : bugMonitorState.label
+                    statusBar.incidentMonitor?.lastError
+                      ? `${incidentMonitorState.label}: ${statusBar.incidentMonitor.lastError}`
+                      : incidentMonitorState.label
                   }
                   onClick={() => {
-                    onNavigate("bug-monitor");
+                    onNavigate("incident-monitor");
                     if (mobile) setMobileNavOpen(false);
                   }}
                 >
-                  <i data-lucide="bug-play"></i>
-                  <span className="tcp-bug-monitor-dot" aria-hidden="true"></span>
-                  <span>{bugMonitorState.shortLabel}</span>
+                  <i data-lucide="shield-alert"></i>
+                  <span className="tcp-incident-monitor-dot" aria-hidden="true"></span>
+                  <span>{incidentMonitorState.shortLabel}</span>
                 </button>
               </div>
             ) : null}
@@ -489,20 +489,20 @@ export function AppShell({
               {currentNav?.[1] || routeMeta.subtitle}
             </div>
           </div>
-          {bugMonitorState ? (
+          {incidentMonitorState ? (
             <button
               type="button"
-              className={`tcp-bug-monitor-pill ${bugMonitorState.toneClass}`}
+              className={`tcp-incident-monitor-pill ${incidentMonitorState.toneClass}`}
               disabled={navigationLocked}
               title={
-                statusBar.bugMonitor?.lastError
-                  ? `${bugMonitorState.label}: ${statusBar.bugMonitor.lastError}`
-                  : bugMonitorState.label
+                statusBar.incidentMonitor?.lastError
+                  ? `${incidentMonitorState.label}: ${statusBar.incidentMonitor.lastError}`
+                  : incidentMonitorState.label
               }
-              onClick={() => onNavigate("bug-monitor")}
+              onClick={() => onNavigate("incident-monitor")}
             >
-              <i data-lucide="bug-play"></i>
-              <span className="tcp-bug-monitor-dot" aria-hidden="true"></span>
+              <i data-lucide="shield-alert"></i>
+              <span className="tcp-incident-monitor-dot" aria-hidden="true"></span>
             </button>
           ) : null}
           {pendingApprovalCount > 0 ? (
@@ -529,21 +529,21 @@ export function AppShell({
             <p className="tcp-subtle mt-1 line-clamp-2">{routeMeta.subtitle}</p>
           </div>
           <div className="tcp-topbar-status">
-            {bugMonitorState ? (
+            {incidentMonitorState ? (
               <button
                 type="button"
-                className={`tcp-bug-monitor-pill ${bugMonitorState.toneClass}`}
+                className={`tcp-incident-monitor-pill ${incidentMonitorState.toneClass}`}
                 disabled={navigationLocked}
                 title={
-                  statusBar.bugMonitor?.lastError
-                    ? `${bugMonitorState.label}: ${statusBar.bugMonitor.lastError}`
-                    : bugMonitorState.label
+                  statusBar.incidentMonitor?.lastError
+                    ? `${incidentMonitorState.label}: ${statusBar.incidentMonitor.lastError}`
+                    : incidentMonitorState.label
                 }
-                onClick={() => onNavigate("bug-monitor")}
+                onClick={() => onNavigate("incident-monitor")}
               >
-                <i data-lucide="bug-play"></i>
-                <span className="tcp-bug-monitor-dot" aria-hidden="true"></span>
-                <span>{bugMonitorState.shortLabel}</span>
+                <i data-lucide="shield-alert"></i>
+                <span className="tcp-incident-monitor-dot" aria-hidden="true"></span>
+                <span>{incidentMonitorState.shortLabel}</span>
               </button>
             ) : null}
             {pendingApprovalCount > 0 ? (

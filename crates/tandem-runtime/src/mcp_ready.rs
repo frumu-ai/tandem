@@ -5,7 +5,7 @@
 //! module landed, six production sites each reinvented `if !connected
 //! { connect() }` with their own retry policy and stringly-typed error
 //! handling (commits `852c453`, `f6bf753`, plus inline copies in the
-//! bug monitor and automation paths). One missed site is a stuck or
+//! incident monitor and automation paths). One missed site is a stuck or
 //! panicking run.
 //!
 //! [`McpRegistry::ensure_ready`] is the single gate. Callers pass an
@@ -15,7 +15,7 @@
 //! Phase 2 migrates the bedrock site (`McpRegistry::call_tool`) and the
 //! most recently reinvented retry helper
 //! (`automation_connect_mcp_server_with_retry`). The remaining external
-//! callers — `bug_monitor_github`, `automation/capability_impl`,
+//! callers — `incident_monitor_github`, `automation/capability_impl`,
 //! `automation/logic_parts/part01.rs:880`,
 //! `automation/logic/part01_parts/part01.rs:608`,
 //! `app_state_impl_parts/part02.rs:378` — migrate in the follow-up.
@@ -65,7 +65,7 @@ impl std::error::Error for McpReadyError {}
 /// Default is a single attempt with no delay — the same shape as the
 /// pre-existing inline check at `call_tool`. Use [`Self::with_retries`]
 /// when reconnect after transient drop is expected (automation
-/// preflight, bug monitor heartbeat).
+/// preflight, incident monitor heartbeat).
 #[derive(Debug, Clone, Copy)]
 pub struct EnsureReadyPolicy {
     pub attempts: usize,

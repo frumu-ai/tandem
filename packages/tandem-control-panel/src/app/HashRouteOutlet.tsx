@@ -34,7 +34,10 @@ const FilesPage = lazyNamed(() => import("../pages/FilesPage"), "FilesPage");
 const MemoryPage = lazyNamed(() => import("../pages/MemoryPage"), "MemoryPage");
 const RunsPage = lazyNamed(() => import("../pages/RunsPage"), "RunsPage");
 const ControlLoopPage = lazyNamed(() => import("../pages/ControlLoopPage"), "ControlLoopPage");
-const BugMonitorPage = lazyNamed(() => import("../pages/BugMonitorPage"), "BugMonitorPage");
+const IncidentMonitorPage = lazyNamed(
+  () => import("../pages/IncidentMonitorPage"),
+  "IncidentMonitorPage"
+);
 const TeamsPage = lazyNamed(() => import("../pages/TeamsPage"), "TeamsPage");
 const SettingsPage = lazyNamed(() => import("../pages/SettingsPage"), "SettingsPage");
 
@@ -112,8 +115,8 @@ function renderRoute(routeId: ReturnType<typeof ensureRouteId>, pageProps: any) 
       return <PacksPage {...pageProps} />;
     case "orchestrator":
       return <OrchestratorPage {...pageProps} />;
-    case "bug-monitor":
-      return <BugMonitorPage {...pageProps} />;
+    case "incident-monitor":
+      return <IncidentMonitorPage {...pageProps} />;
     case "files":
       return <FilesPage {...pageProps} />;
     case "memory":

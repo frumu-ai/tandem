@@ -356,7 +356,7 @@ impl AppState {
         Ok(Some(archived))
     }
 
-    /// Atomically transition a Bug Monitor draft to `triage_timed_out`,
+    /// Atomically transition a Incident Monitor draft to `triage_timed_out`,
     /// returning the updated draft only if WE set the marker. If
     /// another concurrent caller got there first, or the draft already
     /// has an issue posted, returns `Ok(None)` and the caller MUST
@@ -369,8 +369,8 @@ impl AppState {
     /// The check + mutation happens entirely under one write lock so
     /// it cannot race with another invocation. Without this, two
     /// near-simultaneous status pollers (UI heartbeat or anything else
-    /// hitting `bug_monitor_status`) each fire their own
-    /// `recover_overdue_bug_monitor_triage_runs`, both see the draft
+    /// hitting `incident_monitor_status`) each fire their own
+    /// `recover_overdue_incident_monitor_triage_runs`, both see the draft
     /// as not-yet-timed-out at read time, both mark it, and both call
     /// `publish_draft` — producing duplicate GitHub issues for the
     /// same incident (see issues #45 and #46, 3s apart, same
@@ -379,9 +379,9 @@ impl AppState {
         &self,
         draft_id: &str,
         last_post_error: String,
-    ) -> anyhow::Result<Option<BugMonitorDraftRecord>> {
+    ) -> anyhow::Result<Option<IncidentMonitorDraftRecord>> {
         let updated = {
-            let mut guard = self.bug_monitor_drafts.write().await;
+            let mut guard = self.incident_monitor_drafts.write().await;
             let Some(draft) = guard.get_mut(draft_id) else {
                 return Ok(None);
             };
@@ -400,13 +400,13 @@ impl AppState {
             draft.clone()
         };
         // Match the durability semantics of the previous
-        // put_bug_monitor_draft path: if persistence fails, propagate
+        // put_incident_monitor_draft path: if persistence fails, propagate
         // the error so the caller does NOT proceed into publish.
         // Otherwise a transient I/O failure could result in a publish
         // (creating a GitHub issue) without the timed_out marker on
         // disk — and after a restart, recovery would mark + publish
         // again, producing a duplicate.
-        self.persist_bug_monitor_drafts().await?;
+        self.persist_incident_monitor_drafts().await?;
         Ok(Some(updated))
     }
 }

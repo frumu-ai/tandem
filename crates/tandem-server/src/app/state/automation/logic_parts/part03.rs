@@ -408,7 +408,7 @@ pub(crate) fn recoverable_json_matches_required_output(payload: &Value, output_p
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    if !file_name.starts_with("bug_monitor.") {
+    if !file_name.starts_with("incident_monitor.") {
         return true;
     }
     let Some(object) = payload.as_object() else {
@@ -423,7 +423,7 @@ pub(crate) fn recoverable_json_matches_required_output(payload: &Value, output_p
         .is_some_and(|status| status.eq_ignore_ascii_case("completed"));
     let has_any_key = |keys: &[&str]| object.keys().any(|key| keys.contains(&key.as_str()));
     match file_name.as_str() {
-        "bug_monitor.inspection.json" => {
+        "incident_monitor.inspection.json" => {
             status_completed
                 && has_any_key(&[
                     "search_queries_used",
@@ -434,7 +434,7 @@ pub(crate) fn recoverable_json_matches_required_output(payload: &Value, output_p
                     "bounded_next_steps",
                 ])
         }
-        "bug_monitor.research.json" => {
+        "incident_monitor.research.json" => {
             status_completed
                 && (has_any_key(&[
                     "research_summary",
@@ -447,7 +447,7 @@ pub(crate) fn recoverable_json_matches_required_output(payload: &Value, output_p
                     .pointer("/research_summary/likely_root_cause")
                     .is_some())
         }
-        "bug_monitor.validation.json" => {
+        "incident_monitor.validation.json" => {
             status_completed
                 && has_any_key(&[
                     "validation_summary",
@@ -457,7 +457,7 @@ pub(crate) fn recoverable_json_matches_required_output(payload: &Value, output_p
                     "confidence",
                 ])
         }
-        "bug_monitor.fix_proposal.json" => {
+        "incident_monitor.fix_proposal.json" => {
             status_completed
                 && has_any_key(&[
                     "recommended_fix",

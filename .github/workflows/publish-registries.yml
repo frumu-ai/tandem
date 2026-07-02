@@ -228,7 +228,7 @@ jobs:
               "crates/tandem-tools",
               "crates/tandem-channels",
               "crates/tandem-core",
-              "crates/tandem-bug-monitor",
+              "crates/tandem-incident-monitor",
               "crates/tandem-runtime",
               "crates/tandem-workflows",
               "crates/tandem-browser",

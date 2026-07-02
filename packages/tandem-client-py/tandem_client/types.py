@@ -680,9 +680,9 @@ class WorkflowHookListResponse(BaseModel):
     count: int = 0
 
 
-# ─── Bug Monitor ──────────────────────────────────────────────────────────────
+# ─── Incident Monitor ──────────────────────────────────────────────────────────────
 
-BugMonitorDestinationKind = Literal[
+IncidentMonitorDestinationKind = Literal[
     "github_issue",
     "linear_issue",
     "webhook",
@@ -690,9 +690,10 @@ BugMonitorDestinationKind = Literal[
     "mcp_tool",
     "internal_memory",
 ]
-BugMonitorApprovalPolicy = Literal["inherit", "always", "high_risk", "never"]
-BugMonitorSourceKind = Literal[
+IncidentMonitorApprovalPolicy = Literal["inherit", "always", "high_risk", "never"]
+IncidentMonitorSourceKind = Literal[
     "tandem_runtime",
+    "tandem_monitor",
     "external_app",
     "ci",
     "agent_runtime",
@@ -701,7 +702,7 @@ BugMonitorSourceKind = Literal[
 ]
 
 
-class BugMonitorDestinationConfig(BaseModel):
+class IncidentMonitorDestinationConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
     destination_id: str
     name: str
@@ -721,7 +722,7 @@ class BugMonitorDestinationConfig(BaseModel):
     config: Optional[dict[str, Any]] = None
 
 
-class BugMonitorRouteConfig(BaseModel):
+class IncidentMonitorRouteConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
     route_id: str
     name: str
@@ -745,7 +746,7 @@ class BugMonitorRouteConfig(BaseModel):
     match_event_schema_versions: list[str] = []
 
 
-class BugMonitorSafetyDefaults(BaseModel):
+class IncidentMonitorSafetyDefaults(BaseModel):
     model_config = ConfigDict(extra="allow")
     require_approval_for_high_risk: bool = True
     redact_secrets: bool = True
@@ -753,7 +754,7 @@ class BugMonitorSafetyDefaults(BaseModel):
     retention_days: Optional[int] = None
 
 
-class BugMonitorDestinationReadiness(BaseModel):
+class IncidentMonitorDestinationReadiness(BaseModel):
     model_config = ConfigDict(extra="allow")
     destination_id: str
     kind: Optional[str] = None
@@ -765,7 +766,56 @@ class BugMonitorDestinationReadiness(BaseModel):
     detail: Optional[str] = None
 
 
-class BugMonitorRoutePreviewMatch(BaseModel):
+class IncidentMonitorSourceReadinessConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    source_owner: Optional[str] = None
+    system_of_record: Optional[str] = None
+    data_classification: Optional[str] = None
+    allowed_use: Optional[str] = None
+    source_of_truth: Optional[str] = None
+    lineage_ref: Optional[str] = None
+    freshness_sla_ms: Optional[int] = None
+    last_observed_at_ms: Optional[int] = None
+    expected_schema_version: Optional[str] = None
+    schema_drift_status: Optional[str] = None
+    quality_notes: Optional[str] = None
+    legal_basis: Optional[str] = None
+    authorization_marker: Optional[str] = None
+
+
+class IncidentMonitorSourceReadinessFinding(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    finding_id: str
+    rule_id: str
+    category: str
+    severity: str
+    title: str
+    detail: str
+    evidence_refs: list[str] = []
+    recommendation: str
+
+
+class IncidentMonitorSourceReadiness(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    project_id: str
+    source_id: Optional[str] = None
+    source_kind: Optional[str] = None
+    enabled: Optional[bool] = None
+    ready: Optional[bool] = None
+    governance_ready: Optional[bool] = None
+    lineage_ready: Optional[bool] = None
+    freshness_ready: Optional[bool] = None
+    schema_ready: Optional[bool] = None
+    protection_ready: Optional[bool] = None
+    missing: list[str] = []
+    warnings: list[str] = []
+    findings: list[IncidentMonitorSourceReadinessFinding] = []
+    last_observed_at_ms: Optional[int] = None
+    stale_after_ms: Optional[int] = None
+    detail: Optional[str] = None
+
+
+class IncidentMonitorRoutePreviewMatch(BaseModel):
     model_config = ConfigDict(extra="allow")
     route_id: Optional[str] = None
     route_name: Optional[str] = None
@@ -774,11 +824,13 @@ class BugMonitorRoutePreviewMatch(BaseModel):
     reason: Optional[str] = None
 
 
-class BugMonitorRoutePreviewResponse(BaseModel):
+class IncidentMonitorRoutePreviewResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
-    matches: list[BugMonitorRoutePreviewMatch] = []
-    destinations: list[BugMonitorDestinationConfig] = []
-    readiness: list[BugMonitorDestinationReadiness] = []
+    matches: list[IncidentMonitorRoutePreviewMatch] = []
+    destinations: list[IncidentMonitorDestinationConfig] = []
+    readiness: list[IncidentMonitorDestinationReadiness] = []
+    source_readiness: list[IncidentMonitorSourceReadiness] = []
+    source_readiness_warnings: list[str] = []
     default_destination_ids: list[str] = []
     effective_destination_ids: list[str] = []
     approval_required: Optional[bool] = None
@@ -786,7 +838,7 @@ class BugMonitorRoutePreviewResponse(BaseModel):
     blocked_reasons: list[str] = []
 
 
-class BugMonitorLogSource(BaseModel):
+class IncidentMonitorLogSource(BaseModel):
     model_config = ConfigDict(extra="allow")
     source_id: Optional[str] = None
     path: Optional[str] = None
@@ -809,9 +861,10 @@ class BugMonitorLogSource(BaseModel):
     approval_policy: Optional[str] = None
     redaction_profile: Optional[str] = None
     retention_profile: Optional[str] = None
+    data_readiness: Optional[IncidentMonitorSourceReadinessConfig] = None
 
 
-class BugMonitorMonitoredProject(BaseModel):
+class IncidentMonitorMonitoredProject(BaseModel):
     model_config = ConfigDict(extra="allow")
     project_id: Optional[str] = None
     name: Optional[str] = None
@@ -831,13 +884,14 @@ class BugMonitorMonitoredProject(BaseModel):
     approval_policy: Optional[str] = None
     redaction_profile: Optional[str] = None
     retention_profile: Optional[str] = None
+    data_readiness: Optional[IncidentMonitorSourceReadinessConfig] = None
     auto_create_new_issues: Optional[bool] = None
     require_approval_for_new_issues: Optional[bool] = None
     auto_comment_on_matched_open_issues: Optional[bool] = None
-    log_sources: list[BugMonitorLogSource] = []
+    log_sources: list[IncidentMonitorLogSource] = []
 
 
-class BugMonitorConfigRow(BaseModel):
+class IncidentMonitorConfigRow(BaseModel):
     model_config = ConfigDict(extra="allow")
     enabled: Optional[bool] = None
     paused: Optional[bool] = None
@@ -850,21 +904,21 @@ class BugMonitorConfigRow(BaseModel):
     require_approval_for_new_issues: Optional[bool] = None
     auto_comment_on_matched_open_issues: Optional[bool] = None
     label_mode: Optional[str] = None
-    monitored_projects: list[BugMonitorMonitoredProject] = []
-    destinations: list[BugMonitorDestinationConfig] = []
-    routes: list[BugMonitorRouteConfig] = []
+    monitored_projects: list[IncidentMonitorMonitoredProject] = []
+    destinations: list[IncidentMonitorDestinationConfig] = []
+    routes: list[IncidentMonitorRouteConfig] = []
     default_destination_ids: list[str] = []
-    safety_defaults: Optional[BugMonitorSafetyDefaults] = None
+    safety_defaults: Optional[IncidentMonitorSafetyDefaults] = None
 
 
-class BugMonitorConfigResponse(BaseModel):
+class IncidentMonitorConfigResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    bug_monitor: BugMonitorConfigRow
+    incident_monitor: IncidentMonitorConfigRow
 
 
-class BugMonitorStatusRow(BaseModel):
+class IncidentMonitorStatusRow(BaseModel):
     model_config = ConfigDict(extra="allow")
-    config: Optional[BugMonitorConfigRow] = None
+    config: Optional[IncidentMonitorConfigRow] = None
     readiness: Optional[dict[str, bool]] = None
     runtime: Optional[dict[str, Any]] = None
     required_capabilities: Optional[dict[str, bool]] = None
@@ -872,8 +926,9 @@ class BugMonitorStatusRow(BaseModel):
     resolved_capabilities: list[dict[str, Any]] = []
     discovered_mcp_tools: list[str] = []
     selected_server_binding_candidates: list[dict[str, Any]] = []
-    destinations: list[BugMonitorDestinationConfig] = []
-    destination_readiness: list[BugMonitorDestinationReadiness] = []
+    destinations: list[IncidentMonitorDestinationConfig] = []
+    destination_readiness: list[IncidentMonitorDestinationReadiness] = []
+    source_readiness: list[IncidentMonitorSourceReadiness] = []
     binding_source_version: Optional[str] = None
     bindings_last_merged_at_ms: Optional[int] = None
     selected_model: Optional[dict[str, Any]] = None
@@ -883,17 +938,17 @@ class BugMonitorStatusRow(BaseModel):
     last_error: Optional[str] = None
 
 
-class BugMonitorStatusResponse(BaseModel):
+class IncidentMonitorStatusResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    status: BugMonitorStatusRow
+    status: IncidentMonitorStatusRow
 
 
-class BugMonitorAuthorityInventory(BaseModel):
+class IncidentMonitorAuthorityInventory(BaseModel):
     model_config = ConfigDict(extra="allow")
     workflows: list[dict[str, Any]] = []
     automation_specs: list[dict[str, Any]] = []
     mcp: Optional[dict[str, Any]] = None
-    bug_monitor: Optional[dict[str, Any]] = None
+    incident_monitor: Optional[dict[str, Any]] = None
     destinations: list[dict[str, Any]] = []
     routes: list[dict[str, Any]] = []
     monitored_sources: list[dict[str, Any]] = []
@@ -905,17 +960,133 @@ class BugMonitorAuthorityInventory(BaseModel):
     external_publish_surfaces: Optional[dict[str, Any]] = None
 
 
-class BugMonitorAuthorityInventoryResponse(BaseModel):
+class IncidentMonitorAuthorityInventoryResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
     schema_version: int
     generated_at_ms: Optional[int] = None
     scope: Optional[dict[str, Any]] = None
-    inventory: BugMonitorAuthorityInventory
+    inventory: IncidentMonitorAuthorityInventory
     counts: dict[str, int] = {}
     sensitive_values: Optional[dict[str, Any]] = None
 
 
-class BugMonitorIncidentRecord(BaseModel):
+class IncidentMonitorPostureRuleState(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    rule_id: str
+    category: Optional[str] = None
+    default_severity: Optional[str] = None
+    enabled: Optional[bool] = None
+    dry_run: Optional[bool] = None
+
+
+class IncidentMonitorPostureCounts(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    findings: Optional[int] = None
+    by_severity: dict[str, int] = {}
+    by_category: dict[str, int] = {}
+    active_rules: Optional[int] = None
+
+
+class IncidentMonitorPostureFinding(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    finding_id: str
+    fingerprint: str
+    rule_id: str
+    category: str
+    severity: str
+    title: str
+    detail: Optional[str] = None
+    affected_objects: list[dict[str, Any]] = []
+    evidence_refs: list[dict[str, Any]] = []
+    recommendation: Optional[str] = None
+    route_suggestion: Optional[dict[str, Any]] = None
+    destination_suggestion: Optional[dict[str, Any]] = None
+    incident_draft_suggestion: Optional[dict[str, Any]] = None
+    dry_run: Optional[bool] = None
+
+
+class IncidentMonitorPostureChecksResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    schema_version: int
+    generated_at_ms: Optional[int] = None
+    scope: Optional[dict[str, Any]] = None
+    baseline_policy: Optional[dict[str, Any]] = None
+    rules: list[IncidentMonitorPostureRuleState] = []
+    findings: list[IncidentMonitorPostureFinding] = []
+    counts: Optional[IncidentMonitorPostureCounts] = None
+    authority_inventory: Optional[dict[str, Any]] = None
+    draft_conversion: Optional[dict[str, Any]] = None
+    sensitive_values: Optional[dict[str, Any]] = None
+
+
+class IncidentMonitorAssessmentProbeCounts(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    results: Optional[int] = None
+    pass_: Optional[int] = Field(default=None, alias="pass")
+    fail: Optional[int] = None
+    blocked: Optional[int] = None
+    by_status: dict[str, int] = {}
+    draft_suggestions: Optional[int] = None
+
+
+class IncidentMonitorAssessmentProbeResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    probe_id: str
+    target: Optional[dict[str, Any]] = None
+    expected_behavior: Optional[str] = None
+    observed_behavior: Optional[str] = None
+    status: str
+    passed: Optional[bool] = None
+    blocked: Optional[bool] = None
+    fingerprint: Optional[str] = None
+    finding_id: Optional[str] = None
+    evidence_refs: list[dict[str, Any]] = []
+    source_finding: Optional[dict[str, Any]] = None
+    incident_draft_suggestion: Optional[dict[str, Any]] = None
+    dry_run: Optional[bool] = None
+
+
+class IncidentMonitorAssessmentProbeRunResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    schema_version: int
+    generated_at_ms: Optional[int] = None
+    scope: Optional[dict[str, Any]] = None
+    probe_policy: Optional[dict[str, Any]] = None
+    counts: Optional[IncidentMonitorAssessmentProbeCounts] = None
+    results: list[IncidentMonitorAssessmentProbeResult] = []
+    authority_inventory: Optional[dict[str, Any]] = None
+    evidence_pack: Optional[dict[str, Any]] = None
+    draft_conversion: Optional[dict[str, Any]] = None
+    sensitive_values: Optional[dict[str, Any]] = None
+
+
+class IncidentMonitorAssessmentReportResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    schema_version: int
+    generated_at_ms: Optional[int] = None
+    scope: Optional[dict[str, Any]] = None
+    counts: Optional[dict[str, Any]] = None
+    sections: Optional[dict[str, Any]] = None
+    markdown_summary: Optional[str] = None
+    evidence_pack: Optional[dict[str, Any]] = None
+    sensitive_values: Optional[dict[str, Any]] = None
+
+
+class IncidentMonitorDeploymentCardsResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    schema_version: int
+    generated_at_ms: Optional[int] = None
+    scope: Optional[dict[str, Any]] = None
+    card_policy: Optional[dict[str, Any]] = None
+    counts: Optional[dict[str, Any]] = None
+    cards: list[dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
+    markdown_export: Optional[str] = None
+    authority_inventory: Optional[dict[str, Any]] = None
+    sensitive_values: Optional[dict[str, Any]] = None
+
+
+class IncidentMonitorIncidentRecord(BaseModel):
     model_config = ConfigDict(extra="allow")
     incident_id: str
     fingerprint: Optional[str] = None
@@ -967,13 +1138,13 @@ class BugMonitorIncidentRecord(BaseModel):
     quality_gate: Optional[dict[str, Any]] = None
 
 
-class BugMonitorIncidentListResponse(BaseModel):
+class IncidentMonitorIncidentListResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    incidents: list[BugMonitorIncidentRecord] = []
+    incidents: list[IncidentMonitorIncidentRecord] = []
     count: int = 0
 
 
-class BugMonitorDraftRecord(BaseModel):
+class IncidentMonitorDraftRecord(BaseModel):
     model_config = ConfigDict(extra="allow")
     draft_id: str
     fingerprint: Optional[str] = None
@@ -1021,13 +1192,13 @@ class BugMonitorDraftRecord(BaseModel):
     last_post_error: Optional[str] = None
 
 
-class BugMonitorDraftListResponse(BaseModel):
+class IncidentMonitorDraftListResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    drafts: list[BugMonitorDraftRecord] = []
+    drafts: list[IncidentMonitorDraftRecord] = []
     count: int = 0
 
 
-class BugMonitorPostRecord(BaseModel):
+class IncidentMonitorPostRecord(BaseModel):
     model_config = ConfigDict(extra="allow")
     post_id: str
     draft_id: Optional[str] = None
@@ -1062,9 +1233,9 @@ class BugMonitorPostRecord(BaseModel):
     updated_at_ms: Optional[int] = None
 
 
-class BugMonitorPostListResponse(BaseModel):
+class IncidentMonitorPostListResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    posts: list[BugMonitorPostRecord] = []
+    posts: list[IncidentMonitorPostRecord] = []
     count: int = 0
 
 

@@ -37,7 +37,7 @@ When `block_unready_destinations` is enabled, unready destinations fail closed b
 
 ## GitHub compatibility
 
-Legacy Bug Monitor configs synthesize:
+Legacy Incident Monitor configs synthesize:
 
 ```json
 {
@@ -56,5 +56,5 @@ Signed webhook destinations publish bounded JSON incident payloads to configured
 
 - Prefer route preview before changing publish behavior.
 - Keep duplicate checks destination-aware.
-- Preserve legacy `/bug-monitor/drafts/{id}/publish` response fields.
+- Preserve legacy `/incident-monitor/drafts/{id}/publish` response fields.
 - Never let a scoped intake key choose arbitrary destinations or invoke destination tools.

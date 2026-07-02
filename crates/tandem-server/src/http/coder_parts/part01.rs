@@ -1390,7 +1390,7 @@ pub(crate) async fn query_failure_pattern_matches(
         repo_slug,
         None,
         &[
-            "bug_monitor".to_string(),
+            "incident_monitor".to_string(),
             "default".to_string(),
             "coder_api".to_string(),
             "desktop_developer_mode".to_string(),

@@ -1,36 +1,38 @@
-// Bug Monitor source binding validation helpers split from part01.rs for the
+// Incident Monitor source binding validation helpers split from part01.rs for the
 // file-size gate (same module via include!).
 
-fn normalize_bug_monitor_source_binding_values(project: &mut BugMonitorMonitoredProject) {
-    normalize_bug_monitor_optional_source_binding_value(&mut project.tenant_id);
-    normalize_bug_monitor_optional_source_binding_value(&mut project.workspace_id);
-    normalize_bug_monitor_optional_source_binding_value(&mut project.event_schema_version);
-    normalize_bug_monitor_optional_source_binding_value(&mut project.redaction_profile);
-    normalize_bug_monitor_optional_source_binding_value(&mut project.retention_profile);
-    normalize_bug_monitor_source_binding_vec(&mut project.allowed_destination_ids);
-    normalize_bug_monitor_source_binding_vec(&mut project.default_destination_ids);
-    normalize_bug_monitor_source_binding_vec(&mut project.default_route_tags);
+fn normalize_incident_monitor_source_binding_values(project: &mut IncidentMonitorMonitoredProject) {
+    normalize_incident_monitor_optional_source_binding_value(&mut project.tenant_id);
+    normalize_incident_monitor_optional_source_binding_value(&mut project.workspace_id);
+    normalize_incident_monitor_optional_source_binding_value(&mut project.event_schema_version);
+    normalize_incident_monitor_optional_source_binding_value(&mut project.redaction_profile);
+    normalize_incident_monitor_optional_source_binding_value(&mut project.retention_profile);
+    normalize_incident_monitor_data_readiness(&mut project.data_readiness);
+    normalize_incident_monitor_source_binding_vec(&mut project.allowed_destination_ids);
+    normalize_incident_monitor_source_binding_vec(&mut project.default_destination_ids);
+    normalize_incident_monitor_source_binding_vec(&mut project.default_route_tags);
 
     for source in &mut project.log_sources {
-        normalize_bug_monitor_optional_source_binding_value(&mut source.tenant_id);
-        normalize_bug_monitor_optional_source_binding_value(&mut source.workspace_id);
-        normalize_bug_monitor_optional_source_binding_value(&mut source.event_schema_version);
-        normalize_bug_monitor_optional_source_binding_value(&mut source.redaction_profile);
-        normalize_bug_monitor_optional_source_binding_value(&mut source.retention_profile);
-        normalize_bug_monitor_source_binding_vec(&mut source.allowed_destination_ids);
-        normalize_bug_monitor_source_binding_vec(&mut source.default_destination_ids);
-        normalize_bug_monitor_source_binding_vec(&mut source.default_route_tags);
+        normalize_incident_monitor_optional_source_binding_value(&mut source.tenant_id);
+        normalize_incident_monitor_optional_source_binding_value(&mut source.workspace_id);
+        normalize_incident_monitor_optional_source_binding_value(&mut source.event_schema_version);
+        normalize_incident_monitor_optional_source_binding_value(&mut source.redaction_profile);
+        normalize_incident_monitor_optional_source_binding_value(&mut source.retention_profile);
+        normalize_incident_monitor_data_readiness(&mut source.data_readiness);
+        normalize_incident_monitor_source_binding_vec(&mut source.allowed_destination_ids);
+        normalize_incident_monitor_source_binding_vec(&mut source.default_destination_ids);
+        normalize_incident_monitor_source_binding_vec(&mut source.default_route_tags);
     }
 }
 
-fn normalize_bug_monitor_optional_source_binding_value(value: &mut Option<String>) {
+fn normalize_incident_monitor_optional_source_binding_value(value: &mut Option<String>) {
     *value = value
         .as_ref()
         .map(|row| row.trim().to_string())
         .filter(|row| !row.is_empty());
 }
 
-fn normalize_bug_monitor_source_binding_vec(values: &mut Vec<String>) {
+fn normalize_incident_monitor_source_binding_vec(values: &mut Vec<String>) {
     let mut out = Vec::new();
     for value in std::mem::take(values) {
         let value = value.trim().to_string();
@@ -42,11 +44,27 @@ fn normalize_bug_monitor_source_binding_vec(values: &mut Vec<String>) {
     *values = out;
 }
 
-fn validate_bug_monitor_source_binding_destinations(
-    project: &BugMonitorMonitoredProject,
+fn normalize_incident_monitor_data_readiness(
+    readiness: &mut IncidentMonitorSourceReadinessConfig,
+) {
+    normalize_incident_monitor_optional_source_binding_value(&mut readiness.source_owner);
+    normalize_incident_monitor_optional_source_binding_value(&mut readiness.system_of_record);
+    normalize_incident_monitor_optional_source_binding_value(&mut readiness.data_classification);
+    normalize_incident_monitor_optional_source_binding_value(&mut readiness.allowed_use);
+    normalize_incident_monitor_optional_source_binding_value(&mut readiness.source_of_truth);
+    normalize_incident_monitor_optional_source_binding_value(&mut readiness.lineage_ref);
+    normalize_incident_monitor_optional_source_binding_value(&mut readiness.expected_schema_version);
+    normalize_incident_monitor_optional_source_binding_value(&mut readiness.schema_drift_status);
+    normalize_incident_monitor_optional_source_binding_value(&mut readiness.quality_notes);
+    normalize_incident_monitor_optional_source_binding_value(&mut readiness.legal_basis);
+    normalize_incident_monitor_optional_source_binding_value(&mut readiness.authorization_marker);
+}
+
+fn validate_incident_monitor_source_binding_destinations(
+    project: &IncidentMonitorMonitoredProject,
     configured_destination_ids: &std::collections::BTreeSet<String>,
 ) -> anyhow::Result<()> {
-    validate_bug_monitor_destination_ids(
+    validate_incident_monitor_destination_ids(
         &format!(
             "monitored project `{}` allowed_destination_ids",
             project.project_id
@@ -54,7 +72,7 @@ fn validate_bug_monitor_source_binding_destinations(
         &project.allowed_destination_ids,
         configured_destination_ids,
     )?;
-    validate_bug_monitor_destination_ids(
+    validate_incident_monitor_destination_ids(
         &format!(
             "monitored project `{}` default_destination_ids",
             project.project_id
@@ -78,7 +96,7 @@ fn validate_bug_monitor_source_binding_destinations(
     }
 
     for source in &project.log_sources {
-        validate_bug_monitor_destination_ids(
+        validate_incident_monitor_destination_ids(
             &format!(
                 "log source `{}` in monitored project `{}` allowed_destination_ids",
                 source.source_id, project.project_id
@@ -86,7 +104,7 @@ fn validate_bug_monitor_source_binding_destinations(
             &source.allowed_destination_ids,
             configured_destination_ids,
         )?;
-        validate_bug_monitor_destination_ids(
+        validate_incident_monitor_destination_ids(
             &format!(
                 "log source `{}` in monitored project `{}` default_destination_ids",
                 source.source_id, project.project_id
@@ -94,7 +112,7 @@ fn validate_bug_monitor_source_binding_destinations(
             &source.default_destination_ids,
             configured_destination_ids,
         )?;
-        let effective_allowed = effective_bug_monitor_source_allowed_destination_ids(
+        let effective_allowed = effective_incident_monitor_source_allowed_destination_ids(
             &project.allowed_destination_ids,
             &source.allowed_destination_ids,
         );
@@ -121,7 +139,7 @@ fn validate_bug_monitor_source_binding_destinations(
     Ok(())
 }
 
-fn validate_bug_monitor_destination_ids(
+fn validate_incident_monitor_destination_ids(
     owner: &str,
     values: &[String],
     configured_destination_ids: &std::collections::BTreeSet<String>,
@@ -134,7 +152,7 @@ fn validate_bug_monitor_destination_ids(
     Ok(())
 }
 
-fn effective_bug_monitor_source_allowed_destination_ids(
+fn effective_incident_monitor_source_allowed_destination_ids(
     project_allowed: &[String],
     source_allowed: &[String],
 ) -> Vec<String> {

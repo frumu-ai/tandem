@@ -325,8 +325,8 @@ The Python SDK already includes the newer engine surfaces that have landed acros
 - `client.resources` for key-value resources
 - `client.skills` for list/get/import plus preview, templates, validation, routing, evals, compile, and generate flows
 - `client.packs` and `client.capabilities` for pack lifecycle and capability resolution
-- `client.automations_v2`, `client.bug_monitor`, `client.coder`, `client.agent_teams`, and `client.missions` for newer orchestration APIs
-- For the Bug Monitor flow, see [Bug Monitor And Issue Reporter](https://docs.tandem.ac/reference/bug-monitor/)
+- `client.automations_v2`, `client.incident_monitor`, `client.coder`, `client.agent_teams`, and `client.missions` for newer orchestration APIs
+- For the Incident Monitor flow, see [Incident Monitor](https://docs.tandem.ac/incident-monitor/overview/)
 
 ```python
 browser = await client.browser.status()

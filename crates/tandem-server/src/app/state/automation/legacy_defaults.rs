@@ -110,16 +110,16 @@ pub(crate) fn automation_node_uses_upstream_validation_evidence(node: &Automatio
     if automation_node_requires_email_delivery(node) {
         return true;
     }
-    let bug_monitor_artifact_type = node
+    let incident_monitor_artifact_type = node
         .metadata
         .as_ref()
-        .and_then(|metadata| metadata.pointer("/bug_monitor/artifact_type"))
+        .and_then(|metadata| metadata.pointer("/incident_monitor/artifact_type"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    if bug_monitor_artifact_type.is_some_and(|artifact_type| {
-        !artifact_type.eq_ignore_ascii_case("bug_monitor_inspection")
-            && !artifact_type.eq_ignore_ascii_case("bug_monitor_research")
+    if incident_monitor_artifact_type.is_some_and(|artifact_type| {
+        !artifact_type.eq_ignore_ascii_case("incident_monitor_inspection")
+            && !artifact_type.eq_ignore_ascii_case("incident_monitor_research")
     }) {
         return true;
     }

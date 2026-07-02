@@ -25,7 +25,7 @@ serde_yaml = "0.9"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 uuid = { version = "1", features = ["v4"] }
-tandem-bug-monitor = { path = "../tandem-bug-monitor", version = "0.6.4" }
+tandem-incident-monitor = { path = "../tandem-incident-monitor", version = "0.6.4" }
 tandem-core = { path = "../tandem-core", version = "0.6.4" }
 tandem-memory = { path = "../tandem-memory", version = "0.6.4" }
 tandem-observability = { path = "../tandem-observability", version = "0.6.4" }
@@ -44,5 +44,5 @@ name = "eval-runner"
 path = "src/bin/eval_runner.rs"
 
 [[bin]]
-name = "bug-monitor-fixture"
-path = "src/bin/bug_monitor_fixture.rs"
+name = "incident-monitor-fixture"
+path = "src/bin/incident_monitor_fixture.rs"

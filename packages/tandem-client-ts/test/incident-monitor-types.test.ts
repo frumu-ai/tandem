@@ -1,0 +1,818 @@
+import { describe, expect, it } from "vitest";
+import { TandemClient } from "../src/client.js";
+import type {
+  IncidentMonitorAuthorityInventoryResponse,
+  IncidentMonitorAssessmentReportResponse,
+  IncidentMonitorAssessmentProbeRunResponse,
+  IncidentMonitorConfigResponse,
+  IncidentMonitorDeploymentCardsResponse,
+  IncidentMonitorDestinationConfig,
+  IncidentMonitorIntakeKeyCreateInput,
+  IncidentMonitorIntakeKeyCreateResponse,
+  IncidentMonitorIntakeKeyDisableResponse,
+  IncidentMonitorIntakeKeyListResponse,
+  IncidentMonitorLogSourceReplayResponse,
+  IncidentMonitorLogSourceResetResponse,
+  IncidentMonitorPostureChecksResponse,
+  IncidentMonitorPostRecord,
+  IncidentMonitorRouteConfig,
+  IncidentMonitorRoutePreviewResponse,
+  IncidentMonitorStatusResponse,
+} from "../src/public/index.js";
+
+describe("Incident Monitor external project public types", () => {
+  it("accept monitored project config and structured log watcher status", () => {
+    const config: IncidentMonitorConfigResponse = {
+      incident_monitor: {
+        enabled: true,
+        repo: "frumu-ai/tandem",
+        destinations: [
+          {
+            destination_id: "legacy-github",
+            name: "GitHub (legacy Incident Monitor)",
+            kind: "github_issue",
+            enabled: true,
+            repo: "frumu-ai/tandem",
+            mcp_server: "github",
+            route_tags: ["legacy_github"],
+          },
+        ],
+        routes: [
+          {
+            route_id: "default",
+            name: "Default route",
+            enabled: true,
+            destination_ids: ["legacy-github"],
+            approval_policy: "inherit",
+            match_sources: ["manual"],
+            match_source_kinds: ["ci"],
+            match_route_tags: ["payments"],
+          },
+        ],
+        default_destination_ids: ["legacy-github"],
+        safety_defaults: {
+          require_approval_for_high_risk: true,
+          redact_secrets: true,
+          block_unready_destinations: false,
+        },
+        monitored_projects: [
+          {
+            project_id: "aca",
+            name: "ACA",
+            enabled: true,
+            repo: "frumu-ai/aca",
+            workspace_root: "/home/evan/aca",
+            source_kind: "external_app",
+            mcp_server: "github",
+            allowed_destination_ids: ["legacy-github"],
+            default_destination_ids: ["legacy-github"],
+            default_route_tags: ["aca"],
+            tenant_id: "tenant-a",
+            approval_policy: "high_risk",
+            data_readiness: {
+              source_owner: "platform",
+              system_of_record: "aca-observability",
+              data_classification: "confidential",
+              allowed_use: "incident triage",
+              source_of_truth: "aca-observability",
+              freshness_sla_ms: 60000,
+              last_observed_at_ms: 1234,
+              expected_schema_version: "aca.v1",
+              schema_drift_status: "stable",
+              quality_notes: "complete for worker incidents",
+              authorization_marker: "approved",
+            },
+            log_sources: [
+              {
+                source_id: "coder-worker",
+                path: "logs/coder-worker.jsonl",
+                source_kind: "ci",
+                format: "json",
+                minimum_level: "error",
+                start_position: "end",
+                watch_interval_seconds: 5,
+                default_route_tags: ["worker"],
+                workspace_id: "workspace-a",
+              },
+            ],
+          },
+        ],
+      },
+    };
+    const status: IncidentMonitorStatusResponse = {
+      status: {
+        config: config.incident_monitor,
+        destinations: config.incident_monitor.destinations,
+        destination_readiness: [
+          {
+            destination_id: "legacy-github",
+            kind: "github_issue",
+            enabled: true,
+            ready: true,
+            publish_ready: true,
+            requires_approval: false,
+          },
+        ],
+        source_readiness: [
+          {
+            project_id: "aca",
+            source_id: "coder-worker",
+            source_kind: "ci",
+            enabled: true,
+            ready: false,
+            lineage_ready: true,
+            freshness_ready: true,
+            schema_ready: false,
+            protection_ready: false,
+            missing: ["redaction_profile", "retention_profile"],
+            warnings: ["high: Source `aca/coder-worker` is missing redaction profile coverage"],
+            findings: [
+              {
+                finding_id: "srf_example",
+                rule_id: "source_redaction_profile_missing",
+                category: "source_protection",
+                severity: "high",
+                title: "Source `aca/coder-worker` is missing redaction profile coverage",
+                detail: "Production source readiness requires a redaction profile.",
+                evidence_refs: [
+                  "incident_monitor.config.monitored_projects[].log_sources[coder-worker].redaction_profile",
+                ],
+                recommendation: "Attach a redaction_profile to the source binding.",
+              },
+            ],
+          },
+        ],
+        log_watcher: {
+          running: true,
+          enabled_projects: 1,
+          enabled_sources: 1,
+          sources: [
+            {
+              project_id: "aca",
+              source_id: "coder-worker",
+              path: "/home/evan/aca/logs/coder-worker.jsonl",
+              healthy: true,
+              offset: 2048,
+              file_size: 4096,
+              total_candidates: 1,
+              total_submitted: 1,
+            },
+          ],
+        },
+      },
+    };
+    const preview: IncidentMonitorRoutePreviewResponse = {
+      matches: [
+        {
+          route_id: "default",
+          destination_ids: ["legacy-github"],
+          approval_required: false,
+          reason: "default_destination",
+        },
+      ],
+      destinations: config.incident_monitor.destinations,
+      readiness: status.status.destination_readiness,
+      source_readiness: status.status.source_readiness,
+      source_readiness_warnings: status.status.source_readiness?.[0]?.warnings,
+      default_destination_ids: ["legacy-github"],
+      effective_destination_ids: ["legacy-github"],
+      approval_required: false,
+      blocked: false,
+      blocked_reasons: [],
+    };
+    const post: IncidentMonitorPostRecord = {
+      post_id: "post-1",
+      draft_id: "draft-1",
+      repo: "frumu-ai/tandem",
+      operation: "create_issue",
+      status: "posted",
+      destination_id: "legacy-github",
+      destination_kind: "github_issue",
+      route_match_reason: "legacy_github",
+      external_id: "42",
+      external_url: "https://github.com/frumu-ai/tandem/issues/42",
+      external_title: "GitHub issue #42",
+      target_ref: "frumu-ai/tandem",
+      receipt: { provider: "github", issue_number: 42 },
+    };
+
+    expect(config.incident_monitor.monitored_projects?.[0]?.log_sources?.[0]?.source_id).toBe(
+      "coder-worker"
+    );
+    expect(config.incident_monitor.monitored_projects?.[0]?.source_kind).toBe("external_app");
+    expect(config.incident_monitor.monitored_projects?.[0]?.log_sources?.[0]?.source_kind).toBe("ci");
+    expect(status.status.log_watcher?.sources?.[0]?.healthy).toBe(true);
+    expect(status.status.source_readiness?.[0]?.findings?.[0]?.rule_id).toBe(
+      "source_redaction_profile_missing"
+    );
+    expect(preview.source_readiness_warnings?.[0]).toContain("redaction profile");
+    expect(preview.effective_destination_ids?.[0]).toBe("legacy-github");
+    expect(post.receipt && typeof post.receipt === "object").toBe(true);
+  });
+
+  it("accepts scoped intake key management payloads", () => {
+    const createInput: IncidentMonitorIntakeKeyCreateInput = {
+      project_id: "aca",
+      name: "ACA CI",
+      scopes: ["incident_monitor:report"],
+    };
+    const listResponse: IncidentMonitorIntakeKeyListResponse = {
+      keys: [
+        {
+          key_id: "intake-key-1",
+          project_id: "aca",
+          name: "ACA CI",
+          key_hash: "[redacted]",
+          enabled: true,
+          scopes: ["incident_monitor:report"],
+          created_at_ms: 1,
+          last_used_at_ms: null,
+        },
+      ],
+    };
+    const createResponse: IncidentMonitorIntakeKeyCreateResponse = {
+      key: listResponse.keys[0]!,
+      raw_key: "tim_intake_secret",
+    };
+    const disableResponse: IncidentMonitorIntakeKeyDisableResponse = {
+      key: { ...listResponse.keys[0]!, enabled: false },
+    };
+
+    expect(createInput.project_id).toBe("aca");
+    expect(createResponse.raw_key).toContain("tim_intake_");
+    expect(disableResponse.key.enabled).toBe(false);
+  });
+
+  it("calls scoped intake key endpoints with typed payloads", async () => {
+    const client = new TandemClient({ baseUrl: "http://localhost:39731", token: "test-token" });
+    const originalFetch = globalThis.fetch;
+    const calls: Array<{ url: string; method: string; body?: string }> = [];
+    globalThis.fetch = (async (input, init) => {
+      calls.push({
+        url: String(input),
+        method: String(init?.method ?? "GET"),
+        body: typeof init?.body === "string" ? init.body : undefined,
+      });
+      return new Response(
+        JSON.stringify({
+          keys: [],
+          key: {
+            key_id: "intake-key-1",
+            project_id: "aca",
+            name: "ACA CI",
+            key_hash: "[redacted]",
+            enabled: true,
+            scopes: ["incident_monitor:report"],
+          },
+          raw_key: "tim_intake_secret",
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+    }) as typeof fetch;
+
+    try {
+      await client.incidentMonitor.listIntakeKeys();
+      await client.incidentMonitor.createIntakeKey({
+        project_id: "aca",
+        name: "ACA CI",
+        scopes: ["incident_monitor:report"],
+      });
+      await client.incidentMonitor.disableIntakeKey("intake/key 1");
+      await client.incidentMonitor.resetLogSourceOffset("aca/project", "worker/source");
+      await client.incidentMonitor.replayLatestLogSourceCandidate("aca/project", "worker/source");
+      await client.incidentMonitor.previewRoute({
+        source: "desktop_logs",
+        risk_level: "high",
+      });
+      await client.incidentMonitor.listPosts({
+        limit: 25,
+        destinationId: "legacy-github",
+      });
+
+      expect(calls[0]).toMatchObject({
+        url: "http://localhost:39731/incident-monitor/intake/keys",
+        method: "GET",
+      });
+      expect(calls[1]).toMatchObject({
+        url: "http://localhost:39731/incident-monitor/intake/keys",
+        method: "POST",
+      });
+      expect(calls[1]?.body).toBe(
+        JSON.stringify({
+          project_id: "aca",
+          name: "ACA CI",
+          scopes: ["incident_monitor:report"],
+        })
+      );
+      expect(calls[2]).toMatchObject({
+        url: "http://localhost:39731/incident-monitor/intake/keys/intake%2Fkey%201/disable",
+        method: "POST",
+      });
+      expect(calls[3]).toMatchObject({
+        url: "http://localhost:39731/incident-monitor/log-sources/aca%2Fproject/worker%2Fsource/reset-offset",
+        method: "POST",
+      });
+      expect(calls[4]).toMatchObject({
+        url: "http://localhost:39731/incident-monitor/log-sources/aca%2Fproject/worker%2Fsource/replay-latest",
+        method: "POST",
+      });
+      expect(calls[5]).toMatchObject({
+        url: "http://localhost:39731/incident-monitor/route-preview",
+        method: "POST",
+      });
+      expect(calls[5]?.body).toBe(
+        JSON.stringify({
+          source: "desktop_logs",
+          risk_level: "high",
+        })
+      );
+      expect(calls[6]).toMatchObject({
+        url: "http://localhost:39731/incident-monitor/posts?limit=25&destination_id=legacy-github",
+        method: "GET",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("fetches the authority inventory through the SDK helper", async () => {
+    const client = new TandemClient({ baseUrl: "http://localhost:39731", token: "test-token" });
+    const originalFetch = globalThis.fetch;
+    const calls: Array<{ url: string; method: string }> = [];
+    const response: IncidentMonitorAuthorityInventoryResponse = {
+      schema_version: 1,
+      scope: {
+        source: "incident_monitor_authority_inventory",
+        read_only: true,
+      },
+      inventory: {
+        workflows: [{ workflow_id: "wf-1", enabled: true }],
+        automation_specs: [{ automation_id: "auto-1", agents: [{ agent_id: "agent-1" }] }],
+        mcp: { servers: [{ server: "github", tool_count: 1 }] },
+        destinations: [{ destination_id: "linear-prod", kind: "linear_issue", require_approval: true }],
+        routes: [{ route_id: "high-risk", destination_ids: ["linear-prod"] }],
+        monitored_sources: [{ project_id: "payments", source_kind: "ci" }],
+        scoped_intake_keys: [{ key_id: "key-1", project_id: "payments", key_hash_present: true }],
+        approval_rules: [{ rule_id: "destination:linear-prod", requires_approval: true }],
+        external_publish_surfaces: {
+          configured_destinations: [{ surface_id: "linear-prod" }],
+        },
+      },
+      counts: {
+        workflows: 1,
+        automation_specs: 1,
+        destinations: 1,
+      },
+      sensitive_values: {
+        policy: "redacted_or_summarized",
+      },
+    };
+
+    globalThis.fetch = (async (input, init) => {
+      calls.push({ url: String(input), method: String(init?.method ?? "GET") });
+      return new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const inventory = await client.incidentMonitor.getAuthorityInventory();
+      expect(inventory.inventory.scoped_intake_keys?.[0]?.key_hash_present).toBe(true);
+      expect(inventory.inventory.destinations?.[0]?.require_approval).toBe(true);
+      expect(calls[0]).toMatchObject({
+        url: "http://localhost:39731/incident-monitor/security/authority-inventory",
+        method: "GET",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("fetches security posture checks through the SDK helper", async () => {
+    const client = new TandemClient({ baseUrl: "http://localhost:39731", token: "test-token" });
+    const originalFetch = globalThis.fetch;
+    const calls: Array<{ url: string; method: string }> = [];
+    const response: IncidentMonitorPostureChecksResponse = {
+      schema_version: 1,
+      scope: {
+        source: "incident_monitor_security_posture_checks",
+        read_only: true,
+        dry_run: true,
+      },
+      baseline_policy: {
+        mode: "dry_run",
+      },
+      findings: [
+        {
+          finding_id: "bpf_123",
+          fingerprint: "sha256:abc",
+          rule_id: "mcp_server_without_tool_allowlist",
+          category: "mcp_allowlist_gap",
+          severity: "high",
+          title: "MCP server missing tool allowlist",
+          incident_draft_suggestion: {
+            source: "security_posture",
+            event_type: "security.posture.finding",
+          },
+        },
+      ],
+      counts: {
+        findings: 1,
+        by_severity: { high: 1 },
+        by_category: { mcp_allowlist_gap: 1 },
+      },
+    };
+
+    globalThis.fetch = (async (input, init) => {
+      calls.push({ url: String(input), method: String(init?.method ?? "GET") });
+      return new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const posture = await client.incidentMonitor.getPostureChecks({
+        rules: ["mcp_server_without_tool_allowlist"],
+        minSeverity: "medium",
+      });
+      expect(posture.findings[0]?.category).toBe("mcp_allowlist_gap");
+      expect(posture.counts?.by_severity?.high).toBe(1);
+      expect(calls[0]).toMatchObject({
+        url: "http://localhost:39731/incident-monitor/security/posture-checks?rules=mcp_server_without_tool_allowlist&min_severity=medium",
+        method: "GET",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("runs security assessment probes through the SDK helper", async () => {
+    const client = new TandemClient({ baseUrl: "http://localhost:39731", token: "test-token" });
+    const originalFetch = globalThis.fetch;
+    const calls: Array<{ url: string; method: string; body?: string }> = [];
+    const response: IncidentMonitorAssessmentProbeRunResponse = {
+      schema_version: 1,
+      scope: {
+        source: "incident_monitor_security_assessment_probes",
+        read_only: true,
+        dry_run: true,
+      },
+      probe_policy: {
+        mode: "dry_run",
+        selected_probe_ids: ["webhook_url_policy"],
+      },
+      results: [
+        {
+          probe_id: "webhook_url_policy",
+          status: "fail",
+          expected_behavior: "Webhook destinations must use public HTTPS URLs.",
+          observed_behavior: "Webhook URL points to localhost/private network",
+          incident_draft_suggestion: {
+            source: "security_assessment_probe",
+          },
+        },
+      ],
+      counts: {
+        results: 1,
+        fail: 1,
+        by_status: { fail: 1 },
+        draft_suggestions: 1,
+      },
+      evidence_pack: {
+        persisted: true,
+        context_run_id: "incident-monitor-assessment-probes-1",
+      },
+    };
+
+    globalThis.fetch = (async (input, init) => {
+      calls.push({
+        url: String(input),
+        method: String(init?.method ?? "GET"),
+        body: String(init?.body ?? ""),
+      });
+      return new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const probes = await client.incidentMonitor.runAssessmentProbes({
+        probes: ["webhook_url_policy"],
+      });
+      expect(probes.results[0]?.probe_id).toBe("webhook_url_policy");
+      expect(probes.counts?.fail).toBe(1);
+      expect(calls[0]).toMatchObject({
+        url: "http://localhost:39731/incident-monitor/security/assessment-probes",
+        method: "POST",
+      });
+      expect(JSON.parse(calls[0]?.body ?? "{}")).toEqual({
+        probes: ["webhook_url_policy"],
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("generates security assessment reports through the SDK helper", async () => {
+    const client = new TandemClient({ baseUrl: "http://localhost:39731", token: "test-token" });
+    const originalFetch = globalThis.fetch;
+    const calls: Array<{ url: string; method: string; body?: string }> = [];
+    const response: IncidentMonitorAssessmentReportResponse = {
+      schema_version: 1,
+      scope: {
+        source: "incident_monitor_security_gap_assessment_report",
+        read_only: true,
+      },
+      counts: {
+        findings: 1,
+        protected_audit_events: 1,
+      },
+      sections: {
+        self_monitoring_boundary: {
+          source_kinds: ["tandem_runtime", "tandem_monitor"],
+          external_export_required_for_high_assurance: true,
+        },
+        external_audit_export: {
+          existing_ndjson_endpoint: "/audit/export",
+          records: [{ event_type: "incident_monitor.publish.failed" }],
+        },
+      },
+      markdown_summary: "# Incident Monitor Security Gap Assessment",
+      evidence_pack: {
+        persisted: true,
+        context_run_id: "incident-monitor-assessment-report-1",
+      },
+    };
+
+    globalThis.fetch = (async (input, init) => {
+      calls.push({
+        url: String(input),
+        method: String(init?.method ?? "GET"),
+        body: String(init?.body ?? ""),
+      });
+      return new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const report = await client.incidentMonitor.generateAssessmentReport({
+        source_kind: "tandem_monitor",
+        includeProbeResults: true,
+        persistArtifact: true,
+        routeDestinationIds: ["audit-webhook"],
+        includeRawPayloads: true,
+      });
+      expect(report.sections?.self_monitoring_boundary?.source_kinds).toContain(
+        "tandem_monitor"
+      );
+      expect(report.markdown_summary).toContain("Security Gap Assessment");
+      expect(calls[0]).toMatchObject({
+        url: "http://localhost:39731/incident-monitor/security/assessment-report",
+        method: "POST",
+      });
+      expect(JSON.parse(calls[0]?.body ?? "{}")).toEqual({
+        source_kind: "tandem_monitor",
+        include_probe_results: true,
+        persist_artifact: true,
+        route_destination_ids: ["audit-webhook"],
+        include_raw_payloads: true,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("generates deployment cards through the SDK helper", async () => {
+    const client = new TandemClient({ baseUrl: "http://localhost:39731", token: "test-token" });
+    const originalFetch = globalThis.fetch;
+    const calls: Array<{ url: string; method: string; body?: string }> = [];
+    const response: IncidentMonitorDeploymentCardsResponse = {
+      schema_version: 1,
+      scope: {
+        source: "incident_monitor_deployment_cards",
+        read_only: true,
+      },
+      cards: [
+        {
+          card_id: "automation:auto-1",
+          card_kind: "automation",
+          business_owner: "Security Ops",
+          linked_evidence: {
+            operator_refs: ["runbook:auto-1"],
+          },
+        },
+      ],
+      findings: [],
+      markdown_export: "# Incident Monitor Deployment Cards",
+    };
+
+    globalThis.fetch = (async (input, init) => {
+      calls.push({
+        url: String(input),
+        method: String(init?.method ?? "GET"),
+        body: String(init?.body ?? ""),
+      });
+      return new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const cards = await client.incidentMonitor.generateDeploymentCards({
+        includeMarkdown: true,
+        includeRawInventory: true,
+        defaults: {
+          business_owner: "Security Ops",
+          review_cadence_days: 30,
+        },
+        metadata: {
+          "automation:auto-1": {
+            intended_purpose: "Govern payment incident follow-up",
+            evidence_refs: ["runbook:auto-1"],
+          },
+        },
+      });
+      expect(cards.cards[0]?.card_id).toBe("automation:auto-1");
+      expect(cards.markdown_export).toContain("Deployment Cards");
+      expect(calls[0]).toMatchObject({
+        url: "http://localhost:39731/incident-monitor/security/deployment-cards",
+        method: "POST",
+      });
+      expect(JSON.parse(calls[0]?.body ?? "{}")).toEqual({
+        include_markdown: true,
+        include_raw_inventory: true,
+        defaults: {
+          business_owner: "Security Ops",
+          review_cadence_days: 30,
+        },
+        metadata: {
+          "automation:auto-1": {
+            intended_purpose: "Govern payment incident follow-up",
+            evidence_refs: ["runbook:auto-1"],
+          },
+        },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("mutates destination router config through convenience helpers", async () => {
+    const client = new TandemClient({ baseUrl: "http://localhost:39731", token: "test-token" });
+    const originalFetch = globalThis.fetch;
+    const calls: Array<{ url: string; method: string; body?: string }> = [];
+    const baseConfig: IncidentMonitorConfigResponse = {
+      incident_monitor: {
+        enabled: true,
+        destinations: [
+          {
+            destination_id: "legacy-github",
+            name: "GitHub",
+            kind: "github_issue",
+            enabled: true,
+          },
+          {
+            destination_id: "linear-primary",
+            name: "Linear",
+            kind: "linear_issue",
+            enabled: true,
+          },
+        ],
+        routes: [
+          {
+            route_id: "default",
+            name: "Default",
+            destination_ids: ["legacy-github"],
+          },
+          {
+            route_id: "high-risk",
+            name: "High risk",
+            destination_ids: ["linear-primary"],
+            match_risk_levels: ["high"],
+          },
+        ],
+        default_destination_ids: ["legacy-github"],
+      },
+    };
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input);
+      const method = String(init?.method ?? "GET");
+      const body = typeof init?.body === "string" ? init.body : undefined;
+      calls.push({ url, method, body });
+      if (url.endsWith("/incident-monitor/drafts/draft-1/publish")) {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(body || JSON.stringify(baseConfig), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const linearDestination: IncidentMonitorDestinationConfig = {
+      destination_id: "linear-primary",
+      name: "Linear",
+      kind: "linear_issue",
+      enabled: true,
+    };
+    const highRiskRoute: IncidentMonitorRouteConfig = {
+      route_id: "high-risk",
+      name: "High risk",
+      destination_ids: ["linear-primary"],
+      match_risk_levels: ["high"],
+    };
+
+    try {
+      await client.incidentMonitor.listDestinations();
+      await client.incidentMonitor.upsertDestination(linearDestination);
+      await client.incidentMonitor.upsertRoute(highRiskRoute);
+      await client.incidentMonitor.removeDestination("linear-primary");
+      await client.incidentMonitor.publishDraftToDestinations("draft-1", ["legacy-github"], {
+        reason: "ship it",
+      });
+
+      expect(calls[0]).toMatchObject({
+        url: "http://localhost:39731/config/incident-monitor",
+        method: "GET",
+      });
+      expect(calls[2]).toMatchObject({
+        url: "http://localhost:39731/config/incident-monitor",
+        method: "PATCH",
+      });
+      expect(JSON.parse(calls[2]?.body || "{}").incident_monitor.destinations).toContainEqual(
+        linearDestination
+      );
+      expect(JSON.parse(calls[4]?.body || "{}").incident_monitor.routes).toContainEqual(highRiskRoute);
+      const removePayload = JSON.parse(calls[6]?.body || "{}").incident_monitor;
+      expect(removePayload.destinations).not.toContainEqual(linearDestination);
+      expect(removePayload.default_destination_ids).toEqual(["legacy-github"]);
+      expect(removePayload.routes).toContainEqual({
+        route_id: "default",
+        name: "Default",
+        destination_ids: ["legacy-github"],
+      });
+      expect(removePayload.routes).not.toContainEqual(highRiskRoute);
+      expect(removePayload.routes).not.toContainEqual({
+        ...highRiskRoute,
+        destination_ids: [],
+      });
+      expect(calls[7]).toMatchObject({
+        url: "http://localhost:39731/incident-monitor/drafts/draft-1/publish",
+        method: "POST",
+      });
+      expect(calls[7]?.body).toBe(
+        JSON.stringify({
+          reason: "ship it",
+          destination_ids: ["legacy-github"],
+        })
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("accepts log-source debug action responses", () => {
+    const reset: IncidentMonitorLogSourceResetResponse = {
+      project_id: "aca",
+      source_id: "worker",
+      state: {
+        project_id: "aca",
+        source_id: "worker",
+        path: "/tmp/worker.log",
+        offset: 0,
+        total_candidates: 3,
+      },
+    };
+    const replay: IncidentMonitorLogSourceReplayResponse = {
+      project_id: "aca",
+      source_id: "worker",
+      incident: {
+        incident_id: "failure-incident-1",
+        fingerprint: "fp",
+        event_type: "external_service_crash",
+        status: "draft_created",
+        repo: "frumu-ai/aca",
+        workspace_root: "/home/evan/aca",
+        title: "External service crashed",
+        occurrence_count: 2,
+        created_at_ms: 1,
+        updated_at_ms: 2,
+      },
+      draft: null,
+    };
+
+    expect(reset.state.offset).toBe(0);
+    expect(replay.incident.occurrence_count).toBe(2);
+  });
+});

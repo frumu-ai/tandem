@@ -1268,7 +1268,7 @@ pub(crate) fn build_automation_repair_context(node: &AutomationFlowNode, verdict
 fn attempt_review_why_requirement_matters(requirement: &str) -> &'static str {
     match requirement {
         "current_attempt_output_missing" | "required_workspace_files_missing" => {
-            "Downstream nodes and Bug Monitor need a real artifact or workspace file to inspect."
+            "Downstream nodes and Incident Monitor need a real artifact or workspace file to inspect."
         }
         "mcp_connector_source_missing"
         | "mcp_connector_source_artifact_missing"

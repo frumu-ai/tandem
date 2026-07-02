@@ -43,21 +43,21 @@ fn parse_review_decision_status_json(raw: &str) -> Option<Value> {
         .next()
 }
 
-fn automation_node_is_bug_monitor_triage_handoff(node: &AutomationFlowNode) -> bool {
+fn automation_node_is_incident_monitor_triage_handoff(node: &AutomationFlowNode) -> bool {
     node.metadata
         .as_ref()
-        .and_then(|metadata| metadata.get("bug_monitor"))
+        .and_then(|metadata| metadata.get("incident_monitor"))
         .and_then(Value::as_object)
-        .and_then(|bug_monitor| bug_monitor.get("artifact_type"))
+        .and_then(|incident_monitor| incident_monitor.get("artifact_type"))
         .and_then(Value::as_str)
         .map(str::trim)
         .is_some_and(|artifact_type| {
             matches!(
                 artifact_type,
-                "bug_monitor_inspection"
-                    | "bug_monitor_research"
-                    | "bug_monitor_validation"
-                    | "bug_monitor_fix_proposal"
+                "incident_monitor_inspection"
+                    | "incident_monitor_research"
+                    | "incident_monitor_validation"
+                    | "incident_monitor_fix_proposal"
             )
         })
 }
@@ -266,9 +266,9 @@ pub(crate) fn detect_automation_node_status(
     let structured_handoff_present = validator_kind
         == crate::AutomationOutputValidatorKind::StructuredJson
         && extract_structured_handoff_json(session_text).is_some();
-    let bug_monitor_triage_handoff_present = handoff_only_structured_json
+    let incident_monitor_triage_handoff_present = handoff_only_structured_json
         && structured_handoff_present
-        && automation_node_is_bug_monitor_triage_handoff(node);
+        && automation_node_is_incident_monitor_triage_handoff(node);
     let has_required_tools = !automation_node_required_tools(node).is_empty();
     let validation_repairable = (validator_kind
         == crate::AutomationOutputValidatorKind::ResearchBrief
@@ -360,7 +360,7 @@ pub(crate) fn detect_automation_node_status(
         .and_then(Value::as_str)
         .is_some_and(|status| status.eq_ignore_ascii_case("blocked"))
     {
-        if bug_monitor_triage_handoff_present {
+        if incident_monitor_triage_handoff_present {
             return ("completed".to_string(), explicit_reason, approved);
         }
         let has_actionable_validation = artifact_validation
@@ -512,7 +512,7 @@ pub(crate) fn detect_automation_node_status(
         );
     }
     if !explicit_status_is_completed
-        && !bug_monitor_triage_handoff_present
+        && !incident_monitor_triage_handoff_present
         && blocked_markers
             .iter()
             .any(|marker| lowered.contains(marker))

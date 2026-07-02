@@ -1,13 +1,13 @@
 ---
 title: Incident Monitor Setup Checklist
-description: Configure current Bug Monitor behavior and prepare for destination-router Incident Monitor concepts.
+description: Configure Incident Monitor intake, routing, destinations, security posture, and production governance evidence.
 ---
 
-Use this checklist when setting up current Bug Monitor or preparing for destination-router Incident Monitor work.
+Use this checklist when setting up Incident Monitor intake, destination routing, security posture, and production governance evidence.
 
 ## Current GitHub setup
 
-1. Enable Bug Monitor in `Settings -> Bug Monitor`.
+1. Enable Incident Monitor in `Settings -> Incident Monitor`.
 2. Set the GitHub repo in `owner/repo` format.
 3. Select an MCP server with GitHub list, get, create, and comment capabilities.
 4. Keep `require_approval_for_new_issues` aligned with team policy.
@@ -22,17 +22,20 @@ Use this checklist when setting up current Bug Monitor or preparing for destinat
 1. Add `monitored_projects` with stable `project_id`, `repo`, and `workspace_root`.
 2. Add `log_sources` with stable `source_id` values.
 3. Set `source_kind`, route tags, tenant/workspace IDs, and schema version where known.
-4. Set `allowed_destination_ids` and `default_destination_ids` for any source that must be constrained.
-5. Create scoped intake keys only for report-only external systems.
-6. Confirm scoped keys cannot publish, mutate routes/destinations, call tools, or inspect files.
+4. Fill `data_readiness` for production sources: owner, system of record, classification, allowed use, lineage/source of truth, freshness SLA, last observation, expected schema version, schema drift status, quality notes, and legal basis or authorization marker.
+5. Set `redaction_profile` and `retention_profile` on projects or source bindings before production routing.
+6. Set `allowed_destination_ids` and `default_destination_ids` for any source that must be constrained.
+7. Create scoped intake keys only for report-only external systems.
+8. Confirm scoped keys cannot publish, mutate routes/destinations, call tools, or inspect files.
 
 ## Destination-router setup
 
 1. Define destinations explicitly when moving beyond the legacy fallback.
 2. Add routes only when default destinations are insufficient.
 3. Use route preview to confirm matches, readiness, approval, and blocked reasons.
-4. Keep non-GitHub destinations disabled until their adapters are implemented.
-5. Preserve `legacy-github` behavior for old configs.
+4. Enable Linear, webhook, telemetry, memory, and MCP destinations only after their readiness and receipt behavior match deployment policy.
+5. Treat generic MCP destinations as high risk until `allow_publish`, server/tool allowlists, payload mapping, approval policy, and redaction are reviewed.
+6. Preserve `legacy-github` behavior for old configs.
 
 ## Security posture preparation
 
@@ -40,3 +43,12 @@ Use this checklist when setting up current Bug Monitor or preparing for destinat
 2. Add deterministic checks before adding controlled probes.
 3. Make probes authorized, bounded, and dry-run or sandboxed where possible.
 4. Export evidence to a customer-owned audit destination when assessing Tandem itself.
+
+## Production governance preparation
+
+1. Generate deployment cards for Tandem self-monitoring, monitored sources, high-authority agents, and externally mutating workflows.
+2. Fill owner, accountable team, intended purpose, data classification, approval protocol, escalation protocol, and review cadence metadata.
+3. Review source-readiness findings from status, route preview, posture checks, assessment reports, and deployment cards.
+4. Confirm reports, receipts, and protected audit evidence have a customer-owned retention/export policy before production use.
+5. Map posture findings to customer policy and assign owners before enabling high-risk external destinations.
+6. Use [Production Governance](../production-governance/) for the full operating-model checklist.
