@@ -64,6 +64,46 @@ async fn incident_monitor_authority_inventory_payload(
         crate::now_ms(),
     );
     let monitored_sources = incident_monitor_monitored_sources_inventory(&config, &source_readiness);
+
+    // TAN-547: when the caller is tenant-scoped, drop config topology that
+    // belongs to a *different* tenant so this inventory (and the assessment
+    // report / deployment cards that reuse it) stays inside the tenant boundary,
+    // matching the filtering already applied to automations and approvals.
+    // Local/operator-implicit callers still see the full operator-global view.
+    let (routes, intake_keys, monitored_sources, destinations) = if tenant_context
+        .is_local_implicit()
+    {
+        (routes, intake_keys, monitored_sources, destinations)
+    } else {
+        let routes = routes
+            .into_iter()
+            .filter(|route| incident_monitor_route_visible_to_tenant(route, &tenant_context))
+            .collect::<Vec<_>>();
+        let intake_keys = intake_keys
+            .into_iter()
+            .filter(|key| {
+                incident_monitor_intake_key_visible_to_tenant(key, &config, &tenant_context)
+            })
+            .collect::<Vec<_>>();
+        let monitored_sources = monitored_sources
+            .into_iter()
+            .filter(|source| incident_monitor_inventory_value_visible_to_tenant(source, &tenant_context))
+            .collect::<Vec<_>>();
+        // Keep only destinations reachable from tenant-visible routes/projects
+        // (plus the global defaults) so another tenant's destination targets
+        // don't surface.
+        let referenced = incident_monitor_tenant_referenced_destination_ids(
+            &config,
+            &routes,
+            &tenant_context,
+        );
+        let destinations = destinations
+            .into_iter()
+            .filter(|destination| referenced.contains(&destination.destination_id))
+            .collect::<Vec<_>>();
+        (routes, intake_keys, monitored_sources, destinations)
+    };
+
     let destination_inventory = destinations
         .iter()
         .map(incident_monitor_destination_inventory)
@@ -155,6 +195,99 @@ async fn incident_monitor_authority_inventory_payload(
             ],
         },
     })
+}
+
+/// True unless the entry is explicitly bound to a *different* tenant. Unbound
+/// (operator-global) entries and same-tenant entries stay visible; only another
+/// tenant's clearly-attributed topology is hidden (TAN-547).
+fn incident_monitor_entry_not_other_tenant(
+    tenant_id: Option<&str>,
+    workspace_id: Option<&str>,
+    tenant_context: &TenantContext,
+) -> bool {
+    tenant_context.is_local_implicit()
+        || (tenant_id.map_or(true, |value| value == tenant_context.org_id.as_str())
+            && workspace_id.map_or(true, |value| value == tenant_context.workspace_id.as_str()))
+}
+
+fn incident_monitor_route_visible_to_tenant(
+    route: &IncidentMonitorRouteConfig,
+    tenant_context: &TenantContext,
+) -> bool {
+    if tenant_context.is_local_implicit() {
+        return true;
+    }
+    let tenant_ok = route.match_tenant_ids.is_empty()
+        || route
+            .match_tenant_ids
+            .iter()
+            .any(|value| value == tenant_context.org_id.as_str());
+    let workspace_ok = route.match_workspace_ids.is_empty()
+        || route
+            .match_workspace_ids
+            .iter()
+            .any(|value| value == tenant_context.workspace_id.as_str());
+    tenant_ok && workspace_ok
+}
+
+fn incident_monitor_intake_key_visible_to_tenant(
+    key: &crate::IncidentMonitorProjectIntakeKey,
+    config: &IncidentMonitorConfig,
+    tenant_context: &TenantContext,
+) -> bool {
+    match config
+        .monitored_projects
+        .iter()
+        .find(|project| project.project_id == key.project_id)
+    {
+        Some(project) => incident_monitor_entry_not_other_tenant(
+            project.tenant_id.as_deref(),
+            project.workspace_id.as_deref(),
+            tenant_context,
+        ),
+        // An intake key for an unknown/unbound project is not another tenant's.
+        None => true,
+    }
+}
+
+fn incident_monitor_inventory_value_visible_to_tenant(
+    value: &Value,
+    tenant_context: &TenantContext,
+) -> bool {
+    incident_monitor_entry_not_other_tenant(
+        value.get("tenant_id").and_then(Value::as_str),
+        value.get("workspace_id").and_then(Value::as_str),
+        tenant_context,
+    )
+}
+
+/// Destination ids reachable from the tenant's visible routes and projects, plus
+/// the global defaults — the set of destinations a tenant-scoped inventory may
+/// surface.
+fn incident_monitor_tenant_referenced_destination_ids(
+    config: &IncidentMonitorConfig,
+    visible_routes: &[IncidentMonitorRouteConfig],
+    tenant_context: &TenantContext,
+) -> HashSet<String> {
+    let mut referenced: HashSet<String> = config.default_destination_ids.iter().cloned().collect();
+    for route in visible_routes {
+        referenced.extend(route.destination_ids.iter().cloned());
+    }
+    for project in config.monitored_projects.iter().filter(|project| {
+        incident_monitor_entry_not_other_tenant(
+            project.tenant_id.as_deref(),
+            project.workspace_id.as_deref(),
+            tenant_context,
+        )
+    }) {
+        referenced.extend(project.allowed_destination_ids.iter().cloned());
+        referenced.extend(project.default_destination_ids.iter().cloned());
+        for source in &project.log_sources {
+            referenced.extend(source.allowed_destination_ids.iter().cloned());
+            referenced.extend(source.default_destination_ids.iter().cloned());
+        }
+    }
+    referenced
 }
 
 fn authority_mcp_inventory(snapshot: Value) -> Value {
