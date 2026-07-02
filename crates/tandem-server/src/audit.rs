@@ -218,22 +218,39 @@ pub async fn append_protected_audit_event(
         .append(true)
         .open(&path)
         .await?;
-    file.write_all(serde_json::to_string(&row)?.as_bytes())
-        .await?;
-    file.write_all(b"\n").await?;
-    file.flush().await?;
-    // Crash-durability: flush() only pushes to the OS page cache. A durable
-    // audit event must survive power loss, so fsync the data+metadata before
-    // reporting success. Only advance the cached tail once the bytes are
-    // durably on disk, so a failed sync doesn't desync the cache from the file.
-    if matches!(row.durability, AuditDurability::DurableRequired) {
-        file.sync_all().await?;
+    // Perform the write, and — for durable events — fsync so the record
+    // survives power loss (flush() only reaches the OS page cache).
+    let write_result: anyhow::Result<()> = async {
+        file.write_all(serde_json::to_string(&row)?.as_bytes())
+            .await?;
+        file.write_all(b"\n").await?;
+        file.flush().await?;
+        if matches!(row.durability, AuditDurability::DurableRequired) {
+            file.sync_all().await?;
+        }
+        Ok(())
     }
-    *tail = Some(LastAuditRecord {
-        seq: row.seq,
-        record_hash: row.record_hash.clone(),
-    });
-    Ok(())
+    .await;
+
+    match write_result {
+        Ok(()) => {
+            // Success: advance the cached tail so the next append chains from
+            // this record without re-reading the file.
+            *tail = Some(LastAuditRecord {
+                seq: row.seq,
+                record_hash: row.record_hash.clone(),
+            });
+            Ok(())
+        }
+        Err(err) => {
+            // A partial write or a failed fsync may have made this row (or part
+            // of it) visible in the file while the cached tail still points at
+            // the previous record. Invalidate the cache so the next append
+            // re-seeds seq/prev_hash from disk and cannot reuse this sequence.
+            *tail = None;
+            Err(err)
+        }
+    }
 }
 
 // ── Verification ─────────────────────────────────────────────────────────────
