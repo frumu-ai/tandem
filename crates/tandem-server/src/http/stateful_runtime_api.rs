@@ -1388,7 +1388,7 @@ mod tests {
             "Organization_Unit",
         );
         let grant = OrganizationUnitAccessGrant::active(
-            "grant-finance-repo",
+            "delegation-a",
             tenant_a.clone(),
             org_unit.principal_ref(),
             resource.clone(),
@@ -1407,7 +1407,7 @@ mod tests {
             .org_unit_access_grants
             .write()
             .await
-            .insert("grant-finance-repo".to_string(), grant);
+            .insert("delegation-a".to_string(), grant);
         {
             let mut source_bindings = state.enterprise.source_bindings.write().await;
             for index in 0..13 {
@@ -1506,7 +1506,7 @@ mod tests {
         assert_eq!(
             row.pointer("/enterprise_scope/org_unit_grants/0/grant_id")
                 .and_then(Value::as_str),
-            Some("grant-finance-repo")
+            Some("delegation-a")
         );
     }
 }
