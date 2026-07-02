@@ -52,6 +52,12 @@ function runIdOf(row: any) {
   return safeString(row?.run_id || row?.runId || row?.id || row?.run?.run_id || row?.run?.id);
 }
 
+function optionalError(data: unknown): string {
+  return data && typeof data === "object" && "error" in data
+    ? safeString((data as { error?: unknown }).error)
+    : "";
+}
+
 function timestampMs(row: any) {
   const raw =
     row?.updated_at_ms ||
@@ -646,10 +652,10 @@ export function ControlLoopPage({ api, client, navigate, toast }: AppPageProps) 
   const loadingInitial =
     automationRunsQuery.isLoading && contextRunsQuery.isLoading && acaRunsQuery.isLoading;
   const sourceErrors = [
-    ["ACA", acaRunsQuery.data?.error],
-    ["Governance", policyDecisionsQuery.data?.error],
-    ["Memory", memoryQuery.data?.error],
-    ["Approvals", pendingApprovalsQuery.data?.error || acaPendingApprovalsQuery.data?.error],
+    ["ACA", optionalError(acaRunsQuery.data)],
+    ["Governance", optionalError(policyDecisionsQuery.data)],
+    ["Memory", optionalError(memoryQuery.data)],
+    ["Approvals", optionalError(pendingApprovalsQuery.data) || optionalError(acaPendingApprovalsQuery.data)],
   ].filter(([, error]) => safeString(error));
 
   useEffect(() => {

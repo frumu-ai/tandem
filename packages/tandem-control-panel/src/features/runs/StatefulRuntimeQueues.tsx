@@ -5,6 +5,7 @@ import {
   buildApprovalWaitRows,
   buildRecoveryQueueRows,
   buildWebhookInboxRows,
+  filterStatefulQueueRows,
   summarizeApprovalWaitRows,
   summarizeRecoveryQueueRows,
   summarizeWebhookInboxRows,
@@ -12,8 +13,11 @@ import {
 } from "../../../lib/runs/stateful-queues.js";
 import { formatRunTimestamp } from "../../../lib/runs/stateful-runs.js";
 import type { AppPageProps } from "../../pages/pageTypes";
+import { StatefulRunFilterBar } from "./StatefulRunFilters";
 
 type RuntimeQueueProps = Pick<AppPageProps, "api" | "navigate" | "toast"> & {
+  filters: any;
+  onFiltersChange: (filters: any) => void;
   onOpenRun: (runId: string) => void;
 };
 
@@ -75,13 +79,14 @@ function useNow(intervalMs: number) {
   return now;
 }
 
-export function WebhookInboxView({ api, navigate, onOpenRun }: RuntimeQueueProps) {
+export function WebhookInboxView({ api, navigate, filters, onFiltersChange, onOpenRun }: RuntimeQueueProps) {
   const eventsQuery = useQuery({
     queryKey: ["stateful-runtime", "webhook-inbox"],
     queryFn: () => api("/api/engine/automations/v2/webhook-events?limit=160"),
     refetchInterval: 10000,
   });
-  const rows = useMemo(() => buildWebhookInboxRows(eventsQuery.data || {}), [eventsQuery.data]);
+  const allRows = useMemo(() => buildWebhookInboxRows(eventsQuery.data || {}), [eventsQuery.data]);
+  const rows = useMemo(() => filterStatefulQueueRows(allRows, filters), [allRows, filters]);
   const summary = useMemo(() => summarizeWebhookInboxRows(rows), [rows]);
   const loading = eventsQuery.isLoading && !eventsQuery.data;
 
@@ -118,9 +123,12 @@ export function WebhookInboxView({ api, navigate, onOpenRun }: RuntimeQueueProps
             { key: "redacted", label: "Redacted", value: summary.redacted },
           ]}
         />
+        <div className="mt-4">
+          <StatefulRunFilterBar filters={filters} onFiltersChange={onFiltersChange} />
+        </div>
       </PanelCard>
 
-      <PanelCard title="Raw Event Inbox" subtitle={`${rows.length} retained events`} fullHeight>
+      <PanelCard title="Raw Event Inbox" subtitle={`${rows.length} of ${allRows.length} retained events`} fullHeight>
         {eventsQuery.error ? <QueryProblem message={errorText(eventsQuery.error)} /> : null}
         {loading ? (
           <LoadingState title="Loading webhook events" />
@@ -189,14 +197,15 @@ export function WebhookInboxView({ api, navigate, onOpenRun }: RuntimeQueueProps
   );
 }
 
-export function ApprovalWaitsView({ api, navigate, onOpenRun }: RuntimeQueueProps) {
+export function ApprovalWaitsView({ api, navigate, filters, onFiltersChange, onOpenRun }: RuntimeQueueProps) {
   const now = useNow(10000);
   const approvalsQuery = useQuery({
     queryKey: ["stateful-runtime", "approval-waits"],
     queryFn: () => api("/api/engine/approvals/pending"),
     refetchInterval: 5000,
   });
-  const rows = useMemo(() => buildApprovalWaitRows(approvalsQuery.data || {}, { now }), [approvalsQuery.data, now]);
+  const allRows = useMemo(() => buildApprovalWaitRows(approvalsQuery.data || {}, { now }), [approvalsQuery.data, now]);
+  const rows = useMemo(() => filterStatefulQueueRows(allRows, filters), [allRows, filters]);
   const summary = useMemo(() => summarizeApprovalWaitRows(rows), [rows]);
   const loading = approvalsQuery.isLoading && !approvalsQuery.data;
 
@@ -232,9 +241,12 @@ export function ApprovalWaitsView({ api, navigate, onOpenRun }: RuntimeQueueProp
             { key: "decided", label: "Decided", value: summary.decided },
           ]}
         />
+        <div className="mt-4">
+          <StatefulRunFilterBar filters={filters} onFiltersChange={onFiltersChange} />
+        </div>
       </PanelCard>
 
-      <PanelCard title="Pending Approval Waits" subtitle={`${rows.length} waits`} fullHeight>
+      <PanelCard title="Pending Approval Waits" subtitle={`${rows.length} of ${allRows.length} waits`} fullHeight>
         {approvalsQuery.error ? <QueryProblem message={errorText(approvalsQuery.error)} /> : null}
         {loading ? (
           <LoadingState title="Loading approvals" />
@@ -332,14 +344,15 @@ function actionChoice(option: string) {
   }
 }
 
-export function RecoveryQueueView({ api, toast, onOpenRun }: RuntimeQueueProps) {
+export function RecoveryQueueView({ api, toast, filters, onFiltersChange, onOpenRun }: RuntimeQueueProps) {
   const queryClient = useQueryClient();
   const reliabilityQuery = useQuery({
     queryKey: ["stateful-runtime", "reliability-queue"],
     queryFn: () => api("/api/engine/stateful-runtime/reliability?limit=240"),
     refetchInterval: 10000,
   });
-  const rows = useMemo(() => buildRecoveryQueueRows(reliabilityQuery.data || {}), [reliabilityQuery.data]);
+  const allRows = useMemo(() => buildRecoveryQueueRows(reliabilityQuery.data || {}), [reliabilityQuery.data]);
+  const rows = useMemo(() => filterStatefulQueueRows(allRows, filters), [allRows, filters]);
   const summary = useMemo(() => summarizeRecoveryQueueRows(rows), [rows]);
   const loading = reliabilityQuery.isLoading && !reliabilityQuery.data;
 
@@ -390,9 +403,12 @@ export function RecoveryQueueView({ api, toast, onOpenRun }: RuntimeQueueProps) 
             { key: "blocked", label: "Manual", value: summary.manuallyBlocked },
           ]}
         />
+        <div className="mt-4">
+          <StatefulRunFilterBar filters={filters} onFiltersChange={onFiltersChange} />
+        </div>
       </PanelCard>
 
-      <PanelCard title="Reliability Queue" subtitle={`${rows.length} reliability records`} fullHeight>
+      <PanelCard title="Reliability Queue" subtitle={`${rows.length} of ${allRows.length} reliability records`} fullHeight>
         {reliabilityQuery.error ? <QueryProblem message={errorText(reliabilityQuery.error)} /> : null}
         {loading ? (
           <LoadingState title="Loading reliability queue" />

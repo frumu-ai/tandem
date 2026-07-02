@@ -204,7 +204,7 @@ export function WorkflowsPage({ client, toast, navigate, identity }: AppPageProp
       });
     },
     onSuccess: async (payload) => {
-      const session = payload?.sessions?.[0] || payload?.session;
+      const session = (payload?.sessions?.[0] || payload?.session) as any;
       if (session?.session_id) {
         try {
           localStorage.setItem(

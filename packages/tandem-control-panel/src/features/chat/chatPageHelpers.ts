@@ -264,7 +264,7 @@ function normalizePartType(part: any) {
     .replace(/_/g, "-");
 }
 
-function toolStatusFromPayload(part: any): ToolActivityStatus {
+export function toolStatusFromPayload(part: any): ToolActivityStatus {
   const state = part?.state;
   const status = String(
     (state && typeof state === "object" ? state.status : state) || part?.status || part?.phase || ""

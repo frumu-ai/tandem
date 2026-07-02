@@ -171,7 +171,7 @@ export function useRunTimeline({
   );
 
   const entries = useMemo(
-    () => buildRunTimeline({ persistedPages: pages, liveEvents, limit: limit * 4 }),
+    () => buildRunTimeline({ persistedPages: pages, liveEvents }).slice(0, limit * 4),
     [liveEvents, limit, pages]
   );
   const persistedEntries = useMemo(

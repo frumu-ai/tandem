@@ -233,7 +233,7 @@ export function SignalLifecyclePanel({
     firstString(record, ["approval_status", "approval_decision", "status"]) ||
     (kind === "draft" ? "awaiting review" : "");
   const intakeId = firstString(record, ["incident_id", "post_id", "id", "fingerprint"]);
-  const items: LifecycleItem[] = [
+  const lifecycleItems: LifecycleItem[] = [
     {
       label: "Signal",
       value: shortValue(
@@ -297,7 +297,8 @@ export function SignalLifecyclePanel({
       value: shortValue(memory.slice(0, 3).join(", ")),
       tone: memory.length ? "info" : "ghost",
     },
-  ].filter((item) => item.value);
+  ];
+  const items = lifecycleItems.filter((item) => item.value);
 
   if (!items.length) return null;
 

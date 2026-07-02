@@ -14,7 +14,7 @@ export function CodingWorkflowsConnectingState() {
   return (
     <AnimatedPage className="grid gap-4">
       <PanelCard>
-        <LoadingState title="Connecting to ACA" subtitle="Tandem is checking the ACA runtime before loading Coder." />
+        <LoadingState title="Connecting to ACA" text="Tandem is checking the ACA runtime before loading Coder." />
       </PanelCard>
     </AnimatedPage>
   );

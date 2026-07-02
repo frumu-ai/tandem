@@ -1,3 +1,5 @@
+import { normalizeStatefulRunFilters } from "./stateful-runs.js";
+
 function toArray(input, key) {
   if (Array.isArray(input)) return input;
   if (Array.isArray(input?.[key])) return input[key];
@@ -103,6 +105,177 @@ function hasObjectValue(value) {
 
 function runRoute(runId) {
   return runId ? `runs?run=${encodeURIComponent(runId)}` : "";
+}
+
+function safeJson(value) {
+  try {
+    return JSON.stringify(value || {});
+  } catch {
+    return "";
+  }
+}
+
+function queueStatusGroup(row) {
+  const status = normalizeKey(row?.status);
+  const statusGroup = normalizeKey(row?.statusGroup);
+  const category = normalizeKey(row?.category);
+  if (["failed", "rejected", "expired", "cancelled", "canceled", "dead_lettered"].includes(status)) {
+    return "failed";
+  }
+  if (["failed", "dead_lettered", "retryable"].includes(category)) return "failed";
+  if (["pending", "escalated", "proposed", "awaiting_approval", "waiting_backoff", "manually_blocked"].includes(status)) {
+    return "waiting";
+  }
+  if (["waiting_backoff", "manually_blocked"].includes(category)) return "waiting";
+  if (["accepted", "approved", "completed", "resolved", "sent", "succeeded"].includes(status)) {
+    return "completed";
+  }
+  if (["accepted", "duplicate", "suppressed"].includes(statusGroup)) return "completed";
+  if (["received", "queued", "claimed", "running"].includes(status)) return "active";
+  return statusGroup || category || "unknown";
+}
+
+function queueSourceGroup(row) {
+  const text = compact([row?.source, row?.kind, row?.provider, row?.operation, row?.sourceLabel, row?.raw?.source])
+    .join(" ")
+    .toLowerCase();
+  if (text.includes("context")) return "context";
+  if (text.includes("workflow")) return "workflow";
+  if (text.includes("automation") || text.includes("webhook") || text.includes("approval")) return "automation";
+  return "unknown";
+}
+
+function nestedScope(row) {
+  const raw = row?.raw || {};
+  const scope = raw.scope || raw.resource_scope || raw.resourceScope || {};
+  const tenant = raw.tenant_context || raw.tenantContext || scope.tenant_context || scope.tenantContext || {};
+  const enterprise = raw.enterprise_scope || raw.enterpriseScope || {};
+  return { raw, scope, tenant, enterprise };
+}
+
+function queueFilterText(row, key) {
+  const { raw, scope, tenant, enterprise } = nestedScope(row);
+  const haystacks = {
+    query: [
+      row?.id,
+      row?.runId,
+      row?.title,
+      row?.provider,
+      row?.operation,
+      row?.tool,
+      row?.target,
+      row?.reason,
+      row?.scopeLabel,
+      row?.correlationLabel,
+      row?.verificationLabel,
+      row?.dedupeLabel,
+      row?.payloadLabel,
+      row?.sourceLabel,
+      safeJson(raw),
+    ],
+    tenant: [
+      tenant.org_id,
+      tenant.orgId,
+      tenant.workspace_id,
+      tenant.workspaceId,
+      raw.org_id,
+      raw.orgId,
+      raw.workspace_id,
+      raw.workspaceId,
+      row?.scopeLabel,
+    ],
+    workspace: [
+      raw.workspace,
+      raw.workspace_root,
+      raw.workspaceRoot,
+      raw.workspace_path,
+      raw.workspacePath,
+      tenant.workspace_id,
+      tenant.workspaceId,
+      row?.scopeLabel,
+    ],
+    orgUnit: [
+      scope.owning_org_unit_id,
+      scope.owningOrgUnitId,
+      enterprise.owning_org_unit_id,
+      enterprise.owningOrgUnitId,
+      enterprise.owning_org_unit?.name,
+      enterprise.owningOrgUnit?.name,
+      row?.scopeLabel,
+    ],
+    resource: [
+      scope.resource_kind,
+      scope.resourceKind,
+      scope.resource_id,
+      scope.resourceId,
+      enterprise.resource_kind,
+      enterprise.resourceKind,
+      enterprise.resource_id,
+      enterprise.resourceId,
+      row?.target,
+      row?.sourceLabel,
+      row?.scopeLabel,
+    ],
+    policy: [
+      scope.policy_version_id,
+      scope.policyVersionId,
+      enterprise.policy_version_id,
+      enterprise.policyVersionId,
+      raw.policy_decision_id,
+      raw.policyDecisionId,
+      row?.scopeLabel,
+    ],
+    dataClass: [scope.data_class, scope.dataClass, enterprise.data_class, enterprise.dataClass, safeJson(enterprise.data_classes)],
+    knowledge: [
+      safeJson(enterprise.visible_knowledge_sources),
+      safeJson(enterprise.visibleKnowledgeSources),
+      safeJson(raw.knowledge_sources),
+      safeJson(raw.knowledgeSources),
+    ],
+    wait: [
+      row?.phaseId,
+      row?.nodeId,
+      row?.transitionId,
+      row?.status,
+      row?.statusLabel,
+      row?.categoryLabel,
+      row?.timeoutLabel,
+      row?.escalationLabel,
+      row?.reason,
+      row?.operation,
+    ],
+  };
+  return normalizeKey(compact(haystacks[key] || []).join(" "));
+}
+
+function filterStatefulQueueRows(rows = [], filters = {}) {
+  const normalized = normalizeStatefulRunFilters(filters);
+  const query = normalizeKey(normalized.query);
+  const status = normalizeKey(normalized.status);
+  const source = normalizeKey(normalized.source);
+  const tenant = normalizeKey(normalized.tenant);
+  const workspace = normalizeKey(normalized.workspace);
+  const orgUnit = normalizeKey(normalized.orgUnit);
+  const resource = normalizeKey(normalized.resource);
+  const policy = normalizeKey(normalized.policy);
+  const dataClass = normalizeKey(normalized.dataClass);
+  const knowledge = normalizeKey(normalized.knowledge);
+  const wait = normalizeKey(normalized.wait);
+
+  return (Array.isArray(rows) ? rows : []).filter((row) => {
+    if (query && !queueFilterText(row, "query").includes(query)) return false;
+    if (status && status !== "all" && queueStatusGroup(row) !== status) return false;
+    if (source && source !== "all" && queueSourceGroup(row) !== source) return false;
+    if (tenant && !queueFilterText(row, "tenant").includes(tenant)) return false;
+    if (workspace && !queueFilterText(row, "workspace").includes(workspace)) return false;
+    if (orgUnit && !queueFilterText(row, "orgUnit").includes(orgUnit)) return false;
+    if (resource && !queueFilterText(row, "resource").includes(resource)) return false;
+    if (policy && !queueFilterText(row, "policy").includes(policy)) return false;
+    if (dataClass && !queueFilterText(row, "dataClass").includes(dataClass)) return false;
+    if (knowledge && !queueFilterText(row, "knowledge").includes(knowledge)) return false;
+    if (wait && !queueFilterText(row, "wait").includes(wait)) return false;
+    return true;
+  });
 }
 
 function webhookStatusGroup(status) {
@@ -447,6 +620,7 @@ export {
   buildRecoveryQueueRows,
   buildWebhookInboxRows,
   deadlineLabel,
+  filterStatefulQueueRows,
   statusTone,
   summarizeApprovalWaitRows,
   summarizeRecoveryQueueRows,

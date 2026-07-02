@@ -1,4 +1,4 @@
-import type { PlannerProviderOption } from "../features/planner/plannerShared";
+export type { PlannerProviderOption } from "../features/planner/plannerShared";
 export type CodingTab = "overview" | "board" | "cockpit" | "planning" | "manual" | "integrations";
 export type TaskSourceType = "manual" | "kanban_board" | "github_project" | "linear" | "local_backlog";
 
@@ -102,6 +102,10 @@ export function normalizeProjects(raw: any) {
         slug: String(row?.slug || "").trim(),
         name: String(row?.name || row?.display_name || row?.displayName || row?.slug || "").trim(),
         repoUrl: String(
+          row?.repo_url || row?.repoUrl || repo?.clone_url || repo?.cloneUrl || ""
+        ).trim(),
+        repo,
+        repo_url: String(
           row?.repo_url || row?.repoUrl || repo?.clone_url || repo?.cloneUrl || ""
         ).trim(),
         repoPath: String(repo?.path || row?.repo_path || row?.repoPath || "").trim(),

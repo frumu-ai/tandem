@@ -3,20 +3,21 @@ import { useQuery } from "@tanstack/react-query";
 import { Badge, LoadingState, PanelCard, Toolbar } from "../../ui/index.tsx";
 import { EmptyState } from "../../pages/ui";
 import {
-  DEFAULT_STATEFUL_RUN_FILTERS,
-  RUN_SOURCE_FILTERS,
-  RUN_STATUS_FILTERS,
   buildRunObservabilityDetail,
   buildStatefulRunRows,
   filterStatefulRunRows,
   formatRunTimestamp,
-  normalizeStatefulRunFilters,
   summarizeStatefulRuns,
 } from "../../../lib/runs/stateful-runs.js";
 import type { AppPageProps } from "../../pages/pageTypes";
+import { StatefulRunFilterBar } from "./StatefulRunFilters";
 
 type RunsProps = Pick<AppPageProps, "api" | "client" | "navigate">;
 type RunListRequest = Pick<AppPageProps, "api" | "client">;
+type StatefulRunsPageProps = RunsProps & {
+  filters: any;
+  onFiltersChange: (filters: any) => void;
+};
 
 type RunListPayload = {
   statefulRuns: any[];
@@ -24,6 +25,11 @@ type RunListPayload = {
   legacyRuns: any[];
   contextRuns: any[];
   errors: string[];
+};
+
+type RunRowsResult = {
+  runs: any[];
+  error?: string;
 };
 
 function toArray(input: any, key: string) {
@@ -37,12 +43,12 @@ function errorText(error: any) {
 }
 
 async function runListPayload({ api, client }: RunListRequest): Promise<RunListPayload> {
-  const canonicalRuns = await api("/api/engine/stateful-runtime/runs?limit=120").catch((error: any) => ({
+  const canonicalRuns: RunRowsResult = await api("/api/engine/stateful-runtime/runs?limit=120").catch((error: any) => ({
     runs: [],
     error: errorText(error),
   }));
   if (!canonicalRuns?.error) {
-    const contextRuns = await api("/api/engine/context/runs?limit=120").catch((error: any) => ({
+    const contextRuns: RunRowsResult = await api("/api/engine/context/runs?limit=120").catch((error: any) => ({
       runs: [],
       error: errorText(error),
     }));
@@ -55,7 +61,7 @@ async function runListPayload({ api, client }: RunListRequest): Promise<RunListP
     };
   }
 
-  const [workflowRuns, legacyRuns, contextRuns] = await Promise.all([
+  const [workflowRuns, legacyRuns, contextRuns]: RunRowsResult[] = await Promise.all([
     api("/api/engine/automations/v2/runs?limit=120").catch((error: any) => ({
       runs: [],
       error: errorText(error),
@@ -63,7 +69,7 @@ async function runListPayload({ api, client }: RunListRequest): Promise<RunListP
     client?.automations?.listRuns?.({ limit: 120 }).catch((error: any) => ({
       runs: [],
       error: errorText(error),
-    })) ?? Promise.resolve({ runs: [] }),
+    })) ?? Promise.resolve({ runs: [] } as RunRowsResult),
     api("/api/engine/context/runs?limit=120").catch((error: any) => ({
       runs: [],
       error: errorText(error),
@@ -93,15 +99,14 @@ function metricItems(summary: any) {
 }
 
 function badgeTone(statusGroup: string): "ok" | "warn" | "err" | "info" | "ghost" {
-  if (statusGroup === "active") return "info";
-  if (statusGroup === "waiting" || statusGroup === "queued") return "warn";
-  if (statusGroup === "failed") return "err";
-  if (statusGroup === "completed") return "ok";
+  const normalized = String(statusGroup || "").toLowerCase();
+  if (["active", "available", "scoped", "held", "tracked"].includes(normalized)) return "info";
+  if (["waiting", "queued", "changed", "fallback", "constrained", "claimed", "rehydrated"].includes(normalized)) {
+    return "warn";
+  }
+  if (["failed", "error"].includes(normalized)) return "err";
+  if (["completed", "unchanged", "terminal"].includes(normalized)) return "ok";
   return "ghost";
-}
-
-function setFilter(filters: any, key: string, value: string) {
-  return normalizeStatefulRunFilters({ ...filters, [key]: value });
 }
 
 function selectedRunIdFromHash() {
@@ -146,6 +151,18 @@ function DetailRecords({ title, rows, emptyText }: { title: string; rows: any[];
                 {row.status ? <Badge tone={badgeTone(row.statusGroup || row.status)}>{row.status}</Badge> : null}
               </div>
               {row.detail ? <div className="mt-1 line-clamp-2 text-[11px] text-tcp-text-muted">{row.detail}</div> : null}
+              {row.changes?.length ? (
+                <div className="mt-2 space-y-1">
+                  {row.changes.slice(0, 4).map((change: any) => (
+                    <div key={change.key || change.label} className="grid gap-0.5 text-[10px] text-tcp-text-muted">
+                      <span>{change.label}</span>
+                      <span className="break-all font-mono text-tcp-text-secondary">
+                        {change.from} -&gt; {change.to}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               {row.seq || recordTime(row) ? (
                 <div className="mt-1 flex min-w-0 gap-2 text-[10px] text-tcp-text-muted">
                   {row.seq ? <span className="font-mono">seq {row.seq}</span> : null}
@@ -226,8 +243,13 @@ function RunObservabilityPanel({
               </div>
             </div>
             <div>
-              <div className="text-[11px] uppercase tracking-wide text-tcp-text-muted">Phase</div>
-              <div className="mt-1 truncate text-sm text-tcp-text-secondary">{detail.phase || selectedRow.phase}</div>
+              <div className="text-[11px] uppercase tracking-wide text-tcp-text-muted">Runtime Phase</div>
+              <div className="mt-1 truncate text-sm text-tcp-text-secondary">
+                {detail.runtimePhase || detail.phase || selectedRow.phase}
+              </div>
+              {detail.phase && detail.phase !== detail.runtimePhase ? (
+                <div className="mt-1 truncate text-[11px] text-tcp-text-muted">{detail.phase}</div>
+              ) : null}
             </div>
             <div>
               <div className="text-[11px] uppercase tracking-wide text-tcp-text-muted">Current Wait</div>
@@ -279,10 +301,29 @@ function RunObservabilityPanel({
             )}
           </section>
 
+          {detail.crashRecoverySnapshotDiff ? (
+            <DetailRecords
+              title="Crash Recovery"
+              rows={[detail.crashRecoverySnapshotDiff]}
+              emptyText="No crash recovery checkpoint diff."
+            />
+          ) : null}
           <DetailRecords title="Operator Actions" rows={detail.allowedActions || []} emptyText="No operator actions." />
           <DetailRecords title="Blocking Reasons" rows={detail.blockingReasons || []} emptyText="No blocking reasons." />
+          <DetailRecords
+            title="Legal Next Transitions"
+            rows={detail.allowedNextPhases || []}
+            emptyText="No legal transition data."
+          />
+          <DetailRecords
+            title="Locks & Constraints"
+            rows={detail.lockConstraints || []}
+            emptyText="No locks or workspace constraints."
+          />
+          <DetailRecords title="Phase History" rows={detail.phaseHistory || []} emptyText="No phase history." />
           <DetailRecords title="Events" rows={detail.events || []} emptyText="No event tail." />
           <DetailRecords title="Snapshots" rows={detail.snapshots || []} emptyText="No snapshots." />
+          <DetailRecords title="Snapshot Diffs" rows={detail.snapshotDiffs || []} emptyText="Need at least two snapshots." />
           <DetailRecords title="Policy Decisions" rows={detail.policyDecisions || []} emptyText="No policy decisions." />
           <DetailRecords title="Tool Effects" rows={detail.toolEffects || []} emptyText="No tool effects." />
           <DetailRecords title="Outbox" rows={detail.outbox || []} emptyText="No outbox rows." />
@@ -295,8 +336,13 @@ function RunObservabilityPanel({
   );
 }
 
-export function StatefulRunsPage({ api, client, navigate }: RunsProps) {
-  const [filters, setFilters] = useState(DEFAULT_STATEFUL_RUN_FILTERS);
+export function StatefulRunsPage({
+  api,
+  client,
+  navigate,
+  filters,
+  onFiltersChange,
+}: StatefulRunsPageProps) {
   const [selectedRunKey, setSelectedRunKey] = useState("");
   const [selectedRunIdHint, setSelectedRunIdHint] = useState(selectedRunIdFromHash);
   const runsQuery = useQuery({
@@ -339,7 +385,6 @@ export function StatefulRunsPage({ api, client, navigate }: RunsProps) {
     () => buildRunObservabilityDetail(detailQuery.data && !detailQuery.data.error ? detailQuery.data : {}),
     [detailQuery.data]
   );
-  const hasFilters = JSON.stringify(normalizeStatefulRunFilters(filters)) !== JSON.stringify(DEFAULT_STATEFUL_RUN_FILTERS);
   const loading = runsQuery.isLoading && !runsQuery.data;
   const errors = runsQuery.data?.errors ?? [];
   const selectRow = (rowKey: string, row: any) => {
@@ -391,130 +436,7 @@ export function StatefulRunsPage({ api, client, navigate }: RunsProps) {
             ))}
           </div>
 
-          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-[1.4fr_repeat(5,minmax(0,1fr))_auto]">
-            <label className="grid min-w-0 gap-1 text-xs text-tcp-text-muted">
-              <span>Search</span>
-              <input
-                className="tcp-input h-9 text-sm"
-                value={filters.query}
-                onChange={(event) => setFilters((current) => setFilter(current, "query", event.currentTarget.value))}
-                placeholder="Run, workflow, trigger"
-              />
-            </label>
-            <label className="grid min-w-0 gap-1 text-xs text-tcp-text-muted">
-              <span>Status</span>
-              <select
-                className="tcp-input h-9 text-sm"
-                value={filters.status}
-                onChange={(event) => setFilters((current) => setFilter(current, "status", event.currentTarget.value))}
-              >
-                {RUN_STATUS_FILTERS.map((option: any) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="grid min-w-0 gap-1 text-xs text-tcp-text-muted">
-              <span>Source</span>
-              <select
-                className="tcp-input h-9 text-sm"
-                value={filters.source}
-                onChange={(event) => setFilters((current) => setFilter(current, "source", event.currentTarget.value))}
-              >
-                {RUN_SOURCE_FILTERS.map((option: any) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="grid min-w-0 gap-1 text-xs text-tcp-text-muted">
-              <span>Tenant</span>
-              <input
-                className="tcp-input h-9 text-sm"
-                value={filters.tenant}
-                onChange={(event) => setFilters((current) => setFilter(current, "tenant", event.currentTarget.value))}
-                placeholder="Org or workspace"
-              />
-            </label>
-            <label className="grid min-w-0 gap-1 text-xs text-tcp-text-muted">
-              <span>Workspace</span>
-              <input
-                className="tcp-input h-9 text-sm"
-                value={filters.workspace}
-                onChange={(event) =>
-                  setFilters((current) => setFilter(current, "workspace", event.currentTarget.value))
-                }
-                placeholder="Path"
-              />
-            </label>
-            <label className="grid min-w-0 gap-1 text-xs text-tcp-text-muted">
-              <span>Org Unit</span>
-              <input
-                className="tcp-input h-9 text-sm"
-                value={filters.orgUnit}
-                onChange={(event) => setFilters((current) => setFilter(current, "orgUnit", event.currentTarget.value))}
-                placeholder="Unit or owner"
-              />
-            </label>
-            <label className="grid min-w-0 gap-1 text-xs text-tcp-text-muted">
-              <span>Resource</span>
-              <input
-                className="tcp-input h-9 text-sm"
-                value={filters.resource}
-                onChange={(event) => setFilters((current) => setFilter(current, "resource", event.currentTarget.value))}
-                placeholder="Kind or ID"
-              />
-            </label>
-            <label className="grid min-w-0 gap-1 text-xs text-tcp-text-muted">
-              <span>Policy</span>
-              <input
-                className="tcp-input h-9 text-sm"
-                value={filters.policy}
-                onChange={(event) => setFilters((current) => setFilter(current, "policy", event.currentTarget.value))}
-                placeholder="Version"
-              />
-            </label>
-            <label className="grid min-w-0 gap-1 text-xs text-tcp-text-muted">
-              <span>Data</span>
-              <input
-                className="tcp-input h-9 text-sm"
-                value={filters.dataClass}
-                onChange={(event) => setFilters((current) => setFilter(current, "dataClass", event.currentTarget.value))}
-                placeholder="Class"
-              />
-            </label>
-            <label className="grid min-w-0 gap-1 text-xs text-tcp-text-muted">
-              <span>Knowledge</span>
-              <input
-                className="tcp-input h-9 text-sm"
-                value={filters.knowledge}
-                onChange={(event) => setFilters((current) => setFilter(current, "knowledge", event.currentTarget.value))}
-                placeholder="Source"
-              />
-            </label>
-            <label className="grid min-w-0 gap-1 text-xs text-tcp-text-muted">
-              <span>Phase</span>
-              <input
-                className="tcp-input h-9 text-sm"
-                value={filters.wait}
-                onChange={(event) => setFilters((current) => setFilter(current, "wait", event.currentTarget.value))}
-                placeholder="Wait or retry"
-              />
-            </label>
-            <div className="flex items-end">
-              <button
-                type="button"
-                className="tcp-btn h-9 w-full px-3 text-xs"
-                onClick={() => setFilters(DEFAULT_STATEFUL_RUN_FILTERS)}
-                disabled={!hasFilters}
-              >
-                <i data-lucide="x"></i>
-                Clear
-              </button>
-            </div>
-          </div>
+          <StatefulRunFilterBar filters={filters} onFiltersChange={onFiltersChange} />
 
           {errors.length ? (
             <div className="rounded-md border border-yellow-400/20 bg-yellow-400/10 px-3 py-2 text-xs text-yellow-100">

@@ -605,6 +605,7 @@ test("control panel auth/proxy/swarm smoke", async (t) => {
       TANDEM_CONTROL_PANEL_PORT: String(panelPort),
       TANDEM_ENGINE_URL: `http://127.0.0.1:${fake.port}`,
       TANDEM_CONTROL_PANEL_AUTO_START_ENGINE: "0",
+      TANDEM_STRICT_WRITE_RETRY_MAX_ATTEMPTS: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

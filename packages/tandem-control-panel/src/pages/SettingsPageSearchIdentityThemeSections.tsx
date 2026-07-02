@@ -1,6 +1,7 @@
 import { renderMarkdownSafe } from "../lib/markdown";
 import { ThemePicker } from "../ui/ThemePicker.tsx";
 import { Badge, PanelCard, Toolbar } from "../ui/index.tsx";
+import { EmptyState } from "./ui";
 import { useSettingsPageController } from "./SettingsPageController";
 
 type SettingsPageControllerState = ReturnType<typeof useSettingsPageController>;

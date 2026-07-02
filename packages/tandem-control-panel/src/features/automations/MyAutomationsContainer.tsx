@@ -21,6 +21,7 @@ import { projectOrchestrationRun } from "../orchestrator/blackboardProjection";
 import {
   workflowActiveSessionCount,
   workflowArtifactValidation,
+  workflowBlockedNodeCount,
   workflowBlockedNodeIds,
   workflowContextHistoryEntries,
   workflowDerivedRunStatus,
@@ -602,7 +603,7 @@ export function MyAutomationsContainer({
     [isMissionBlueprintAutomation, isStandupAutomation]
   );
   const workflowAutomationRows = useMemo(() => {
-    const visibleAutomations = filterWorkflowAutomations(automationsV2, workflowLibraryFilters);
+    const visibleAutomations = filterWorkflowAutomations(automationsV2, workflowLibraryFilters as any);
     return sortWorkflowAutomations(visibleAutomations, {
       sortMode: workflowSortMode,
       favoriteAutomationIds: favoriteAutomationIdSet,

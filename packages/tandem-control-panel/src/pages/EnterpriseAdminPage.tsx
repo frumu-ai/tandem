@@ -14,6 +14,7 @@ import {
   useCreateEnterpriseConnector,
   useCreateEnterpriseConnectorCredentialRef,
   useCreateEnterpriseOrgUnit,
+  useCreateEnterpriseOrgUnitAccessGrant,
   useCreateEnterpriseOrgUnitMembership,
   useCreateEnterpriseSourceBinding,
   useDeleteEnterpriseSourceObject,

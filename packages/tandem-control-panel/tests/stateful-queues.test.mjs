@@ -4,6 +4,7 @@ import {
   buildApprovalWaitRows,
   buildRecoveryQueueRows,
   buildWebhookInboxRows,
+  filterStatefulQueueRows,
   summarizeApprovalWaitRows,
   summarizeRecoveryQueueRows,
   summarizeWebhookInboxRows,
@@ -70,6 +71,77 @@ test("webhook inbox rows expose accepted, duplicate, rejected, dead-lettered, an
     redacted: 1,
     deadLetters: 1,
   });
+});
+
+test("stateful queue filters apply tenant, workspace, policy, knowledge, and wait terms", () => {
+  const rows = [
+    ...buildWebhookInboxRows({
+      events: [
+        {
+          event_id: "evt-prod",
+          provider: "github",
+          status: "accepted",
+          queued_run_id: "run-prod",
+          tenant_context: { org_id: "org-prod", workspace_id: "workspace-prod" },
+          workspace_root: "/srv/prod",
+          enterprise_scope: {
+            owning_org_unit_id: "platform",
+            resource_kind: "repository",
+            resource_id: "repo-prod",
+            policy_version_id: "policy-prod",
+            data_classes: ["source"],
+            visible_knowledge_sources: [{ binding_id: "kb-prod", source_type: "runbook" }],
+          },
+        },
+        {
+          event_id: "evt-sandbox",
+          provider: "linear",
+          status: "accepted",
+          queued_run_id: "run-sandbox",
+          tenant_context: { org_id: "org-sandbox", workspace_id: "workspace-sandbox" },
+          workspace_root: "/srv/sandbox",
+        },
+      ],
+    }),
+    ...buildApprovalWaitRows(
+      {
+        approvals: [
+          {
+            request_id: "approval-prod",
+            run_id: "run-prod",
+            status: "pending",
+            phase_id: "approval",
+            approval_wait: { transition_id: "ship" },
+            tenant_context: { org_id: "org-prod", workspace_id: "workspace-prod" },
+          },
+        ],
+      },
+      { now: 1000 }
+    ),
+  ];
+
+  assert.deepEqual(
+    filterStatefulQueueRows(rows, { tenant: "org-prod" }).map((row) => row.id),
+    ["evt-prod", "approval-prod"]
+  );
+  assert.deepEqual(
+    filterStatefulQueueRows(rows, { workspace: "/srv/prod" }).map((row) => row.id),
+    ["evt-prod"]
+  );
+  assert.deepEqual(
+    filterStatefulQueueRows(rows, { orgUnit: "platform", resource: "repo-prod", policy: "policy-prod" }).map(
+      (row) => row.id
+    ),
+    ["evt-prod"]
+  );
+  assert.deepEqual(
+    filterStatefulQueueRows(rows, { dataClass: "source", knowledge: "kb-prod" }).map((row) => row.id),
+    ["evt-prod"]
+  );
+  assert.deepEqual(
+    filterStatefulQueueRows(rows, { status: "waiting", wait: "ship" }).map((row) => row.id),
+    ["approval-prod"]
+  );
 });
 
 test("approval wait rows expose timeout, escalation, transition, and decision history", () => {

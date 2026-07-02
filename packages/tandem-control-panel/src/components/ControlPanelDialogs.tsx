@@ -1,4 +1,5 @@
 import { AnimatePresence, motion } from "motion/react";
+import type { ReactNode } from "react";
 import { useEffect, useRef } from "react";
 import { renderIcons } from "../app/icons.js";
 
@@ -78,6 +79,7 @@ type ConfirmDialogProps = {
   open: boolean;
   title: string;
   message: any;
+  children?: ReactNode;
   confirmLabel?: string;
   cancelLabel?: string;
   confirmIcon?: string;
@@ -98,6 +100,7 @@ export function ConfirmDialog({
   confirmTone = "danger",
   confirmDisabled = false,
   widthClassName,
+  children,
   onCancel,
   onConfirm,
 }: ConfirmDialogProps) {
@@ -108,6 +111,7 @@ export function ConfirmDialog({
       message={message}
       widthClassName={widthClassName}
       onCancel={onCancel}
+      children={children}
       actions={
         <>
           <button type="button" className="tcp-btn" onClick={onCancel}>

@@ -242,7 +242,35 @@ test("stateful run helpers normalize observability detail sections", () => {
       run_id: "run-observe",
       kind: "automation_v2",
       status: "blocked",
+      phase: "paused_attention_required",
       current_phase_id: "phase-review",
+      allowed_next_phases: ["queued", "running_phase", "failed", "cancelled"],
+      phase_history: [
+        {
+          event_id: "phase-a",
+          from_phase: "running_phase",
+          to_phase: "paused_attention_required",
+          event_type: "stateful_runtime.phase.transition",
+          phase_id: "phase-review",
+          reason: "rehydrated blocked review",
+          occurred_at_ms: 3200,
+        },
+      ],
+      scope: {
+        tenant_context: {
+          org_id: "org-observe",
+          workspace_id: "workspace-observe",
+          deployment_id: "prod",
+        },
+        resource_scope: {
+          root: {
+            resource_kind: "repository",
+            resource_id: "repo-observe",
+          },
+        },
+        policy_version_id: "policy-observe",
+        data_classes: ["confidential"],
+      },
       workflow_definition_version: "v3",
       workflow_definition_snapshot_hash: "sha256:workflow",
     },
@@ -252,6 +280,8 @@ test("stateful run helpers normalize observability detail sections", () => {
       status: "waiting",
       phase_id: "phase-review",
       reason: "awaiting operator",
+      claimed_by: "scheduler-a",
+      claim_expires_at_ms: 9000,
     },
     waits: [
       {
@@ -273,7 +303,20 @@ test("stateful run helpers normalize observability detail sections", () => {
     ],
     reliability: {
       outbox: [{ outbox_id: "outbox-a", operation: "github.comment", status: "pending", idempotency_key: "idem-a" }],
-      tool_effects: [{ effect_id: "effect-a", operation: "github.comment", status: "failed", error: "timeout" }],
+      tool_effects: [
+        {
+          effect_id: "effect-a",
+          operation: "github.comment",
+          status: "failed",
+          error: "timeout",
+          metadata: {
+            run_as: {
+              principal: { kind: "service_principal", id: "svc-a" },
+              connectionId: "conn-a",
+            },
+          },
+        },
+      ],
       dead_letters: [{ dead_letter_id: "dead-a", source_type: "tool_effect", status: "open", reason: "timeout" }],
       compensations: [
         {
@@ -308,12 +351,48 @@ test("stateful run helpers normalize observability detail sections", () => {
         snapshot_id: "snapshot-4",
         seq: 4,
         status: "blocked",
-        phase_id: "phase-review",
+        phase: "paused_attention_required",
         workflow_definition_version: "v3",
       },
       items: [
-        { snapshot_id: "snapshot-2", seq: 2, status: "waiting" },
-        { snapshot_id: "snapshot-4", seq: 4, status: "blocked", phase_id: "phase-review" },
+        {
+          snapshot_id: "snapshot-2",
+          seq: 2,
+          status: "waiting",
+          phase: "awaiting_approval",
+          phase_id: "phase-draft",
+          payload_digest: "sha256:before",
+          checkpoint: {
+            completed_nodes: ["draft"],
+            pending_nodes: ["review"],
+            blocked_nodes: [],
+            node_attempts: { draft: 1 },
+            execution_claim_epoch: 1,
+          },
+        },
+        {
+          snapshot_id: "snapshot-4",
+          seq: 4,
+          status: "blocked",
+          phase: "paused_attention_required",
+          phase_id: "phase-review",
+          payload_digest: "sha256:after",
+          allowed_next_phases: ["queued", "running_phase", "failed", "cancelled"],
+          checkpoint: {
+            completed_nodes: ["draft"],
+            pending_nodes: [],
+            blocked_nodes: ["review"],
+            awaiting_gate: { node_id: "review", title: "Review output" },
+            node_attempts: { draft: 1, review: 2 },
+            resume_reason: "server_restart_rehydration",
+            execution_claim: {
+              claim_id: "claim-a",
+              claimant_id: "worker-a",
+              claim_expires_at_ms: 9500,
+            },
+            active_session_ids: ["session-a"],
+          },
+        },
       ],
     },
     operator_summary: {
@@ -326,10 +405,23 @@ test("stateful run helpers normalize observability detail sections", () => {
   assert.equal(detail.runId, "run-observe");
   assert.equal(detail.statusLabel, "Blocked");
   assert.equal(detail.phase, "Phase Review");
+  assert.equal(detail.runtimePhase, "Paused Attention Required");
   assert.equal(detail.workflowDefinitionVersion, "v3");
   assert.equal(detail.currentWait.label, "awaiting operator");
+  assert.equal(detail.latestSnapshot.payloadDigest, "sha256:after");
+  assert.equal(detail.snapshotDiffs.length, 1);
+  assert.equal(detail.snapshotDiffs[0].status, "changed");
+  assert.ok(detail.snapshotDiffs[0].changes.some((change) => change.key === "payloadDigest"));
+  assert.ok(detail.snapshotDiffs[0].changes.some((change) => change.key === "awaitingGate"));
+  assert.equal(detail.resumeReason, "server_restart_rehydration");
+  assert.equal(detail.crashRecoverySnapshotDiff.label, "Crash recovery checkpoint");
+  assert.ok(detail.allowedNextPhases.some((row) => row.label === "Running Phase"));
+  assert.ok(detail.lockConstraints.some((row) => row.label === "Execution claim"));
+  assert.ok(detail.lockConstraints.some((row) => row.label === "Tenant workspace"));
+  assert.ok(detail.phaseHistory.some((row) => row.detail.includes("rehydrated blocked review")));
   assert.equal(detail.policyDecisions[0].detail, "github.comment · external_effect · approval-a");
   assert.equal(detail.toolEffects[0].status, "failed");
+  assert.ok(detail.toolEffects[0].detail.includes("principal service_principal:svc-a"));
   assert.equal(detail.protectedAuditEvents[0].detail, "operator-a · sha256:audit");
   assert.equal(detail.counts.events, 2);
   assert.equal(detail.replay.firstSeq, 2);

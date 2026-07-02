@@ -28,6 +28,20 @@ const DEFAULT_STATEFUL_RUN_FILTERS = {
   wait: "",
 };
 
+const FALLBACK_ALLOWED_NEXT_PHASES = {
+  created: ["queued", "cancelled"],
+  queued: ["running_phase", "paused_attention_required", "cancelled"],
+  running_phase: ["sleeping", "waiting_webhook", "awaiting_approval", "retrying", "paused_attention_required", "completed", "failed", "cancelled"],
+  sleeping: ["running_phase", "paused_attention_required", "cancelled"],
+  waiting_webhook: ["running_phase", "retrying", "paused_attention_required", "failed", "cancelled"],
+  awaiting_approval: ["running_phase", "paused_attention_required", "failed", "cancelled"],
+  retrying: ["running_phase", "paused_attention_required", "failed", "cancelled"],
+  paused_attention_required: ["queued", "running_phase", "failed", "cancelled"],
+  failed: [],
+  completed: [],
+  cancelled: [],
+};
+
 function compact(values) {
   return values
     .map((value) => stringValue(value))
@@ -402,6 +416,62 @@ function recordId(row, keys, fallback = "") {
   return fallback;
 }
 
+function objectValue(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function firstValue(values) {
+  for (const value of values) {
+    if (value !== null && value !== undefined && value !== "") return value;
+  }
+  return undefined;
+}
+
+function stableStringify(value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value !== "object") return stringValue(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  const entries = Object.keys(value)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`);
+  return `{${entries.join(",")}}`;
+}
+
+function valueSummary(value) {
+  if (value === null || value === undefined || value === "") return "n/a";
+  if (Array.isArray(value)) return value.length ? compact(value).join(", ") : "none";
+  if (typeof value === "object") {
+    const text = stableStringify(value);
+    return text.length > 96 ? `${text.slice(0, 93)}...` : text || "none";
+  }
+  const text = stringValue(value, "n/a");
+  return text.length > 96 ? `${text.slice(0, 93)}...` : text;
+}
+
+function comparableValue(value) {
+  if (value === null || value === undefined || value === "") return "";
+  return typeof value === "object" ? stableStringify(value) : stringValue(value);
+}
+
+function checkpointOf(snapshot) {
+  return objectValue(snapshot?.checkpoint || snapshot?.payload?.checkpoint);
+}
+
+function checkpointField(snapshot, snakeKey, camelKey) {
+  const checkpoint = checkpointOf(snapshot);
+  return firstValue([checkpoint[snakeKey], checkpoint[camelKey]]);
+}
+
+function phaseHistoryRows(rows) {
+  return toArray(rows, "phase_history").map((row, index) => ({
+    id: recordId(row, ["event_id", "eventId"], `phase-history-${index}`),
+    label: compact([row?.from_phase || row?.fromPhase, row?.to_phase || row?.toPhase || row?.phase]).join(" -> "),
+    status: stringValue(row?.event_type || row?.eventType, "phase"),
+    detail: compact([row?.phase_id || row?.phaseId, row?.reason]).join(" · "),
+    occurredAtMs: firstTimestamp([row?.occurred_at_ms, row?.occurredAtMs]),
+  }));
+}
+
 function projectObservabilityWait(wait) {
   const kind = stringValue(wait?.wait_kind || wait?.waitKind, "wait");
   return {
@@ -410,6 +480,7 @@ function projectObservabilityWait(wait) {
     status: recordStatus(wait),
     detail: compact([wait?.phase_id || wait?.phaseId, wait?.wait_id || wait?.waitId]).join(" · "),
     updatedAtMs: firstTimestamp([wait?.updated_at_ms, wait?.updatedAtMs, wait?.created_at_ms, wait?.createdAtMs]),
+    raw: wait,
   };
 }
 
@@ -427,17 +498,147 @@ function projectObservabilityEvent(event) {
 
 function projectObservabilitySnapshot(snapshot) {
   const seq = numberValue(snapshot?.seq);
+  const checkpoint = checkpointOf(snapshot);
+  const phaseId = stringValue(snapshot?.phase_id || snapshot?.phaseId);
+  const phase = stringValue(snapshot?.phase || snapshot?.runtime_phase || snapshot?.runtimePhase);
+  const payloadDigest = stringValue(snapshot?.payload_digest || snapshot?.payloadDigest);
+  const checkpointDigest = stringValue(
+    snapshot?.checkpoint_digest ||
+      snapshot?.checkpointDigest ||
+      checkpoint.checkpoint_digest ||
+      checkpoint.checkpointDigest ||
+      checkpoint.digest ||
+      checkpoint.hash
+  );
+  const allowedNextPhases = uniqueCompact(
+    toArray(snapshot?.allowed_next_phases || snapshot?.allowedNextPhases, "allowed_next_phases")
+  );
   return {
     id: recordId(snapshot, ["snapshot_id", "snapshotId"], seq ? `snapshot-${seq}` : "snapshot"),
     label: seq ? `Snapshot ${seq}` : "Snapshot",
     status: recordStatus(snapshot),
     seq,
-    detail: compact([snapshot?.phase_id || snapshot?.phaseId, snapshot?.payload_digest || snapshot?.payloadDigest]).join(" · "),
+    phase,
+    phaseId,
+    payloadDigest,
+    checkpointDigest,
+    checkpoint,
+    allowedNextPhases,
+    phaseHistory: phaseHistoryRows(snapshot?.phase_history || snapshot?.phaseHistory),
+    sourceRecordKind: stringValue(snapshot?.source_record_kind || snapshot?.sourceRecordKind),
+    detail: compact([phase || phaseId, payloadDigest, checkpointDigest]).join(" · "),
     createdAtMs: firstTimestamp([snapshot?.created_at_ms, snapshot?.createdAtMs]),
     workflowDefinitionVersion: stringValue(snapshot?.workflow_definition_version || snapshot?.workflowDefinitionVersion),
     workflowDefinitionSnapshotHash: stringValue(
       snapshot?.workflow_definition_snapshot_hash || snapshot?.workflowDefinitionSnapshotHash
     ),
+  };
+}
+
+function snapshotDiffChanges(from, to) {
+  const fields = [
+    { key: "status", label: "Status", get: (snapshot) => snapshot?.status },
+    { key: "phase", label: "Runtime phase", get: (snapshot) => snapshot?.phase },
+    { key: "phaseId", label: "Workflow phase", get: (snapshot) => snapshot?.phaseId },
+    { key: "payloadDigest", label: "Payload digest", get: (snapshot) => snapshot?.payloadDigest },
+    { key: "checkpointDigest", label: "Checkpoint digest", get: (snapshot) => snapshot?.checkpointDigest },
+    {
+      key: "workflowDefinitionSnapshotHash",
+      label: "Workflow hash",
+      get: (snapshot) => snapshot?.workflowDefinitionSnapshotHash,
+    },
+    { key: "completedNodes", label: "Completed nodes", get: (snapshot) => checkpointField(snapshot, "completed_nodes", "completedNodes") },
+    { key: "pendingNodes", label: "Pending nodes", get: (snapshot) => checkpointField(snapshot, "pending_nodes", "pendingNodes") },
+    { key: "blockedNodes", label: "Blocked nodes", get: (snapshot) => checkpointField(snapshot, "blocked_nodes", "blockedNodes") },
+    { key: "awaitingGate", label: "Awaiting gate", get: (snapshot) => checkpointField(snapshot, "awaiting_gate", "awaitingGate") },
+    { key: "nodeAttempts", label: "Node attempts", get: (snapshot) => checkpointField(snapshot, "node_attempts", "nodeAttempts") },
+    { key: "lastFailure", label: "Last failure", get: (snapshot) => checkpointField(snapshot, "last_failure", "lastFailure") },
+    { key: "resumeReason", label: "Resume reason", get: (snapshot) => checkpointField(snapshot, "resume_reason", "resumeReason") },
+    { key: "executionClaim", label: "Execution claim", get: (snapshot) => checkpointField(snapshot, "execution_claim", "executionClaim") },
+  ];
+  return fields
+    .map((field) => {
+      const before = field.get(from);
+      const after = field.get(to);
+      if (comparableValue(before) === comparableValue(after)) return null;
+      return {
+        key: field.key,
+        label: field.label,
+        from: valueSummary(before),
+        to: valueSummary(after),
+      };
+    })
+    .filter(Boolean);
+}
+
+function snapshotSortValue(snapshot) {
+  return snapshot?.seq || snapshot?.createdAtMs || 0;
+}
+
+function buildSnapshotDiffRows(snapshots) {
+  const ordered = [...(Array.isArray(snapshots) ? snapshots : [])].sort((left, right) => {
+    const bySeq = snapshotSortValue(left) - snapshotSortValue(right);
+    if (bySeq) return bySeq;
+    return String(left?.id || "").localeCompare(String(right?.id || ""));
+  });
+  const rows = [];
+  for (let index = 1; index < ordered.length; index += 1) {
+    const from = ordered[index - 1];
+    const to = ordered[index];
+    const changes = snapshotDiffChanges(from, to);
+    rows.push({
+      id: `${from.id}->${to.id}`,
+      label: `${from.label} -> ${to.label}`,
+      status: changes.length ? "changed" : "unchanged",
+      statusGroup: changes.length ? "waiting" : "completed",
+      seq: to.seq,
+      createdAtMs: to.createdAtMs,
+      detail: changes.length
+        ? changes
+            .slice(0, 3)
+            .map((change) => `${change.label}: ${change.from} -> ${change.to}`)
+            .join(" · ")
+        : "No projected snapshot changes.",
+      fromSnapshotId: from.id,
+      toSnapshotId: to.id,
+      changes,
+    });
+  }
+  return rows.reverse();
+}
+
+function resumeReasonFrom({ run, latestSnapshot, snapshots }) {
+  const runMetadata = objectValue(run?.metadata);
+  const latestCheckpoint = checkpointOf(latestSnapshot);
+  const fromSnapshots = (Array.isArray(snapshots) ? snapshots : [])
+    .map((snapshot) => checkpointField(snapshot, "resume_reason", "resumeReason"))
+    .reverse()
+    .find(Boolean);
+  return stringValue(
+    run?.resume_reason ||
+      run?.resumeReason ||
+      runMetadata.resume_reason ||
+      runMetadata.resumeReason ||
+      latestCheckpoint.resume_reason ||
+      latestCheckpoint.resumeReason ||
+      fromSnapshots
+  );
+}
+
+function crashRecoverySnapshotDiff(snapshotDiffs, resumeReason) {
+  if (normalizeKey(resumeReason) !== "server_restart_rehydration") return null;
+  const changed = snapshotDiffs.find((row) => row.changes?.length);
+  const latest = changed || snapshotDiffs[0] || null;
+  if (!latest) return null;
+  return {
+    ...latest,
+    id: `crash-recovery:${latest.id}`,
+    label: "Crash recovery checkpoint",
+    status: latest.changes?.length ? "rehydrated" : "unchanged",
+    statusGroup: latest.changes?.length ? "waiting" : "completed",
+    detail: latest.changes?.length
+      ? `server_restart_rehydration: ${latest.detail}`
+      : "server_restart_rehydration with no projected checkpoint delta.",
   };
 }
 
@@ -453,6 +654,48 @@ function projectPolicyDecision(decision) {
     ]).join(" · "),
     createdAtMs: firstTimestamp([decision?.created_at_ms, decision?.createdAtMs]),
   };
+}
+
+function principalSummary(value) {
+  if (!value || typeof value !== "object") return stringValue(value);
+  return compact([
+    value.kind || value.type || value.principal_kind || value.principalKind,
+    value.id || value.principal_id || value.principalId || value.actor_id || value.actorId,
+  ]).join(":");
+}
+
+function runAsContext(row) {
+  const metadata = objectValue(row?.metadata);
+  const runAs = objectValue(row?.run_as || row?.runAs || metadata.run_as || metadata.runAs || metadata.__mcp_run_as);
+  const effectiveTenant = objectValue(runAs.effective_tenant_context || runAs.effectiveTenantContext);
+  const principal =
+    principalSummary(
+      row?.acting_principal ||
+        row?.actingPrincipal ||
+        row?.execution_principal ||
+        row?.executionPrincipal ||
+        row?.principal ||
+        row?.actor ||
+        metadata.acting_principal ||
+        metadata.actingPrincipal ||
+        metadata.execution_principal ||
+        metadata.executionPrincipal ||
+        metadata.principal ||
+        metadata.actor ||
+        runAs.principal
+    ) || "";
+  const actor = stringValue(row?.actor_id || row?.actorId || metadata.actor_id || metadata.actorId || effectiveTenant.actor_id || effectiveTenant.actorId);
+  const connection = stringValue(
+    row?.connection_id || row?.connectionId || metadata.connection_id || metadata.connectionId || runAs.connection_id || runAs.connectionId
+  );
+  const runAsKind = stringValue(runAs.kind || runAs.type || runAs.mode);
+  const parts = compact([
+    principal ? `principal ${principal}` : "",
+    actor ? `actor ${actor}` : "",
+    connection ? `connection ${connection}` : "",
+    runAsKind ? `run-as ${runAsKind}` : "",
+  ]);
+  return parts.join(" · ");
 }
 
 function projectReliabilityRecord(row, kind) {
@@ -481,6 +724,7 @@ function projectReliabilityRecord(row, kind) {
       row?.target,
       row?.idempotency_key || row?.idempotencyKey,
       row?.policy_decision_id || row?.policyDecisionId,
+      runAsContext(row),
       row?.reason,
       row?.error,
     ]).join(" · "),
@@ -521,6 +765,201 @@ function projectOperatorItem(row, fallbackKind) {
       row?.tool,
     ]).join(" · "),
   };
+}
+
+function runtimePhaseValue(run, latestSnapshot) {
+  return stringValue(run?.phase || run?.runtime_phase || run?.runtimePhase || latestSnapshot?.phase || run?.status);
+}
+
+function allowedNextPhaseValues({ run, latestSnapshot }) {
+  const explicit = uniqueCompact([
+    ...toArray(run?.allowed_next_phases || run?.allowedNextPhases, "allowed_next_phases"),
+    ...(latestSnapshot?.allowedNextPhases || []),
+  ]);
+  if (explicit.length) return { values: explicit, source: "runtime" };
+  const phase = normalizeKey(runtimePhaseValue(run, latestSnapshot));
+  return { values: FALLBACK_ALLOWED_NEXT_PHASES[phase] || [], source: "fallback" };
+}
+
+function projectAllowedNextPhases({ run, latestSnapshot }) {
+  const phase = runtimePhaseValue(run, latestSnapshot);
+  const { values, source } = allowedNextPhaseValues({ run, latestSnapshot });
+  if (!values.length && phase) {
+    return [
+      {
+        id: `terminal:${normalizeKey(phase)}`,
+        label: "No legal transitions",
+        status: "terminal",
+        statusGroup: "completed",
+        detail: `${titleCase(phase)} is terminal or no transition data was reported.`,
+      },
+    ];
+  }
+  return values.map((value) => ({
+    id: `next-phase:${normalizeKey(value)}`,
+    label: titleCase(value),
+    status: source === "runtime" ? "available" : "fallback",
+    statusGroup: source === "runtime" ? "active" : "queued",
+    detail: source === "runtime" ? "reported by allowed_next_phases" : `fallback from ${titleCase(phase || "unknown")}`,
+  }));
+}
+
+function projectPhaseHistory({ run, latestSnapshot }) {
+  const runHistory = phaseHistoryRows(run?.phase_history || run?.phaseHistory);
+  if (runHistory.length) return runHistory.slice().reverse();
+  return (latestSnapshot?.phaseHistory || []).slice().reverse();
+}
+
+function constraintRecord(row, fallbackKind, index) {
+  const kind = stringValue(row?.kind || row?.type || row?.constraint_type || row?.constraintType, fallbackKind);
+  const id = recordId(
+    row,
+    [
+      "lock_id",
+      "lockId",
+      "claim_id",
+      "claimId",
+      "constraint_id",
+      "constraintId",
+      "lease_id",
+      "leaseId",
+      "resource_key",
+      "resourceKey",
+      "workspace_id",
+      "workspaceId",
+    ],
+    `${kind}-${index}`
+  );
+  return {
+    id: `${kind}:${id}`,
+    label: titleCase(row?.label || row?.name || kind),
+    status: stringValue(row?.status || row?.state || row?.effect, kind),
+    statusGroup: "waiting",
+    detail: compact([
+      row?.resource_key || row?.resourceKey,
+      row?.workspace_id || row?.workspaceId,
+      row?.claimant_id || row?.claimantId || row?.claimed_by || row?.claimedBy,
+      row?.claim_expires_at_ms || row?.claimExpiresAtMs || row?.expires_at_ms || row?.expiresAtMs,
+      row?.reason,
+    ]).join(" · "),
+  };
+}
+
+function pushConstraint(rows, row) {
+  if (!row?.id || rows.some((existing) => existing.id === row.id)) return;
+  rows.push(row);
+}
+
+function scopeConstraintRows(run) {
+  const rows = [];
+  const scope = objectValue(run?.scope || run?.enterprise_scope || run?.enterpriseScope);
+  const tenant = objectValue(scope.tenant_context || scope.tenantContext);
+  const resourceScope = objectValue(scope.resource_scope || scope.resourceScope);
+  const root = objectValue(resourceScope.root || scope.root_resource || scope.rootResource);
+  const tenantDetail = compact([tenant.org_id || tenant.orgId, tenant.workspace_id || tenant.workspaceId, tenant.deployment_id || tenant.deploymentId]).join(
+    " / "
+  );
+  if (tenantDetail) {
+    rows.push({
+      id: `tenant:${tenantDetail}`,
+      label: "Tenant workspace",
+      status: "scoped",
+      statusGroup: "active",
+      detail: tenantDetail,
+    });
+  }
+  const resource = resourceLabel(root.resource_kind || root.resourceKind, root.resource_id || root.resourceId);
+  if (resource) {
+    rows.push({
+      id: `resource:${resource}`,
+      label: "Resource scope",
+      status: "constrained",
+      statusGroup: "waiting",
+      detail: resource,
+    });
+  }
+  const policy = stringValue(scope.policy_version_id || scope.policyVersionId);
+  const dataClasses = toArray(scope.data_classes || scope.dataClasses, "data_classes");
+  if (policy || dataClasses.length) {
+    rows.push({
+      id: `governance:${policy || dataClasses.join(":")}`,
+      label: "Governance scope",
+      status: "constrained",
+      statusGroup: "waiting",
+      detail: compact([policy ? `Policy ${policy}` : "", dataClasses.join(", ")]).join(" · "),
+    });
+  }
+  return rows;
+}
+
+function projectLockConstraints({ input, run, latestSnapshot, currentWaitRow }) {
+  const rows = [];
+  for (const row of [
+    ...toArray(input?.locks, "locks"),
+    ...toArray(input?.held_locks || input?.heldLocks, "held_locks"),
+    ...toArray(input?.lock_constraints || input?.lockConstraints, "lock_constraints"),
+    ...toArray(input?.workspace_constraints || input?.workspaceConstraints, "workspace_constraints"),
+    ...toArray(run?.locks, "locks"),
+    ...toArray(run?.held_locks || run?.heldLocks, "held_locks"),
+    ...toArray(run?.workspace_constraints || run?.workspaceConstraints, "workspace_constraints"),
+  ]) {
+    pushConstraint(rows, constraintRecord(row, "constraint", rows.length));
+  }
+
+  const checkpoint = checkpointOf(latestSnapshot);
+  const executionClaim = checkpoint.execution_claim || checkpoint.executionClaim;
+  if (executionClaim && typeof executionClaim === "object") {
+    pushConstraint(rows, {
+      id: `execution-claim:${executionClaim.claim_id || executionClaim.claimId || "active"}`,
+      label: "Execution claim",
+      status: "claimed",
+      statusGroup: "waiting",
+      detail: compact([
+        executionClaim.claimant_id || executionClaim.claimantId,
+        executionClaim.claim_id || executionClaim.claimId,
+        executionClaim.claim_expires_at_ms || executionClaim.claimExpiresAtMs,
+      ]).join(" · "),
+    });
+  } else if (checkpoint.execution_claim_epoch || checkpoint.executionClaimEpoch) {
+    pushConstraint(rows, {
+      id: `execution-claim-epoch:${checkpoint.execution_claim_epoch || checkpoint.executionClaimEpoch}`,
+      label: "Execution claim epoch",
+      status: "tracked",
+      statusGroup: "active",
+      detail: String(checkpoint.execution_claim_epoch || checkpoint.executionClaimEpoch),
+    });
+  }
+
+  const activeSessions = toArray(checkpoint.active_session_ids || checkpoint.activeSessionIds, "active_session_ids");
+  const activeInstances = toArray(checkpoint.active_instance_ids || checkpoint.activeInstanceIds, "active_instance_ids");
+  if (activeSessions.length || activeInstances.length) {
+    pushConstraint(rows, {
+      id: `active-execution:${activeSessions.join(":") || activeInstances.join(":")}`,
+      label: "Active execution",
+      status: "held",
+      statusGroup: "active",
+      detail: compact([
+        activeSessions.length ? `sessions ${activeSessions.join(", ")}` : "",
+        activeInstances.length ? `instances ${activeInstances.join(", ")}` : "",
+      ]).join(" · "),
+    });
+  }
+
+  if (currentWaitRow?.raw?.claimed_by || currentWaitRow?.raw?.claimedBy || currentWaitRow?.raw?.claim_expires_at_ms) {
+    pushConstraint(rows, {
+      id: `wait-claim:${currentWaitRow.id}`,
+      label: "Wait claim",
+      status: stringValue(currentWaitRow.raw.status, "claimed"),
+      statusGroup: "waiting",
+      detail: compact([
+        currentWaitRow.raw.claimed_by || currentWaitRow.raw.claimedBy,
+        currentWaitRow.raw.claim_expires_at_ms || currentWaitRow.raw.claimExpiresAtMs,
+      ]).join(" · "),
+    });
+  }
+
+  for (const row of scopeConstraintRows(run)) pushConstraint(rows, row);
+  return rows;
 }
 
 function replayUnsafeReasons({ operator, reliability }) {
@@ -579,13 +1018,20 @@ function buildRunObservabilityDetail(payload = {}) {
     projectOperatorItem(row, "action")
   );
   const latestEvent = eventsBlock.latest ? projectObservabilityEvent(eventsBlock.latest) : events[events.length - 1] || null;
-  const latestSnapshot = snapshotsBlock.latest
-    ? projectObservabilitySnapshot(snapshotsBlock.latest)
-    : snapshots[snapshots.length - 1] || null;
+  const latestSnapshotSummary = snapshotsBlock.latest ? projectObservabilitySnapshot(snapshotsBlock.latest) : null;
+  const latestSnapshot =
+    (latestSnapshotSummary && snapshots.find((snapshot) => snapshot.id === latestSnapshotSummary.id)) ||
+    snapshots[snapshots.length - 1] ||
+    latestSnapshotSummary ||
+    null;
   const unsafeReasons = replayUnsafeReasons({ operator, reliability });
   const eventSeqs = events.map((event) => event.seq).filter((seq) => seq > 0);
   const counts = input.counts && typeof input.counts === "object" ? input.counts : {};
   const runStatus = stringValue(run.status, "unknown");
+  const runtimePhase = runtimePhaseValue(run, latestSnapshot);
+  const snapshotDiffs = buildSnapshotDiffRows(snapshots);
+  const resumeReason = resumeReasonFrom({ run, latestSnapshot, snapshots });
+  const recoverySnapshotDiff = crashRecoverySnapshotDiff(snapshotDiffs, resumeReason);
 
   return {
     runId: stringValue(input.run_id || input.runId || run.run_id || run.runId),
@@ -593,8 +1039,16 @@ function buildRunObservabilityDetail(payload = {}) {
     status: runStatus,
     statusLabel: titleCase(runStatus),
     phase: titleCase(
-      run.current_phase_id || run.currentPhaseId || run.phase?.phase_id || run.phase?.phaseId || run.phase?.name || run.phase?.status || runStatus
+      run.current_phase_id ||
+        run.currentPhaseId ||
+        run.phase?.phase_id ||
+        run.phase?.phaseId ||
+        run.phase?.name ||
+        run.phase?.status ||
+        runtimePhase ||
+        runStatus
     ),
+    runtimePhase: titleCase(runtimePhase || runStatus),
     kind: titleCase(run.kind || "workflow"),
     workflowDefinitionVersion: stringValue(
       run.workflow_definition_version || run.workflowDefinitionVersion || latestSnapshot?.workflowDefinitionVersion
@@ -608,6 +1062,8 @@ function buildRunObservabilityDetail(payload = {}) {
     latestEvent,
     snapshots,
     latestSnapshot,
+    snapshotDiffs,
+    crashRecoverySnapshotDiff: recoverySnapshotDiff,
     policyDecisions,
     outbox,
     toolEffects,
@@ -616,6 +1072,10 @@ function buildRunObservabilityDetail(payload = {}) {
     protectedAuditEvents,
     blockingReasons,
     allowedActions,
+    allowedNextPhases: projectAllowedNextPhases({ run, latestSnapshot }),
+    phaseHistory: projectPhaseHistory({ run, latestSnapshot }),
+    lockConstraints: projectLockConstraints({ input, run, latestSnapshot, currentWaitRow }),
+    resumeReason,
     isBlocked: Boolean(operator.is_blocked || operator.isBlocked || blockingReasons.length),
     counts: {
       waits: numberValue(counts.waits, waits.length),

@@ -49,6 +49,7 @@ import {
   timelineSummaryForEvent,
   timelineTitleForEvent,
   timelineToneForEvent,
+  toolStatusFromPayload,
   toolStatusClass,
   toTextError,
   type ConfirmDeleteState,

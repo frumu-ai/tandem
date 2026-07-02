@@ -51,6 +51,33 @@ jobs:
       - name: Run linter
         run: pnpm -C apps/tandem-desktop lint
 
+  test-control-panel:
+    name: Test Control Panel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: packages/tandem-control-panel/pnpm-lock.yaml
+
+      - name: Install control panel dependencies
+        run: pnpm -C packages/tandem-control-panel install --frozen-lockfile
+
+      - name: Typecheck control panel
+        run: pnpm -C packages/tandem-control-panel typecheck
+
+      - name: Run control panel contract tests
+        run: pnpm -C packages/tandem-control-panel test
+
   lint-backend:
     name: Lint Backend
     runs-on: ubuntu-22.04

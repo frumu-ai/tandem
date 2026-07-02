@@ -1,4 +1,4 @@
-import { motion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
 import { Badge, PanelCard, Toolbar } from "../ui/index.tsx";
 import { useSettingsPageController } from "./SettingsPageController";
 

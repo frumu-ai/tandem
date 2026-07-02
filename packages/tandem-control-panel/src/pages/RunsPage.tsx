@@ -4,6 +4,7 @@ import { StatefulRunsPage } from "../features/runs/StatefulRunsPage";
 import { ApprovalWaitsView, RecoveryQueueView, WebhookInboxView } from "../features/runs/StatefulRuntimeQueues";
 import { renderIcons } from "../app/icons.js";
 import type { AppPageProps } from "./pageTypes";
+import { DEFAULT_STATEFUL_RUN_FILTERS } from "../../lib/runs/stateful-runs.js";
 
 type RunsSurface = "runs" | "webhooks" | "approvals" | "recovery";
 
@@ -22,6 +23,7 @@ function replaceRunSelectionHash(runId: string) {
 
 export function RunsPage({ api, client, navigate, toast }: AppPageProps) {
   const [surface, setSurface] = useState<RunsSurface>("runs");
+  const [filters, setFilters] = useState(DEFAULT_STATEFUL_RUN_FILTERS);
 
   useEffect(() => {
     try {
@@ -51,13 +53,40 @@ export function RunsPage({ api, client, navigate, toast }: AppPageProps) {
       </div>
       <div className="min-h-0">
         {surface === "runs" ? (
-          <StatefulRunsPage api={api} client={client} navigate={navigate} />
+          <StatefulRunsPage
+            api={api}
+            client={client}
+            navigate={navigate}
+            filters={filters}
+            onFiltersChange={setFilters}
+          />
         ) : surface === "webhooks" ? (
-          <WebhookInboxView api={api} navigate={navigate} toast={toast} onOpenRun={openRun} />
+          <WebhookInboxView
+            api={api}
+            navigate={navigate}
+            toast={toast}
+            filters={filters}
+            onFiltersChange={setFilters}
+            onOpenRun={openRun}
+          />
         ) : surface === "approvals" ? (
-          <ApprovalWaitsView api={api} navigate={navigate} toast={toast} onOpenRun={openRun} />
+          <ApprovalWaitsView
+            api={api}
+            navigate={navigate}
+            toast={toast}
+            filters={filters}
+            onFiltersChange={setFilters}
+            onOpenRun={openRun}
+          />
         ) : (
-          <RecoveryQueueView api={api} navigate={navigate} toast={toast} onOpenRun={openRun} />
+          <RecoveryQueueView
+            api={api}
+            navigate={navigate}
+            toast={toast}
+            filters={filters}
+            onFiltersChange={setFilters}
+            onOpenRun={openRun}
+          />
         )}
       </div>
     </AnimatedPage>

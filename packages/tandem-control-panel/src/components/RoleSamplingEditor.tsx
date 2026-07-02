@@ -32,7 +32,7 @@ const ROLE_LABELS: Record<string, string> = {
  */
 export function RoleSamplingEditor({ configText, onChange }: RoleSamplingEditorProps) {
   const initial = readRoleSampling(configText);
-  const [drafts, setDrafts] = useState<Drafts>(initial.values);
+  const [drafts, setDrafts] = useState<Drafts>(initial.values as Drafts);
   const [fieldError, setFieldError] = useState<string>("");
   // Tracks text this component wrote, so the echo from `onChange` does not
   // clobber in-progress typing while still re-syncing on external edits.
@@ -41,7 +41,7 @@ export function RoleSamplingEditor({ configText, onChange }: RoleSamplingEditorP
   useEffect(() => {
     if (configText === lastWrittenRef.current) return;
     lastWrittenRef.current = configText;
-    setDrafts(readRoleSampling(configText).values);
+    setDrafts(readRoleSampling(configText).values as Drafts);
     setFieldError("");
   }, [configText]);
 

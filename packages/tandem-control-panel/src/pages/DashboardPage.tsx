@@ -284,7 +284,12 @@ export function DashboardPage(props: AppPageProps) {
                   <Badge tone={stat.tone}>{stat.helper}</Badge>
                 </div>
                 <strong>
-                  <MotionNumber value={stat.value} format={stat.format ?? formatCompactNumber} />
+                  <MotionNumber
+                    value={stat.value}
+                    format={
+                      (stat as { format?: (value: number) => string }).format ?? formatCompactNumber
+                    }
+                  />
                 </strong>
               </div>
             ))}
