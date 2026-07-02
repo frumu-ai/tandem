@@ -72,6 +72,7 @@ struct LinearIssue {
     description: String,
     url: Option<String>,
     state: Option<String>,
+    state_type: Option<String>,
 }
 
 pub async fn publish_draft(
@@ -201,16 +202,24 @@ pub async fn publish_draft(
     }
 
     if let Some(issue) = matched_issue {
-        return record_matched_linear_issue(
-            state,
-            draft,
-            incident.as_ref(),
-            &destination,
-            &target_ref,
-            &evidence_digest,
-            issue,
-        )
-        .await;
+        if linear_issue_is_terminal(&issue) {
+            // Recurrence after the matched issue was completed/canceled: file a
+            // fresh issue instead of silently recording a match, mirroring the
+            // GitHub closed-issue path. Once the new (open) issue exists, future
+            // recurrences match it and record a match rather than re-creating.
+            draft.matched_issue_state = issue.state.clone();
+        } else {
+            return record_matched_linear_issue(
+                state,
+                draft,
+                incident.as_ref(),
+                &destination,
+                &target_ref,
+                &evidence_digest,
+                issue,
+            )
+            .await;
+        }
     }
 
     create_linear_issue_from_draft(
@@ -718,27 +727,78 @@ async fn find_matching_linear_issue(
     draft: &IncidentMonitorDraftRecord,
     evidence_digest: &str,
 ) -> anyhow::Result<Option<LinearIssue>> {
-    let mut issues =
-        call_list_linear_issues(state, tools, team, project, &draft.fingerprint).await?;
-    issues.sort_by_key(|issue| std::cmp::Reverse(issue.identifier.clone()));
+    let issues = call_list_linear_issues(state, tools, team, project, &draft.fingerprint).await?;
     let marker = fingerprint_marker(&draft.fingerprint);
     let evidence = evidence_marker(evidence_digest);
-    if let Some(issue) = issues
-        .iter()
-        .find(|issue| issue.description.contains(&marker) || issue.description.contains(&evidence))
-        .cloned()
-    {
-        return Ok(Some(issue));
-    }
     let normalized_title = draft
         .title
         .as_deref()
         .map(|value| value.trim().to_ascii_lowercase())
         .unwrap_or_default();
-    Ok(issues.into_iter().find(|issue| {
-        issue.title.trim().eq_ignore_ascii_case(&normalized_title)
-            || issue.description.contains(&draft.fingerprint)
-    }))
+    Ok(select_matching_linear_issue(
+        issues,
+        &marker,
+        &evidence,
+        &normalized_title,
+        &draft.fingerprint,
+    ))
+}
+
+/// Whether a Linear issue is in a terminal (completed/canceled) state. Prefers
+/// the canonical workflow-state `type` and falls back to the state name.
+fn linear_issue_is_terminal(issue: &LinearIssue) -> bool {
+    if let Some(state_type) = issue.state_type.as_deref() {
+        return matches!(
+            state_type.trim().to_ascii_lowercase().as_str(),
+            "completed" | "canceled" | "cancelled"
+        );
+    }
+    match issue.state.as_deref() {
+        Some(name) => matches!(
+            name.trim().to_ascii_lowercase().as_str(),
+            "done"
+                | "completed"
+                | "complete"
+                | "closed"
+                | "canceled"
+                | "cancelled"
+                | "resolved"
+                | "won't do"
+                | "wont do"
+                | "won't fix"
+                | "wontfix"
+        ),
+        None => false,
+    }
+}
+
+/// Select the best matching Linear issue for a draft. Marker/evidence matches
+/// take priority over title/fingerprint matches, and within each an open
+/// (non-terminal) issue is preferred over a terminal one so recurrences converge
+/// onto the currently-open issue instead of repeatedly matching a closed one.
+fn select_matching_linear_issue(
+    mut issues: Vec<LinearIssue>,
+    marker: &str,
+    evidence: &str,
+    normalized_title: &str,
+    fingerprint: &str,
+) -> Option<LinearIssue> {
+    issues.sort_by_key(|issue| std::cmp::Reverse(issue.identifier.clone()));
+    let is_marker_match = |issue: &LinearIssue| {
+        issue.description.contains(marker) || issue.description.contains(evidence)
+    };
+    let is_title_match = |issue: &LinearIssue| {
+        issue.title.trim().eq_ignore_ascii_case(normalized_title)
+            || issue.description.contains(fingerprint)
+    };
+    let prefer_open = |predicate: &dyn Fn(&LinearIssue) -> bool| -> Option<LinearIssue> {
+        issues
+            .iter()
+            .find(|issue| predicate(issue) && !linear_issue_is_terminal(issue))
+            .cloned()
+            .or_else(|| issues.iter().find(|issue| predicate(issue)).cloned())
+    };
+    prefer_open(&is_marker_match).or_else(|| prefer_open(&is_title_match))
 }
 
 async fn successful_post_by_idempotency(
@@ -1218,6 +1278,11 @@ fn collect_linear_issues(value: &Value, out: &mut Vec<LinearIssue>) {
                         .map(ToString::to_string)
                 })
             });
+            let state_type = map
+                .get("state")
+                .and_then(|value| value.get("type"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
             let issue_like =
                 id.is_some() || identifier.is_some() || url.as_deref().is_some_and(is_linear_url);
             if issue_like && (!title.is_empty() || !description.is_empty()) {
@@ -1228,6 +1293,7 @@ fn collect_linear_issues(value: &Value, out: &mut Vec<LinearIssue>) {
                     description,
                     url,
                     state,
+                    state_type,
                 });
             }
             for nested in map.values() {
@@ -1373,5 +1439,78 @@ async fn mirror_linear_post_as_external_action(
             post.post_id,
             error
         );
+    }
+}
+
+#[cfg(test)]
+mod linear_recurrence_tests {
+    use super::*;
+
+    fn issue(
+        identifier: &str,
+        description: &str,
+        state: Option<&str>,
+        state_type: Option<&str>,
+    ) -> LinearIssue {
+        LinearIssue {
+            id: Some(identifier.to_string()),
+            identifier: Some(identifier.to_string()),
+            title: "Failure".to_string(),
+            description: description.to_string(),
+            url: None,
+            state: state.map(ToString::to_string),
+            state_type: state_type.map(ToString::to_string),
+        }
+    }
+
+    #[test]
+    fn terminal_detection_prefers_state_type() {
+        // TAN-551: the canonical workflow-state type wins over the display name.
+        assert!(linear_issue_is_terminal(&issue(
+            "T-1",
+            "",
+            Some("In Progress"),
+            Some("completed")
+        )));
+        assert!(linear_issue_is_terminal(&issue("T-2", "", None, Some("canceled"))));
+        assert!(!linear_issue_is_terminal(&issue(
+            "T-3",
+            "",
+            Some("Done"),
+            Some("started")
+        )));
+    }
+
+    #[test]
+    fn terminal_detection_falls_back_to_state_name() {
+        assert!(linear_issue_is_terminal(&issue("T-1", "", Some("Done"), None)));
+        assert!(linear_issue_is_terminal(&issue("T-2", "", Some("Canceled"), None)));
+        assert!(!linear_issue_is_terminal(&issue(
+            "T-3",
+            "",
+            Some("In Progress"),
+            None
+        )));
+        assert!(!linear_issue_is_terminal(&issue("T-4", "", None, None)));
+    }
+
+    #[test]
+    fn selection_prefers_open_marker_match_over_closed() {
+        let marker = fingerprint_marker("fp-1");
+        let closed = issue("T-9", &marker, Some("Done"), Some("completed"));
+        let open = issue("T-8", &marker, Some("In Progress"), Some("started"));
+        let picked =
+            select_matching_linear_issue(vec![closed, open], &marker, "evidence-x", "failure", "fp-1");
+        assert_eq!(picked.and_then(|issue| issue.identifier), Some("T-8".to_string()));
+    }
+
+    #[test]
+    fn selection_returns_closed_match_when_no_open_exists() {
+        let marker = fingerprint_marker("fp-1");
+        let closed = issue("T-9", &marker, Some("Canceled"), Some("canceled"));
+        let picked =
+            select_matching_linear_issue(vec![closed], &marker, "evidence-x", "failure", "fp-1");
+        assert!(picked.as_ref().map(linear_issue_is_terminal).unwrap_or(false));
+        assert_eq!(picked.and_then(|issue| issue.identifier), Some("T-9".to_string()));
     }
 }
