@@ -96,7 +96,21 @@ async fn poll_enabled_sources(state: &AppState, now_ms: u64) -> anyhow::Result<(
             if now_ms < last_poll_at.saturating_add(source.watch_interval_seconds * 1000) {
                 continue;
             }
-            let status = poll_log_source_once(state, project, source, now_ms).await?;
+            let status = match poll_log_source_once(state, project, source, now_ms).await {
+                Ok(status) => status,
+                Err(error) => {
+                    // A hard error on one source (e.g. a file truncated mid-read)
+                    // must not abort the whole tick and discard the statuses
+                    // accumulated for the other sources.
+                    tracing::warn!(
+                        project_id = %project.project_id,
+                        source_id = %source.source_id,
+                        error = %error,
+                        "incident monitor log source poll failed; skipping this source for the tick"
+                    );
+                    continue;
+                }
+            };
             source_statuses.retain(|row| {
                 !(row.project_id == status.project_id && row.source_id == status.source_id)
             });

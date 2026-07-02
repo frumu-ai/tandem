@@ -1069,6 +1069,15 @@ pub struct IncidentMonitorDraftRecord {
     pub quality_gate: Option<IncidentMonitorQualityGateReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_post_error: Option<String>,
+    /// Number of times the recovery sweep has re-surfaced this draft after a
+    /// triage timeout. Bounds re-attempts so a permanently-unpublishable draft
+    /// is not re-published (with the associated audit/probe events) every sweep.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub recovery_attempts: u32,
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

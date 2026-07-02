@@ -204,3 +204,62 @@ async fn recovery_publish_honors_source_approval_policy() {
     assert_eq!(stored.status, "approval_required");
     assert_eq!(stored.github_status.as_deref(), Some("approval_required"));
 }
+
+#[tokio::test]
+async fn overdue_recovery_stops_after_attempt_cap_for_unpublishable_draft() {
+    // TAN-554: a permanently-unpublishable timed-out draft must stop being
+    // re-surfaced after a bounded number of recovery attempts instead of
+    // churning (and emitting publish/probe events) on every sweep.
+    let state = incident_monitor_recovery_state("incident-monitor-recovery-attempt-cap");
+    state
+        .put_incident_monitor_config(IncidentMonitorConfig {
+            enabled: true,
+            paused: false,
+            repo: Some("frumu-ai/tandem".to_string()),
+            triage_timeout_ms: Some(0),
+            ..Default::default()
+        })
+        .await
+        .expect("put incident monitor config");
+
+    let draft_id = "failure-draft-attempt-cap";
+    let triage_run_id = "automation-v2-run-attempt-cap";
+    let incident_id = "failure-incident-attempt-cap";
+    state
+        .put_incident_monitor_draft(timed_out_draft(draft_id, triage_run_id))
+        .await
+        .expect("put timed out draft");
+    state
+        .put_incident_monitor_incident(incident_for_draft(incident_id, draft_id, triage_run_id))
+        .await
+        .expect("put incident");
+
+    let mut recovered_rounds = 0;
+    for _ in 0..8 {
+        let recovered = recover_overdue_incident_monitor_triage_runs(&state)
+            .await
+            .expect("recover overdue triage");
+        if recovered.is_empty() {
+            break;
+        }
+        recovered_rounds += 1;
+    }
+
+    assert_eq!(
+        recovered_rounds, 5,
+        "recovery should re-surface the draft only up to the attempt cap"
+    );
+    let draft = state
+        .get_incident_monitor_draft(draft_id)
+        .await
+        .expect("draft still present");
+    assert_eq!(draft.recovery_attempts, 5);
+
+    let recovered = recover_overdue_incident_monitor_triage_runs(&state)
+        .await
+        .expect("recover overdue triage");
+    assert!(
+        recovered.is_empty(),
+        "a capped draft must not be re-surfaced again"
+    );
+}

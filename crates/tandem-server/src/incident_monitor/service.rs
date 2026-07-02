@@ -18,6 +18,9 @@ fn incident_monitor_triage_timeout_deadline_ms(created_at_ms: u64, timeout_ms: u
 
 const INCIDENT_MONITOR_TRIAGE_AUTOMATION_PREFIX: &str = "automation-v2-incident-monitor-triage-";
 const INCIDENT_MONITOR_TRIAGE_AGENT_ROLE: &str = "incident_monitor_triage_agent";
+/// Maximum times the recovery sweep re-surfaces a timed-out draft before giving
+/// up, so a permanently-unpublishable draft stops churning every sweep.
+const MAX_INCIDENT_MONITOR_RECOVERY_ATTEMPTS: u32 = 5;
 
 /// Strip per-run identifiers from a failure reason before fingerprinting
 /// so that recurrences of the same logical failure dedup correctly.
@@ -319,8 +322,23 @@ pub async fn recover_overdue_incident_monitor_triage_runs(
             continue;
         }
         if draft_is_triage_timed_out(&draft) {
+            if draft.recovery_attempts >= MAX_INCIDENT_MONITOR_RECOVERY_ATTEMPTS {
+                // Stop re-surfacing a permanently-unpublishable timed-out draft
+                // instead of re-attempting it (and emitting publish/probe audit
+                // events) on every sweep.
+                continue;
+            }
             let incident_id =
                 incident_monitor_incident_for_draft(state, &draft.draft_id, &triage_run_id).await;
+            let mut updated = draft.clone();
+            updated.recovery_attempts = updated.recovery_attempts.saturating_add(1);
+            if let Err(error) = state.put_incident_monitor_draft(updated).await {
+                tracing::warn!(
+                    draft_id = %draft.draft_id,
+                    error = %error,
+                    "failed to persist incident monitor recovery attempt count",
+                );
+            }
             recovered.push((draft.draft_id.clone(), incident_id));
             continue;
         }
