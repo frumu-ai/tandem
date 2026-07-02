@@ -10,9 +10,7 @@ use crate::app::state::automation::{record_automation_lifecycle_event, QueueReas
 use crate::app::state::AppState;
 use crate::automation_v2::executor::run_automation_v2_run;
 use crate::automation_v2::types::{AutomationRunStatus, AutomationStopKind, AutomationV2RunRecord};
-use crate::stateful_runtime::{
-    process_due_stateful_waits, StatefulRuntimeStoragePaths,
-};
+use crate::stateful_runtime::{process_due_stateful_waits, StatefulRuntimeStoragePaths};
 
 const STALE_RUNNING_AUTOMATION_RUN_MS: u64 = 600_000;
 
@@ -75,9 +73,10 @@ async fn run_automation_v2_executor_supervised(state: AppState) {
 
 async fn process_stateful_wait_scheduler_tick(state: &AppState) {
     let paths = StatefulRuntimeStoragePaths::from_runtime_events_path(&state.runtime_events_path);
-    let tick = process_due_stateful_waits(&paths, crate::util::time::now_ms(), Default::default())
-        .await;
+    let tick =
+        process_due_stateful_waits(&paths, crate::util::time::now_ms(), Default::default()).await;
     for outcome in &tick.outcomes {
+        let _ = state.apply_stateful_wait_scheduler_outcome(outcome).await;
         state.event_bus.publish(EngineEvent::new(
             outcome.event_type.clone(),
             serde_json::json!({
@@ -485,5 +484,96 @@ mod tests {
             .await
             .expect("persisted run");
         assert_eq!(persisted.scheduler, Some(meta));
+    }
+
+    #[tokio::test]
+    async fn scheduler_wait_wake_requeues_authoritative_automation_run() {
+        let workspace_root =
+            std::env::temp_dir().join(format!("tandem-stateful-wait-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&workspace_root).expect("workspace");
+        let workspace_root = workspace_root.to_string_lossy().to_string();
+        let state = ready_test_state().await;
+        let automation = test_automation(&workspace_root);
+        state
+            .put_automation_v2(automation.clone())
+            .await
+            .expect("put automation");
+        let run = state
+            .create_automation_v2_run(&automation, "manual")
+            .await
+            .expect("create queued run");
+        let run_id = run.run_id.clone();
+        let paused = state
+            .update_automation_v2_run(&run_id, |row| {
+                row.status = AutomationRunStatus::Paused;
+                row.detail = Some("sleeping until timer wait".to_string());
+                row.pause_reason = Some("timer wait".to_string());
+            })
+            .await
+            .expect("pause run");
+        let paths = crate::stateful_runtime::StatefulRuntimeStoragePaths::from_runtime_events_path(
+            &state.runtime_events_path,
+        );
+        let now = crate::util::time::now_ms();
+        crate::stateful_runtime::upsert_stateful_wait(
+            &paths.waits_path,
+            crate::stateful_runtime::StatefulWaitRecord {
+                schema_version: 1,
+                wait_id: "timer-wait-resume".to_string(),
+                run_id: run_id.clone(),
+                wait_kind: crate::stateful_runtime::StatefulWaitKind::Timer,
+                status: crate::stateful_runtime::StatefulWaitStatus::Waiting,
+                scope: crate::stateful_runtime::StatefulRuntimeScope::from_tenant_context(
+                    paused.tenant_context.clone(),
+                ),
+                phase_id: Some("sleep".to_string()),
+                reason: Some("resume paused automation after timer".to_string()),
+                created_at_ms: now.saturating_sub(10_000),
+                updated_at_ms: now.saturating_sub(10_000),
+                wake_at_ms: Some(now.saturating_sub(1)),
+                timeout_policy: None,
+                event_seq: None,
+                wake_idempotency_key: None,
+                claimed_by: None,
+                claimed_at_ms: None,
+                claim_expires_at_ms: None,
+                completed_at_ms: None,
+                metadata: None,
+            },
+        )
+        .await
+        .expect("upsert wait");
+
+        process_stateful_wait_scheduler_tick(&state).await;
+
+        let updated = state
+            .get_automation_v2_run(&run_id)
+            .await
+            .expect("updated run");
+        assert_eq!(updated.status, AutomationRunStatus::Queued);
+        assert_eq!(
+            updated.resume_reason.as_deref(),
+            Some("stateful_runtime.wait.timer_woken")
+        );
+        assert!(updated
+            .checkpoint
+            .lifecycle_history
+            .iter()
+            .any(|entry| entry.event == "stateful_wait_woken_requeued"));
+        let waits = crate::stateful_runtime::list_stateful_waits(
+            &paths.waits_path,
+            &updated.tenant_context,
+            crate::stateful_runtime::StatefulWaitQuery {
+                run_id: Some(&run_id),
+                wait_kind: Some(crate::stateful_runtime::StatefulWaitKind::Timer),
+                status: None,
+                limit: None,
+            },
+        );
+        assert_eq!(waits.len(), 1);
+        assert_eq!(
+            waits[0].status,
+            crate::stateful_runtime::StatefulWaitStatus::Woken
+        );
     }
 }

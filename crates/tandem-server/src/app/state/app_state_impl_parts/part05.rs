@@ -162,6 +162,100 @@ fn refresh_stale_running_detail(run: &mut AutomationV2RunRecord) {
     }
 }
 
+fn approval_wait_ref_for_gate(
+    run: &AutomationV2RunRecord,
+    gate: &crate::AutomationPendingGate,
+) -> tandem_types::ApprovalWaitRef {
+    tandem_types::ApprovalWaitRef::for_gate(
+        tandem_types::ApprovalSourceKind::AutomationV2,
+        &run.run_id,
+        &gate.node_id,
+    )
+}
+
+fn approval_gate_timeout_policy(
+    gate: &crate::AutomationPendingGate,
+) -> Option<crate::stateful_runtime::StatefulWaitTimeoutPolicy> {
+    let policy = automation::effective_automation_gate_expiry_policy(gate)?;
+    let timeout_at_ms = automation::automation_gate_expires_at_ms(gate)?;
+    let on_timeout = match policy
+        .on_expiry
+        .unwrap_or(crate::AutomationGateExpiryAction::Cancel)
+    {
+        crate::AutomationGateExpiryAction::Cancel => {
+            crate::stateful_runtime::StatefulWaitTimeoutAction::Cancel
+        }
+        crate::AutomationGateExpiryAction::Escalate => {
+            crate::stateful_runtime::StatefulWaitTimeoutAction::Escalate
+        }
+        crate::AutomationGateExpiryAction::Remind => {
+            crate::stateful_runtime::StatefulWaitTimeoutAction::Remind
+        }
+    };
+    Some(crate::stateful_runtime::StatefulWaitTimeoutPolicy {
+        timeout_at_ms,
+        on_timeout,
+        escalate_to: policy.escalate_to,
+        remind_every_ms: policy.remind_every_ms,
+        metadata: Some(json!({
+            "source": "automation_v2.awaiting_gate",
+            "gate_node_id": &gate.node_id,
+        })),
+    })
+}
+
+fn automation_v2_approval_wait_record(
+    run: &AutomationV2RunRecord,
+    gate: &crate::AutomationPendingGate,
+) -> crate::stateful_runtime::StatefulWaitRecord {
+    let approval_wait = approval_wait_ref_for_gate(run, gate);
+    let stateful_run = crate::stateful_runtime::stateful_run_from_automation_v2(run);
+    crate::stateful_runtime::StatefulWaitRecord {
+        schema_version: 1,
+        wait_id: approval_wait.wait_id.clone(),
+        run_id: run.run_id.clone(),
+        wait_kind: crate::stateful_runtime::StatefulWaitKind::Approval,
+        status: crate::stateful_runtime::StatefulWaitStatus::Waiting,
+        scope: stateful_run.scope,
+        phase_id: Some(gate.node_id.clone()),
+        reason: Some(format!("awaiting approval for gate `{}`", gate.node_id)),
+        created_at_ms: gate.requested_at_ms,
+        updated_at_ms: now_ms(),
+        wake_at_ms: None,
+        timeout_policy: approval_gate_timeout_policy(gate),
+        event_seq: None,
+        wake_idempotency_key: None,
+        claimed_by: None,
+        claimed_at_ms: None,
+        claim_expires_at_ms: None,
+        completed_at_ms: None,
+        metadata: Some(json!({
+            "source": "automation_v2.awaiting_gate",
+            "approval_wait": approval_wait,
+            "automation_id": &run.automation_id,
+            "gate": {
+                "node_id": &gate.node_id,
+                "title": &gate.title,
+                "decisions": &gate.decisions,
+                "requested_at_ms": gate.requested_at_ms,
+                "upstream_node_ids": &gate.upstream_node_ids,
+                "rework_targets": &gate.rework_targets,
+            },
+            "gate_metadata": &gate.metadata,
+        })),
+    }
+}
+
+fn automation_run_is_terminal_status(status: &AutomationRunStatus) -> bool {
+    matches!(
+        status,
+        AutomationRunStatus::Completed
+            | AutomationRunStatus::Blocked
+            | AutomationRunStatus::Failed
+            | AutomationRunStatus::Cancelled
+    )
+}
+
 #[cfg(test)]
 mod stale_auto_resume_window_tests {
     use super::{
@@ -361,9 +455,7 @@ impl AppState {
             let Some(gate) = run.checkpoint.awaiting_gate.as_ref().cloned() else {
                 continue;
             };
-            let Some(policy) =
-                automation::effective_automation_gate_expiry_policy(&gate)
-            else {
+            let Some(policy) = automation::effective_automation_gate_expiry_policy(&gate) else {
                 continue;
             };
             let Some(expires_at_ms) = automation::automation_gate_expires_at_ms(&gate) else {
@@ -936,6 +1028,356 @@ impl AppState {
             .store(stopping, Ordering::Relaxed);
     }
 
+    async fn sync_automation_v2_durable_wait_transition(
+        &self,
+        previous_status: AutomationRunStatus,
+        previous_gate: Option<crate::AutomationPendingGate>,
+        run: &AutomationV2RunRecord,
+    ) {
+        if let Err(error) = self
+            .sync_automation_v2_durable_wait_transition_inner(previous_status, previous_gate, run)
+            .await
+        {
+            tracing::warn!(
+                run_id = %run.run_id,
+                error = %error,
+                "failed to sync automation v2 durable wait state"
+            );
+        }
+    }
+
+    async fn sync_automation_v2_durable_wait_transition_inner(
+        &self,
+        previous_status: AutomationRunStatus,
+        previous_gate: Option<crate::AutomationPendingGate>,
+        run: &AutomationV2RunRecord,
+    ) -> anyhow::Result<()> {
+        if run.status == AutomationRunStatus::AwaitingApproval {
+            if let Some(gate) = run.checkpoint.awaiting_gate.as_ref() {
+                self.upsert_automation_v2_approval_wait(run, gate).await?;
+                return Ok(());
+            }
+        }
+
+        let Some(gate) = previous_gate else {
+            return Ok(());
+        };
+        if previous_status != AutomationRunStatus::AwaitingApproval {
+            return Ok(());
+        }
+        if run
+            .checkpoint
+            .awaiting_gate
+            .as_ref()
+            .is_some_and(|current| current.node_id == gate.node_id)
+        {
+            return Ok(());
+        }
+        self.complete_automation_v2_approval_wait(run, &gate).await
+    }
+
+    async fn upsert_automation_v2_approval_wait(
+        &self,
+        run: &AutomationV2RunRecord,
+        gate: &crate::AutomationPendingGate,
+    ) -> anyhow::Result<()> {
+        let paths = crate::stateful_runtime::StatefulRuntimeStoragePaths::from_runtime_events_path(
+            &self.runtime_events_path,
+        );
+        let wait = automation_v2_approval_wait_record(run, gate);
+        let existing = crate::stateful_runtime::list_stateful_waits(
+            &paths.waits_path,
+            &run.tenant_context,
+            crate::stateful_runtime::StatefulWaitQuery {
+                run_id: Some(&run.run_id),
+                wait_kind: Some(crate::stateful_runtime::StatefulWaitKind::Approval),
+                status: None,
+                limit: None,
+            },
+        )
+        .into_iter()
+        .find(|existing| existing.wait_id == wait.wait_id);
+
+        if let Some(existing) = existing {
+            let same_gate_instance = existing.created_at_ms >= gate.requested_at_ms;
+            if existing.status.is_terminal() && same_gate_instance {
+                return Ok(());
+            }
+            if existing.status == crate::stateful_runtime::StatefulWaitStatus::Claimed
+                && existing.claim_is_active_at(now_ms())
+            {
+                return Ok(());
+            }
+        }
+
+        crate::stateful_runtime::upsert_stateful_wait(&paths.waits_path, wait).await?;
+        Ok(())
+    }
+
+    async fn complete_automation_v2_approval_wait(
+        &self,
+        run: &AutomationV2RunRecord,
+        gate: &crate::AutomationPendingGate,
+    ) -> anyhow::Result<()> {
+        let paths = crate::stateful_runtime::StatefulRuntimeStoragePaths::from_runtime_events_path(
+            &self.runtime_events_path,
+        );
+        let approval_wait = approval_wait_ref_for_gate(run, gate);
+        let Some(existing) = crate::stateful_runtime::list_stateful_waits(
+            &paths.waits_path,
+            &run.tenant_context,
+            crate::stateful_runtime::StatefulWaitQuery {
+                run_id: Some(&run.run_id),
+                wait_kind: Some(crate::stateful_runtime::StatefulWaitKind::Approval),
+                status: None,
+                limit: None,
+            },
+        )
+        .into_iter()
+        .find(|wait| wait.wait_id == approval_wait.wait_id) else {
+            return Ok(());
+        };
+        if existing.status.is_terminal() {
+            return Ok(());
+        }
+
+        let wait_status = if run.status == AutomationRunStatus::Queued {
+            crate::stateful_runtime::StatefulWaitStatus::Woken
+        } else {
+            crate::stateful_runtime::StatefulWaitStatus::Cancelled
+        };
+        let event_type = if wait_status == crate::stateful_runtime::StatefulWaitStatus::Woken {
+            "stateful_runtime.wait.approval_woken"
+        } else {
+            "stateful_runtime.wait.approval_cancelled"
+        };
+        let completion_key = format!(
+            "approval:{}:{}:{}:{wait_status:?}",
+            run.run_id, gate.node_id, gate.requested_at_ms
+        );
+        let event_id = format!("stateful-approval-wait-{completion_key}");
+        let gate_decision = run
+            .checkpoint
+            .gate_history
+            .iter()
+            .rev()
+            .find(|record| record.node_id == gate.node_id);
+        let event = crate::stateful_runtime::StatefulRunEventRecord {
+            schema_version: 1,
+            event_id,
+            run_id: run.run_id.clone(),
+            seq: 0,
+            event_type: event_type.to_string(),
+            occurred_at_ms: run.updated_at_ms,
+            scope: existing.scope.clone(),
+            actor: None,
+            phase_id: Some(gate.node_id.clone()),
+            phase_transition: None,
+            wait_kind: Some(crate::stateful_runtime::StatefulWaitKind::Approval),
+            causation_id: Some(approval_wait.approval_request_id.clone()),
+            correlation_id: Some(completion_key.clone()),
+            payload: json!({
+                "source": "automation_v2.awaiting_gate",
+                "wait_id": &approval_wait.wait_id,
+                "approval_request_id": &approval_wait.approval_request_id,
+                "node_id": &gate.node_id,
+                "wait_status": &wait_status,
+                "run_status": &run.status,
+                "decision": gate_decision.map(|record| record.decision.clone()),
+                "completion_key": &completion_key,
+            }),
+        };
+        let (_appended, seq) =
+            crate::stateful_runtime::append_stateful_run_event_once_with_next_seq(
+                &paths.run_events_path,
+                &run.tenant_context,
+                &event,
+            )
+            .await?;
+
+        if wait_status == crate::stateful_runtime::StatefulWaitStatus::Woken {
+            let _ = crate::stateful_runtime::mark_stateful_wait_woken(
+                &paths.waits_path,
+                &run.tenant_context,
+                &run.run_id,
+                &existing.wait_id,
+                &completion_key,
+                seq,
+                run.updated_at_ms,
+            )
+            .await?;
+        } else {
+            let _ = crate::stateful_runtime::mark_stateful_wait_timeout_result(
+                &paths.waits_path,
+                &run.tenant_context,
+                &run.run_id,
+                &existing.wait_id,
+                &completion_key,
+                seq,
+                wait_status,
+                run.updated_at_ms,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn requeue_automation_v2_run_from_stateful_wait_wake(
+        &self,
+        run_id: &str,
+        wait_id: &str,
+        event_type: &str,
+        event_seq: u64,
+        detail: String,
+        metadata: Value,
+    ) -> Option<AutomationV2RunRecord> {
+        let mut applied = false;
+        let updated = self
+            .update_automation_v2_run(run_id, |row| {
+                if automation_run_is_terminal_status(&row.status)
+                    || matches!(
+                        row.status,
+                        AutomationRunStatus::Queued | AutomationRunStatus::Running
+                    )
+                {
+                    return;
+                }
+                row.status = AutomationRunStatus::Queued;
+                row.detail = Some(detail.clone());
+                row.resume_reason = Some(event_type.to_string());
+                row.pause_reason = None;
+                row.stop_kind = None;
+                row.stop_reason = None;
+                row.active_session_ids.clear();
+                row.latest_session_id = None;
+                row.active_instance_ids.clear();
+                automation::record_automation_lifecycle_event_with_metadata(
+                    row,
+                    "stateful_wait_woken_requeued",
+                    Some(detail.clone()),
+                    None,
+                    Some(json!({
+                        "wait_id": wait_id,
+                        "event_type": event_type,
+                        "event_seq": event_seq,
+                        "wake": &metadata,
+                    })),
+                );
+                applied = true;
+            })
+            .await;
+        if applied {
+            updated
+        } else {
+            None
+        }
+    }
+
+    pub(crate) async fn apply_stateful_wait_scheduler_outcome(
+        &self,
+        outcome: &crate::stateful_runtime::StatefulWaitSchedulerOutcome,
+    ) -> Option<AutomationV2RunRecord> {
+        match outcome.run_status {
+            crate::stateful_runtime::StatefulWorkflowRunStatus::Running => {
+                self.requeue_automation_v2_run_from_stateful_wait_wake(
+                    &outcome.run_id,
+                    &outcome.wait_id,
+                    &outcome.event_type,
+                    outcome.event_seq,
+                    format!(
+                        "stateful wait `{}` completed; run queued for resume",
+                        outcome.wait_id
+                    ),
+                    json!({
+                        "wait_status": &outcome.wait_status,
+                        "lag_ms": outcome.lag_ms,
+                    }),
+                )
+                .await
+            }
+            crate::stateful_runtime::StatefulWorkflowRunStatus::Cancelled => {
+                let mut applied = false;
+                let detail = format!(
+                    "stateful wait `{}` cancelled the run after timeout",
+                    outcome.wait_id
+                );
+                let updated = self
+                    .update_automation_v2_run(&outcome.run_id, |row| {
+                        if automation_run_is_terminal_status(&row.status) {
+                            return;
+                        }
+                        row.status = AutomationRunStatus::Cancelled;
+                        row.detail = Some(detail.clone());
+                        row.stop_kind = Some(AutomationStopKind::Cancelled);
+                        row.stop_reason = Some(detail.clone());
+                        row.checkpoint.awaiting_gate = None;
+                        row.active_session_ids.clear();
+                        row.latest_session_id = None;
+                        row.active_instance_ids.clear();
+                        automation::record_automation_lifecycle_event_with_metadata(
+                            row,
+                            "stateful_wait_timeout_cancelled_run",
+                            Some(detail.clone()),
+                            Some(AutomationStopKind::Cancelled),
+                            Some(json!({
+                                "wait_id": &outcome.wait_id,
+                                "event_type": &outcome.event_type,
+                                "event_seq": outcome.event_seq,
+                                "wait_status": &outcome.wait_status,
+                                "lag_ms": outcome.lag_ms,
+                            })),
+                        );
+                        applied = true;
+                    })
+                    .await;
+                if applied {
+                    updated
+                } else {
+                    None
+                }
+            }
+            crate::stateful_runtime::StatefulWorkflowRunStatus::Paused => {
+                let mut applied = false;
+                let detail = format!(
+                    "stateful wait `{}` timed out and paused for operator action",
+                    outcome.wait_id
+                );
+                let updated = self
+                    .update_automation_v2_run(&outcome.run_id, |row| {
+                        if automation_run_is_terminal_status(&row.status) {
+                            return;
+                        }
+                        if row.status != AutomationRunStatus::AwaitingApproval {
+                            row.status = AutomationRunStatus::Paused;
+                            row.pause_reason = Some(detail.clone());
+                        }
+                        row.detail = Some(detail.clone());
+                        automation::record_automation_lifecycle_event_with_metadata(
+                            row,
+                            "stateful_wait_timeout_paused_run",
+                            Some(detail.clone()),
+                            None,
+                            Some(json!({
+                                "wait_id": &outcome.wait_id,
+                                "event_type": &outcome.event_type,
+                                "event_seq": outcome.event_seq,
+                                "wait_status": &outcome.wait_status,
+                                "lag_ms": outcome.lag_ms,
+                            })),
+                        );
+                        applied = true;
+                    })
+                    .await;
+                if applied {
+                    updated
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     pub async fn fail_running_automation_runs_for_shutdown(&self) -> usize {
         let run_ids = self
             .automation_v2_runs
@@ -1007,6 +1449,7 @@ impl AppState {
         }
         let run = guard.get_mut(run_id)?;
         let previous_status = run.status.clone();
+        let previous_gate = run.checkpoint.awaiting_gate.clone();
         update(run);
         refresh_stale_running_detail(run);
         if run.status != AutomationRunStatus::Queued {
@@ -1033,6 +1476,12 @@ impl AppState {
         let _ = self.persist_automation_v2_run_status_json(&out).await;
         self.project_automation_v2_stateful_boundaries_or_warn(&out)
             .await;
+        self.sync_automation_v2_durable_wait_transition(
+            previous_status.clone(),
+            previous_gate,
+            &out,
+        )
+        .await;
         if matches!(
             out.status,
             AutomationRunStatus::Completed
