@@ -641,6 +641,36 @@ pub fn is_high_risk(value: Option<&str>) -> bool {
     )
 }
 
+/// Ordinal rank of a risk level so two values can be compared for flooring.
+/// Unknown/empty ranks lowest so a configured floor always wins over it.
+fn risk_level_rank(value: Option<&str>) -> u8 {
+    match normalize_route_value(value).unwrap_or_default().as_str() {
+        "critical" | "urgent" | "severe" => 5,
+        "high" => 4,
+        "medium" | "moderate" => 3,
+        "low" => 2,
+        "info" | "informational" | "none" => 1,
+        _ => 0,
+    }
+}
+
+/// Apply the server-controlled `minimum_risk_level` floor from safety defaults.
+/// A reporter-supplied `risk_level` can never lower the effective classification
+/// below the operator's floor, closing the severity-downgrade spoof (TAN-548).
+fn floor_risk_level(config: &IncidentMonitorConfig, context: &mut IncidentMonitorRouteContext) {
+    let Some(floor) = config
+        .safety_defaults
+        .minimum_risk_level
+        .as_deref()
+        .and_then(|value| normalize_route_value(Some(value)))
+    else {
+        return;
+    };
+    if risk_level_rank(Some(&floor)) > risk_level_rank(context.risk_level.as_deref()) {
+        context.risk_level = Some(floor);
+    }
+}
+
 fn validate_publish_plan(
     config: &IncidentMonitorConfig,
     preview: &IncidentMonitorRoutePreviewResponse,
@@ -999,6 +1029,10 @@ fn enrich_route_context_from_sources(
     context: &IncidentMonitorRouteContext,
 ) -> IncidentMonitorRouteContext {
     let mut out = context.clone();
+    // Server-side risk floor is a global operator control: apply it before any
+    // early return so an untrusted reporter can never dodge it, whatever the
+    // project/source binding resolves to.
+    floor_risk_level(config, &mut out);
     let Some(project_id) = out.project_id.as_deref() else {
         return out;
     };
@@ -1413,7 +1447,8 @@ fn push_unique(values: &mut Vec<String>, value: &str) {
 mod tests {
     use super::*;
     use crate::{
-        IncidentMonitorLogSource, IncidentMonitorMonitoredProject, IncidentMonitorSourceKind,
+        IncidentMonitorLogSource, IncidentMonitorMonitoredProject, IncidentMonitorSafetyDefaults,
+        IncidentMonitorSourceKind,
     };
 
     fn source_bound_config() -> IncidentMonitorConfig {
@@ -1808,5 +1843,58 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn minimum_risk_level_floor_blocks_reporter_downgrade() {
+        // TAN-548: a reporter labelling a high-risk incident "low" must not be
+        // able to slip under the high-risk approval gate when the operator has
+        // configured a server-side floor.
+        let config = IncidentMonitorConfig {
+            safety_defaults: IncidentMonitorSafetyDefaults {
+                minimum_risk_level: Some("high".to_string()),
+                ..IncidentMonitorSafetyDefaults::default()
+            },
+            ..IncidentMonitorConfig::default()
+        };
+        let context = IncidentMonitorRouteContext {
+            risk_level: Some("low".to_string()),
+            ..IncidentMonitorRouteContext::default()
+        };
+        let enriched = enrich_route_context_from_sources(&config, &context);
+        assert_eq!(enriched.risk_level.as_deref(), Some("high"));
+        assert!(
+            is_high_risk(enriched.risk_level.as_deref()),
+            "floored risk must trip the high-risk approval gate"
+        );
+    }
+
+    #[test]
+    fn minimum_risk_level_floor_never_downgrades_a_higher_report() {
+        // The floor only raises; a report already above the floor is untouched.
+        let config = IncidentMonitorConfig {
+            safety_defaults: IncidentMonitorSafetyDefaults {
+                minimum_risk_level: Some("medium".to_string()),
+                ..IncidentMonitorSafetyDefaults::default()
+            },
+            ..IncidentMonitorConfig::default()
+        };
+        let context = IncidentMonitorRouteContext {
+            risk_level: Some("critical".to_string()),
+            ..IncidentMonitorRouteContext::default()
+        };
+        let enriched = enrich_route_context_from_sources(&config, &context);
+        assert_eq!(enriched.risk_level.as_deref(), Some("critical"));
+    }
+
+    #[test]
+    fn absent_minimum_risk_level_leaves_reporter_value_untouched() {
+        let config = IncidentMonitorConfig::default();
+        let context = IncidentMonitorRouteContext {
+            risk_level: Some("low".to_string()),
+            ..IncidentMonitorRouteContext::default()
+        };
+        let enriched = enrich_route_context_from_sources(&config, &context);
+        assert_eq!(enriched.risk_level.as_deref(), Some("low"));
     }
 }

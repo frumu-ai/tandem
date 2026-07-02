@@ -234,6 +234,12 @@ pub struct IncidentMonitorSafetyDefaults {
     pub block_unready_destinations: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_days: Option<u64>,
+    /// Server-controlled floor for the effective incident risk level. When set,
+    /// a reporter-supplied `risk_level` can never lower the classification below
+    /// this value — closing the severity-downgrade spoof against the high-risk
+    /// approval gate (TAN-548). `None` leaves the reporter value untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum_risk_level: Option<String>,
 }
 
 impl Default for IncidentMonitorSafetyDefaults {
@@ -243,6 +249,7 @@ impl Default for IncidentMonitorSafetyDefaults {
             redact_secrets: true,
             block_unready_destinations: false,
             retention_days: None,
+            minimum_risk_level: None,
         }
     }
 }
