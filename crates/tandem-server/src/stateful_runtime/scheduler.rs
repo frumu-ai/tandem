@@ -4,16 +4,16 @@ use tandem_types::TenantContext;
 
 use super::phases::phase_state_from_status;
 use super::store::{
-    append_stateful_run_event_once, load_stateful_run_events, query_stateful_run_events,
-    write_stateful_run_snapshot, StatefulRunEventQuery, StatefulRuntimeStoragePaths,
+    append_stateful_run_event_once_with_next_seq, load_stateful_run_events,
+    write_stateful_run_snapshot, StatefulRuntimeStoragePaths,
 };
 use super::types::{
     StatefulRunEventRecord, StatefulRunSnapshotRecord, StatefulWaitRecord, StatefulWaitStatus,
     StatefulWaitTimeoutAction, StatefulWorkflowRunStatus,
 };
 use super::waits::{
-    claim_due_stateful_wait, due_stateful_waits, mark_stateful_wait_timeout_result,
-    mark_stateful_wait_woken,
+    attach_stateful_wait_completion_event_seq, begin_claimed_stateful_wait_timeout_completion,
+    begin_claimed_stateful_wait_wake_completion, claim_due_stateful_wait, due_stateful_waits,
 };
 
 pub const STATEFUL_WAIT_SCHEDULER_CLAIMANT: &str = "stateful-wait-scheduler";
@@ -223,17 +223,35 @@ async fn complete_claimed_wait(
 ) -> anyhow::Result<StatefulWaitSchedulerOutcome> {
     let completion_key = action.completion_key(wait);
     let event_id = format!("stateful-wait-{completion_key}");
-    let mut seq = next_stateful_run_event_seq(
-        &paths.run_events_path,
-        &wait.scope.tenant_context,
-        &wait.run_id,
-    );
     let lag_ms = now_ms.saturating_sub(action.due_at_ms());
+    let wait_status = action.wait_status();
+    let completed = if wait_status == StatefulWaitStatus::Woken {
+        begin_claimed_stateful_wait_wake_completion(
+            &paths.waits_path,
+            &wait.scope.tenant_context,
+            wait,
+            &completion_key,
+            now_ms,
+        )
+        .await?
+    } else {
+        begin_claimed_stateful_wait_timeout_completion(
+            &paths.waits_path,
+            &wait.scope.tenant_context,
+            wait,
+            &completion_key,
+            wait_status.clone(),
+            now_ms,
+        )
+        .await?
+    }
+    .ok_or_else(|| anyhow::anyhow!("stateful wait completion conflict"))?;
+
     let event = StatefulRunEventRecord {
         schema_version: 1,
         event_id: event_id.clone(),
         run_id: wait.run_id.clone(),
-        seq,
+        seq: 0,
         event_type: action.event_type().to_string(),
         occurred_at_ms: now_ms,
         scope: wait.scope.clone(),
@@ -248,21 +266,28 @@ async fn complete_claimed_wait(
             "wait_kind": &wait.wait_kind,
             "wake_at_ms": wait.wake_at_ms,
             "timeout_policy": &wait.timeout_policy,
-            "completion_key": completion_key,
+            "completion_key": &completion_key,
             "lag_ms": lag_ms,
             "scheduler": STATEFUL_WAIT_SCHEDULER_CLAIMANT,
         }),
     };
-    if !append_stateful_run_event_once(&paths.run_events_path, &event).await? {
-        if let Some(existing_seq) = stateful_run_event_seq_by_id(
-            &paths.run_events_path,
-            &wait.scope.tenant_context,
-            &wait.run_id,
-            &event_id,
-        ) {
-            seq = existing_seq;
-        }
-    }
+    let (_appended, seq) = append_stateful_run_event_once_with_next_seq(
+        &paths.run_events_path,
+        &wait.scope.tenant_context,
+        &event,
+    )
+    .await?;
+    let completed = attach_stateful_wait_completion_event_seq(
+        &paths.waits_path,
+        &wait.scope.tenant_context,
+        &wait.run_id,
+        &wait.wait_id,
+        &completion_key,
+        seq,
+        now_ms,
+    )
+    .await?
+    .unwrap_or(completed);
 
     let run_status = action.run_status();
     let phase_state =
@@ -293,33 +318,6 @@ async fn complete_claimed_wait(
         })),
     };
     write_stateful_run_snapshot(&paths.snapshots_root, &snapshot).await?;
-
-    let wait_status = action.wait_status();
-    let completed = if wait_status == StatefulWaitStatus::Woken {
-        mark_stateful_wait_woken(
-            &paths.waits_path,
-            &wait.scope.tenant_context,
-            &wait.run_id,
-            &wait.wait_id,
-            &completion_key,
-            seq,
-            now_ms,
-        )
-        .await?
-    } else {
-        mark_stateful_wait_timeout_result(
-            &paths.waits_path,
-            &wait.scope.tenant_context,
-            &wait.run_id,
-            &wait.wait_id,
-            &completion_key,
-            seq,
-            wait_status.clone(),
-            now_ms,
-        )
-        .await?
-    }
-    .ok_or_else(|| anyhow::anyhow!("stateful wait completion conflict"))?;
 
     Ok(StatefulWaitSchedulerOutcome {
         run_id: completed.run_id,
@@ -353,49 +351,6 @@ fn scheduler_action(wait: &StatefulWaitRecord, now_ms: u64) -> Option<SchedulerA
         (None, Some(timeout)) => Some(timeout),
         (None, None) => None,
     }
-}
-
-fn next_stateful_run_event_seq(
-    path: &std::path::Path,
-    tenant_context: &TenantContext,
-    run_id: &str,
-) -> u64 {
-    query_stateful_run_events(
-        path,
-        tenant_context,
-        StatefulRunEventQuery {
-            run_id,
-            after_seq: None,
-            before_seq: None,
-            limit: None,
-            tail: false,
-        },
-    )
-    .last()
-    .map(|event| event.seq.saturating_add(1))
-    .unwrap_or(1)
-}
-
-fn stateful_run_event_seq_by_id(
-    path: &std::path::Path,
-    tenant_context: &TenantContext,
-    run_id: &str,
-    event_id: &str,
-) -> Option<u64> {
-    query_stateful_run_events(
-        path,
-        tenant_context,
-        StatefulRunEventQuery {
-            run_id,
-            after_seq: None,
-            before_seq: None,
-            limit: None,
-            tail: false,
-        },
-    )
-    .into_iter()
-    .find(|event| event.event_id == event_id)
-    .map(|event| event.seq)
 }
 
 #[cfg(test)]
@@ -514,6 +469,75 @@ mod tests {
         let duplicate = process_due_stateful_waits(&paths, 2_000, Default::default()).await;
         assert_eq!(duplicate.checked, 0);
         assert_eq!(load_stateful_run_events(&paths.run_events_path).len(), 1);
+        let _ = tokio::fs::remove_dir_all(
+            paths
+                .run_events_path
+                .parent()
+                .expect("runtime root")
+                .to_path_buf(),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn scheduler_assigns_completion_sequence_under_append_lock() {
+        let paths = paths("stateful-wait-scheduler-seq");
+        let tenant = tenant("org-a", "workspace-a");
+        let seed = StatefulRunEventRecord {
+            schema_version: 1,
+            event_id: "seed-event".to_string(),
+            run_id: "run-a".to_string(),
+            seq: 0,
+            event_type: "stateful_runtime.seed".to_string(),
+            occurred_at_ms: 1_000,
+            scope: StatefulRuntimeScope::from_tenant_context(tenant.clone()),
+            actor: None,
+            phase_id: None,
+            phase_transition: None,
+            wait_kind: None,
+            causation_id: None,
+            correlation_id: None,
+            payload: json!({ "seed": true }),
+        };
+        let (_appended, seed_seq) =
+            append_stateful_run_event_once_with_next_seq(&paths.run_events_path, &tenant, &seed)
+                .await
+                .expect("seed event");
+        assert_eq!(seed_seq, 1);
+
+        upsert_stateful_wait(&paths.waits_path, timer_wait("wait-a", 1_250))
+            .await
+            .expect("insert wait");
+        let tick = process_due_stateful_waits(
+            &paths,
+            1_500,
+            StatefulWaitSchedulerConfig {
+                claimant_id: "scheduler-test".to_string(),
+                lease_ms: 500,
+                limit: 10,
+            },
+        )
+        .await;
+
+        assert_eq!(tick.completed, 1);
+        assert_eq!(tick.outcomes[0].event_seq, 2);
+        let events = load_stateful_run_events(&paths.run_events_path);
+        assert_eq!(
+            events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        let waits = list_stateful_waits(
+            &paths.waits_path,
+            &tenant,
+            StatefulWaitQuery {
+                run_id: Some("run-a"),
+                ..StatefulWaitQuery::default()
+            },
+        );
+        assert_eq!(waits[0].status, StatefulWaitStatus::Woken);
+        assert_eq!(waits[0].event_seq, Some(2));
+        let snapshots = list_stateful_run_snapshots(&paths.snapshots_root, &tenant, "run-a", None);
+        assert_eq!(snapshots[0].seq, 2);
         let _ = tokio::fs::remove_dir_all(
             paths
                 .run_events_path

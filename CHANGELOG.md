@@ -195,6 +195,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Legacy stateful runtime snapshots that predate explicit phase fields now
   derive phase, phase history, and allowed next phases from their stored status
   when read.
+- Durable wait scheduler and webhook wake completions now terminalize only the
+  active leased claim before appending wake events, then attach the locked event
+  sequence to the wait so duplicate timer/webhook wakes cannot race into
+  conflicting per-run sequence numbers.
 - Incident Monitor publish and recheck failures now return the full error chain in
   API response details so destination adapter failures expose the underlying
   MCP/provider cause.

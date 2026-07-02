@@ -50,6 +50,10 @@ The Automation V2 executor now runs a durable stateful wait scheduler tick that
 claims due waits, recovers missed timer wakeups after downtime, records
 idempotent wake/timeout events and snapshots, and marks timeout cancellations
 or escalations for operator visibility.
+Timer and webhook wait completions now terminalize only the active leased claim
+before appending the wake event, then attach the locked per-run event sequence
+back to the wait record so concurrent completions cannot race into duplicate
+sequence numbers.
 Automation V2 runs now also bridge those durable waits back into the live run
 store: approval gates register and complete stateful approval waits, while
 timer and webhook wait wakes requeue the authoritative automation run so the
