@@ -117,12 +117,36 @@ pub(crate) fn resolve_automation_execute_node_timeout_ms() -> u64 {
 }
 
 pub(crate) fn resolve_incident_monitor_env_config() -> IncidentMonitorConfig {
-    fn env_value(new_name: &str, legacy_name: &str) -> Option<String> {
-        std::env::var(new_name)
+    fn read_env_trimmed(name: &str) -> Option<String> {
+        std::env::var(name)
             .ok()
-            .or_else(|| std::env::var(legacy_name).ok())
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
+    }
+
+    fn env_value(new_name: &str, legacy_name: &str) -> Option<String> {
+        // Back-compat: pre-rename deployments configured the monitor via
+        // TANDEM_FAILURE_REPORTER_* or TANDEM_BUG_MONITOR_* (TAN-542). Prefer the
+        // current name, then fall back to the legacy names with a deprecation
+        // warning so an upgrade doesn't silently drop configuration.
+        if let Some(value) = read_env_trimmed(new_name) {
+            return Some(value);
+        }
+        let bug_monitor_name = new_name.replace("TANDEM_INCIDENT_MONITOR_", "TANDEM_BUG_MONITOR_");
+        for legacy in [legacy_name, bug_monitor_name.as_str()] {
+            if legacy == new_name {
+                continue;
+            }
+            if let Some(value) = read_env_trimmed(legacy) {
+                tracing::warn!(
+                    deprecated_env = %legacy,
+                    current_env = %new_name,
+                    "using a deprecated Incident Monitor environment variable; rename it to the current name"
+                );
+                return Some(value);
+            }
+        }
+        None
     }
 
     fn env_bool(new_name: &str, legacy_name: &str, default: bool) -> bool {
@@ -261,4 +285,57 @@ pub(crate) fn resolve_scheduler_shutdown_timeout_secs() -> u64 {
         .and_then(|value| value.trim().parse::<u64>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(30)
+}
+
+#[cfg(test)]
+mod incident_monitor_env_backcompat_tests {
+    use super::*;
+
+    // These vars are read only by resolve_incident_monitor_env_config; guard the
+    // env mutations so the two cases don't race each other.
+    fn clear_incident_monitor_env() {
+        for name in [
+            "TANDEM_INCIDENT_MONITOR_ENABLED",
+            "TANDEM_FAILURE_REPORTER_ENABLED",
+            "TANDEM_BUG_MONITOR_ENABLED",
+            "TANDEM_INCIDENT_MONITOR_REPO",
+            "TANDEM_FAILURE_REPORTER_REPO",
+            "TANDEM_BUG_MONITOR_REPO",
+        ] {
+            std::env::remove_var(name);
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(incident_monitor_env_backcompat)]
+    fn deprecated_bug_monitor_env_vars_are_honored() {
+        // TAN-542: pre-rename deployments configured via TANDEM_BUG_MONITOR_*
+        // must not silently come up disabled after the rename.
+        clear_incident_monitor_env();
+        std::env::set_var("TANDEM_BUG_MONITOR_ENABLED", "true");
+        std::env::set_var("TANDEM_BUG_MONITOR_REPO", "legacy/repo");
+        let config = resolve_incident_monitor_env_config();
+        clear_incident_monitor_env();
+        assert!(
+            config.enabled,
+            "legacy TANDEM_BUG_MONITOR_ENABLED must still enable the monitor"
+        );
+        assert_eq!(config.repo.as_deref(), Some("legacy/repo"));
+    }
+
+    #[test]
+    #[serial_test::serial(incident_monitor_env_backcompat)]
+    fn current_env_var_wins_over_deprecated_names() {
+        clear_incident_monitor_env();
+        std::env::set_var("TANDEM_INCIDENT_MONITOR_REPO", "current/repo");
+        std::env::set_var("TANDEM_FAILURE_REPORTER_REPO", "failure/repo");
+        std::env::set_var("TANDEM_BUG_MONITOR_REPO", "bug/repo");
+        let config = resolve_incident_monitor_env_config();
+        clear_incident_monitor_env();
+        assert_eq!(
+            config.repo.as_deref(),
+            Some("current/repo"),
+            "the current env var must take precedence over deprecated names"
+        );
+    }
 }
