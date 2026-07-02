@@ -58,6 +58,10 @@ Stateful runtime persistence now hardens wait, reliability, snapshot, and event
 logs for crash recovery: JSON store mutations fail closed by sidelining corrupt
 files, atomic writes sync temp files before rename, and event-log appends repair
 torn JSONL tails before writing the next durable event.
+Enterprise policy inheritance now preserves compliance floors before runtime
+wiring: ancestor deny and approval-required rules block weaker descendant rules
+unless explicitly marked overridable, and tenant/org-unit/workflow/phase scope
+IDs are normalized for matching so case drift cannot suppress deny rules.
 Automation V2 runs now also bridge those durable waits back into the live run
 store: approval gates register and complete stateful approval waits, while
 timer and webhook wait wakes requeue the authoritative automation run so the

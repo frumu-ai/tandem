@@ -206,6 +206,15 @@ impl HumanActor {
     }
 }
 
+pub fn canonical_enterprise_scope_id(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_lowercase())
+}
+
+pub fn enterprise_scope_ids_match(left: &str, right: &str) -> bool {
+    canonical_enterprise_scope_id(left) == canonical_enterprise_scope_id(right)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceKind {

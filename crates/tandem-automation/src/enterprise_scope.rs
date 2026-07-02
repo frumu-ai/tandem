@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tandem_enterprise_contract::canonical_enterprise_scope_id;
 use tandem_types::{DataClass, PrincipalRef, ResourceScope, ToolRiskTier};
 
 pub const AUTOMATION_ENTERPRISE_SCOPE_METADATA_KEY: &str = "enterprise_scope";
@@ -46,7 +47,7 @@ impl AutomationEnterpriseScope {
     }
 
     pub fn normalized(mut self) -> Self {
-        self.owning_org_unit_id = normalized_optional_string(self.owning_org_unit_id);
+        self.owning_org_unit_id = normalized_optional_scope_id(self.owning_org_unit_id);
         self.policy_version_id = normalized_optional_string(self.policy_version_id);
         self.delegation_grant_ids =
             normalized_strings(std::mem::take(&mut self.delegation_grant_ids));
@@ -147,6 +148,10 @@ fn normalized_optional_string(value: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn normalized_optional_scope_id(value: Option<String>) -> Option<String> {
+    value.and_then(|value| canonical_enterprise_scope_id(&value))
+}
+
 fn normalized_strings(values: Vec<String>) -> Vec<String> {
     let mut values = values
         .into_iter()
@@ -178,7 +183,7 @@ mod tests {
         let metadata = json!({
             "resource_access": {
                 "owner_principal": { "kind": "human_user", "id": "owner-a" },
-                "owning_org_unit_id": "finance"
+                "owning_org_unit_id": " Finance "
             },
             "enterprise_scope": {
                 "owner_principal": { "kind": "automation", "id": "automation-a" },

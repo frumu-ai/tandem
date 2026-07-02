@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{AccessPermission, DataClass, ResourceRef, TenantContext};
+use crate::{
+    canonical_enterprise_scope_id, enterprise_scope_ids_match, AccessPermission, DataClass,
+    ResourceRef, TenantContext,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -58,6 +61,10 @@ impl EnterprisePolicyEffect {
         }
     }
 
+    fn restrictiveness_priority(self) -> u8 {
+        self.same_level_priority()
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Allow => "allow",
@@ -90,6 +97,8 @@ pub struct EnterprisePolicyRule {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_patterns: Vec<String>,
     pub effect: EnterprisePolicyEffect,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub overridable: bool,
     pub reason_code: String,
     pub reason: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -119,6 +128,7 @@ impl EnterprisePolicyRule {
             data_classes: Vec::new(),
             tool_patterns: Vec::new(),
             effect,
+            overridable: false,
             reason_code: format!("policy_{effect_label}"),
             reason: format!("policy resolved to {effect_label}"),
             approval_id: None,
@@ -171,6 +181,11 @@ impl EnterprisePolicyRule {
         self
     }
 
+    pub fn with_overridable(mut self, overridable: bool) -> Self {
+        self.overridable = overridable;
+        self
+    }
+
     pub fn with_reason(
         mut self,
         reason_code: impl Into<String>,
@@ -191,6 +206,16 @@ impl EnterprisePolicyRule {
         self
     }
 
+    pub fn normalized(mut self) -> Self {
+        if let Some(tenant_context) = self.tenant_context.as_mut() {
+            normalize_tenant_context_scope_ids(tenant_context);
+        }
+        self.org_unit_id = normalize_optional_scope_id(self.org_unit_id);
+        self.workflow_id = normalize_optional_scope_id(self.workflow_id);
+        self.workflow_phase = normalize_optional_scope_id(self.workflow_phase);
+        self
+    }
+
     fn matches(&self, input: &EnterprisePolicyInput) -> bool {
         self.matches_tenant(&input.tenant_context)
             && self.matches_org_unit(input.org_unit_id.as_deref())
@@ -206,15 +231,20 @@ impl EnterprisePolicyRule {
         let Some(rule_tenant) = &self.tenant_context else {
             return true;
         };
-        rule_tenant.org_id == tenant_context.org_id
-            && rule_tenant.workspace_id == tenant_context.workspace_id
-            && rule_tenant.deployment_id == tenant_context.deployment_id
+        enterprise_scope_ids_match(&rule_tenant.org_id, &tenant_context.org_id)
+            && enterprise_scope_ids_match(&rule_tenant.workspace_id, &tenant_context.workspace_id)
+            && optional_scope_ids_match(
+                rule_tenant.deployment_id.as_deref(),
+                tenant_context.deployment_id.as_deref(),
+            )
     }
 
     fn matches_org_unit(&self, org_unit_id: Option<&str>) -> bool {
         self.org_unit_id
             .as_deref()
-            .map(|expected| org_unit_id == Some(expected))
+            .map(|expected| {
+                org_unit_id.is_some_and(|actual| enterprise_scope_ids_match(expected, actual))
+            })
             .unwrap_or(true)
     }
 
@@ -229,14 +259,18 @@ impl EnterprisePolicyRule {
     fn matches_workflow(&self, workflow_id: Option<&str>) -> bool {
         self.workflow_id
             .as_deref()
-            .map(|expected| workflow_id == Some(expected))
+            .map(|expected| {
+                workflow_id.is_some_and(|actual| enterprise_scope_ids_match(expected, actual))
+            })
             .unwrap_or(true)
     }
 
     fn matches_phase(&self, workflow_phase: Option<&str>) -> bool {
         self.workflow_phase
             .as_deref()
-            .map(|expected| workflow_phase == Some(expected))
+            .map(|expected| {
+                workflow_phase.is_some_and(|actual| enterprise_scope_ids_match(expected, actual))
+            })
             .unwrap_or(true)
     }
 
@@ -336,6 +370,8 @@ pub struct EffectivePolicySource {
     pub version: u64,
     pub scope_level: EnterprisePolicyScopeLevel,
     pub effect: EnterprisePolicyEffect,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub overridable: bool,
     pub reason_code: String,
     pub reason: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -350,6 +386,7 @@ impl From<&EnterprisePolicyRule> for EffectivePolicySource {
             version: rule.version,
             scope_level: rule.scope_level,
             effect: rule.effect,
+            overridable: rule.overridable,
             reason_code: rule.reason_code.clone(),
             reason: rule.reason.clone(),
             approval_id: rule.approval_id.clone(),
@@ -456,7 +493,16 @@ pub struct EnterprisePolicyResolver {
 
 impl EnterprisePolicyResolver {
     pub fn new(rules: Vec<EnterprisePolicyRule>) -> Self {
-        Self { rules }
+        let mut resolver = Self { rules };
+        resolver.normalize_rules();
+        resolver
+    }
+
+    pub fn normalize_rules(&mut self) {
+        self.rules = std::mem::take(&mut self.rules)
+            .into_iter()
+            .map(EnterprisePolicyRule::normalized)
+            .collect();
     }
 
     pub fn resolve(&self, input: &EnterprisePolicyInput, now_ms: u64) -> EffectivePolicySnapshot {
@@ -478,9 +524,7 @@ impl EnterprisePolicyResolver {
             .iter()
             .map(|rule| EffectivePolicySource::from(*rule))
             .collect::<Vec<_>>();
-        let decision_source = matching
-            .last()
-            .map(|rule| EffectivePolicySource::from(*rule));
+        let decision_source = select_decision_rule(&matching).map(EffectivePolicySource::from);
 
         let Some(source) = decision_source.clone() else {
             return EffectivePolicySnapshot::from_parts(
@@ -514,6 +558,31 @@ impl EnterprisePolicyResolver {
     }
 }
 
+fn select_decision_rule<'a>(
+    matching: &[&'a EnterprisePolicyRule],
+) -> Option<&'a EnterprisePolicyRule> {
+    let selected = matching.last().copied()?;
+    matching
+        .iter()
+        .copied()
+        .filter(|rule| {
+            !rule.overridable
+                && rule.scope_level.inheritance_rank() < selected.scope_level.inheritance_rank()
+                && rule.effect.restrictiveness_priority()
+                    > selected.effect.restrictiveness_priority()
+        })
+        .max_by_key(|rule| {
+            (
+                rule.effect.restrictiveness_priority(),
+                rule.scope_level.inheritance_rank(),
+                rule.version,
+                rule.updated_at_ms,
+                rule.rule_id.clone(),
+            )
+        })
+        .or(Some(selected))
+}
+
 fn tool_pattern_matches(pattern: &str, tool: &str) -> bool {
     let pattern = pattern.trim();
     pattern == "*"
@@ -534,6 +603,33 @@ fn policy_version_id_for_sources(sources: &[EffectivePolicySource]) -> String {
 fn digest_hex(input: impl AsRef<[u8]>) -> String {
     let digest = Sha256::digest(input.as_ref());
     format!("{digest:x}")[..24].to_string()
+}
+
+fn normalize_tenant_context_scope_ids(tenant_context: &mut TenantContext) {
+    if let Some(org_id) = canonical_enterprise_scope_id(&tenant_context.org_id) {
+        tenant_context.org_id = org_id;
+    }
+    if let Some(workspace_id) = canonical_enterprise_scope_id(&tenant_context.workspace_id) {
+        tenant_context.workspace_id = workspace_id;
+    }
+    tenant_context.deployment_id =
+        normalize_optional_scope_id(std::mem::take(&mut tenant_context.deployment_id));
+}
+
+fn normalize_optional_scope_id(value: Option<String>) -> Option<String> {
+    value.and_then(|value| canonical_enterprise_scope_id(&value))
+}
+
+fn optional_scope_ids_match(left: Option<&str>, right: Option<&str>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => enterprise_scope_ids_match(left, right),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[cfg(test)]
@@ -566,7 +662,8 @@ mod tests {
             .with_reason(
                 "enterprise_default_deny",
                 "enterprise default denies finance reads",
-            ),
+            )
+            .with_overridable(true),
             EnterprisePolicyRule::new(
                 "workspace-finance",
                 "finance-policy",
@@ -605,6 +702,160 @@ mod tests {
                 .map(|source| &source.rule_id),
             Some(&"workspace-finance".to_string())
         );
+    }
+
+    #[test]
+    fn ancestor_deny_blocks_descendant_allow_by_default() {
+        let input = EnterprisePolicyInput::new(tenant())
+            .with_resource(ledger_resource())
+            .with_permission(AccessPermission::Read)
+            .with_data_class(DataClass::FinancialRecord);
+        let resolver = EnterprisePolicyResolver::new(vec![
+            EnterprisePolicyRule::new(
+                "enterprise-finance-deny",
+                "finance-policy",
+                EnterprisePolicyScopeLevel::Enterprise,
+                EnterprisePolicyEffect::Deny,
+            )
+            .with_permissions(vec![AccessPermission::Read])
+            .with_reason(
+                "enterprise_finance_floor",
+                "enterprise compliance floor denies finance reads",
+            ),
+            EnterprisePolicyRule::new(
+                "workspace-finance-allow",
+                "finance-policy",
+                EnterprisePolicyScopeLevel::Workspace,
+                EnterprisePolicyEffect::Allow,
+            )
+            .with_tenant_context(tenant())
+            .with_permissions(vec![AccessPermission::Read])
+            .with_data_classes(vec![DataClass::FinancialRecord])
+            .with_reason(
+                "workspace_finance_allow",
+                "finance workspace can read ledger data",
+            ),
+        ]);
+
+        let snapshot = resolver.resolve(&input, 1_000);
+
+        assert_eq!(snapshot.effect, EnterprisePolicyEffect::Deny);
+        assert_eq!(snapshot.reason_code, "enterprise_finance_floor");
+        assert_eq!(
+            snapshot
+                .decision_source
+                .as_ref()
+                .map(|source| &source.rule_id),
+            Some(&"enterprise-finance-deny".to_string())
+        );
+        assert_eq!(snapshot.inherited_sources.len(), 2);
+    }
+
+    #[test]
+    fn overridable_ancestor_deny_allows_descendant_allow() {
+        let input = EnterprisePolicyInput::new(tenant())
+            .with_permission(AccessPermission::Read)
+            .with_data_class(DataClass::FinancialRecord);
+        let resolver = EnterprisePolicyResolver::new(vec![
+            EnterprisePolicyRule::new(
+                "enterprise-default",
+                "finance-policy",
+                EnterprisePolicyScopeLevel::Enterprise,
+                EnterprisePolicyEffect::Deny,
+            )
+            .with_permissions(vec![AccessPermission::Read])
+            .with_overridable(true),
+            EnterprisePolicyRule::new(
+                "workspace-finance",
+                "finance-policy",
+                EnterprisePolicyScopeLevel::Workspace,
+                EnterprisePolicyEffect::Allow,
+            )
+            .with_tenant_context(tenant())
+            .with_permissions(vec![AccessPermission::Read])
+            .with_data_classes(vec![DataClass::FinancialRecord])
+            .with_reason(
+                "workspace_finance_allow",
+                "finance workspace can read ledger data",
+            ),
+        ]);
+
+        let snapshot = resolver.resolve(&input, 1_000);
+
+        assert_eq!(snapshot.effect, EnterprisePolicyEffect::Allow);
+        assert_eq!(snapshot.reason_code, "workspace_finance_allow");
+    }
+
+    #[test]
+    fn ancestor_approval_blocks_descendant_allow_by_default() {
+        let input = EnterprisePolicyInput::new(tenant())
+            .with_workflow_id("close-books")
+            .with_tool("mcp.erp.post_journal");
+        let resolver = EnterprisePolicyResolver::new(vec![
+            EnterprisePolicyRule::new(
+                "enterprise-approval",
+                "finance-policy",
+                EnterprisePolicyScopeLevel::Enterprise,
+                EnterprisePolicyEffect::ApprovalRequired,
+            )
+            .with_tool_patterns(vec!["mcp.erp.*".to_string()])
+            .with_approval_id("approval-enterprise-erp")
+            .with_reason(
+                "enterprise_erp_requires_approval",
+                "enterprise policy requires approval for ERP tools",
+            ),
+            EnterprisePolicyRule::new(
+                "workflow-allow",
+                "finance-policy",
+                EnterprisePolicyScopeLevel::Workflow,
+                EnterprisePolicyEffect::Allow,
+            )
+            .with_workflow_id("close-books")
+            .with_tool_patterns(vec!["mcp.erp.*".to_string()])
+            .with_reason("workflow_tools_allowed", "workflow allows ERP tools"),
+        ]);
+
+        let snapshot = resolver.resolve(&input, 1_000);
+
+        assert_eq!(snapshot.effect, EnterprisePolicyEffect::ApprovalRequired);
+        assert_eq!(snapshot.reason_code, "enterprise_erp_requires_approval");
+        assert_eq!(
+            snapshot.approval_id.as_deref(),
+            Some("approval-enterprise-erp")
+        );
+    }
+
+    #[test]
+    fn scope_ids_match_after_trimming_and_case_folding() {
+        let input = EnterprisePolicyInput::new(TenantContext::explicit_user_workspace(
+            "acme",
+            "finance",
+            Some("deployment-a".to_string()),
+            "user-finance",
+        ))
+        .with_org_unit_id("finance")
+        .with_permission(AccessPermission::Read);
+        let resolver = EnterprisePolicyResolver::new(vec![EnterprisePolicyRule::new(
+            "finance-deny",
+            "finance-policy",
+            EnterprisePolicyScopeLevel::OrgUnit,
+            EnterprisePolicyEffect::Deny,
+        )
+        .with_tenant_context(TenantContext::explicit_user_workspace(
+            " ACME ",
+            " Finance ",
+            Some(" DEPLOYMENT-A ".to_string()),
+            "user-finance",
+        ))
+        .with_org_unit_id(" Finance ")
+        .with_permissions(vec![AccessPermission::Read])
+        .with_reason("finance_scope_deny", "finance scope denies reads")]);
+
+        let snapshot = resolver.resolve(&input, 1_000);
+
+        assert_eq!(resolver.rules[0].org_unit_id.as_deref(), Some("finance"));
+        assert_eq!(snapshot.effect, EnterprisePolicyEffect::Deny);
+        assert_eq!(snapshot.reason_code, "finance_scope_deny");
     }
 
     #[test]
