@@ -232,6 +232,12 @@ pub struct IncidentMonitorSafetyDefaults {
     pub redact_secrets: bool,
     #[serde(default)]
     pub block_unready_destinations: bool,
+    /// When true, an incident whose source is not data-ready (failed lineage /
+    /// freshness / classification / legal-basis / watcher-health gates) is
+    /// blocked from publishing instead of the readiness result being advisory
+    /// only (TAN-544). Default false preserves the advisory-only behavior.
+    #[serde(default)]
+    pub block_unready_sources: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_days: Option<u64>,
     /// Server-controlled floor for the effective incident risk level. When set,
@@ -248,6 +254,7 @@ impl Default for IncidentMonitorSafetyDefaults {
             require_approval_for_high_risk: true,
             redact_secrets: true,
             block_unready_destinations: false,
+            block_unready_sources: false,
             retention_days: None,
             minimum_risk_level: None,
         }

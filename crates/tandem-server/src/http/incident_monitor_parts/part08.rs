@@ -38,6 +38,7 @@ async fn emit_incident_monitor_config_audit(state: &AppState, config: &IncidentM
                 "require_approval_for_high_risk": config.safety_defaults.require_approval_for_high_risk,
                 "redact_secrets": config.safety_defaults.redact_secrets,
                 "block_unready_destinations": config.safety_defaults.block_unready_destinations,
+                "block_unready_sources": config.safety_defaults.block_unready_sources,
                 "retention_days": config.safety_defaults.retention_days,
                 "minimum_risk_level": config.safety_defaults.minimum_risk_level,
             },

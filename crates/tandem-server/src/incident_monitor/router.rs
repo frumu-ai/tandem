@@ -262,6 +262,36 @@ pub fn build_route_preview(
             )),
         }
     }
+    // TAN-544: when source-readiness gating is enabled, a not-ready source
+    // (failed lineage/freshness/classification/legal-basis/watcher-health)
+    // blocks publish instead of being advisory-only. The reasons are marked
+    // with a `Source ...` prefix so validate_publish_plan can enforce them
+    // independently of the destination-readiness gate.
+    if config.safety_defaults.block_unready_sources {
+        for row in &selected_source_readiness {
+            if row.ready {
+                continue;
+            }
+            let detail = if !row.findings.is_empty() {
+                row.findings
+                    .iter()
+                    .map(|finding| finding.rule_id.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            } else if !row.missing.is_empty() {
+                row.missing.join(", ")
+            } else {
+                "source readiness is false".to_string()
+            };
+            let label = row
+                .source_id
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(row.project_id.as_str());
+            blocked_reasons.push(format!("Source `{label}` is not data-ready: {detail}"));
+        }
+    }
+
     // Approval reflects the winning match only — the same match whose
     // destinations are effective — so a non-selected lower-priority route can't
     // flip the preview's approval flag.
@@ -708,11 +738,24 @@ fn validate_publish_plan(
             destination.kind
         );
     }
-    if config.safety_defaults.block_unready_destinations
-        && mode != incident_monitor_github::PublishMode::RecheckOnly
-        && preview.blocked
-    {
-        anyhow::bail!("{}", preview.blocked_reasons.join("; "));
+    if mode != incident_monitor_github::PublishMode::RecheckOnly {
+        if config.safety_defaults.block_unready_destinations && preview.blocked {
+            anyhow::bail!("{}", preview.blocked_reasons.join("; "));
+        }
+        // TAN-544: the source-readiness gate enforces independently, blocking
+        // only on source-not-ready reasons so it doesn't silently pick up the
+        // destination-readiness gate the operator did not enable.
+        if config.safety_defaults.block_unready_sources {
+            let source_blocks = preview
+                .blocked_reasons
+                .iter()
+                .filter(|reason| reason.starts_with("Source `"))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !source_blocks.is_empty() {
+                anyhow::bail!("{}", source_blocks.join("; "));
+            }
+        }
     }
     Ok(())
 }
@@ -1896,5 +1939,143 @@ mod tests {
         };
         let enriched = enrich_route_context_from_sources(&config, &context);
         assert_eq!(enriched.risk_level.as_deref(), Some("low"));
+    }
+
+    fn source_gate_config(block_unready_sources: bool) -> IncidentMonitorConfig {
+        IncidentMonitorConfig {
+            destinations: vec![IncidentMonitorDestinationConfig {
+                destination_id: "gh".to_string(),
+                name: "GitHub".to_string(),
+                kind: IncidentMonitorDestinationKind::GithubIssue,
+                enabled: true,
+                repo: Some("acme/app".to_string()),
+                ..IncidentMonitorDestinationConfig::default()
+            }],
+            default_destination_ids: vec!["gh".to_string()],
+            safety_defaults: IncidentMonitorSafetyDefaults {
+                block_unready_sources,
+                ..IncidentMonitorSafetyDefaults::default()
+            },
+            monitored_projects: vec![IncidentMonitorMonitoredProject {
+                project_id: "payments".to_string(),
+                name: "Payments".to_string(),
+                repo: "acme/app".to_string(),
+                workspace_root: "/tmp/payments".to_string(),
+                log_sources: vec![IncidentMonitorLogSource {
+                    source_id: "ci".to_string(),
+                    path: "logs/ci.jsonl".to_string(),
+                    ..IncidentMonitorLogSource::default()
+                }],
+                ..IncidentMonitorMonitoredProject::default()
+            }],
+            ..IncidentMonitorConfig::default()
+        }
+    }
+
+    #[test]
+    fn block_unready_sources_gates_publish_on_not_ready_source() {
+        // TAN-544: with the gate enabled, a not-ready source blocks publish
+        // instead of the readiness result being advisory only; with it off the
+        // same source publishes (default behavior preserved).
+        // A persisted-draft context is trusted, so enrichment keeps the
+        // project/source binding the readiness gate matches on.
+        let draft = IncidentMonitorDraftRecord {
+            draft_id: "d1".to_string(),
+            fingerprint: "fp".to_string(),
+            repo: "acme/app".to_string(),
+            project_id: Some("payments".to_string()),
+            log_source_id: Some("ci".to_string()),
+            ..IncidentMonitorDraftRecord::default()
+        };
+        let context = build_route_context(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            None,
+            Some(&draft),
+            None,
+        );
+        let ready_destinations = source_gate_config(true).effective_destinations();
+        let destination_readiness = ready_destinations
+            .iter()
+            .map(|destination| IncidentMonitorDestinationReadiness {
+                destination_id: destination.destination_id.clone(),
+                kind: destination.kind.clone(),
+                enabled: true,
+                publish_ready: true,
+                ..IncidentMonitorDestinationReadiness::default()
+            })
+            .collect::<Vec<_>>();
+        let source_readiness = vec![IncidentMonitorSourceReadiness {
+            project_id: "payments".to_string(),
+            source_id: Some("ci".to_string()),
+            ready: false,
+            findings: vec![crate::IncidentMonitorSourceReadinessFinding {
+                rule_id: "source_stale".to_string(),
+                ..Default::default()
+            }],
+            ..IncidentMonitorSourceReadiness::default()
+        }];
+
+        let gated = source_gate_config(true);
+        let preview = build_route_preview(
+            &gated,
+            &ready_destinations,
+            &destination_readiness,
+            &source_readiness,
+            &context,
+            &[],
+        );
+        assert!(
+            preview
+                .blocked_reasons
+                .iter()
+                .any(|reason| reason.contains("not data-ready")),
+            "expected a source-readiness block: {:?}",
+            preview.blocked_reasons
+        );
+        assert!(
+            validate_publish_plan(
+                &gated,
+                &preview,
+                incident_monitor_github::PublishMode::ManualPublish
+            )
+            .is_err(),
+            "the source-readiness gate must block a Manual publish"
+        );
+
+        let open = source_gate_config(false);
+        let preview_open = build_route_preview(
+            &open,
+            &ready_destinations,
+            &destination_readiness,
+            &source_readiness,
+            &context,
+            &[],
+        );
+        assert!(
+            !preview_open
+                .blocked_reasons
+                .iter()
+                .any(|reason| reason.contains("not data-ready")),
+            "advisory-only default must not add a source block: {:?}",
+            preview_open.blocked_reasons
+        );
+        assert!(
+            validate_publish_plan(
+                &open,
+                &preview_open,
+                incident_monitor_github::PublishMode::ManualPublish
+            )
+            .is_ok(),
+            "with the gate off the same not-ready source must still publish"
+        );
     }
 }
