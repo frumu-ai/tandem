@@ -428,14 +428,18 @@ fn stateful_run_response(
             .map(|snapshot| snapshot.snapshot_id.clone());
     }
     let current_wait = current_wait_for_run(paths, tenant_context, &run.run_id);
-    let (latest_event, first_event_seq, latest_event_seq) =
-        if let Some(summary) = event_summaries.and_then(|summaries| summaries.get(&run.run_id)) {
-            (
-                Some(stateful_event_summary(&summary.latest_event)),
-                Some(summary.first_event_seq),
-                Some(summary.latest_event.seq),
-            )
-        } else {
+    let (latest_event, first_event_seq, latest_event_seq) = match event_summaries {
+        Some(summaries) => summaries
+            .get(&run.run_id)
+            .map(|summary| {
+                (
+                    Some(stateful_event_summary(&summary.latest_event)),
+                    Some(summary.first_event_seq),
+                    Some(summary.latest_event.seq),
+                )
+            })
+            .unwrap_or((None, None, None)),
+        None => {
             let events = query_stateful_run_events(
                 &paths.run_events_path,
                 tenant_context,
@@ -452,7 +456,8 @@ fn stateful_run_response(
                 events.first().map(|event| event.seq),
                 events.last().map(|event| event.seq),
             )
-        };
+        }
+    };
     let latest_snapshot_summary = latest_snapshot.as_ref().map(stateful_snapshot_summary);
     let enterprise_scope = stateful_enterprise_scope_summary(enterprise_catalog, &run);
     let replay_boundaries = json!({
@@ -1270,6 +1275,42 @@ mod tests {
                 .unwrap_or_else(|| std::path::Path::new(".")),
         )
         .await;
+    }
+
+    #[test]
+    fn run_response_treats_missing_cached_event_summary_as_empty() {
+        let tenant_a = tenant("org-a", "workspace-a");
+        let root = std::env::temp_dir().join(format!(
+            "stateful-runtime-api-empty-summary-{}",
+            Uuid::new_v4()
+        ));
+        let paths = StatefulRuntimeStoragePaths::new(
+            root.join("events.jsonl"),
+            root.join("snapshots"),
+            root.join("waits.json"),
+        );
+        let run = crate::stateful_runtime::stateful_run_from_automation_v2(&automation_run(
+            "run-without-events",
+            tenant_a.clone(),
+            AutomationRunStatus::Running,
+            4_000,
+        ));
+        let summaries = HashMap::new();
+
+        let body = stateful_run_response(
+            &paths,
+            &tenant_a,
+            &EnterpriseScopeCatalog::default(),
+            run,
+            false,
+            Some(&summaries),
+        );
+
+        assert!(body.get("latest_event").is_some_and(Value::is_null));
+        assert_eq!(
+            body["replay_boundaries"]["can_replay_from_event_log"],
+            false
+        );
     }
 
     #[tokio::test]

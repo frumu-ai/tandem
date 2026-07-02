@@ -1152,6 +1152,11 @@ impl AppState {
         {
             return Ok(());
         }
+        if existing.status == crate::stateful_runtime::StatefulWaitStatus::Claimed
+            && existing.claim_is_active_at(now_ms())
+        {
+            return Ok(());
+        }
 
         let wait_status = if run.status == AutomationRunStatus::Queued {
             crate::stateful_runtime::StatefulWaitStatus::Woken
