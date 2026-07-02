@@ -973,9 +973,9 @@ fn transform_sensitive_data(
             data_class: finding.data_class,
             occurrence,
             span: finding.span,
-            evidence_hash: finding.evidence_hash.clone(),
-            detector_id: finding.detector_id.clone(),
-            reason_codes: finding.reason_codes.clone(),
+            evidence_hash: finding.evidence_hash,
+            detector_id: finding.detector_id,
+            reason_codes: finding.reason_codes,
         });
 
         cursor = finding.span.end;
@@ -988,10 +988,10 @@ fn transform_sensitive_data(
     }
 }
 
-fn select_transform_findings<'a>(
+fn select_transform_findings(
     input: &str,
-    findings: &'a [DataBoundaryDetectorFinding],
-) -> Vec<&'a DataBoundaryDetectorFinding> {
+    findings: &[DataBoundaryDetectorFinding],
+) -> Vec<DataBoundaryDetectorFinding> {
     let mut candidates: Vec<_> = findings
         .iter()
         .filter(|finding| is_valid_span(input, finding.span))
@@ -1007,21 +1007,45 @@ fn select_transform_findings<'a>(
             .then_with(|| left.detector_id.cmp(&right.detector_id))
     });
 
-    let mut selected: Vec<&DataBoundaryDetectorFinding> = Vec::new();
+    let mut selected: Vec<DataBoundaryDetectorFinding> = Vec::new();
     for candidate in candidates {
         if let Some(last) = selected.last_mut() {
             if candidate.span.start < last.span.end {
-                if should_replace_overlap(candidate, last) {
-                    *last = candidate;
-                }
+                merge_overlapping_transform_finding(input, last, candidate);
                 continue;
             }
         }
-        selected.push(candidate);
+        selected.push(candidate.clone());
     }
 
     selected.sort_by_key(|finding| finding.span.start);
     selected
+}
+
+fn merge_overlapping_transform_finding(
+    input: &str,
+    selected: &mut DataBoundaryDetectorFinding,
+    candidate: &DataBoundaryDetectorFinding,
+) {
+    if candidate.span.start >= selected.span.start && candidate.span.end <= selected.span.end {
+        return;
+    }
+
+    if candidate.span.start <= selected.span.start && candidate.span.end >= selected.span.end {
+        *selected = candidate.clone();
+        return;
+    }
+
+    let merged_span = DataBoundarySpan {
+        start: selected.span.start.min(candidate.span.start),
+        end: selected.span.end.max(candidate.span.end),
+    };
+
+    if should_replace_overlap(candidate, selected) {
+        *selected = candidate.clone();
+    }
+    selected.span = merged_span;
+    selected.evidence_hash = hash_span(input, merged_span);
 }
 
 fn should_replace_overlap(
@@ -1177,7 +1201,14 @@ fn assignment_value_span(input: &str, key_end: usize) -> Option<(usize, usize)> 
     let start = index;
 
     let end = if let Some(quote) = quote {
-        while index < bytes.len() && bytes[index] != quote {
+        while index < bytes.len() {
+            if bytes[index] == b'\\' && index + 1 < bytes.len() {
+                index += 2;
+                continue;
+            }
+            if bytes[index] == quote {
+                break;
+            }
             index += 1;
         }
         index

@@ -143,3 +143,37 @@ fn overlapping_spans_are_handled_deterministically() {
     assert_eq!(redaction.placeholders.len(), 1);
     assert_eq!(redaction.placeholders[0].detector_id, "long_high");
 }
+
+#[test]
+fn nested_key_detection_keeps_outer_assignment_redacted() {
+    let aws_key = ["AK", "IA", "IOSFODNN7EXAMPLE"].concat();
+    let input = format!("secret=prefix-{aws_key}-suffix");
+    let findings = detect_sensitive_data(&input);
+    let detector_ids: Vec<_> = findings
+        .iter()
+        .map(|finding| finding.detector_id.as_str())
+        .collect();
+
+    assert!(detector_ids.contains(&"credential_assignment"));
+    assert!(detector_ids.contains(&"aws_access_key_id"));
+
+    let redaction = redact_sensitive_data(&input, &findings);
+
+    assert_eq!(redaction.redacted, "secret=[REDACTED:SECRET:1]");
+    assert!(!redaction.redacted.contains("prefix-"));
+    assert!(!redaction.redacted.contains("-suffix"));
+    assert!(!redaction.redacted.contains(&aws_key));
+}
+
+#[test]
+fn quoted_credential_scan_skips_escaped_delimiters() {
+    let password_key = ["pass", "word"].concat();
+    let password_value = ["abc", "\\\"", "defSECRET123"].concat();
+    let input = format!("{password_key}=\"{password_value}\"");
+    let findings = detect_sensitive_data(&input);
+    let redaction = redact_sensitive_data(&input, &findings);
+
+    assert_eq!(redaction.redacted, "password=\"[REDACTED:CREDENTIAL:1]\"");
+    assert!(!redaction.redacted.contains("abc"));
+    assert!(!redaction.redacted.contains("defSECRET123"));
+}
