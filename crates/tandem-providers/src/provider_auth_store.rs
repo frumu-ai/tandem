@@ -141,15 +141,33 @@ fn write_codex_cli_auth_json_at(path: &Path, auth_json: &Value) -> anyhow::Resul
 }
 
 fn keyring_entry(provider_id: &str) -> Option<keyring::Entry> {
+    if provider_auth_keyring_disabled() {
+        return None;
+    }
     keyring::Entry::new(PROVIDER_AUTH_SERVICE, &provider_auth_account(provider_id)).ok()
 }
 
 fn credential_keyring_entry(provider_id: &str) -> Option<keyring::Entry> {
+    if provider_auth_keyring_disabled() {
+        return None;
+    }
     keyring::Entry::new(
         PROVIDER_AUTH_SERVICE,
         &provider_credential_account(provider_id),
     )
     .ok()
+}
+
+fn provider_auth_keyring_disabled() -> bool {
+    std::env::var("TANDEM_PROVIDER_AUTH_DISABLE_KEYRING")
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 const TENANT_SCOPED_PROVIDER_PREFIX: &str = "__tenant__::";

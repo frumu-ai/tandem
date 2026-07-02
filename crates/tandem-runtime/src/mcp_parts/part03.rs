@@ -5,7 +5,7 @@ mod tests {
     use tokio::net::TcpListener;
     use uuid::Uuid;
 
-    static PROVIDER_AUTH_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    include!("provider_auth_test_guard.rs");
 
     async fn spawn_fake_http_mcp_server() -> (String, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -1054,7 +1054,7 @@ mod tests {
 
     #[tokio::test]
     async fn persisted_connection_state_does_not_store_raw_bearer_token() {
-        let _provider_auth_guard = PROVIDER_AUTH_TEST_LOCK.lock().await;
+        let _provider_auth_guard = provider_auth_test_guard().await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
         let registry = McpRegistry::new_with_state_file(file.clone());
         registry
@@ -1191,7 +1191,7 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_tenant_mcp_secret_headers_are_not_cached_globally() {
-        let _provider_auth_guard = PROVIDER_AUTH_TEST_LOCK.lock().await;
+        let _provider_auth_guard = provider_auth_test_guard().await;
         let current_tenant = TenantContext::explicit("tenant", "workspace", None);
         let (headers, secret_headers, secret_values) = split_headers_for_storage(
             "tenant-server",
@@ -1218,7 +1218,7 @@ mod tests {
 
     #[tokio::test]
     async fn actor_scoped_mcp_header_secret_ids_do_not_collide() {
-        let _provider_auth_guard = PROVIDER_AUTH_TEST_LOCK.lock().await;
+        let _provider_auth_guard = provider_auth_test_guard().await;
         let alice = TenantContext::explicit_user_workspace(
             format!("tenant-a-{}", Uuid::new_v4()),
             "workspace-a",
@@ -1283,7 +1283,7 @@ mod tests {
 
     #[tokio::test]
     async fn call_tool_for_tenant_resolves_matching_tenant_store_secret() {
-        let _provider_auth_guard = PROVIDER_AUTH_TEST_LOCK.lock().await;
+        let _provider_auth_guard = provider_auth_test_guard().await;
         let (endpoint, server) =
             spawn_auth_required_http_mcp_server("Bearer tenant-a-secret").await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
@@ -1319,7 +1319,7 @@ mod tests {
 
     #[tokio::test]
     async fn call_tool_for_tenant_reconnects_with_matching_tenant_secret() {
-        let _provider_auth_guard = PROVIDER_AUTH_TEST_LOCK.lock().await;
+        let _provider_auth_guard = provider_auth_test_guard().await;
         let (endpoint, server) =
             spawn_discovery_auth_required_http_mcp_server("Bearer tenant-a-secret").await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
@@ -1391,7 +1391,7 @@ mod tests {
 
     #[tokio::test]
     async fn call_tool_for_tenant_rejects_mismatched_tenant_store_secret() {
-        let _provider_auth_guard = PROVIDER_AUTH_TEST_LOCK.lock().await;
+        let _provider_auth_guard = provider_auth_test_guard().await;
         let (endpoint, server) =
             spawn_auth_required_http_mcp_server("Bearer tenant-a-secret").await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
@@ -1431,7 +1431,7 @@ mod tests {
 
     #[tokio::test]
     async fn call_tool_for_tenant_rejects_mismatched_secret_before_reconnect() {
-        let _provider_auth_guard = PROVIDER_AUTH_TEST_LOCK.lock().await;
+        let _provider_auth_guard = provider_auth_test_guard().await;
         let (endpoint, server) =
             spawn_auth_required_http_mcp_server("Bearer tenant-a-secret").await;
         let file = std::env::temp_dir().join(format!("mcp-test-{}.json", Uuid::new_v4()));
