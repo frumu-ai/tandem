@@ -70,6 +70,19 @@ pub(super) async fn workflow_learning_candidate_promote(
             tandem_memory::MemoryAuthorityOperation::Write,
             Vec::new(),
         );
+        let knowledge_scope_policy =
+            tandem_memory::knowledge_scope_policy_from_authority_job_context(
+                &session_partition,
+                &authority_job_context,
+                format!(
+                    "workflow-learning:{}:{}",
+                    candidate.workflow_id, candidate.candidate_id
+                ),
+                vec![tandem_memory::GovernedMemoryTier::Session],
+                vec![tandem_memory::GovernedMemoryTier::Project],
+                true,
+            )
+            .ok_or(StatusCode::FORBIDDEN)?;
         let response = memory_put_impl(
             &state,
             &tenant_context,
@@ -81,12 +94,15 @@ pub(super) async fn workflow_learning_candidate_promote(
                 artifact_refs: candidate.artifact_refs.clone(),
                 classification: tandem_memory::MemoryClassification::Internal,
                 authority_job_context: Some(authority_job_context),
-                metadata: Some(json!({
-                    "origin": "workflow_learning_candidate",
-                    "candidate_id": candidate.candidate_id,
-                    "workflow_id": candidate.workflow_id,
-                    "kind": workflow_learning_kind_label(candidate.kind),
-                })),
+                metadata: tandem_memory::metadata_with_knowledge_scope(
+                    Some(json!({
+                        "origin": "workflow_learning_candidate",
+                        "candidate_id": candidate.candidate_id,
+                        "workflow_id": candidate.workflow_id,
+                        "kind": workflow_learning_kind_label(candidate.kind),
+                    })),
+                    &knowledge_scope_policy,
+                ),
             },
             Some(capability.clone()),
         )

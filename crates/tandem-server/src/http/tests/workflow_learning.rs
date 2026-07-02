@@ -305,15 +305,32 @@ async fn workflow_learning_candidate_promote_promotes_memory_fact_candidate() {
             json!({
                 "run_id": "wflearn-promote-run",
                 "partition": {
-                    "org_id": "org-1",
-                    "workspace_id": "ws-1",
+                    "org_id": "local",
+                    "workspace_id": "local",
                     "project_id": "proj-1",
                     "tier": "session"
                 },
                 "kind": "fact",
                 "content": "promote this learning",
                 "classification": "internal",
-                "artifact_refs": ["artifact://wflearn-promote/report.md"]
+                "artifact_refs": ["artifact://wflearn-promote/report.md"],
+                "metadata": {
+                    "knowledge_scope_registry": {
+                        "registry_id": "registry-wflearn-promote",
+                        "resource_ref": {
+                            "organization_id": "local",
+                            "workspace_id": "local",
+                            "project_id": "proj-1",
+                            "resource_kind": "source_binding",
+                            "resource_id": "workflow:workflow-promote"
+                        },
+                        "data_class": "internal",
+                        "source_binding_id": "workflow:workflow-promote",
+                        "allowed_write_tiers": ["session"],
+                        "allowed_promotion_tiers": ["project"],
+                        "promotion_requires_approval": true
+                    }
+                }
             })
             .to_string(),
         ))

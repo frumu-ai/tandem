@@ -68,6 +68,10 @@ Runtime policy decisions now consume that resolver directly: the server loads
 the enterprise inheritance model across every recorded data class, enforces the
 resolved result in gate, authority, fintech protected-action receipt, MCP
 preflight, and memory promotion helpers, and stores inherited sources for replay.
+Knowledge-scope memory governance now fails closed for source-bound gaps:
+workflow-phase retrieval requires registered source-bound scope metadata, and
+source-bound memory writes or promotions are blocked unless the derived memory
+carries explicit `knowledge_scope_registry` policy metadata.
 Automation V2 runs now also bridge those durable waits back into the live run
 store: approval gates register and complete stateful approval waits, while
 timer and webhook wait wakes requeue the authoritative automation run so the

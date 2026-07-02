@@ -239,6 +239,11 @@ impl MemoryAccessFilter {
         {
             return decision;
         }
+        if let Some(decision) =
+            self.decision_for_missing_knowledge_scope_metadata(chunk.metadata.as_ref())
+        {
+            return decision;
+        }
         match governed_read_target_from_chunk(chunk) {
             Ok(target) => self.decision_for_target(&target),
             Err(reason) => self.decision_for_missing_target(reason),
@@ -247,6 +252,11 @@ impl MemoryAccessFilter {
 
     pub fn decision_for_global_record(&self, record: &GlobalMemoryRecord) -> GovernedReadDecision {
         if let Some(decision) = self.decision_for_knowledge_scope_metadata(record.metadata.as_ref())
+        {
+            return decision;
+        }
+        if let Some(decision) =
+            self.decision_for_missing_knowledge_scope_metadata(record.metadata.as_ref())
         {
             return decision;
         }
@@ -274,6 +284,22 @@ impl MemoryAccessFilter {
             return Some(GovernedReadDecision::deny(reason));
         }
         Some(self.decision_for_target(&policy.governed_read_target()))
+    }
+
+    fn decision_for_missing_knowledge_scope_metadata(
+        &self,
+        metadata: Option<&serde_json::Value>,
+    ) -> Option<GovernedReadDecision> {
+        if self.mode == GovernedReadMode::LocalNoop || self.workflow_phase.is_none() {
+            return None;
+        }
+        if crate::knowledge_scope::metadata_has_enterprise_source_binding(metadata) {
+            Some(GovernedReadDecision::deny(
+                "knowledge_scope_registry_missing",
+            ))
+        } else {
+            None
+        }
     }
 
     pub fn decision_for_source_target(

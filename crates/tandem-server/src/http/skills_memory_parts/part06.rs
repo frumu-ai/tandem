@@ -425,9 +425,10 @@ pub(super) async fn memory_put_impl_with_verified(
         return Err(StatusCode::FORBIDDEN);
     }
     let now = crate::now_ms();
-    let scope_decision = tandem_memory::memory_write_scope_decision(
+    let scope_decision = tandem_memory::memory_write_scope_decision_for_context(
         &request.partition,
         request.metadata.as_ref(),
+        request.authority_job_context.as_ref(),
         now,
     )
     .map_err(|error| {

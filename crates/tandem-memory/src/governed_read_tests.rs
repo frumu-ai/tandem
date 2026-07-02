@@ -222,6 +222,51 @@ fn governed_read_filter_denies_source_binding_without_data_class() {
     assert_eq!(decision.reason.as_deref(), Some("missing_data_class"));
 }
 
+#[test]
+fn workflow_phase_read_filter_requires_registered_source_bound_scope() {
+    let resource = ResourceRef::new(
+        "org-a",
+        "workspace-a",
+        ResourceKind::DocumentCollection,
+        "finance-drive",
+    );
+    let grant = ScopedGrant::new(
+        "grant-finance",
+        PrincipalRef::human_user("user-a"),
+        resource.clone(),
+        GrantSource::Direct,
+    )
+    .with_permissions(vec![AccessPermission::Read])
+    .with_data_classes(vec![DataClass::FinancialRecord]);
+    let strict = tenant_strict(DataBoundary::unrestricted()).with_grants(vec![grant]);
+    let record = global_record(Some(serde_json::json!({
+        "enterprise_source_binding": {
+            "binding_id": "finance-drive",
+            "connector_id": "manual-upload",
+            "resource_ref": {
+                "organization_id": "org-a",
+                "workspace_id": "workspace-a",
+                "resource_kind": "document_collection",
+                "resource_id": "finance-drive"
+            },
+            "data_class": "financial_record",
+            "source_object_id": "statement-q4"
+        }
+    })));
+
+    let plain_decision =
+        MemoryAccessFilter::strict(strict.clone(), 2_000).decision_for_global_record(&record);
+    let workflow_decision = MemoryAccessFilter::strict_with_workflow_phase(strict, 2_000, "draft")
+        .decision_for_global_record(&record);
+
+    assert!(plain_decision.allowed);
+    assert!(!workflow_decision.allowed);
+    assert_eq!(
+        workflow_decision.reason.as_deref(),
+        Some("knowledge_scope_registry_missing")
+    );
+}
+
 fn tenant_strict(data_boundary: DataBoundary) -> StrictTenantContext {
     let tenant = TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "user-a");
     let principal = RequestPrincipal::authenticated_user("user-a", "test");

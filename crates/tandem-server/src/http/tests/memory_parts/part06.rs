@@ -398,3 +398,68 @@ async fn memory_put_blocks_project_write_denied_by_knowledge_scope() {
     let put_resp = app.oneshot(put_req).await.expect("put response");
     assert_eq!(put_resp.status(), StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn memory_put_blocks_source_bound_authority_without_knowledge_scope() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let capability = json!({
+        "run_id": "run-source-bound-write",
+        "subject": "agent-user",
+        "org_id": "org-1",
+        "workspace_id": "ws-1",
+        "project_id": "proj-1",
+        "memory": {
+            "read_tiers": ["session", "project"],
+            "write_tiers": ["session", "project"],
+            "promote_targets": ["project"],
+            "require_review_for_promote": false,
+            "allow_auto_use_tiers": ["curated"]
+        },
+        "expires_at": 9999999999999u64
+    });
+
+    let put_req = Request::builder()
+        .method("POST")
+        .uri("/memory/put")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "run_id": "run-source-bound-write",
+                "partition": {
+                    "org_id": "org-1",
+                    "workspace_id": "ws-1",
+                    "project_id": "proj-1",
+                    "tier": "session"
+                },
+                "kind": "fact",
+                "content": "source-bound write must carry knowledge scope policy",
+                "artifact_refs": ["artifact://run-source-bound-write/output.json"],
+                "classification": "internal",
+                "authority_job_context": {
+                    "org_id": "org-1",
+                    "workspace_id": "ws-1",
+                    "project_id": "proj-1",
+                    "actor_id": "agent-user",
+                    "run_id": "run-source-bound-write",
+                    "task_id": "task-source-bound",
+                    "purpose": "write derived source-bound memory",
+                    "source_binding_id": "workflow:wf-source-bound",
+                    "data_class": "internal",
+                    "classification": "internal",
+                    "operation": "write",
+                    "source_memory_ids": [],
+                    "artifact_refs": ["artifact://run-source-bound-write/output.json"],
+                    "policy_decision_id": "policy-1",
+                    "grant_decision_id": "grant-1"
+                },
+                "capability": capability
+            })
+            .to_string(),
+        ))
+        .expect("put request");
+
+    let put_resp = app.oneshot(put_req).await.expect("put response");
+    assert_eq!(put_resp.status(), StatusCode::FORBIDDEN);
+}
