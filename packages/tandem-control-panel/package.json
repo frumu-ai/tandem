@@ -12,7 +12,7 @@
     "build": "vite build",
     "dev": "vite",
     "preview": "vite preview",
-    "test": "node --test tests/*.test.mjs",
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs",
     "test:smoke": "node --test tests/smoke.test.mjs",
     "typecheck": "tsc --noEmit",
     "init:env": "node bin/init-env.js",
