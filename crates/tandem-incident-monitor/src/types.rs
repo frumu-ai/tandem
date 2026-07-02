@@ -232,8 +232,20 @@ pub struct IncidentMonitorSafetyDefaults {
     pub redact_secrets: bool,
     #[serde(default)]
     pub block_unready_destinations: bool,
+    /// When true, an incident whose source is not data-ready (failed lineage /
+    /// freshness / classification / legal-basis / watcher-health gates) is
+    /// blocked from publishing instead of the readiness result being advisory
+    /// only (TAN-544). Default false preserves the advisory-only behavior.
+    #[serde(default)]
+    pub block_unready_sources: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_days: Option<u64>,
+    /// Server-controlled floor for the effective incident risk level. When set,
+    /// a reporter-supplied `risk_level` can never lower the classification below
+    /// this value — closing the severity-downgrade spoof against the high-risk
+    /// approval gate (TAN-548). `None` leaves the reporter value untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum_risk_level: Option<String>,
 }
 
 impl Default for IncidentMonitorSafetyDefaults {
@@ -242,7 +254,9 @@ impl Default for IncidentMonitorSafetyDefaults {
             require_approval_for_high_risk: true,
             redact_secrets: true,
             block_unready_destinations: false,
+            block_unready_sources: false,
             retention_days: None,
+            minimum_risk_level: None,
         }
     }
 }
@@ -1140,6 +1154,14 @@ pub struct IncidentMonitorPostRecord {
     pub response_excerpt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Tenant/workspace this receipt belongs to, stamped at publish so a
+    /// tenant-scoped assessment report can filter receipts the same way it
+    /// already filters incidents and audit events (TAN-546). `None` on legacy
+    /// records predating this field / in single-tenant deployments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
 }

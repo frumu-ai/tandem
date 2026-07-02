@@ -1241,10 +1241,17 @@ impl AppState {
         verified: VerifiedAutomationWebhookRequest,
         sanitized_preview: Value,
     ) -> anyhow::Result<AutomationWebhookQueueResult> {
-        self.queue_automation_v2_run_from_webhook_delivery_with_feedback_loop(
-            verified,
-            sanitized_preview,
-            None,
+        // Box the large inner future so this entry point's frame stays small.
+        // The delivery-queueing future is big and is often driven concurrently
+        // (e.g. two deliveries under tokio::join!); keeping it on the heap gives
+        // real headroom against the default 2 MiB worker/test stack instead of
+        // sitting one unrelated codegen change away from a stack overflow.
+        Box::pin(
+            self.queue_automation_v2_run_from_webhook_delivery_with_feedback_loop(
+                verified,
+                sanitized_preview,
+                None,
+            ),
         )
         .await
     }

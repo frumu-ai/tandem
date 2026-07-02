@@ -42,6 +42,72 @@ async fn quarantine_corrupt_incident_monitor_state(
     }
 }
 
+/// Resolve which file to read incident-monitor state from, preferring the
+/// canonical path but falling back to legacy locations AND legacy file names
+/// (`failure_reporter_*` / `bug_monitor_*`) written by pre-rename deployments.
+/// Returns `(path, is_legacy)`; a legacy hit is migrated to the canonical path
+/// on read so upgrades don't silently come up empty and lose receipts /
+/// idempotency history (TAN-542).
+fn resolve_incident_monitor_state_read_path(
+    canonical: &std::path::Path,
+    file_stem: &str,
+) -> Option<(std::path::PathBuf, bool)> {
+    if canonical.exists() {
+        return Some((canonical.to_path_buf(), false));
+    }
+    let candidate_names = [
+        format!("incident_monitor_{file_stem}.json"),
+        format!("failure_reporter_{file_stem}.json"),
+        format!("bug_monitor_{file_stem}.json"),
+    ];
+    for name in &candidate_names {
+        if let Some(path) = config::paths::resolve_legacy_root_file_path(name) {
+            if path.exists() {
+                return Some((path, true));
+            }
+        }
+        let legacy = config::paths::legacy_incident_monitor_path(name);
+        if legacy.exists() {
+            return Some((legacy, true));
+        }
+    }
+    None
+}
+
+/// Delete incident-monitor log-evidence artifact files older than `cutoff_ms`
+/// (by mtime), walking the project/source subdirectories. Best-effort: I/O
+/// errors on individual entries are skipped so one unreadable file can't stall
+/// retention pruning (TAN-556).
+async fn prune_incident_monitor_evidence_dir(dir: &std::path::Path, cutoff_ms: u64) -> usize {
+    let mut removed = 0usize;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let mut entries = match fs::read_dir(&current).await {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            let Ok(metadata) = entry.metadata().await else {
+                continue;
+            };
+            if metadata.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let Ok(modified) = metadata.modified() else {
+                continue;
+            };
+            if let Ok(elapsed) = modified.duration_since(std::time::UNIX_EPOCH) {
+                if (elapsed.as_millis() as u64) < cutoff_ms && fs::remove_file(&path).await.is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+    }
+    removed
+}
+
 fn policy_decision_scope_level(decision: &PolicyDecisionRecord) -> EnterprisePolicyScopeLevel {
     if policy_decision_workflow_phase(decision).is_some() {
         EnterprisePolicyScopeLevel::Phase
@@ -338,38 +404,54 @@ impl AppState {
     }
 
     pub async fn load_incident_monitor_config(&self) -> anyhow::Result<()> {
-        let path = if self.incident_monitor_config_path.exists() {
-            self.incident_monitor_config_path.clone()
-        } else if let Some(path) =
-            config::paths::resolve_legacy_root_file_path("incident_monitor_config.json")
-        {
-            if path.exists() {
-                path
-            } else if config::paths::legacy_incident_monitor_path("incident_monitor_config.json")
-                .exists()
-            {
-                config::paths::legacy_incident_monitor_path("incident_monitor_config.json")
-            } else {
-                return Ok(());
-            }
-        } else if config::paths::legacy_incident_monitor_path("incident_monitor_config.json")
-            .exists()
-        {
-            config::paths::legacy_incident_monitor_path("incident_monitor_config.json")
-        } else {
+        let Some((path, is_legacy)) = resolve_incident_monitor_state_read_path(
+            &self.incident_monitor_config_path,
+            "config",
+        ) else {
             return Ok(());
         };
         check_file_permissions(&path);
         let raw = fs::read_to_string(&path).await?;
-        let parsed = match serde_json::from_str::<IncidentMonitorConfig>(&raw) {
-            Ok(parsed) => parsed,
+        let (parsed, migrate) = match serde_json::from_str::<IncidentMonitorConfig>(&raw) {
+            Ok(parsed) => (parsed, is_legacy),
             Err(error) => {
                 quarantine_corrupt_incident_monitor_state(&path, "config", &error).await;
-                config::env::resolve_incident_monitor_env_config()
+                (config::env::resolve_incident_monitor_env_config(), false)
             }
         };
         *self.incident_monitor_config.write().await = parsed;
+        if migrate {
+            self.migrate_legacy_incident_monitor_state(&path, "config", || async {
+                self.persist_incident_monitor_config().await
+            })
+            .await;
+        }
         Ok(())
+    }
+
+    /// Persist migrated legacy state to the canonical path (one-time on read)
+    /// and log a deprecation warning. Failures are logged, not fatal — the
+    /// in-memory state is already loaded and the legacy file is left intact.
+    async fn migrate_legacy_incident_monitor_state<F, Fut>(
+        &self,
+        legacy_path: &std::path::Path,
+        kind: &str,
+        persist: F,
+    ) where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<()>>,
+    {
+        match persist().await {
+            Ok(()) => tracing::warn!(
+                legacy_path = %legacy_path.display(),
+                "migrated legacy incident monitor {kind} state to the canonical path; the legacy file name is deprecated and will stop being read in a future release"
+            ),
+            Err(error) => tracing::error!(
+                legacy_path = %legacy_path.display(),
+                error = %error,
+                "failed to migrate legacy incident monitor {kind} state to the canonical path; will retry on next load"
+            ),
+        }
     }
 
     pub async fn persist_incident_monitor_config(&self) -> anyhow::Result<()> {
@@ -558,39 +640,30 @@ impl AppState {
     }
 
     pub async fn load_incident_monitor_drafts(&self) -> anyhow::Result<()> {
-        let path = if self.incident_monitor_drafts_path.exists() {
-            self.incident_monitor_drafts_path.clone()
-        } else if let Some(path) =
-            config::paths::resolve_legacy_root_file_path("incident_monitor_drafts.json")
-        {
-            if path.exists() {
-                path
-            } else if config::paths::legacy_incident_monitor_path("incident_monitor_drafts.json")
-                .exists()
-            {
-                config::paths::legacy_incident_monitor_path("incident_monitor_drafts.json")
-            } else {
-                return Ok(());
-            }
-        } else if config::paths::legacy_incident_monitor_path("incident_monitor_drafts.json")
-            .exists()
-        {
-            config::paths::legacy_incident_monitor_path("incident_monitor_drafts.json")
-        } else {
+        let Some((path, is_legacy)) = resolve_incident_monitor_state_read_path(
+            &self.incident_monitor_drafts_path,
+            "drafts",
+        ) else {
             return Ok(());
         };
         let raw = fs::read_to_string(&path).await?;
-        let parsed = match serde_json::from_str::<
+        let (parsed, migrate) = match serde_json::from_str::<
             std::collections::HashMap<String, IncidentMonitorDraftRecord>,
         >(&raw)
         {
-            Ok(parsed) => parsed,
+            Ok(parsed) => (parsed, is_legacy),
             Err(error) => {
                 quarantine_corrupt_incident_monitor_state(&path, "drafts", &error).await;
-                std::collections::HashMap::new()
+                (std::collections::HashMap::new(), false)
             }
         };
         *self.incident_monitor_drafts.write().await = parsed;
+        if migrate {
+            self.migrate_legacy_incident_monitor_state(&path, "drafts", || async {
+                self.persist_incident_monitor_drafts().await
+            })
+            .await;
+        }
         Ok(())
     }
 
@@ -606,39 +679,30 @@ impl AppState {
     }
 
     pub async fn load_incident_monitor_incidents(&self) -> anyhow::Result<()> {
-        let path = if self.incident_monitor_incidents_path.exists() {
-            self.incident_monitor_incidents_path.clone()
-        } else if let Some(path) =
-            config::paths::resolve_legacy_root_file_path("incident_monitor_incidents.json")
-        {
-            if path.exists() {
-                path
-            } else if config::paths::legacy_incident_monitor_path("incident_monitor_incidents.json")
-                .exists()
-            {
-                config::paths::legacy_incident_monitor_path("incident_monitor_incidents.json")
-            } else {
-                return Ok(());
-            }
-        } else if config::paths::legacy_incident_monitor_path("incident_monitor_incidents.json")
-            .exists()
-        {
-            config::paths::legacy_incident_monitor_path("incident_monitor_incidents.json")
-        } else {
+        let Some((path, is_legacy)) = resolve_incident_monitor_state_read_path(
+            &self.incident_monitor_incidents_path,
+            "incidents",
+        ) else {
             return Ok(());
         };
         let raw = fs::read_to_string(&path).await?;
-        let parsed = match serde_json::from_str::<
+        let (parsed, migrate) = match serde_json::from_str::<
             std::collections::HashMap<String, IncidentMonitorIncidentRecord>,
         >(&raw)
         {
-            Ok(parsed) => parsed,
+            Ok(parsed) => (parsed, is_legacy),
             Err(error) => {
                 quarantine_corrupt_incident_monitor_state(&path, "incidents", &error).await;
-                std::collections::HashMap::new()
+                (std::collections::HashMap::new(), false)
             }
         };
         *self.incident_monitor_incidents.write().await = parsed;
+        if migrate {
+            self.migrate_legacy_incident_monitor_state(&path, "incidents", || async {
+                self.persist_incident_monitor_incidents().await
+            })
+            .await;
+        }
         Ok(())
     }
 
@@ -654,39 +718,30 @@ impl AppState {
     }
 
     pub async fn load_incident_monitor_posts(&self) -> anyhow::Result<()> {
-        let path = if self.incident_monitor_posts_path.exists() {
-            self.incident_monitor_posts_path.clone()
-        } else if let Some(path) =
-            config::paths::resolve_legacy_root_file_path("incident_monitor_posts.json")
-        {
-            if path.exists() {
-                path
-            } else if config::paths::legacy_incident_monitor_path("incident_monitor_posts.json")
-                .exists()
-            {
-                config::paths::legacy_incident_monitor_path("incident_monitor_posts.json")
-            } else {
-                return Ok(());
-            }
-        } else if config::paths::legacy_incident_monitor_path("incident_monitor_posts.json")
-            .exists()
-        {
-            config::paths::legacy_incident_monitor_path("incident_monitor_posts.json")
-        } else {
+        let Some((path, is_legacy)) = resolve_incident_monitor_state_read_path(
+            &self.incident_monitor_posts_path,
+            "posts",
+        ) else {
             return Ok(());
         };
         let raw = fs::read_to_string(&path).await?;
-        let parsed = match serde_json::from_str::<
+        let (parsed, migrate) = match serde_json::from_str::<
             std::collections::HashMap<String, IncidentMonitorPostRecord>,
         >(&raw)
         {
-            Ok(parsed) => parsed,
+            Ok(parsed) => (parsed, is_legacy),
             Err(error) => {
                 quarantine_corrupt_incident_monitor_state(&path, "posts", &error).await;
-                std::collections::HashMap::new()
+                (std::collections::HashMap::new(), false)
             }
         };
         *self.incident_monitor_posts.write().await = parsed;
+        if migrate {
+            self.migrate_legacy_incident_monitor_state(&path, "posts", || async {
+                self.persist_incident_monitor_posts().await
+            })
+            .await;
+        }
         Ok(())
     }
 
@@ -699,6 +754,47 @@ impl AppState {
             serde_json::to_string_pretty(&*guard)?
         };
         write_state_file_atomically(&self.incident_monitor_posts_path, payload).await
+    }
+
+    /// TAN-556: enforce `safety_defaults.retention_days` by pruning receipts,
+    /// incidents and log-evidence artifacts older than the retention window.
+    /// Returns `(posts, incidents, artifacts)` removed. A window of 0 (unset)
+    /// prunes nothing.
+    pub async fn prune_incident_monitor_retention(
+        &self,
+        retention_days: u64,
+    ) -> anyhow::Result<(usize, usize, usize)> {
+        if retention_days == 0 {
+            return Ok((0, 0, 0));
+        }
+        let cutoff = crate::now_ms()
+            .saturating_sub(retention_days.saturating_mul(24 * 60 * 60 * 1_000));
+
+        let removed_posts = {
+            let mut guard = self.incident_monitor_posts.write().await;
+            let before = guard.len();
+            guard.retain(|_, post| post.updated_at_ms >= cutoff);
+            before - guard.len()
+        };
+        if removed_posts > 0 {
+            self.persist_incident_monitor_posts().await?;
+        }
+
+        let removed_incidents = {
+            let mut guard = self.incident_monitor_incidents.write().await;
+            let before = guard.len();
+            guard.retain(|_, incident| incident.updated_at_ms >= cutoff);
+            before - guard.len()
+        };
+        if removed_incidents > 0 {
+            self.persist_incident_monitor_incidents().await?;
+        }
+
+        let removed_artifacts =
+            prune_incident_monitor_evidence_dir(&self.incident_monitor_log_evidence_dir, cutoff)
+                .await;
+
+        Ok((removed_posts, removed_incidents, removed_artifacts))
     }
 
     pub async fn load_external_actions(&self) -> anyhow::Result<()> {
@@ -835,6 +931,34 @@ impl AppState {
         rows
     }
 
+    /// TAN-546: list receipts belonging to a tenant, applying the tenant
+    /// predicate *before* the recency cap so a tenant's own receipts can't be
+    /// crowded out of a scoped report by newer receipts from other tenants.
+    /// Local/implicit callers see everything (single-tenant deployments).
+    pub async fn list_incident_monitor_posts_for_tenant(
+        &self,
+        tenant_context: &TenantContext,
+        limit: usize,
+    ) -> Vec<IncidentMonitorPostRecord> {
+        let local = tenant_context.is_local_implicit();
+        let mut rows = self
+            .incident_monitor_posts
+            .read()
+            .await
+            .values()
+            .filter(|post| {
+                local
+                    || (post.tenant_id.as_deref() == Some(tenant_context.org_id.as_str())
+                        && post.workspace_id.as_deref()
+                            == Some(tenant_context.workspace_id.as_str()))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+        rows.truncate(limit.clamp(1, 200));
+        rows
+    }
+
     pub async fn list_incident_monitor_posts_by_destination(
         &self,
         limit: usize,
@@ -869,10 +993,25 @@ impl AppState {
             .cloned()
     }
 
+    /// TAN-546: stamp a publish receipt with the tenant/workspace of its draft
+    /// so tenant-scoped assessment reports can filter receipts the same way they
+    /// filter incidents and audit events. Only fills gaps — an adapter that
+    /// already set the fields wins, and single-tenant drafts leave them None.
+    async fn stamp_incident_monitor_post_tenant(&self, post: &mut IncidentMonitorPostRecord) {
+        if post.tenant_id.is_some() || post.workspace_id.is_some() {
+            return;
+        }
+        if let Some(draft) = self.get_incident_monitor_draft(&post.draft_id).await {
+            post.tenant_id = draft.tenant_id.clone();
+            post.workspace_id = draft.workspace_id.clone();
+        }
+    }
+
     pub async fn put_incident_monitor_post(
         &self,
-        post: IncidentMonitorPostRecord,
+        mut post: IncidentMonitorPostRecord,
     ) -> anyhow::Result<IncidentMonitorPostRecord> {
+        self.stamp_incident_monitor_post_tenant(&mut post).await;
         self.incident_monitor_posts
             .write()
             .await
@@ -883,8 +1022,9 @@ impl AppState {
 
     pub async fn try_claim_incident_monitor_post_idempotency(
         &self,
-        post: IncidentMonitorPostRecord,
+        mut post: IncidentMonitorPostRecord,
     ) -> anyhow::Result<(bool, IncidentMonitorPostRecord)> {
+        self.stamp_incident_monitor_post_tenant(&mut post).await;
         let now = crate::now_ms();
         let pending_claim_ttl_ms = 10 * 60 * 1000;
         let result = {

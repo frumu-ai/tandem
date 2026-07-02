@@ -436,3 +436,170 @@ fn sample_authority_inventory_automation(workspace_root: String) -> crate::Autom
         handoff_config: None,
     }
 }
+
+#[tokio::test]
+#[serial_test::serial(incident_monitor_http)]
+async fn incident_monitor_authority_inventory_scopes_topology_by_request_tenant() {
+    // TAN-547: intake keys, destinations, routes and monitored sources must be
+    // tenant-scoped like automations/approvals, so a tenant-scoped caller can't
+    // enumerate another tenant's config topology.
+    let state = test_state().await;
+    let workspace = tempfile::tempdir().expect("authority inventory scope workspace");
+    let workspace_root = workspace.path().display().to_string();
+    state
+        .put_incident_monitor_config(crate::IncidentMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            workspace_root: Some(workspace_root.clone()),
+            destinations: vec![
+                crate::IncidentMonitorDestinationConfig {
+                    destination_id: "dest-a".to_string(),
+                    name: "Tenant A GitHub".to_string(),
+                    kind: crate::IncidentMonitorDestinationKind::GithubIssue,
+                    enabled: true,
+                    repo: Some("acme/a-repo".to_string()),
+                    ..Default::default()
+                },
+                crate::IncidentMonitorDestinationConfig {
+                    destination_id: "dest-b".to_string(),
+                    name: "Tenant B GitHub".to_string(),
+                    kind: crate::IncidentMonitorDestinationKind::GithubIssue,
+                    enabled: true,
+                    repo: Some("acme/b-repo".to_string()),
+                    ..Default::default()
+                },
+            ],
+            routes: vec![
+                crate::IncidentMonitorRouteConfig {
+                    route_id: "route-a".to_string(),
+                    name: "Tenant A route".to_string(),
+                    destination_ids: vec!["dest-a".to_string()],
+                    match_tenant_ids: vec!["org-a".to_string()],
+                    match_workspace_ids: vec!["workspace-a".to_string()],
+                    ..Default::default()
+                },
+                crate::IncidentMonitorRouteConfig {
+                    route_id: "route-b".to_string(),
+                    name: "Tenant B route".to_string(),
+                    destination_ids: vec!["dest-b".to_string()],
+                    match_tenant_ids: vec!["org-b".to_string()],
+                    match_workspace_ids: vec!["workspace-b".to_string()],
+                    ..Default::default()
+                },
+            ],
+            monitored_projects: vec![
+                crate::IncidentMonitorMonitoredProject {
+                    project_id: "project-a".to_string(),
+                    name: "Project A".to_string(),
+                    repo: "acme/a-repo".to_string(),
+                    workspace_root: workspace_root.clone(),
+                    tenant_id: Some("org-a".to_string()),
+                    workspace_id: Some("workspace-a".to_string()),
+                    log_sources: vec![crate::IncidentMonitorLogSource {
+                        source_id: "src-a".to_string(),
+                        path: "logs/a.jsonl".to_string(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                crate::IncidentMonitorMonitoredProject {
+                    project_id: "project-b".to_string(),
+                    name: "Project B".to_string(),
+                    repo: "acme/b-repo".to_string(),
+                    workspace_root: workspace_root.clone(),
+                    tenant_id: Some("org-b".to_string()),
+                    workspace_id: Some("workspace-b".to_string()),
+                    log_sources: vec![crate::IncidentMonitorLogSource {
+                        source_id: "src-b".to_string(),
+                        path: "logs/b.jsonl".to_string(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+    for (key_id, project_id, raw) in [
+        ("key-a", "project-a", "tim_key_a_secret"),
+        ("key-b", "project-b", "tim_key_b_secret"),
+    ] {
+        state
+            .put_incident_monitor_intake_key(crate::IncidentMonitorProjectIntakeKey {
+                key_id: key_id.to_string(),
+                project_id: project_id.to_string(),
+                name: format!("Intake {key_id}"),
+                key_hash: crate::sha256_hex(&[raw]),
+                enabled: true,
+                scopes: vec!["incident_monitor:report".to_string()],
+                created_at_ms: Some(crate::now_ms()),
+                last_used_at_ms: None,
+            })
+            .await
+            .expect("intake key");
+    }
+
+    let app = app_router(state);
+    let resp = app
+        .oneshot(authority_inventory_tenant_request(
+            "org-a",
+            "workspace-a",
+            "actor-a",
+        ))
+        .await
+        .expect("authority inventory response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let payload: Value = serde_json::from_slice(
+        &to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("authority inventory body"),
+    )
+    .expect("authority inventory json");
+
+    let inventory = &payload["inventory"];
+    let route_ids = inventory["routes"]
+        .as_array()
+        .expect("routes")
+        .iter()
+        .filter_map(|row| row["route_id"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(route_ids, vec!["route-a"], "routes must be tenant-scoped");
+
+    let destination_ids = inventory["destinations"]
+        .as_array()
+        .expect("destinations")
+        .iter()
+        .filter_map(|row| row["destination_id"].as_str())
+        .collect::<Vec<_>>();
+    assert!(destination_ids.contains(&"dest-a"));
+    assert!(
+        !destination_ids.contains(&"dest-b"),
+        "another tenant's destination leaked: {destination_ids:?}"
+    );
+
+    let key_ids = inventory["scoped_intake_keys"]
+        .as_array()
+        .expect("intake keys")
+        .iter()
+        .filter_map(|row| row["key_id"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(key_ids, vec!["key-a"], "intake keys must be tenant-scoped");
+
+    let source_ids = inventory["monitored_sources"]
+        .as_array()
+        .expect("monitored sources")
+        .iter()
+        .filter_map(|row| row["source_id"].as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        !source_ids.contains(&"src-b"),
+        "another tenant's monitored source leaked: {source_ids:?}"
+    );
+
+    // Nothing belonging to tenant B may appear anywhere in the payload.
+    assert!(
+        !payload.to_string().contains("b-repo"),
+        "tenant B topology leaked into tenant A inventory"
+    );
+}

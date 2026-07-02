@@ -123,3 +123,45 @@ async fn corrupt_incident_monitor_posts_file_is_quarantined_not_discarded() {
         "expected a quarantined .corrupt- sibling preserving the corrupt bytes"
     );
 }
+
+#[tokio::test]
+async fn retention_prune_removes_stale_receipts_but_keeps_fresh() {
+    // TAN-556: safety_defaults.retention_days must actually prune old receipts /
+    // incidents instead of letting them accumulate unbounded.
+    let mut state = test_state_with_path(tmp_resource_file("im-retention"));
+    state.incident_monitor_posts_path = tmp_resource_file("im-retention-posts");
+    state.incident_monitor_incidents_path = tmp_resource_file("im-retention-incidents");
+
+    let now = crate::now_ms();
+    let day_ms = 24 * 60 * 60 * 1_000u64;
+
+    let mut stale = sample_post("stale");
+    stale.updated_at_ms = now.saturating_sub(30 * day_ms);
+    let mut fresh = sample_post("fresh");
+    fresh.updated_at_ms = now;
+    {
+        let mut guard = state.incident_monitor_posts.write().await;
+        guard.insert("stale".to_string(), stale);
+        guard.insert("fresh".to_string(), fresh);
+    }
+
+    // A zero window prunes nothing.
+    assert_eq!(
+        state
+            .prune_incident_monitor_retention(0)
+            .await
+            .expect("no-op prune"),
+        (0, 0, 0)
+    );
+    assert_eq!(state.incident_monitor_posts.read().await.len(), 2);
+
+    // A 7-day window drops the 30-day-old receipt and keeps the fresh one.
+    let (posts, _incidents, _artifacts) = state
+        .prune_incident_monitor_retention(7)
+        .await
+        .expect("prune");
+    assert_eq!(posts, 1, "the stale receipt should have been pruned");
+    let guard = state.incident_monitor_posts.read().await;
+    assert!(guard.contains_key("fresh"));
+    assert!(!guard.contains_key("stale"));
+}

@@ -70,6 +70,20 @@ const allowedMatches = [
     file: "crates/tandem-server/src/config/engine.rs",
     line: /TANDEM_FAILURE_REPORTER_/,
   },
+  // `TANDEM_BUG_MONITOR_*` are the oldest legacy env-var names, read only as a
+  // deprecated backward-compatible fallback (TAN-542); an intentional
+  // compatibility surface, not stale terminology to rename.
+  {
+    file: "crates/tandem-server/src/config/env.rs",
+    line: /bug_monitor/i,
+  },
+  // Legacy on-disk state file names (`failure_reporter_*` / `bug_monitor_*`)
+  // are read as migrate-on-load fallbacks so upgrades don't lose state
+  // (TAN-542), not stale terminology.
+  {
+    file: "crates/tandem-server/src/app/state/app_state_impl_parts/part06.rs",
+    line: /(failure_reporter|bug_monitor)_/,
+  },
 ];
 
 function normalizePath(file) {

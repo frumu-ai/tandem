@@ -243,14 +243,51 @@ pub async fn poll_log_source_once(
         source_state.partial_line.clone(),
         source_state.partial_line_offset_start,
     );
-    source_state.offset = source_state.offset.saturating_add(read_len);
-    source_state.partial_line = parse_result.next_partial_line;
-    source_state.partial_line_offset_start = parse_result.next_partial_line_offset_start;
+    let poll_start_offset = source_state.offset;
+    let cap = source.max_candidates_per_poll;
+    let parsed_count = parse_result.candidates.len();
+    // A cap of 0 means "no per-poll cap"; otherwise we only process the first
+    // `cap` candidates this poll.
+    let truncated = cap > 0 && parsed_count > cap;
+    let mut candidates = parse_result.candidates;
+    if truncated {
+        candidates.truncate(cap);
+    }
+
+    if truncated {
+        // TAN-549: more candidates were parsed than we will process this poll.
+        // Advancing the offset by the full read window would skip the remainder
+        // permanently (silent incident loss). Instead resume from the end of the
+        // last processed candidate and re-read the rest next poll; drop the
+        // parser's partial-line state since that tail now lives beyond the new
+        // offset and will be re-read.
+        let resume_offset = candidates
+            .last()
+            .map(|candidate| candidate.offset_end)
+            .unwrap_or_else(|| poll_start_offset.saturating_add(read_len))
+            .max(poll_start_offset);
+        let consumed = resume_offset.saturating_sub(poll_start_offset);
+        source_state.offset = resume_offset;
+        source_state.partial_line = None;
+        source_state.partial_line_offset_start = None;
+        source_state.total_bytes_read = source_state.total_bytes_read.saturating_add(consumed);
+        tracing::warn!(
+            project_id = %project.project_id,
+            source_id = %source.source_id,
+            processed = candidates.len(),
+            deferred = parsed_count.saturating_sub(candidates.len()),
+            "incident monitor log poll hit max_candidates_per_poll; deferring remaining candidates to the next poll instead of dropping them"
+        );
+    } else {
+        source_state.offset = source_state.offset.saturating_add(read_len);
+        source_state.partial_line = parse_result.next_partial_line;
+        source_state.partial_line_offset_start = parse_result.next_partial_line_offset_start;
+        source_state.total_bytes_read = source_state.total_bytes_read.saturating_add(read_len);
+    }
     source_state.positioned_at_ms.get_or_insert(now_ms);
-    source_state.total_bytes_read = source_state.total_bytes_read.saturating_add(read_len);
     source_state.total_candidates = source_state
         .total_candidates
-        .saturating_add(parse_result.candidates.len() as u64);
+        .saturating_add(candidates.len() as u64);
     source_state.updated_at_ms = now_ms;
     source_state.last_error = None;
     source_state.consecutive_errors = 0;
@@ -258,11 +295,7 @@ pub async fn poll_log_source_once(
     let mut submitted = 0usize;
     let mut last_candidate_at_ms = None;
     let mut last_submitted_at_ms = None;
-    for candidate in parse_result
-        .candidates
-        .into_iter()
-        .take(source.max_candidates_per_poll)
-    {
+    for candidate in candidates {
         last_candidate_at_ms = Some(now_ms);
         if fingerprint_recent(
             &mut source_state,

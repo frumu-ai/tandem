@@ -52,6 +52,8 @@ async fn incident_monitor_post_idempotency_claim_allows_one_pending_create() {
         idempotency_key: "acme/platform:fingerprint-claim:create_issue:digest-claim".to_string(),
         response_excerpt: None,
         error: None,
+        tenant_id: None,
+        workspace_id: None,
         created_at_ms: now,
         updated_at_ms: now,
     };

@@ -145,8 +145,11 @@ async fn incident_monitor_assessment_report_payload(
             incident_monitor_assessment_report_incident_matches(incident, &tenant_context, input)
         })
         .collect::<Vec<_>>();
+    // Tenant filter is applied inside the listing, before the recency cap, so a
+    // scoped report can't lose the caller tenant's receipts to newer receipts
+    // from other tenants (TAN-546).
     let posts = state
-        .list_incident_monitor_posts(200)
+        .list_incident_monitor_posts_for_tenant(&tenant_context, 200)
         .await
         .into_iter()
         .filter(|post| incident_monitor_assessment_report_time_matches(post.updated_at_ms, input))

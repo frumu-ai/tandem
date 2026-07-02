@@ -1206,3 +1206,102 @@ async fn incident_monitor_scoped_intake_source_never_overrides_global_approval_d
         Some(crate::IncidentMonitorApprovalPolicy::Never)
     );
 }
+
+#[tokio::test]
+#[serial_test::serial(incident_monitor_http)]
+async fn incident_monitor_log_poll_defers_candidates_over_cap_instead_of_dropping() {
+    // TAN-549: when one poll parses more candidates than max_candidates_per_poll,
+    // the persisted offset must advance only to the last processed candidate so
+    // the remainder is re-read on the next poll rather than skipped forever.
+    let state = test_state().await;
+    let workspace = tempfile::tempdir().expect("incident monitor log defer workspace");
+    std::fs::create_dir_all(workspace.path().join("logs")).expect("logs dir");
+    let log_path = workspace.path().join("logs/ci.jsonl");
+    // Five ERROR lines → five candidates in a single read window.
+    let words = ["alpha", "bravo", "charlie", "delta", "echo"];
+    let mut log = String::new();
+    for word in words {
+        log.push_str(&format!("ERROR upload failed in the {word} subsystem\n"));
+    }
+    std::fs::write(&log_path, &log).expect("write log");
+    let file_size = std::fs::metadata(&log_path).expect("log metadata").len();
+
+    let source = crate::IncidentMonitorLogSource {
+        source_id: "ci".to_string(),
+        path: "logs/ci.jsonl".to_string(),
+        format: crate::IncidentMonitorLogFormat::Plaintext,
+        start_position: crate::IncidentMonitorLogStartPosition::Beginning,
+        max_candidates_per_poll: 2,
+        fingerprint_cooldown_ms: 0,
+        ..Default::default()
+    };
+    let project = crate::IncidentMonitorMonitoredProject {
+        project_id: "payments".to_string(),
+        name: "Payments".to_string(),
+        enabled: true,
+        repo: "acme/payments".to_string(),
+        workspace_root: workspace.path().display().to_string(),
+        log_sources: vec![source.clone()],
+        ..Default::default()
+    };
+    state
+        .put_incident_monitor_config(crate::IncidentMonitorConfig {
+            enabled: true,
+            repo: Some("acme/payments".to_string()),
+            workspace_root: Some(workspace.path().display().to_string()),
+            monitored_projects: vec![project.clone()],
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+
+    // First poll processes only the cap (2) and defers the remaining 3 — the
+    // offset must stop at the last processed candidate rather than jumping to
+    // EOF (which would drop candidates 3..5 permanently, the TAN-549 bug).
+    crate::incident_monitor::log_watcher::poll_log_source_once(
+        &state,
+        &project,
+        &source,
+        crate::now_ms(),
+    )
+    .await
+    .expect("first poll");
+    let after_first = state
+        .get_incident_monitor_log_source_state(&project.project_id, &source.source_id)
+        .await
+        .expect("source state after first poll");
+    assert_eq!(
+        after_first.total_candidates, 2,
+        "first poll should process only max_candidates_per_poll candidates"
+    );
+    assert!(
+        after_first.offset < file_size,
+        "offset must not jump past the deferred candidates: {} vs {file_size}",
+        after_first.offset
+    );
+
+    // Subsequent polls drain the remainder; every candidate is eventually
+    // processed and the offset only then reaches EOF.
+    for _ in 0..3 {
+        crate::incident_monitor::log_watcher::poll_log_source_once(
+            &state,
+            &project,
+            &source,
+            crate::now_ms(),
+        )
+        .await
+        .expect("drain poll");
+    }
+    let after_drain = state
+        .get_incident_monitor_log_source_state(&project.project_id, &source.source_id)
+        .await
+        .expect("final source state");
+    assert_eq!(
+        after_drain.total_candidates, 5,
+        "all five candidates must eventually be processed, none skipped"
+    );
+    assert_eq!(
+        after_drain.offset, file_size,
+        "offset should reach EOF once the backlog is drained"
+    );
+}

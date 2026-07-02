@@ -262,6 +262,49 @@ pub fn build_route_preview(
             )),
         }
     }
+    // TAN-544: when source-readiness gating is enabled, a not-ready source
+    // (failed lineage/freshness/classification/legal-basis/watcher-health)
+    // blocks publish instead of being advisory-only. The reasons are marked
+    // with a `Source ...` prefix so validate_publish_plan can enforce them
+    // independently of the destination-readiness gate.
+    if config.safety_defaults.block_unready_sources {
+        // Fail closed when a bound project/source has no readiness evidence at
+        // all (e.g. the draft's log_source_id was renamed/removed after triage,
+        // so no row matches): an empty selection must not be treated as ready.
+        if context.project_id.is_some() && selected_source_readiness.is_empty() {
+            let label = context
+                .log_source_id
+                .as_deref()
+                .or(context.project_id.as_deref())
+                .unwrap_or("source");
+            blocked_reasons.push(format!(
+                "Source `{label}` is not data-ready: no readiness evidence for the bound source"
+            ));
+        }
+        for row in &selected_source_readiness {
+            if row.ready {
+                continue;
+            }
+            let detail = if !row.findings.is_empty() {
+                row.findings
+                    .iter()
+                    .map(|finding| finding.rule_id.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            } else if !row.missing.is_empty() {
+                row.missing.join(", ")
+            } else {
+                "source readiness is false".to_string()
+            };
+            let label = row
+                .source_id
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(row.project_id.as_str());
+            blocked_reasons.push(format!("Source `{label}` is not data-ready: {detail}"));
+        }
+    }
+
     // Approval reflects the winning match only — the same match whose
     // destinations are effective — so a non-selected lower-priority route can't
     // flip the preview's approval flag.
@@ -641,6 +684,36 @@ pub fn is_high_risk(value: Option<&str>) -> bool {
     )
 }
 
+/// Ordinal rank of a risk level so two values can be compared for flooring.
+/// Unknown/empty ranks lowest so a configured floor always wins over it.
+fn risk_level_rank(value: Option<&str>) -> u8 {
+    match normalize_route_value(value).unwrap_or_default().as_str() {
+        "critical" | "urgent" | "severe" => 5,
+        "high" => 4,
+        "medium" | "moderate" => 3,
+        "low" => 2,
+        "info" | "informational" | "none" => 1,
+        _ => 0,
+    }
+}
+
+/// Apply the server-controlled `minimum_risk_level` floor from safety defaults.
+/// A reporter-supplied `risk_level` can never lower the effective classification
+/// below the operator's floor, closing the severity-downgrade spoof (TAN-548).
+fn floor_risk_level(config: &IncidentMonitorConfig, context: &mut IncidentMonitorRouteContext) {
+    let Some(floor) = config
+        .safety_defaults
+        .minimum_risk_level
+        .as_deref()
+        .and_then(|value| normalize_route_value(Some(value)))
+    else {
+        return;
+    };
+    if risk_level_rank(Some(&floor)) > risk_level_rank(context.risk_level.as_deref()) {
+        context.risk_level = Some(floor);
+    }
+}
+
 fn validate_publish_plan(
     config: &IncidentMonitorConfig,
     preview: &IncidentMonitorRoutePreviewResponse,
@@ -678,11 +751,24 @@ fn validate_publish_plan(
             destination.kind
         );
     }
-    if config.safety_defaults.block_unready_destinations
-        && mode != incident_monitor_github::PublishMode::RecheckOnly
-        && preview.blocked
-    {
-        anyhow::bail!("{}", preview.blocked_reasons.join("; "));
+    if mode != incident_monitor_github::PublishMode::RecheckOnly {
+        if config.safety_defaults.block_unready_destinations && preview.blocked {
+            anyhow::bail!("{}", preview.blocked_reasons.join("; "));
+        }
+        // TAN-544: the source-readiness gate enforces independently, blocking
+        // only on source-not-ready reasons so it doesn't silently pick up the
+        // destination-readiness gate the operator did not enable.
+        if config.safety_defaults.block_unready_sources {
+            let source_blocks = preview
+                .blocked_reasons
+                .iter()
+                .filter(|reason| reason.starts_with("Source `"))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !source_blocks.is_empty() {
+                anyhow::bail!("{}", source_blocks.join("; "));
+            }
+        }
     }
     Ok(())
 }
@@ -999,6 +1085,10 @@ fn enrich_route_context_from_sources(
     context: &IncidentMonitorRouteContext,
 ) -> IncidentMonitorRouteContext {
     let mut out = context.clone();
+    // Server-side risk floor is a global operator control: apply it before any
+    // early return so an untrusted reporter can never dodge it, whatever the
+    // project/source binding resolves to.
+    floor_risk_level(config, &mut out);
     let Some(project_id) = out.project_id.as_deref() else {
         return out;
     };
@@ -1410,403 +1500,5 @@ fn push_unique(values: &mut Vec<String>, value: &str) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        IncidentMonitorLogSource, IncidentMonitorMonitoredProject, IncidentMonitorSourceKind,
-    };
-
-    fn source_bound_config() -> IncidentMonitorConfig {
-        IncidentMonitorConfig {
-            monitored_projects: vec![IncidentMonitorMonitoredProject {
-                project_id: "payments".to_string(),
-                name: "Payments".to_string(),
-                repo: "acme/payments".to_string(),
-                workspace_root: "/tmp/payments".to_string(),
-                source_kind: IncidentMonitorSourceKind::ExternalApp,
-                allowed_destination_ids: vec!["triage".to_string(), "pager".to_string()],
-                default_destination_ids: vec!["triage".to_string()],
-                default_route_tags: vec!["payments".to_string()],
-                tenant_id: Some("tenant-payments".to_string()),
-                workspace_id: Some("workspace-project".to_string()),
-                event_schema_version: Some("project-v1".to_string()),
-                log_sources: vec![IncidentMonitorLogSource {
-                    source_id: "ci".to_string(),
-                    path: "logs/ci.jsonl".to_string(),
-                    source_kind: Some(IncidentMonitorSourceKind::Ci),
-                    allowed_destination_ids: vec!["pager".to_string()],
-                    default_destination_ids: vec!["pager".to_string()],
-                    default_route_tags: vec!["ci".to_string()],
-                    tenant_id: Some("tenant-ci".to_string()),
-                    workspace_id: Some("workspace-ci".to_string()),
-                    event_schema_version: Some("ci-v1".to_string()),
-                    approval_policy: IncidentMonitorApprovalPolicy::Never,
-                    ..IncidentMonitorLogSource::default()
-                }],
-                ..IncidentMonitorMonitoredProject::default()
-            }],
-            ..IncidentMonitorConfig::default()
-        }
-    }
-
-    #[test]
-    fn untrusted_report_source_ids_do_not_inherit_source_binding_routes() {
-        let report = IncidentMonitorSubmission {
-            project_id: Some("payments".to_string()),
-            log_source_id: Some("ci".to_string()),
-            source_kind: Some(IncidentMonitorSourceKind::ExternalApp),
-            route_tags: vec!["forged".to_string()],
-            allowed_destination_ids: vec!["pager".to_string()],
-            default_destination_ids: vec!["pager".to_string()],
-            tenant_id: Some("tenant-forged".to_string()),
-            workspace_id: Some("workspace-forged".to_string()),
-            event_schema_version: Some("forged-v1".to_string()),
-            source_approval_policy: None,
-            ..IncidentMonitorSubmission::default()
-        };
-
-        let context = build_route_context(
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            &[],
-            Some(&report),
-            None,
-            None,
-        );
-        let enriched = enrich_route_context_from_sources(&source_bound_config(), &context);
-
-        assert_eq!(enriched.project_id, None);
-        assert_eq!(enriched.log_source_id, None);
-        assert_eq!(enriched.source_kind, None);
-        assert_eq!(enriched.tenant_id, None);
-        assert_eq!(enriched.workspace_id, None);
-        assert_eq!(enriched.event_schema_version, None);
-        assert!(enriched.route_tags.is_empty());
-        assert!(enriched.allowed_destination_ids.is_empty());
-        assert!(enriched.default_destination_ids.is_empty());
-        assert!(!enriched.source_approval_policy_trusted);
-    }
-
-    #[test]
-    fn legacy_persisted_draft_source_ids_inherit_fail_closed_source_binding() {
-        let mut config = source_bound_config();
-        config.monitored_projects[0].log_sources[0].approval_policy =
-            IncidentMonitorApprovalPolicy::Always;
-        let draft = IncidentMonitorDraftRecord {
-            project_id: Some("payments".to_string()),
-            log_source_id: Some("ci".to_string()),
-            source_approval_policy: None,
-            ..IncidentMonitorDraftRecord::default()
-        };
-
-        let context = build_route_context(
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            &[],
-            None,
-            Some(&draft),
-            None,
-        );
-        let enriched = enrich_route_context_from_sources(&config, &context);
-
-        assert_eq!(enriched.project_id.as_deref(), Some("payments"));
-        assert_eq!(enriched.log_source_id.as_deref(), Some("ci"));
-        assert_eq!(enriched.source_kind.as_deref(), Some("ci"));
-        assert_eq!(enriched.default_destination_ids, vec!["pager"]);
-        assert_eq!(
-            enriched.source_approval_policy,
-            Some(IncidentMonitorApprovalPolicy::Always)
-        );
-        assert!(enriched.source_approval_policy_trusted);
-    }
-
-    #[test]
-    fn trusted_report_source_binding_overrides_forged_source_fields() {
-        let report = IncidentMonitorSubmission {
-            project_id: Some("payments".to_string()),
-            log_source_id: Some("ci".to_string()),
-            source_kind: Some(IncidentMonitorSourceKind::ExternalApp),
-            route_tags: vec!["candidate".to_string()],
-            allowed_destination_ids: vec!["triage".to_string(), "pager".to_string()],
-            default_destination_ids: vec!["triage".to_string()],
-            tenant_id: Some("tenant-forged".to_string()),
-            workspace_id: Some("workspace-forged".to_string()),
-            event_schema_version: Some("forged-v1".to_string()),
-            source_approval_policy: Some(IncidentMonitorApprovalPolicy::Never),
-            ..IncidentMonitorSubmission::default()
-        };
-
-        let context = build_route_context(
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            &[],
-            Some(&report),
-            None,
-            None,
-        );
-        let enriched = enrich_route_context_from_sources(&source_bound_config(), &context);
-
-        assert_eq!(enriched.project_id.as_deref(), Some("payments"));
-        assert_eq!(enriched.log_source_id.as_deref(), Some("ci"));
-        assert_eq!(enriched.source_kind.as_deref(), Some("ci"));
-        assert_eq!(enriched.tenant_id.as_deref(), Some("tenant-ci"));
-        assert_eq!(enriched.workspace_id.as_deref(), Some("workspace-ci"));
-        assert_eq!(enriched.event_schema_version.as_deref(), Some("ci-v1"));
-        assert_eq!(enriched.route_tags, vec!["candidate", "payments", "ci"]);
-        assert_eq!(enriched.allowed_destination_ids, vec!["pager"]);
-        assert_eq!(enriched.default_destination_ids, vec!["pager"]);
-        assert_eq!(
-            enriched.source_approval_policy,
-            Some(IncidentMonitorApprovalPolicy::Never)
-        );
-        assert!(enriched.source_approval_policy_trusted);
-    }
-
-    #[test]
-    fn publish_audit_tenant_context_uses_source_bound_draft_scope() {
-        let draft = IncidentMonitorDraftRecord {
-            tenant_id: Some("tenant-draft".to_string()),
-            workspace_id: Some("workspace-draft".to_string()),
-            ..IncidentMonitorDraftRecord::default()
-        };
-        let context = IncidentMonitorRouteContext {
-            tenant_id: Some("tenant-ci".to_string()),
-            workspace_id: Some("workspace-ci".to_string()),
-            ..IncidentMonitorRouteContext::default()
-        };
-
-        let tenant_context = publish_audit_tenant_context(&context, &draft);
-
-        assert_eq!(tenant_context.org_id, "tenant-ci");
-        assert_eq!(tenant_context.workspace_id, "workspace-ci");
-        assert_eq!(tenant_context.actor_id, None);
-        assert_eq!(tenant_context.source, tandem_types::TenantSource::Explicit);
-    }
-
-    #[test]
-    fn publish_audit_tenant_context_falls_back_to_local_without_complete_scope() {
-        let draft = IncidentMonitorDraftRecord {
-            tenant_id: Some("tenant-draft".to_string()),
-            ..IncidentMonitorDraftRecord::default()
-        };
-        let context = IncidentMonitorRouteContext::default();
-
-        let tenant_context = publish_audit_tenant_context(&context, &draft);
-
-        assert!(tenant_context.is_local_implicit());
-    }
-
-    #[test]
-    fn route_preview_matches_risk_category() {
-        let config = IncidentMonitorConfig {
-            destinations: vec![IncidentMonitorDestinationConfig {
-                destination_id: "security-linear".to_string(),
-                name: "Security Linear".to_string(),
-                kind: IncidentMonitorDestinationKind::LinearIssue,
-                ..IncidentMonitorDestinationConfig::default()
-            }],
-            routes: vec![IncidentMonitorRouteConfig {
-                route_id: "security-risk".to_string(),
-                name: "Security Risk".to_string(),
-                destination_ids: vec!["security-linear".to_string()],
-                match_risk_categories: vec!["data_exfiltration".to_string()],
-                ..IncidentMonitorRouteConfig::default()
-            }],
-            default_destination_ids: vec!["legacy-github".to_string()],
-            ..IncidentMonitorConfig::default()
-        };
-        let context = build_route_context(
-            None,
-            None,
-            None,
-            None,
-            Some("data_exfiltration"),
-            None,
-            None,
-            None,
-            None,
-            &[],
-            None,
-            None,
-            None,
-        );
-        let destinations = config.effective_destinations();
-        let preview = build_route_preview(&config, &destinations, &[], &[], &context, &[]);
-
-        assert_eq!(
-            preview.effective_destination_ids,
-            vec!["security-linear".to_string()]
-        );
-        assert_eq!(
-            preview
-                .matches
-                .first()
-                .and_then(|row| row.reason.as_deref()),
-            Some("matched_risk_category")
-        );
-    }
-
-    #[test]
-    fn route_preview_prefers_highest_priority_route_over_overlapping_catch_all() {
-        // TAN-543: when more than one route matches, the highest-priority route
-        // wins and its destination is the only effective one. Previously the
-        // matcher unioned destinations across all matching routes, which then
-        // hard-failed every publish for any event that matched an overlapping
-        // catch-all route.
-        let config = IncidentMonitorConfig {
-            destinations: vec![
-                IncidentMonitorDestinationConfig {
-                    destination_id: "security-linear".to_string(),
-                    name: "Security Linear".to_string(),
-                    kind: IncidentMonitorDestinationKind::LinearIssue,
-                    ..IncidentMonitorDestinationConfig::default()
-                },
-                IncidentMonitorDestinationConfig {
-                    destination_id: "legacy-github".to_string(),
-                    name: "Legacy GitHub".to_string(),
-                    kind: IncidentMonitorDestinationKind::GithubIssue,
-                    ..IncidentMonitorDestinationConfig::default()
-                },
-            ],
-            routes: vec![
-                IncidentMonitorRouteConfig {
-                    route_id: "catch-all".to_string(),
-                    name: "Catch all".to_string(),
-                    enabled: true,
-                    priority: 0,
-                    destination_ids: vec!["legacy-github".to_string()],
-                    ..IncidentMonitorRouteConfig::default()
-                },
-                IncidentMonitorRouteConfig {
-                    route_id: "security-risk".to_string(),
-                    name: "Security Risk".to_string(),
-                    enabled: true,
-                    priority: 100,
-                    destination_ids: vec!["security-linear".to_string()],
-                    match_risk_categories: vec!["data_exfiltration".to_string()],
-                    ..IncidentMonitorRouteConfig::default()
-                },
-            ],
-            default_destination_ids: vec!["legacy-github".to_string()],
-            ..IncidentMonitorConfig::default()
-        };
-        let context = build_route_context(
-            None,
-            None,
-            None,
-            None,
-            Some("data_exfiltration"),
-            None,
-            None,
-            None,
-            None,
-            &[],
-            None,
-            None,
-            None,
-        );
-        let destinations = config.effective_destinations();
-        let preview = build_route_preview(&config, &destinations, &[], &[], &context, &[]);
-
-        // Both routes match...
-        assert!(
-            preview.matches.len() >= 2,
-            "both routes should appear as matches: {:?}",
-            preview.matches
-        );
-        // ...but only the higher-priority route's destination is effective.
-        assert_eq!(
-            preview.effective_destination_ids,
-            vec!["security-linear".to_string()]
-        );
-        // A single effective destination satisfies the one-destination phase limit,
-        // so validate_publish_plan no longer hard-fails on overlapping routes.
-        assert_eq!(preview.destinations.len(), 1);
-    }
-
-    #[test]
-    fn preview_and_publish_approval_decisions_agree() {
-        // TAN-557: the preview approval flag must reflect the publish gate exactly,
-        // across risk levels and approval policies.
-        let destinations = vec![IncidentMonitorDestinationConfig {
-            destination_id: "gh".to_string(),
-            name: "GitHub".to_string(),
-            kind: IncidentMonitorDestinationKind::GithubIssue,
-            require_approval: true,
-            ..IncidentMonitorDestinationConfig::default()
-        }];
-        let config = IncidentMonitorConfig {
-            destinations: destinations.clone(),
-            ..IncidentMonitorConfig::default()
-        };
-        let ids = vec!["gh".to_string()];
-        for policy in [
-            IncidentMonitorApprovalPolicy::Inherit,
-            IncidentMonitorApprovalPolicy::HighRisk,
-            IncidentMonitorApprovalPolicy::Always,
-            IncidentMonitorApprovalPolicy::Never,
-        ] {
-            let route = IncidentMonitorRouteConfig {
-                route_id: "r".to_string(),
-                approval_policy: policy.clone(),
-                destination_ids: ids.clone(),
-                ..IncidentMonitorRouteConfig::default()
-            };
-            for risk in [None, Some("low"), Some("high")] {
-                let context = build_route_context(
-                    None,
-                    None,
-                    None,
-                    risk,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    &[],
-                    None,
-                    None,
-                    None,
-                );
-                assert_eq!(
-                    route_preview_approval_required(
-                        Some(&route),
-                        &context,
-                        &config,
-                        &destinations,
-                        &ids
-                    ),
-                    route_publish_match_approval_required(
-                        &config,
-                        Some(&route),
-                        &context,
-                        &destinations,
-                        &ids
-                    ),
-                    "preview must match publish for policy={policy:?} risk={risk:?}"
-                );
-            }
-        }
-    }
-}
+#[path = "router_tests.rs"]
+mod tests;
