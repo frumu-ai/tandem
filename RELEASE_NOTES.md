@@ -68,6 +68,17 @@ Runtime policy decisions now consume that resolver directly: the server loads
 the enterprise inheritance model across every recorded data class, enforces the
 resolved result in gate, authority, fintech protected-action receipt, MCP
 preflight, and memory promotion helpers, and stores inherited sources for replay.
+Knowledge-scope memory governance now fails closed for source-bound gaps:
+workflow-phase retrieval requires registered source-bound scope metadata, and
+source-bound memory writes or promotions are blocked unless the derived memory
+carries explicit `knowledge_scope_registry` policy metadata that matches the
+source resource, source binding, and data class being written or promoted.
+Source-bound manual imports now stamp imported chunks with that matching
+registry metadata so governed workflow-phase reads can authorize imported
+source chunks instead of hiding them as unregistered source-bound memory.
+Promotion checks also preserve that source-resource registry shape when
+validated source-binding metadata is present, while authority-only scope claims
+still require a `source_binding` registry resource.
 Automation V2 runs now also bridge those durable waits back into the live run
 store: approval gates register and complete stateful approval waits, while
 timer and webhook wait wakes requeue the authoritative automation run so the
@@ -1152,8 +1163,9 @@ automation remain follow-up implementation phases.
   common resource-scoped ingestion contract.
 - Manual memory imports accept an optional `source_binding_id`, fail closed if
   the binding is outside the tenant or disabled for indexing, and stamp chunks
-  with source-binding, resource, data-class, and source-object metadata while
-  preserving local/default import behavior when unset.
+  with source-binding, resource, data-class, source-object, and matching
+  knowledge-scope registry metadata while preserving local/default import
+  behavior when unset.
 - Source-bound vector memory now fails closed before ranking. Chunks stamped
   with enterprise source-binding metadata are hidden unless the caller supplies
   a strict tenant access projection with a matching `Read` grant for the bound

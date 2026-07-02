@@ -214,6 +214,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   helpers, fintech protected-action receipts, MCP preflight checks, and memory
   promotion checks, and preserving inherited decision sources for replay instead
   of only writing single-source fallback snapshots.
+- Knowledge-scope governance now requires registered source-bound scope for
+  workflow-phase memory retrieval and blocks source-bound memory writes or
+  promotions that omit explicit `knowledge_scope_registry` metadata or provide
+  a registry for a different source resource, source binding, or data class.
+- Source-bound manual memory imports now stamp imported chunks with matching
+  `knowledge_scope_registry` metadata so workflow-phase reads can authorize
+  imported source chunks through the registered source resource instead of
+  hiding them as unregistered source-bound memory.
+- Source-bound memory promotion checks now allow validated source-binding
+  metadata to use the actual bound source resource in `knowledge_scope_registry`
+  while keeping the stricter `source_binding` resource requirement for
+  authority-only scope claims.
 - Backend CI now runs the touched-file size gate before dependency installation
   and Rust lint/build work so oversized files fail fast instead of burning the
   full backend job first.
@@ -976,7 +988,8 @@ automation` modal with callback URL copy, one-time secret reveal on
   `source_binding_id` support to manual memory imports, validates that the
   binding belongs to the request tenant and allows indexing before import,
   stamps imported chunks with source-binding/resource/data-class/source-object
-  metadata, and keeps local/default manual imports unchanged.
+  metadata plus matching knowledge-scope registry metadata, and keeps
+  local/default manual imports unchanged.
 - **Enterprise source-bound memory retrieval guard**: Added memory access
   filtering for source-bound chunks so bound enterprise memory is hidden by
   default and can only participate in vector ranking when an explicit strict

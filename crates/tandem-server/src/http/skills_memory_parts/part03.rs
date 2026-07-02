@@ -61,6 +61,31 @@ pub(super) async fn workflow_learning_candidate_promote(
             }
         };
     let source_memory_id = if let Some(memory_id) = candidate.source_memory_id.clone() {
+        let authority_job_context = make_authority_job_context(
+            &session_partition,
+            tandem_memory::MemoryAuthorityOperation::Write,
+            vec![memory_id.clone()],
+        );
+        let knowledge_scope_policy =
+            tandem_memory::knowledge_scope_policy_from_authority_job_context(
+                &session_partition,
+                &authority_job_context,
+                format!(
+                    "workflow-learning:{}:{}",
+                    candidate.workflow_id, candidate.candidate_id
+                ),
+                vec![tandem_memory::GovernedMemoryTier::Session],
+                vec![tandem_memory::GovernedMemoryTier::Project],
+                true,
+            )
+            .ok_or(StatusCode::FORBIDDEN)?;
+        backfill_workflow_learning_source_memory_scope(
+            &state,
+            &tenant_context,
+            &memory_id,
+            &knowledge_scope_policy,
+        )
+        .await?;
         memory_id
     } else {
         let content = workflow_learning_candidate_memory_content(&candidate)
@@ -70,6 +95,19 @@ pub(super) async fn workflow_learning_candidate_promote(
             tandem_memory::MemoryAuthorityOperation::Write,
             Vec::new(),
         );
+        let knowledge_scope_policy =
+            tandem_memory::knowledge_scope_policy_from_authority_job_context(
+                &session_partition,
+                &authority_job_context,
+                format!(
+                    "workflow-learning:{}:{}",
+                    candidate.workflow_id, candidate.candidate_id
+                ),
+                vec![tandem_memory::GovernedMemoryTier::Session],
+                vec![tandem_memory::GovernedMemoryTier::Project],
+                true,
+            )
+            .ok_or(StatusCode::FORBIDDEN)?;
         let response = memory_put_impl(
             &state,
             &tenant_context,
@@ -81,12 +119,15 @@ pub(super) async fn workflow_learning_candidate_promote(
                 artifact_refs: candidate.artifact_refs.clone(),
                 classification: tandem_memory::MemoryClassification::Internal,
                 authority_job_context: Some(authority_job_context),
-                metadata: Some(json!({
-                    "origin": "workflow_learning_candidate",
-                    "candidate_id": candidate.candidate_id,
-                    "workflow_id": candidate.workflow_id,
-                    "kind": workflow_learning_kind_label(candidate.kind),
-                })),
+                metadata: tandem_memory::metadata_with_knowledge_scope(
+                    Some(json!({
+                        "origin": "workflow_learning_candidate",
+                        "candidate_id": candidate.candidate_id,
+                        "workflow_id": candidate.workflow_id,
+                        "kind": workflow_learning_kind_label(candidate.kind),
+                    })),
+                    &knowledge_scope_policy,
+                ),
             },
             Some(capability.clone()),
         )
@@ -148,6 +189,48 @@ pub(super) async fn workflow_learning_candidate_promote(
         "candidate": updated,
         "promotion": promote_response,
     })))
+}
+
+async fn backfill_workflow_learning_source_memory_scope(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    memory_id: &str,
+    knowledge_scope_policy: &tandem_memory::KnowledgeScopePolicy,
+) -> Result<(), StatusCode> {
+    let db = open_global_memory_db_for_state(state)
+        .await
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(source) = db
+        .get_global_memory_for_tenant(
+            memory_id,
+            &tenant_context.org_id,
+            &tenant_context.workspace_id,
+            tenant_context.deployment_id.as_deref(),
+        )
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    else {
+        return Ok(());
+    };
+    if tandem_memory::metadata_has_knowledge_scope(source.metadata.as_ref()) {
+        return Ok(());
+    }
+    let metadata =
+        tandem_memory::metadata_with_knowledge_scope(source.metadata.clone(), knowledge_scope_policy)
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    db.update_global_memory_context_for_tenant(
+        &source.id,
+        &tenant_context.org_id,
+        &tenant_context.workspace_id,
+        tenant_context.deployment_id.as_deref(),
+        &source.visibility,
+        source.demoted,
+        Some(&metadata),
+        source.provenance.as_ref(),
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(())
 }
 
 pub(super) async fn workflow_learning_candidate_spawn_revision(

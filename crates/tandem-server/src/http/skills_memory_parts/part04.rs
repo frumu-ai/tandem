@@ -164,11 +164,12 @@ async fn memory_promote_impl_with_verified(
         request.to_tier
     );
     let source_outcome = promotion_source_outcome_value(&request, &source);
-    let scope_decision = tandem_memory::memory_promotion_scope_decision(
+    let scope_decision = tandem_memory::memory_promotion_scope_decision_for_context(
         &request.partition,
         request.to_tier,
         &request.review,
         source.metadata.as_ref(),
+        request.authority_job_context.as_ref(),
         now,
     )
     .map_err(|error| {

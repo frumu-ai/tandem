@@ -1,3 +1,5 @@
+use crate::governance::GovernedMemoryTier;
+use crate::knowledge_scope::{metadata_with_knowledge_scope, KnowledgeScopePolicy};
 use crate::manager::MemoryManager;
 use crate::types::{
     MemoryError, MemoryImportFormat, MemoryImportProgress, MemoryImportRequest,
@@ -9,6 +11,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tandem_enterprise_contract::{DataClass, ResourceRef};
 
 const MAX_FILE_SIZE_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -101,13 +104,41 @@ where
             .await?;
         if let Some((existing_mtime, existing_size, existing_hash)) = &existing {
             if *existing_mtime == mtime && *existing_size == size {
+                let mut content_hash = None;
+                let mut source_hash = Some(existing_hash.clone());
+                if let Some(binding) = request.source_binding.as_ref() {
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        if !content.trim().is_empty() {
+                            let next_content_hash = sha256_hex(content.as_bytes());
+                            let next_source_hash =
+                                scoped_source_hash(&next_content_hash, &indexed_path, binding);
+                            let metadata_context = ImportFileMetadataContext {
+                                canonical_root: &canonical_root,
+                                namespace: &namespace,
+                                relative_path: &relative_path,
+                                indexed_path: &indexed_path,
+                                path: &path,
+                                content_hash: &next_content_hash,
+                            };
+                            backfill_source_bound_import_metadata(
+                                db,
+                                request,
+                                binding,
+                                &metadata_context,
+                            )
+                            .await?;
+                            content_hash = Some(next_content_hash);
+                            source_hash = Some(next_source_hash);
+                        }
+                    }
+                }
                 if let Some(record) = source_object_lifecycle_record(
                     request,
                     request.source_binding.as_ref(),
                     &namespace,
                     &indexed_path,
-                    None,
-                    Some(existing_hash.clone()),
+                    content_hash,
+                    source_hash,
                     now_ms(),
                 ) {
                     db.upsert_source_object_active_for_tenant(&record).await?;
@@ -155,6 +186,18 @@ where
                     &request.tenant_scope,
                 )
                 .await?;
+                if let Some(binding) = request.source_binding.as_ref() {
+                    let metadata_context = ImportFileMetadataContext {
+                        canonical_root: &canonical_root,
+                        namespace: &namespace,
+                        relative_path: &relative_path,
+                        indexed_path: &indexed_path,
+                        path: &path,
+                        content_hash: &content_hash,
+                    };
+                    backfill_source_bound_import_metadata(db, request, binding, &metadata_context)
+                        .await?;
+                }
                 if let Some(record) = source_object_lifecycle_record(
                     request,
                     request.source_binding.as_ref(),
@@ -195,24 +238,16 @@ where
             continue;
         }
 
-        let mut request_metadata = serde_json::json!({
-            "path": relative_path,
-            "filename": path.file_name().and_then(|name| name.to_str()).unwrap_or(""),
-            "import_format": request.format.to_string(),
-            "import_root": canonical_root.display().to_string(),
-            "import_namespace": namespace,
-        });
-        if let Some(binding) = request.source_binding.as_ref() {
-            request_metadata["enterprise_source_binding"] = serde_json::json!({
-                "binding_id": binding.binding_id,
-                "connector_id": binding.connector_id,
-                "resource_ref": binding.resource_ref,
-                "data_class": binding.data_class,
-                "source_object_id": source_object_id(request, binding, &indexed_path),
-                "native_object_id": indexed_path,
-                "content_hash": content_hash,
-            });
-        }
+        let metadata_context = ImportFileMetadataContext {
+            canonical_root: &canonical_root,
+            namespace: &namespace,
+            relative_path: &relative_path,
+            indexed_path: &indexed_path,
+            path: &path,
+            content_hash: &content_hash,
+        };
+        let request_metadata =
+            import_file_metadata(request, request.source_binding.as_ref(), &metadata_context)?;
         let store_request = StoreMessageRequest {
             content,
             tier: request.tier,
@@ -548,6 +583,120 @@ fn source_object_id(
     )
 }
 
+fn source_bound_import_knowledge_scope_policy(
+    request: &MemoryImportRequest,
+    binding: &MemoryImportSourceBinding,
+    indexed_path: &str,
+) -> Result<KnowledgeScopePolicy, MemoryError> {
+    let resource_ref = serde_json::from_value::<ResourceRef>(binding.resource_ref.clone())
+        .map_err(|error| {
+            MemoryError::InvalidConfig(format!(
+                "source binding resource_ref is invalid for knowledge scope: {error}"
+            ))
+        })?;
+    let data_class =
+        serde_json::from_value::<DataClass>(serde_json::Value::String(binding.data_class.clone()))
+            .map_err(|error| {
+                MemoryError::InvalidConfig(format!(
+                    "source binding data_class is invalid for knowledge scope: {error}"
+                ))
+            })?;
+    let source_object_id = source_object_id(request, binding, indexed_path);
+    Ok(KnowledgeScopePolicy {
+        registry_id: format!("source-bound-import:{source_object_id}"),
+        resource_ref,
+        data_class,
+        collection_id: None,
+        source_binding_id: Some(binding.binding_id.clone()),
+        source_object_id: Some(source_object_id),
+        owner_org_unit_id: None,
+        risk_tier: None,
+        allowed_workflow_phases: Vec::new(),
+        allowed_write_tiers: governed_import_tier(request.tier).into_iter().collect(),
+        allowed_promotion_tiers: governed_import_promotion_tiers(request.tier),
+        retention_expires_at_ms: None,
+        required_trust_label: None,
+        promotion_requires_approval: binding.require_review,
+    })
+}
+
+struct ImportFileMetadataContext<'a> {
+    canonical_root: &'a Path,
+    namespace: &'a str,
+    relative_path: &'a str,
+    indexed_path: &'a str,
+    path: &'a Path,
+    content_hash: &'a str,
+}
+
+fn import_file_metadata(
+    request: &MemoryImportRequest,
+    binding: Option<&MemoryImportSourceBinding>,
+    context: &ImportFileMetadataContext<'_>,
+) -> Result<serde_json::Value, MemoryError> {
+    let mut request_metadata = serde_json::json!({
+        "path": context.relative_path,
+        "filename": context.path.file_name().and_then(|name| name.to_str()).unwrap_or(""),
+        "import_format": request.format.to_string(),
+        "import_root": context.canonical_root.display().to_string(),
+        "import_namespace": context.namespace,
+    });
+    if let Some(binding) = binding {
+        request_metadata["enterprise_source_binding"] = serde_json::json!({
+            "binding_id": binding.binding_id,
+            "connector_id": binding.connector_id,
+            "resource_ref": binding.resource_ref,
+            "data_class": binding.data_class,
+            "source_object_id": source_object_id(request, binding, context.indexed_path),
+            "native_object_id": context.indexed_path,
+            "content_hash": context.content_hash,
+        });
+        let policy =
+            source_bound_import_knowledge_scope_policy(request, binding, context.indexed_path)?;
+        request_metadata = metadata_with_knowledge_scope(Some(request_metadata), &policy)
+            .ok_or_else(|| {
+                MemoryError::InvalidConfig(
+                    "failed to attach source-bound import knowledge scope".to_string(),
+                )
+            })?;
+    }
+    Ok(request_metadata)
+}
+
+async fn backfill_source_bound_import_metadata(
+    db: &crate::db::MemoryDatabase,
+    request: &MemoryImportRequest,
+    binding: &MemoryImportSourceBinding,
+    context: &ImportFileMetadataContext<'_>,
+) -> Result<(), MemoryError> {
+    let metadata = import_file_metadata(request, Some(binding), context)?;
+    db.update_file_chunks_metadata_by_path_for_tenant(
+        request.tier,
+        request.session_id.as_deref(),
+        request.project_id.as_deref(),
+        context.indexed_path,
+        &request.tenant_scope,
+        &metadata,
+    )
+    .await?;
+    Ok(())
+}
+
+fn governed_import_tier(tier: MemoryTier) -> Option<GovernedMemoryTier> {
+    match tier {
+        MemoryTier::Session => Some(GovernedMemoryTier::Session),
+        MemoryTier::Project => Some(GovernedMemoryTier::Project),
+        MemoryTier::Global => None,
+    }
+}
+
+fn governed_import_promotion_tiers(tier: MemoryTier) -> Vec<GovernedMemoryTier> {
+    match tier {
+        MemoryTier::Session => vec![GovernedMemoryTier::Project],
+        MemoryTier::Project | MemoryTier::Global => Vec::new(),
+    }
+}
+
 fn source_object_lifecycle_record(
     request: &MemoryImportRequest,
     binding: Option<&MemoryImportSourceBinding>,
@@ -743,7 +892,7 @@ mod tests {
                 binding_id: "binding-finance-docs".to_string(),
                 connector_id: "manual-upload".to_string(),
                 resource_ref: serde_json::json!({
-                    "org_id": "acme",
+                    "organization_id": "acme",
                     "workspace_id": "finance",
                     "resource_kind": "project",
                     "resource_id": "board-pack",
@@ -782,8 +931,69 @@ mod tests {
         assert_eq!(first_record.native_object_id, indexed_path);
         assert_eq!(first_record.resource_ref["resource_id"], "board-pack");
         assert_eq!(first_record.data_class, "financial_record");
+        let chunks = manager.db().get_global_chunks(20).await.unwrap();
+        let imported_chunk = chunks
+            .iter()
+            .find(|chunk| chunk.source_path.as_deref() == Some(indexed_path.as_str()))
+            .expect("imported source-bound chunk");
+        let chunk_metadata = imported_chunk.metadata.as_ref().expect("chunk metadata");
+        let source_binding_metadata = chunk_metadata
+            .get("enterprise_source_binding")
+            .expect("source binding metadata");
+        let knowledge_scope_metadata = chunk_metadata
+            .get("knowledge_scope_registry")
+            .expect("knowledge scope metadata");
+        assert_eq!(
+            knowledge_scope_metadata["resource_ref"],
+            source_binding_metadata["resource_ref"]
+        );
+        assert_eq!(
+            knowledge_scope_metadata["source_binding_id"],
+            source_binding_metadata["binding_id"]
+        );
+        assert_eq!(
+            knowledge_scope_metadata["source_object_id"],
+            source_binding_metadata["source_object_id"]
+        );
+        assert_eq!(knowledge_scope_metadata["data_class"], "financial_record");
         let stable_source_object_id = first_record.source_object_id.clone();
         let first_source_hash = first_record.source_hash.clone();
+
+        let mut legacy_metadata = chunk_metadata.clone();
+        legacy_metadata
+            .as_object_mut()
+            .expect("object metadata")
+            .remove("knowledge_scope_registry");
+        manager
+            .db()
+            .update_file_chunks_metadata_by_path_for_tenant(
+                request.tier,
+                request.session_id.as_deref(),
+                request.project_id.as_deref(),
+                &indexed_path,
+                &request.tenant_scope,
+                &legacy_metadata,
+            )
+            .await
+            .unwrap();
+        let unchanged =
+            match import_files(&manager, &request, None::<fn(&MemoryImportProgress)>).await {
+                Ok(stats) => stats,
+                Err(err) if is_embeddings_disabled(&err) => return,
+                Err(err) => panic!("import_files failed: {err}"),
+            };
+        assert_eq!(unchanged.indexed_files, 0);
+        assert_eq!(unchanged.skipped_files, 1);
+        let backfilled_chunks = manager.db().get_global_chunks(20).await.unwrap();
+        let backfilled_chunk = backfilled_chunks
+            .iter()
+            .find(|chunk| chunk.source_path.as_deref() == Some(indexed_path.as_str()))
+            .expect("backfilled imported source-bound chunk");
+        assert!(backfilled_chunk
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("knowledge_scope_registry"))
+            .is_some());
 
         std::fs::write(
             root.join("note.md"),

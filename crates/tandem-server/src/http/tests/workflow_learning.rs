@@ -305,15 +305,18 @@ async fn workflow_learning_candidate_promote_promotes_memory_fact_candidate() {
             json!({
                 "run_id": "wflearn-promote-run",
                 "partition": {
-                    "org_id": "org-1",
-                    "workspace_id": "ws-1",
+                    "org_id": "local",
+                    "workspace_id": "local",
                     "project_id": "proj-1",
                     "tier": "session"
                 },
                 "kind": "fact",
                 "content": "promote this learning",
                 "classification": "internal",
-                "artifact_refs": ["artifact://wflearn-promote/report.md"]
+                "artifact_refs": ["artifact://wflearn-promote/report.md"],
+                "metadata": {
+                    "origin": "legacy_workflow_candidate"
+                }
             })
             .to_string(),
         ))
@@ -394,6 +397,24 @@ async fn workflow_learning_candidate_promote_promotes_memory_fact_candidate() {
             .and_then(Value::as_bool),
         Some(true)
     );
+    let db = super::super::skills_memory::open_global_memory_db_for_state(&state)
+        .await
+        .expect("memory db");
+    let source = db
+        .get_global_memory_for_tenant(&source_memory_id, "local", "local", None)
+        .await
+        .expect("source memory lookup")
+        .expect("source memory");
+    let source_scope = source
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("knowledge_scope_registry"))
+        .expect("backfilled workflow knowledge scope");
+    assert_eq!(
+        source_scope["source_binding_id"],
+        "workflow:workflow-promote"
+    );
+    assert_eq!(source_scope["allowed_promotion_tiers"], json!(["project"]));
 
     let missing_req = Request::builder()
         .method("POST")

@@ -778,6 +778,18 @@ pub(super) async fn coder_memory_candidate_promote(
         tandem_memory::MemoryAuthorityOperation::Write,
         Vec::new(),
     );
+    let knowledge_scope_policy = tandem_memory::knowledge_scope_policy_from_authority_job_context(
+        &session_partition,
+        &write_authority_job_context,
+        format!(
+            "coder-memory:{}:{}",
+            record.linked_context_run_id, candidate_id
+        ),
+        vec![GovernedMemoryTier::Session],
+        vec![to_tier],
+        true,
+    )
+    .ok_or(StatusCode::FORBIDDEN)?;
     let put_response = super::skills_memory::memory_put_impl(
         &state,
         &tenant_context,
@@ -801,29 +813,32 @@ pub(super) async fn coder_memory_candidate_promote(
             artifact_refs: artifact_refs.clone(),
             classification: MemoryClassification::Internal,
             authority_job_context: Some(write_authority_job_context),
-            metadata: Some(json!({
-                "kind": kind,
-                "candidate_id": candidate_id,
-                "coder_run_id": record.coder_run_id,
-                "workflow_mode": record.workflow_mode,
-                "repo_slug": record.repo_binding.repo_slug,
-                "github_ref": record.github_ref,
-                "failure_pattern_fingerprint": candidate_payload
-                    .get("payload")
-                    .and_then(|row| row.get("fingerprint"))
-                    .cloned()
-                    .unwrap_or(Value::Null),
-                "linked_issue_numbers": candidate_payload
-                    .get("payload")
-                    .and_then(|row| row.get("linked_issue_numbers"))
-                    .cloned()
-                    .unwrap_or_else(|| json!([])),
-                "linked_pr_numbers": candidate_payload
-                    .get("payload")
-                    .and_then(|row| row.get("linked_pr_numbers"))
-                    .cloned()
-                    .unwrap_or_else(|| json!([])),
-            })),
+            metadata: tandem_memory::metadata_with_knowledge_scope(
+                Some(json!({
+                    "kind": kind,
+                    "candidate_id": candidate_id,
+                    "coder_run_id": record.coder_run_id,
+                    "workflow_mode": record.workflow_mode,
+                    "repo_slug": record.repo_binding.repo_slug,
+                    "github_ref": record.github_ref,
+                    "failure_pattern_fingerprint": candidate_payload
+                        .get("payload")
+                        .and_then(|row| row.get("fingerprint"))
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                    "linked_issue_numbers": candidate_payload
+                        .get("payload")
+                        .and_then(|row| row.get("linked_issue_numbers"))
+                        .cloned()
+                        .unwrap_or_else(|| json!([])),
+                    "linked_pr_numbers": candidate_payload
+                        .get("payload")
+                        .and_then(|row| row.get("linked_pr_numbers"))
+                        .cloned()
+                        .unwrap_or_else(|| json!([])),
+                })),
+                &knowledge_scope_policy,
+            ),
         },
         Some(capability.clone()),
     )

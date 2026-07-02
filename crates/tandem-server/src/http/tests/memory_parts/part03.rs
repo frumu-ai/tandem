@@ -784,22 +784,15 @@ async fn memory_search_hides_source_bound_records_without_strict_grant() {
                 "kind": "fact",
                 "content": "payroll restricted governed memory must stay hidden",
                 "classification": "restricted",
-                "metadata": {
-                    "enterprise_source_binding": {
-                        "binding_id": "binding-hr-finance",
-                        "connector_id": "manual-upload",
-                        "resource_ref": {
-                            "organization_id": "org-1",
-                            "workspace_id": "ws-1",
-                            "resource_kind": "document_collection",
-                            "resource_id": "hr-payroll"
-                        },
-                        "data_class": "financial_record",
-                        "source_object_id": "source-object-hr-payroll",
-                        "native_object_id": "/imports/hr/payroll.md",
-                        "content_hash": "hash-hr-payroll"
-                    }
-                },
+                "metadata": source_bound_memory_metadata(
+                    "org-1",
+                    "ws-1",
+                    "proj-1",
+                    "binding-hr-finance",
+                    "hr-payroll",
+                    "financial_record",
+                    "source-object-hr-payroll"
+                ),
                 "capability": capability
             })
             .to_string(),
@@ -882,22 +875,15 @@ async fn memory_list_hides_source_bound_citation_metadata_without_strict_grant()
                 "kind": "fact",
                 "content": "payroll citation metadata must not leak from list",
                 "classification": "restricted",
-                "metadata": {
-                    "enterprise_source_binding": {
-                        "binding_id": "binding-hr-finance",
-                        "connector_id": "manual-upload",
-                        "resource_ref": {
-                            "organization_id": "org-1",
-                            "workspace_id": "ws-1",
-                            "resource_kind": "document_collection",
-                            "resource_id": "hr-payroll"
-                        },
-                        "data_class": "financial_record",
-                        "source_object_id": "source-object-hr-payroll",
-                        "native_object_id": "/imports/hr/payroll.md",
-                        "content_hash": "hash-hr-payroll"
-                    }
-                },
+                "metadata": source_bound_memory_metadata(
+                    "org-1",
+                    "ws-1",
+                    "proj-1",
+                    "binding-hr-finance",
+                    "hr-payroll",
+                    "financial_record",
+                    "source-object-hr-payroll"
+                ),
                 "capability": capability
             })
             .to_string(),
@@ -1361,6 +1347,45 @@ fn memory_capability(
     })
 }
 
+fn source_bound_memory_metadata(
+    org_id: &str,
+    workspace_id: &str,
+    project_id: &str,
+    binding_id: &str,
+    resource_id: &str,
+    data_class: &str,
+    source_object_id: &str,
+) -> Value {
+    let resource_ref = json!({
+        "organization_id": org_id,
+        "workspace_id": workspace_id,
+        "project_id": project_id,
+        "resource_kind": "document_collection",
+        "resource_id": resource_id
+    });
+    json!({
+        "enterprise_source_binding": {
+            "binding_id": binding_id,
+            "connector_id": "manual-upload",
+            "resource_ref": resource_ref.clone(),
+            "data_class": data_class,
+            "source_object_id": source_object_id,
+            "native_object_id": format!("/imports/{source_object_id}.md"),
+            "content_hash": format!("hash-{source_object_id}")
+        },
+        "knowledge_scope_registry": {
+            "registry_id": format!("source-bound:{binding_id}:{source_object_id}"),
+            "resource_ref": resource_ref,
+            "data_class": data_class,
+            "source_binding_id": binding_id,
+            "source_object_id": source_object_id,
+            "allowed_write_tiers": ["session"],
+            "allowed_promotion_tiers": ["project"],
+            "promotion_requires_approval": true
+        }
+    })
+}
+
 fn verified_delegate_context(
     tenant_context: tandem_types::TenantContext,
     delegate_id: &str,
@@ -1579,22 +1604,15 @@ async fn retrieval_gateway_filters_source_classification_and_query_budget() {
                     "kind": "fact",
                     "content": content,
                     "classification": "internal",
-                    "metadata": {
-                        "enterprise_source_binding": {
-                            "binding_id": binding_id,
-                            "connector_id": "manual-upload",
-                            "resource_ref": {
-                                "organization_id": "org-1",
-                                "workspace_id": "ws-1",
-                                "resource_kind": "document_collection",
-                                "resource_id": binding_id
-                            },
-                            "data_class": data_class,
-                            "source_object_id": source_object_id,
-                            "native_object_id": format!("/imports/{source_object_id}.md"),
-                            "content_hash": format!("hash-{source_object_id}")
-                        }
-                    },
+                    "metadata": source_bound_memory_metadata(
+                        "org-1",
+                        "ws-1",
+                        "proj-1",
+                        binding_id,
+                        binding_id,
+                        data_class,
+                        source_object_id
+                    ),
                     "capability": capability
                 })
                 .to_string(),
