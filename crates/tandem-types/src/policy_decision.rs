@@ -81,6 +81,7 @@ impl PolicyDecisionRecord {
             version: 1,
             scope_level: self.default_effective_policy_scope_level(),
             effect: self.decision.enterprise_effect(),
+            overridable: false,
             reason_code: "fallback_effective_policy_source".to_string(),
             reason: format!("fallback effective policy source for `{policy_id}`"),
             approval_id: None,

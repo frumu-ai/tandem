@@ -6,6 +6,7 @@ use crate::stateful_runtime::{
     stateful_run_from_workflow, StatefulRunEventQuery, StatefulRuntimeStoragePaths,
     StatefulWaitQuery, StatefulWorkflowRunKind, StatefulWorkflowRunRecord,
 };
+use tandem_enterprise_contract::{canonical_enterprise_scope_id, enterprise_scope_ids_match};
 use tandem_types::{
     OrganizationUnit, OrganizationUnitAccessGrant, ResourceRef, ResourceScope, SourceBinding,
 };
@@ -476,7 +477,8 @@ fn organization_unit_for_scope<'a>(
 }
 
 fn organization_unit_id_matches(unit: &OrganizationUnit, unit_id: &str) -> bool {
-    unit.unit_id == unit_id || format!("{}/{}", unit.taxonomy_id, unit.unit_id) == unit_id
+    enterprise_scope_ids_match(&unit.unit_id, unit_id)
+        || enterprise_scope_ids_match(&format!("{}/{}", unit.taxonomy_id, unit.unit_id), unit_id)
 }
 
 fn organization_unit_summary(unit: &OrganizationUnit) -> Value {
@@ -523,7 +525,13 @@ fn principal_matches_org_unit_id(
     principal: &tandem_types::PrincipalRef,
     org_unit_id: &str,
 ) -> bool {
-    principal.id == org_unit_id || principal.id.ends_with(&format!("/{org_unit_id}"))
+    let Some(principal_id) = canonical_enterprise_scope_id(&principal.id) else {
+        return false;
+    };
+    let Some(org_unit_id) = canonical_enterprise_scope_id(org_unit_id) else {
+        return false;
+    };
+    principal_id == org_unit_id || principal_id.ends_with(&format!("/{org_unit_id}"))
 }
 
 fn org_unit_grant_summary(grant: &OrganizationUnitAccessGrant) -> Value {
@@ -1306,12 +1314,17 @@ mod tests {
         let resource = ResourceRef::new("org-a", "workspace-a", ResourceKind::Repository, "repo-a");
         let resource_scope = ResourceScope::root(resource.clone());
         let org_unit = OrganizationUnit::active(
-            "finance",
+            "Finance",
             tenant_a.clone(),
             "Finance Ops",
             OrganizationUnitKind::Department,
             PrincipalRef::human_user("user-a"),
             1,
+        )
+        .with_taxonomy_id(
+            // The runtime stamps canonical lowercase IDs, while imported catalogs may
+            // preserve source casing.
+            "Organization_Unit",
         );
         let grant = OrganizationUnitAccessGrant::active(
             "grant-finance-repo",
@@ -1327,7 +1340,7 @@ mod tests {
             .org_units
             .write()
             .await
-            .insert("finance".to_string(), org_unit);
+            .insert("Finance".to_string(), org_unit);
         state
             .enterprise
             .org_unit_access_grants
@@ -1408,6 +1421,11 @@ mod tests {
             row.pointer("/enterprise_scope/owning_org_unit/display_name")
                 .and_then(Value::as_str),
             Some("Finance Ops")
+        );
+        assert_eq!(
+            row.pointer("/enterprise_scope/owning_org_unit_id")
+                .and_then(Value::as_str),
+            Some("finance")
         );
         assert_eq!(
             row.pointer("/enterprise_scope/summary/resource")

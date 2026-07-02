@@ -203,6 +203,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   durable files, repair torn JSONL event-log tails before appending, and fail
   closed by moving corrupt wait/reliability stores aside instead of silently
   overwriting them.
+- Enterprise policy inheritance now treats ancestor deny/approval rules as a
+  non-overridable floor unless explicitly marked overridable, and scope-ID
+  matching now trims and case-folds tenant, org-unit, workflow, and phase IDs so
+  casing drift cannot silently bypass deny rules or hide stateful runtime
+  org-unit summaries and active grants.
 - Incident Monitor publish and recheck failures now return the full error chain in
   API response details so destination adapter failures expose the underlying
   MCP/provider cause.
