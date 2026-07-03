@@ -15,10 +15,10 @@ use crate::automation_v2::types::*;
 use crate::stateful_runtime::{
     append_stateful_run_event_once_with_next_seq, begin_claimed_stateful_wait_wake_completion,
     claim_matching_stateful_webhook_wait, finish_claimed_stateful_wait_completion,
-    phase_state_from_status, write_stateful_run_snapshot, StatefulRunEventRecord,
-    StatefulRunSnapshotRecord, StatefulRuntimeScope, StatefulRuntimeStoragePaths, StatefulWaitKind,
-    StatefulWaitRecord, StatefulWaitStatus, StatefulWebhookWaitEvent, StatefulWorkflowRunKind,
-    StatefulWorkflowRunStatus,
+    guarded_phase_state_from_status, list_stateful_run_snapshots, write_stateful_run_snapshot,
+    StatefulRunEventRecord, StatefulRunSnapshotRecord, StatefulRuntimeScope,
+    StatefulRuntimeStoragePaths, StatefulWaitKind, StatefulWaitRecord, StatefulWaitStatus,
+    StatefulWebhookWaitEvent, StatefulWorkflowRunKind, StatefulWorkflowRunStatus,
 };
 use crate::util::time::now_ms;
 
@@ -1110,6 +1110,27 @@ impl AppState {
         let delivery_id = new_automation_webhook_delivery_id();
         let wake_key = stateful_webhook_wake_key(&claimed_wait, &wait_event);
         let event_id = format!("stateful-webhook-wake-{wake_key}");
+        let status = StatefulWorkflowRunStatus::Running;
+        let previous_snapshot = list_stateful_run_snapshots(
+            &paths.snapshots_root,
+            &trigger.tenant_context,
+            &claimed_wait.run_id,
+            Some(1),
+        )
+        .pop();
+        let previous_history = previous_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.phase_history.as_slice())
+            .unwrap_or(&[]);
+        let phase_state = guarded_phase_state_from_status(
+            &claimed_wait.run_id,
+            &status,
+            received_at_ms,
+            claimed_wait.phase_id.as_deref(),
+            previous_snapshot.as_ref().map(|snapshot| snapshot.phase),
+            previous_history,
+            Some("automation_webhook:wake_wait".to_string()),
+        )?;
         let reserved_wait = begin_claimed_stateful_wait_wake_completion(
             &paths.waits_path,
             &trigger.tenant_context,
@@ -1174,13 +1195,6 @@ impl AppState {
                 }),
             )
             .await;
-        let status = StatefulWorkflowRunStatus::Running;
-        let phase_state = phase_state_from_status(
-            &reserved_wait.run_id,
-            &status,
-            received_at_ms,
-            reserved_wait.phase_id.as_deref(),
-        );
         let snapshot = StatefulRunSnapshotRecord {
             schema_version: 1,
             snapshot_id: format!("stateful-webhook-wake-{delivery_id}"),

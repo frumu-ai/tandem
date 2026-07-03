@@ -294,6 +294,125 @@ async fn mcp_phase_tool_authority_denies_wrong_phase_tool_with_audit() {
 }
 
 #[tokio::test]
+async fn mcp_phase_tool_authority_is_required_for_explicit_tenant_calls() {
+    let state = test_state().await;
+    let tenant =
+        tandem_types::TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "alice");
+    let verified = verified_mcp_execute_context(
+        &tenant,
+        tandem_types::PrincipalRef::human_user("alice").with_tenant_actor_id("alice"),
+        "assertion-phase-tool-missing",
+    );
+
+    let err = crate::http::mcp::call_mcp_tool_for_tenant_with_verified_context(
+        &state,
+        "notion",
+        "alice_search",
+        json!({ "query": "roadmap" }),
+        &tenant,
+        Some(&verified),
+    )
+    .await
+    .expect_err("explicit tenant MCP calls must include trusted phase authority");
+
+    assert!(err.contains("ToolDenied { reason: PhaseToolAuthority }"));
+    assert!(err.contains("phase tool authority is missing"));
+    let decisions = state.list_policy_decisions(&tenant, 50).await;
+    let decision = decisions
+        .iter()
+        .find(|decision| decision.reason_code == "phase_tool_authority_missing")
+        .expect("missing phase authority decision");
+    assert_eq!(decision.decision, tandem_types::PolicyDecisionEffect::Deny);
+
+    let audit = tokio::fs::read_to_string(&state.protected_audit_path)
+        .await
+        .expect("protected audit file");
+    assert!(audit.contains("\"event_type\":\"mcp.phase_tool.denied\""));
+    assert!(audit.contains("phase_tool_authority_missing"));
+}
+
+#[tokio::test]
+async fn mcp_phase_tool_authority_empty_allowlist_denies_all_tools() {
+    let state = test_state().await;
+    let tenant =
+        tandem_types::TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "alice");
+    let verified = verified_mcp_execute_context(
+        &tenant,
+        tandem_types::PrincipalRef::human_user("alice").with_tenant_actor_id("alice"),
+        "assertion-phase-tool-empty",
+    );
+
+    let err = crate::http::mcp::call_mcp_tool_for_tenant_with_verified_context(
+        &state,
+        "notion",
+        "alice_search",
+        json!({
+            "query": "roadmap",
+            "__phase_tool_authority": {
+                "phase": "research",
+                "allowed_tools": [],
+                "run_id": "run-phase-empty"
+            }
+        }),
+        &tenant,
+        Some(&verified),
+    )
+    .await
+    .expect_err("empty phase allowlist must deny all tools");
+
+    assert!(err.contains("ToolDenied { reason: PhaseToolAuthority }"));
+    assert!(err.contains("has no allowed tools"));
+    let decisions = state
+        .list_policy_decisions_for_run(&tenant, "run-phase-empty", 50)
+        .await;
+    let decision = decisions
+        .iter()
+        .find(|decision| decision.reason_code == "phase_tool_authority_empty_allowlist")
+        .expect("empty allowlist denial decision");
+    assert_eq!(decision.decision, tandem_types::PolicyDecisionEffect::Deny);
+}
+
+#[tokio::test]
+async fn mcp_phase_tool_authority_does_not_match_bare_tool_aliases() {
+    let state = test_state().await;
+    let tenant =
+        tandem_types::TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "alice");
+    let verified = verified_mcp_execute_context(
+        &tenant,
+        tandem_types::PrincipalRef::human_user("alice").with_tenant_actor_id("alice"),
+        "assertion-phase-tool-bare",
+    );
+
+    let err = crate::http::mcp::call_mcp_tool_for_tenant_with_verified_context(
+        &state,
+        "notion",
+        "alice_search",
+        json!({
+            "query": "roadmap",
+            "__phase_tool_authority": {
+                "phase": "research",
+                "allowed_tools": ["alice_search"],
+                "run_id": "run-phase-bare"
+            }
+        }),
+        &tenant,
+        Some(&verified),
+    )
+    .await
+    .expect_err("bare tool names must not match cross-server MCP tools");
+
+    assert!(err.contains("ToolDenied { reason: PhaseToolAuthority }"));
+    let decisions = state
+        .list_policy_decisions_for_run(&tenant, "run-phase-bare", 50)
+        .await;
+    let decision = decisions
+        .iter()
+        .find(|decision| decision.reason_code == "phase_tool_not_allowed")
+        .expect("bare alias denial decision");
+    assert_eq!(decision.decision, tandem_types::PolicyDecisionEffect::Deny);
+}
+
+#[tokio::test]
 async fn mcp_secret_tenant_mismatch_records_scope_policy_and_redacts_secret_material() {
     let state = test_state().await;
     let tenant_a = tandem_types::TenantContext::explicit_user_workspace(

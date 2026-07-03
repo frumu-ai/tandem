@@ -2,10 +2,10 @@ use super::*;
 
 use crate::app::state::automation::lifecycle::automation_lifecycle_event_counts_as_activity;
 use crate::stateful_runtime::{
-    append_stateful_run_event_once_with_next_seq, phase_state_from_status,
-    stable_definition_snapshot_hash, stateful_run_from_automation_v2, write_stateful_run_snapshot,
-    StatefulRunEventRecord, StatefulRunSnapshotRecord, StatefulRuntimeStoragePaths,
-    StatefulWaitKind, StatefulWorkflowRunKind,
+    append_stateful_run_event_once_with_next_seq, guarded_phase_state_from_status,
+    list_stateful_run_snapshots, stable_definition_snapshot_hash, stateful_run_from_automation_v2,
+    write_stateful_run_snapshot, StatefulRunEventRecord, StatefulRunSnapshotRecord,
+    StatefulRuntimeStoragePaths, StatefulWaitKind, StatefulWorkflowRunKind,
 };
 
 impl AppState {
@@ -42,11 +42,31 @@ pub(crate) async fn project_automation_v2_stateful_boundaries_to_paths(
 
     let stateful_run = stateful_run_from_automation_v2(run);
     let scope = stateful_run.scope.clone();
+    let mut latest_snapshot = list_stateful_run_snapshots(
+        &paths.snapshots_root,
+        &run.tenant_context,
+        &run.run_id,
+        Some(1),
+    )
+    .pop();
     let mut projected = 0usize;
     for (index, lifecycle) in run.checkpoint.lifecycle_history.iter().enumerate() {
         let event_id = automation_lifecycle_stateful_event_id(run, index, lifecycle);
         let phase_id = lifecycle_phase_id(run, lifecycle);
         let wait_kind = lifecycle_wait_kind(run, lifecycle);
+        let previous_history = latest_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.phase_history.as_slice())
+            .unwrap_or(&[]);
+        let phase_state = guarded_phase_state_from_status(
+            &run.run_id,
+            &stateful_run.status,
+            lifecycle.recorded_at_ms,
+            phase_id.as_deref(),
+            latest_snapshot.as_ref().map(|snapshot| snapshot.phase),
+            previous_history,
+            Some(format!("automation_v2_lifecycle:{}", lifecycle.event)),
+        )?;
         let event = StatefulRunEventRecord {
             schema_version: 1,
             event_id: event_id.clone(),
@@ -78,8 +98,10 @@ pub(crate) async fn project_automation_v2_stateful_boundaries_to_paths(
             seq,
             event_id,
             phase_id,
+            phase_state,
         );
         write_stateful_run_snapshot(&paths.snapshots_root, &snapshot).await?;
+        latest_snapshot = Some(snapshot);
         projected += 1;
     }
 
@@ -208,14 +230,9 @@ fn automation_lifecycle_snapshot(
     seq: u64,
     event_id: String,
     phase_id: Option<String>,
+    phase_state: crate::stateful_runtime::StatefulWorkflowPhaseState,
 ) -> StatefulRunSnapshotRecord {
     let status = stateful_run.status.clone();
-    let phase_state = phase_state_from_status(
-        &run.run_id,
-        &status,
-        lifecycle.recorded_at_ms,
-        phase_id.as_deref(),
-    );
     let checkpoint = checkpoint_summary(run);
     let payload_digest = Some(stable_definition_snapshot_hash(&checkpoint));
     StatefulRunSnapshotRecord {
@@ -313,7 +330,11 @@ mod tests {
         AutomationExecutionPolicy, AutomationFlowSpec, AutomationRunCheckpoint,
         AutomationV2Schedule, AutomationV2ScheduleType, AutomationV2Spec, AutomationV2Status,
     };
-    use crate::stateful_runtime::{list_stateful_run_snapshots, query_stateful_run_events};
+    use crate::stateful_runtime::{
+        list_stateful_run_snapshots, phase_state_from_status, query_stateful_run_events,
+        write_stateful_run_snapshot, StatefulRunSnapshotRecord, StatefulRuntimeScope,
+        StatefulWorkflowRunStatus,
+    };
     use tandem_types::TenantContext;
     use uuid::Uuid;
 
@@ -526,6 +547,71 @@ mod tests {
             None,
         );
         assert_eq!(snapshots.len(), 2);
+
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn projection_accumulates_guarded_phase_transition_from_previous_snapshot() {
+        let root = std::env::temp_dir().join(format!(
+            "stateful-lifecycle-projection-phase-{}",
+            Uuid::new_v4()
+        ));
+        let paths = StatefulRuntimeStoragePaths::new(
+            root.join("events.jsonl"),
+            root.join("snapshots"),
+            root.join("waits.json"),
+        );
+        let run = run_with_lifecycle();
+        let queued_phase =
+            phase_state_from_status(&run.run_id, &StatefulWorkflowRunStatus::Queued, 100, None);
+        let seed_snapshot = StatefulRunSnapshotRecord {
+            schema_version: 1,
+            snapshot_id: "queued-seed".to_string(),
+            run_id: run.run_id.clone(),
+            seq: 1,
+            created_at_ms: 100,
+            scope: StatefulRuntimeScope::from_tenant_context(run.tenant_context.clone()),
+            status: StatefulWorkflowRunStatus::Queued,
+            phase: queued_phase.phase,
+            phase_history: queued_phase.phase_history,
+            allowed_next_phases: queued_phase.allowed_next_phases,
+            phase_id: None,
+            source_record_kind: Some(StatefulWorkflowRunKind::AutomationV2),
+            checkpoint: None,
+            payload_digest: None,
+            workflow_definition_version: None,
+            workflow_definition_snapshot_hash: None,
+            metadata: None,
+        };
+        write_stateful_run_snapshot(&paths.snapshots_root, &seed_snapshot)
+            .await
+            .expect("write queued seed snapshot");
+
+        project_automation_v2_stateful_boundaries_to_paths(&paths, &run)
+            .await
+            .expect("project lifecycle");
+
+        let snapshots = list_stateful_run_snapshots(
+            &paths.snapshots_root,
+            &run.tenant_context,
+            &run.run_id,
+            None,
+        );
+        let latest = snapshots.last().expect("latest snapshot");
+        assert_eq!(
+            latest.phase,
+            crate::stateful_runtime::StatefulWorkflowPhase::RunningPhase
+        );
+        assert_eq!(latest.phase_history.len(), 2);
+        assert_eq!(
+            latest.phase_history[1].from_phase,
+            Some(crate::stateful_runtime::StatefulWorkflowPhase::Queued)
+        );
+        assert_eq!(
+            latest.phase_history[1].to_phase,
+            crate::stateful_runtime::StatefulWorkflowPhase::RunningPhase
+        );
 
         let _ = tokio::fs::remove_dir_all(root).await;
     }

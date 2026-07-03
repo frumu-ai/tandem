@@ -2,10 +2,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tandem_types::TenantContext;
 
-use super::phases::phase_state_from_status;
+use super::phases::{guarded_phase_state_from_status, StatefulWorkflowPhaseState};
 use super::store::{
-    append_stateful_run_event_once_with_next_seq, load_stateful_run_events,
-    write_stateful_run_snapshot, StatefulRuntimeStoragePaths,
+    append_stateful_run_event_once_with_next_seq, list_stateful_run_snapshots,
+    load_stateful_run_events, write_stateful_run_snapshot, StatefulRuntimeStoragePaths,
 };
 use super::types::{
     StatefulRunEventRecord, StatefulRunSnapshotRecord, StatefulWaitRecord, StatefulWaitStatus,
@@ -172,6 +172,18 @@ pub async fn process_due_stateful_waits(
         let Some(action) = scheduler_action(&candidate, now_ms) else {
             continue;
         };
+        let phase_state =
+            match guarded_phase_state_for_wait_action(paths, &candidate, &action, now_ms) {
+                Ok(phase_state) => phase_state,
+                Err(error) => {
+                    tick.failed += 1;
+                    tick.errors.push(format!(
+                        "failed to validate phase transition for wait {} for run {}: {error}",
+                        candidate.wait_id, candidate.run_id
+                    ));
+                    continue;
+                }
+            };
         let tenant_context = candidate.scope.tenant_context.clone();
         let claimed = match claim_due_stateful_wait(
             &paths.waits_path,
@@ -196,7 +208,7 @@ pub async fn process_due_stateful_waits(
             }
         };
         tick.claimed += 1;
-        match complete_claimed_wait(paths, &claimed, &action, now_ms).await {
+        match complete_claimed_wait(paths, &claimed, &action, now_ms, phase_state).await {
             Ok(outcome) => {
                 tick.max_lag_ms = tick.max_lag_ms.max(outcome.lag_ms);
                 tick.completed += 1;
@@ -220,11 +232,14 @@ async fn complete_claimed_wait(
     wait: &StatefulWaitRecord,
     action: &SchedulerAction,
     now_ms: u64,
+    phase_state: StatefulWorkflowPhaseState,
 ) -> anyhow::Result<StatefulWaitSchedulerOutcome> {
     let completion_key = action.completion_key(wait);
     let event_id = format!("stateful-wait-{completion_key}");
     let lag_ms = now_ms.saturating_sub(action.due_at_ms());
     let wait_status = action.wait_status();
+    let run_status = action.run_status();
+
     let reserved = if wait_status == StatefulWaitStatus::Woken {
         begin_claimed_stateful_wait_wake_completion(
             &paths.waits_path,
@@ -278,9 +293,6 @@ async fn complete_claimed_wait(
     )
     .await?;
 
-    let run_status = action.run_status();
-    let phase_state =
-        phase_state_from_status(&wait.run_id, &run_status, now_ms, wait.phase_id.as_deref());
     let snapshot = StatefulRunSnapshotRecord {
         schema_version: 1,
         snapshot_id: event_id,
@@ -329,6 +341,36 @@ async fn complete_claimed_wait(
         run_status,
         lag_ms,
     })
+}
+
+fn guarded_phase_state_for_wait_action(
+    paths: &StatefulRuntimeStoragePaths,
+    wait: &StatefulWaitRecord,
+    action: &SchedulerAction,
+    now_ms: u64,
+) -> anyhow::Result<StatefulWorkflowPhaseState> {
+    let run_status = action.run_status();
+    let previous_snapshot = list_stateful_run_snapshots(
+        &paths.snapshots_root,
+        &wait.scope.tenant_context,
+        &wait.run_id,
+        Some(1),
+    )
+    .pop();
+    let previous_history = previous_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.phase_history.as_slice())
+        .unwrap_or(&[]);
+    guarded_phase_state_from_status(
+        &wait.run_id,
+        &run_status,
+        now_ms,
+        wait.phase_id.as_deref(),
+        previous_snapshot.as_ref().map(|snapshot| snapshot.phase),
+        previous_history,
+        Some(format!("stateful_wait_scheduler:{}", action.event_type())),
+    )
+    .map_err(anyhow::Error::from)
 }
 
 fn scheduler_action(wait: &StatefulWaitRecord, now_ms: u64) -> Option<SchedulerAction> {
@@ -538,6 +580,72 @@ mod tests {
         assert_eq!(waits[0].event_seq, Some(2));
         let snapshots = list_stateful_run_snapshots(&paths.snapshots_root, &tenant, "run-a", None);
         assert_eq!(snapshots[0].seq, 2);
+        let _ = tokio::fs::remove_dir_all(
+            paths
+                .run_events_path
+                .parent()
+                .expect("runtime root")
+                .to_path_buf(),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn scheduler_rejects_wake_after_terminal_phase_without_appending_event() {
+        let paths = paths("stateful-wait-scheduler-terminal-phase");
+        let tenant = tenant("org-a", "workspace-a");
+        let phase_state = crate::stateful_runtime::phase_state_from_status(
+            "run-a",
+            &StatefulWorkflowRunStatus::Completed,
+            900,
+            None,
+        );
+        let completed_snapshot = StatefulRunSnapshotRecord {
+            schema_version: 1,
+            snapshot_id: "completed-snapshot".to_string(),
+            run_id: "run-a".to_string(),
+            seq: 1,
+            created_at_ms: 900,
+            scope: StatefulRuntimeScope::from_tenant_context(tenant.clone()),
+            status: StatefulWorkflowRunStatus::Completed,
+            phase: phase_state.phase,
+            phase_history: phase_state.phase_history,
+            allowed_next_phases: phase_state.allowed_next_phases,
+            phase_id: None,
+            source_record_kind: None,
+            checkpoint: None,
+            payload_digest: None,
+            workflow_definition_version: None,
+            workflow_definition_snapshot_hash: None,
+            metadata: None,
+        };
+        crate::stateful_runtime::write_stateful_run_snapshot(
+            &paths.snapshots_root,
+            &completed_snapshot,
+        )
+        .await
+        .expect("write completed snapshot");
+        upsert_stateful_wait(&paths.waits_path, timer_wait("wait-a", 1_000))
+            .await
+            .expect("insert wait");
+
+        let tick = process_due_stateful_waits(
+            &paths,
+            1_250,
+            StatefulWaitSchedulerConfig {
+                claimant_id: "scheduler-test".to_string(),
+                lease_ms: 500,
+                limit: 10,
+            },
+        )
+        .await;
+
+        assert_eq!(tick.checked, 1);
+        assert_eq!(tick.claimed, 0);
+        assert_eq!(tick.completed, 0);
+        assert_eq!(tick.failed, 1);
+        assert!(tick.errors[0].contains("terminal phase completed"));
+        assert!(load_stateful_run_events(&paths.run_events_path).is_empty());
         let _ = tokio::fs::remove_dir_all(
             paths
                 .run_events_path

@@ -31,7 +31,14 @@ async fn mcp_run_as_interactive_call_uses_current_actor_connection() {
         &state,
         "notion",
         "alice_search",
-        json!({ "query": "roadmap" }),
+        json!({
+            "query": "roadmap",
+            "__phase_tool_authority": {
+                "phase": "interactive",
+                "allowed_tools": ["mcp.notion.alice_search"],
+                "run_id": "run-as-interactive"
+            }
+        }),
         &alice,
         Some(&verified),
     )
@@ -229,7 +236,14 @@ async fn mcp_run_as_scheduled_automation_uses_tenant_service_principal_connectio
         &state,
         "notion",
         "alice_search",
-        json!({ "query": "roadmap" }),
+        json!({
+            "query": "roadmap",
+            "__phase_tool_authority": {
+                "phase": "scheduled",
+                "allowed_tools": ["mcp.notion.alice_search"],
+                "run_id": "run-as-scheduled"
+            }
+        }),
         &scheduled_tenant,
         Some(&verified),
     )
