@@ -27,11 +27,9 @@ use super::{
     automation_webhook_accepted_delivery, automation_webhook_delivery_correlation,
     automation_webhook_delivery_matches_key, automation_webhook_rejection_delivery,
     automation_webhook_run_metadata, automation_webhook_scope_denial_reason,
-    idempotency_outcome_ref, new_automation_webhook_delivery_id,
-    verify_automation_webhook_signature, AppState, AutomationWebhookDedupeDecision,
-    AutomationWebhookFeedbackLoopCandidate, AutomationWebhookReservedClaim,
-    AutomationWebhookSignatureHeaders, AutomationWebhookSignatureVerificationContext,
-    AutomationWebhookVerificationDecision, AutomationWebhookVerificationError,
+    idempotency_outcome_ref, new_automation_webhook_delivery_id, AppState,
+    AutomationWebhookDedupeDecision, AutomationWebhookFeedbackLoopCandidate,
+    AutomationWebhookReservedClaim, AutomationWebhookVerificationDecision,
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -125,6 +123,7 @@ pub(crate) struct VerifiedAutomationWebhookRequest {
     pub provider_event_id: Option<String>,
     pub body_digest: String,
     pub received_at_ms: u64,
+    pub wait_bookkeeping_at_ms: Option<u64>,
     pub verification: AutomationWebhookVerificationDecision,
 }
 
@@ -243,13 +242,13 @@ fn serialize_automation_webhook_secret_material_file(
     .context("failed to serialize automation webhook secret material state file")
 }
 
-fn tenant_context_matches(left: &TenantContext, right: &TenantContext) -> bool {
+pub(crate) fn tenant_context_matches(left: &TenantContext, right: &TenantContext) -> bool {
     left.org_id == right.org_id
         && left.workspace_id == right.workspace_id
         && left.deployment_id == right.deployment_id
 }
 
-fn secret_material_key(secret_ref: &SecretRef) -> String {
+pub(crate) fn secret_material_key(secret_ref: &SecretRef) -> String {
     format!(
         "{}::{}::{}::{}",
         secret_ref.org_id, secret_ref.workspace_id, secret_ref.provider, secret_ref.secret_id
@@ -501,6 +500,25 @@ fn automation_webhook_phase_denied_delivery(
     delivery
 }
 
+fn automation_webhook_feedback_loop_is_suppressed(
+    decision: &AutomationWebhookFeedbackLoopDecision,
+) -> bool {
+    matches!(
+        decision.outcome,
+        AutomationWebhookFeedbackLoopOutcome::Suppressed
+    )
+}
+
+fn automation_webhook_delivery_was_suppressed_feedback(
+    delivery: &AutomationWebhookDeliveryRecord,
+) -> bool {
+    delivery.status == AutomationWebhookDeliveryStatus::Suppressed
+        || delivery
+            .feedback_loop
+            .as_ref()
+            .is_some_and(automation_webhook_feedback_loop_is_suppressed)
+}
+
 async fn ensure_parent_dir(path: &std::path::Path) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
@@ -623,7 +641,7 @@ impl AppState {
             .store(allowed, std::sync::atomic::Ordering::Relaxed);
     }
 
-    fn unsigned_dev_webhooks_allowed(&self) -> bool {
+    pub(crate) fn unsigned_dev_webhooks_allowed(&self) -> bool {
         self.allow_unsigned_dev_webhooks
             .load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -1180,6 +1198,7 @@ impl AppState {
         provider_event_id: Option<String>,
         body_digest: String,
         received_at_ms: u64,
+        wait_bookkeeping_at_ms: u64,
         sanitized_preview: Value,
         verification: AutomationWebhookVerificationDecision,
         primary_idempotency: Option<AutomationWebhookReservedClaim>,
@@ -1197,7 +1216,7 @@ impl AppState {
             &trigger.tenant_context,
             &wait_event,
             AUTOMATION_WEBHOOK_STATEFUL_WAIT_CLAIMANT,
-            received_at_ms,
+            wait_bookkeeping_at_ms,
             AUTOMATION_WEBHOOK_STATEFUL_WAIT_LEASE_MS,
         )
         .await?
@@ -1210,14 +1229,14 @@ impl AppState {
         let event_id = format!("stateful-webhook-wake-{wake_key}");
         let status = StatefulWorkflowRunStatus::Running;
         if let Err(error) =
-            guarded_phase_state_for_webhook_wait(&paths, &claimed_wait, received_at_ms)
+            guarded_phase_state_for_webhook_wait(&paths, &claimed_wait, wait_bookkeeping_at_ms)
         {
             let reason = error.to_string();
             cancel_webhook_wait_after_phase_guard_denial(
                 &paths,
                 &claimed_wait,
                 &reason,
-                received_at_ms,
+                wait_bookkeeping_at_ms,
             )
             .await;
             let delivery = automation_webhook_phase_denied_delivery(
@@ -1242,40 +1261,43 @@ impl AppState {
             &trigger.tenant_context,
             &claimed_wait,
             &wake_key,
-            received_at_ms,
+            wait_bookkeeping_at_ms,
         )
         .await?
         .ok_or_else(|| anyhow::anyhow!("stateful webhook wait wake conflict"))?;
-        let phase_state =
-            match guarded_phase_state_for_webhook_wait(&paths, &reserved_wait, received_at_ms) {
-                Ok(phase_state) => phase_state,
-                Err(error) => {
-                    let reason = error.to_string();
-                    cancel_webhook_wait_after_phase_guard_denial(
-                        &paths,
-                        &reserved_wait,
-                        &reason,
-                        received_at_ms,
-                    )
-                    .await;
-                    let delivery = automation_webhook_phase_denied_delivery(
-                        trigger,
-                        provider_event_id,
-                        body_digest,
-                        received_at_ms,
-                        sanitized_preview,
-                        &verification,
-                        primary_idempotency.as_ref(),
-                    );
-                    let delivery = self
-                        .record_automation_webhook_delivery_locked(delivery)
-                        .await?;
-                    return Ok(Some(AutomationWebhookStatefulWaitResult::Rejected {
-                        delivery,
-                        reason_code: "stateful_wait_phase_denied".to_string(),
-                    }));
-                }
-            };
+        let phase_state = match guarded_phase_state_for_webhook_wait(
+            &paths,
+            &reserved_wait,
+            wait_bookkeeping_at_ms,
+        ) {
+            Ok(phase_state) => phase_state,
+            Err(error) => {
+                let reason = error.to_string();
+                cancel_webhook_wait_after_phase_guard_denial(
+                    &paths,
+                    &reserved_wait,
+                    &reason,
+                    wait_bookkeeping_at_ms,
+                )
+                .await;
+                let delivery = automation_webhook_phase_denied_delivery(
+                    trigger,
+                    provider_event_id,
+                    body_digest,
+                    received_at_ms,
+                    sanitized_preview,
+                    &verification,
+                    primary_idempotency.as_ref(),
+                );
+                let delivery = self
+                    .record_automation_webhook_delivery_locked(delivery)
+                    .await?;
+                return Ok(Some(AutomationWebhookStatefulWaitResult::Rejected {
+                    delivery,
+                    reason_code: "stateful_wait_phase_denied".to_string(),
+                }));
+            }
+        };
         let scope = claimed_wait.scope.clone();
         let event = StatefulRunEventRecord {
             schema_version: 1,
@@ -1283,7 +1305,7 @@ impl AppState {
             run_id: claimed_wait.run_id.clone(),
             seq: 0,
             event_type: "stateful_runtime.wait.webhook_woken".to_string(),
-            occurred_at_ms: received_at_ms,
+            occurred_at_ms: wait_bookkeeping_at_ms,
             scope: scope.clone(),
             actor: trigger.owner_principal.clone(),
             phase_id: claimed_wait.phase_id.clone(),
@@ -1336,7 +1358,7 @@ impl AppState {
             snapshot_id: format!("stateful-webhook-wake-{delivery_id}"),
             run_id: reserved_wait.run_id.clone(),
             seq,
-            created_at_ms: received_at_ms,
+            created_at_ms: wait_bookkeeping_at_ms,
             scope,
             status,
             phase: phase_state.phase,
@@ -1383,7 +1405,7 @@ impl AppState {
             &wake_key,
             seq,
             StatefulWaitStatus::Woken,
-            received_at_ms,
+            wait_bookkeeping_at_ms,
         )
         .await?
         .ok_or_else(|| anyhow::anyhow!("stateful webhook wait wake conflict"))?;
@@ -1436,6 +1458,10 @@ impl AppState {
         let provider_event_id = verified.provider_event_id.clone();
         let body_digest = verified.body_digest.clone();
         let received_at_ms = verified.received_at_ms;
+        let wait_bookkeeping_at_ms = verified
+            .wait_bookkeeping_at_ms
+            .unwrap_or(received_at_ms)
+            .max(received_at_ms);
         let automation = match self.get_automation_v2(&trigger.automation_id).await {
             Some(automation) => automation,
             None => {
@@ -1567,24 +1593,84 @@ impl AppState {
                 } => {
                     let (mut duplicate_of_delivery_id, mut duplicate_of_run_id) =
                         idempotency_outcome_ref(&primary_record);
+                    let original_delivery = {
+                        let deliveries = self.automation_webhook_deliveries.read().await;
+                        deliveries
+                            .values()
+                            .find(|delivery| {
+                                automation_webhook_delivery_matches_key(
+                                    delivery,
+                                    &trigger,
+                                    provider_event_id.as_ref(),
+                                    &body_digest,
+                                )
+                            })
+                            .cloned()
+                    };
                     if duplicate_of_delivery_id.is_none() {
-                        let original_delivery = {
-                            let deliveries = self.automation_webhook_deliveries.read().await;
-                            deliveries
-                                .values()
-                                .find(|delivery| {
-                                    automation_webhook_delivery_matches_key(
-                                        delivery,
-                                        &trigger,
-                                        provider_event_id.as_ref(),
-                                        &body_digest,
+                        if let Some(original) = original_delivery.as_ref() {
+                            duplicate_of_delivery_id = Some(original.delivery_id.clone());
+                            duplicate_of_run_id = original
+                                .queued_run_id
+                                .clone()
+                                .or_else(|| original.woken_run_id.clone());
+                        }
+                    }
+                    let duplicate_suppressed_feedback = feedback_loop
+                        .as_ref()
+                        .is_some_and(automation_webhook_feedback_loop_is_suppressed)
+                        || original_delivery
+                            .as_ref()
+                            .is_some_and(automation_webhook_delivery_was_suppressed_feedback);
+                    if !duplicate_suppressed_feedback {
+                        if let Some(stateful_wait_result) = self
+                            .wake_matching_stateful_webhook_wait_locked(
+                                &trigger,
+                                verified.provider_event_id.clone(),
+                                verified.body_digest.clone(),
+                                verified.received_at_ms,
+                                wait_bookkeeping_at_ms,
+                                sanitized_preview.clone(),
+                                verification.clone(),
+                                Some(AutomationWebhookReservedClaim {
+                                    claim: primary_claim.clone(),
+                                    record: primary_record.clone(),
+                                }),
+                                feedback_loop.clone(),
+                            )
+                            .await?
+                        {
+                            match stateful_wait_result {
+                                AutomationWebhookStatefulWaitResult::Woken { delivery, wait } => {
+                                    self.complete_automation_webhook_idempotency_records(
+                                        &reserved_records,
+                                        &delivery,
+                                        "woken",
+                                        received_at_ms,
                                     )
-                                })
-                                .cloned()
-                        };
-                        if let Some(original) = original_delivery {
-                            duplicate_of_delivery_id = Some(original.delivery_id);
-                            duplicate_of_run_id = original.queued_run_id;
+                                    .await?;
+                                    return Ok(AutomationWebhookQueueResult::Woken {
+                                        delivery,
+                                        wait,
+                                    });
+                                }
+                                AutomationWebhookStatefulWaitResult::Rejected {
+                                    delivery,
+                                    reason_code,
+                                } => {
+                                    self.complete_automation_webhook_idempotency_records(
+                                        &reserved_records,
+                                        &delivery,
+                                        "rejected",
+                                        received_at_ms,
+                                    )
+                                    .await?;
+                                    return Ok(AutomationWebhookQueueResult::Rejected {
+                                        delivery,
+                                        reason_code,
+                                    });
+                                }
+                            }
                         }
                     }
                     let mut delivery = automation_webhook_rejection_delivery(
@@ -1750,6 +1836,7 @@ impl AppState {
                     verified.provider_event_id.clone(),
                     verified.body_digest.clone(),
                     verified.received_at_ms,
+                    wait_bookkeeping_at_ms,
                     sanitized_preview.clone(),
                     verification.clone(),
                     primary.cloned(),
@@ -1891,86 +1978,5 @@ impl AppState {
             .get(delivery_id)
             .filter(|delivery| delivery.tenant_matches(tenant_context))
             .cloned()
-    }
-
-    pub(crate) async fn verify_automation_webhook_request(
-        &self,
-        public_path_token: &str,
-        signature_header: Option<&str>,
-        body: &[u8],
-        provider_event_id: Option<String>,
-        request_now_ms: u64,
-        signature_tolerance_ms: u64,
-    ) -> Result<VerifiedAutomationWebhookRequest, AutomationWebhookVerificationError> {
-        self.verify_automation_webhook_request_with_headers(
-            public_path_token,
-            AutomationWebhookSignatureHeaders::tandem(signature_header),
-            body,
-            provider_event_id,
-            request_now_ms,
-            signature_tolerance_ms,
-        )
-        .await
-    }
-
-    pub(crate) async fn verify_automation_webhook_request_with_headers(
-        &self,
-        public_path_token: &str,
-        signature_headers: AutomationWebhookSignatureHeaders,
-        body: &[u8],
-        provider_event_id: Option<String>,
-        request_now_ms: u64,
-        signature_tolerance_ms: u64,
-    ) -> Result<VerifiedAutomationWebhookRequest, AutomationWebhookVerificationError> {
-        let trigger = self
-            .automation_webhook_triggers
-            .read()
-            .await
-            .values()
-            .find(|trigger| trigger.public_path_token == public_path_token)
-            .cloned()
-            .ok_or(AutomationWebhookVerificationError::UnknownTrigger)?;
-        if !trigger.enabled {
-            return Err(AutomationWebhookVerificationError::DisabledTrigger);
-        }
-        if matches!(
-            trigger.signature_scheme,
-            AutomationWebhookSignatureScheme::UnsignedDevMode
-        ) && !self.unsigned_dev_webhooks_allowed()
-        {
-            return Err(AutomationWebhookVerificationError::UnsignedDevModeDisabled);
-        }
-        let material = self
-            .automation_webhook_secret_material
-            .read()
-            .await
-            .get(&secret_material_key(&trigger.secret.secret_ref))
-            .cloned()
-            .ok_or(AutomationWebhookVerificationError::MissingSecretMaterial)?;
-        if !tenant_context_matches(&material.tenant_context, &trigger.tenant_context)
-            || material.trigger_id != trigger.trigger_id
-        {
-            return Err(AutomationWebhookVerificationError::MissingSecretMaterial);
-        }
-
-        let verification =
-            verify_automation_webhook_signature(AutomationWebhookSignatureVerificationContext {
-                provider: &trigger.provider,
-                scheme: &trigger.signature_scheme,
-                headers: &signature_headers,
-                secret: Some(&material.secret),
-                body,
-                request_now_ms,
-                signature_tolerance_ms,
-            })?;
-
-        let body_digest = automation_webhook_body_digest(body);
-        Ok(VerifiedAutomationWebhookRequest {
-            trigger,
-            provider_event_id,
-            body_digest,
-            received_at_ms: request_now_ms,
-            verification,
-        })
     }
 }

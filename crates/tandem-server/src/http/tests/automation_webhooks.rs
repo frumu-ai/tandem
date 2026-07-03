@@ -8,6 +8,13 @@ use crate::automation_v2::types::{
     AutomationWebhookDedupeResult, AutomationWebhookDeliveryStatus,
     AutomationWebhookFeedbackLoopOutcome, AutomationWebhookSignatureScheme,
 };
+use crate::stateful_runtime::{
+    list_stateful_waits, phase_state_from_status, stateful_webhook_wait_metadata,
+    upsert_stateful_wait, write_stateful_run_snapshot, StatefulRunSnapshotRecord,
+    StatefulRuntimeScope, StatefulRuntimeStoragePaths, StatefulWaitKind, StatefulWaitQuery,
+    StatefulWaitRecord, StatefulWaitStatus, StatefulWebhookWaitMatch, StatefulWorkflowRunKind,
+    StatefulWorkflowRunStatus,
+};
 use crate::ExternalActionRecord;
 use tandem_types::{DataClass, TenantContext};
 
@@ -161,6 +168,11 @@ async fn response_json(response: axum::response::Response) -> Value {
     .expect("json")
 }
 
+async fn drain_webhook_inbox(state: &AppState) {
+    let report = state.process_automation_webhook_inbox_once(100).await;
+    assert_eq!(report.failed, 0);
+}
+
 #[tokio::test]
 async fn public_automation_webhook_accepts_signed_request_without_transport_auth() {
     let state = test_state().await;
@@ -199,8 +211,7 @@ async fn public_automation_webhook_accepts_signed_request_without_transport_auth
             &created.trigger.trigger_id,
         )
         .await;
-    assert_eq!(deliveries.len(), 1);
-    let delivery = &deliveries[0];
+    assert!(deliveries.is_empty());
     let raw_events = state
         .list_automation_webhook_raw_events_for_trigger(
             &tenant_context,
@@ -211,13 +222,19 @@ async fn public_automation_webhook_accepts_signed_request_without_transport_auth
     let raw_event = &raw_events[0];
     assert_eq!(
         raw_event.status,
-        crate::AutomationWebhookDeliveryStatus::Accepted
+        crate::AutomationWebhookDeliveryStatus::Received
     );
+    assert!(raw_event.delivery_id.is_none());
+    assert_eq!(raw_event.provider_event_id.as_deref(), Some("evt-1"));
     assert_eq!(
-        raw_event.delivery_id.as_deref(),
-        Some(delivery.delivery_id.as_str())
+        raw_event.verification_scheme,
+        Some(AutomationWebhookSignatureScheme::HmacSha256V1)
     );
-    assert_eq!(raw_event.body_digest, delivery.body_digest);
+    assert_eq!(raw_event.verification_provider.as_deref(), Some("generic"));
+    assert_eq!(
+        raw_event.verification_reason_code.as_deref(),
+        Some("verified")
+    );
     assert!(raw_event.headers_digest.starts_with("sha256:"));
     assert_eq!(
         raw_event
@@ -239,6 +256,35 @@ async fn public_automation_webhook_accepts_signed_request_without_transport_auth
         .expect("raw payload read")
         .expect("raw payload");
     assert_eq!(persisted_payload, body);
+
+    let report = state.process_automation_webhook_inbox_once(10).await;
+    assert_eq!(report.checked, 1);
+    assert_eq!(report.processed, 1);
+    assert_eq!(report.failed, 0);
+    let deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+        )
+        .await;
+    assert_eq!(deliveries.len(), 1);
+    let delivery = &deliveries[0];
+    let raw_events = state
+        .list_automation_webhook_raw_events_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+        )
+        .await;
+    let raw_event = &raw_events[0];
+    assert_eq!(
+        raw_event.status,
+        crate::AutomationWebhookDeliveryStatus::Accepted
+    );
+    assert_eq!(
+        raw_event.delivery_id.as_deref(),
+        Some(delivery.delivery_id.as_str())
+    );
+    assert_eq!(raw_event.body_digest, delivery.body_digest);
     assert_eq!(
         delivery.verification_scheme,
         Some(AutomationWebhookSignatureScheme::HmacSha256V1)
@@ -364,6 +410,7 @@ async fn public_automation_webhook_accepts_hosted_prefixed_path_without_transpor
         .await
         .expect("response");
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
 
     let deliveries = state
         .list_automation_webhook_deliveries_for_trigger(
@@ -420,6 +467,7 @@ async fn public_automation_webhook_prefers_provider_specific_event_id_header() {
         .await
         .expect("response");
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
 
     let deliveries = state
         .list_automation_webhook_deliveries_for_trigger(
@@ -483,6 +531,7 @@ async fn public_automation_webhook_uses_trigger_signature_scheme_registry() {
         .await
         .expect("response");
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
 
     let deliveries = state
         .list_automation_webhook_deliveries_for_trigger(
@@ -542,6 +591,7 @@ async fn public_automation_webhook_duplicate_body_digest_does_not_queue_second_r
         .await
         .expect("second response");
     assert_eq!(second.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
 
     assert_eq!(state.automation_v2_runs.read().await.len(), 1);
     let deliveries = state
@@ -758,12 +808,6 @@ async fn public_automation_webhook_suppresses_tandem_origin_feedback_loop() {
     .to_string()
     .into_bytes();
     let body = json!({
-        "tandem_origin": {
-            "idempotency_key": idempotency_key,
-                "run_id": source_run.run_id.clone(),
-                "node_id": "node-feedback",
-                "resource_id": "ticket-123",
-            },
         "ticket": "ticket-123",
     })
     .to_string()
@@ -793,6 +837,7 @@ async fn public_automation_webhook_suppresses_tandem_origin_feedback_loop() {
         .await
         .expect("mismatch response");
     assert_eq!(mismatch_resp.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
     assert_eq!(state.automation_v2_runs.read().await.len(), 2);
 
     let resp = app
@@ -806,16 +851,21 @@ async fn public_automation_webhook_suppresses_tandem_origin_feedback_loop() {
                 ))
                 .header("content-type", "application/json")
                 .header("x-tandem-webhook-event-id", "evt-feedback-suppressed")
+                .header("x-tandem-origin-idempotency-key", idempotency_key)
+                .header("x-tandem-origin-run-id", source_run.run_id.as_str())
+                .header("x-tandem-origin-node-id", "node-feedback")
+                .header("x-tandem-origin-resource-id", "ticket-123")
                 .header(
                     "x-tandem-webhook-signature",
                     automation_webhook_signature_header(&created.secret, now, &body),
                 )
-                .body(Body::from(body))
+                .body(Body::from(body.clone()))
                 .expect("request"),
         )
         .await
         .expect("response");
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
     assert_eq!(state.automation_v2_runs.read().await.len(), 2);
     let deliveries = state
         .list_automation_webhook_deliveries_for_trigger(
@@ -856,6 +906,121 @@ async fn public_automation_webhook_suppresses_tandem_origin_feedback_loop() {
         Some(&crate::AutomationWebhookCorrelationOutcome::Suppressed)
     );
 
+    let paths = StatefulRuntimeStoragePaths::from_runtime_events_path(&state.runtime_events_path);
+    let wait_run_id = "run-suppressed-feedback-wait";
+    let wait_now = now + 1;
+    let phase_state = phase_state_from_status(
+        wait_run_id,
+        &StatefulWorkflowRunStatus::Running,
+        wait_now,
+        Some("phase-feedback"),
+    );
+    write_stateful_run_snapshot(
+        &paths.snapshots_root,
+        &StatefulRunSnapshotRecord {
+            schema_version: 1,
+            snapshot_id: "snapshot-suppressed-feedback-wait".to_string(),
+            run_id: wait_run_id.to_string(),
+            seq: 7,
+            created_at_ms: wait_now,
+            scope: StatefulRuntimeScope::from_tenant_context(tenant_context.clone()),
+            status: StatefulWorkflowRunStatus::Running,
+            phase: phase_state.phase,
+            phase_history: phase_state.phase_history,
+            allowed_next_phases: phase_state.allowed_next_phases,
+            phase_id: Some("phase-feedback".to_string()),
+            source_record_kind: Some(StatefulWorkflowRunKind::AutomationV2),
+            checkpoint: None,
+            payload_digest: None,
+            workflow_definition_version: None,
+            workflow_definition_snapshot_hash: None,
+            metadata: None,
+        },
+    )
+    .await
+    .expect("write feedback wait snapshot");
+    upsert_stateful_wait(
+        &paths.waits_path,
+        StatefulWaitRecord {
+            schema_version: 1,
+            wait_id: "wait-suppressed-feedback".to_string(),
+            run_id: wait_run_id.to_string(),
+            wait_kind: StatefulWaitKind::Webhook,
+            status: StatefulWaitStatus::Waiting,
+            scope: StatefulRuntimeScope::from_tenant_context(tenant_context.clone()),
+            phase_id: Some("phase-feedback".to_string()),
+            reason: Some("feedback duplicate should not wake".to_string()),
+            created_at_ms: wait_now,
+            updated_at_ms: wait_now,
+            wake_at_ms: None,
+            timeout_policy: None,
+            event_seq: None,
+            wake_idempotency_key: None,
+            claimed_by: None,
+            claimed_at_ms: None,
+            claim_expires_at_ms: None,
+            completed_at_ms: None,
+            metadata: Some(stateful_webhook_wait_metadata(
+                StatefulWebhookWaitMatch {
+                    trigger_id: Some(created.trigger.trigger_id.clone()),
+                    provider: Some(created.trigger.provider.clone()),
+                    provider_event_id: Some("evt-feedback-suppressed".to_string()),
+                    ..StatefulWebhookWaitMatch::default()
+                },
+                None,
+            )),
+        },
+    )
+    .await
+    .expect("insert suppressed feedback wait");
+    let suppressed_duplicate_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/webhooks/automations/{}",
+                    created.trigger.public_path_token
+                ))
+                .header("content-type", "application/json")
+                .header("x-tandem-webhook-event-id", "evt-feedback-suppressed")
+                .header(
+                    "x-tandem-webhook-signature",
+                    automation_webhook_signature_header(&created.secret, now + 1, &body),
+                )
+                .body(Body::from(body.clone()))
+                .expect("request"),
+        )
+        .await
+        .expect("suppressed duplicate response");
+    assert_eq!(suppressed_duplicate_resp.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
+    let waits = list_stateful_waits(
+        &paths.waits_path,
+        &tenant_context,
+        StatefulWaitQuery {
+            run_id: Some(wait_run_id),
+            wait_kind: Some(StatefulWaitKind::Webhook),
+            ..StatefulWaitQuery::default()
+        },
+    );
+    assert_eq!(waits.len(), 1);
+    assert_eq!(waits[0].status, StatefulWaitStatus::Waiting);
+    let deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+        )
+        .await;
+    let suppressed_duplicate = deliveries
+        .iter()
+        .find(|delivery| {
+            delivery.status == AutomationWebhookDeliveryStatus::Duplicate
+                && delivery.provider_event_id.as_deref() == Some("evt-feedback-suppressed")
+        })
+        .expect("suppressed duplicate delivery");
+    assert!(suppressed_duplicate.woken_wait_id.is_none());
+
     let body_only_allowed_body = json!({
             "tandem_origin": {
                 "idempotency_key": idempotency_key,
@@ -894,6 +1059,7 @@ async fn public_automation_webhook_suppresses_tandem_origin_feedback_loop() {
         .await
         .expect("body-only allowed response");
     assert_eq!(body_only_allowed_resp.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
     assert_eq!(state.automation_v2_runs.read().await.len(), 2);
     let deliveries = state
         .list_automation_webhook_deliveries_for_trigger(
@@ -995,6 +1161,7 @@ async fn public_automation_webhook_suppresses_tandem_origin_feedback_loop() {
         .await
         .expect("trusted allowed response");
     assert_eq!(trusted_allowed_resp.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
     assert_eq!(state.automation_v2_runs.read().await.len(), 3);
     let deliveries = state
         .list_automation_webhook_deliveries_for_trigger(
@@ -1100,7 +1267,8 @@ async fn public_automation_webhook_inactive_automation_does_not_queue_run() {
         ))
         .await
         .expect("response");
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
     assert!(state.automation_v2_runs.read().await.is_empty());
 
     let deliveries = state
@@ -1143,7 +1311,8 @@ async fn public_automation_webhook_tenant_mismatch_does_not_queue_run() {
         ))
         .await
         .expect("response");
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
     assert!(state.automation_v2_runs.read().await.is_empty());
 
     let tenant_a_deliveries = state

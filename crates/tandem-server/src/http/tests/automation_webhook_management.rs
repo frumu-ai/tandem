@@ -718,6 +718,8 @@ async fn webhook_event_routes_enforce_automation_visibility_before_payloads() {
             trigger,
             provider_event_id: Some("evt-private".to_string()),
             body_digest: automation_webhook_body_digest(body),
+            verification: None,
+            feedback_loop_candidate: None,
             headers_digest: automation_webhook_body_digest(br#"x-provider: private"#),
             headers_redacted: json!({ "x-provider": "private" }),
             content_type: Some("application/json".to_string()),

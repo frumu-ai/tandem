@@ -6,6 +6,11 @@ use crate::automation_v2::types::{
     AutomationWebhookTriggerRecord,
 };
 
+use super::{
+    automation_webhook_body_digest, secret_material_key, tenant_context_matches, AppState,
+    VerifiedAutomationWebhookRequest,
+};
+
 type HmacSha256 = Hmac<Sha256>;
 
 const TANDEM_HMAC_SHA256_VERIFIER_ID: &str = "tandem_hmac_sha256_v1";
@@ -35,7 +40,105 @@ pub(crate) struct AutomationWebhookVerificationDecision {
     pub reason_code: String,
 }
 
+impl AppState {
+    pub(crate) async fn verify_automation_webhook_request(
+        &self,
+        public_path_token: &str,
+        signature_header: Option<&str>,
+        body: &[u8],
+        provider_event_id: Option<String>,
+        request_now_ms: u64,
+        signature_tolerance_ms: u64,
+    ) -> Result<VerifiedAutomationWebhookRequest, AutomationWebhookVerificationError> {
+        self.verify_automation_webhook_request_with_headers(
+            public_path_token,
+            AutomationWebhookSignatureHeaders::tandem(signature_header),
+            body,
+            provider_event_id,
+            request_now_ms,
+            signature_tolerance_ms,
+        )
+        .await
+    }
+
+    pub(crate) async fn verify_automation_webhook_request_with_headers(
+        &self,
+        public_path_token: &str,
+        signature_headers: AutomationWebhookSignatureHeaders,
+        body: &[u8],
+        provider_event_id: Option<String>,
+        request_now_ms: u64,
+        signature_tolerance_ms: u64,
+    ) -> Result<VerifiedAutomationWebhookRequest, AutomationWebhookVerificationError> {
+        let trigger = self
+            .automation_webhook_triggers
+            .read()
+            .await
+            .values()
+            .find(|trigger| trigger.public_path_token == public_path_token)
+            .cloned()
+            .ok_or(AutomationWebhookVerificationError::UnknownTrigger)?;
+        if !trigger.enabled {
+            return Err(AutomationWebhookVerificationError::DisabledTrigger);
+        }
+        if matches!(
+            trigger.signature_scheme,
+            AutomationWebhookSignatureScheme::UnsignedDevMode
+        ) && !self.unsigned_dev_webhooks_allowed()
+        {
+            return Err(AutomationWebhookVerificationError::UnsignedDevModeDisabled);
+        }
+        let material = self
+            .automation_webhook_secret_material
+            .read()
+            .await
+            .get(&secret_material_key(&trigger.secret.secret_ref))
+            .cloned()
+            .ok_or(AutomationWebhookVerificationError::MissingSecretMaterial)?;
+        if !tenant_context_matches(&material.tenant_context, &trigger.tenant_context)
+            || material.trigger_id != trigger.trigger_id
+        {
+            return Err(AutomationWebhookVerificationError::MissingSecretMaterial);
+        }
+
+        let verification =
+            verify_automation_webhook_signature(AutomationWebhookSignatureVerificationContext {
+                provider: &trigger.provider,
+                scheme: &trigger.signature_scheme,
+                headers: &signature_headers,
+                secret: Some(&material.secret),
+                body,
+                request_now_ms,
+                signature_tolerance_ms,
+            })?;
+
+        Ok(VerifiedAutomationWebhookRequest {
+            trigger,
+            provider_event_id,
+            body_digest: automation_webhook_body_digest(body),
+            received_at_ms: request_now_ms,
+            wait_bookkeeping_at_ms: None,
+            verification,
+        })
+    }
+}
+
 impl AutomationWebhookVerificationDecision {
+    pub(crate) fn from_persisted(
+        provider: impl Into<String>,
+        scheme: AutomationWebhookSignatureScheme,
+        reason_code: impl Into<String>,
+    ) -> Self {
+        let provider = canonical_provider(&provider.into());
+        let verifier = automation_webhook_signature_verifier_for(&provider, &scheme);
+        Self {
+            provider,
+            scheme,
+            verifier_id: verifier.verifier_id(),
+            reason_code: reason_code.into(),
+        }
+    }
+
     pub(crate) fn rejected_for_trigger(
         trigger: &AutomationWebhookTriggerRecord,
         reason_code: impl Into<String>,

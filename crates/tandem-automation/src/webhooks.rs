@@ -321,6 +321,14 @@ pub struct AutomationWebhookRawEventRecord {
     pub headers_redacted: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_scheme: Option<AutomationWebhookSignatureScheme>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_reason_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback_loop_candidate: Option<Value>,
     pub payload_ref: String,
     pub payload_bytes: u64,
     pub status: AutomationWebhookDeliveryStatus,

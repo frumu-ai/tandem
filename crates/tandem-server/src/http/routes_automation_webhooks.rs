@@ -8,9 +8,9 @@ use serde_json::{json, Value};
 
 use crate::app::state::{
     automation_webhook_body_digest, sanitize_automation_webhook_preview,
-    AutomationWebhookFeedbackLoopCandidate, AutomationWebhookQueueResult,
-    AutomationWebhookRawEventCreateInput, AutomationWebhookSignatureHeaders,
-    AutomationWebhookVerificationDecision, AutomationWebhookVerificationError,
+    AutomationWebhookFeedbackLoopCandidate, AutomationWebhookRawEventCreateInput,
+    AutomationWebhookSignatureHeaders, AutomationWebhookVerificationDecision,
+    AutomationWebhookVerificationError,
 };
 use crate::automation_v2::types::{
     automation_webhook_provider_event_id_headers, AutomationWebhookSignatureScheme,
@@ -92,28 +92,30 @@ async fn automation_webhook_intake(
             return verification_error_response(&error);
         }
     };
-    let raw_event = match record_raw_event_for_trigger(
-        &state,
-        &verified.trigger,
-        verified.provider_event_id.clone(),
-        verified.body_digest.clone(),
-        &headers,
-        body.as_ref(),
-        verified.received_at_ms,
-    )
-    .await
-    {
-        Ok(raw_event) => raw_event,
-        Err(error) => {
-            tracing::warn!(error = %error, "failed to persist automation webhook raw event");
-            return webhook_public_response(StatusCode::INTERNAL_SERVER_ERROR, "rejected");
-        }
-    };
     let raw_event_tenant = verified.trigger.tenant_context.clone();
 
     let payload = match serde_json::from_slice::<Value>(body.as_ref()) {
         Ok(payload) => payload,
         Err(_) => {
+            let raw_event = match record_raw_event_for_trigger(
+                &state,
+                &verified.trigger,
+                verified.provider_event_id.clone(),
+                verified.body_digest.clone(),
+                Some(&verified.verification),
+                None,
+                &headers,
+                body.as_ref(),
+                verified.received_at_ms,
+            )
+            .await
+            {
+                Ok(raw_event) => raw_event,
+                Err(error) => {
+                    tracing::warn!(error = %error, "failed to persist automation webhook raw event");
+                    return webhook_public_response(StatusCode::INTERNAL_SERVER_ERROR, "rejected");
+                }
+            };
             if let Ok(delivery) = state
                 .record_automation_webhook_rejection(
                     &verified.trigger,
@@ -133,43 +135,25 @@ async fn automation_webhook_intake(
             return webhook_public_response(StatusCode::BAD_REQUEST, "rejected");
         }
     };
-    let sanitized_preview = sanitize_automation_webhook_preview(&payload);
     let feedback_loop_candidate =
         automation_webhook_feedback_loop_candidate(&headers, &payload, &verified.verification);
-
-    match state
-        .queue_automation_v2_run_from_webhook_delivery_with_feedback_loop(
-            verified,
-            sanitized_preview,
-            feedback_loop_candidate,
-        )
-        .await
+    if let Err(error) = record_raw_event_for_trigger(
+        &state,
+        &verified.trigger,
+        verified.provider_event_id.clone(),
+        verified.body_digest.clone(),
+        Some(&verified.verification),
+        feedback_loop_candidate.as_ref(),
+        &headers,
+        body.as_ref(),
+        verified.received_at_ms,
+    )
+    .await
     {
-        Ok(AutomationWebhookQueueResult::Accepted { delivery, .. }) => {
-            update_raw_event_from_delivery(&state, &raw_event_tenant, &raw_event, &delivery).await;
-            webhook_public_response(StatusCode::ACCEPTED, "accepted")
-        }
-        Ok(AutomationWebhookQueueResult::Duplicate { delivery }) => {
-            update_raw_event_from_delivery(&state, &raw_event_tenant, &raw_event, &delivery).await;
-            webhook_public_response(StatusCode::ACCEPTED, "accepted")
-        }
-        Ok(AutomationWebhookQueueResult::Woken { delivery, .. }) => {
-            update_raw_event_from_delivery(&state, &raw_event_tenant, &raw_event, &delivery).await;
-            webhook_public_response(StatusCode::ACCEPTED, "accepted")
-        }
-        Ok(AutomationWebhookQueueResult::Suppressed { delivery }) => {
-            update_raw_event_from_delivery(&state, &raw_event_tenant, &raw_event, &delivery).await;
-            webhook_public_response(StatusCode::ACCEPTED, "accepted")
-        }
-        Ok(AutomationWebhookQueueResult::Rejected { delivery, .. }) => {
-            update_raw_event_from_delivery(&state, &raw_event_tenant, &raw_event, &delivery).await;
-            webhook_public_response(StatusCode::CONFLICT, "rejected")
-        }
-        Err(error) => {
-            tracing::warn!(error = %error, "automation webhook intake failed");
-            webhook_public_response(StatusCode::INTERNAL_SERVER_ERROR, "rejected")
-        }
+        tracing::warn!(error = %error, "failed to persist automation webhook raw event");
+        return webhook_public_response(StatusCode::INTERNAL_SERVER_ERROR, "rejected");
     }
+    webhook_public_response(StatusCode::ACCEPTED, "accepted")
 }
 
 fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -367,6 +351,8 @@ async fn record_raw_event_for_trigger(
     trigger: &AutomationWebhookTriggerRecord,
     provider_event_id: Option<String>,
     body_digest: String,
+    verification: Option<&AutomationWebhookVerificationDecision>,
+    feedback_loop_candidate: Option<&AutomationWebhookFeedbackLoopCandidate>,
     headers: &HeaderMap,
     body: &[u8],
     received_at_ms: u64,
@@ -376,6 +362,8 @@ async fn record_raw_event_for_trigger(
             trigger: trigger.clone(),
             provider_event_id,
             body_digest,
+            verification: verification.cloned(),
+            feedback_loop_candidate: feedback_loop_candidate.cloned(),
             headers_digest: automation_webhook_headers_digest(headers),
             headers_redacted: redacted_automation_webhook_headers(headers),
             content_type: header_str(headers, header::CONTENT_TYPE.as_str()).map(str::to_string),
@@ -429,12 +417,18 @@ async fn record_verification_rejection(
     else {
         return;
     };
+    let verification = Some(AutomationWebhookVerificationDecision::rejected_for_trigger(
+        &trigger,
+        reason_code,
+    ));
     let raw_event = if verification_error_allows_raw_payload_persistence(error) {
         match record_raw_event_for_trigger(
             state,
             &trigger,
             provider_event_id.clone(),
             body_digest.clone(),
+            verification.as_ref(),
+            None,
             headers,
             body,
             received_at_ms,
@@ -454,10 +448,6 @@ async fn record_verification_rejection(
     } else {
         None
     };
-    let verification = Some(AutomationWebhookVerificationDecision::rejected_for_trigger(
-        &trigger,
-        reason_code,
-    ));
     if let Ok(delivery) = state
         .record_automation_webhook_rejection(
             &trigger,
