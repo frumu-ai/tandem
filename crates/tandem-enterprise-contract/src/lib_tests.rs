@@ -1467,4 +1467,30 @@ mod tests {
             DataClass::SourceCode,
         ]))
     }
+
+    // TAN-568: a resource-scoped rule must match its target regardless of the
+    // case/whitespace of the scope IDs, so a Deny cannot silently fail open.
+    #[test]
+    fn resource_ref_applies_to_is_case_insensitive() {
+        let rule = ResourceRef::new("Org-A", "WS-A", ResourceKind::Repository, "Ledger");
+        let target = ResourceRef::new("org-a", "ws-a", ResourceKind::Repository, "ledger");
+        assert!(
+            rule.applies_to(&target),
+            "case-mismatched resource scope must still match"
+        );
+
+        let other = ResourceRef::new("org-a", "ws-a", ResourceKind::Repository, "invoices");
+        assert!(
+            !rule.applies_to(&other),
+            "a genuinely different resource must not match"
+        );
+    }
+
+    #[test]
+    fn resource_ref_applies_to_project_scope_is_case_insensitive() {
+        let rule = ResourceRef::new("org-a", "ws-a", ResourceKind::Project, "Q3-Launch");
+        let mut target = ResourceRef::new("org-a", "ws-a", ResourceKind::Project, "ignored");
+        target.project_id = Some("q3-launch".to_string());
+        assert!(rule.applies_to(&target));
+    }
 }

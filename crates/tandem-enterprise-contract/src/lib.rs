@@ -215,6 +215,21 @@ pub fn enterprise_scope_ids_match(left: &str, right: &str) -> bool {
     canonical_enterprise_scope_id(left) == canonical_enterprise_scope_id(right)
 }
 
+/// A `"*"` scope id means "any" and is compared literally (not canonicalized).
+fn is_scope_wildcard(value: &str) -> bool {
+    value.trim() == "*"
+}
+
+/// Canonicalized optional-scope-id equality: `None`/`None` matches; a present
+/// value only matches another present, case/whitespace-insensitively equal one.
+fn optional_scope_ids_match(left: Option<&str>, right: Option<&str>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => enterprise_scope_ids_match(left, right),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceKind {
@@ -332,33 +347,47 @@ impl ResourceRef {
     }
 
     pub fn applies_to(&self, target: &ResourceRef) -> bool {
-        if self.organization_id != target.organization_id {
+        // TAN-568: compare scope IDs case/whitespace-insensitively via
+        // `enterprise_scope_ids_match`, matching how tenant/org-unit/workflow
+        // IDs are compared elsewhere. These previously used raw `==`, so a
+        // resource-scoped Deny stored as `"Ledger"` silently failed to match a
+        // runtime `"ledger"` and the resolver fell through to Allow.
+        if !enterprise_scope_ids_match(&self.organization_id, &target.organization_id) {
             return false;
         }
-        if self.workspace_id != "*" && self.workspace_id != target.workspace_id {
+        if !is_scope_wildcard(&self.workspace_id)
+            && !enterprise_scope_ids_match(&self.workspace_id, &target.workspace_id)
+        {
             return false;
         }
 
         match self.resource_kind {
-            ResourceKind::Organization => self.resource_id == target.organization_id,
+            ResourceKind::Organization => {
+                enterprise_scope_ids_match(&self.resource_id, &target.organization_id)
+            }
             ResourceKind::Workspace | ResourceKind::Department => {
-                self.resource_id == target.workspace_id
-                    || self.resource_id == "*"
-                    || self.resource_id == target.resource_id
+                enterprise_scope_ids_match(&self.resource_id, &target.workspace_id)
+                    || is_scope_wildcard(&self.resource_id)
+                    || enterprise_scope_ids_match(&self.resource_id, &target.resource_id)
             }
             ResourceKind::Project => {
-                target.project_id.as_deref() == Some(self.resource_id.as_str())
-                    || target.resource_id == self.resource_id
+                target.project_id.as_deref().is_some_and(|project_id| {
+                    enterprise_scope_ids_match(project_id, &self.resource_id)
+                }) || enterprise_scope_ids_match(&target.resource_id, &self.resource_id)
             }
             _ => self.matches_resource_or_path(target),
         }
     }
 
     fn matches_resource_or_path(&self, target: &ResourceRef) -> bool {
-        if self.project_id.is_some() && self.project_id != target.project_id {
+        if self.project_id.is_some()
+            && !optional_scope_ids_match(self.project_id.as_deref(), target.project_id.as_deref())
+        {
             return false;
         }
-        if self.resource_kind == target.resource_kind && self.resource_id == target.resource_id {
+        if self.resource_kind == target.resource_kind
+            && enterprise_scope_ids_match(&self.resource_id, &target.resource_id)
+        {
             return self.path_prefix_applies_to(target);
         }
         self.path_prefix
