@@ -94,20 +94,41 @@ impl AppState {
             return AutomationWebhookNotionIntake::Ignored;
         }
 
-        // Re-extract inside the storing call under the persistence lock.
-        if let Err(error) = self
+        // Re-extract and apply the token inside the storing call under the
+        // persistence lock. `applied == false` means another concurrent
+        // verification POST captured the token first (first-token-wins).
+        let applied = match self
             .store_notion_verification_token(&trigger, body, received_at_ms)
             .await
         {
-            tracing::warn!(
-                target: "tandem_server::state",
-                error = ?error,
-                trigger_id = %trigger.trigger_id,
-                "failed to store notion verification token"
-            );
-            // Fall through to the normal path, which will reject the unsigned
-            // request rather than silently accepting it.
-            return AutomationWebhookNotionIntake::NotApplicable;
+            Ok(applied) => applied,
+            Err(error) => {
+                tracing::warn!(
+                    target: "tandem_server::state",
+                    error = ?error,
+                    trigger_id = %trigger.trigger_id,
+                    "failed to store notion verification token"
+                );
+                // Fall through to the normal path, which will reject the unsigned
+                // request rather than silently accepting it.
+                return AutomationWebhookNotionIntake::NotApplicable;
+            }
+        };
+
+        if !applied {
+            let _ = self
+                .record_automation_webhook_rejection(
+                    &trigger,
+                    None,
+                    body_digest,
+                    AutomationWebhookDeliveryStatus::Suppressed,
+                    "notion_verification_token_ignored",
+                    received_at_ms,
+                    json!({ "notion_verification": "ignored", "reason": "already_received" }),
+                    None,
+                )
+                .await;
+            return AutomationWebhookNotionIntake::Ignored;
         }
 
         let _ = self
@@ -126,25 +147,49 @@ impl AppState {
     }
 
     /// Overwrite the trigger's placeholder secret material with Notion's
-    /// verification token and advance the trigger to `token_received`.
+    /// verification token and advance the trigger to `token_received`. Returns
+    /// `false` without mutating anything when the trigger is no longer awaiting a
+    /// token (another verification POST won the race), enforcing first-token-wins.
     async fn store_notion_verification_token(
         &self,
         trigger: &AutomationWebhookTriggerRecord,
         body: &[u8],
         received_at_ms: u64,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<bool> {
         let token = extract_notion_verification_token(body)
             .context("missing verification_token in notion verification body")?;
         let _guard = self.automation_webhook_persistence.lock().await;
-        let key = secret_material_key(&trigger.secret.secret_ref);
+
+        // Re-read the current status while holding the lock — the pre-lock
+        // `AwaitingToken` check was made on a stale clone.
+        let (secret_ref, tenant_context) = {
+            let triggers = self.automation_webhook_triggers.read().await;
+            let stored = triggers
+                .get(&trigger.trigger_id)
+                .context("notion trigger not found")?;
+            let status = stored
+                .notion_verification
+                .as_ref()
+                .map(|verification| verification.status)
+                .unwrap_or_default();
+            if status != AutomationWebhookNotionVerificationStatus::AwaitingToken {
+                return Ok(false);
+            }
+            (
+                stored.secret.secret_ref.clone(),
+                stored.tenant_context.clone(),
+            )
+        };
+
+        let key = secret_material_key(&secret_ref);
         {
             let mut materials = self.automation_webhook_secret_material.write().await;
             let material = materials
                 .get_mut(&key)
                 .context("notion trigger secret material not found")?;
             if material.trigger_id != trigger.trigger_id
-                || material.tenant_context.org_id != trigger.tenant_context.org_id
-                || material.tenant_context.workspace_id != trigger.tenant_context.workspace_id
+                || material.tenant_context.org_id != tenant_context.org_id
+                || material.tenant_context.workspace_id != tenant_context.workspace_id
             {
                 anyhow::bail!("notion verification token tenant/trigger binding mismatch");
             }
@@ -153,7 +198,7 @@ impl AppState {
         self.persist_automation_webhook_secret_material_locked()
             .await?;
 
-        let digest = secret_digest(&token, &trigger.tenant_context, &trigger.trigger_id);
+        let digest = secret_digest(&token, &tenant_context, &trigger.trigger_id);
         {
             let mut triggers = self.automation_webhook_triggers.write().await;
             let stored = triggers
@@ -170,7 +215,7 @@ impl AppState {
             stored.updated_at_ms = received_at_ms;
         }
         self.persist_automation_webhook_triggers_locked().await?;
-        Ok(())
+        Ok(true)
     }
 
     /// One-time reveal of the stored Notion verification token to an authorized

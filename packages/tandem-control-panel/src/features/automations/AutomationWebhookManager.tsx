@@ -616,10 +616,12 @@ export function AutomationWebhookManager({
                   <i data-lucide="save"></i>
                   {updateMutation.isPending ? "Saving..." : "Save trigger"}
                 </button>
-                <button type="button" className="tcp-btn h-9 px-3 text-sm" disabled={rotateMutation.isPending || !effectiveTriggerId} onClick={() => rotateMutation.mutate()}>
-                  <i data-lucide="rotate-cw"></i>
-                  {rotateMutation.isPending ? "Rotating..." : "Rotate secret"}
-                </button>
+                {notionVerification(selectedTrigger) ? null : (
+                  <button type="button" className="tcp-btn h-9 px-3 text-sm" disabled={rotateMutation.isPending || !effectiveTriggerId} onClick={() => rotateMutation.mutate()}>
+                    <i data-lucide="rotate-cw"></i>
+                    {rotateMutation.isPending ? "Rotating..." : "Rotate secret"}
+                  </button>
+                )}
                 <button type="button" className="tcp-btn h-9 px-3 text-sm" disabled={disableMutation.isPending || !effectiveTriggerId || selectedTrigger.enabled === false} onClick={() => disableMutation.mutate()}>
                   <i data-lucide="pause-circle"></i>
                   {disableMutation.isPending ? "Disabling..." : "Disable"}

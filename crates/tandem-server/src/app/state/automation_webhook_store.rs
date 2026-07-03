@@ -687,14 +687,12 @@ impl AppState {
         let mut requested_scheme = self.validate_webhook_signature_scheme_allowed(
             input.signature_scheme.clone().unwrap_or_default(),
         )?;
-        // The Notion provider is bound to its provider-owned verification-token
-        // signature scheme: the signing secret is Notion's token, not a
-        // Tandem-generated secret, so force the scheme for consistency.
-        if provider == "notion" {
+        // Notion's signing secret is its provider-owned verification token, so
+        // force the scheme and start the verification lifecycle for that provider.
+        let is_notion = provider == "notion";
+        if is_notion {
             requested_scheme = AutomationWebhookSignatureScheme::NotionHmacSha256;
         }
-        let notion_verification =
-            (provider == "notion").then(AutomationWebhookNotionVerification::default);
         let _guard = self.automation_webhook_persistence.lock().await;
         let now = now_ms();
         let trigger_id = format!("whtr_{}", Uuid::new_v4().simple());
@@ -742,7 +740,7 @@ impl AppState {
             last_received_at_ms: None,
             last_accepted_at_ms: None,
             last_rejected_at_ms: None,
-            notion_verification,
+            notion_verification: is_notion.then(AutomationWebhookNotionVerification::default),
         };
         let material = AutomationWebhookSecretMaterialRecord {
             secret_ref: secret_ref.clone(),
@@ -821,6 +819,12 @@ impl AppState {
             }
             trigger
         };
+        // Notion's provider-owned token must not rotate to a Tandem secret.
+        if current_trigger.is_provider_owned_secret() {
+            anyhow::bail!(
+                "notion webhook triggers use a provider-owned verification token and cannot rotate a Tandem secret"
+            );
+        }
         let old_secret_ref = current_trigger.secret.secret_ref.clone();
         let secret_version = current_trigger
             .secret
