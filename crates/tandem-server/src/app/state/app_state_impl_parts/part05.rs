@@ -266,6 +266,28 @@ fn approval_wait_terminal_status_allows_later_settlement(
     )
 }
 
+fn approval_wait_should_preserve_existing_reminder_schedule(
+    existing: &crate::stateful_runtime::StatefulWaitRecord,
+    next: &crate::stateful_runtime::StatefulWaitRecord,
+) -> bool {
+    if existing.status != crate::stateful_runtime::StatefulWaitStatus::Waiting {
+        return false;
+    }
+    let (Some(existing_policy), Some(next_policy)) = (
+        existing.timeout_policy.as_ref(),
+        next.timeout_policy.as_ref(),
+    ) else {
+        return false;
+    };
+    existing_policy.on_timeout == crate::stateful_runtime::StatefulWaitTimeoutAction::Remind
+        && next_policy.on_timeout == crate::stateful_runtime::StatefulWaitTimeoutAction::Remind
+        && existing_policy.remind_every_ms == next_policy.remind_every_ms
+        && existing_policy
+            .remind_every_ms
+            .is_some_and(|remind_every_ms| remind_every_ms > 0)
+        && existing_policy.timeout_at_ms > next_policy.timeout_at_ms
+}
+
 #[cfg(test)]
 mod stale_auto_resume_window_tests {
     use super::{
@@ -1094,7 +1116,7 @@ impl AppState {
         let paths = crate::stateful_runtime::StatefulRuntimeStoragePaths::from_runtime_events_path(
             &self.runtime_events_path,
         );
-        let wait = automation_v2_approval_wait_record(run, gate);
+        let mut wait = automation_v2_approval_wait_record(run, gate);
         let existing = crate::stateful_runtime::list_stateful_waits(
             &paths.waits_path,
             &run.tenant_context,
@@ -1117,6 +1139,13 @@ impl AppState {
                 && existing.claim_is_active_at(now_ms())
             {
                 return Ok(());
+            }
+            if same_gate_instance
+                && approval_wait_should_preserve_existing_reminder_schedule(&existing, &wait)
+            {
+                wait.timeout_policy = existing.timeout_policy.clone();
+                wait.event_seq = existing.event_seq;
+                wait.wake_idempotency_key = existing.wake_idempotency_key.clone();
             }
         }
 
