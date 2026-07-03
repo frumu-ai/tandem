@@ -8,6 +8,13 @@ use crate::automation_v2::types::{
     AutomationWebhookDedupeResult, AutomationWebhookDeliveryStatus,
     AutomationWebhookFeedbackLoopOutcome, AutomationWebhookSignatureScheme,
 };
+use crate::stateful_runtime::{
+    list_stateful_waits, phase_state_from_status, stateful_webhook_wait_metadata,
+    upsert_stateful_wait, write_stateful_run_snapshot, StatefulRunSnapshotRecord,
+    StatefulRuntimeScope, StatefulRuntimeStoragePaths, StatefulWaitKind, StatefulWaitQuery,
+    StatefulWaitRecord, StatefulWaitStatus, StatefulWebhookWaitMatch, StatefulWorkflowRunKind,
+    StatefulWorkflowRunStatus,
+};
 use crate::ExternalActionRecord;
 use tandem_types::{DataClass, TenantContext};
 
@@ -854,7 +861,7 @@ async fn public_automation_webhook_suppresses_tandem_origin_feedback_loop() {
                     "x-tandem-webhook-signature",
                     automation_webhook_signature_header(&created.secret, now, &body),
                 )
-                .body(Body::from(body))
+                .body(Body::from(body.clone()))
                 .expect("request"),
         )
         .await
@@ -900,6 +907,121 @@ async fn public_automation_webhook_suppresses_tandem_origin_feedback_loop() {
             .map(|correlation| &correlation.outcome),
         Some(&crate::AutomationWebhookCorrelationOutcome::Suppressed)
     );
+
+    let paths = StatefulRuntimeStoragePaths::from_runtime_events_path(&state.runtime_events_path);
+    let wait_run_id = "run-suppressed-feedback-wait";
+    let wait_now = now + 1;
+    let phase_state = phase_state_from_status(
+        wait_run_id,
+        &StatefulWorkflowRunStatus::Running,
+        wait_now,
+        Some("phase-feedback"),
+    );
+    write_stateful_run_snapshot(
+        &paths.snapshots_root,
+        &StatefulRunSnapshotRecord {
+            schema_version: 1,
+            snapshot_id: "snapshot-suppressed-feedback-wait".to_string(),
+            run_id: wait_run_id.to_string(),
+            seq: 7,
+            created_at_ms: wait_now,
+            scope: StatefulRuntimeScope::from_tenant_context(tenant_context.clone()),
+            status: StatefulWorkflowRunStatus::Running,
+            phase: phase_state.phase,
+            phase_history: phase_state.phase_history,
+            allowed_next_phases: phase_state.allowed_next_phases,
+            phase_id: Some("phase-feedback".to_string()),
+            source_record_kind: Some(StatefulWorkflowRunKind::AutomationV2),
+            checkpoint: None,
+            payload_digest: None,
+            workflow_definition_version: None,
+            workflow_definition_snapshot_hash: None,
+            metadata: None,
+        },
+    )
+    .await
+    .expect("write feedback wait snapshot");
+    upsert_stateful_wait(
+        &paths.waits_path,
+        StatefulWaitRecord {
+            schema_version: 1,
+            wait_id: "wait-suppressed-feedback".to_string(),
+            run_id: wait_run_id.to_string(),
+            wait_kind: StatefulWaitKind::Webhook,
+            status: StatefulWaitStatus::Waiting,
+            scope: StatefulRuntimeScope::from_tenant_context(tenant_context.clone()),
+            phase_id: Some("phase-feedback".to_string()),
+            reason: Some("feedback duplicate should not wake".to_string()),
+            created_at_ms: wait_now,
+            updated_at_ms: wait_now,
+            wake_at_ms: None,
+            timeout_policy: None,
+            event_seq: None,
+            wake_idempotency_key: None,
+            claimed_by: None,
+            claimed_at_ms: None,
+            claim_expires_at_ms: None,
+            completed_at_ms: None,
+            metadata: Some(stateful_webhook_wait_metadata(
+                StatefulWebhookWaitMatch {
+                    trigger_id: Some(created.trigger.trigger_id.clone()),
+                    provider: Some(created.trigger.provider.clone()),
+                    provider_event_id: Some("evt-feedback-suppressed".to_string()),
+                    ..StatefulWebhookWaitMatch::default()
+                },
+                None,
+            )),
+        },
+    )
+    .await
+    .expect("insert suppressed feedback wait");
+    let suppressed_duplicate_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/webhooks/automations/{}",
+                    created.trigger.public_path_token
+                ))
+                .header("content-type", "application/json")
+                .header("x-tandem-webhook-event-id", "evt-feedback-suppressed")
+                .header(
+                    "x-tandem-webhook-signature",
+                    automation_webhook_signature_header(&created.secret, now + 1, &body),
+                )
+                .body(Body::from(body.clone()))
+                .expect("request"),
+        )
+        .await
+        .expect("suppressed duplicate response");
+    assert_eq!(suppressed_duplicate_resp.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
+    let waits = list_stateful_waits(
+        &paths.waits_path,
+        &tenant_context,
+        StatefulWaitQuery {
+            run_id: Some(wait_run_id),
+            wait_kind: Some(StatefulWaitKind::Webhook),
+            ..StatefulWaitQuery::default()
+        },
+    );
+    assert_eq!(waits.len(), 1);
+    assert_eq!(waits[0].status, StatefulWaitStatus::Waiting);
+    let deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+        )
+        .await;
+    let suppressed_duplicate = deliveries
+        .iter()
+        .find(|delivery| {
+            delivery.status == AutomationWebhookDeliveryStatus::Duplicate
+                && delivery.provider_event_id.as_deref() == Some("evt-feedback-suppressed")
+        })
+        .expect("suppressed duplicate delivery");
+    assert!(suppressed_duplicate.woken_wait_id.is_none());
 
     let body_only_allowed_body = json!({
             "tandem_origin": {

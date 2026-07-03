@@ -1585,48 +1585,60 @@ impl AppState {
                             duplicate_of_run_id = original.queued_run_id;
                         }
                     }
-                    if let Some(stateful_wait_result) = self
-                        .wake_matching_stateful_webhook_wait_locked(
-                            &trigger,
-                            verified.provider_event_id.clone(),
-                            verified.body_digest.clone(),
-                            verified.received_at_ms,
-                            sanitized_preview.clone(),
-                            verification.clone(),
-                            Some(AutomationWebhookReservedClaim {
-                                claim: primary_claim.clone(),
-                                record: primary_record.clone(),
-                            }),
-                            feedback_loop.clone(),
-                        )
-                        .await?
-                    {
-                        match stateful_wait_result {
-                            AutomationWebhookStatefulWaitResult::Woken { delivery, wait } => {
-                                self.complete_automation_webhook_idempotency_records(
-                                    &reserved_records,
-                                    &delivery,
-                                    "woken",
-                                    received_at_ms,
-                                )
-                                .await?;
-                                return Ok(AutomationWebhookQueueResult::Woken { delivery, wait });
-                            }
-                            AutomationWebhookStatefulWaitResult::Rejected {
-                                delivery,
-                                reason_code,
-                            } => {
-                                self.complete_automation_webhook_idempotency_records(
-                                    &reserved_records,
-                                    &delivery,
-                                    "rejected",
-                                    received_at_ms,
-                                )
-                                .await?;
-                                return Ok(AutomationWebhookQueueResult::Rejected {
+                    let duplicate_suppressed_feedback =
+                        feedback_loop.as_ref().is_some_and(|decision| {
+                            matches!(
+                                decision.outcome,
+                                AutomationWebhookFeedbackLoopOutcome::Suppressed
+                            )
+                        });
+                    if !duplicate_suppressed_feedback {
+                        if let Some(stateful_wait_result) = self
+                            .wake_matching_stateful_webhook_wait_locked(
+                                &trigger,
+                                verified.provider_event_id.clone(),
+                                verified.body_digest.clone(),
+                                verified.received_at_ms,
+                                sanitized_preview.clone(),
+                                verification.clone(),
+                                Some(AutomationWebhookReservedClaim {
+                                    claim: primary_claim.clone(),
+                                    record: primary_record.clone(),
+                                }),
+                                feedback_loop.clone(),
+                            )
+                            .await?
+                        {
+                            match stateful_wait_result {
+                                AutomationWebhookStatefulWaitResult::Woken { delivery, wait } => {
+                                    self.complete_automation_webhook_idempotency_records(
+                                        &reserved_records,
+                                        &delivery,
+                                        "woken",
+                                        received_at_ms,
+                                    )
+                                    .await?;
+                                    return Ok(AutomationWebhookQueueResult::Woken {
+                                        delivery,
+                                        wait,
+                                    });
+                                }
+                                AutomationWebhookStatefulWaitResult::Rejected {
                                     delivery,
                                     reason_code,
-                                });
+                                } => {
+                                    self.complete_automation_webhook_idempotency_records(
+                                        &reserved_records,
+                                        &delivery,
+                                        "rejected",
+                                        received_at_ms,
+                                    )
+                                    .await?;
+                                    return Ok(AutomationWebhookQueueResult::Rejected {
+                                        delivery,
+                                        reason_code,
+                                    });
+                                }
                             }
                         }
                     }
