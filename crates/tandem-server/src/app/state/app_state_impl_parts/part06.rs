@@ -495,9 +495,46 @@ impl AppState {
         }
         validate_incident_monitor_monitored_projects(self, &mut config).await?;
         config.updated_at_ms = now_ms();
+        let previous = self.incident_monitor_config.read().await.clone();
         *self.incident_monitor_config.write().await = config.clone();
         self.persist_incident_monitor_config().await?;
+        self.note_incident_monitor_config_reassessment_triggers(&previous, &config)
+            .await;
         Ok(config)
+    }
+
+    /// TAN-490: schedule a change-triggered reassessment when a governance-
+    /// relevant config section changes. Each affected tenant deployment scope is
+    /// marked due; the reassessment scheduler picks it up on its next tick.
+    async fn note_incident_monitor_config_reassessment_triggers(
+        &self,
+        previous: &IncidentMonitorConfig,
+        next: &IncidentMonitorConfig,
+    ) {
+        if !next.reassessment.change_triggers_enabled {
+            return;
+        }
+        let triggers = crate::incident_monitor::reassessment::config_change_reassessment_triggers(
+            previous, next,
+        );
+        if triggers.is_empty() {
+            return;
+        }
+        let now = now_ms();
+        for tenant_context in
+            crate::incident_monitor_reassessment::incident_monitor_config_reassessment_tenants(next)
+        {
+            for trigger in &triggers {
+                crate::incident_monitor_reassessment::note_incident_monitor_reassessment_trigger(
+                    self,
+                    &tenant_context,
+                    *trigger,
+                    Some("incident monitor config change".to_string()),
+                    now,
+                )
+                .await;
+            }
+        }
     }
 
     pub async fn load_incident_monitor_log_watcher_state(&self) -> anyhow::Result<()> {
@@ -754,6 +791,55 @@ impl AppState {
             serde_json::to_string_pretty(&*guard)?
         };
         write_state_file_atomically(&self.incident_monitor_posts_path, payload).await
+    }
+
+    /// TAN-490: the reassessment run-history file lives alongside the other
+    /// Incident Monitor state (derived from the posts path to avoid a dedicated
+    /// AppState path field).
+    fn incident_monitor_reassessments_path(&self) -> std::path::PathBuf {
+        self.incident_monitor_posts_path
+            .with_file_name("reassessments.json")
+    }
+
+    /// TAN-490: load persisted continuous-reassessment run history.
+    pub async fn load_incident_monitor_reassessments(&self) -> anyhow::Result<()> {
+        let reassessments_path = self.incident_monitor_reassessments_path();
+        let Some((path, is_legacy)) =
+            resolve_incident_monitor_state_read_path(&reassessments_path, "reassessments")
+        else {
+            return Ok(());
+        };
+        let raw = fs::read_to_string(&path).await?;
+        let (parsed, migrate) = match serde_json::from_str::<
+            std::collections::HashMap<String, ReassessmentRecord>,
+        >(&raw)
+        {
+            Ok(parsed) => (parsed, is_legacy),
+            Err(error) => {
+                quarantine_corrupt_incident_monitor_state(&path, "reassessments", &error).await;
+                (std::collections::HashMap::new(), false)
+            }
+        };
+        *self.incident_monitor_reassessments.write().await = parsed;
+        if migrate {
+            self.migrate_legacy_incident_monitor_state(&path, "reassessments", || async {
+                self.persist_incident_monitor_reassessments().await
+            })
+            .await;
+        }
+        Ok(())
+    }
+
+    pub async fn persist_incident_monitor_reassessments(&self) -> anyhow::Result<()> {
+        let reassessments_path = self.incident_monitor_reassessments_path();
+        if let Some(parent) = reassessments_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        let payload = {
+            let guard = self.incident_monitor_reassessments.read().await;
+            serde_json::to_string_pretty(&*guard)?
+        };
+        write_state_file_atomically(&reassessments_path, payload).await
     }
 
     /// TAN-556: enforce `safety_defaults.retention_days` by pruning receipts,

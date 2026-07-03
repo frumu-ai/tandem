@@ -65,7 +65,9 @@ use crate::automation_v2::types::*;
 use crate::capability_resolver::CapabilityResolver;
 use crate::config::{self, channels::ChannelsConfigFile, webui::WebUiConfig};
 use crate::goal_capability_learning::GoalCapabilityLearningDecisionStore;
+use crate::incident_monitor::reassessment::ReassessmentRecord;
 use crate::incident_monitor::types::*;
+use crate::incident_monitor_reassessment::IncidentMonitorReassessmentPending;
 use crate::memory::types::{GovernedMemoryRecord, MemoryAuditEvent};
 use crate::pack_manager::PackManager;
 use crate::preset_registry::PresetRegistry;
@@ -218,6 +220,13 @@ pub struct AppState {
         Arc<RwLock<std::collections::HashMap<String, IncidentMonitorIncidentRecord>>>,
     pub incident_monitor_posts:
         Arc<RwLock<std::collections::HashMap<String, IncidentMonitorPostRecord>>>,
+    /// Versioned continuous-reassessment run history, keyed by record id (TAN-490).
+    pub incident_monitor_reassessments:
+        Arc<RwLock<std::collections::HashMap<String, ReassessmentRecord>>>,
+    /// In-memory change-triggered reassessment requests awaiting a run, keyed by
+    /// scope key. Not persisted: the cadence backstops after a restart.
+    pub incident_monitor_reassessment_pending:
+        Arc<RwLock<std::collections::HashMap<String, IncidentMonitorReassessmentPending>>>,
     pub incident_monitor_log_watcher_state_path: PathBuf,
     pub incident_monitor_log_source_states:
         Arc<RwLock<std::collections::HashMap<String, IncidentMonitorLogSourceState>>>,

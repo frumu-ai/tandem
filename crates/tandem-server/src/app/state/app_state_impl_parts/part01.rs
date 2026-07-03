@@ -284,6 +284,8 @@ impl AppState {
             incident_monitor_drafts: Arc::new(RwLock::new(std::collections::HashMap::new())),
             incident_monitor_incidents: Arc::new(RwLock::new(std::collections::HashMap::new())),
             incident_monitor_posts: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            incident_monitor_reassessments: Default::default(),
+            incident_monitor_reassessment_pending: Default::default(),
             incident_monitor_log_watcher_state_path:
                 config::paths::resolve_incident_monitor_log_watcher_state_path(),
             incident_monitor_log_source_states: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -557,6 +559,7 @@ impl AppState {
         let _ = self.load_incident_monitor_drafts().await;
         let _ = self.load_incident_monitor_incidents().await;
         let _ = self.load_incident_monitor_posts().await;
+        let _ = self.load_incident_monitor_reassessments().await;
         let _ = self.load_incident_monitor_log_watcher_state().await;
         let _ = self.load_incident_monitor_intake_keys().await;
         let _ = self.load_external_actions().await;

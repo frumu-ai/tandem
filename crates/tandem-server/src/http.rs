@@ -372,6 +372,7 @@ pub async fn serve_with_route_extensions(
     let global_memory_ingestor_state = state.clone();
     let incident_monitor_state = state.clone();
     let incident_monitor_log_watcher_state = state.clone();
+    let incident_monitor_reassessment_scheduler_state = state.clone();
     let incident_monitor_recovery_sweep_state = state.clone();
     let governance_health_state = state.clone();
     let approval_outbound_state = state.clone();
@@ -446,6 +447,10 @@ pub async fn serve_with_route_extensions(
         agent_team_supervisor_state,
     ));
     let incident_monitor = tokio::spawn(crate::run_incident_monitor(incident_monitor_state));
+    let incident_monitor_reassessment_scheduler =
+        tokio::spawn(crate::run_incident_monitor_reassessment_scheduler(
+            incident_monitor_reassessment_scheduler_state,
+        ));
     let incident_monitor_log_watcher = tokio::spawn(
         crate::incident_monitor::log_watcher::run_incident_monitor_log_watcher(
             incident_monitor_log_watcher_state,
@@ -625,6 +630,7 @@ pub async fn serve_with_route_extensions(
     workflow_dispatcher.abort();
     agent_team_supervisor.abort();
     incident_monitor.abort();
+    incident_monitor_reassessment_scheduler.abort();
     incident_monitor_log_watcher.abort();
     incident_monitor_recovery_sweep.abort();
     global_memory_ingestor.abort();

@@ -192,6 +192,17 @@ async fn incident_monitor_deployment_cards_payload(
         ));
     }
 
+    // TAN-490: attach live continuous-reassessment schedule status (last
+    // completed / next due / overdue) per scope so operators can see it on the
+    // deployment cards, not just as operator-declared metadata.
+    let reassessment_schedule =
+        crate::incident_monitor_reassessment::incident_monitor_reassessment_schedule_status(
+            state,
+            &tenant_context,
+            generated_at_ms,
+        )
+        .await;
+
     let markdown_export = input.include_markdown.unwrap_or(true).then(|| {
         incident_monitor_deployment_cards_markdown(generated_at_ms, &tenant_context, &cards, &findings)
     });
@@ -240,6 +251,11 @@ async fn incident_monitor_deployment_cards_payload(
                 .filter_map(|card| card.pointer("/linked_evidence/posture_finding_refs").and_then(Value::as_array))
                 .map(Vec::len)
                 .sum::<usize>(),
+        },
+        "reassessment": {
+            "source": "incident_monitor_continuous_reassessment",
+            "overdue_scopes": reassessment_schedule.iter().filter(|status| status.overdue).count(),
+            "schedule": reassessment_schedule,
         },
         "cards": cards,
         "findings": findings,

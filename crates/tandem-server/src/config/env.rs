@@ -250,6 +250,7 @@ pub(crate) fn resolve_incident_monitor_env_config() -> IncidentMonitorConfig {
         routes: Vec::new(),
         default_destination_ids: Vec::new(),
         safety_defaults: Default::default(),
+        reassessment: Default::default(),
         updated_at_ms: 0,
     }
 }

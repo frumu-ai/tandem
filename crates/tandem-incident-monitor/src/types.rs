@@ -505,6 +505,9 @@ pub struct IncidentMonitorConfig {
     pub default_destination_ids: Vec<String>,
     #[serde(default)]
     pub safety_defaults: IncidentMonitorSafetyDefaults,
+    /// Continuous reassessment cadence + change-trigger settings (TAN-490).
+    #[serde(default)]
+    pub reassessment: crate::reassessment::IncidentMonitorReassessmentConfig,
     #[serde(default)]
     pub updated_at_ms: u64,
 }
@@ -541,6 +544,7 @@ impl Default for IncidentMonitorConfig {
             routes: Vec::new(),
             default_destination_ids: Vec::new(),
             safety_defaults: IncidentMonitorSafetyDefaults::default(),
+            reassessment: crate::reassessment::IncidentMonitorReassessmentConfig::default(),
             updated_at_ms: 0,
         }
     }
