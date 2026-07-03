@@ -1,7 +1,8 @@
 use std::time::Instant;
 
 use super::session_kb_grounding::{
-    apply_strict_kb_grounding_after_run, render_strict_kb_direct_answer,
+    apply_strict_kb_grounding_after_run, policy_answer_question_tool,
+    render_strict_kb_direct_answer, tool_allowlist_for_kb_grounding,
 };
 use super::*;
 use crate::app::rate_limit::{
@@ -184,35 +185,6 @@ fn request_is_text_only(req: &SendMessageRequest) -> bool {
     req.parts
         .iter()
         .all(|part| matches!(part, MessagePartInput::Text { .. }))
-}
-
-fn policy_answer_question_tool(
-    policy: &tandem_core::KnowledgebaseGroundingPolicy,
-) -> Option<String> {
-    policy.tool_patterns.iter().find_map(|pattern| {
-        let normalized = pattern.trim().to_ascii_lowercase();
-        if normalized == "*"
-            || normalized.ends_with(".*")
-            || normalized.ends_with(".answer_question")
-        {
-            Some("answer_question".to_string())
-        } else {
-            None
-        }
-    })
-}
-
-fn tool_allowlist_for_kb_grounding(
-    policy: &tandem_core::KnowledgebaseGroundingPolicy,
-) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    policy
-        .tool_patterns
-        .iter()
-        .map(|tool| tool.trim().to_ascii_lowercase())
-        .filter(|tool| !tool.is_empty())
-        .filter(|tool| seen.insert(tool.clone()))
-        .collect::<Vec<_>>()
 }
 
 pub(super) async fn create_session(
@@ -1140,6 +1112,13 @@ pub(super) async fn execute_run(
                 let args = json!({
                     "question": question,
                     "max_documents": 3,
+                    "__phase_tool_authority": {
+                        "phase": "kb_grounding",
+                        "allowed_tools": kb_tool_allowlist,
+                        "run_id": run_id,
+                        "session_id": session_id,
+                        "policy_id": "workflow_phase_tool_authority"
+                    }
                 });
                 for server_name in &policy.server_names {
                     match super::mcp::call_mcp_tool_for_tenant_with_verified_context(

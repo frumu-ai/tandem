@@ -203,6 +203,41 @@ pub async fn claim_matching_stateful_webhook_wait(
     Ok(Some(claimed))
 }
 
+pub async fn release_claimed_stateful_wait(
+    path: &Path,
+    tenant: &TenantContext,
+    claimed_wait: &StatefulWaitRecord,
+    now_ms: u64,
+) -> anyhow::Result<Option<StatefulWaitRecord>> {
+    let _guard = STATEFUL_WAIT_STORE_LOCK.lock().await;
+    let mut waits = try_load_stateful_waits(path)?;
+    let Some(wait) = waits.iter_mut().find(|wait| {
+        wait.run_id == claimed_wait.run_id
+            && wait.wait_id == claimed_wait.wait_id
+            && wait.visible_to_tenant(tenant)
+    }) else {
+        return Ok(None);
+    };
+    if wait.status.is_terminal() {
+        return Ok(None);
+    }
+    if !claimed_wait_matches_current_claim(wait, claimed_wait) {
+        return Ok(None);
+    }
+
+    wait.status = StatefulWaitStatus::Waiting;
+    wait.claimed_by = None;
+    wait.claimed_at_ms = None;
+    wait.claim_expires_at_ms = None;
+    wait.wake_idempotency_key = None;
+    wait.event_seq = None;
+    wait.completed_at_ms = None;
+    wait.updated_at_ms = now_ms;
+    let released = wait.clone();
+    write_stateful_waits_unlocked(path, &waits).await?;
+    Ok(Some(released))
+}
+
 pub async fn mark_stateful_wait_woken(
     path: &Path,
     tenant: &TenantContext,
@@ -1105,6 +1140,49 @@ mod tests {
         .await
         .expect("conflicting event seq")
         .is_none());
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn release_claimed_wait_restores_waiting_status_and_clears_claim() {
+        let path = temp_wait_store("stateful-waits-release-claim");
+        let tenant_a = tenant("org-a", "workspace-a");
+        upsert_stateful_wait(
+            &path,
+            timer_wait("wait-a", "run-a", tenant_a.clone(), 1_000),
+        )
+        .await
+        .expect("insert wait");
+        let claimed = claim_due_stateful_wait(
+            &path,
+            &tenant_a,
+            "run-a",
+            "wait-a",
+            "scheduler-a",
+            1_500,
+            500,
+        )
+        .await
+        .expect("claim wait")
+        .expect("claimed wait");
+
+        let released = release_claimed_stateful_wait(&path, &tenant_a, &claimed, 1_550)
+            .await
+            .expect("release claim")
+            .expect("released wait");
+
+        assert_eq!(released.status, StatefulWaitStatus::Waiting);
+        assert!(released.claimed_by.is_none());
+        assert!(released.claimed_at_ms.is_none());
+        assert!(released.claim_expires_at_ms.is_none());
+        assert!(released.wake_idempotency_key.is_none());
+        assert_eq!(released.updated_at_ms, 1_550);
+        assert!(
+            release_claimed_stateful_wait(&path, &tenant_a, &claimed, 1_600)
+                .await
+                .expect("stale release")
+                .is_none()
+        );
         let _ = tokio::fs::remove_file(path).await;
     }
 

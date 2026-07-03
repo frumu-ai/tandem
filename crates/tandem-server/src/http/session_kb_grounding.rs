@@ -28,6 +28,35 @@ const MAX_EVIDENCE_CHARS: usize = 700;
 const MAX_FULL_DOCUMENT_CHARS: usize = 6_000;
 const MAX_FULL_DOCUMENT_FETCHES: usize = 3;
 
+pub(super) fn policy_answer_question_tool(
+    policy: &tandem_core::KnowledgebaseGroundingPolicy,
+) -> Option<String> {
+    policy.tool_patterns.iter().find_map(|pattern| {
+        let normalized = pattern.trim().to_ascii_lowercase();
+        if normalized == "*"
+            || normalized.ends_with(".*")
+            || normalized.ends_with(".answer_question")
+        {
+            Some("answer_question".to_string())
+        } else {
+            None
+        }
+    })
+}
+
+pub(super) fn tool_allowlist_for_kb_grounding(
+    policy: &tandem_core::KnowledgebaseGroundingPolicy,
+) -> Vec<String> {
+    let mut seen = HashSet::new();
+    policy
+        .tool_patterns
+        .iter()
+        .map(|tool| tool.trim().to_ascii_lowercase())
+        .filter(|tool| !tool.is_empty())
+        .filter(|tool| seen.insert(tool.clone()))
+        .collect::<Vec<_>>()
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct StrictKbGroundingOutcome {
     pub support: String,
@@ -518,11 +547,20 @@ async fn fetch_kb_full_document(
     let mut last_error = None;
     let mut result = None;
     for server_name in mcp_server_name_candidates(&document_ref.server_name) {
+        let mut call_args = args.clone();
+        call_args["__phase_tool_authority"] = json!({
+            "phase": "kb_full_document_fetch",
+            "allowed_tools": [format!(
+                "mcp.{}.get_document",
+                super::mcp::mcp_namespace_segment(&server_name)
+            )],
+            "policy_id": "workflow_phase_tool_authority"
+        });
         match super::mcp::call_mcp_tool_for_tenant_with_verified_context(
             state,
             &server_name,
             "get_document",
-            args.clone(),
+            call_args,
             tenant_context,
             verified_tenant_context,
         )
