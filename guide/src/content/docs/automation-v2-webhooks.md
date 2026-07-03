@@ -13,9 +13,10 @@ are treated as untrusted external event data, never as instructions.
 A webhook trigger declares a signature scheme that decides how deliveries are
 authenticated:
 
-- `tandem_hmac_sha256_v1` — Tandem generates the signing secret and reveals it
-  once at creation. Deliveries are signed with `X-Tandem-Webhook-Signature` over
-  `<timestamp_ms>.<raw_body>`.
+- `hmac_sha256_v1` — Tandem generates the signing secret and reveals it once at
+  creation. Deliveries carry `X-Tandem-Webhook-Signature: t=<timestamp_ms>,v1=<hmac_sha256>`,
+  an HMAC over the timestamp and raw body. (`tandem_hmac_sha256_v1` is the
+  internal verifier/header identifier, not the value you set on the trigger.)
 - `notion_hmac_sha256` — the provider (Notion) owns the signing secret. No secret
   is revealed at creation; the token arrives out of band and Tandem stores it.
   See [Notion webhooks](#notion-webhooks) below.
