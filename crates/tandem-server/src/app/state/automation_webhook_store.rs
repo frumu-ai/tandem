@@ -499,6 +499,25 @@ fn automation_webhook_phase_denied_delivery(
     delivery
 }
 
+fn automation_webhook_feedback_loop_is_suppressed(
+    decision: &AutomationWebhookFeedbackLoopDecision,
+) -> bool {
+    matches!(
+        decision.outcome,
+        AutomationWebhookFeedbackLoopOutcome::Suppressed
+    )
+}
+
+fn automation_webhook_delivery_was_suppressed_feedback(
+    delivery: &AutomationWebhookDeliveryRecord,
+) -> bool {
+    delivery.status == AutomationWebhookDeliveryStatus::Suppressed
+        || delivery
+            .feedback_loop
+            .as_ref()
+            .is_some_and(automation_webhook_feedback_loop_is_suppressed)
+}
+
 async fn ensure_parent_dir(path: &std::path::Path) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
@@ -1565,33 +1584,35 @@ impl AppState {
                 } => {
                     let (mut duplicate_of_delivery_id, mut duplicate_of_run_id) =
                         idempotency_outcome_ref(&primary_record);
+                    let original_delivery = {
+                        let deliveries = self.automation_webhook_deliveries.read().await;
+                        deliveries
+                            .values()
+                            .find(|delivery| {
+                                automation_webhook_delivery_matches_key(
+                                    delivery,
+                                    &trigger,
+                                    provider_event_id.as_ref(),
+                                    &body_digest,
+                                )
+                            })
+                            .cloned()
+                    };
                     if duplicate_of_delivery_id.is_none() {
-                        let original_delivery = {
-                            let deliveries = self.automation_webhook_deliveries.read().await;
-                            deliveries
-                                .values()
-                                .find(|delivery| {
-                                    automation_webhook_delivery_matches_key(
-                                        delivery,
-                                        &trigger,
-                                        provider_event_id.as_ref(),
-                                        &body_digest,
-                                    )
-                                })
-                                .cloned()
-                        };
-                        if let Some(original) = original_delivery {
-                            duplicate_of_delivery_id = Some(original.delivery_id);
-                            duplicate_of_run_id = original.queued_run_id;
+                        if let Some(original) = original_delivery.as_ref() {
+                            duplicate_of_delivery_id = Some(original.delivery_id.clone());
+                            duplicate_of_run_id = original
+                                .queued_run_id
+                                .clone()
+                                .or_else(|| original.woken_run_id.clone());
                         }
                     }
-                    let duplicate_suppressed_feedback =
-                        feedback_loop.as_ref().is_some_and(|decision| {
-                            matches!(
-                                decision.outcome,
-                                AutomationWebhookFeedbackLoopOutcome::Suppressed
-                            )
-                        });
+                    let duplicate_suppressed_feedback = feedback_loop
+                        .as_ref()
+                        .is_some_and(automation_webhook_feedback_loop_is_suppressed)
+                        || original_delivery
+                            .as_ref()
+                            .is_some_and(automation_webhook_delivery_was_suppressed_feedback);
                     if !duplicate_suppressed_feedback {
                         if let Some(stateful_wait_result) = self
                             .wake_matching_stateful_webhook_wait_locked(

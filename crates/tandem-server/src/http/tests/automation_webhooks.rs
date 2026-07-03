@@ -808,12 +808,6 @@ async fn public_automation_webhook_suppresses_tandem_origin_feedback_loop() {
     .to_string()
     .into_bytes();
     let body = json!({
-        "tandem_origin": {
-            "idempotency_key": idempotency_key,
-                "run_id": source_run.run_id.clone(),
-                "node_id": "node-feedback",
-                "resource_id": "ticket-123",
-            },
         "ticket": "ticket-123",
     })
     .to_string()
@@ -857,6 +851,10 @@ async fn public_automation_webhook_suppresses_tandem_origin_feedback_loop() {
                 ))
                 .header("content-type", "application/json")
                 .header("x-tandem-webhook-event-id", "evt-feedback-suppressed")
+                .header("x-tandem-origin-idempotency-key", idempotency_key)
+                .header("x-tandem-origin-run-id", source_run.run_id.as_str())
+                .header("x-tandem-origin-node-id", "node-feedback")
+                .header("x-tandem-origin-resource-id", "ticket-123")
                 .header(
                     "x-tandem-webhook-signature",
                     automation_webhook_signature_header(&created.secret, now, &body),
