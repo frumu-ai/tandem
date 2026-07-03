@@ -114,7 +114,7 @@ pub fn due_stateful_waits(
     let mut rows = load_stateful_waits(path)
         .into_iter()
         .filter(|wait| wait.visible_to_tenant(tenant))
-        .filter(|wait| wait_is_claimable(wait, now_ms))
+        .filter(|wait| wait_is_claimable(wait, now_ms, now_ms))
         .collect::<Vec<_>>();
     sort_waits(&mut rows);
     apply_limit(&mut rows, limit);
@@ -147,25 +147,110 @@ pub async fn claim_due_stateful_wait(
     now_ms: u64,
     lease_ms: u64,
 ) -> anyhow::Result<Option<StatefulWaitRecord>> {
+    claim_due_stateful_wait_with_lease_clock(
+        path,
+        tenant,
+        run_id,
+        wait_id,
+        claimant_id,
+        now_ms,
+        now_ms,
+        lease_ms,
+    )
+    .await
+}
+
+pub async fn claim_due_stateful_wait_with_lease_clock(
+    path: &Path,
+    tenant: &TenantContext,
+    run_id: &str,
+    wait_id: &str,
+    claimant_id: &str,
+    due_now_ms: u64,
+    lease_now_ms: u64,
+    lease_ms: u64,
+) -> anyhow::Result<Option<StatefulWaitRecord>> {
+    claim_due_stateful_wait_matching_version_with_lease_clock(
+        path,
+        tenant,
+        run_id,
+        wait_id,
+        None,
+        None,
+        claimant_id,
+        due_now_ms,
+        lease_now_ms,
+        lease_ms,
+    )
+    .await
+}
+
+pub async fn claim_due_stateful_wait_version_with_lease_clock(
+    path: &Path,
+    tenant: &TenantContext,
+    run_id: &str,
+    wait_id: &str,
+    expected_created_at_ms: u64,
+    expected_updated_at_ms: u64,
+    claimant_id: &str,
+    due_now_ms: u64,
+    lease_now_ms: u64,
+    lease_ms: u64,
+) -> anyhow::Result<Option<StatefulWaitRecord>> {
+    claim_due_stateful_wait_matching_version_with_lease_clock(
+        path,
+        tenant,
+        run_id,
+        wait_id,
+        Some(expected_created_at_ms),
+        Some(expected_updated_at_ms),
+        claimant_id,
+        due_now_ms,
+        lease_now_ms,
+        lease_ms,
+    )
+    .await
+}
+
+async fn claim_due_stateful_wait_matching_version_with_lease_clock(
+    path: &Path,
+    tenant: &TenantContext,
+    run_id: &str,
+    wait_id: &str,
+    expected_created_at_ms: Option<u64>,
+    expected_updated_at_ms: Option<u64>,
+    claimant_id: &str,
+    due_now_ms: u64,
+    lease_now_ms: u64,
+    lease_ms: u64,
+) -> anyhow::Result<Option<StatefulWaitRecord>> {
     let _guard = STATEFUL_WAIT_STORE_LOCK.lock().await;
     let mut waits = try_load_stateful_waits(path)?;
     let Some(wait) = waits.iter_mut().find(|wait| {
-        wait.run_id == run_id && wait.wait_id == wait_id && wait.visible_to_tenant(tenant)
+        wait.run_id == run_id
+            && wait.wait_id == wait_id
+            && wait.visible_to_tenant(tenant)
+            && expected_created_at_ms
+                .map(|created_at_ms| wait.created_at_ms == created_at_ms)
+                .unwrap_or(true)
+            && expected_updated_at_ms
+                .map(|updated_at_ms| wait.updated_at_ms == updated_at_ms)
+                .unwrap_or(true)
     }) else {
         return Ok(None);
     };
-    if !wait_is_claimable(wait, now_ms) {
+    if !wait_is_claimable(wait, due_now_ms, lease_now_ms) {
         return Ok(None);
     }
 
     wait.status = StatefulWaitStatus::Claimed;
     wait.claimed_by = Some(claimant_id.to_string());
-    wait.claimed_at_ms = Some(now_ms);
-    wait.claim_expires_at_ms = Some(now_ms.saturating_add(lease_ms.max(1)));
+    wait.claimed_at_ms = Some(lease_now_ms);
+    wait.claim_expires_at_ms = Some(lease_now_ms.saturating_add(lease_ms.max(1)));
     wait.wake_idempotency_key = None;
     wait.event_seq = None;
     wait.completed_at_ms = None;
-    wait.updated_at_ms = now_ms;
+    wait.updated_at_ms = lease_now_ms;
     let claimed = wait.clone();
     write_stateful_waits_unlocked(path, &waits).await?;
     Ok(Some(claimed))
@@ -435,6 +520,23 @@ pub async fn begin_claimed_stateful_wait_timeout_completion(
     .await
 }
 
+pub async fn begin_claimed_stateful_wait_reminder_completion(
+    path: &Path,
+    tenant: &TenantContext,
+    claimed_wait: &StatefulWaitRecord,
+    reminder_idempotency_key: &str,
+    now_ms: u64,
+) -> anyhow::Result<Option<StatefulWaitRecord>> {
+    reserve_claimed_stateful_wait_completion(
+        path,
+        tenant,
+        claimed_wait,
+        reminder_idempotency_key,
+        now_ms,
+    )
+    .await
+}
+
 pub async fn finish_claimed_stateful_wait_completion(
     path: &Path,
     tenant: &TenantContext,
@@ -483,6 +585,89 @@ pub async fn finish_claimed_stateful_wait_completion(
     let completed = wait.clone();
     write_stateful_waits_unlocked(path, &waits).await?;
     Ok(Some(completed))
+}
+
+pub async fn finish_claimed_stateful_wait_reminder_completion(
+    path: &Path,
+    tenant: &TenantContext,
+    claimed_wait: &StatefulWaitRecord,
+    reminder_idempotency_key: &str,
+    event_seq: u64,
+    next_timeout_at_ms: u64,
+    now_ms: u64,
+) -> anyhow::Result<Option<StatefulWaitRecord>> {
+    let _guard = STATEFUL_WAIT_STORE_LOCK.lock().await;
+    let mut waits = try_load_stateful_waits(path)?;
+    let Some(wait) = waits.iter_mut().find(|wait| {
+        wait.run_id == claimed_wait.run_id
+            && wait.wait_id == claimed_wait.wait_id
+            && wait.visible_to_tenant(tenant)
+    }) else {
+        return Ok(None);
+    };
+    if wait.status == StatefulWaitStatus::Waiting {
+        return Ok(
+            (wait.wake_idempotency_key.as_deref() == Some(reminder_idempotency_key)
+                && wait.event_seq == Some(event_seq))
+            .then(|| wait.clone()),
+        );
+    }
+    if wait.status.is_terminal() {
+        return Ok(None);
+    }
+    if !claimed_wait_matches_current_claim(wait, claimed_wait)
+        || wait.wake_idempotency_key.as_deref() != Some(reminder_idempotency_key)
+    {
+        return Ok(None);
+    }
+    let Some(timeout_policy) = wait.timeout_policy.as_mut() else {
+        return Ok(None);
+    };
+
+    timeout_policy.timeout_at_ms = next_timeout_at_ms;
+    timeout_policy.metadata = Some(reminder_timeout_metadata(
+        timeout_policy.metadata.take(),
+        now_ms,
+        next_timeout_at_ms,
+    ));
+    wait.status = StatefulWaitStatus::Waiting;
+    wait.event_seq = Some(event_seq);
+    wait.completed_at_ms = None;
+    wait.updated_at_ms = now_ms;
+    wait.claimed_by = None;
+    wait.claimed_at_ms = None;
+    wait.claim_expires_at_ms = None;
+    let reminded = wait.clone();
+    write_stateful_waits_unlocked(path, &waits).await?;
+    Ok(Some(reminded))
+}
+
+fn reminder_timeout_metadata(
+    metadata: Option<Value>,
+    reminded_at_ms: u64,
+    next_reminder_at_ms: u64,
+) -> Value {
+    let mut object = match metadata {
+        Some(Value::Object(object)) => object,
+        Some(value) => {
+            let mut object = Map::new();
+            object.insert("previous_metadata".to_string(), value);
+            object
+        }
+        None => Map::new(),
+    };
+    let reminder_count = object
+        .get("reminder_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .saturating_add(1);
+    object.insert("reminder_count".to_string(), json!(reminder_count));
+    object.insert("last_reminded_at_ms".to_string(), json!(reminded_at_ms));
+    object.insert(
+        "next_reminder_at_ms".to_string(),
+        json!(next_reminder_at_ms),
+    );
+    Value::Object(object)
 }
 
 async fn reserve_claimed_stateful_wait_completion(
@@ -608,12 +793,12 @@ fn optional_match(expected: Option<&str>, actual: Option<&str>) -> bool {
         .unwrap_or(true)
 }
 
-fn wait_is_claimable(wait: &StatefulWaitRecord, now_ms: u64) -> bool {
-    let due = wait_wake_is_due_at(wait, now_ms) || wait_timeout_is_due_at(wait, now_ms);
+fn wait_is_claimable(wait: &StatefulWaitRecord, due_now_ms: u64, lease_now_ms: u64) -> bool {
+    let due = wait_wake_is_due_at(wait, due_now_ms) || wait_timeout_is_due_at(wait, due_now_ms);
     if wait.status == StatefulWaitStatus::Waiting {
         return due;
     }
-    wait.status == StatefulWaitStatus::Claimed && !wait.claim_is_active_at(now_ms) && due
+    wait.status == StatefulWaitStatus::Claimed && !wait.claim_is_active_at(lease_now_ms) && due
 }
 
 fn webhook_wait_is_claimable(wait: &StatefulWaitRecord, now_ms: u64) -> bool {
@@ -1044,6 +1229,118 @@ mod tests {
         let _ = tokio::fs::remove_file(path).await;
     }
 
+    #[tokio::test]
+    async fn regressed_due_clock_does_not_expire_active_claim_lease() {
+        let path = temp_wait_store("stateful-waits-regressed-claim-lease");
+        let tenant_a = tenant("org-a", "workspace-a");
+        upsert_stateful_wait(
+            &path,
+            timer_wait("wait-a", "run-a", tenant_a.clone(), 1_000),
+        )
+        .await
+        .expect("insert wait");
+
+        let claimed = claim_due_stateful_wait_with_lease_clock(
+            &path,
+            &tenant_a,
+            "run-a",
+            "wait-a",
+            "scheduler-a",
+            2_000,
+            1_000,
+            500,
+        )
+        .await
+        .expect("claim wait")
+        .expect("claim record");
+        assert_eq!(claimed.claim_expires_at_ms, Some(1_500));
+
+        assert!(claim_due_stateful_wait_with_lease_clock(
+            &path,
+            &tenant_a,
+            "run-a",
+            "wait-a",
+            "scheduler-b",
+            2_000,
+            1_400,
+            500,
+        )
+        .await
+        .expect("active lease reclaim")
+        .is_none());
+
+        let reclaimed = claim_due_stateful_wait_with_lease_clock(
+            &path,
+            &tenant_a,
+            "run-a",
+            "wait-a",
+            "scheduler-b",
+            2_000,
+            1_500,
+            500,
+        )
+        .await
+        .expect("expired lease reclaim")
+        .expect("reclaimed record");
+        assert_eq!(reclaimed.claimed_by.as_deref(), Some("scheduler-b"));
+        assert_eq!(reclaimed.claim_expires_at_ms, Some(2_000));
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn version_scoped_claim_rejects_updated_wait() {
+        let path = temp_wait_store("stateful-waits-version-claim");
+        let tenant_a = tenant("org-a", "workspace-a");
+        let mut original = timer_wait("wait-a", "run-a", tenant_a.clone(), 1_900);
+        original.created_at_ms = 1_800;
+        original.updated_at_ms = 1_800;
+        upsert_stateful_wait(&path, original.clone())
+            .await
+            .expect("insert original wait");
+
+        let mut updated = original.clone();
+        updated.wake_at_ms = Some(1_500);
+        updated.updated_at_ms = 1_050;
+        upsert_stateful_wait(&path, updated)
+            .await
+            .expect("update wait in place");
+
+        assert!(claim_due_stateful_wait_version_with_lease_clock(
+            &path,
+            &tenant_a,
+            "run-a",
+            "wait-a",
+            original.created_at_ms,
+            original.updated_at_ms,
+            "scheduler-a",
+            2_000,
+            1_000,
+            500,
+        )
+        .await
+        .expect("claim stale version")
+        .is_none());
+
+        let claimed = claim_due_stateful_wait_version_with_lease_clock(
+            &path,
+            &tenant_a,
+            "run-a",
+            "wait-a",
+            original.created_at_ms,
+            1_050,
+            "scheduler-a",
+            2_000,
+            1_000,
+            500,
+        )
+        .await
+        .expect("claim current version")
+        .expect("current version claimed");
+        assert_eq!(claimed.updated_at_ms, 1_000);
+        assert_eq!(claimed.claimed_by.as_deref(), Some("scheduler-a"));
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
     #[test]
     fn expired_claimed_timer_wait_without_timeout_remains_claimable() {
         let tenant_a = tenant("org-a", "workspace-a");
@@ -1053,8 +1350,8 @@ mod tests {
         wait.claimed_at_ms = Some(1_500);
         wait.claim_expires_at_ms = Some(2_000);
 
-        assert!(!wait_is_claimable(&wait, 1_999));
-        assert!(wait_is_claimable(&wait, 2_000));
+        assert!(!wait_is_claimable(&wait, 1_999, 1_999));
+        assert!(wait_is_claimable(&wait, 2_000, 2_000));
     }
 
     #[tokio::test]

@@ -590,6 +590,146 @@ async fn approval_gate_reminder_policy_updates_notification_key() {
 }
 
 #[tokio::test]
+async fn stateful_reminder_outcome_preserves_rescheduled_approval_wait() {
+    let state = ready_test_state().await;
+    let automation = approval_policy_test_automation("auto-gate-stateful-reminder");
+    state
+        .put_automation_v2(automation.clone())
+        .await
+        .expect("put automation");
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("create run");
+    let run_id = run.run_id.clone();
+    let requested_at_ms = now_ms().saturating_sub(120_000);
+    let gate = AutomationPendingGate {
+        node_id: "approval".to_string(),
+        title: "Approval".to_string(),
+        instructions: None,
+        decisions: vec!["approve".to_string(), "cancel".to_string()],
+        rework_targets: Vec::new(),
+        requested_at_ms,
+        upstream_node_ids: Vec::new(),
+        metadata: None,
+        expiry_policy: Some(AutomationGateExpiryPolicy {
+            expires_after_ms: Some(60_000),
+            on_expiry: Some(AutomationGateExpiryAction::Remind),
+            escalate_to: None,
+            remind_every_ms: Some(60_000),
+        }),
+    };
+    state
+        .update_automation_v2_run(&run_id, |row| {
+            crate::app::state::automation::pause_automation_run_for_gate(
+                row,
+                gate.clone(),
+                vec![gate.node_id.clone()],
+            );
+        })
+        .await
+        .expect("pause for approval");
+
+    let paths = crate::stateful_runtime::StatefulRuntimeStoragePaths::from_runtime_events_path(
+        &state.runtime_events_path,
+    );
+    let initial_waits = crate::stateful_runtime::list_stateful_waits(
+        &paths.waits_path,
+        &run.tenant_context,
+        crate::stateful_runtime::StatefulWaitQuery {
+            run_id: Some(&run_id),
+            wait_kind: Some(crate::stateful_runtime::StatefulWaitKind::Approval),
+            status: None,
+            limit: None,
+        },
+    );
+    assert_eq!(initial_waits.len(), 1);
+    let original_timeout_at_ms = initial_waits[0]
+        .timeout_policy
+        .as_ref()
+        .expect("timeout policy")
+        .timeout_at_ms;
+    assert_eq!(
+        original_timeout_at_ms,
+        requested_at_ms.saturating_add(60_000)
+    );
+
+    let config = crate::stateful_runtime::StatefulWaitSchedulerConfig {
+        claimant_id: format!("scheduler-reminder-apply-{run_id}"),
+        lease_ms: 500,
+        limit: 10,
+    };
+    let tick = crate::stateful_runtime::process_due_stateful_waits(&paths, now_ms(), config.clone())
+        .await;
+    assert_eq!(tick.completed, 1);
+    assert_eq!(
+        tick.outcomes[0].event_type,
+        "stateful_runtime.wait.timeout_reminded"
+    );
+    assert_eq!(
+        tick.outcomes[0].wait_status,
+        crate::stateful_runtime::StatefulWaitStatus::Waiting
+    );
+
+    let rescheduled_waits = crate::stateful_runtime::list_stateful_waits(
+        &paths.waits_path,
+        &run.tenant_context,
+        crate::stateful_runtime::StatefulWaitQuery {
+            run_id: Some(&run_id),
+            wait_kind: Some(crate::stateful_runtime::StatefulWaitKind::Approval),
+            status: None,
+            limit: None,
+        },
+    );
+    let rescheduled_policy = rescheduled_waits[0]
+        .timeout_policy
+        .as_ref()
+        .expect("rescheduled timeout policy");
+    let rescheduled_timeout_at_ms = rescheduled_policy.timeout_at_ms;
+    assert!(rescheduled_timeout_at_ms > original_timeout_at_ms);
+    assert_eq!(
+        rescheduled_policy
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("reminder_count"))
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+
+    state
+        .apply_stateful_wait_scheduler_outcome(&tick.outcomes[0])
+        .await
+        .expect("apply scheduler outcome");
+    let after_apply = crate::stateful_runtime::list_stateful_waits(
+        &paths.waits_path,
+        &run.tenant_context,
+        crate::stateful_runtime::StatefulWaitQuery {
+            run_id: Some(&run_id),
+            wait_kind: Some(crate::stateful_runtime::StatefulWaitKind::Approval),
+            status: None,
+            limit: None,
+        },
+    );
+    let after_policy = after_apply[0]
+        .timeout_policy
+        .as_ref()
+        .expect("timeout policy after outcome");
+    assert_eq!(after_policy.timeout_at_ms, rescheduled_timeout_at_ms);
+    assert_eq!(
+        after_policy
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("reminder_count"))
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+
+    let immediate_tick =
+        crate::stateful_runtime::process_due_stateful_waits(&paths, now_ms(), config).await;
+    assert_eq!(immediate_tick.checked, 0);
+}
+
+#[tokio::test]
 async fn approval_gate_escalation_policy_updates_notification_key() {
     let state = ready_test_state().await;
     let automation = approval_policy_test_automation("auto-gate-escalation");

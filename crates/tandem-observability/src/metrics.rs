@@ -24,6 +24,8 @@ impl MetricSummary {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ObservabilityMetricsSnapshot {
     pub scheduler_tick_latency_ms: MetricSummary,
+    pub scheduler_clock_regression_ms: MetricSummary,
+    pub scheduler_clock_regressions_total: u64,
     pub run_duration_ms_by_status: BTreeMap<String, MetricSummary>,
     pub gate_wait_ms_by_decision: BTreeMap<String, MetricSummary>,
     pub tool_call_decisions_total: BTreeMap<String, u64>,
@@ -57,6 +59,22 @@ pub fn record_scheduler_tick_latency_ms(duration_ms: u64) {
         .lock()
         .expect("observability metrics mutex poisoned");
     state.snapshot.scheduler_tick_latency_ms.record(duration_ms);
+}
+
+pub fn record_scheduler_clock_regression_ms(regression_ms: u64) {
+    metrics::counter!("tandem_scheduler_clock_regressions_total").increment(1);
+    metrics::histogram!("tandem_scheduler_clock_regression_ms").record(regression_ms as f64);
+    let mut state = metrics_state()
+        .lock()
+        .expect("observability metrics mutex poisoned");
+    state.snapshot.scheduler_clock_regressions_total = state
+        .snapshot
+        .scheduler_clock_regressions_total
+        .saturating_add(1);
+    state
+        .snapshot
+        .scheduler_clock_regression_ms
+        .record(regression_ms);
 }
 
 pub fn record_run_duration_ms(status: &str, duration_ms: u64) {
@@ -213,6 +231,18 @@ pub fn render_observability_metrics_prometheus() -> String {
         "tandem_scheduler_tick_latency_ms",
         &[],
         &snapshot.scheduler_tick_latency_ms,
+    );
+    render_metric_line(
+        &mut out,
+        "tandem_scheduler_clock_regressions_total",
+        &[],
+        snapshot.scheduler_clock_regressions_total,
+    );
+    render_summary(
+        &mut out,
+        "tandem_scheduler_clock_regression_ms",
+        &[],
+        &snapshot.scheduler_clock_regression_ms,
     );
     for (status, summary) in snapshot.run_duration_ms_by_status {
         render_summary(
