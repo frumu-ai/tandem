@@ -435,6 +435,23 @@ pub async fn begin_claimed_stateful_wait_timeout_completion(
     .await
 }
 
+pub async fn begin_claimed_stateful_wait_reminder_completion(
+    path: &Path,
+    tenant: &TenantContext,
+    claimed_wait: &StatefulWaitRecord,
+    reminder_idempotency_key: &str,
+    now_ms: u64,
+) -> anyhow::Result<Option<StatefulWaitRecord>> {
+    reserve_claimed_stateful_wait_completion(
+        path,
+        tenant,
+        claimed_wait,
+        reminder_idempotency_key,
+        now_ms,
+    )
+    .await
+}
+
 pub async fn finish_claimed_stateful_wait_completion(
     path: &Path,
     tenant: &TenantContext,
@@ -483,6 +500,89 @@ pub async fn finish_claimed_stateful_wait_completion(
     let completed = wait.clone();
     write_stateful_waits_unlocked(path, &waits).await?;
     Ok(Some(completed))
+}
+
+pub async fn finish_claimed_stateful_wait_reminder_completion(
+    path: &Path,
+    tenant: &TenantContext,
+    claimed_wait: &StatefulWaitRecord,
+    reminder_idempotency_key: &str,
+    event_seq: u64,
+    next_timeout_at_ms: u64,
+    now_ms: u64,
+) -> anyhow::Result<Option<StatefulWaitRecord>> {
+    let _guard = STATEFUL_WAIT_STORE_LOCK.lock().await;
+    let mut waits = try_load_stateful_waits(path)?;
+    let Some(wait) = waits.iter_mut().find(|wait| {
+        wait.run_id == claimed_wait.run_id
+            && wait.wait_id == claimed_wait.wait_id
+            && wait.visible_to_tenant(tenant)
+    }) else {
+        return Ok(None);
+    };
+    if wait.status == StatefulWaitStatus::Waiting {
+        return Ok(
+            (wait.wake_idempotency_key.as_deref() == Some(reminder_idempotency_key)
+                && wait.event_seq == Some(event_seq))
+            .then(|| wait.clone()),
+        );
+    }
+    if wait.status.is_terminal() {
+        return Ok(None);
+    }
+    if !claimed_wait_matches_current_claim(wait, claimed_wait)
+        || wait.wake_idempotency_key.as_deref() != Some(reminder_idempotency_key)
+    {
+        return Ok(None);
+    }
+    let Some(timeout_policy) = wait.timeout_policy.as_mut() else {
+        return Ok(None);
+    };
+
+    timeout_policy.timeout_at_ms = next_timeout_at_ms;
+    timeout_policy.metadata = Some(reminder_timeout_metadata(
+        timeout_policy.metadata.take(),
+        now_ms,
+        next_timeout_at_ms,
+    ));
+    wait.status = StatefulWaitStatus::Waiting;
+    wait.event_seq = Some(event_seq);
+    wait.completed_at_ms = None;
+    wait.updated_at_ms = now_ms;
+    wait.claimed_by = None;
+    wait.claimed_at_ms = None;
+    wait.claim_expires_at_ms = None;
+    let reminded = wait.clone();
+    write_stateful_waits_unlocked(path, &waits).await?;
+    Ok(Some(reminded))
+}
+
+fn reminder_timeout_metadata(
+    metadata: Option<Value>,
+    reminded_at_ms: u64,
+    next_reminder_at_ms: u64,
+) -> Value {
+    let mut object = match metadata {
+        Some(Value::Object(object)) => object,
+        Some(value) => {
+            let mut object = Map::new();
+            object.insert("previous_metadata".to_string(), value);
+            object
+        }
+        None => Map::new(),
+    };
+    let reminder_count = object
+        .get("reminder_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .saturating_add(1);
+    object.insert("reminder_count".to_string(), json!(reminder_count));
+    object.insert("last_reminded_at_ms".to_string(), json!(reminded_at_ms));
+    object.insert(
+        "next_reminder_at_ms".to_string(),
+        json!(next_reminder_at_ms),
+    );
+    Value::Object(object)
 }
 
 async fn reserve_claimed_stateful_wait_completion(

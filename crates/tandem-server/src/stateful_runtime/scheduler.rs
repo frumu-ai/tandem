@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tandem_types::TenantContext;
@@ -16,14 +19,17 @@ use super::types::{
     StatefulWaitTimeoutAction, StatefulWorkflowRunStatus,
 };
 use super::waits::{
+    begin_claimed_stateful_wait_reminder_completion,
     begin_claimed_stateful_wait_timeout_completion, begin_claimed_stateful_wait_wake_completion,
     cancel_stateful_wait_after_phase_guard_denial, claim_due_stateful_wait, due_stateful_waits,
-    finish_claimed_stateful_wait_completion,
+    finish_claimed_stateful_wait_completion, finish_claimed_stateful_wait_reminder_completion,
 };
 
 pub const STATEFUL_WAIT_SCHEDULER_CLAIMANT: &str = "stateful-wait-scheduler";
 pub const DEFAULT_STATEFUL_WAIT_SCHEDULER_LEASE_MS: u64 = 60_000;
 pub const DEFAULT_STATEFUL_WAIT_SCHEDULER_LIMIT: usize = 100;
+
+static SCHEDULER_CLOCK_STATE: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub struct StatefulWaitSchedulerConfig {
@@ -63,6 +69,8 @@ pub struct StatefulWaitSchedulerTick {
     pub claimed: usize,
     pub completed: usize,
     pub failed: usize,
+    pub clock_regressions: usize,
+    pub max_clock_regression_ms: u64,
     pub max_lag_ms: u64,
     pub outcomes: Vec<StatefulWaitSchedulerOutcome>,
     pub errors: Vec<String>,
@@ -77,12 +85,18 @@ enum SchedulerAction {
         due_at_ms: u64,
         timeout_action: StatefulWaitTimeoutAction,
     },
+    Reminder {
+        due_at_ms: u64,
+        remind_every_ms: u64,
+    },
 }
 
 impl SchedulerAction {
     fn due_at_ms(&self) -> u64 {
         match self {
-            Self::WakeTimer { due_at_ms } | Self::Timeout { due_at_ms, .. } => *due_at_ms,
+            Self::WakeTimer { due_at_ms }
+            | Self::Timeout { due_at_ms, .. }
+            | Self::Reminder { due_at_ms, .. } => *due_at_ms,
         }
     }
 
@@ -100,7 +114,8 @@ impl SchedulerAction {
             Self::Timeout {
                 timeout_action: StatefulWaitTimeoutAction::Remind,
                 ..
-            } => "stateful_runtime.wait.timeout_reminded",
+            }
+            | Self::Reminder { .. } => "stateful_runtime.wait.timeout_reminded",
             Self::Timeout {
                 timeout_action: StatefulWaitTimeoutAction::Resume,
                 ..
@@ -123,6 +138,7 @@ impl SchedulerAction {
                 timeout_action: StatefulWaitTimeoutAction::Remind,
                 ..
             } => StatefulWaitStatus::TimedOut,
+            Self::Reminder { .. } => StatefulWaitStatus::Waiting,
             Self::Timeout {
                 timeout_action: StatefulWaitTimeoutAction::Resume,
                 ..
@@ -141,7 +157,7 @@ impl SchedulerAction {
                 timeout_action: StatefulWaitTimeoutAction::Cancel,
                 ..
             } => StatefulWorkflowRunStatus::Cancelled,
-            Self::Timeout { .. } => StatefulWorkflowRunStatus::Paused,
+            Self::Timeout { .. } | Self::Reminder { .. } => StatefulWorkflowRunStatus::Paused,
         }
     }
 
@@ -157,6 +173,12 @@ impl SchedulerAction {
                 "timeout:{timeout_action:?}:{}:{}:{due_at_ms}",
                 wait.run_id, wait.wait_id
             ),
+            Self::Reminder { due_at_ms, .. } => {
+                format!(
+                    "timeout:Remind:{}:{}:{due_at_ms}",
+                    wait.run_id, wait.wait_id
+                )
+            }
         }
     }
 
@@ -178,6 +200,7 @@ impl SchedulerAction {
                 timeout_action: StatefulWaitTimeoutAction::Resume,
                 ..
             }
+            | Self::Reminder { .. }
             | Self::WakeTimer { .. } => None,
         }
     }
@@ -189,17 +212,22 @@ pub async fn process_due_stateful_waits(
     config: StatefulWaitSchedulerConfig,
 ) -> StatefulWaitSchedulerTick {
     let tenant = TenantContext::local_implicit();
-    let candidates = due_stateful_waits(&paths.waits_path, &tenant, now_ms, Some(config.limit));
-    let mut tick = StatefulWaitSchedulerTick {
-        checked: candidates.len(),
-        ..StatefulWaitSchedulerTick::default()
-    };
+    let mut tick = StatefulWaitSchedulerTick::default();
+    let effective_now_ms = observe_scheduler_wall_time(paths, &config, now_ms, &mut tick);
+    let candidates = due_stateful_waits(
+        &paths.waits_path,
+        &tenant,
+        effective_now_ms,
+        Some(config.limit),
+    );
+    tick.checked = candidates.len();
 
     for candidate in candidates {
-        let Some(action) = scheduler_action(&candidate, now_ms) else {
+        let Some(action) = scheduler_action(&candidate, effective_now_ms) else {
             continue;
         };
-        if let Err(error) = guarded_phase_state_for_wait_action(paths, &candidate, &action, now_ms)
+        if let Err(error) =
+            guarded_phase_state_for_wait_action(paths, &candidate, &action, effective_now_ms)
         {
             let reason = error.to_string();
             if let Err(cancel_error) = cancel_stateful_wait_after_phase_guard_denial(
@@ -207,7 +235,7 @@ pub async fn process_due_stateful_waits(
                 &candidate.scope.tenant_context,
                 &candidate,
                 &reason,
-                now_ms,
+                effective_now_ms,
             )
             .await
             {
@@ -230,7 +258,7 @@ pub async fn process_due_stateful_waits(
             &candidate.run_id,
             &candidate.wait_id,
             &config.claimant_id,
-            now_ms,
+            effective_now_ms,
             config.lease_ms,
         )
         .await
@@ -247,7 +275,7 @@ pub async fn process_due_stateful_waits(
             }
         };
         tick.claimed += 1;
-        match complete_claimed_wait(paths, &claimed, &action, now_ms).await {
+        match complete_claimed_wait(paths, &claimed, &action, effective_now_ms).await {
             Ok(outcome) => {
                 tick.max_lag_ms = tick.max_lag_ms.max(outcome.lag_ms);
                 tick.completed += 1;
@@ -266,6 +294,62 @@ pub async fn process_due_stateful_waits(
     tick
 }
 
+fn observe_scheduler_wall_time(
+    paths: &StatefulRuntimeStoragePaths,
+    config: &StatefulWaitSchedulerConfig,
+    now_ms: u64,
+    tick: &mut StatefulWaitSchedulerTick,
+) -> u64 {
+    let key = scheduler_clock_key(paths, config);
+    let (effective_now_ms, regression_ms) = {
+        let mut state = SCHEDULER_CLOCK_STATE
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .expect("stateful wait scheduler clock state mutex poisoned");
+        match state.get_mut(&key) {
+            Some(last_seen_ms) if now_ms < *last_seen_ms => {
+                let regression_ms = last_seen_ms.saturating_sub(now_ms);
+                (*last_seen_ms, Some(regression_ms))
+            }
+            Some(last_seen_ms) => {
+                *last_seen_ms = now_ms;
+                (now_ms, None)
+            }
+            None => {
+                state.insert(key.clone(), now_ms);
+                (now_ms, None)
+            }
+        }
+    };
+
+    if let Some(regression_ms) = regression_ms {
+        tick.clock_regressions = tick.clock_regressions.saturating_add(1);
+        tick.max_clock_regression_ms = tick.max_clock_regression_ms.max(regression_ms);
+        tandem_observability::record_scheduler_clock_regression_ms(regression_ms);
+        tracing::warn!(
+            waits_path = %paths.waits_path.display(),
+            claimant_id = %config.claimant_id,
+            now_ms,
+            effective_now_ms,
+            regression_ms,
+            "stateful wait scheduler observed a backward wall-clock step"
+        );
+    }
+
+    effective_now_ms
+}
+
+fn scheduler_clock_key(
+    paths: &StatefulRuntimeStoragePaths,
+    config: &StatefulWaitSchedulerConfig,
+) -> String {
+    format!(
+        "{}:{}",
+        config.claimant_id,
+        paths.waits_path.to_string_lossy()
+    )
+}
+
 async fn complete_claimed_wait(
     paths: &StatefulRuntimeStoragePaths,
     wait: &StatefulWaitRecord,
@@ -278,25 +362,42 @@ async fn complete_claimed_wait(
     let wait_status = action.wait_status();
     let run_status = action.run_status();
 
-    let reserved = if wait_status == StatefulWaitStatus::Woken {
-        begin_claimed_stateful_wait_wake_completion(
-            &paths.waits_path,
-            &wait.scope.tenant_context,
-            wait,
-            &completion_key,
-            now_ms,
-        )
-        .await?
-    } else {
-        begin_claimed_stateful_wait_timeout_completion(
-            &paths.waits_path,
-            &wait.scope.tenant_context,
-            wait,
-            &completion_key,
-            wait_status.clone(),
-            now_ms,
-        )
-        .await?
+    let reserved = match action {
+        SchedulerAction::WakeTimer { .. }
+        | SchedulerAction::Timeout {
+            timeout_action: StatefulWaitTimeoutAction::Resume,
+            ..
+        } => {
+            begin_claimed_stateful_wait_wake_completion(
+                &paths.waits_path,
+                &wait.scope.tenant_context,
+                wait,
+                &completion_key,
+                now_ms,
+            )
+            .await?
+        }
+        SchedulerAction::Reminder { .. } => {
+            begin_claimed_stateful_wait_reminder_completion(
+                &paths.waits_path,
+                &wait.scope.tenant_context,
+                wait,
+                &completion_key,
+                now_ms,
+            )
+            .await?
+        }
+        SchedulerAction::Timeout { .. } => {
+            begin_claimed_stateful_wait_timeout_completion(
+                &paths.waits_path,
+                &wait.scope.tenant_context,
+                wait,
+                &completion_key,
+                wait_status.clone(),
+                now_ms,
+            )
+            .await?
+        }
     }
     .ok_or_else(|| anyhow::anyhow!("stateful wait completion conflict"))?;
 
@@ -386,16 +487,34 @@ async fn complete_claimed_wait(
         })),
     };
     write_stateful_run_snapshot(&paths.snapshots_root, &snapshot).await?;
-    let completed = finish_claimed_stateful_wait_completion(
-        &paths.waits_path,
-        &wait.scope.tenant_context,
-        &reserved,
-        &completion_key,
-        seq,
-        wait_status.clone(),
-        now_ms,
-    )
-    .await?
+    let completed = match action {
+        SchedulerAction::Reminder {
+            remind_every_ms, ..
+        } => {
+            finish_claimed_stateful_wait_reminder_completion(
+                &paths.waits_path,
+                &wait.scope.tenant_context,
+                &reserved,
+                &completion_key,
+                seq,
+                now_ms.saturating_add((*remind_every_ms).max(1)),
+                now_ms,
+            )
+            .await?
+        }
+        _ => {
+            finish_claimed_stateful_wait_completion(
+                &paths.waits_path,
+                &wait.scope.tenant_context,
+                &reserved,
+                &completion_key,
+                seq,
+                wait_status.clone(),
+                now_ms,
+            )
+            .await?
+        }
+    }
     .ok_or_else(|| anyhow::anyhow!("stateful wait completion conflict"))?;
 
     if let Err(error) =
@@ -517,9 +636,22 @@ fn scheduler_action(wait: &StatefulWaitRecord, now_ms: u64) -> Option<SchedulerA
         .timeout_policy
         .as_ref()
         .filter(|policy| policy.timeout_at_ms <= now_ms)
-        .map(|policy| SchedulerAction::Timeout {
-            due_at_ms: policy.timeout_at_ms,
-            timeout_action: policy.on_timeout.clone(),
+        .map(|policy| match &policy.on_timeout {
+            StatefulWaitTimeoutAction::Remind => policy
+                .remind_every_ms
+                .filter(|remind_every_ms| *remind_every_ms > 0)
+                .map(|remind_every_ms| SchedulerAction::Reminder {
+                    due_at_ms: policy.timeout_at_ms,
+                    remind_every_ms,
+                })
+                .unwrap_or_else(|| SchedulerAction::Timeout {
+                    due_at_ms: policy.timeout_at_ms,
+                    timeout_action: policy.on_timeout.clone(),
+                }),
+            _ => SchedulerAction::Timeout {
+                due_at_ms: policy.timeout_at_ms,
+                timeout_action: policy.on_timeout.clone(),
+            },
         });
 
     match (wake_due, timeout_due) {
@@ -975,6 +1107,198 @@ mod tests {
                 StatefulRecoveryOption::Compensate
             ]
         );
+        let _ = tokio::fs::remove_dir_all(
+            paths
+                .run_events_path
+                .parent()
+                .expect("runtime root")
+                .to_path_buf(),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn scheduler_reschedules_remind_timeout_without_terminal_wait() {
+        let paths = paths("stateful-wait-scheduler-reminder");
+        let tenant = tenant("org-a", "workspace-a");
+        let mut wait = timeout_wait("wait-a", 1_000, StatefulWaitTimeoutAction::Remind);
+        wait.timeout_policy
+            .as_mut()
+            .expect("timeout policy")
+            .remind_every_ms = Some(500);
+        upsert_stateful_wait(&paths.waits_path, wait)
+            .await
+            .expect("insert wait");
+
+        let tick = process_due_stateful_waits(
+            &paths,
+            1_250,
+            StatefulWaitSchedulerConfig {
+                claimant_id: "scheduler-reminder-test".to_string(),
+                lease_ms: 500,
+                limit: 10,
+            },
+        )
+        .await;
+
+        assert_eq!(tick.checked, 1);
+        assert_eq!(tick.claimed, 1);
+        assert_eq!(tick.completed, 1);
+        assert_eq!(tick.failed, 0);
+        assert_eq!(
+            tick.outcomes[0].event_type,
+            "stateful_runtime.wait.timeout_reminded"
+        );
+        assert_eq!(tick.outcomes[0].wait_status, StatefulWaitStatus::Waiting);
+        assert_eq!(
+            tick.outcomes[0].run_status,
+            StatefulWorkflowRunStatus::Paused
+        );
+        assert_eq!(tick.outcomes[0].lag_ms, 250);
+
+        let waits = list_stateful_waits(
+            &paths.waits_path,
+            &tenant,
+            StatefulWaitQuery {
+                run_id: Some("run-a"),
+                ..StatefulWaitQuery::default()
+            },
+        );
+        assert_eq!(waits.len(), 1);
+        assert_eq!(waits[0].status, StatefulWaitStatus::Waiting);
+        assert!(waits[0].claimed_by.is_none());
+        assert_eq!(
+            waits[0].wake_idempotency_key.as_deref(),
+            Some("timeout:Remind:run-a:wait-a:1000")
+        );
+        let timeout_policy = waits[0].timeout_policy.as_ref().expect("timeout policy");
+        assert_eq!(timeout_policy.timeout_at_ms, 1_750);
+        assert_eq!(timeout_policy.remind_every_ms, Some(500));
+        let metadata = timeout_policy.metadata.as_ref().expect("timeout metadata");
+        assert_eq!(
+            metadata.get("source").and_then(|value| value.as_str()),
+            Some("test")
+        );
+        assert_eq!(
+            metadata
+                .get("reminder_count")
+                .and_then(|value| value.as_u64()),
+            Some(1)
+        );
+        assert_eq!(
+            metadata
+                .get("last_reminded_at_ms")
+                .and_then(|value| value.as_u64()),
+            Some(1_250)
+        );
+        assert_eq!(
+            metadata
+                .get("next_reminder_at_ms")
+                .and_then(|value| value.as_u64()),
+            Some(1_750)
+        );
+        let dead_letters = list_stateful_dead_letters(
+            &stateful_reliability_path_from_runtime_events_path(&paths.run_events_path),
+            &tenant,
+            StatefulReliabilityQuery {
+                run_id: Some("run-a"),
+                limit: Some(10),
+                ..Default::default()
+            },
+        );
+        assert!(dead_letters.is_empty());
+
+        let early_tick = process_due_stateful_waits(
+            &paths,
+            1_500,
+            StatefulWaitSchedulerConfig {
+                claimant_id: "scheduler-reminder-test".to_string(),
+                lease_ms: 500,
+                limit: 10,
+            },
+        )
+        .await;
+        assert_eq!(early_tick.checked, 0);
+
+        let second_tick = process_due_stateful_waits(
+            &paths,
+            1_750,
+            StatefulWaitSchedulerConfig {
+                claimant_id: "scheduler-reminder-test".to_string(),
+                lease_ms: 500,
+                limit: 10,
+            },
+        )
+        .await;
+        assert_eq!(second_tick.completed, 1);
+        let waits = list_stateful_waits(
+            &paths.waits_path,
+            &tenant,
+            StatefulWaitQuery {
+                run_id: Some("run-a"),
+                ..StatefulWaitQuery::default()
+            },
+        );
+        let timeout_policy = waits[0].timeout_policy.as_ref().expect("timeout policy");
+        assert_eq!(timeout_policy.timeout_at_ms, 2_250);
+        assert_eq!(
+            timeout_policy
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("reminder_count"))
+                .and_then(|value| value.as_u64()),
+            Some(2)
+        );
+        assert_eq!(load_stateful_run_events(&paths.run_events_path).len(), 2);
+        let _ = tokio::fs::remove_dir_all(
+            paths
+                .run_events_path
+                .parent()
+                .expect("runtime root")
+                .to_path_buf(),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn scheduler_compensates_backward_clock_regression_for_due_waits() {
+        let paths = paths("stateful-wait-scheduler-clock-regression");
+        let tenant = tenant("org-a", "workspace-a");
+        let config = StatefulWaitSchedulerConfig {
+            claimant_id: "scheduler-clock-regression-test".to_string(),
+            lease_ms: 500,
+            limit: 10,
+        };
+        let seed_tick = process_due_stateful_waits(&paths, 2_000, config.clone()).await;
+        assert_eq!(seed_tick.checked, 0);
+        assert_eq!(seed_tick.clock_regressions, 0);
+
+        upsert_stateful_wait(&paths.waits_path, timer_wait("wait-a", 1_900))
+            .await
+            .expect("insert wait");
+        let tick = process_due_stateful_waits(&paths, 1_000, config).await;
+
+        assert_eq!(tick.clock_regressions, 1);
+        assert_eq!(tick.max_clock_regression_ms, 1_000);
+        assert_eq!(tick.checked, 1);
+        assert_eq!(tick.claimed, 1);
+        assert_eq!(tick.completed, 1);
+        assert_eq!(tick.failed, 0);
+        assert_eq!(tick.outcomes[0].wait_status, StatefulWaitStatus::Woken);
+        assert_eq!(tick.outcomes[0].lag_ms, 100);
+
+        let waits = list_stateful_waits(
+            &paths.waits_path,
+            &tenant,
+            StatefulWaitQuery {
+                run_id: Some("run-a"),
+                ..StatefulWaitQuery::default()
+            },
+        );
+        assert_eq!(waits[0].status, StatefulWaitStatus::Woken);
+        let events = load_stateful_run_events(&paths.run_events_path);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].occurred_at_ms, 2_000);
         let _ = tokio::fs::remove_dir_all(
             paths
                 .run_events_path

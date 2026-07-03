@@ -9,9 +9,9 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 mod metrics;
 pub use metrics::{
     observability_metrics_snapshot, record_engine_event_metrics, record_gate_wait_ms,
-    record_provider_error, record_run_duration_ms, record_scheduler_tick_latency_ms,
-    record_tool_call_decision, render_observability_metrics_prometheus, MetricSummary,
-    ObservabilityMetricsSnapshot,
+    record_provider_error, record_run_duration_ms, record_scheduler_clock_regression_ms,
+    record_scheduler_tick_latency_ms, record_tool_call_decision,
+    render_observability_metrics_prometheus, MetricSummary, ObservabilityMetricsSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -468,6 +468,7 @@ mod tests {
     fn prometheus_renderer_exposes_scrubbed_metric_labels() {
         metrics::reset_observability_metrics_for_tests();
         record_scheduler_tick_latency_ms(12);
+        record_scheduler_clock_regression_ms(25);
         record_tool_call_decision("allow");
         record_provider_error("openai/prod", "rate limit with spaces");
         record_engine_event_metrics(
@@ -494,6 +495,8 @@ mod tests {
 
         let rendered = render_observability_metrics_prometheus();
         assert!(rendered.contains("tandem_scheduler_tick_latency_ms_count 1"));
+        assert!(rendered.contains("tandem_scheduler_clock_regressions_total 1"));
+        assert!(rendered.contains("tandem_scheduler_clock_regression_ms_count 1"));
         assert!(rendered.contains("tandem_tool_call_decisions_total{decision=\"allow\"} 1"));
         assert!(rendered.contains("tandem_tool_call_decisions_total{decision=\"deny\"} 1"));
         assert!(rendered.contains("tandem_gate_wait_ms_count{decision=\"deny\"} 1"));

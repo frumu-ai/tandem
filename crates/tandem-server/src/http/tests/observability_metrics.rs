@@ -50,6 +50,7 @@ async fn metrics_route_is_disabled_by_default() {
 async fn metrics_route_renders_prometheus_when_enabled() {
     let _guard = EnvGuard::set("TANDEM_OBSERVABILITY_PROMETHEUS_ENABLED", Some("true"));
     tandem_observability::record_scheduler_tick_latency_ms(7);
+    tandem_observability::record_scheduler_clock_regression_ms(250);
     tandem_observability::record_tool_call_decision("allow");
     let state = test_state().await;
     let app = app_router(state);
@@ -71,5 +72,7 @@ async fn metrics_route_renders_prometheus_when_enabled() {
     let body = String::from_utf8(body.to_vec()).expect("utf8");
     assert!(body.contains("tandem_scheduler_active_runs"));
     assert!(body.contains("tandem_scheduler_tick_latency_ms_count"));
+    assert!(body.contains("tandem_scheduler_clock_regressions_total"));
+    assert!(body.contains("tandem_scheduler_clock_regression_ms_count"));
     assert!(body.contains("tandem_tool_call_decisions_total{decision=\"allow\"}"));
 }
