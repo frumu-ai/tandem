@@ -160,8 +160,11 @@ async fn incident_monitor_assessment_report_payload(
             &crate::IncidentMonitorGovernanceThresholds::default(),
         )
         .await;
+    // Tenant filter is applied inside the listing, before the recency cap, so a
+    // scoped report can't lose the caller tenant's incidents to newer incidents
+    // from other tenants (TAN-546-style crowd-out).
     let incidents = state
-        .list_incident_monitor_incidents(200)
+        .list_incident_monitor_incidents_for_tenant(&tenant_context, 200)
         .await
         .into_iter()
         .filter(|incident| {

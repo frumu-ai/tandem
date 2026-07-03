@@ -863,6 +863,35 @@ impl AppState {
         rows
     }
 
+    /// TAN-488: list incidents belonging to a tenant, applying the tenant
+    /// predicate *before* the recency cap so a tenant's own incidents can't be
+    /// crowded out of a scoped view by newer incidents from other tenants
+    /// (mirrors `list_incident_monitor_posts_for_tenant`, TAN-546).
+    /// Local/implicit callers see everything (single-tenant deployments).
+    pub async fn list_incident_monitor_incidents_for_tenant(
+        &self,
+        tenant_context: &TenantContext,
+        limit: usize,
+    ) -> Vec<IncidentMonitorIncidentRecord> {
+        let local = tenant_context.is_local_implicit();
+        let mut rows = self
+            .incident_monitor_incidents
+            .read()
+            .await
+            .values()
+            .filter(|incident| {
+                local
+                    || (incident.tenant_id.as_deref() == Some(tenant_context.org_id.as_str())
+                        && incident.workspace_id.as_deref()
+                            == Some(tenant_context.workspace_id.as_str()))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+        rows.truncate(limit.clamp(1, 200));
+        rows
+    }
+
     pub async fn get_incident_monitor_incident(
         &self,
         incident_id: &str,

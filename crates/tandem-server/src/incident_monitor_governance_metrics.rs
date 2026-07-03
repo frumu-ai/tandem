@@ -38,12 +38,12 @@ pub async fn compute_incident_monitor_governance_metrics(
     let current = TimeWindow::current(to_ms, window_ms);
     let baseline = TimeWindow::baseline(to_ms, window_ms);
 
+    // Tenant filter is applied inside the listing, before the recency cap, so a
+    // scoped view can't lose the caller tenant's incidents to newer incidents
+    // from other tenants (TAN-546-style crowd-out).
     let all_incidents = state
-        .list_incident_monitor_incidents(200)
-        .await
-        .into_iter()
-        .filter(|incident| incident_matches_tenant(incident, tenant_context))
-        .collect::<Vec<_>>();
+        .list_incident_monitor_incidents_for_tenant(tenant_context, 200)
+        .await;
     let all_posts = state
         .list_incident_monitor_posts_for_tenant(tenant_context, 200)
         .await;
@@ -51,6 +51,12 @@ pub async fn compute_incident_monitor_governance_metrics(
     let audit_events =
         crate::audit::load_protected_audit_events_for_tenant(state, tenant_context).await;
     let status = state.incident_monitor_status_snapshot().await;
+
+    // Scope route readiness to the tenant's own topology (TAN-547): the status
+    // snapshot is operator-global, so for a tenant-scoped call keep only the
+    // destinations/sources visible to that tenant. Local/implicit callers see
+    // everything.
+    let route_scope = tenant_visible_route_scope(state, tenant_context).await;
 
     // Incident ids that produced an auditable publish trail (a receipt or a
     // protected audit publish event referencing the incident).
@@ -75,7 +81,7 @@ pub async fn compute_incident_monitor_governance_metrics(
         governance_confidence_metric(&all_incidents, &audited_incident_ids, &current, thresholds),
         authority_boundary_compliance_metric(&all_decisions, &current, thresholds),
         escalation_pathway_utilization_metric(&all_decisions, &current, thresholds),
-        route_readiness_compliance_metric(&status, thresholds),
+        route_readiness_compliance_metric(&status, &route_scope, thresholds),
         receipt_completeness_metric(&all_posts, &current, thresholds),
         recurring_incident_metric(&all_incidents, &current),
     ];
@@ -147,13 +153,77 @@ impl TimeWindow {
     }
 }
 
-fn incident_matches_tenant(
-    incident: &IncidentMonitorIncidentRecord,
+/// Tenant-visible route topology for scoping the route-readiness metric. `None`
+/// on either field means "count every enabled row" (local/implicit callers see
+/// the full operator-global view); `Some(set)` restricts the count to that
+/// tenant's own destinations / source projects.
+struct RouteScope {
+    destination_ids: Option<HashSet<String>>,
+    source_project_ids: Option<HashSet<String>>,
+}
+
+impl RouteScope {
+    fn includes_destination(&self, destination_id: &str) -> bool {
+        self.destination_ids
+            .as_ref()
+            .is_none_or(|ids| ids.contains(destination_id))
+    }
+
+    fn includes_source(&self, project_id: &str) -> bool {
+        self.source_project_ids
+            .as_ref()
+            .is_none_or(|ids| ids.contains(project_id))
+    }
+}
+
+/// Compute the tenant-visible destination and source-project id sets, reusing
+/// the same visibility rules the authority inventory applies (TAN-547) so route
+/// readiness stays inside the tenant boundary and can't be skewed by another
+/// tenant's topology.
+async fn tenant_visible_route_scope(
+    state: &AppState,
     tenant_context: &TenantContext,
-) -> bool {
-    tenant_context.is_local_implicit()
-        || (incident.tenant_id.as_deref() == Some(tenant_context.org_id.as_str())
-            && incident.workspace_id.as_deref() == Some(tenant_context.workspace_id.as_str()))
+) -> RouteScope {
+    if tenant_context.is_local_implicit() {
+        return RouteScope {
+            destination_ids: None,
+            source_project_ids: None,
+        };
+    }
+    let config = state.incident_monitor_config().await;
+    let visible_routes = config
+        .routes
+        .iter()
+        .filter(|route| {
+            crate::http::incident_monitor::incident_monitor_route_visible_to_tenant(
+                route,
+                tenant_context,
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let destination_ids =
+        crate::http::incident_monitor::incident_monitor_tenant_referenced_destination_ids(
+            &config,
+            &visible_routes,
+            tenant_context,
+        );
+    let source_project_ids = config
+        .monitored_projects
+        .iter()
+        .filter(|project| {
+            crate::http::incident_monitor::incident_monitor_entry_not_other_tenant(
+                project.tenant_id.as_deref(),
+                project.workspace_id.as_deref(),
+                tenant_context,
+            )
+        })
+        .map(|project| project.project_id.clone())
+        .collect::<HashSet<String>>();
+    RouteScope {
+        destination_ids: Some(destination_ids),
+        source_project_ids: Some(source_project_ids),
+    }
 }
 
 fn is_high_risk_incident(incident: &IncidentMonitorIncidentRecord) -> bool {
@@ -316,6 +386,7 @@ fn escalation_pathway_utilization_metric(
 
 fn route_readiness_compliance_metric(
     status: &crate::IncidentMonitorStatus,
+    scope: &RouteScope,
     thresholds: &IncidentMonitorGovernanceThresholds,
 ) -> Value {
     let mut ready = 0u64;
@@ -324,7 +395,7 @@ fn route_readiness_compliance_metric(
     for destination in status
         .destination_readiness
         .iter()
-        .filter(|row| row.enabled)
+        .filter(|row| row.enabled && scope.includes_destination(&row.destination_id))
     {
         total += 1;
         if destination.publish_ready {
@@ -336,7 +407,11 @@ fn route_readiness_compliance_metric(
             ));
         }
     }
-    for source in status.source_readiness.iter().filter(|row| row.enabled) {
+    for source in status
+        .source_readiness
+        .iter()
+        .filter(|row| row.enabled && scope.includes_source(&row.project_id))
+    {
         total += 1;
         if source.ready {
             ready += 1;

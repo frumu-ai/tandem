@@ -246,6 +246,99 @@ async fn governance_metrics_flag_behavioral_drift_between_windows() {
 
 #[tokio::test]
 #[serial_test::serial(incident_monitor_http)]
+async fn governance_metrics_route_readiness_scopes_to_requesting_tenant() {
+    let state = test_state().await;
+    let tenant = governance_tenant(); // org-a / workspace-a
+    let now = crate::now_ms();
+    let workspace_a = tempfile::tempdir().expect("workspace a");
+    let workspace_b = tempfile::tempdir().expect("workspace b");
+
+    // Two tenants each own one project + one destination. A tenant-scoped
+    // request must count only its own route topology (TAN-547), not the other
+    // tenant's enabled sources/destinations.
+    state
+        .put_incident_monitor_config(crate::IncidentMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            destinations: vec![
+                crate::IncidentMonitorDestinationConfig {
+                    destination_id: "dest-a".to_string(),
+                    name: "Tenant A destination".to_string(),
+                    kind: crate::IncidentMonitorDestinationKind::GithubIssue,
+                    enabled: true,
+                    repo: Some("org-a/platform".to_string()),
+                    ..Default::default()
+                },
+                crate::IncidentMonitorDestinationConfig {
+                    destination_id: "dest-b".to_string(),
+                    name: "Tenant B destination".to_string(),
+                    kind: crate::IncidentMonitorDestinationKind::GithubIssue,
+                    enabled: true,
+                    repo: Some("org-b/platform".to_string()),
+                    ..Default::default()
+                },
+            ],
+            monitored_projects: vec![
+                crate::IncidentMonitorMonitoredProject {
+                    project_id: "project-a".to_string(),
+                    name: "Tenant A".to_string(),
+                    enabled: true,
+                    repo: "org-a/platform".to_string(),
+                    workspace_root: workspace_a.path().display().to_string(),
+                    source_kind: crate::IncidentMonitorSourceKind::ExternalApp,
+                    allowed_destination_ids: vec!["dest-a".to_string()],
+                    tenant_id: Some("org-a".to_string()),
+                    workspace_id: Some("workspace-a".to_string()),
+                    ..Default::default()
+                },
+                crate::IncidentMonitorMonitoredProject {
+                    project_id: "project-b".to_string(),
+                    name: "Tenant B".to_string(),
+                    enabled: true,
+                    repo: "org-b/platform".to_string(),
+                    workspace_root: workspace_b.path().display().to_string(),
+                    source_kind: crate::IncidentMonitorSourceKind::ExternalApp,
+                    allowed_destination_ids: vec!["dest-b".to_string()],
+                    tenant_id: Some("org-b".to_string()),
+                    workspace_id: Some("workspace-b".to_string()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+
+    let thresholds = crate::IncidentMonitorGovernanceThresholds::default();
+    let report = crate::incident_monitor_governance_metrics::compute_incident_monitor_governance_metrics(
+        &state, &tenant, now, None, &thresholds,
+    )
+    .await;
+
+    let readiness = report["metrics"]
+        .as_array()
+        .expect("metrics")
+        .iter()
+        .find(|m| m["metric_id"] == serde_json::json!("route_readiness_compliance"))
+        .cloned()
+        .expect("route_readiness_compliance metric");
+
+    // Only tenant A's destination + source project are counted (2 rows), never
+    // tenant B's — and no missing-evidence reason should mention tenant B.
+    assert_eq!(
+        readiness["denominator"],
+        serde_json::json!(2),
+        "route readiness must count only the requesting tenant's topology: {readiness}"
+    );
+    let serialized = readiness.to_string();
+    assert!(
+        !serialized.contains("dest-b") && !serialized.contains("project-b"),
+        "route readiness leaked another tenant's topology: {serialized}"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(incident_monitor_http)]
 async fn governance_metrics_endpoint_requires_admin_and_is_dry_run() {
     let state = test_state().await;
     state.set_api_token(Some("tk_admin".to_string())).await;
