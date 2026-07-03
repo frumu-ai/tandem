@@ -69,6 +69,7 @@ export default defineConfig({
           items: [
             "automation-composer-workflows",
             "automation-examples-for-teams",
+            "automation-v2-webhooks",
             "sdk/typescript",
             "sdk/python",
             "reference/incident-monitor",

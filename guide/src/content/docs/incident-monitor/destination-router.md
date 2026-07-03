@@ -33,7 +33,9 @@ Publishing can be blocked by global config, destination readiness, route approva
 
 High-risk incidents should require approval unless a trusted route/source policy explicitly says otherwise. Untrusted report-only submissions cannot downgrade approval policy.
 
-When `block_unready_destinations` is enabled, unready destinations fail closed before publish. Without that setting, preview can still show readiness problems while legacy compatibility remains intact where existing behavior expects it.
+Destination readiness is enforced fail-closed by default. `block_unready_destinations` defaults to `true`, and readiness is checked again at delivery time — after any required approval clears — so an unready destination cannot publish even if a route or approval decision looked clean at preview time. A blocked delivery returns an error with the readiness detail, emits a `destination_not_ready` audit event, and produces no receipt.
+
+The escape hatch is deliberately narrow. Setting `block_unready_destinations` to `false` only frees `Recovery`-mode publishes (best-effort recovery paths); `Auto` and `ManualPublish` always block unready destinations regardless of the flag. `RecheckOnly` never publishes, so it is never gated. Preview still surfaces readiness problems ahead of any publish attempt.
 
 ## GitHub compatibility
 

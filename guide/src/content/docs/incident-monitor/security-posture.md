@@ -40,7 +40,7 @@ Security posture mode should be described as a layer on top of the existing Tand
 
 - Governed runtime: workflows, agents, tool policies, MCP policy, tenant/workspace context, and approval gates.
 - Incident Monitor: passive intake, triage, routing, destination readiness, approvals, receipts, and remediation routing.
-- Security posture assessment: read-only authority inventory, posture rules, controlled checks, evidence reports, and remediation issues.
+- Security posture assessment: read-only authority inventory, posture rules, controlled checks, adversarial scenario packs, governance-maturity metrics with behavioral-drift detection, scheduled continuous reassessment, evidence reports, and remediation issues.
 
 The first posture primitive is the read-only authority inventory at `GET /incident-monitor/security/authority-inventory`. It summarizes workflows, Automation V2 specs, agent/tool/MCP policy, Incident Monitor destinations and routes, monitored sources, scoped intake keys, approvals, policy decisions, and recent external publish surfaces without exposing raw secrets or credentials.
 
@@ -109,6 +109,16 @@ Unsafe probe framing:
 - sending synthetic sensitive data to external destinations without approval
 - executing arbitrary MCP tools outside a configured dry-run or sandbox boundary
 
+## Continuous and adversarial assessment
+
+Point-in-time inventory and probes are complemented by three ongoing surfaces, all dry-run, redacted, and admin-only:
+
+- **Adversarial scenario packs** (`/incident-monitor/security/scenario-packs`) run versioned, production-mirroring governance edge cases — regulatory escalation, prompt injection, excessive agency, cross-tenant forgery, unsafe/unready destinations — against live route preview, approval, and readiness logic. A failing scenario surfaces a governance gap and carries a `finding_id`.
+- **Governance maturity metrics** (`/incident-monitor/security/governance-metrics`) turn audit events, incidents, receipts, and policy decisions into health signals (governance confidence, authority-boundary compliance, escalation utilization, route readiness, receipt completeness) and compare the current window against a baseline to detect behavioral drift. Threshold breaches surface as posture findings.
+- **Continuous reassessment** (`/incident-monitor/security/reassessments`) re-runs posture, metrics, and drift on a cadence and on config-change triggers, producing versioned records that track findings as `new`, `recurring`, or `resolved` and expose per-scope schedule status (`last_completed`, `next_due`, `overdue`).
+
+None of these mutate external systems; escalation still flows through the normal Incident Monitor draft, approval, and routing path.
+
 ## Demo storyline
 
 1. Passive monitoring collects failures, incidents, route decisions, approval waits, and publish receipts.
@@ -134,7 +144,7 @@ Unsafe probe framing:
 Security posture mode should be packaged as an enterprise governance capability, not as generic vulnerability scanning.
 
 - Core Incident Monitor: intake, triage, routing, approvals, receipts, and destination readiness.
-- Security Posture Monitoring: authority inventory, posture rules, evidence reports, controlled checks, and remediation routing.
+- Security Posture Monitoring: authority inventory, posture rules, evidence reports, controlled checks, adversarial scenario packs, governance-maturity metrics and drift detection, scheduled continuous reassessment, and remediation routing.
 - Enterprise Governance: tenant/workspace policy, audit export, compliance mapping, retention profiles, and external evidence destinations.
 
 The package boundary should track governance value: who can see authority, who can assess it, who can approve controlled checks, and where reports can be exported.

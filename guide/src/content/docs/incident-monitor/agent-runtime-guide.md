@@ -198,6 +198,9 @@ Use these surfaces when an operator, auditor, or follow-on agent needs proof of 
 | `POST /incident-monitor/security/assessment-probes`  | Authorized dry-run checks for Tandem governance controls                                                        |
 | `POST /incident-monitor/security/assessment-report`  | Redacted JSON and Markdown report with evidence refs and recommendations                                        |
 | `POST /incident-monitor/security/deployment-cards`   | Production-governance cards for agents, workflows, sources, and Tandem self-monitoring                          |
+| `GET`/`POST /incident-monitor/security/scenario-packs`   | Describe or run dry-run adversarial scenario packs against live routing, approval, and readiness logic          |
+| `POST /incident-monitor/security/governance-metrics` | Redacted governance maturity metrics plus behavioral-drift detection                                            |
+| `GET`/`POST /incident-monitor/security/reassessments`    | List or run versioned, fingerprint-deduplicated continuous reassessments                                       |
 | `GET /incident-monitor/posts`                        | Destination-aware publish receipts and outcomes                                                                 |
 
 Reports intentionally omit raw credentials, intake-key material, webhook secrets, auth headers, arbitrary destination config values, and raw protected-audit payloads by default.
