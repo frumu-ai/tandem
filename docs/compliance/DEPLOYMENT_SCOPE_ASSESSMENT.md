@@ -234,7 +234,7 @@ For regulated financial services, as a conservative starting position:
 | Workflow execution           | Durable runs, state, artifacts, approval gates, audit records                                | Workflow design appropriate to the use case; oversight process                  |
 | Protected-action enforcement | Fintech strict-mode classification; fail-closed at execution; approval-receipt checks        | Confirm protected-action taxonomy; operate identity and approver assignment     |
 | Human oversight              | Approval gates; approve / rework / cancel paths; gate history                                | Assign qualified reviewers; define policy; provide training                     |
-| Audit logging                | Receipts, protected audit envelopes, audit stream, protected audit ledger/export foundations | Configure retention; export; access controls; long-term storage                 |
+| Audit logging                | Receipts, protected audit envelopes, audit stream, hash-chained ledger with verifiable export | Configure retention; export; access controls; long-term storage                 |
 | Article 11 documentation     | Architecture docs; compliance starter pack; Annex IV template                                | Complete deployment-specific documentation; intended-purpose statement          |
 | Article 50 labeling          | Runtime provenance for generated content; planned UI badges (EUAI-04)                        | Until EUAI-04 ships: deployer-level disclosure that content is AI-generated     |
 | Incident response            | Suspend/cancel run endpoints; audit trail                                                    | Detect incidents; report where required; operate incident response              |

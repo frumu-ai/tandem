@@ -334,7 +334,7 @@ not every key.
 - The envelope is stamped centrally in `EventBus::publish`, so **all**
   emitters — including `tandem-core` engine_loop and `tandem-server`
   automation_v2 — publish the canonical envelope.
-- Durable persistence of the event stream is out of scope here (Runtime
-  Observability milestone).
+- Durable persistence of the event stream ships as the JSONL runtime event
+  log with replay (see "Durable event log" above).
 - The closed-vocabulary test (`vocabulary_round_trips_and_has_no_duplicates`)
   and this document must be updated together.
