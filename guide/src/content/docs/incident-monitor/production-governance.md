@@ -16,6 +16,9 @@ Incident Monitor is not a compliance certification engine. It records what Tande
 | Runtime authority inventory        | `GET /incident-monitor/security/authority-inventory`                                                                | Read-only inventory of workflows, agents, tool/MCP policy, destinations, routes, approvals, policy decisions, and recent external publish surfaces    | Decide whether the observed authority matches business intent                                                   |
 | Deterministic posture review       | `GET /incident-monitor/security/posture-checks`                                                                     | Findings with severity, affected authority surface, evidence refs, mitigation guidance, and draft conversion payloads                                 | Map findings to customer policy and assign owners                                                               |
 | Controlled governance checks       | `POST /incident-monitor/security/assessment-probes`                                                                 | Dry-run probe evidence for approval gates, scoped intake limits, route readiness, MCP allowlists, and webhook URL policy                              | Authorize probes, define sandbox boundaries, and decide which failures block production                         |
+| Adversarial scenario coverage      | `GET`/`POST /incident-monitor/security/scenario-packs`                                                               | Dry-run scenario results (regulatory escalation, prompt injection, excessive agency, cross-tenant forgery, unsafe/unready destinations) with `finding_id`s for failures | Decide which scenario failures block production and which need policy or config changes                         |
+| Governance maturity and drift      | `POST /incident-monitor/security/governance-metrics`                                                                | Redacted metrics (governance confidence, authority-boundary compliance, escalation utilization, route readiness, receipt completeness) plus behavioral-drift signals | Set thresholds, decide which breaches or drifts require action                                                  |
+| Continuous reassessment            | `GET`/`POST /incident-monitor/security/reassessments`                                                               | Versioned reassessment records with new/recurring/resolved fingerprints and per-scope schedule status (`last_completed`, `next_due`, `overdue`)       | Set cadence, decide how quickly recurring or overdue findings must be worked                                    |
 | Route and destination control      | Route preview, destination readiness, approval policy, publish receipts                                             | Matched routes, effective destination IDs, blocked reasons, receipt status, external URL/ID, evidence digest                                          | Decide which incident classes can reach GitHub, Linear, webhook, telemetry, memory, or MCP destinations         |
 | Assessment and compliance packet   | `POST /incident-monitor/security/assessment-report`                                                                 | Redacted JSON/Markdown report with inventory, findings, probes, incidents, receipts, protected audit summaries, and export preview                    | Decide who reviews the packet and where it is retained                                                          |
 | External evidence custody          | Protected audit stream or ledger export plus customer-owned destination                                             | Audit export summaries, ledger/export manifests, route receipts, and destination receipts                                                             | Configure retention, access control, SIEM/object-store/database custody, and legal hold policy                  |
@@ -26,7 +29,8 @@ Incident Monitor is not a compliance certification engine. It records what Tande
 Tandem can provide evidence that:
 
 - a source, workflow, agent, destination, route, approval, policy decision, or publish receipt existed in Tandem's governed runtime
-- an assessment report, posture check, or controlled probe was generated from a redacted authority inventory
+- an assessment report, posture check, controlled probe, adversarial scenario pack, or governance-maturity metric was generated from a redacted authority inventory
+- a reassessment ran on cadence or on a config-change trigger and how its findings compared to the previous versioned run
 - a publish attempt used the destination router rather than a direct external mutation path
 - scoped intake credentials were report-only and rejected privileged routes when checked
 - a deployment card had or lacked required owner, purpose, escalation, approval, data-classification, and review metadata
@@ -59,7 +63,7 @@ Before using Incident Monitor for production governance:
 8. Confirm high-risk or sensitive destinations require approval and redaction.
 9. Configure retention/export policy for reports, receipts, protected audit evidence, and customer-owned records.
 10. Assign finding owners and escalation paths before enabling external publish routes.
-11. Schedule periodic drift review for stale deployment cards, stale sources, repeated failures, approval waits, and route changes.
+11. Run adversarial scenario packs and governance-maturity metrics, and tune the continuous-reassessment cadence and change triggers so stale deployment cards, stale sources, repeated failures, approval waits, route changes, and behavioral drift are reviewed on a schedule.
 
 ## Compliance Mapping Notes
 

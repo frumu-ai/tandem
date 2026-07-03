@@ -50,6 +50,9 @@ Implemented now:
 - authority inventory for security posture assessment
 - posture rules and finding generation
 - controlled dry-run probes for Tandem governance controls
+- adversarial scenario packs exercised in dry-run against live routing, approval, and readiness logic
+- governance-maturity metrics with behavioral-drift detection
+- scheduled and change-triggered continuous reassessment with versioned, fingerprint-deduplicated results
 - security gap assessment reports with redacted evidence packs
 - deployment cards for production authority governance
 - production governance guidance that maps deployment cards, posture checks, assessment reports, protected audit evidence, and destination receipts to operator-owned policy decisions
