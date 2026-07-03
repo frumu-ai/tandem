@@ -245,7 +245,13 @@ pub struct IncidentMonitorSafetyDefaults {
     pub require_approval_for_high_risk: bool,
     #[serde(default = "default_true")]
     pub redact_secrets: bool,
-    #[serde(default)]
+    /// Fail-closed destination readiness (TAN-545). Automated (`Auto`) and
+    /// operator (`ManualPublish`) publishes always block a not-ready destination
+    /// regardless of this flag. This flag governs only `Recovery` publishes:
+    /// when `true` (the default) Recovery also blocks on a not-ready destination;
+    /// set it to `false` to make Recovery a deliberate operator escape hatch for
+    /// re-sending to a destination that is not currently ready.
+    #[serde(default = "default_true")]
     pub block_unready_destinations: bool,
     /// When true, an incident whose source is not data-ready (failed lineage /
     /// freshness / classification / legal-basis / watcher-health gates) is
@@ -268,7 +274,7 @@ impl Default for IncidentMonitorSafetyDefaults {
         Self {
             require_approval_for_high_risk: true,
             redact_secrets: true,
-            block_unready_destinations: false,
+            block_unready_destinations: true,
             block_unready_sources: false,
             retention_days: None,
             minimum_risk_level: None,
@@ -1704,7 +1710,8 @@ mod tests {
 
         assert!(defaults.require_approval_for_high_risk);
         assert!(defaults.redact_secrets);
-        assert!(!defaults.block_unready_destinations);
+        // TAN-545: destination readiness is fail-closed by default.
+        assert!(defaults.block_unready_destinations);
         assert_eq!(defaults.retention_days, None);
     }
 

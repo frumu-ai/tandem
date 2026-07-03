@@ -295,17 +295,10 @@ async fn incident_monitor_webhook_destination_blocks_private_url_by_default() {
         "private URL should be blocked: {publish_payload:?}"
     );
     assert_eq!(requests.read().await.len(), 0);
-    let posts = state.list_incident_monitor_posts(10).await;
-    assert_eq!(posts.len(), 1);
-    assert_eq!(posts[0].status, "failed");
-    assert_eq!(
-        posts[0]
-            .receipt
-            .as_ref()
-            .and_then(|row| row.get("status"))
-            .and_then(Value::as_str),
-        Some("blocked")
-    );
+    // TAN-545: a not-ready destination (here a private/localhost webhook) is
+    // blocked at the fail-closed readiness gate before any delivery attempt, so
+    // no receipt is recorded — matching the adapters' pre-execution guards.
+    assert!(state.list_incident_monitor_posts(10).await.is_empty());
 
     server.abort();
 }

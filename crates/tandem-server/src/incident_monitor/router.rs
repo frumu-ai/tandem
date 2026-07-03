@@ -438,6 +438,35 @@ pub async fn publish_draft(
         });
     }
 
+    // TAN-545: destination readiness is fail-closed at delivery time. This runs
+    // after the approval gate (so an approval-pending draft still pauses for
+    // approval rather than erroring on readiness). A not-ready destination is
+    // blocked before any delivery attempt — consistent with the adapters'
+    // pre-execution guards, so no receipt is recorded for a publish that never
+    // left the gate — and the reason is surfaced to the caller and audit trail.
+    if let Some(detail) = destination_readiness_block(&status.config, &preview, request.mode) {
+        emit_publish_audit_event(
+            state,
+            "incident_monitor.publish.failed",
+            publish_audit_payload(
+                &request,
+                &draft,
+                incident.as_ref(),
+                &context,
+                &preview,
+                Some("destination_not_ready"),
+                Some(&crate::truncate_text(&detail, 500)),
+                router_approval_required,
+            ),
+            &audit_tenant_context,
+        )
+        .await;
+        return Err(anyhow::anyhow!("{detail}")).context(format!(
+            "destination `{}` is not publish-ready",
+            selected_destination.destination_id
+        ));
+    }
+
     let outcome = match &selected_destination.kind {
         IncidentMonitorDestinationKind::GithubIssue => {
             incident_monitor_github::publish_draft(
@@ -714,6 +743,45 @@ fn floor_risk_level(config: &IncidentMonitorConfig, context: &mut IncidentMonito
     }
 }
 
+/// A preview blocked-reason that reflects the selected destination not being
+/// publish-ready (missing token/config, unreachable, or no readiness result) —
+/// as opposed to a source-readiness or routing block. Configuration/binding and
+/// disabled-destination reasons are already hard-errored before this is used.
+fn is_destination_readiness_block(reason: &str) -> bool {
+    reason.starts_with("Destination `")
+        && (reason.contains("is not ready") || reason.contains("has no readiness result"))
+}
+
+/// Fail-closed destination-readiness decision (TAN-545). Returns the joined
+/// block reason when the publish must be blocked for a not-ready destination,
+/// or `None` when it may proceed. `Auto` and `ManualPublish` always block a
+/// not-ready destination regardless of `block_unready_destinations`, so the gate
+/// cannot be reopened by flipping the flag. `Recovery` is the deliberate
+/// operator escape hatch: it blocks too by default (the flag defaults `true`)
+/// but an operator can set the flag `false` to re-send to a not-ready
+/// destination. `RecheckOnly` never blocks.
+fn destination_readiness_block(
+    config: &IncidentMonitorConfig,
+    preview: &IncidentMonitorRoutePreviewResponse,
+    mode: incident_monitor_github::PublishMode,
+) -> Option<String> {
+    if mode == incident_monitor_github::PublishMode::RecheckOnly {
+        return None;
+    }
+    let enforce = mode != incident_monitor_github::PublishMode::Recovery
+        || config.safety_defaults.block_unready_destinations;
+    if !enforce {
+        return None;
+    }
+    let blocks = preview
+        .blocked_reasons
+        .iter()
+        .filter(|reason| is_destination_readiness_block(reason))
+        .cloned()
+        .collect::<Vec<_>>();
+    (!blocks.is_empty()).then(|| blocks.join("; "))
+}
+
 fn validate_publish_plan(
     config: &IncidentMonitorConfig,
     preview: &IncidentMonitorRoutePreviewResponse,
@@ -752,9 +820,6 @@ fn validate_publish_plan(
         );
     }
     if mode != incident_monitor_github::PublishMode::RecheckOnly {
-        if config.safety_defaults.block_unready_destinations && preview.blocked {
-            anyhow::bail!("{}", preview.blocked_reasons.join("; "));
-        }
         // TAN-544: the source-readiness gate enforces independently, blocking
         // only on source-not-ready reasons so it doesn't silently pick up the
         // destination-readiness gate the operator did not enable.

@@ -657,3 +657,132 @@ fn block_unready_sources_fails_closed_when_no_readiness_row_matches() {
     )
     .is_err());
 }
+
+fn destination_gate_config() -> IncidentMonitorConfig {
+    IncidentMonitorConfig {
+        destinations: vec![IncidentMonitorDestinationConfig {
+            destination_id: "gh".to_string(),
+            name: "GitHub".to_string(),
+            kind: IncidentMonitorDestinationKind::GithubIssue,
+            enabled: true,
+            repo: Some("acme/app".to_string()),
+            ..IncidentMonitorDestinationConfig::default()
+        }],
+        default_destination_ids: vec!["gh".to_string()],
+        ..IncidentMonitorConfig::default()
+    }
+}
+
+fn unready_destination_preview(
+    config: &IncidentMonitorConfig,
+) -> IncidentMonitorRoutePreviewResponse {
+    let context = build_route_context(
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        &[],
+        None,
+        None,
+        None,
+    );
+    let destinations = config.effective_destinations();
+    let destination_readiness = destinations
+        .iter()
+        .map(|destination| IncidentMonitorDestinationReadiness {
+            destination_id: destination.destination_id.clone(),
+            kind: destination.kind.clone(),
+            enabled: true,
+            publish_ready: false,
+            missing: vec!["GitHub capabilities are missing".to_string()],
+            ..IncidentMonitorDestinationReadiness::default()
+        })
+        .collect::<Vec<_>>();
+    build_route_preview(
+        config,
+        &destinations,
+        &destination_readiness,
+        &[],
+        &context,
+        &[],
+    )
+}
+
+#[test]
+fn tan545_default_true_is_the_destination_readiness_safety_default() {
+    // The fail-closed default: a fresh config blocks not-ready destinations.
+    assert!(IncidentMonitorSafetyDefaults::default().block_unready_destinations);
+}
+
+#[test]
+fn tan545_blocks_not_ready_destination_for_auto_manual_and_recovery_by_default() {
+    let config = destination_gate_config();
+    let preview = unready_destination_preview(&config);
+    assert!(
+        preview
+            .blocked_reasons
+            .iter()
+            .any(|reason| is_destination_readiness_block(reason)),
+        "expected a destination-readiness block: {:?}",
+        preview.blocked_reasons
+    );
+    for mode in [
+        incident_monitor_github::PublishMode::Auto,
+        incident_monitor_github::PublishMode::ManualPublish,
+        incident_monitor_github::PublishMode::Recovery,
+    ] {
+        assert!(
+            destination_readiness_block(&config, &preview, mode).is_some(),
+            "{mode:?} must block a not-ready destination by default"
+        );
+    }
+    // RecheckOnly is a dry recheck and never blocks.
+    assert!(destination_readiness_block(
+        &config,
+        &preview,
+        incident_monitor_github::PublishMode::RecheckOnly
+    )
+    .is_none());
+}
+
+#[test]
+fn tan545_flag_false_cannot_reopen_auto_or_manual_but_frees_recovery() {
+    let mut config = destination_gate_config();
+    config.safety_defaults.block_unready_destinations = false;
+    let preview = unready_destination_preview(&config);
+    // Auto/ManualPublish enforce structurally — flipping the flag cannot reopen
+    // the gap.
+    assert!(
+        destination_readiness_block(
+            &config,
+            &preview,
+            incident_monitor_github::PublishMode::Auto
+        )
+        .is_some(),
+        "Auto must still block a not-ready destination when the flag is false"
+    );
+    assert!(
+        destination_readiness_block(
+            &config,
+            &preview,
+            incident_monitor_github::PublishMode::ManualPublish
+        )
+        .is_some(),
+        "ManualPublish must still block a not-ready destination when the flag is false"
+    );
+    // Recovery is the deliberate escape hatch: with the flag off it may re-send.
+    assert!(
+        destination_readiness_block(
+            &config,
+            &preview,
+            incident_monitor_github::PublishMode::Recovery
+        )
+        .is_none(),
+        "Recovery must be the escape hatch when block_unready_destinations is false"
+    );
+}
