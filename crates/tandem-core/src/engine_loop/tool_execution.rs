@@ -5,17 +5,18 @@ use tandem_tools::{
 };
 
 #[derive(Clone)]
-struct EngineToolDispatchLedger {
-    event_bus: EventBus,
+pub(super) struct EngineToolDispatchLedger {
+    pub(super) event_bus: EventBus,
 }
 
 #[async_trait::async_trait]
 impl ToolDispatchLedger for EngineToolDispatchLedger {
-    async fn record(&self, event: ToolDispatchLedgerEvent) {
+    async fn record(&self, event: ToolDispatchLedgerEvent) -> anyhow::Result<()> {
         self.event_bus.publish(EngineEvent::new(
             "tool.dispatch.recorded",
             serde_json::to_value(event).unwrap_or(Value::Null),
         ));
+        Ok(())
     }
 }
 
@@ -43,6 +44,7 @@ impl EngineLoop {
             .get(session_id)
             .cloned()
             .unwrap_or_default();
+        let tool_dispatch_ledger = self.tool_dispatch_ledger.read().await.clone();
         let mut dispatch_context = ToolDispatchContext::for_tenant("engine_loop", tenant_context)
             .with_source(
                 ToolDispatchSource::new("engine_loop")
@@ -50,13 +52,15 @@ impl EngineLoop {
                     .message(message_id),
             )
             .with_scope_allowlist(scope_allowlist)
-            .with_ledger(std::sync::Arc::new(EngineToolDispatchLedger {
-                event_bus: self.event_bus.clone(),
-            }));
+            .with_ledger(tool_dispatch_ledger);
         if let Some(verified_tenant_context) = verified_tenant_context {
             dispatch_context =
                 dispatch_context.with_verified_tenant_context(verified_tenant_context);
         }
+        let (timeout_dispatch_id, timeout_payload_digest) = self
+            .tool_dispatcher
+            .dispatch_identity_for(tool, &args, &dispatch_context)
+            .await;
         let timeout_dispatch_context = dispatch_context.clone();
         match tokio::time::timeout(
             Duration::from_millis(timeout_ms),
@@ -75,6 +79,7 @@ impl EngineLoop {
                 timeout_dispatch_context
                     .ledger
                     .record(ToolDispatchLedgerEvent {
+                        dispatch_id: Some(timeout_dispatch_id),
                         tool: tool.to_string(),
                         canonical_tool: None,
                         tenant_context: timeout_dispatch_context.tenant_context.clone(),
@@ -82,10 +87,11 @@ impl EngineLoop {
                         scope_allowlist: timeout_dispatch_context.scope_allowlist.clone(),
                         policy_outcome: ToolDispatchPolicyOutcome::Allowed,
                         policy_decision_id: None,
+                        payload_digest: Some(timeout_payload_digest),
                         status: ToolDispatchStatus::Failed,
                         error: Some(format!("TOOL_EXEC_TIMEOUT_MS_EXCEEDED({timeout_ms})")),
                     })
-                    .await;
+                    .await?;
                 anyhow::bail!("TOOL_EXEC_TIMEOUT_MS_EXCEEDED({timeout_ms})");
             }
         }

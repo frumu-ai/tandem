@@ -672,7 +672,11 @@ fn collect_automation_external_action_receipts_records_bound_publisher_tools() {
                 result: Some(json!({
                     "output": "posted",
                     "metadata": {
-                        "channel": "engineering"
+                        "channel": "engineering",
+                        "stateful_outbox": {
+                            "outbox_id": "outbox-pre-send",
+                            "idempotency_key": "tool-dispatch-pre-send"
+                        }
                     }
                 })),
                 error: None,
@@ -719,6 +723,20 @@ fn collect_automation_external_action_receipts_records_bound_publisher_tools() {
     assert_eq!(
         receipts[0].context_run_id.as_deref(),
         Some("automation-v2-run-1")
+    );
+    assert_eq!(
+        receipts[0].idempotency_key.as_deref(),
+        Some("tool-dispatch-pre-send")
+    );
+    assert_eq!(
+        receipts[0].action_id,
+        format!(
+            "automation-external-{}",
+            crate::sha256_hex(&["tool-dispatch-pre-send"])
+                .chars()
+                .take(16)
+                .collect::<String>()
+        )
     );
     assert_eq!(receipts[0].target.as_deref(), Some("engineering"));
 }

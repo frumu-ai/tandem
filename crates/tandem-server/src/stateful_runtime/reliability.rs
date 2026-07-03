@@ -10,8 +10,8 @@ use crate::routines::types::ExternalActionRecord;
 use super::durable_io::{sideline_corrupt_state_file_sync, write_file_atomically};
 use super::types::{StatefulRuntimeScope, STATEFUL_RUNTIME_SCHEMA_VERSION};
 
-static STATEFUL_RELIABILITY_STORE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
+pub(crate) static STATEFUL_RELIABILITY_STORE_LOCK: tokio::sync::Mutex<()> =
+    tokio::sync::Mutex::const_new(());
 const DEFAULT_RELIABILITY_LIMIT: usize = 250;
 const MAX_RELIABILITY_LIMIT: usize = 1_000;
 
@@ -45,7 +45,7 @@ pub struct StatefulReliabilityStoreFile {
     #[serde(default)]
     pub compensations: Vec<StatefulCompensationRecord>,
 }
-
+type StatefulReliabilityResult = anyhow::Result<StatefulReliabilityStoreFile>;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum StatefulOutboxStatus {
@@ -329,7 +329,7 @@ pub fn load_stateful_reliability(path: &Path) -> StatefulReliabilityStoreFile {
     }
 }
 
-fn try_load_stateful_reliability(path: &Path) -> anyhow::Result<StatefulReliabilityStoreFile> {
+pub(crate) fn try_load_stateful_reliability(path: &Path) -> StatefulReliabilityResult {
     read_stateful_reliability(path, true)
 }
 
@@ -559,6 +559,7 @@ pub async fn record_external_action_reliability_bridge(
         clear_stale_failure_rows_for_effect(&mut store, &effect, &outbox);
     }
 
+    super::outbox_reconcile::preserve_pre_send_outbox(&store.outbox, &mut outbox);
     upsert_by(&mut store.outbox, outbox, |row| &row.outbox_id);
     upsert_by(&mut store.tool_effects, effect.clone(), |row| {
         &row.effect_id
@@ -729,7 +730,7 @@ pub async fn mark_compensation_status(
     Ok(Some(updated))
 }
 
-async fn write_stateful_reliability_unlocked(
+pub(crate) async fn write_stateful_reliability_unlocked(
     path: &Path,
     store: &StatefulReliabilityStoreFile,
 ) -> anyhow::Result<()> {

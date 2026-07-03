@@ -463,15 +463,28 @@ impl AppState {
         tenant_context: TenantContext,
         scope_allowlist: Vec<String>,
     ) -> ToolDispatchContext {
+        let source = if source.has_identity_key() {
+            source
+        } else {
+            source.request(uuid::Uuid::new_v4().to_string())
+        };
         ToolDispatchContext::for_tenant(source.kind.clone(), tenant_context)
             .with_source(source)
             .with_scope_allowlist(scope_allowlist)
             .with_ledger(Arc::new(AppStateToolDispatchLedger {
                 event_bus: self.event_bus.clone(),
+                runtime_events_path: self.runtime_events_path.clone(),
             }))
     }
 
     pub async fn mark_ready(&self, runtime: RuntimeState) -> anyhow::Result<()> {
+        runtime
+            .engine_loop
+            .set_tool_dispatch_ledger(Arc::new(AppStateToolDispatchLedger {
+                event_bus: runtime.event_bus.clone(),
+                runtime_events_path: self.runtime_events_path.clone(),
+            }))
+            .await;
         self.runtime
             .set(runtime)
             .map_err(|_| anyhow::anyhow!("runtime already initialized"))?;

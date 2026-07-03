@@ -8203,6 +8203,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2",
  "tandem-agent-teams",
  "tandem-document",
  "tandem-memory",
