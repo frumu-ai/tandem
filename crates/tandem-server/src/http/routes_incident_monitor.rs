@@ -67,6 +67,13 @@ fn apply_incident_monitor_routes(router: Router<AppState>, prefix: &str) -> Rout
     let router = route_prefixed(
         router,
         prefix,
+        "/security/reassessments",
+        get(list_incident_monitor_reassessments_endpoint)
+            .post(run_incident_monitor_reassessment_endpoint),
+    );
+    let router = route_prefixed(
+        router,
+        prefix,
         "/route-preview",
         post(preview_incident_monitor_route),
     );

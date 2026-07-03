@@ -13,6 +13,7 @@ use crate::automation_v2::types::{AutomationRunStatus, AutomationStopKind, Autom
 use crate::stateful_runtime::{process_due_stateful_waits, StatefulRuntimeStoragePaths};
 
 const STALE_RUNNING_AUTOMATION_RUN_MS: u64 = 600_000;
+const AUTOMATION_WEBHOOK_INBOX_BATCH_LIMIT: usize = 50;
 
 pub async fn run_automation_v2_executor(state: AppState) {
     // Self-supervise: if any panic escapes, log it and respawn the inner loop
@@ -105,6 +106,21 @@ async fn process_stateful_wait_scheduler_tick(state: &AppState) {
     }
 }
 
+async fn process_automation_webhook_inbox_tick(state: &AppState) {
+    let report = state
+        .process_automation_webhook_inbox_once(AUTOMATION_WEBHOOK_INBOX_BATCH_LIMIT)
+        .boxed()
+        .await;
+    if report.processed > 0 || report.failed > 0 {
+        tracing::info!(
+            checked = report.checked,
+            processed = report.processed,
+            failed = report.failed,
+            "automation webhook inbox tick completed"
+        );
+    }
+}
+
 async fn run_automation_v2_executor_single(state: AppState) {
     let mut active = JoinSet::new();
     loop {
@@ -133,6 +149,7 @@ async fn run_automation_v2_executor_single(state: AppState) {
         let _ = state.auto_resume_stale_reaped_runs().await;
 
         process_stateful_wait_scheduler_tick(&state).await;
+        process_automation_webhook_inbox_tick(&state).await;
 
         if active.is_empty() {
             if let Some(run) = state.claim_next_queued_automation_v2_run().await {
@@ -172,6 +189,7 @@ async fn run_automation_v2_executor_multi(state: AppState) {
         let _ = state.auto_resume_stale_reaped_runs().await;
 
         process_stateful_wait_scheduler_tick(&state).await;
+        process_automation_webhook_inbox_tick(&state).await;
 
         let capacity = {
             let scheduler = state.automation_scheduler.read().await;

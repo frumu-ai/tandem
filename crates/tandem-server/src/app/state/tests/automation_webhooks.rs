@@ -1168,6 +1168,87 @@ async fn webhook_duplicate_after_restart_uses_persisted_idempotency_outcome() {
 }
 
 #[tokio::test]
+async fn webhook_inbox_reconnects_received_event_to_existing_delivery() {
+    let state = ready_test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a");
+    insert_test_automation(&state, "automation-inbox-reconnect", &tenant_a).await;
+    let created = state
+        .create_automation_webhook_trigger(create_input(
+            "automation-inbox-reconnect",
+            tenant_a.clone(),
+        ))
+        .await
+        .expect("create webhook trigger");
+
+    let body = br#"{"reconnect":true}"#;
+    let now = now_ms();
+    let raw_event = state
+        .record_automation_webhook_raw_event(AutomationWebhookRawEventCreateInput {
+            trigger: created.trigger.clone(),
+            provider_event_id: Some("evt-inbox-reconnect".to_string()),
+            body_digest: automation_webhook_body_digest(body),
+            verification: None,
+            feedback_loop_candidate: None,
+            headers_digest: "headers-digest".to_string(),
+            headers_redacted: json!({"x-tandem-webhook-event-id": "evt-inbox-reconnect"}),
+            content_type: Some("application/json".to_string()),
+            payload: body.to_vec(),
+            received_at_ms: now,
+        })
+        .await
+        .expect("record raw event");
+    let signature = automation_webhook_signature_header(&created.secret, now, body);
+    let verified = state
+        .verify_automation_webhook_request(
+            &created.trigger.public_path_token,
+            Some(&signature),
+            body,
+            Some("evt-inbox-reconnect".to_string()),
+            now,
+            300_000,
+        )
+        .await
+        .expect("verify webhook");
+    let (delivery, run) = match state
+        .queue_automation_v2_run_from_webhook_delivery(verified, json!({"reconnect": true}))
+        .await
+        .expect("accepted delivery")
+    {
+        AutomationWebhookQueueResult::Accepted { delivery, run } => (delivery, run),
+        other => panic!("expected accepted delivery, got {other:?}"),
+    };
+    assert_eq!(delivery.queued_run_id.as_deref(), Some(run.run_id.as_str()));
+    assert_eq!(state.automation_v2_runs.read().await.len(), 1);
+
+    let report = state.process_automation_webhook_inbox_once(10).await;
+    assert_eq!(report.checked, 1);
+    assert_eq!(report.processed, 1);
+    assert_eq!(report.failed, 0);
+
+    let updated = state
+        .get_automation_webhook_raw_event(&tenant_a, &raw_event.event_id)
+        .await
+        .expect("load raw event")
+        .expect("raw event exists");
+    assert_eq!(updated.status, AutomationWebhookDeliveryStatus::Accepted);
+    assert_eq!(
+        updated.delivery_id.as_deref(),
+        Some(delivery.delivery_id.as_str())
+    );
+    assert_eq!(updated.queued_run_id.as_deref(), Some(run.run_id.as_str()));
+    assert_eq!(
+        updated.dedupe_result,
+        Some(AutomationWebhookDedupeResult::Accepted)
+    );
+
+    let deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(&tenant_a, &created.trigger.trigger_id)
+        .await;
+    assert_eq!(deliveries.len(), 1);
+    assert_eq!(state.automation_v2_runs.read().await.len(), 1);
+}
+
+#[tokio::test]
 async fn webhook_retention_prunes_expired_raw_events_payloads_and_deliveries() {
     let state = ready_test_state().await;
     let tenant_a = tenant("org-a", "workspace-a");
@@ -1187,6 +1268,8 @@ async fn webhook_retention_prunes_expired_raw_events_payloads_and_deliveries() {
             trigger: created.trigger.clone(),
             provider_event_id: Some("evt-retention".to_string()),
             body_digest: automation_webhook_body_digest(body),
+            verification: None,
+            feedback_loop_candidate: None,
             headers_digest: "headers-digest".to_string(),
             headers_redacted: json!({"x-tandem-webhook-event-id": "evt-retention"}),
             content_type: Some("application/json".to_string()),
@@ -1289,6 +1372,70 @@ async fn webhook_retention_prunes_expired_raw_events_payloads_and_deliveries() {
     assert!(!remaining_deliveries
         .iter()
         .any(|delivery| delivery.delivery_id == stale_rejection.delivery_id));
+}
+
+#[tokio::test]
+async fn webhook_inbox_dead_letters_raw_event_when_trigger_is_deleted() {
+    let state = ready_test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a");
+    insert_test_automation(&state, "automation-deleted-trigger", &tenant_a).await;
+    let created = state
+        .create_automation_webhook_trigger(create_input(
+            "automation-deleted-trigger",
+            tenant_a.clone(),
+        ))
+        .await
+        .expect("create webhook trigger");
+
+    let body = br#"{"deleted_trigger":true}"#;
+    let raw_event = state
+        .record_automation_webhook_raw_event(AutomationWebhookRawEventCreateInput {
+            trigger: created.trigger.clone(),
+            provider_event_id: Some("evt-deleted-trigger".to_string()),
+            body_digest: automation_webhook_body_digest(body),
+            verification: None,
+            feedback_loop_candidate: None,
+            headers_digest: "headers-digest".to_string(),
+            headers_redacted: json!({"x-tandem-webhook-event-id": "evt-deleted-trigger"}),
+            content_type: Some("application/json".to_string()),
+            payload: body.to_vec(),
+            received_at_ms: now_ms(),
+        })
+        .await
+        .expect("record raw event");
+    assert!(state
+        .delete_automation_webhook_trigger(&tenant_a, &created.trigger.trigger_id)
+        .await
+        .expect("delete trigger"));
+
+    let report = state.process_automation_webhook_inbox_once(10).await;
+    assert_eq!(report.checked, 1);
+    assert_eq!(report.processed, 1);
+    assert_eq!(report.failed, 0);
+
+    let updated = state
+        .get_automation_webhook_raw_event(&tenant_a, &raw_event.event_id)
+        .await
+        .expect("get raw event")
+        .expect("raw event remains inspectable");
+    assert_eq!(updated.status, AutomationWebhookDeliveryStatus::Failed);
+    assert_eq!(
+        updated.rejection_reason_code.as_deref(),
+        Some("webhook_trigger_missing")
+    );
+    assert_eq!(
+        updated
+            .correlation
+            .as_ref()
+            .map(|correlation| &correlation.outcome),
+        Some(&AutomationWebhookCorrelationOutcome::DeadLetter)
+    );
+    assert!(updated.delivery_id.is_none());
+
+    let second_report = state.process_automation_webhook_inbox_once(10).await;
+    assert_eq!(second_report.checked, 0);
+    assert_eq!(second_report.processed, 0);
+    assert_eq!(second_report.failed, 0);
 }
 
 #[tokio::test]

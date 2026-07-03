@@ -76,6 +76,7 @@ pub mod incident_monitor_governance_metrics;
 pub mod incident_monitor_linear;
 pub mod incident_monitor_local;
 pub mod incident_monitor_mcp;
+pub mod incident_monitor_reassessment;
 pub mod incident_monitor_scenarios;
 pub mod incident_monitor_webhook;
 pub mod mcp_catalog;
@@ -126,11 +127,18 @@ pub use failures::{
 };
 pub use http::*;
 pub use incident_monitor::governance_metrics::IncidentMonitorGovernanceThresholds;
+pub use incident_monitor::reassessment::{
+    IncidentMonitorReassessmentConfig, ReassessmentComparison, ReassessmentFinding,
+    ReassessmentRecord, ReassessmentScheduleStatus, ReassessmentTrigger,
+};
 pub use incident_monitor::scenarios::{
     default_scenario_pack, IncidentMonitorScenario, IncidentMonitorScenarioExpectation,
     IncidentMonitorScenarioInput, IncidentMonitorScenarioPack,
 };
 pub use incident_monitor::types::*;
+pub use incident_monitor_reassessment::{
+    run_incident_monitor_reassessment_scheduler, IncidentMonitorReassessmentPending,
+};
 pub use memory::types::*;
 pub use optimization::*;
 pub use routines::errors::*;
