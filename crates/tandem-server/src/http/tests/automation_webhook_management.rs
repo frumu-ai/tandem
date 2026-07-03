@@ -207,6 +207,7 @@ async fn notion_trigger_create_and_one_time_verification_token_reveal() {
 
     // A second reveal is refused — the token is exposed at most once.
     let second_resp = app
+        .clone()
         .oneshot(tenant_request(
             "POST",
             format!("/automations/v2/auto-notion-mgmt/webhook-triggers/{trigger_id}/reveal-verification-token"),
@@ -218,6 +219,21 @@ async fn notion_trigger_create_and_one_time_verification_token_reveal() {
         .await
         .expect("second reveal");
     assert_eq!(second_resp.status(), StatusCode::CONFLICT);
+
+    // Rotating a Tandem secret on a Notion trigger is rejected — it would clobber
+    // the provider-owned verification token.
+    let rotate_resp = app
+        .oneshot(tenant_request(
+            "POST",
+            format!("/automations/v2/auto-notion-mgmt/webhook-triggers/{trigger_id}/rotate-secret"),
+            "org-a",
+            "workspace-a",
+            "actor-a",
+            Some(json!({})),
+        ))
+        .await
+        .expect("rotate");
+    assert_eq!(rotate_resp.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

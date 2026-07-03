@@ -1183,8 +1183,17 @@ async fn rotate_webhook_secret(
         false,
     )
     .await?;
-    let _trigger =
+    let trigger =
         load_trigger_for_mutation(&state, &tenant_context, verified, &id, &trigger_id).await?;
+    // Notion triggers sign with a provider-owned verification token; rotating to
+    // a Tandem-generated secret would break verification and the reveal.
+    if trigger.is_provider_owned_secret() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "AUTOMATION_WEBHOOK_ROTATE_UNSUPPORTED",
+            "provider-owned-secret (notion) webhook triggers cannot rotate a Tandem secret",
+        ));
+    }
     let actor_id = actor_id_for_records(&tenant_context, &request_principal, verified);
     let rotated = state
         .rotate_automation_webhook_secret(&tenant_context, &trigger_id, actor_id)

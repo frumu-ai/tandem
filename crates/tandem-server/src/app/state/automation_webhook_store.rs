@@ -705,8 +705,7 @@ impl AppState {
         let mut requested_scheme = self.validate_webhook_signature_scheme_allowed(
             input.signature_scheme.clone().unwrap_or_default(),
         )?;
-        // Notion's signing secret is its provider-owned verification token, so
-        // force the scheme and start the verification lifecycle for that provider.
+        // Notion's signing secret is its provider-owned verification token.
         let is_notion = provider == "notion";
         if is_notion {
             requested_scheme = AutomationWebhookSignatureScheme::NotionHmacSha256;
@@ -837,12 +836,6 @@ impl AppState {
             }
             trigger
         };
-        // Notion's provider-owned token must not rotate to a Tandem secret.
-        if current_trigger.is_provider_owned_secret() {
-            anyhow::bail!(
-                "notion webhook triggers use a provider-owned verification token and cannot rotate a Tandem secret"
-            );
-        }
         let old_secret_ref = current_trigger.secret.secret_ref.clone();
         let secret_version = current_trigger
             .secret
@@ -1113,8 +1106,7 @@ impl AppState {
                     let accepted_at_ms = delivery.accepted_at_ms.unwrap_or(now);
                     delivery.accepted_at_ms = Some(accepted_at_ms);
                     trigger.last_accepted_at_ms = Some(accepted_at_ms);
-                    // First signed Notion event verifying against the stored
-                    // token marks the subscription active (TAN-562).
+                    // First verified signed Notion event marks it active (TAN-562).
                     if let Some(verification) = trigger.notion_verification.as_mut() {
                         verification.mark_active(accepted_at_ms);
                     }

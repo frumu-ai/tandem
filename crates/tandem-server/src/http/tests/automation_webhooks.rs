@@ -1612,24 +1612,6 @@ async fn notion_event_with_wrong_token_signature_is_rejected() {
 }
 
 #[tokio::test]
-async fn notion_trigger_rejects_secret_rotation() {
-    let state = test_state().await;
-    let tenant_context = tenant("org-a", "workspace-a");
-    let created = setup_notion_webhook(&state, "automation-notion-rotate", &tenant_context).await;
-
-    // Rotating a Tandem secret on a Notion trigger would clobber the provider
-    // token, so it must be rejected.
-    let result = state
-        .rotate_automation_webhook_secret(
-            &tenant_context,
-            &created.trigger.trigger_id,
-            Some("actor-a".to_string()),
-        )
-        .await;
-    assert!(result.is_err(), "notion trigger rotation must be rejected");
-}
-
-#[tokio::test]
 async fn notion_second_verification_token_does_not_overwrite_first() {
     let state = test_state().await;
     let tenant_context = tenant("org-a", "workspace-a");
