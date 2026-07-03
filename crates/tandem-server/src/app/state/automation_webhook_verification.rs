@@ -117,6 +117,7 @@ impl AppState {
             provider_event_id,
             body_digest: automation_webhook_body_digest(body),
             received_at_ms: request_now_ms,
+            wait_bookkeeping_at_ms: None,
             verification,
         })
     }

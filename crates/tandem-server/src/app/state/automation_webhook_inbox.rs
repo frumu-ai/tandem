@@ -669,6 +669,7 @@ impl AppState {
             provider_event_id: event.provider_event_id.clone(),
             body_digest: event.body_digest.clone(),
             received_at_ms: event.received_at_ms,
+            wait_bookkeeping_at_ms: Some(crate::now_ms().max(event.received_at_ms)),
             verification: automation_webhook_verification_from_raw_event(&event, &trigger),
         };
         let queue: BoxFuture<'_, anyhow::Result<AutomationWebhookQueueResult>> = Box::pin(
