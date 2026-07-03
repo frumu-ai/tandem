@@ -243,6 +243,9 @@ pub async fn process_due_stateful_waits(
         candidate_limit,
     )
     .into_iter()
+    .filter(|candidate| {
+        !scheduler_candidate_has_active_regression_lease(candidate, regression_tick, now_ms)
+    })
     .filter_map(|candidate| {
         let action = scheduler_action(&candidate, clock.effective_now_ms)?;
         let processing_now_ms = scheduler_processing_now_ms(
@@ -330,6 +333,14 @@ pub async fn process_due_stateful_waits(
     }
 
     tick
+}
+
+fn scheduler_candidate_has_active_regression_lease(
+    wait: &StatefulWaitRecord,
+    regression_tick: bool,
+    now_ms: u64,
+) -> bool {
+    regression_tick && wait.claim_is_active_at(now_ms)
 }
 
 fn observe_scheduler_wall_time(
@@ -1620,6 +1631,71 @@ mod tests {
         let events = load_stateful_run_events(&paths.run_events_path);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].occurred_at_ms, 1_500);
+        let _ = tokio::fs::remove_dir_all(
+            paths
+                .run_events_path
+                .parent()
+                .expect("runtime root")
+                .to_path_buf(),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn scheduler_regression_limit_skips_active_leases() {
+        let paths = paths("stateful-wait-scheduler-clock-regression-active-lease-limit");
+        let tenant = tenant("org-a", "workspace-a");
+        let config = StatefulWaitSchedulerConfig {
+            claimant_id: "scheduler-clock-regression-active-lease-limit-test".to_string(),
+            lease_ms: 500,
+            limit: 1,
+        };
+        let seed_tick = process_due_stateful_waits(&paths, 2_000, config.clone()).await;
+        assert_eq!(seed_tick.checked, 0);
+        assert_eq!(seed_tick.clock_regressions, 0);
+
+        let mut active_claim = timer_wait("wait-active-lease", 900);
+        active_claim.status = StatefulWaitStatus::Claimed;
+        active_claim.claimed_by = Some("scheduler-a".to_string());
+        active_claim.claimed_at_ms = Some(900);
+        active_claim.claim_expires_at_ms = Some(1_500);
+        upsert_stateful_wait(&paths.waits_path, active_claim)
+            .await
+            .expect("insert active claimed wait");
+        upsert_stateful_wait(&paths.waits_path, timer_wait("wait-ready", 1_000))
+            .await
+            .expect("insert ready wait");
+
+        let tick = process_due_stateful_waits(&paths, 1_000, config).await;
+        assert_eq!(tick.clock_regressions, 1);
+        assert_eq!(tick.checked, 1);
+        assert_eq!(tick.claimed, 1);
+        assert_eq!(tick.completed, 1);
+        assert_eq!(tick.outcomes[0].wait_id, "wait-ready");
+        let waits = list_stateful_waits(
+            &paths.waits_path,
+            &tenant,
+            StatefulWaitQuery {
+                run_id: Some("run-a"),
+                ..StatefulWaitQuery::default()
+            },
+        );
+        assert_eq!(
+            waits
+                .iter()
+                .find(|wait| wait.wait_id == "wait-active-lease")
+                .expect("active lease wait")
+                .status,
+            StatefulWaitStatus::Claimed
+        );
+        assert_eq!(
+            waits
+                .iter()
+                .find(|wait| wait.wait_id == "wait-ready")
+                .expect("ready wait")
+                .status,
+            StatefulWaitStatus::Woken
+        );
         let _ = tokio::fs::remove_dir_all(
             paths
                 .run_events_path
