@@ -404,7 +404,13 @@ async fn mcp_secret_tenant_mismatch_writes_sanitized_protected_audit() {
         &state,
         "tenant-server",
         "get_me",
-        json!({}),
+        json!({
+            "__phase_tool_authority": {
+                "phase": "credential_use",
+                "allowed_tools": ["mcp.tenant_server.get_me"],
+                "run_id": "run-secret-mismatch"
+            }
+        }),
         &tenant_b,
         Some(&verified),
     )
@@ -480,7 +486,13 @@ async fn disabled_mcp_server_with_foreign_secret_does_not_emit_mismatch_audit() 
         &state,
         "disabled-tenant-server",
         "get_me",
-        json!({}),
+        json!({
+            "__phase_tool_authority": {
+                "phase": "credential_use",
+                "allowed_tools": ["mcp.disabled_tenant_server.get_me"],
+                "run_id": "run-disabled-secret"
+            }
+        }),
         &tenant_b,
         Some(&verified),
     )

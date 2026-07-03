@@ -58,6 +58,7 @@ struct McpContextAssertionPreflight {
 struct McpPhaseToolAuthority {
     phase: Option<String>,
     allowed_tools: Vec<String>,
+    source: Option<String>,
     run_id: Option<String>,
     automation_id: Option<String>,
     node_id: Option<String>,
@@ -72,6 +73,7 @@ struct McpPhaseToolAuthorityPreflight {
     phase: Option<String>,
     requested_tool: String,
     allowed_tools: Vec<String>,
+    source: Option<String>,
     decision: PolicyDecisionEffect,
     reason_code: String,
     reason: String,
@@ -691,23 +693,101 @@ async fn enforce_mcp_phase_tool_authority(
     run_as: &McpRunAsResolution,
     authority: Option<&McpPhaseToolAuthority>,
 ) -> Result<Option<McpPhaseToolAuthorityPreflight>, String> {
-    let Some(authority) = authority else {
-        return Ok(None);
-    };
     let requested_tool = mcp_tool_policy_name(server_name, tool_name);
-    let allowed = authority.allowed_tools.is_empty()
-        || mcp_tool_allowed_by_phase_authority(&authority.allowed_tools, server_name, tool_name);
-    let phase = authority.phase_label();
-    let (effect, reason_code, reason) = if allowed {
-        let reason_code = if authority.allowed_tools.is_empty() {
-            "phase_tool_authority_no_allowlist"
-        } else {
-            "phase_tool_allowed"
+    let resource = mcp_tool_resource_ref(&run_as.effective_tenant_context, server_name, tool_name);
+    let Some(authority) = authority else {
+        if run_as.effective_tenant_context.is_local_implicit() {
+            return Ok(None);
+        }
+
+        let authority = McpPhaseToolAuthority::missing();
+        let reason =
+            format!("MCP tool `{requested_tool}` denied because phase tool authority is missing");
+        let decision_record = record_mcp_phase_tool_authority_decision(
+            state,
+            server_name,
+            tool_name,
+            &resource,
+            run_as,
+            &authority,
+            PolicyDecisionEffect::Deny,
+            "phase_tool_authority_missing",
+            &reason,
+            &requested_tool,
+        )
+        .await;
+        let preflight = McpPhaseToolAuthorityPreflight {
+            decision_id: decision_record
+                .as_ref()
+                .map(|record| record.decision_id.clone()),
+            phase: None,
+            requested_tool,
+            allowed_tools: Vec::new(),
+            source: authority.source,
+            decision: decision_record
+                .as_ref()
+                .map(|record| record.decision)
+                .unwrap_or(PolicyDecisionEffect::Deny),
+            reason_code: decision_record
+                .as_ref()
+                .map(|record| record.reason_code.clone())
+                .unwrap_or_else(|| "phase_tool_authority_missing".to_string()),
+            reason: decision_record
+                .as_ref()
+                .map(|record| record.reason.clone())
+                .unwrap_or(reason),
+            run_id: None,
+            automation_id: None,
+            node_id: None,
+            session_id: None,
+            message_id: None,
+            policy_id: authority.policy_id,
         };
+        append_mcp_phase_tool_authority_denial_audit_event(
+            state,
+            &run_as.effective_tenant_context,
+            run_as,
+            &resource,
+            &preflight,
+        )
+        .await;
+        return Err(format!(
+            "ToolDenied {{ reason: PhaseToolAuthority }}: blocked MCP tool `{server_name}.{tool_name}` because {}.",
+            preflight.reason
+        ));
+    };
+    let has_allowlist = authority
+        .allowed_tools
+        .iter()
+        .any(|tool| !tool.trim().is_empty());
+    let unscoped_dispatch_authority = authority.is_unscoped_dispatch_context_authority();
+    let allowed = unscoped_dispatch_authority
+        || (has_allowlist
+            && mcp_tool_allowed_by_phase_authority(
+                &authority.allowed_tools,
+                server_name,
+                tool_name,
+            ));
+    let phase = authority.phase_label();
+    let (effect, reason_code, reason) = if unscoped_dispatch_authority {
         (
             PolicyDecisionEffect::Allow,
-            reason_code.to_string(),
+            "phase_tool_unscoped_dispatch_context".to_string(),
+            format!(
+                "MCP tool `{requested_tool}` allowed by trusted dispatch context without a scoped phase allowlist"
+            ),
+        )
+    } else if allowed {
+        (
+            PolicyDecisionEffect::Allow,
+            "phase_tool_allowed".to_string(),
             format!("MCP tool `{requested_tool}` allowed during workflow phase `{phase}`"),
+        )
+    } else if !has_allowlist {
+        (
+            PolicyDecisionEffect::Deny,
+            "phase_tool_authority_empty_allowlist".to_string(),
+            format!("MCP tool `{requested_tool}` denied because workflow phase `{phase}` has no allowed tools"),
         )
     } else {
         (
@@ -716,7 +796,6 @@ async fn enforce_mcp_phase_tool_authority(
             format!("MCP tool `{requested_tool}` is not allowed during workflow phase `{phase}`"),
         )
     };
-    let resource = mcp_tool_resource_ref(&run_as.effective_tenant_context, server_name, tool_name);
     let decision_record = record_mcp_phase_tool_authority_decision(
         state,
         server_name,
@@ -750,6 +829,7 @@ async fn enforce_mcp_phase_tool_authority(
         phase: authority.phase.clone(),
         requested_tool,
         allowed_tools: authority.allowed_tools.clone(),
+        source: authority.source.clone(),
         decision: resolved_effect,
         reason_code: resolved_reason_code,
         reason: resolved_reason,
@@ -819,7 +899,7 @@ fn mcp_tool_policy_aliases(server_name: &str, tool_name: &str) -> Vec<String> {
     let canonical = mcp_tool_policy_name(server_name, tool_name);
     let raw_server = server_name.trim().to_ascii_lowercase();
     let raw_tool = tool_name.trim().to_ascii_lowercase();
-    let mut aliases = vec![canonical, format!("mcp.{raw_server}.{raw_tool}"), raw_tool];
+    let mut aliases = vec![canonical, format!("mcp.{raw_server}.{raw_tool}")];
     aliases.sort();
     aliases.dedup();
     aliases
@@ -853,6 +933,7 @@ fn extract_mcp_phase_tool_authority(args: &Value) -> Option<McpPhaseToolAuthorit
     });
     let allowed_tools =
         string_array_field(authority_value, "allowed_tools", "allowedTools").unwrap_or_default();
+    let source = string_field(authority_value, "source", "source");
     let run_id = string_field(authority_value, "run_id", "runId");
     let automation_id = string_field(authority_value, "automation_id", "automationId");
     let node_id = string_field(authority_value, "node_id", "nodeId");
@@ -863,6 +944,7 @@ fn extract_mcp_phase_tool_authority(args: &Value) -> Option<McpPhaseToolAuthorit
 
     if phase.is_none()
         && allowed_tools.is_empty()
+        && source.is_none()
         && run_id.is_none()
         && automation_id.is_none()
         && node_id.is_none()
@@ -875,6 +957,7 @@ fn extract_mcp_phase_tool_authority(args: &Value) -> Option<McpPhaseToolAuthorit
     Some(McpPhaseToolAuthority {
         phase,
         allowed_tools,
+        source,
         run_id,
         automation_id,
         node_id,
@@ -1017,6 +1100,7 @@ async fn record_mcp_phase_tool_authority_decision(
             "phase_tool_authority": {
                 "phase": authority.phase,
                 "allowed_tools": authority.allowed_tools,
+                "authority_source": authority.source,
                 "requested_tool": requested_tool,
                 "rule": "workflow_phase_tool_allowlist",
                 "source": "mcp_bridge_authority",
@@ -1388,8 +1472,31 @@ impl McpContextAssertionPreflight {
 }
 
 impl McpPhaseToolAuthority {
+    fn missing() -> Self {
+        Self {
+            phase: None,
+            allowed_tools: Vec::new(),
+            source: None,
+            run_id: None,
+            automation_id: None,
+            node_id: None,
+            session_id: None,
+            message_id: None,
+            policy_id: "workflow_phase_tool_authority".to_string(),
+        }
+    }
+
     fn phase_label(&self) -> String {
         self.phase.clone().unwrap_or_else(|| "unknown".to_string())
+    }
+
+    fn is_unscoped_dispatch_context_authority(&self) -> bool {
+        self.allowed_tools.iter().all(|tool| tool.trim().is_empty())
+            && self.source.as_deref() == Some("tool_dispatch_context")
+            && (self.session_id.is_some()
+                || self.message_id.is_some()
+                || self.run_id.is_some()
+                || self.node_id.is_some())
     }
 }
 
@@ -1401,6 +1508,7 @@ impl McpPhaseToolAuthorityPreflight {
             "phase": self.phase,
             "requestedTool": self.requested_tool,
             "allowedTools": self.allowed_tools,
+            "source": self.source,
             "decision": self.decision,
             "reasonCode": self.reason_code,
             "reason": self.reason,

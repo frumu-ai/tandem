@@ -279,6 +279,67 @@ pub fn phase_state_from_status(
     }
 }
 
+pub fn guarded_phase_state_from_status(
+    run_id: &str,
+    status: &StatefulWorkflowRunStatus,
+    occurred_at_ms: u64,
+    phase_id: Option<&str>,
+    previous_phase: Option<StatefulWorkflowPhase>,
+    previous_history: &[StatefulWorkflowPhaseTransitionRecord],
+    reason: impl Into<Option<String>>,
+) -> Result<StatefulWorkflowPhaseState, StatefulWorkflowPhaseTransitionError> {
+    let next_phase = phase_from_stateful_status(status);
+    let Some(from_phase) = previous_phase else {
+        return Ok(phase_state_from_status(
+            run_id,
+            status,
+            occurred_at_ms,
+            phase_id,
+        ));
+    };
+
+    let mut history = previous_history.to_vec();
+    if from_phase == next_phase {
+        if history.is_empty() {
+            history.push(StatefulWorkflowPhaseTransitionRecord::observed(
+                phase_observed_event_id(run_id, next_phase, occurred_at_ms),
+                next_phase,
+                occurred_at_ms,
+                phase_id.map(ToOwned::to_owned),
+                Some(format!(
+                    "observed_status:{}",
+                    stateful_status_as_str(status)
+                )),
+            ));
+        }
+        return Ok(StatefulWorkflowPhaseState {
+            phase: next_phase,
+            phase_history: history,
+            allowed_next_phases: next_phase.allowed_next_phases().to_vec(),
+        });
+    }
+
+    let transition = StatefulWorkflowPhaseTransitionRecord::new(
+        phase_transition_event_id(run_id, from_phase, next_phase, occurred_at_ms),
+        from_phase,
+        next_phase,
+        occurred_at_ms,
+        phase_id.map(ToOwned::to_owned),
+        reason.into().or_else(|| {
+            Some(format!(
+                "status_transition:{}",
+                stateful_status_as_str(status)
+            ))
+        }),
+    )?;
+    history.push(transition);
+    Ok(StatefulWorkflowPhaseState {
+        phase: next_phase,
+        phase_history: history,
+        allowed_next_phases: next_phase.allowed_next_phases().to_vec(),
+    })
+}
+
 pub fn phase_transition_event(
     run_id: impl Into<String>,
     seq: u64,
@@ -306,6 +367,27 @@ pub fn phase_transition_event(
             "reason": transition.reason,
         }),
     }
+}
+
+fn phase_observed_event_id(
+    run_id: &str,
+    phase: StatefulWorkflowPhase,
+    occurred_at_ms: u64,
+) -> String {
+    format!("{run_id}:phase:{}:{occurred_at_ms}", phase.as_str())
+}
+
+fn phase_transition_event_id(
+    run_id: &str,
+    from_phase: StatefulWorkflowPhase,
+    to_phase: StatefulWorkflowPhase,
+    occurred_at_ms: u64,
+) -> String {
+    format!(
+        "{run_id}:phase_transition:{}:{}:{occurred_at_ms}",
+        from_phase.as_str(),
+        to_phase.as_str()
+    )
 }
 
 fn stateful_status_as_str(status: &StatefulWorkflowRunStatus) -> &'static str {
@@ -436,6 +518,56 @@ mod tests {
             state.phase_history[0].reason.as_deref(),
             Some("observed_status:awaiting_approval")
         );
+    }
+
+    #[test]
+    fn guarded_phase_state_accumulates_and_rejects_illegal_transitions() {
+        let queued =
+            phase_state_from_status("run-a", &StatefulWorkflowRunStatus::Queued, 100, None);
+        let running = guarded_phase_state_from_status(
+            "run-a",
+            &StatefulWorkflowRunStatus::Running,
+            200,
+            Some("node-a"),
+            Some(queued.phase),
+            &queued.phase_history,
+            Some("executor claimed run".to_string()),
+        )
+        .expect("queued to running");
+
+        assert_eq!(running.phase, StatefulWorkflowPhase::RunningPhase);
+        assert_eq!(running.phase_history.len(), 2);
+        assert_eq!(
+            running.phase_history[1].from_phase,
+            Some(StatefulWorkflowPhase::Queued)
+        );
+        assert_eq!(
+            running.phase_history[1].to_phase,
+            StatefulWorkflowPhase::RunningPhase
+        );
+
+        let completed = guarded_phase_state_from_status(
+            "run-a",
+            &StatefulWorkflowRunStatus::Completed,
+            300,
+            None,
+            Some(running.phase),
+            &running.phase_history,
+            Some("executor completed run".to_string()),
+        )
+        .expect("running to completed");
+        let err = guarded_phase_state_from_status(
+            "run-a",
+            &StatefulWorkflowRunStatus::Running,
+            400,
+            None,
+            Some(completed.phase),
+            &completed.phase_history,
+            Some("scheduler attempted wake".to_string()),
+        )
+        .expect_err("terminal completed run must not transition to running");
+        assert_eq!(err.from_phase, StatefulWorkflowPhase::Completed);
+        assert_eq!(err.to_phase, StatefulWorkflowPhase::RunningPhase);
     }
 
     #[test]

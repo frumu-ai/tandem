@@ -46,9 +46,10 @@ pub use store::{
 pub use types::*;
 pub use waits::{
     begin_claimed_stateful_wait_timeout_completion, begin_claimed_stateful_wait_wake_completion,
-    claim_due_stateful_wait, claim_matching_stateful_webhook_wait, due_stateful_waits,
+    cancel_stateful_wait_after_phase_guard_denial, claim_due_stateful_wait,
+    claim_matching_stateful_webhook_wait, due_stateful_waits,
     finish_claimed_stateful_wait_completion, list_stateful_waits, load_stateful_waits,
-    mark_stateful_wait_timeout_result, mark_stateful_wait_woken,
+    mark_stateful_wait_timeout_result, mark_stateful_wait_woken, release_claimed_stateful_wait,
     stateful_webhook_wait_match_from_metadata, stateful_webhook_wait_metadata,
     upsert_stateful_wait, StatefulWaitQuery,
 };
