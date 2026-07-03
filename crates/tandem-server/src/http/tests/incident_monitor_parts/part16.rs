@@ -6,15 +6,17 @@ async fn configure_scenario_pack_incident_monitor(state: &AppState, require_appr
             enabled: true,
             repo: Some("acme/platform".to_string()),
             workspace_root: Some("/tmp/acme".to_string()),
+            // A telemetry destination is publish-ready without an MCP server, so
+            // the high-risk approval scenarios have a routable path to evaluate.
             destinations: vec![crate::IncidentMonitorDestinationConfig {
-                destination_id: "gh-default".to_string(),
-                name: "Default GitHub".to_string(),
-                kind: crate::IncidentMonitorDestinationKind::GithubIssue,
+                destination_id: "telemetry-default".to_string(),
+                name: "Default telemetry".to_string(),
+                kind: crate::IncidentMonitorDestinationKind::Telemetry,
                 enabled: true,
-                repo: Some("acme/platform".to_string()),
+                telemetry_path: Some("incidents".to_string()),
                 ..Default::default()
             }],
-            default_destination_ids: vec!["gh-default".to_string()],
+            default_destination_ids: vec!["telemetry-default".to_string()],
             safety_defaults: crate::IncidentMonitorSafetyDefaults {
                 require_approval_for_high_risk,
                 ..Default::default()
@@ -195,4 +197,114 @@ async fn incident_monitor_scenario_packs_listing_describes_pack_without_running(
     assert!(scenarios.len() >= 8);
     // Listing must not execute anything (no results field on the pack).
     assert!(payload["packs"][0].get("results").is_none());
+}
+
+#[tokio::test]
+#[serial_test::serial(incident_monitor_http)]
+async fn incident_monitor_scenario_blocked_preview_is_not_evaluable_for_approval() {
+    // TAN-487 review: a high-risk approval scenario must not report `pass` when
+    // the readiness gate blocked the publish (non-empty destinations + blocked).
+    // A GitHub destination without a connected MCP server is not publish-ready.
+    let state = test_state().await;
+    state
+        .put_incident_monitor_config(crate::IncidentMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            workspace_root: Some("/tmp/acme".to_string()),
+            destinations: vec![crate::IncidentMonitorDestinationConfig {
+                destination_id: "gh-unready".to_string(),
+                name: "Unready GitHub".to_string(),
+                kind: crate::IncidentMonitorDestinationKind::GithubIssue,
+                enabled: true,
+                repo: Some("acme/platform".to_string()),
+                ..Default::default()
+            }],
+            default_destination_ids: vec!["gh-unready".to_string()],
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+    let app = app_router(state);
+
+    let (status, payload) = run_scenario_packs(
+        app,
+        json!({ "scenario_ids": ["regulatory_escalation_requires_approval"] }),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{payload:?}");
+    let result = &payload["pack"]["results"][0];
+    assert_eq!(
+        result["status"],
+        json!("blocked"),
+        "an unready (blocked) destination must make the approval scenario not-evaluable: {result}"
+    );
+    assert_eq!(result["route_preview"]["blocked"], json!(true));
+}
+
+#[tokio::test]
+#[serial_test::serial(incident_monitor_http)]
+async fn incident_monitor_scenario_forwards_source_kind_into_routing() {
+    // TAN-487 review: a scenario's source_kind must reach route matching so a
+    // source-kind-specific route is selected.
+    let state = test_state().await;
+    state
+        .put_incident_monitor_config(crate::IncidentMonitorConfig {
+            enabled: true,
+            repo: Some("acme/platform".to_string()),
+            workspace_root: Some("/tmp/acme".to_string()),
+            destinations: vec![
+                crate::IncidentMonitorDestinationConfig {
+                    destination_id: "dest-ci".to_string(),
+                    name: "CI telemetry".to_string(),
+                    kind: crate::IncidentMonitorDestinationKind::Telemetry,
+                    enabled: true,
+                    telemetry_path: Some("ci".to_string()),
+                    ..Default::default()
+                },
+                crate::IncidentMonitorDestinationConfig {
+                    destination_id: "dest-default".to_string(),
+                    name: "Default telemetry".to_string(),
+                    kind: crate::IncidentMonitorDestinationKind::Telemetry,
+                    enabled: true,
+                    telemetry_path: Some("default".to_string()),
+                    ..Default::default()
+                },
+            ],
+            routes: vec![crate::IncidentMonitorRouteConfig {
+                route_id: "ci-route".to_string(),
+                name: "CI route".to_string(),
+                priority: 10,
+                destination_ids: vec!["dest-ci".to_string()],
+                match_source_kinds: vec!["ci".to_string()],
+                ..Default::default()
+            }],
+            default_destination_ids: vec!["dest-default".to_string()],
+            ..Default::default()
+        })
+        .await
+        .expect("config");
+    let app = app_router(state);
+
+    let custom_pack = json!({
+        "pack": {
+            "pack_id": "source-kind-test",
+            "version": "1.0.0",
+            "scenarios": [{
+                "scenario_id": "ci_routes_to_ci_destination",
+                "category": "cross_system_dispute",
+                "input": { "source_kind": "ci", "risk_level": "medium" },
+                "expect": { "effective_destination_id": "dest-ci" }
+            }]
+        }
+    });
+    let (status, payload) = run_scenario_packs(app, custom_pack, None).await;
+    assert_eq!(status, StatusCode::OK, "{payload:?}");
+    let result = &payload["pack"]["results"][0];
+    assert_eq!(
+        result["route_preview"]["effective_destination_ids"],
+        json!(["dest-ci"]),
+        "source_kind=ci must route to the ci-specific destination: {result}"
+    );
+    assert_eq!(result["status"], json!("pass"));
 }

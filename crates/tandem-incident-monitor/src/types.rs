@@ -96,6 +96,21 @@ impl IncidentMonitorSourceKind {
             Self::CustomerSystem => "customer_system",
         }
     }
+
+    /// Parse a source-kind string (snake_case or hyphenated), returning `None`
+    /// for an unknown value.
+    pub fn from_str_opt(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "tandem_runtime" => Some(Self::TandemRuntime),
+            "tandem_monitor" => Some(Self::TandemMonitor),
+            "external_app" => Some(Self::ExternalApp),
+            "ci" => Some(Self::Ci),
+            "agent_runtime" => Some(Self::AgentRuntime),
+            "mcp_gateway" => Some(Self::McpGateway),
+            "customer_system" => Some(Self::CustomerSystem),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

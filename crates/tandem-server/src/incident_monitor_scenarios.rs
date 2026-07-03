@@ -10,10 +10,7 @@
 use serde_json::{json, Value};
 use tandem_types::TenantContext;
 
-use crate::{
-    IncidentMonitorScenario, IncidentMonitorScenarioPack, IncidentMonitorStatus,
-    IncidentMonitorSubmission,
-};
+use crate::{IncidentMonitorScenario, IncidentMonitorScenarioPack, IncidentMonitorStatus};
 
 /// Run every scenario in a pack in dry-run mode and return one result per
 /// scenario, plus a summary. `mutates_external_systems` is always false.
@@ -52,28 +49,31 @@ pub fn run_incident_monitor_scenario_pack(
 /// Evaluate a single scenario against the live route preview.
 pub fn run_incident_monitor_scenario(
     status: &IncidentMonitorStatus,
-    tenant_context: &TenantContext,
+    _tenant_context: &TenantContext,
     scenario: &IncidentMonitorScenario,
 ) -> Value {
-    // Synthetic *untrusted* external report — adversarial input must not inherit
-    // trusted source bindings (a forged tenant/project is stripped by the
-    // router's enrichment, exactly as a real forged report would be).
-    let submission = scenario_submission(scenario);
-    let context = crate::incident_monitor::router::build_route_context(
+    // Operator-authored test input: set the routing signals directly (like the
+    // report's own route-preview helper) so source-kind / tenant / risk all
+    // reach route matching and the approval/readiness gates.
+    let input = &scenario.input;
+    let mut context = crate::incident_monitor::router::build_route_context(
+        input.event_type.as_deref(),
+        input.source.as_deref(),
         None,
+        input.risk_level.as_deref(),
+        input.risk_category.as_deref(),
+        input.confidence.as_deref(),
+        input.expected_destination.as_deref(),
+        input.project_id.as_deref(),
+        input.log_source_id.as_deref(),
+        &input.route_tags,
         None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        &[],
-        Some(&submission),
         None,
         None,
     );
+    context.source_kind = input.source_kind.clone();
+    context.tenant_id = input.tenant_id.clone();
+    context.workspace_id = input.workspace_id.clone();
     let preview = crate::incident_monitor::router::build_route_preview(
         &status.config,
         &status.destinations,
@@ -86,8 +86,10 @@ pub fn run_incident_monitor_scenario(
     let expect = &scenario.expect;
     let mut assertions = Vec::new();
     let mut all_ok = true;
-    // An approval assertion is only meaningful when a destination is actually
-    // routable; otherwise the case can't be evaluated and is reported blocked.
+    // An approval assertion is only meaningful when the publish is actually
+    // routable: no routable destination, or a preview the readiness/allowlist
+    // gate already blocked, means the approval path was not validated and the
+    // case is reported blocked (not evaluated) rather than a false pass.
     let mut not_evaluable = false;
 
     if let Some(expected_blocked) = expect.blocked {
@@ -102,7 +104,11 @@ pub fn run_incident_monitor_scenario(
         ));
     }
     if let Some(expected_approval) = expect.approval_required {
-        if preview.effective_destination_ids.is_empty() {
+        // A scenario that asserts approval but not a block cannot be evaluated
+        // when the publish would be blocked or has no routable destination.
+        if expect.blocked != Some(true)
+            && (preview.effective_destination_ids.is_empty() || preview.blocked)
+        {
             not_evaluable = true;
         }
         let actual = preview.approval_required;
@@ -203,25 +209,4 @@ pub fn run_incident_monitor_scenario(
 
 fn assertion(name: &str, expected: Value, actual: Value, ok: bool) -> Value {
     json!({ "name": name, "expected": expected, "actual": actual, "ok": ok })
-}
-
-fn scenario_submission(scenario: &IncidentMonitorScenario) -> IncidentMonitorSubmission {
-    let input = &scenario.input;
-    IncidentMonitorSubmission {
-        source: input.source.clone(),
-        event: input.event_type.clone(),
-        risk_level: input.risk_level.clone(),
-        risk_category: input.risk_category.clone(),
-        confidence: input.confidence.clone(),
-        expected_destination: input.expected_destination.clone(),
-        project_id: input.project_id.clone(),
-        log_source_id: input.log_source_id.clone(),
-        route_tags: input.route_tags.clone(),
-        tenant_id: input.tenant_id.clone(),
-        workspace_id: input.workspace_id.clone(),
-        title: input.title.clone(),
-        detail: input.detail.clone(),
-        fingerprint: Some(format!("scenario:{}", scenario.scenario_id)),
-        ..Default::default()
-    }
 }
