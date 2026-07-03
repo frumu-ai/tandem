@@ -161,6 +161,11 @@ async fn response_json(response: axum::response::Response) -> Value {
     .expect("json")
 }
 
+async fn drain_webhook_inbox(state: &AppState) {
+    let report = state.process_automation_webhook_inbox_once(100).await;
+    assert_eq!(report.failed, 0);
+}
+
 #[tokio::test]
 async fn public_automation_webhook_accepts_signed_request_without_transport_auth() {
     let state = test_state().await;
@@ -199,8 +204,7 @@ async fn public_automation_webhook_accepts_signed_request_without_transport_auth
             &created.trigger.trigger_id,
         )
         .await;
-    assert_eq!(deliveries.len(), 1);
-    let delivery = &deliveries[0];
+    assert!(deliveries.is_empty());
     let raw_events = state
         .list_automation_webhook_raw_events_for_trigger(
             &tenant_context,
@@ -211,13 +215,19 @@ async fn public_automation_webhook_accepts_signed_request_without_transport_auth
     let raw_event = &raw_events[0];
     assert_eq!(
         raw_event.status,
-        crate::AutomationWebhookDeliveryStatus::Accepted
+        crate::AutomationWebhookDeliveryStatus::Received
     );
+    assert!(raw_event.delivery_id.is_none());
+    assert_eq!(raw_event.provider_event_id.as_deref(), Some("evt-1"));
     assert_eq!(
-        raw_event.delivery_id.as_deref(),
-        Some(delivery.delivery_id.as_str())
+        raw_event.verification_scheme,
+        Some(AutomationWebhookSignatureScheme::HmacSha256V1)
     );
-    assert_eq!(raw_event.body_digest, delivery.body_digest);
+    assert_eq!(raw_event.verification_provider.as_deref(), Some("generic"));
+    assert_eq!(
+        raw_event.verification_reason_code.as_deref(),
+        Some("verified")
+    );
     assert!(raw_event.headers_digest.starts_with("sha256:"));
     assert_eq!(
         raw_event
@@ -239,6 +249,35 @@ async fn public_automation_webhook_accepts_signed_request_without_transport_auth
         .expect("raw payload read")
         .expect("raw payload");
     assert_eq!(persisted_payload, body);
+
+    let report = state.process_automation_webhook_inbox_once(10).await;
+    assert_eq!(report.checked, 1);
+    assert_eq!(report.processed, 1);
+    assert_eq!(report.failed, 0);
+    let deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+        )
+        .await;
+    assert_eq!(deliveries.len(), 1);
+    let delivery = &deliveries[0];
+    let raw_events = state
+        .list_automation_webhook_raw_events_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+        )
+        .await;
+    let raw_event = &raw_events[0];
+    assert_eq!(
+        raw_event.status,
+        crate::AutomationWebhookDeliveryStatus::Accepted
+    );
+    assert_eq!(
+        raw_event.delivery_id.as_deref(),
+        Some(delivery.delivery_id.as_str())
+    );
+    assert_eq!(raw_event.body_digest, delivery.body_digest);
     assert_eq!(
         delivery.verification_scheme,
         Some(AutomationWebhookSignatureScheme::HmacSha256V1)
@@ -364,6 +403,7 @@ async fn public_automation_webhook_accepts_hosted_prefixed_path_without_transpor
         .await
         .expect("response");
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
 
     let deliveries = state
         .list_automation_webhook_deliveries_for_trigger(
@@ -420,6 +460,7 @@ async fn public_automation_webhook_prefers_provider_specific_event_id_header() {
         .await
         .expect("response");
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
 
     let deliveries = state
         .list_automation_webhook_deliveries_for_trigger(
@@ -483,6 +524,7 @@ async fn public_automation_webhook_uses_trigger_signature_scheme_registry() {
         .await
         .expect("response");
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
 
     let deliveries = state
         .list_automation_webhook_deliveries_for_trigger(
@@ -542,6 +584,7 @@ async fn public_automation_webhook_duplicate_body_digest_does_not_queue_second_r
         .await
         .expect("second response");
     assert_eq!(second.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
 
     assert_eq!(state.automation_v2_runs.read().await.len(), 1);
     let deliveries = state
@@ -793,6 +836,7 @@ async fn public_automation_webhook_suppresses_tandem_origin_feedback_loop() {
         .await
         .expect("mismatch response");
     assert_eq!(mismatch_resp.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
     assert_eq!(state.automation_v2_runs.read().await.len(), 2);
 
     let resp = app
@@ -816,6 +860,7 @@ async fn public_automation_webhook_suppresses_tandem_origin_feedback_loop() {
         .await
         .expect("response");
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
     assert_eq!(state.automation_v2_runs.read().await.len(), 2);
     let deliveries = state
         .list_automation_webhook_deliveries_for_trigger(
@@ -894,6 +939,7 @@ async fn public_automation_webhook_suppresses_tandem_origin_feedback_loop() {
         .await
         .expect("body-only allowed response");
     assert_eq!(body_only_allowed_resp.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
     assert_eq!(state.automation_v2_runs.read().await.len(), 2);
     let deliveries = state
         .list_automation_webhook_deliveries_for_trigger(
@@ -995,6 +1041,7 @@ async fn public_automation_webhook_suppresses_tandem_origin_feedback_loop() {
         .await
         .expect("trusted allowed response");
     assert_eq!(trusted_allowed_resp.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
     assert_eq!(state.automation_v2_runs.read().await.len(), 3);
     let deliveries = state
         .list_automation_webhook_deliveries_for_trigger(
@@ -1100,7 +1147,8 @@ async fn public_automation_webhook_inactive_automation_does_not_queue_run() {
         ))
         .await
         .expect("response");
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
     assert!(state.automation_v2_runs.read().await.is_empty());
 
     let deliveries = state
@@ -1143,7 +1191,8 @@ async fn public_automation_webhook_tenant_mismatch_does_not_queue_run() {
         ))
         .await
         .expect("response");
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    drain_webhook_inbox(&state).await;
     assert!(state.automation_v2_runs.read().await.is_empty());
 
     let tenant_a_deliveries = state

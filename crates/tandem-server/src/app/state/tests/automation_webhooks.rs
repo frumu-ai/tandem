@@ -1187,6 +1187,8 @@ async fn webhook_retention_prunes_expired_raw_events_payloads_and_deliveries() {
             trigger: created.trigger.clone(),
             provider_event_id: Some("evt-retention".to_string()),
             body_digest: automation_webhook_body_digest(body),
+            verification: None,
+            feedback_loop_candidate: None,
             headers_digest: "headers-digest".to_string(),
             headers_redacted: json!({"x-tandem-webhook-event-id": "evt-retention"}),
             content_type: Some("application/json".to_string()),

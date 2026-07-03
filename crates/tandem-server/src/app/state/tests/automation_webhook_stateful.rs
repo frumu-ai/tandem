@@ -205,3 +205,134 @@ async fn webhook_phase_denied_wait_completes_idempotency_without_new_run() {
     );
     assert!(state.automation_v2_runs.read().await.is_empty());
 }
+
+#[tokio::test]
+async fn duplicate_webhook_redelivery_wakes_late_registered_wait() {
+    let state = ready_test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a");
+    insert_test_automation(&state, "automation-stateful-late-wait", &tenant_a).await;
+    let created = state
+        .create_automation_webhook_trigger(create_input(
+            "automation-stateful-late-wait",
+            tenant_a.clone(),
+        ))
+        .await
+        .expect("create webhook trigger");
+
+    let body = br#"{"ok":true}"#;
+    let now = now_ms();
+    let signature = automation_webhook_signature_header(&created.secret, now, body);
+    let early = state
+        .verify_automation_webhook_request(
+            &created.trigger.public_path_token,
+            Some(&signature),
+            body,
+            Some("evt-late-wait".to_string()),
+            now,
+            300_000,
+        )
+        .await
+        .expect("early request verifies");
+    let early_delivery = match state
+        .queue_automation_v2_run_from_webhook_delivery(early, json!({"ok": true}))
+        .await
+        .expect("early webhook accepted")
+    {
+        AutomationWebhookQueueResult::Accepted { delivery, .. } => delivery,
+        other => panic!("expected accepted early webhook, got {other:?}"),
+    };
+    assert!(early_delivery.queued_run_id.is_some());
+
+    let paths = StatefulRuntimeStoragePaths::from_runtime_events_path(&state.runtime_events_path);
+    let wait_run_id = "run-late-webhook-wait";
+    let phase_state = phase_state_from_status(
+        wait_run_id,
+        &StatefulWorkflowRunStatus::Running,
+        now,
+        Some("phase-wait"),
+    );
+    write_stateful_run_snapshot(
+        &paths.snapshots_root,
+        &StatefulRunSnapshotRecord {
+            schema_version: 1,
+            snapshot_id: "snapshot-late-webhook-wait".to_string(),
+            run_id: wait_run_id.to_string(),
+            seq: 3,
+            created_at_ms: now,
+            scope: StatefulRuntimeScope::from_tenant_context(tenant_a.clone()),
+            status: StatefulWorkflowRunStatus::Running,
+            phase: phase_state.phase,
+            phase_history: phase_state.phase_history,
+            allowed_next_phases: phase_state.allowed_next_phases,
+            phase_id: Some("phase-wait".to_string()),
+            source_record_kind: Some(StatefulWorkflowRunKind::AutomationV2),
+            checkpoint: None,
+            payload_digest: None,
+            workflow_definition_version: None,
+            workflow_definition_snapshot_hash: None,
+            metadata: None,
+        },
+    )
+    .await
+    .expect("write running snapshot");
+    upsert_stateful_wait(
+        &paths.waits_path,
+        StatefulWaitRecord {
+            schema_version: 1,
+            wait_id: "wait-late-webhook".to_string(),
+            run_id: wait_run_id.to_string(),
+            wait_kind: StatefulWaitKind::Webhook,
+            status: StatefulWaitStatus::Waiting,
+            scope: StatefulRuntimeScope::from_tenant_context(tenant_a.clone()),
+            phase_id: Some("phase-wait".to_string()),
+            reason: Some("awaiting correlated webhook".to_string()),
+            created_at_ms: now.saturating_add(1),
+            updated_at_ms: now.saturating_add(1),
+            wake_at_ms: None,
+            timeout_policy: None,
+            event_seq: None,
+            wake_idempotency_key: None,
+            claimed_by: None,
+            claimed_at_ms: None,
+            claim_expires_at_ms: None,
+            completed_at_ms: None,
+            metadata: Some(stateful_webhook_wait_metadata(
+                StatefulWebhookWaitMatch {
+                    trigger_id: Some(created.trigger.trigger_id.clone()),
+                    provider: Some(created.trigger.provider.clone()),
+                    provider_event_id: Some("evt-late-wait".to_string()),
+                    ..StatefulWebhookWaitMatch::default()
+                },
+                None,
+            )),
+        },
+    )
+    .await
+    .expect("insert late webhook wait");
+
+    let retry_now = now + 2;
+    let retry_signature = automation_webhook_signature_header(&created.secret, retry_now, body);
+    let retry = state
+        .verify_automation_webhook_request(
+            &created.trigger.public_path_token,
+            Some(&retry_signature),
+            body,
+            Some("evt-late-wait".to_string()),
+            retry_now,
+            300_000,
+        )
+        .await
+        .expect("retry verifies");
+    let (delivery, wait) = match state
+        .queue_automation_v2_run_from_webhook_delivery(retry, json!({"ok": true}))
+        .await
+        .expect("redelivery wakes late wait")
+    {
+        AutomationWebhookQueueResult::Woken { delivery, wait } => (delivery, wait),
+        other => panic!("expected redelivery to wake wait, got {other:?}"),
+    };
+    assert_eq!(delivery.woken_run_id.as_deref(), Some(wait_run_id));
+    assert_eq!(delivery.woken_wait_id.as_deref(), Some("wait-late-webhook"));
+    assert_eq!(wait.status, StatefulWaitStatus::Woken);
+    assert_eq!(state.automation_v2_runs.read().await.len(), 1);
+}

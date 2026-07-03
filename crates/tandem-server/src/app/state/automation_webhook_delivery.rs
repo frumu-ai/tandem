@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tandem_types::ResourceScope;
 use uuid::Uuid;
@@ -7,7 +8,7 @@ use crate::ExternalActionRecord;
 
 use super::{AutomationWebhookReservedClaim, AutomationWebhookVerificationDecision};
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct AutomationWebhookFeedbackLoopCandidate {
     pub(crate) source_action_id: Option<String>,
     pub(crate) source_run_id: Option<String>,

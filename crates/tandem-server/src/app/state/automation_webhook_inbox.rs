@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tandem_types::TenantContext;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
@@ -11,7 +11,11 @@ use uuid::Uuid;
 
 use crate::automation_v2::types::*;
 
-use super::{automation_webhook_delivery_correlation, AppState};
+use super::{
+    automation_webhook_delivery_correlation, sanitize_automation_webhook_preview, AppState,
+    AutomationWebhookFeedbackLoopCandidate, AutomationWebhookQueueResult,
+    AutomationWebhookVerificationDecision, VerifiedAutomationWebhookRequest,
+};
 
 const AUTOMATION_WEBHOOK_EVENT_SCHEMA_VERSION: u32 = 1;
 
@@ -20,6 +24,13 @@ pub(crate) struct AutomationWebhookRetentionPruneReport {
     pub pruned_events: usize,
     pub pruned_payloads: usize,
     pub pruned_deliveries: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct AutomationWebhookInboxDrainReport {
+    pub checked: usize,
+    pub processed: usize,
+    pub failed: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +46,8 @@ pub(crate) struct AutomationWebhookRawEventCreateInput {
     pub trigger: AutomationWebhookTriggerRecord,
     pub provider_event_id: Option<String>,
     pub body_digest: String,
+    pub verification: Option<AutomationWebhookVerificationDecision>,
+    pub feedback_loop_candidate: Option<AutomationWebhookFeedbackLoopCandidate>,
     pub headers_digest: String,
     pub headers_redacted: Value,
     pub content_type: Option<String>,
@@ -349,6 +362,22 @@ impl AppState {
             headers_digest: input.headers_digest,
             headers_redacted: input.headers_redacted,
             content_type: input.content_type,
+            verification_scheme: input
+                .verification
+                .as_ref()
+                .map(|decision| decision.scheme.clone()),
+            verification_provider: input
+                .verification
+                .as_ref()
+                .map(|decision| decision.provider.clone()),
+            verification_reason_code: input
+                .verification
+                .as_ref()
+                .map(|decision| decision.reason_code.clone()),
+            feedback_loop_candidate: input
+                .feedback_loop_candidate
+                .as_ref()
+                .and_then(|candidate| serde_json::to_value(candidate).ok()),
             payload_ref: format!("raw_payloads/{payload_file_name}"),
             payload_bytes: input.payload.len() as u64,
             status: AutomationWebhookDeliveryStatus::Received,
@@ -506,6 +535,113 @@ impl AppState {
         events
     }
 
+    pub(crate) async fn process_automation_webhook_inbox_once(
+        &self,
+        limit: usize,
+    ) -> AutomationWebhookInboxDrainReport {
+        let pending = self.pending_automation_webhook_raw_events(limit).await;
+        let mut report = AutomationWebhookInboxDrainReport {
+            checked: pending.len(),
+            ..AutomationWebhookInboxDrainReport::default()
+        };
+        for event in pending {
+            match self.process_automation_webhook_raw_event(event).await {
+                Ok(()) => report.processed += 1,
+                Err(error) => {
+                    report.failed += 1;
+                    tracing::warn!(
+                        error = %error,
+                        "automation webhook inbox event processing failed"
+                    );
+                }
+            }
+        }
+        report
+    }
+
+    async fn pending_automation_webhook_raw_events(
+        &self,
+        limit: usize,
+    ) -> Vec<AutomationWebhookRawEventRecord> {
+        let events_path = automation_webhook_events_path(&self.automation_webhook_deliveries_path);
+        let mut events = load_automation_webhook_events(&events_path)
+            .await
+            .unwrap_or_default()
+            .into_values()
+            .filter(|event| event.status == AutomationWebhookDeliveryStatus::Received)
+            .collect::<Vec<_>>();
+        events.sort_by_key(|event| event.received_at_ms);
+        events.truncate(limit.clamp(1, 200));
+        events
+    }
+
+    async fn process_automation_webhook_raw_event(
+        &self,
+        event: AutomationWebhookRawEventRecord,
+    ) -> anyhow::Result<()> {
+        let Some(trigger) = self
+            .get_automation_webhook_trigger(&event.tenant_context, &event.trigger_id)
+            .await
+        else {
+            anyhow::bail!("automation webhook trigger {} is missing", event.trigger_id);
+        };
+        let payload = self
+            .read_automation_webhook_raw_event_payload(&event.tenant_context, &event.event_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("automation webhook raw payload is missing"))?;
+        let payload = match serde_json::from_slice::<Value>(&payload) {
+            Ok(payload) => payload,
+            Err(_) => {
+                let delivery = self
+                    .record_automation_webhook_rejection(
+                        &trigger,
+                        event.provider_event_id.clone(),
+                        event.body_digest.clone(),
+                        AutomationWebhookDeliveryStatus::Rejected,
+                        "invalid_json",
+                        event.received_at_ms,
+                        json!({ "body_digest": event.body_digest }),
+                        Some(automation_webhook_verification_from_raw_event(
+                            &event, &trigger,
+                        )),
+                    )
+                    .await?;
+                self.update_automation_webhook_raw_event_outcome(
+                    &event.tenant_context,
+                    &event.event_id,
+                    &delivery,
+                    crate::now_ms(),
+                )
+                .await?;
+                return Ok(());
+            }
+        };
+        let verified = VerifiedAutomationWebhookRequest {
+            trigger: trigger.clone(),
+            provider_event_id: event.provider_event_id.clone(),
+            body_digest: event.body_digest.clone(),
+            received_at_ms: event.received_at_ms,
+            verification: automation_webhook_verification_from_raw_event(&event, &trigger),
+        };
+        let result = Box::pin(
+            self.queue_automation_v2_run_from_webhook_delivery_with_feedback_loop(
+                verified,
+                sanitize_automation_webhook_preview(&payload),
+                automation_webhook_feedback_candidate_from_raw_event(&event),
+            ),
+        )
+        .await?;
+        let delivery = automation_webhook_delivery_from_queue_result(result);
+        self.update_automation_webhook_raw_event_outcome(
+            &event.tenant_context,
+            &event.event_id,
+            &delivery,
+            crate::now_ms(),
+        )
+        .await?;
+        Ok(())
+    }
+
     pub(crate) async fn read_automation_webhook_raw_event_payload(
         &self,
         tenant_context: &TenantContext,
@@ -524,5 +660,47 @@ impl AppState {
                 .join(format!("{}.body", event.event_id));
         let payload = fs::read(payload_path).await?;
         Ok(Some(payload))
+    }
+}
+
+fn automation_webhook_verification_from_raw_event(
+    event: &AutomationWebhookRawEventRecord,
+    trigger: &AutomationWebhookTriggerRecord,
+) -> AutomationWebhookVerificationDecision {
+    AutomationWebhookVerificationDecision::from_persisted(
+        event
+            .verification_provider
+            .clone()
+            .unwrap_or_else(|| trigger.provider.clone()),
+        event
+            .verification_scheme
+            .clone()
+            .unwrap_or_else(|| trigger.signature_scheme.clone()),
+        event
+            .verification_reason_code
+            .clone()
+            .unwrap_or_else(|| "verified".to_string()),
+    )
+}
+
+fn automation_webhook_feedback_candidate_from_raw_event(
+    event: &AutomationWebhookRawEventRecord,
+) -> Option<AutomationWebhookFeedbackLoopCandidate> {
+    event.feedback_loop_candidate.as_ref().and_then(|value| {
+        serde_json::from_value::<AutomationWebhookFeedbackLoopCandidate>(value.clone())
+            .ok()
+            .filter(|candidate| !candidate.is_empty())
+    })
+}
+
+fn automation_webhook_delivery_from_queue_result(
+    result: AutomationWebhookQueueResult,
+) -> AutomationWebhookDeliveryRecord {
+    match result {
+        AutomationWebhookQueueResult::Accepted { delivery, .. }
+        | AutomationWebhookQueueResult::Duplicate { delivery }
+        | AutomationWebhookQueueResult::Woken { delivery, .. }
+        | AutomationWebhookQueueResult::Suppressed { delivery }
+        | AutomationWebhookQueueResult::Rejected { delivery, .. } => delivery,
     }
 }
