@@ -5,7 +5,7 @@ use anyhow::Context;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tandem_types::TenantContext;
+use tandem_types::{DataClass, TenantContext};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
@@ -72,6 +72,37 @@ fn automation_webhook_payloads_dir(deliveries_path: &Path) -> PathBuf {
 
 fn new_automation_webhook_event_id() -> String {
     format!("automation-webhook-event-{}", Uuid::new_v4())
+}
+
+fn automation_webhook_trigger_from_raw_event_snapshot(
+    mut trigger: AutomationWebhookTriggerRecord,
+    event: &AutomationWebhookRawEventRecord,
+) -> AutomationWebhookTriggerRecord {
+    trigger.automation_id = event.automation_id.clone();
+    trigger.tenant_context = event.tenant_context.clone();
+    trigger.provider = event.provider.clone();
+    trigger.provider_event_kind = event.provider_event_kind.clone();
+    match event.enterprise_scope.clone() {
+        Some(scope) => {
+            trigger.owner_principal = scope.owner_principal;
+            trigger.owning_org_unit_id = scope.owning_org_unit_id;
+            trigger.resource_scope = scope.resource_scope;
+            trigger.default_data_class = scope
+                .data_classes
+                .into_iter()
+                .next()
+                .unwrap_or(DataClass::Internal);
+            trigger.default_risk_tier = scope.risk_tier;
+        }
+        None => {
+            trigger.owner_principal = None;
+            trigger.owning_org_unit_id = None;
+            trigger.resource_scope = None;
+            trigger.default_data_class = DataClass::Internal;
+            trigger.default_risk_tier = None;
+        }
+    }
+    trigger
 }
 
 fn automation_webhook_payload_path_for_event(
@@ -633,6 +664,7 @@ impl AppState {
             .await?;
             return Ok(());
         };
+        let trigger = automation_webhook_trigger_from_raw_event_snapshot(trigger, &event);
         let payload = self
             .read_automation_webhook_raw_event_payload(&event.tenant_context, &event.event_id)
             .await?

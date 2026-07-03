@@ -2,7 +2,7 @@ use super::*;
 use crate::app::state::{
     automation_webhook_body_digest, automation_webhook_signature_header,
     AutomationWebhookQueueResult, AutomationWebhookRawEventCreateInput,
-    AutomationWebhookTriggerCreateInput,
+    AutomationWebhookTriggerCreateInput, AutomationWebhookTriggerUpdateInput,
 };
 use crate::stateful_runtime::{
     list_stateful_waits, phase_state_from_status, stateful_webhook_wait_metadata,
@@ -370,6 +370,26 @@ async fn buffered_webhook_wake_uses_drain_time_for_late_wait_bookkeeping() {
         .await
         .expect("record buffered raw event");
 
+    state
+        .update_automation_webhook_trigger(
+            &tenant_a,
+            "automation-stateful-buffered-wait",
+            &created.trigger.trigger_id,
+            AutomationWebhookTriggerUpdateInput {
+                provider: Some("linear".to_string()),
+                provider_event_kind: Some(Some("issue.updated".to_string())),
+                ..AutomationWebhookTriggerUpdateInput::default()
+            },
+            Some("actor-a".to_string()),
+        )
+        .await
+        .expect("update trigger after receipt");
+    let latest_trigger = state
+        .get_automation_webhook_trigger(&tenant_a, &created.trigger.trigger_id)
+        .await
+        .expect("load updated trigger");
+    assert_eq!(latest_trigger.provider, "linear");
+
     let paths = StatefulRuntimeStoragePaths::from_runtime_events_path(&state.runtime_events_path);
     let wait_run_id = "run-buffered-late-webhook-wait";
     let phase_state = phase_state_from_status(
@@ -461,6 +481,7 @@ async fn buffered_webhook_wake_uses_drain_time_for_late_wait_bookkeeping() {
         .expect("delivery exists");
     assert_eq!(delivery.received_at_ms, receipt_at);
     assert_eq!(delivery.accepted_at_ms, Some(receipt_at));
+    assert_eq!(delivery.verification_provider.as_deref(), Some("generic"));
     assert_eq!(
         delivery.woken_wait_id.as_deref(),
         Some("wait-buffered-late-webhook")
