@@ -62,21 +62,26 @@ pub(crate) fn collect_automation_external_action_receipts(
         else {
             continue;
         };
-        let idempotency_key = automation_external_action_idempotency_key(
-            automation,
-            run_id,
-            node,
-            tool,
-            args,
-            &call_index.to_string(),
-        );
+        let idempotency_key =
+            automation_external_action_pre_send_idempotency_key(result.as_ref()).unwrap_or_else(
+                || {
+                    automation_external_action_idempotency_key(
+                        automation,
+                        run_id,
+                        node,
+                        tool,
+                        args,
+                        &call_index.to_string(),
+                    )
+                },
+            );
         if !seen.insert(idempotency_key.clone()) {
             continue;
         }
         let source_id = format!("{run_id}:{}:{attempt}:{call_index}", node.node_id);
         let created_at_ms = now_ms();
         out.push(ExternalActionRecord {
-            action_id: format!("automation-external-{}", &idempotency_key[..16]),
+            action_id: automation_external_action_id(&idempotency_key),
             operation: binding.capability_id.clone(),
             status: "posted".to_string(),
             source_kind: Some("automation_v2".to_string()),
@@ -128,6 +133,25 @@ pub(crate) fn automation_external_action_idempotency_key(
         &args.to_string(),
         call_index,
     ])
+}
+
+fn automation_external_action_id(idempotency_key: &str) -> String {
+    format!(
+        "automation-external-{}",
+        crate::sha256_hex(&[idempotency_key])
+            .chars()
+            .take(16)
+            .collect::<String>()
+    )
+}
+
+fn automation_external_action_pre_send_idempotency_key(result: Option<&Value>) -> Option<String> {
+    result
+        .and_then(|value| value.pointer("/metadata/stateful_outbox/idempotency_key"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 pub(crate) fn automation_attempt_uses_legacy_fallback(

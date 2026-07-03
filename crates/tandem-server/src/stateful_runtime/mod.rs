@@ -1,6 +1,7 @@
 pub mod adapters;
 pub mod definition;
 mod durable_io;
+mod outbox_reconcile;
 pub mod phases;
 pub mod reliability;
 pub mod scheduler;

@@ -46,6 +46,28 @@ fn extract_mcp_auth_required_metadata_parses_expected_shape() {
 }
 
 #[test]
+fn stored_tool_result_preserves_stateful_outbox_metadata() {
+    let metadata = json!({
+        "stateful_outbox": {
+            "outbox_id": "outbox-123",
+            "idempotency_key": "tool-dispatch-123"
+        }
+    });
+    let stored = stored_tool_result_value("sent", &metadata);
+    assert_eq!(stored.get("output").and_then(Value::as_str), Some("sent"));
+    assert_eq!(
+        stored
+            .pointer("/metadata/stateful_outbox/idempotency_key")
+            .and_then(Value::as_str),
+        Some("tool-dispatch-123")
+    );
+    assert_eq!(
+        stored_tool_result_value("plain", &json!({})),
+        json!("plain")
+    );
+}
+
+#[test]
 fn auth_required_output_detector_matches_auth_text() {
     assert!(is_auth_required_tool_output(
         "Authorization required for `mcp.arcade.gmail_whoami`.\nAuthorize here: https://example.com"

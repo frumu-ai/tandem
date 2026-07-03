@@ -344,6 +344,36 @@ function actionChoice(option: string) {
   }
 }
 
+function recoveryActionLabel(option: string) {
+  switch (option) {
+    case "retry":
+      return "Request Retry";
+    case "compensate":
+      return "Link Runbook";
+    case "ignore":
+      return "Ignore";
+    case "abandon":
+      return "Abandon";
+    default:
+      return titleCase(option);
+  }
+}
+
+function recoveryActionTitle(option: string) {
+  switch (option) {
+    case "retry":
+      return "Record an operator retry request";
+    case "compensate":
+      return "Link this item to an operator compensation runbook";
+    case "ignore":
+      return "Record that this item is ignored";
+    case "abandon":
+      return "Record an audited abandon decision";
+    default:
+      return `Record ${titleCase(option)} recovery choice`;
+  }
+}
+
 export function RecoveryQueueView({ api, toast, filters, onFiltersChange, onOpenRun }: RuntimeQueueProps) {
   const queryClient = useQueryClient();
   const reliabilityQuery = useQuery({
@@ -362,14 +392,14 @@ export function RecoveryQueueView({ api, toast, filters, onFiltersChange, onOpen
         method: "POST",
         body: JSON.stringify({
           choice: actionChoice(option),
-          reason: "Recorded from control panel recovery queue.",
+          reason: "Operator recovery request recorded from control panel queue.",
           dead_letter_id: row.kind === "dead_letter" ? row.id : undefined,
           compensation_id: row.kind === "compensation" ? row.id : undefined,
           target_effect_id: row.kind === "tool_effect" ? row.id : undefined,
         }),
       }),
     onSuccess: async () => {
-      toast("ok", "Recovery action recorded.");
+      toast("ok", "Recovery request recorded.");
       await queryClient.invalidateQueries({ queryKey: ["stateful-runtime", "reliability-queue"] });
     },
     onError: (error: any) => toast("err", errorText(error) || "Recovery action failed."),
@@ -397,7 +427,7 @@ export function RecoveryQueueView({ api, toast, filters, onFiltersChange, onOpen
         <StatTiles
           items={[
             { key: "total", label: "Items", value: summary.total },
-            { key: "retryable", label: "Retryable", value: summary.retryable },
+            { key: "retryable", label: "Needs Retry", value: summary.retryable },
             { key: "waiting", label: "Backoff", value: summary.waitingBackoff },
             { key: "dead", label: "Dead Letters", value: summary.deadLettered },
             { key: "blocked", label: "Manual", value: summary.manuallyBlocked },
@@ -471,9 +501,9 @@ export function RecoveryQueueView({ api, toast, filters, onFiltersChange, onOpen
                                 className="tcp-btn h-7 px-2 text-xs"
                                 disabled={actionMutation.isPending}
                                 onClick={() => actionMutation.mutate({ row, option })}
-                                title={`Record ${titleCase(option)} recovery choice`}
+                                title={recoveryActionTitle(option)}
                               >
-                                {titleCase(option)}
+                                {recoveryActionLabel(option)}
                               </button>
                             ))
                           : null}

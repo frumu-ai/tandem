@@ -3,6 +3,10 @@ use serde_json::json;
 use tandem_types::TenantContext;
 
 use super::phases::{guarded_phase_state_from_status, StatefulWorkflowPhaseState};
+use super::reliability::{
+    stateful_reliability_path_from_runtime_events_path, upsert_stateful_dead_letter,
+    StatefulDeadLetterRecord, StatefulDeadLetterStatus, StatefulRecoveryOption,
+};
 use super::store::{
     append_stateful_run_event_once_with_next_seq, list_stateful_run_snapshots,
     load_stateful_run_events, write_stateful_run_snapshot, StatefulRuntimeStoragePaths,
@@ -153,6 +157,28 @@ impl SchedulerAction {
                 "timeout:{timeout_action:?}:{}:{}:{due_at_ms}",
                 wait.run_id, wait.wait_id
             ),
+        }
+    }
+
+    fn dead_letter_reason(&self) -> Option<&'static str> {
+        match self {
+            Self::Timeout {
+                timeout_action: StatefulWaitTimeoutAction::Cancel,
+                ..
+            } => Some("stateful wait timeout cancelled the run"),
+            Self::Timeout {
+                timeout_action: StatefulWaitTimeoutAction::Escalate,
+                ..
+            } => Some("stateful wait timeout escalated for operator review"),
+            Self::Timeout {
+                timeout_action: StatefulWaitTimeoutAction::Remind,
+                ..
+            } => Some("stateful wait timeout reminder requires operator review"),
+            Self::Timeout {
+                timeout_action: StatefulWaitTimeoutAction::Resume,
+                ..
+            }
+            | Self::WakeTimer { .. } => None,
         }
     }
 }
@@ -372,6 +398,17 @@ async fn complete_claimed_wait(
     .await?
     .ok_or_else(|| anyhow::anyhow!("stateful wait completion conflict"))?;
 
+    if let Err(error) =
+        record_wait_terminal_dead_letter(paths, &completed, action, seq, now_ms, lag_ms).await
+    {
+        tracing::warn!(
+            wait_id = %completed.wait_id,
+            run_id = %completed.run_id,
+            error = %error,
+            "failed to record terminal stateful wait dead letter"
+        );
+    }
+
     Ok(StatefulWaitSchedulerOutcome {
         run_id: completed.run_id,
         wait_id: completed.wait_id,
@@ -414,6 +451,63 @@ fn guarded_phase_state_for_wait_action(
     .map_err(anyhow::Error::from)
 }
 
+async fn record_wait_terminal_dead_letter(
+    paths: &StatefulRuntimeStoragePaths,
+    wait: &StatefulWaitRecord,
+    action: &SchedulerAction,
+    event_seq: u64,
+    now_ms: u64,
+    lag_ms: u64,
+) -> anyhow::Result<()> {
+    let Some(reason) = action.dead_letter_reason() else {
+        return Ok(());
+    };
+    let reliability_path =
+        stateful_reliability_path_from_runtime_events_path(&paths.run_events_path);
+    let digest = crate::sha256_hex(&["stateful_wait", &wait.run_id, &wait.wait_id]);
+    let detail = wait
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let reason = detail
+        .map(|detail| format!("{reason}: {detail}"))
+        .unwrap_or_else(|| reason.to_string());
+    let record = StatefulDeadLetterRecord {
+        schema_version: 1,
+        dead_letter_id: format!("dead-letter-wait-{}", &digest[..16]),
+        source_type: "stateful_wait".to_string(),
+        source_id: wait.wait_id.clone(),
+        run_id: Some(wait.run_id.clone()),
+        scope: wait.scope.clone(),
+        reason,
+        status: StatefulDeadLetterStatus::Open,
+        recovery_options: vec![
+            StatefulRecoveryOption::Ignore,
+            StatefulRecoveryOption::Compensate,
+        ],
+        payload_pointer: Some(format!("stateful-wait://{}/{}", wait.run_id, wait.wait_id)),
+        compensation_id: None,
+        attempts: 1,
+        created_at_ms: now_ms,
+        updated_at_ms: now_ms,
+        operator_disposition: None,
+        disposition_reason: None,
+        disposition_actor: None,
+        disposition_at_ms: None,
+        metadata: Some(json!({
+            "source": "stateful_wait_scheduler",
+            "event_seq": event_seq,
+            "wait_status": &wait.status,
+            "wait_kind": &wait.wait_kind,
+            "timeout_policy": &wait.timeout_policy,
+            "lag_ms": lag_ms,
+        })),
+    };
+    upsert_stateful_dead_letter(&reliability_path, record).await?;
+    Ok(())
+}
+
 fn scheduler_action(wait: &StatefulWaitRecord, now_ms: u64) -> Option<SchedulerAction> {
     let wake_due = wait
         .wake_at_ms
@@ -444,9 +538,10 @@ mod tests {
 
     use super::*;
     use crate::stateful_runtime::{
-        list_stateful_run_snapshots, list_stateful_waits, upsert_stateful_wait,
-        StatefulRuntimeScope, StatefulWaitKind, StatefulWaitQuery, StatefulWaitTimeoutAction,
-        StatefulWaitTimeoutPolicy,
+        list_stateful_dead_letters, list_stateful_run_snapshots, list_stateful_waits,
+        stateful_reliability_path_from_runtime_events_path, upsert_stateful_wait,
+        StatefulRecoveryOption, StatefulReliabilityQuery, StatefulRuntimeScope, StatefulWaitKind,
+        StatefulWaitQuery, StatefulWaitTimeoutAction, StatefulWaitTimeoutPolicy,
     };
 
     fn tenant(org: &str, workspace: &str) -> TenantContext {
@@ -861,6 +956,25 @@ mod tests {
             },
         );
         assert_eq!(waits.len(), 1);
+        let dead_letters = list_stateful_dead_letters(
+            &stateful_reliability_path_from_runtime_events_path(&paths.run_events_path),
+            &tenant,
+            StatefulReliabilityQuery {
+                run_id: Some("run-a"),
+                limit: Some(10),
+                ..Default::default()
+            },
+        );
+        assert_eq!(dead_letters.len(), 1);
+        assert_eq!(dead_letters[0].source_type, "stateful_wait");
+        assert_eq!(dead_letters[0].source_id, "wait-a");
+        assert_eq!(
+            dead_letters[0].recovery_options,
+            vec![
+                StatefulRecoveryOption::Ignore,
+                StatefulRecoveryOption::Compensate
+            ]
+        );
         let _ = tokio::fs::remove_dir_all(
             paths
                 .run_events_path

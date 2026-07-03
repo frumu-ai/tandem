@@ -450,7 +450,8 @@ pub(super) async fn execute_tool(
         }
     }
     let mut dispatch_context = state.tool_dispatch_context(
-        tandem_tools::ToolDispatchSource::new("http_global_tool"),
+        tandem_tools::ToolDispatchSource::new("http_global_tool")
+            .request(Uuid::new_v4().to_string()),
         tenant_context,
         Vec::new(),
     );
