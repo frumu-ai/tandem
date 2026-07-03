@@ -602,6 +602,122 @@ async fn record_external_action_dedupes_by_idempotency_key() {
 }
 
 #[tokio::test]
+async fn record_external_action_reliability_scope_prefers_authoritative_run() {
+    let mut state = test_state_for_external_action_reliability("external-action-scope-run");
+    let tenant_a = TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "actor-a");
+    let tenant_b = TenantContext::explicit_user_workspace("org-b", "workspace-b", None, "actor-b");
+    let mut run = AutomationRunBuilder::new("run-authoritative", "automation-authoritative")
+        .status(AutomationRunStatus::Completed)
+        .build();
+    run.tenant_context = tenant_a.clone();
+    state
+        .automation_v2_runs
+        .write()
+        .await
+        .insert(run.run_id.clone(), run);
+
+    state
+        .record_external_action(ExternalActionRecord {
+            action_id: "action-authoritative".to_string(),
+            operation: "send_email".to_string(),
+            status: "posted".to_string(),
+            metadata: Some(json!({
+                "automationRunID": "run-authoritative",
+                "tenant_context": tenant_b,
+            })),
+            created_at_ms: 10,
+            updated_at_ms: 10,
+            ..Default::default()
+        })
+        .await
+        .expect("record external action");
+
+    let reliability_path =
+        crate::stateful_runtime::stateful_reliability_path_from_runtime_events_path(
+            &state.runtime_events_path,
+        );
+    let store = crate::stateful_runtime::load_stateful_reliability(&reliability_path);
+    assert_eq!(store.outbox.len(), 1);
+    assert_eq!(store.tool_effects.len(), 1);
+    assert_eq!(store.outbox[0].scope.tenant_context, tenant_a);
+    assert_eq!(store.tool_effects[0].scope.tenant_context, tenant_a);
+}
+
+#[tokio::test]
+async fn record_external_action_reliability_scope_does_not_trust_unresolved_metadata_tenant() {
+    let state = test_state_for_external_action_reliability("external-action-scope-unresolved");
+    let tenant_b =
+        TenantContext::explicit_user_workspace("org-writer", "workspace-writer", None, "actor-b");
+
+    state
+        .record_external_action(ExternalActionRecord {
+            action_id: "action-unresolved".to_string(),
+            operation: "send_email".to_string(),
+            status: "failed".to_string(),
+            error: Some("provider timeout".to_string()),
+            metadata: Some(json!({
+                "automationRunID": "missing-run",
+                "tenant_context": tenant_b.clone(),
+            })),
+            created_at_ms: 20,
+            updated_at_ms: 20,
+            ..Default::default()
+        })
+        .await
+        .expect("record external action");
+
+    let reliability_path =
+        crate::stateful_runtime::stateful_reliability_path_from_runtime_events_path(
+            &state.runtime_events_path,
+        );
+    let store = crate::stateful_runtime::load_stateful_reliability(&reliability_path);
+    assert_eq!(store.outbox.len(), 1);
+    assert_eq!(store.dead_letters.len(), 1);
+
+    assert_eq!(store.outbox[0].scope.tenant_context.org_id, "unattributed");
+    assert_eq!(
+        store.outbox[0].scope.tenant_context.workspace_id,
+        "unresolved-external-action"
+    );
+    assert!(
+        !store.outbox[0].scope.tenant_context.is_local_implicit(),
+        "unresolved reliability rows must not disappear into local implicit scope"
+    );
+    assert!(
+        crate::stateful_runtime::list_stateful_outbox(
+            &reliability_path,
+            &tenant_b,
+            crate::stateful_runtime::StatefulReliabilityQuery {
+                limit: Some(10),
+                ..Default::default()
+            },
+        )
+        .is_empty(),
+        "writer-controlled metadata must not make unresolved rows visible to the spoofed tenant"
+    );
+    assert_eq!(
+        crate::stateful_runtime::list_stateful_outbox(
+            &reliability_path,
+            &TenantContext::local_implicit(),
+            crate::stateful_runtime::StatefulReliabilityQuery {
+                limit: Some(10),
+                ..Default::default()
+            },
+        )
+        .len(),
+        1
+    );
+}
+
+fn test_state_for_external_action_reliability(name: &str) -> AppState {
+    let root = std::env::temp_dir().join(format!("tandem-server-{name}-{}", uuid::Uuid::new_v4()));
+    let mut state = test_state_with_path(root.join("shared-resources.json"));
+    state.runtime_events_path = root.join("runtime-events.json");
+    state.external_actions_path = root.join("external-actions.json");
+    state
+}
+
+#[tokio::test]
 async fn record_external_action_without_idempotency_key_preserves_existing_behavior() {
     let state = test_state_with_path(tmp_resource_file("external-action-no-idem"));
     let run = RoutineRunRecord {

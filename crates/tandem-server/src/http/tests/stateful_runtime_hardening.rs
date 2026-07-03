@@ -735,11 +735,30 @@ async fn stateful_runtime_resume_plan_surfaces_partial_failure_without_cross_ten
         plan["audit_summary"]["pending_compensation_count"],
         json!(1)
     );
-    assert!(plan["operator_choices"]
+    let operator_choices = plan["operator_choices"]
         .as_array()
-        .expect("operator choices")
+        .expect("operator choices");
+    assert!(operator_choices
         .iter()
         .any(|choice| choice["choice"] == "resume_from_checkpoint"));
+    let retry_choice = operator_choices
+        .iter()
+        .find(|choice| choice["choice"] == "retry_failed_effect")
+        .expect("retry choice");
+    assert_eq!(
+        retry_choice["execution_mode"],
+        json!("operator_request_record_only")
+    );
+    assert_eq!(retry_choice["automatic_dispatch"], json!(false));
+    let compensation_choice = operator_choices
+        .iter()
+        .find(|choice| choice["choice"] == "compensate_pending_effects")
+        .expect("compensation choice");
+    assert_eq!(
+        compensation_choice["execution_mode"],
+        json!("operator_runbook_record_only")
+    );
+    assert_eq!(compensation_choice["automatic_dispatch"], json!(false));
     assert_payload_excludes_hidden_runtime_rows(&plan);
     let body = plan.to_string();
     assert!(!body.contains("dead-superseded"), "{body}");

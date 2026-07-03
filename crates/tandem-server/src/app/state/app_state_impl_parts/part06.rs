@@ -1657,22 +1657,6 @@ impl AppState {
         &self,
         action: &ExternalActionRecord,
     ) -> crate::stateful_runtime::StatefulRuntimeScope {
-        if let Some(tenant_context) = action
-            .metadata
-            .as_ref()
-            .and_then(|metadata| {
-                metadata
-                    .get("tenant_context")
-                    .or_else(|| metadata.get("tenantContext"))
-            })
-            .cloned()
-            .and_then(|value| serde_json::from_value::<TenantContext>(value).ok())
-        {
-            return crate::stateful_runtime::StatefulRuntimeScope::from_tenant_context(
-                tenant_context,
-            );
-        }
-
         if let Some(run_id) = external_action_metadata_string(action, "automationRunID")
             .or_else(|| external_action_metadata_string(action, "automation_run_id"))
             .or_else(|| {
@@ -1705,7 +1689,7 @@ impl AppState {
             }
         }
 
-        crate::stateful_runtime::StatefulRuntimeScope::local_implicit()
+        unresolved_external_action_reliability_scope()
     }
 
     pub async fn update_incident_monitor_runtime_status(
@@ -1799,4 +1783,17 @@ fn external_action_metadata_string(action: &ExternalActionRecord, key: &str) -> 
         })
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn unresolved_external_action_reliability_scope() -> crate::stateful_runtime::StatefulRuntimeScope {
+    let mut scope = crate::stateful_runtime::StatefulRuntimeScope::from_tenant_context(
+        TenantContext::explicit_user_workspace(
+            "unattributed",
+            "unresolved-external-action",
+            None,
+            "stateful-runtime",
+        ),
+    );
+    scope.owning_org_unit_id = Some("unresolved-external-action".to_string());
+    scope
 }

@@ -600,7 +600,7 @@ function scopeLabel(row) {
 function recoveryCategory(kind, status, row) {
   const key = normalizeKey(status);
   if (kind === "dead_letter") {
-    if (key === "retry_requested") return "retryable";
+    if (key === "retry_requested") return "manually_blocked";
     if (key === "open") return "dead_lettered";
     if (["ignored", "resolved", "linked_to_compensation"].includes(key)) return "manually_blocked";
   }
@@ -620,6 +620,40 @@ function recoveryCategory(kind, status, row) {
   }
   if (read(row, ["claim_expires_at_ms", "claimExpiresAtMs"])) return "waiting_backoff";
   return "other";
+}
+
+function recoveryCategoryLabel(category) {
+  const labels = {
+    dead_lettered: "Dead Lettered",
+    manually_blocked: "Manual Review",
+    retryable: "Needs Retry",
+    waiting_backoff: "Waiting",
+  };
+  return labels[normalizeKey(category)] || titleCase(category);
+}
+
+function recoveryStatusLabel(kind, status) {
+  const key = normalizeKey(status);
+  if (kind === "dead_letter" && key === "retry_requested") return "Retry Requested";
+  if (kind === "compensation" && key === "proposed") return "Runbook Proposed";
+  if (kind === "compensation" && key === "awaiting_approval") return "Runbook Approval";
+  return titleCase(status);
+}
+
+function recoveryReason(kind, row, status) {
+  const direct = stringValue(read(row, ["reason", "error", "disposition_reason", "dispositionReason"]));
+  if (direct) return direct;
+  if (kind === "dead_letter" && normalizeKey(status) === "retry_requested") {
+    return "Retry request recorded for operator execution";
+  }
+  if (kind === "compensation") {
+    return stringValue(
+      read(row, ["rollback_instruction", "rollbackInstruction"]) ||
+        read(row, ["forward_fix_instruction", "forwardFixInstruction"]),
+      "Operator runbook awaiting manual execution"
+    );
+  }
+  return "";
 }
 
 function reliabilityRow(kind, row, index) {
@@ -644,10 +678,10 @@ function reliabilityRow(kind, row, index) {
     kind,
     kindLabel: titleCase(kind),
     status,
-    statusLabel: titleCase(status),
+    statusLabel: recoveryStatusLabel(kind, status),
     statusTone: statusTone(status),
     category,
-    categoryLabel: titleCase(category),
+    categoryLabel: recoveryCategoryLabel(category),
     runId,
     runRoute: runRoute(runId),
     sourceLabel: compact([sourceType, sourceId]).join(" - "),
@@ -656,7 +690,7 @@ function reliabilityRow(kind, row, index) {
     tool: stringValue(read(row, ["tool"])),
     target: stringValue(read(row, ["target"])),
     nodeId: stringValue(read(row, ["node_id", "nodeId"])),
-    reason: stringValue(read(row, ["reason", "error", "disposition_reason", "dispositionReason"])),
+    reason: recoveryReason(kind, row, status),
     attempts: numberValue(read(row, ["attempts"], 0), 0),
     scopeLabel: scopeLabel(row),
     updatedAtMs: numberValue(read(row, ["updated_at_ms", "updatedAtMs", "created_at_ms", "createdAtMs"], 0), 0),

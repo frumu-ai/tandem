@@ -329,6 +329,8 @@ pub(super) async fn apply_stateful_run_resume_plan_action(
         )
             .into_response();
     }
+    let execution_mode = recovery_choice_execution_mode(&choice);
+    let automatic_dispatch = recovery_choice_automatic_dispatch(&choice);
 
     let now = crate::now_ms();
     let actor = operator_principal(
@@ -420,6 +422,8 @@ pub(super) async fn apply_stateful_run_resume_plan_action(
             "dead_letter_id": input.dead_letter_id,
             "compensation_id": input.compensation_id,
             "target_effect_id": input.target_effect_id,
+            "execution_mode": execution_mode,
+            "automatic_dispatch": automatic_dispatch,
             "disposition": disposition,
         }),
     };
@@ -434,6 +438,8 @@ pub(super) async fn apply_stateful_run_resume_plan_action(
     Json(json!({
         "run_id": run_id,
         "choice": choice,
+        "execution_mode": execution_mode,
+        "automatic_dispatch": automatic_dispatch,
         "recorded": recorded,
         "event_seq": seq,
         "disposition": disposition,
@@ -590,33 +596,27 @@ fn operator_choices(
     dead_letters: &[crate::stateful_runtime::StatefulDeadLetterRecord],
     compensations: &[crate::stateful_runtime::StatefulCompensationRecord],
 ) -> Vec<Value> {
-    let mut choices = vec![json!({
-        "choice": "abandon_with_audit",
-        "enabled": true,
-    })];
+    let mut choices = vec![operator_choice("abandon_with_audit", true)];
     if !safe_resume_points.is_empty() {
-        choices.push(json!({
-            "choice": "resume_from_checkpoint",
-            "enabled": true,
-        }));
+        choices.push(operator_choice("resume_from_checkpoint", true));
     }
     if !uncertain_effects.is_empty() || !dead_letters.is_empty() {
-        choices.push(json!({
-            "choice": "retry_failed_effect",
-            "enabled": true,
-        }));
-        choices.push(json!({
-            "choice": "reconcile_external_effect",
-            "enabled": true,
-        }));
+        choices.push(operator_choice("retry_failed_effect", true));
+        choices.push(operator_choice("reconcile_external_effect", true));
     }
     if !compensations.is_empty() {
-        choices.push(json!({
-            "choice": "compensate_pending_effects",
-            "enabled": true,
-        }));
+        choices.push(operator_choice("compensate_pending_effects", true));
     }
     choices
+}
+
+fn operator_choice(choice: &str, enabled: bool) -> Value {
+    json!({
+        "choice": choice,
+        "enabled": enabled,
+        "execution_mode": recovery_choice_execution_mode(choice),
+        "automatic_dispatch": recovery_choice_automatic_dispatch(choice),
+    })
 }
 
 fn reliability_query<'a>(
@@ -826,6 +826,22 @@ fn dead_letter_status_for_choice(choice: &str) -> (StatefulDeadLetterStatus, &'s
         }
         _ => (StatefulDeadLetterStatus::Open, "reviewed"),
     }
+}
+
+fn recovery_choice_execution_mode(choice: &str) -> &'static str {
+    match choice {
+        "compensate_pending_effects" | "compensate" => "operator_runbook_record_only",
+        "abandon_with_audit" | "ignore_dead_letter" => "audit_disposition_only",
+        "retry_failed_effect"
+        | "retry_dead_letter"
+        | "resume_from_checkpoint"
+        | "reconcile_external_effect" => "operator_request_record_only",
+        _ => "operator_review_record_only",
+    }
+}
+
+fn recovery_choice_automatic_dispatch(_choice: &str) -> bool {
+    false
 }
 
 fn compensation_status_for_choice(choice: &str) -> StatefulCompensationStatus {
