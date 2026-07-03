@@ -40,6 +40,10 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
             post(rotate_webhook_secret),
         )
         .route(
+            "/automations/v2/{id}/webhook-triggers/{trigger_id}/reveal-verification-token",
+            post(reveal_webhook_verification_token),
+        )
+        .route(
             "/automations/v2/{id}/webhook-triggers/{trigger_id}/deliveries",
             get(list_webhook_deliveries),
         )
@@ -575,6 +579,7 @@ fn provider_metadata(trigger: &AutomationWebhookTriggerRecord) -> Value {
     let provider_specific_verification = matches!(
         trigger.signature_scheme,
         AutomationWebhookSignatureScheme::GithubHmacSha256
+            | AutomationWebhookSignatureScheme::NotionHmacSha256
     );
     json!({
         "canonical_provider": canonical_provider.as_str(),
@@ -651,9 +656,31 @@ fn trigger_value(
         "lastAcceptedAtMs": trigger.last_accepted_at_ms,
         "last_rejected_at_ms": trigger.last_rejected_at_ms,
         "lastRejectedAtMs": trigger.last_rejected_at_ms,
+        "verification_status": notion_verification_value(trigger),
+        "verificationStatus": notion_verification_value(trigger),
         "delivery_counts": delivery_counts(deliveries),
         "deliveryCounts": delivery_counts(deliveries),
     })
+}
+
+/// Notion provider verification state for the Control Panel — never includes the
+/// token itself, only the status and whether a one-time reveal is available.
+fn notion_verification_value(trigger: &AutomationWebhookTriggerRecord) -> Value {
+    match trigger.notion_verification.as_ref() {
+        Some(verification) => json!({
+            "provider": "notion",
+            "status": verification.status.as_str(),
+            "token_available": verification.token_available_for_reveal(),
+            "tokenAvailable": verification.token_available_for_reveal(),
+            "token_received_at_ms": verification.token_received_at_ms,
+            "tokenReceivedAtMs": verification.token_received_at_ms,
+            "token_revealed_at_ms": verification.token_revealed_at_ms,
+            "tokenRevealedAtMs": verification.token_revealed_at_ms,
+            "verified_at_ms": verification.verified_at_ms,
+            "verifiedAtMs": verification.verified_at_ms,
+        }),
+        None => Value::Null,
+    }
 }
 
 fn delivery_value(delivery: &AutomationWebhookDeliveryRecord) -> Value {
@@ -928,6 +955,18 @@ async fn create_webhook_trigger(
         }),
     )
     .await;
+    // Notion is a provider-owned-secret flow: the real signing secret is the
+    // verification token Notion POSTs later, so we never reveal the placeholder
+    // secret generated at creation — the operator waits for the token instead.
+    if result.trigger.notion_verification.is_some() {
+        return Ok(Json(json!({
+            "trigger": trigger_value(&result.trigger, &[], &headers),
+            "secret_one_time": false,
+            "secretOneTime": false,
+            "verification_pending": true,
+            "verificationPending": true,
+        })));
+    }
     Ok(Json(json!({
         "trigger": trigger_value(&result.trigger, &[], &headers),
         "new_secret": result.secret,
@@ -1178,6 +1217,70 @@ async fn rotate_webhook_secret(
         "newSecret": rotated.secret,
         "secret_one_time": true,
         "secretOneTime": true,
+    })))
+}
+
+/// One-time reveal of a Notion trigger's provider-supplied verification token so
+/// an authorized operator can paste it back into Notion. Admin-scoped; the token
+/// is returned at most once and never again.
+async fn reveal_webhook_verification_token(
+    State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    headers: HeaderMap,
+    Path((id, trigger_id)): Path<(String, String)>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let verified = verified_tenant_context.as_ref().map(|context| &context.0);
+    let _automation = load_automation_for_mutation(
+        &state,
+        &tenant_context,
+        &request_principal,
+        verified,
+        &headers,
+        &id,
+        false,
+    )
+    .await?;
+    let _trigger =
+        load_trigger_for_mutation(&state, &tenant_context, verified, &id, &trigger_id).await?;
+    let token = state
+        .reveal_automation_webhook_notion_verification_token(&tenant_context, &id, &trigger_id)
+        .await
+        .map_err(|error| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "AUTOMATION_WEBHOOK_REVEAL_FAILED",
+                error.to_string(),
+            )
+        })?;
+    let Some(token) = token else {
+        return Err(error_response(
+            StatusCode::CONFLICT,
+            "AUTOMATION_WEBHOOK_TOKEN_UNAVAILABLE",
+            "no verification token is available to reveal for this trigger",
+        ));
+    };
+    append_webhook_audit(
+        &state,
+        "automation.webhook_trigger.verification_token_revealed",
+        &tenant_context,
+        audit_actor(&tenant_context, &request_principal, verified),
+        json!({ "automationID": id, "triggerID": trigger_id }),
+    )
+    .await;
+    let trigger = state
+        .get_automation_webhook_trigger(&tenant_context, &trigger_id)
+        .await;
+    let deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(&tenant_context, &trigger_id)
+        .await;
+    Ok(Json(json!({
+        "verification_token": token,
+        "verificationToken": token,
+        "token_one_time": true,
+        "tokenOneTime": true,
+        "trigger": trigger.map(|trigger| trigger_value(&trigger, &deliveries, &headers)),
     })))
 }
 

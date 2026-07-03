@@ -10,6 +10,7 @@ type HmacSha256 = Hmac<Sha256>;
 
 const TANDEM_HMAC_SHA256_VERIFIER_ID: &str = "tandem_hmac_sha256_v1";
 const GITHUB_HMAC_SHA256_VERIFIER_ID: &str = "github_hmac_sha256";
+const NOTION_HMAC_SHA256_VERIFIER_ID: &str = "notion_hmac_sha256";
 const SHARED_SECRET_HEADER_VERIFIER_ID: &str = "shared_secret_header_v1";
 const UNSIGNED_DEV_MODE_VERIFIER_ID: &str = "unsigned_dev_mode";
 const TANDEM_SIGNED_ALLOW_SELF_FEEDBACK_HEADER: &str = "x-tandem-allow-self-feedback";
@@ -57,6 +58,7 @@ pub(crate) struct AutomationWebhookSignatureHeaders {
     tandem_hmac_sha256: Option<String>,
     legacy_tandem_hmac_sha256: Option<String>,
     github_hmac_sha256: Option<String>,
+    notion_hmac_sha256: Option<String>,
     shared_secret: Option<String>,
     tandem_signed_allow_self_feedback: Option<String>,
 }
@@ -72,6 +74,7 @@ impl AutomationWebhookSignatureHeaders {
             tandem_hmac_sha256: clean_header(tandem_hmac_sha256),
             legacy_tandem_hmac_sha256: clean_header(legacy_tandem_hmac_sha256),
             github_hmac_sha256: clean_header(github_hmac_sha256),
+            notion_hmac_sha256: None,
             shared_secret: clean_header(shared_secret),
             tandem_signed_allow_self_feedback: None,
         }
@@ -79,6 +82,12 @@ impl AutomationWebhookSignatureHeaders {
 
     pub(crate) fn tandem(signature_header: Option<&str>) -> Self {
         Self::from_headers(signature_header, None, None, None)
+    }
+
+    /// Attach the `X-Notion-Signature` header value used by the Notion provider.
+    pub(crate) fn with_notion_signature(mut self, value: Option<&str>) -> Self {
+        self.notion_hmac_sha256 = clean_header(value);
+        self
     }
 
     pub(crate) fn with_tandem_signed_allow_self_feedback(mut self, value: Option<&str>) -> Self {
@@ -94,6 +103,10 @@ impl AutomationWebhookSignatureHeaders {
 
     fn github_hmac_sha256(&self) -> Option<&str> {
         self.github_hmac_sha256.as_deref()
+    }
+
+    fn notion_hmac_sha256(&self) -> Option<&str> {
+        self.notion_hmac_sha256.as_deref()
     }
 
     fn shared_secret(&self) -> Option<&str> {
@@ -133,11 +146,13 @@ pub(crate) trait AutomationWebhookSignatureVerifier: Sync {
 
 struct TandemHmacSha256Verifier;
 struct GithubHmacSha256Verifier;
+struct NotionHmacSha256Verifier;
 struct SharedSecretHeaderVerifier;
 struct UnsignedDevModeVerifier;
 
 static TANDEM_HMAC_SHA256_VERIFIER: TandemHmacSha256Verifier = TandemHmacSha256Verifier;
 static GITHUB_HMAC_SHA256_VERIFIER: GithubHmacSha256Verifier = GithubHmacSha256Verifier;
+static NOTION_HMAC_SHA256_VERIFIER: NotionHmacSha256Verifier = NotionHmacSha256Verifier;
 static SHARED_SECRET_HEADER_VERIFIER: SharedSecretHeaderVerifier = SharedSecretHeaderVerifier;
 static UNSIGNED_DEV_MODE_VERIFIER: UnsignedDevModeVerifier = UnsignedDevModeVerifier;
 
@@ -204,6 +219,34 @@ impl AutomationWebhookSignatureVerifier for GithubHmacSha256Verifier {
     }
 }
 
+impl AutomationWebhookSignatureVerifier for NotionHmacSha256Verifier {
+    fn verifier_id(&self) -> &'static str {
+        NOTION_HMAC_SHA256_VERIFIER_ID
+    }
+
+    fn verify(
+        &self,
+        context: &AutomationWebhookSignatureVerificationContext<'_>,
+    ) -> Result<&'static str, AutomationWebhookVerificationError> {
+        // Notion signs `X-Notion-Signature: sha256=<hex>` = HMAC-SHA256 over the
+        // exact raw request body, keyed by the stored verification token.
+        let secret = context
+            .secret
+            .ok_or(AutomationWebhookVerificationError::MissingSecretMaterial)?;
+        let signature_header = context
+            .headers
+            .notion_hmac_sha256()
+            .ok_or(AutomationWebhookVerificationError::MissingSignature)?;
+        let signature = parse_prefixed_hex_signature(signature_header, "sha256=")?;
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+            .expect("HMAC-SHA256 accepts secrets of any length");
+        mac.update(context.body);
+        mac.verify_slice(&signature)
+            .map_err(|_| AutomationWebhookVerificationError::BadSignature)?;
+        Ok("verified")
+    }
+}
+
 impl AutomationWebhookSignatureVerifier for SharedSecretHeaderVerifier {
     fn verifier_id(&self) -> &'static str {
         SHARED_SECRET_HEADER_VERIFIER_ID
@@ -247,6 +290,7 @@ pub(crate) fn automation_webhook_signature_verifier_for(
     match scheme {
         AutomationWebhookSignatureScheme::HmacSha256V1 => &TANDEM_HMAC_SHA256_VERIFIER,
         AutomationWebhookSignatureScheme::GithubHmacSha256 => &GITHUB_HMAC_SHA256_VERIFIER,
+        AutomationWebhookSignatureScheme::NotionHmacSha256 => &NOTION_HMAC_SHA256_VERIFIER,
         AutomationWebhookSignatureScheme::SharedSecretHeaderV1 => &SHARED_SECRET_HEADER_VERIFIER,
         AutomationWebhookSignatureScheme::UnsignedDevMode => &UNSIGNED_DEV_MODE_VERIFIER,
     }
@@ -288,6 +332,16 @@ pub(crate) fn automation_webhook_signature_header_with_signed_allow_self_feedbac
 
 pub(crate) fn github_automation_webhook_signature_header(secret: &str, body: &[u8]) -> String {
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .expect("HMAC-SHA256 accepts secrets of any length");
+    mac.update(body);
+    let signature = mac.finalize().into_bytes();
+    format!("sha256={}", hex_encode(&signature))
+}
+
+/// Build a Notion `X-Notion-Signature` header value (`sha256=<hex>`) for a body
+/// signed with `verification_token`. Used by senders/tests.
+pub(crate) fn notion_automation_webhook_signature_header(token: &str, body: &[u8]) -> String {
+    let mut mac = HmacSha256::new_from_slice(token.as_bytes())
         .expect("HMAC-SHA256 accepts secrets of any length");
     mac.update(body);
     let signature = mac.finalize().into_bytes();
@@ -427,6 +481,14 @@ mod tests {
         );
         assert_eq!(
             automation_webhook_signature_verifier_for(
+                "notion",
+                &AutomationWebhookSignatureScheme::NotionHmacSha256,
+            )
+            .verifier_id(),
+            NOTION_HMAC_SHA256_VERIFIER_ID
+        );
+        assert_eq!(
+            automation_webhook_signature_verifier_for(
                 "generic",
                 &AutomationWebhookSignatureScheme::SharedSecretHeaderV1,
             )
@@ -489,6 +551,46 @@ mod tests {
             signature_tolerance_ms: 300_000,
         })
         .expect("valid github signature");
+    }
+
+    #[test]
+    fn notion_verifier_accepts_notion_signature_header() {
+        let body = br#"{"type":"page.updated"}"#;
+        let token = "notion_verification_token";
+        let header = notion_automation_webhook_signature_header(token, body);
+        let headers =
+            AutomationWebhookSignatureHeaders::default().with_notion_signature(Some(&header));
+
+        let decision =
+            verify_automation_webhook_signature(AutomationWebhookSignatureVerificationContext {
+                provider: "notion.so",
+                scheme: &AutomationWebhookSignatureScheme::NotionHmacSha256,
+                headers: &headers,
+                secret: Some(token),
+                body,
+                request_now_ms: 1_000,
+                signature_tolerance_ms: 300_000,
+            })
+            .expect("valid notion signature");
+        assert_eq!(decision.provider, "notion");
+        assert_eq!(decision.verifier_id, NOTION_HMAC_SHA256_VERIFIER_ID);
+
+        // A signature computed with a different token must fail.
+        let wrong = notion_automation_webhook_signature_header("other_token", body);
+        let wrong_headers =
+            AutomationWebhookSignatureHeaders::default().with_notion_signature(Some(&wrong));
+        assert!(verify_automation_webhook_signature(
+            AutomationWebhookSignatureVerificationContext {
+                provider: "notion",
+                scheme: &AutomationWebhookSignatureScheme::NotionHmacSha256,
+                headers: &wrong_headers,
+                secret: Some(token),
+                body,
+                request_now_ms: 1_000,
+                signature_tolerance_ms: 300_000,
+            }
+        )
+        .is_err());
     }
 
     #[test]

@@ -102,6 +102,125 @@ async fn create_automation(app: &axum::Router, automation_id: &str) {
 }
 
 #[tokio::test]
+async fn notion_trigger_create_and_one_time_verification_token_reveal() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    create_automation(&app, "auto-notion-mgmt").await;
+
+    // Creating a Notion trigger does not reveal a secret — it waits for Notion's
+    // verification token.
+    let create_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "POST",
+            "/automations/v2/auto-notion-mgmt/webhook-triggers",
+            "org-a",
+            "workspace-a",
+            "actor-a",
+            Some(json!({ "name": "Notion", "provider": "notion" })),
+        ))
+        .await
+        .expect("create notion trigger");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let created = response_json(create_resp).await;
+    assert_eq!(
+        created
+            .pointer("/verification_pending")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(created.get("new_secret").is_none());
+    assert_eq!(
+        created
+            .pointer("/trigger/verification_status/status")
+            .and_then(Value::as_str),
+        Some("awaiting_token")
+    );
+    let trigger_id = created
+        .pointer("/trigger/trigger_id")
+        .and_then(Value::as_str)
+        .expect("trigger id")
+        .to_string();
+
+    // Notion posts its verification token to the public intake.
+    let tenant_context = tandem_types::TenantContext::explicit_user_workspace(
+        "org-a",
+        "workspace-a",
+        None,
+        "actor-a",
+    );
+    let public_token = state
+        .get_automation_webhook_trigger(&tenant_context, &trigger_id)
+        .await
+        .expect("trigger")
+        .public_path_token;
+    let intake_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/webhooks/automations/{public_token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "verification_token": "notion_secret_token" }).to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("intake");
+    assert_eq!(intake_resp.status(), StatusCode::OK);
+
+    // A different tenant may not reveal the token.
+    let cross_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "POST",
+            format!("/automations/v2/auto-notion-mgmt/webhook-triggers/{trigger_id}/reveal-verification-token"),
+            "org-b",
+            "workspace-b",
+            "actor-b",
+            Some(json!({})),
+        ))
+        .await
+        .expect("cross reveal");
+    assert_ne!(cross_resp.status(), StatusCode::OK);
+
+    // The authorized owner reveals the token exactly once.
+    let reveal_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "POST",
+            format!("/automations/v2/auto-notion-mgmt/webhook-triggers/{trigger_id}/reveal-verification-token"),
+            "org-a",
+            "workspace-a",
+            "actor-a",
+            Some(json!({})),
+        ))
+        .await
+        .expect("reveal");
+    assert_eq!(reveal_resp.status(), StatusCode::OK);
+    let revealed = response_json(reveal_resp).await;
+    assert_eq!(
+        revealed.get("verification_token").and_then(Value::as_str),
+        Some("notion_secret_token")
+    );
+
+    // A second reveal is refused — the token is exposed at most once.
+    let second_resp = app
+        .oneshot(tenant_request(
+            "POST",
+            format!("/automations/v2/auto-notion-mgmt/webhook-triggers/{trigger_id}/reveal-verification-token"),
+            "org-a",
+            "workspace-a",
+            "actor-a",
+            Some(json!({})),
+        ))
+        .await
+        .expect("second reveal");
+    assert_eq!(second_resp.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
 async fn webhook_management_rejects_unsigned_dev_mode_without_server_flag() {
     let state = test_state().await;
     let app = app_router(state.clone());

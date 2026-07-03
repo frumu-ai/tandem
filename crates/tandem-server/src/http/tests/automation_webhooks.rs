@@ -2,11 +2,13 @@ use super::*;
 use crate::app::state::{
     automation_webhook_signature_header,
     automation_webhook_signature_header_with_signed_allow_self_feedback,
-    github_automation_webhook_signature_header, AutomationWebhookTriggerCreateInput,
+    github_automation_webhook_signature_header, notion_automation_webhook_signature_header,
+    AutomationWebhookTriggerCreateInput,
 };
 use crate::automation_v2::types::{
     AutomationWebhookDedupeResult, AutomationWebhookDeliveryStatus,
-    AutomationWebhookFeedbackLoopOutcome, AutomationWebhookSignatureScheme,
+    AutomationWebhookFeedbackLoopOutcome, AutomationWebhookNotionVerificationStatus,
+    AutomationWebhookSignatureScheme,
 };
 use crate::ExternalActionRecord;
 use tandem_types::{DataClass, TenantContext};
@@ -1162,4 +1164,315 @@ async fn public_automation_webhook_tenant_mismatch_does_not_queue_run() {
         .list_automation_webhook_raw_events_for_trigger(&tenant_b, &created.trigger.trigger_id)
         .await
         .is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Notion provider webhook support (TAN-562)
+// ---------------------------------------------------------------------------
+
+fn notion_create_input(
+    automation_id: &str,
+    tenant_context: TenantContext,
+) -> AutomationWebhookTriggerCreateInput {
+    AutomationWebhookTriggerCreateInput {
+        provider: "notion.so".to_string(),
+        name: Some("Notion webhook".to_string()),
+        provider_event_kind: Some("page.updated".to_string()),
+        ..create_input(automation_id, tenant_context)
+    }
+}
+
+async fn setup_notion_webhook(
+    state: &AppState,
+    automation_id: &str,
+    tenant_context: &TenantContext,
+) -> crate::app::state::AutomationWebhookCreateResult {
+    state
+        .put_automation_v2(minimal_automation(automation_id, tenant_context))
+        .await
+        .expect("put automation");
+    let created = state
+        .create_automation_webhook_trigger(notion_create_input(
+            automation_id,
+            tenant_context.clone(),
+        ))
+        .await
+        .expect("create notion trigger");
+    // Provider normalizes to `notion` and the scheme is forced accordingly.
+    assert_eq!(created.trigger.provider, "notion");
+    assert_eq!(
+        created.trigger.signature_scheme,
+        AutomationWebhookSignatureScheme::NotionHmacSha256
+    );
+    created
+}
+
+fn notion_verification_request(public_path_token: &str, token: &str) -> Request<Body> {
+    let body = json!({ "verification_token": token }).to_string();
+    Request::builder()
+        .method("POST")
+        .uri(format!("/webhooks/automations/{public_path_token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .expect("request")
+}
+
+fn notion_signed_request(
+    public_path_token: &str,
+    token: &str,
+    body: &'static [u8],
+) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(format!("/webhooks/automations/{public_path_token}"))
+        .header("content-type", "application/json")
+        .header(
+            "x-notion-signature",
+            notion_automation_webhook_signature_header(token, body),
+        )
+        .body(Body::from(body))
+        .expect("request")
+}
+
+#[tokio::test]
+async fn notion_verification_token_is_captured_without_queueing_a_run() {
+    let state = test_state().await;
+    let tenant_context = tenant("org-a", "workspace-a");
+    let created = setup_notion_webhook(&state, "automation-notion-a", &tenant_context).await;
+    let app = app_router(state.clone());
+
+    let resp = app
+        .oneshot(notion_verification_request(
+            &created.trigger.public_path_token,
+            "notion_tok_abc123",
+        ))
+        .await
+        .expect("response");
+    // Verification handshake is accepted but never queues a workflow run.
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(state.automation_v2_runs.read().await.is_empty());
+
+    // Status advanced to token_received and a sanitized status delivery recorded.
+    let trigger = state
+        .get_automation_webhook_trigger(&tenant_context, &created.trigger.trigger_id)
+        .await
+        .expect("trigger");
+    let verification = trigger.notion_verification.expect("notion verification");
+    assert_eq!(
+        verification.status,
+        AutomationWebhookNotionVerificationStatus::TokenReceived
+    );
+    assert!(verification.token_available_for_reveal());
+    let deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+        )
+        .await;
+    assert_eq!(deliveries.len(), 1);
+    assert_eq!(
+        deliveries[0].rejection_reason_code.as_deref(),
+        Some("notion_verification_token_received")
+    );
+    // The sanitized preview never contains the raw token.
+    assert!(!deliveries[0]
+        .sanitized_preview
+        .to_string()
+        .contains("notion_tok_abc123"));
+
+    // One-time reveal returns the token, then never again.
+    let revealed = state
+        .reveal_automation_webhook_notion_verification_token(
+            &tenant_context,
+            "automation-notion-a",
+            &created.trigger.trigger_id,
+        )
+        .await
+        .expect("reveal");
+    assert_eq!(revealed.as_deref(), Some("notion_tok_abc123"));
+    let second = state
+        .reveal_automation_webhook_notion_verification_token(
+            &tenant_context,
+            "automation-notion-a",
+            &created.trigger.trigger_id,
+        )
+        .await
+        .expect("reveal");
+    assert_eq!(second, None, "token is revealed at most once");
+
+    // A different tenant cannot reveal the token.
+    let other_tenant = tenant("org-b", "workspace-b");
+    let cross = state
+        .reveal_automation_webhook_notion_verification_token(
+            &other_tenant,
+            "automation-notion-a",
+            &created.trigger.trigger_id,
+        )
+        .await
+        .expect("reveal");
+    assert_eq!(cross, None);
+}
+
+#[tokio::test]
+async fn notion_signed_event_verifies_queues_once_and_dedupes() {
+    let state = test_state().await;
+    let tenant_context = tenant("org-a", "workspace-a");
+    let created = setup_notion_webhook(&state, "automation-notion-b", &tenant_context).await;
+    let token = "notion_tok_signed";
+    let app = app_router(state.clone());
+
+    // Capture the verification token first.
+    let resp = app
+        .clone()
+        .oneshot(notion_verification_request(
+            &created.trigger.public_path_token,
+            token,
+        ))
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // A correctly signed Notion event verifies and queues exactly one run.
+    let body = br#"{"type":"page.updated","entity":{"id":"page-123"}}"#;
+    let resp = app
+        .clone()
+        .oneshot(notion_signed_request(
+            &created.trigger.public_path_token,
+            token,
+            body,
+        ))
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    assert_eq!(state.automation_v2_runs.read().await.len(), 1);
+
+    let deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+        )
+        .await;
+    let accepted = deliveries
+        .iter()
+        .find(|delivery| delivery.status == AutomationWebhookDeliveryStatus::Accepted)
+        .expect("accepted delivery");
+    assert_eq!(accepted.verification_provider.as_deref(), Some("notion"));
+    assert_eq!(
+        accepted.verification_scheme,
+        Some(AutomationWebhookSignatureScheme::NotionHmacSha256)
+    );
+    assert!(accepted.queued_run_id.is_some());
+
+    // Trigger flips to active once a signed event is verified.
+    let trigger = state
+        .get_automation_webhook_trigger(&tenant_context, &created.trigger.trigger_id)
+        .await
+        .expect("trigger");
+    assert_eq!(
+        trigger.notion_verification.expect("verification").status,
+        AutomationWebhookNotionVerificationStatus::Active
+    );
+
+    // Re-delivering the same body does not queue a second run.
+    let resp = app
+        .oneshot(notion_signed_request(
+            &created.trigger.public_path_token,
+            token,
+            body,
+        ))
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    assert_eq!(
+        state.automation_v2_runs.read().await.len(),
+        1,
+        "duplicate body must not queue a second run"
+    );
+}
+
+#[tokio::test]
+async fn notion_event_with_wrong_token_signature_is_rejected() {
+    let state = test_state().await;
+    let tenant_context = tenant("org-a", "workspace-a");
+    let created = setup_notion_webhook(&state, "automation-notion-c", &tenant_context).await;
+    let app = app_router(state.clone());
+
+    app.clone()
+        .oneshot(notion_verification_request(
+            &created.trigger.public_path_token,
+            "the_real_token",
+        ))
+        .await
+        .expect("response");
+
+    // Signed with a different token than the one stored → rejected, no run.
+    let body = br#"{"type":"page.updated"}"#;
+    let resp = app
+        .clone()
+        .oneshot(notion_signed_request(
+            &created.trigger.public_path_token,
+            "an_attacker_token",
+            body,
+        ))
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert!(state.automation_v2_runs.read().await.is_empty());
+
+    // An unsigned, non-verification event is rejected for missing signature.
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/webhooks/automations/{}",
+                    created.trigger.public_path_token
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(&b"{\"type\":\"page.updated\"}"[..]))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert!(state.automation_v2_runs.read().await.is_empty());
+}
+
+#[tokio::test]
+async fn notion_second_verification_token_does_not_overwrite_first() {
+    let state = test_state().await;
+    let tenant_context = tenant("org-a", "workspace-a");
+    let created = setup_notion_webhook(&state, "automation-notion-d", &tenant_context).await;
+    let app = app_router(state.clone());
+
+    app.clone()
+        .oneshot(notion_verification_request(
+            &created.trigger.public_path_token,
+            "first_token",
+        ))
+        .await
+        .expect("response");
+    // A second unsigned token payload is ignored, not applied.
+    let resp = app
+        .oneshot(notion_verification_request(
+            &created.trigger.public_path_token,
+            "attacker_reset_token",
+        ))
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // The originally captured token still verifies events.
+    let body = br#"{"type":"page.updated"}"#;
+    let sig = notion_automation_webhook_signature_header("first_token", body);
+    assert!(!sig.is_empty());
+    let revealed = state
+        .reveal_automation_webhook_notion_verification_token(
+            &tenant_context,
+            "automation-notion-d",
+            &created.trigger.trigger_id,
+        )
+        .await
+        .expect("reveal");
+    assert_eq!(revealed.as_deref(), Some("first_token"));
 }

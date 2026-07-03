@@ -2962,6 +2962,21 @@ export interface AutomationWebhookTriggerSecretResponse extends AutomationWebhoo
   newSecret?: string;
   secret_one_time?: boolean;
   secretOneTime?: boolean;
+  /** Notion provider-owned-secret flow: no secret is revealed at creation. */
+  verification_pending?: boolean;
+  verificationPending?: boolean;
+}
+
+/**
+ * One-time reveal of a Notion trigger's provider-supplied verification token so
+ * it can be pasted back into Notion. The token is present at most once.
+ */
+export interface AutomationWebhookVerificationTokenResponse {
+  verification_token?: string;
+  verificationToken?: string;
+  token_one_time?: boolean;
+  tokenOneTime?: boolean;
+  trigger?: AutomationWebhookTriggerResponse["trigger"];
 }
 
 export interface AutomationWebhookDeleteResponse {

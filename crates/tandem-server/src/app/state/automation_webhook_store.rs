@@ -249,7 +249,7 @@ fn tenant_context_matches(left: &TenantContext, right: &TenantContext) -> bool {
         && left.deployment_id == right.deployment_id
 }
 
-fn secret_material_key(secret_ref: &SecretRef) -> String {
+pub(crate) fn secret_material_key(secret_ref: &SecretRef) -> String {
     format!(
         "{}::{}::{}::{}",
         secret_ref.org_id, secret_ref.workspace_id, secret_ref.provider, secret_ref.secret_id
@@ -291,7 +291,11 @@ fn secret_ref_for_trigger(
     }
 }
 
-fn secret_digest(secret: &str, tenant_context: &TenantContext, trigger_id: &str) -> String {
+pub(crate) fn secret_digest(
+    secret: &str,
+    tenant_context: &TenantContext,
+    trigger_id: &str,
+) -> String {
     let mut hasher = Sha256::new();
     hasher.update(tenant_context.org_id.as_bytes());
     hasher.update([0]);
@@ -604,7 +608,7 @@ impl AppState {
         Ok(())
     }
 
-    async fn persist_automation_webhook_triggers_locked(&self) -> anyhow::Result<()> {
+    pub(crate) async fn persist_automation_webhook_triggers_locked(&self) -> anyhow::Result<()> {
         let triggers = self.automation_webhook_triggers.read().await.clone();
         let payload = serialize_automation_webhook_triggers_file(triggers)?;
         ensure_parent_dir(&self.automation_webhook_triggers_path).await?;
@@ -642,7 +646,9 @@ impl AppState {
         Ok(scheme)
     }
 
-    async fn persist_automation_webhook_secret_material_locked(&self) -> anyhow::Result<()> {
+    pub(crate) async fn persist_automation_webhook_secret_material_locked(
+        &self,
+    ) -> anyhow::Result<()> {
         let secrets = self.automation_webhook_secret_material.read().await.clone();
         let payload = serialize_automation_webhook_secret_material_file(secrets)?;
         ensure_parent_dir(&self.automation_webhook_secret_material_path).await?;
@@ -678,9 +684,17 @@ impl AppState {
             }
         }
 
-        let requested_scheme = self.validate_webhook_signature_scheme_allowed(
+        let mut requested_scheme = self.validate_webhook_signature_scheme_allowed(
             input.signature_scheme.clone().unwrap_or_default(),
         )?;
+        // The Notion provider is bound to its provider-owned verification-token
+        // signature scheme: the signing secret is Notion's token, not a
+        // Tandem-generated secret, so force the scheme for consistency.
+        if provider == "notion" {
+            requested_scheme = AutomationWebhookSignatureScheme::NotionHmacSha256;
+        }
+        let notion_verification =
+            (provider == "notion").then(AutomationWebhookNotionVerification::default);
         let _guard = self.automation_webhook_persistence.lock().await;
         let now = now_ms();
         let trigger_id = format!("whtr_{}", Uuid::new_v4().simple());
@@ -728,6 +742,7 @@ impl AppState {
             last_received_at_ms: None,
             last_accepted_at_ms: None,
             last_rejected_at_ms: None,
+            notion_verification,
         };
         let material = AutomationWebhookSecretMaterialRecord {
             secret_ref: secret_ref.clone(),
@@ -1076,6 +1091,11 @@ impl AppState {
                     let accepted_at_ms = delivery.accepted_at_ms.unwrap_or(now);
                     delivery.accepted_at_ms = Some(accepted_at_ms);
                     trigger.last_accepted_at_ms = Some(accepted_at_ms);
+                    // First signed Notion event verifying against the stored
+                    // token marks the subscription active (TAN-562).
+                    if let Some(verification) = trigger.notion_verification.as_mut() {
+                        verification.mark_active(accepted_at_ms);
+                    }
                 }
                 AutomationWebhookDeliveryStatus::Rejected
                 | AutomationWebhookDeliveryStatus::Duplicate

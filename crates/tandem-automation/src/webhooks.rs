@@ -81,6 +81,7 @@ pub fn normalize_automation_webhook_provider(value: &str) -> Option<String> {
         "linear.app" => "linear",
         "slack.com" => "slack",
         "stripe.com" => "stripe",
+        "notion.so" | "notion.com" => "notion",
         _ => normalized.as_str(),
     };
     Some(canonical.to_string())
@@ -107,6 +108,9 @@ pub enum AutomationWebhookSignatureScheme {
     #[default]
     HmacSha256V1,
     GithubHmacSha256,
+    /// Notion webhooks: `X-Notion-Signature: sha256=<hex>`, HMAC-SHA256 over the
+    /// raw request body keyed by the provider-supplied verification token.
+    NotionHmacSha256,
     SharedSecretHeaderV1,
     UnsignedDevMode,
 }
@@ -201,6 +205,66 @@ pub struct AutomationWebhookCorrelationRecord {
     pub reason_code: Option<String>,
 }
 
+/// Lifecycle of a Notion webhook trigger's provider-owned verification token.
+///
+/// Notion sends the signing secret (`verification_token`) to the callback URL
+/// *after* the trigger exists; the operator then copies it back into Notion to
+/// activate the subscription. Tandem tracks that handshake here.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationWebhookNotionVerificationStatus {
+    /// Trigger created; waiting for Notion to POST the verification token.
+    #[default]
+    AwaitingToken,
+    /// Token received and stored; available for a one-time operator reveal so it
+    /// can be pasted back into Notion.
+    TokenReceived,
+    /// A signed Notion event has verified against the stored token.
+    Active,
+}
+
+impl AutomationWebhookNotionVerificationStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AutomationWebhookNotionVerificationStatus::AwaitingToken => "awaiting_token",
+            AutomationWebhookNotionVerificationStatus::TokenReceived => "token_received",
+            AutomationWebhookNotionVerificationStatus::Active => "active",
+        }
+    }
+}
+
+/// Notion provider verification state carried on the trigger. The token itself
+/// is never stored here — it lives in the tenant-scoped secret material store
+/// (it becomes the trigger's signing secret); this only tracks status and the
+/// one-time reveal.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutomationWebhookNotionVerification {
+    #[serde(default)]
+    pub status: AutomationWebhookNotionVerificationStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_received_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_revealed_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_at_ms: Option<u64>,
+}
+
+impl AutomationWebhookNotionVerification {
+    /// Whether a stored token is available for a one-time operator reveal (it has
+    /// been received but not yet revealed).
+    pub fn token_available_for_reveal(&self) -> bool {
+        self.token_received_at_ms.is_some() && self.token_revealed_at_ms.is_none()
+    }
+
+    /// Mark the subscription active on the first verified signed event.
+    pub fn mark_active(&mut self, at_ms: u64) {
+        if self.status != AutomationWebhookNotionVerificationStatus::Active {
+            self.status = AutomationWebhookNotionVerificationStatus::Active;
+            self.verified_at_ms = Some(at_ms);
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AutomationWebhookSecretMetadata {
     pub secret_ref: SecretRef,
@@ -253,6 +317,10 @@ pub struct AutomationWebhookTriggerRecord {
     pub last_accepted_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_rejected_at_ms: Option<u64>,
+    /// Notion provider-owned verification-token handshake state (TAN-562). Only
+    /// populated for `notion` provider triggers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notion_verification: Option<AutomationWebhookNotionVerification>,
 }
 
 impl AutomationWebhookTriggerRecord {

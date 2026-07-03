@@ -8,9 +8,10 @@ use serde_json::{json, Value};
 
 use crate::app::state::{
     automation_webhook_body_digest, sanitize_automation_webhook_preview,
-    AutomationWebhookFeedbackLoopCandidate, AutomationWebhookQueueResult,
-    AutomationWebhookRawEventCreateInput, AutomationWebhookSignatureHeaders,
-    AutomationWebhookVerificationDecision, AutomationWebhookVerificationError,
+    AutomationWebhookFeedbackLoopCandidate, AutomationWebhookNotionIntake,
+    AutomationWebhookQueueResult, AutomationWebhookRawEventCreateInput,
+    AutomationWebhookSignatureHeaders, AutomationWebhookVerificationDecision,
+    AutomationWebhookVerificationError,
 };
 use crate::automation_v2::types::{
     automation_webhook_provider_event_id_headers, AutomationWebhookSignatureScheme,
@@ -25,6 +26,7 @@ const AUTOMATION_WEBHOOK_SIGNATURE_TOLERANCE_MS: u64 = 5 * 60 * 1000;
 const AUTOMATION_WEBHOOK_SIGNATURE_HEADER: &str = "x-tandem-webhook-signature";
 const AUTOMATION_WEBHOOK_LEGACY_SIGNATURE_HEADER: &str = "x-tandem-signature";
 const AUTOMATION_WEBHOOK_GITHUB_SIGNATURE_HEADER: &str = "x-hub-signature-256";
+const AUTOMATION_WEBHOOK_NOTION_SIGNATURE_HEADER: &str = "x-notion-signature";
 const AUTOMATION_WEBHOOK_SHARED_SECRET_HEADER: &str = "x-tandem-webhook-secret";
 const AUTOMATION_WEBHOOK_ORIGIN_ACTION_HEADER: &str = "x-tandem-origin-action-id";
 const AUTOMATION_WEBHOOK_ORIGIN_RUN_HEADER: &str = "x-tandem-origin-run-id";
@@ -57,6 +59,26 @@ async fn automation_webhook_intake(
     }
     if !is_json_content_type(&headers) {
         return webhook_public_response(StatusCode::UNSUPPORTED_MEDIA_TYPE, "rejected");
+    }
+
+    // Notion subscription verification handshake: an unsigned POST carrying a
+    // `verification_token` for a Notion-provider trigger. Capture the token as
+    // the trigger's signing secret and respond without queueing a run.
+    let has_notion_signature =
+        header_str(&headers, AUTOMATION_WEBHOOK_NOTION_SIGNATURE_HEADER).is_some();
+    match state
+        .handle_automation_webhook_notion_verification(
+            &public_path_token,
+            body.as_ref(),
+            has_notion_signature,
+            received_at_ms,
+        )
+        .await
+    {
+        AutomationWebhookNotionIntake::Captured | AutomationWebhookNotionIntake::Ignored => {
+            return webhook_public_response(StatusCode::OK, "verification_pending");
+        }
+        AutomationWebhookNotionIntake::NotApplicable => {}
     }
 
     let advisory_provider_event_id =
@@ -197,6 +219,10 @@ fn signature_headers_from_request(headers: &HeaderMap) -> AutomationWebhookSigna
         header_str(headers, AUTOMATION_WEBHOOK_GITHUB_SIGNATURE_HEADER),
         header_str(headers, AUTOMATION_WEBHOOK_SHARED_SECRET_HEADER),
     )
+    .with_notion_signature(header_str(
+        headers,
+        AUTOMATION_WEBHOOK_NOTION_SIGNATURE_HEADER,
+    ))
     .with_tandem_signed_allow_self_feedback(header_str(
         headers,
         AUTOMATION_WEBHOOK_ALLOW_SELF_FEEDBACK_HEADER,

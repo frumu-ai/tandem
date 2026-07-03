@@ -156,6 +156,7 @@ import type {
   AutomationWebhookTriggerResponse,
   AutomationWebhookTriggerSecretResponse,
   AutomationWebhookTriggerUpdateInput,
+  AutomationWebhookVerificationTokenResponse,
   WorkflowPlan,
   WorkflowPlanConversation,
   WorkflowPlanPreviewResponse,
@@ -3673,6 +3674,20 @@ class AutomationsV2 {
   ): Promise<AutomationWebhookTriggerSecretResponse> {
     return this.req<AutomationWebhookTriggerSecretResponse>(
       `/automations/v2/${encodeURIComponent(id)}/webhook-triggers/${encodeURIComponent(triggerId)}/rotate-secret`,
+      { method: "POST", body: JSON.stringify({}) }
+    );
+  }
+
+  /**
+   * One-time reveal of a Notion trigger's provider-supplied verification token
+   * so it can be pasted back into Notion. Returns the token at most once.
+   */
+  async revealWebhookVerificationToken(
+    id: string,
+    triggerId: string
+  ): Promise<AutomationWebhookVerificationTokenResponse> {
+    return this.req<AutomationWebhookVerificationTokenResponse>(
+      `/automations/v2/${encodeURIComponent(id)}/webhook-triggers/${encodeURIComponent(triggerId)}/reveal-verification-token`,
       { method: "POST", body: JSON.stringify({}) }
     );
   }

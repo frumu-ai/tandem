@@ -45,6 +45,24 @@ function callbackUrl(trigger: any) {
   return safeString(trigger?.callback_url || trigger?.callbackUrl || trigger?.callback_path || trigger?.callbackPath);
 }
 
+function notionVerification(trigger: any): {
+  status: string;
+  tokenAvailable: boolean;
+} | null {
+  const raw = trigger?.verification_status || trigger?.verificationStatus;
+  if (!raw || typeof raw !== "object") return null;
+  return {
+    status: safeString(raw.status),
+    tokenAvailable: raw.token_available === true || raw.tokenAvailable === true,
+  };
+}
+
+const NOTION_STATUS_LABEL: Record<string, string> = {
+  awaiting_token: "Waiting for Notion verification token",
+  token_received: "Verification token received — copy it into Notion",
+  active: "Verified — receiving signed events",
+};
+
 function defaultDataClass(trigger: any) {
   return safeString(trigger?.default_data_class || trigger?.defaultDataClass) || "internal";
 }
@@ -152,7 +170,7 @@ export function AutomationWebhookManager({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const queryClient = useQueryClient();
   const [selectedTriggerId, setSelectedTriggerId] = useState("");
-  const [revealedSecret, setRevealedSecret] = useState<{ triggerId: string; secret: string } | null>(null);
+  const [revealedSecret, setRevealedSecret] = useState<{ triggerId: string; secret: string; label?: string; hint?: string } | null>(null);
   const [createDraft, setCreateDraft] = useState({
     name: "",
     provider: "generic",
@@ -280,6 +298,25 @@ export function AutomationWebhookManager({
     onError: (error) => toast?.("err", error instanceof Error ? error.message : String(error)),
   });
 
+  const revealTokenMutation = useMutation({
+    mutationFn: async () =>
+      client.automationsV2.revealWebhookVerificationToken(automationId, effectiveTriggerId),
+    onSuccess: async (payload: any) => {
+      const token = safeString(payload?.verification_token || payload?.verificationToken);
+      if (token) {
+        setRevealedSecret({
+          triggerId: effectiveTriggerId,
+          secret: token,
+          label: "Verification token",
+          hint: "Paste this token back into Notion to verify the subscription. It is shown once.",
+        });
+      }
+      toast?.("ok", "Verification token revealed.");
+      await invalidate();
+    },
+    onError: (error) => toast?.("err", error instanceof Error ? error.message : String(error)),
+  });
+
   const disableMutation = useMutation({
     mutationFn: async () => client.automationsV2.disableWebhookTrigger(automationId, effectiveTriggerId),
     onSuccess: async () => {
@@ -317,9 +354,9 @@ export function AutomationWebhookManager({
         <div className="rounded-lg border border-amber-400/40 bg-amber-400/10 p-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <div className="text-sm font-semibold text-amber-100">New secret</div>
+              <div className="text-sm font-semibold text-amber-100">{revealedSecret.label || "New secret"}</div>
               <div className="mt-1 text-xs text-amber-200/80">
-                This secret is shown once. Store it before closing or rotating again.
+                {revealedSecret.hint || "This secret is shown once. Store it before closing or rotating again."}
               </div>
             </div>
             <button
@@ -379,10 +416,21 @@ export function AutomationWebhookManager({
             <label className="text-xs text-slate-400">Provider</label>
             <input
               className="tcp-input"
+              list="tcp-webhook-providers"
               value={createDraft.provider}
               onInput={(event) => setCreateDraft((draft) => ({ ...draft, provider: (event.target as HTMLInputElement).value }))}
               placeholder="generic"
             />
+            <datalist id="tcp-webhook-providers">
+              <option value="generic"></option>
+              <option value="github"></option>
+              <option value="notion"></option>
+            </datalist>
+            {safeString(createDraft.provider).toLowerCase().startsWith("notion") ? (
+              <div className="text-[11px] text-sky-300/80">
+                Notion signs events with a verification token you'll copy from Tandem back into Notion after creating the trigger.
+              </div>
+            ) : null}
           </div>
           <div className="grid gap-1">
             <label className="text-xs text-slate-400">Event kind</label>
@@ -501,6 +549,36 @@ export function AutomationWebhookManager({
                   </button>
                 </div>
               </div>
+
+              {(() => {
+                const verification = notionVerification(selectedTrigger);
+                if (!verification) return null;
+                const label =
+                  NOTION_STATUS_LABEL[verification.status] || formatLabel(verification.status);
+                return (
+                  <div className="grid gap-2 rounded-md border border-sky-500/30 bg-sky-500/5 p-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-xs uppercase tracking-[0.16em] text-sky-300">Notion verification</div>
+                      <span className={`tcp-badge ${verification.status === "active" ? "tcp-badge-ok" : "tcp-badge-info"}`}>
+                        {label}
+                      </span>
+                    </div>
+                    <div className="text-xs text-slate-400">
+                      Paste the callback URL into your Notion connection's Webhooks tab. When Notion sends its
+                      verification token, reveal it here (once) and paste it back into Notion to activate the subscription.
+                    </div>
+                    <button
+                      type="button"
+                      className="tcp-btn h-8 justify-self-start px-3 text-xs"
+                      disabled={!verification.tokenAvailable || revealTokenMutation.isPending}
+                      onClick={() => revealTokenMutation.mutate()}
+                    >
+                      <i data-lucide="key-round"></i>
+                      {verification.tokenAvailable ? "Reveal verification token" : "No token to reveal"}
+                    </button>
+                  </div>
+                );
+              })()}
 
               <div className="grid gap-2 md:grid-cols-2">
                 <div className="grid gap-1">
