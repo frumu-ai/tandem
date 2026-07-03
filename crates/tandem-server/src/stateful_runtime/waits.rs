@@ -170,11 +170,12 @@ pub async fn claim_due_stateful_wait_with_lease_clock(
     lease_now_ms: u64,
     lease_ms: u64,
 ) -> anyhow::Result<Option<StatefulWaitRecord>> {
-    claim_due_stateful_wait_matching_generation_with_lease_clock(
+    claim_due_stateful_wait_matching_version_with_lease_clock(
         path,
         tenant,
         run_id,
         wait_id,
+        None,
         None,
         claimant_id,
         due_now_ms,
@@ -184,23 +185,25 @@ pub async fn claim_due_stateful_wait_with_lease_clock(
     .await
 }
 
-pub async fn claim_due_stateful_wait_generation_with_lease_clock(
+pub async fn claim_due_stateful_wait_version_with_lease_clock(
     path: &Path,
     tenant: &TenantContext,
     run_id: &str,
     wait_id: &str,
     expected_created_at_ms: u64,
+    expected_updated_at_ms: u64,
     claimant_id: &str,
     due_now_ms: u64,
     lease_now_ms: u64,
     lease_ms: u64,
 ) -> anyhow::Result<Option<StatefulWaitRecord>> {
-    claim_due_stateful_wait_matching_generation_with_lease_clock(
+    claim_due_stateful_wait_matching_version_with_lease_clock(
         path,
         tenant,
         run_id,
         wait_id,
         Some(expected_created_at_ms),
+        Some(expected_updated_at_ms),
         claimant_id,
         due_now_ms,
         lease_now_ms,
@@ -209,12 +212,13 @@ pub async fn claim_due_stateful_wait_generation_with_lease_clock(
     .await
 }
 
-async fn claim_due_stateful_wait_matching_generation_with_lease_clock(
+async fn claim_due_stateful_wait_matching_version_with_lease_clock(
     path: &Path,
     tenant: &TenantContext,
     run_id: &str,
     wait_id: &str,
     expected_created_at_ms: Option<u64>,
+    expected_updated_at_ms: Option<u64>,
     claimant_id: &str,
     due_now_ms: u64,
     lease_now_ms: u64,
@@ -228,6 +232,9 @@ async fn claim_due_stateful_wait_matching_generation_with_lease_clock(
             && wait.visible_to_tenant(tenant)
             && expected_created_at_ms
                 .map(|created_at_ms| wait.created_at_ms == created_at_ms)
+                .unwrap_or(true)
+            && expected_updated_at_ms
+                .map(|updated_at_ms| wait.updated_at_ms == updated_at_ms)
                 .unwrap_or(true)
     }) else {
         return Ok(None);
@@ -1281,48 +1288,56 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn generation_scoped_claim_rejects_replaced_wait() {
-        let path = temp_wait_store("stateful-waits-generation-claim");
+    async fn version_scoped_claim_rejects_updated_wait() {
+        let path = temp_wait_store("stateful-waits-version-claim");
         let tenant_a = tenant("org-a", "workspace-a");
-        let mut old_generation = timer_wait("wait-a", "run-a", tenant_a.clone(), 1_900);
-        old_generation.created_at_ms = 1_800;
-        upsert_stateful_wait(&path, old_generation.clone())
+        let mut original = timer_wait("wait-a", "run-a", tenant_a.clone(), 1_900);
+        original.created_at_ms = 1_800;
+        original.updated_at_ms = 1_800;
+        upsert_stateful_wait(&path, original.clone())
             .await
-            .expect("insert old wait");
+            .expect("insert original wait");
 
-        let mut new_generation = timer_wait("wait-a", "run-a", tenant_a.clone(), 1_500);
-        new_generation.created_at_ms = 1_050;
-        new_generation.updated_at_ms = 1_050;
-        upsert_stateful_wait(&path, new_generation)
+        let mut updated = original.clone();
+        updated.wake_at_ms = Some(1_500);
+        updated.updated_at_ms = 1_050;
+        upsert_stateful_wait(&path, updated)
             .await
-            .expect("replace wait generation");
+            .expect("update wait in place");
 
-        assert!(claim_due_stateful_wait_generation_with_lease_clock(
+        assert!(claim_due_stateful_wait_version_with_lease_clock(
             &path,
             &tenant_a,
             "run-a",
             "wait-a",
-            old_generation.created_at_ms,
+            original.created_at_ms,
+            original.updated_at_ms,
             "scheduler-a",
             2_000,
             1_000,
             500,
         )
         .await
-        .expect("claim stale generation")
+        .expect("claim stale version")
         .is_none());
 
-        let waits = list_stateful_waits(
+        let claimed = claim_due_stateful_wait_version_with_lease_clock(
             &path,
             &tenant_a,
-            StatefulWaitQuery {
-                run_id: Some("run-a"),
-                ..StatefulWaitQuery::default()
-            },
-        );
-        assert_eq!(waits.len(), 1);
-        assert_eq!(waits[0].created_at_ms, 1_050);
-        assert_eq!(waits[0].status, StatefulWaitStatus::Waiting);
+            "run-a",
+            "wait-a",
+            original.created_at_ms,
+            1_050,
+            "scheduler-a",
+            2_000,
+            1_000,
+            500,
+        )
+        .await
+        .expect("claim current version")
+        .expect("current version claimed");
+        assert_eq!(claimed.updated_at_ms, 1_000);
+        assert_eq!(claimed.claimed_by.as_deref(), Some("scheduler-a"));
         let _ = tokio::fs::remove_file(path).await;
     }
 

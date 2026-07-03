@@ -22,7 +22,7 @@ use super::waits::{
     begin_claimed_stateful_wait_reminder_completion,
     begin_claimed_stateful_wait_timeout_completion, begin_claimed_stateful_wait_wake_completion,
     cancel_stateful_wait_after_phase_guard_denial,
-    claim_due_stateful_wait_generation_with_lease_clock, due_stateful_waits,
+    claim_due_stateful_wait_version_with_lease_clock, due_stateful_waits,
     finish_claimed_stateful_wait_completion, finish_claimed_stateful_wait_reminder_completion,
     load_stateful_waits,
 };
@@ -287,12 +287,13 @@ pub async fn process_due_stateful_waits(
             continue;
         }
         let tenant_context = candidate.scope.tenant_context.clone();
-        let claimed = match claim_due_stateful_wait_generation_with_lease_clock(
+        let claimed = match claim_due_stateful_wait_version_with_lease_clock(
             &paths.waits_path,
             &tenant_context,
             &candidate.run_id,
             &candidate.wait_id,
             candidate.created_at_ms,
+            candidate.updated_at_ms,
             &config.claimant_id,
             processing_now_ms,
             now_ms,
@@ -422,13 +423,14 @@ fn scheduler_processing_now_ms(
 fn scheduler_wait_identity_key(wait: &StatefulWaitRecord) -> String {
     let tenant = &wait.scope.tenant_context;
     format!(
-        "{}:{}:{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}:{}:{}",
         tenant.org_id,
         tenant.workspace_id,
         tenant.deployment_id.as_deref().unwrap_or(""),
         wait.run_id,
         wait.wait_id,
-        wait.created_at_ms
+        wait.created_at_ms,
+        wait.updated_at_ms
     )
 }
 
@@ -1556,6 +1558,68 @@ mod tests {
         assert_eq!(waits[0].wait_id, "wait-reused");
         assert_eq!(waits[0].created_at_ms, 1_050);
         assert_eq!(waits[0].status, StatefulWaitStatus::Waiting);
+        let _ = tokio::fs::remove_dir_all(
+            paths
+                .run_events_path
+                .parent()
+                .expect("runtime root")
+                .to_path_buf(),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn scheduler_regression_identity_includes_wait_updates() {
+        let paths = paths("stateful-wait-scheduler-clock-regression-update");
+        let tenant = tenant("org-a", "workspace-a");
+        let config = StatefulWaitSchedulerConfig {
+            claimant_id: "scheduler-clock-regression-update-test".to_string(),
+            lease_ms: 500,
+            limit: 10,
+        };
+        let mut original = timer_wait("wait-updated", 2_500);
+        original.created_at_ms = 1_900;
+        original.updated_at_ms = 1_900;
+        upsert_stateful_wait(&paths.waits_path, original)
+            .await
+            .expect("insert original wait");
+        let seed_tick = process_due_stateful_waits(&paths, 2_000, config.clone()).await;
+        assert_eq!(seed_tick.checked, 0);
+        assert_eq!(seed_tick.clock_regressions, 0);
+
+        let mut updated = timer_wait("wait-updated", 1_500);
+        updated.created_at_ms = 1_900;
+        updated.updated_at_ms = 1_050;
+        upsert_stateful_wait(&paths.waits_path, updated)
+            .await
+            .expect("update wait after regression");
+
+        let early_tick = process_due_stateful_waits(&paths, 1_100, config.clone()).await;
+        assert_eq!(early_tick.clock_regressions, 1);
+        assert_eq!(early_tick.checked, 0);
+        assert_eq!(early_tick.completed, 0);
+        let waits = list_stateful_waits(
+            &paths.waits_path,
+            &tenant,
+            StatefulWaitQuery {
+                run_id: Some("run-a"),
+                ..StatefulWaitQuery::default()
+            },
+        );
+        assert_eq!(waits.len(), 1);
+        assert_eq!(waits[0].wait_id, "wait-updated");
+        assert_eq!(waits[0].created_at_ms, 1_900);
+        assert_eq!(waits[0].updated_at_ms, 1_050);
+        assert_eq!(waits[0].status, StatefulWaitStatus::Waiting);
+
+        let due_tick = process_due_stateful_waits(&paths, 1_500, config).await;
+        assert_eq!(due_tick.clock_regressions, 1);
+        assert_eq!(due_tick.checked, 1);
+        assert_eq!(due_tick.completed, 1);
+        assert_eq!(due_tick.outcomes[0].lag_ms, 0);
+        let events = load_stateful_run_events(&paths.run_events_path);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].occurred_at_ms, 1_500);
         let _ = tokio::fs::remove_dir_all(
             paths
                 .run_events_path
