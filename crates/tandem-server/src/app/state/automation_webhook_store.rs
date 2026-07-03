@@ -370,9 +370,15 @@ fn insert_automation_metadata_value(metadata: &mut Option<Value>, key: &str, val
 }
 
 #[derive(Debug, Clone)]
-struct AutomationWebhookStatefulWakeResult {
-    delivery: AutomationWebhookDeliveryRecord,
-    wait: StatefulWaitRecord,
+enum AutomationWebhookStatefulWaitResult {
+    Woken {
+        delivery: AutomationWebhookDeliveryRecord,
+        wait: StatefulWaitRecord,
+    },
+    Rejected {
+        delivery: AutomationWebhookDeliveryRecord,
+        reason_code: String,
+    },
 }
 
 fn automation_webhook_stateful_wait_event(
@@ -465,6 +471,34 @@ async fn cancel_webhook_wait_after_phase_guard_denial(
             );
         }
     }
+}
+
+fn automation_webhook_phase_denied_delivery(
+    trigger: &AutomationWebhookTriggerRecord,
+    provider_event_id: Option<String>,
+    body_digest: String,
+    received_at_ms: u64,
+    sanitized_preview: Value,
+    verification: &AutomationWebhookVerificationDecision,
+    primary_idempotency: Option<&AutomationWebhookReservedClaim>,
+) -> AutomationWebhookDeliveryRecord {
+    let mut delivery = automation_webhook_rejection_delivery(
+        trigger,
+        provider_event_id,
+        body_digest,
+        AutomationWebhookDeliveryStatus::Rejected,
+        "stateful_wait_phase_denied",
+        received_at_ms,
+        sanitized_preview,
+        Some(verification.clone()),
+    );
+    if let Some(primary) = primary_idempotency {
+        delivery.idempotency_key = Some(primary.claim.key.clone());
+        delivery.idempotency_record_id = Some(primary.record.record_id.clone());
+        delivery.dedupe_result = Some(AutomationWebhookDedupeResult::Accepted);
+        delivery.dedupe_reason_code = Some(format!("rejected_{}", primary.claim.key_kind));
+    }
+    delivery
 }
 
 async fn ensure_parent_dir(path: &std::path::Path) -> anyhow::Result<()> {
@@ -1150,7 +1184,7 @@ impl AppState {
         verification: AutomationWebhookVerificationDecision,
         primary_idempotency: Option<AutomationWebhookReservedClaim>,
         feedback_loop: Option<AutomationWebhookFeedbackLoopDecision>,
-    ) -> anyhow::Result<Option<AutomationWebhookStatefulWakeResult>> {
+    ) -> anyhow::Result<Option<AutomationWebhookStatefulWaitResult>> {
         let paths =
             StatefulRuntimeStoragePaths::from_runtime_events_path(&self.runtime_events_path);
         let wait_event = automation_webhook_stateful_wait_event(
@@ -1186,7 +1220,22 @@ impl AppState {
                 received_at_ms,
             )
             .await;
-            return Err(error);
+            let delivery = automation_webhook_phase_denied_delivery(
+                trigger,
+                provider_event_id,
+                body_digest,
+                received_at_ms,
+                sanitized_preview,
+                &verification,
+                primary_idempotency.as_ref(),
+            );
+            let delivery = self
+                .record_automation_webhook_delivery_locked(delivery)
+                .await?;
+            return Ok(Some(AutomationWebhookStatefulWaitResult::Rejected {
+                delivery,
+                reason_code: "stateful_wait_phase_denied".to_string(),
+            }));
         }
         let reserved_wait = begin_claimed_stateful_wait_wake_completion(
             &paths.waits_path,
@@ -1209,7 +1258,22 @@ impl AppState {
                         received_at_ms,
                     )
                     .await;
-                    return Err(error);
+                    let delivery = automation_webhook_phase_denied_delivery(
+                        trigger,
+                        provider_event_id,
+                        body_digest,
+                        received_at_ms,
+                        sanitized_preview,
+                        &verification,
+                        primary_idempotency.as_ref(),
+                    );
+                    let delivery = self
+                        .record_automation_webhook_delivery_locked(delivery)
+                        .await?;
+                    return Ok(Some(AutomationWebhookStatefulWaitResult::Rejected {
+                        delivery,
+                        reason_code: "stateful_wait_phase_denied".to_string(),
+                    }));
                 }
             };
         let scope = claimed_wait.scope.clone();
@@ -1334,7 +1398,7 @@ impl AppState {
                 "tenantContext": &trigger.tenant_context,
             }),
         ));
-        Ok(Some(AutomationWebhookStatefulWakeResult {
+        Ok(Some(AutomationWebhookStatefulWaitResult::Woken {
             delivery,
             wait: woken_wait,
         }))
@@ -1680,7 +1744,7 @@ impl AppState {
                 .await?;
                 return Ok(AutomationWebhookQueueResult::Suppressed { delivery });
             }
-            if let Some(woken) = self
+            if let Some(stateful_wait_result) = self
                 .wake_matching_stateful_webhook_wait_locked(
                     &trigger,
                     verified.provider_event_id.clone(),
@@ -1693,17 +1757,34 @@ impl AppState {
                 )
                 .await?
             {
-                self.complete_automation_webhook_idempotency_records(
-                    &accepted_idempotency_records,
-                    &woken.delivery,
-                    "woken",
-                    received_at_ms,
-                )
-                .await?;
-                return Ok(AutomationWebhookQueueResult::Woken {
-                    delivery: woken.delivery,
-                    wait: woken.wait,
-                });
+                match stateful_wait_result {
+                    AutomationWebhookStatefulWaitResult::Woken { delivery, wait } => {
+                        self.complete_automation_webhook_idempotency_records(
+                            &accepted_idempotency_records,
+                            &delivery,
+                            "woken",
+                            received_at_ms,
+                        )
+                        .await?;
+                        return Ok(AutomationWebhookQueueResult::Woken { delivery, wait });
+                    }
+                    AutomationWebhookStatefulWaitResult::Rejected {
+                        delivery,
+                        reason_code,
+                    } => {
+                        self.complete_automation_webhook_idempotency_records(
+                            &accepted_idempotency_records,
+                            &delivery,
+                            "rejected",
+                            received_at_ms,
+                        )
+                        .await?;
+                        return Ok(AutomationWebhookQueueResult::Rejected {
+                            delivery,
+                            reason_code,
+                        });
+                    }
+                }
             }
 
             let delivery = automation_webhook_accepted_delivery(
