@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
@@ -23,13 +23,27 @@ use super::waits::{
     begin_claimed_stateful_wait_timeout_completion, begin_claimed_stateful_wait_wake_completion,
     cancel_stateful_wait_after_phase_guard_denial, claim_due_stateful_wait, due_stateful_waits,
     finish_claimed_stateful_wait_completion, finish_claimed_stateful_wait_reminder_completion,
+    load_stateful_waits,
 };
 
 pub const STATEFUL_WAIT_SCHEDULER_CLAIMANT: &str = "stateful-wait-scheduler";
 pub const DEFAULT_STATEFUL_WAIT_SCHEDULER_LEASE_MS: u64 = 60_000;
 pub const DEFAULT_STATEFUL_WAIT_SCHEDULER_LIMIT: usize = 100;
 
-static SCHEDULER_CLOCK_STATE: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+static SCHEDULER_CLOCK_STATE: OnceLock<Mutex<HashMap<String, SchedulerClockState>>> =
+    OnceLock::new();
+
+#[derive(Debug, Clone, Default)]
+struct SchedulerClockState {
+    last_seen_ms: u64,
+    observed_waits: HashSet<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SchedulerClockObservation {
+    effective_now_ms: u64,
+    regression_observed_waits: Option<HashSet<String>>,
+}
 
 #[derive(Debug, Clone)]
 pub struct StatefulWaitSchedulerConfig {
@@ -213,21 +227,41 @@ pub async fn process_due_stateful_waits(
 ) -> StatefulWaitSchedulerTick {
     let tenant = TenantContext::local_implicit();
     let mut tick = StatefulWaitSchedulerTick::default();
-    let effective_now_ms = observe_scheduler_wall_time(paths, &config, now_ms, &mut tick);
-    let candidates = due_stateful_waits(
+    let observed_waits = scheduler_observed_wait_ids(paths, &tenant);
+    let clock = observe_scheduler_wall_time(paths, &config, now_ms, &observed_waits, &mut tick);
+    let regression_tick = clock.regression_observed_waits.is_some();
+    let candidate_limit = if regression_tick {
+        None
+    } else {
+        Some(config.limit)
+    };
+    let mut candidates = due_stateful_waits(
         &paths.waits_path,
         &tenant,
-        effective_now_ms,
-        Some(config.limit),
-    );
+        clock.effective_now_ms,
+        candidate_limit,
+    )
+    .into_iter()
+    .filter_map(|candidate| {
+        let action = scheduler_action(&candidate, clock.effective_now_ms)?;
+        let processing_now_ms = scheduler_processing_now_ms(
+            &candidate,
+            &action,
+            now_ms,
+            clock.effective_now_ms,
+            clock.regression_observed_waits.as_ref(),
+        )?;
+        Some((candidate, action, processing_now_ms))
+    })
+    .collect::<Vec<_>>();
+    if regression_tick && config.limit > 0 && candidates.len() > config.limit {
+        candidates.truncate(config.limit);
+    }
     tick.checked = candidates.len();
 
-    for candidate in candidates {
-        let Some(action) = scheduler_action(&candidate, effective_now_ms) else {
-            continue;
-        };
+    for (candidate, action, processing_now_ms) in candidates {
         if let Err(error) =
-            guarded_phase_state_for_wait_action(paths, &candidate, &action, effective_now_ms)
+            guarded_phase_state_for_wait_action(paths, &candidate, &action, processing_now_ms)
         {
             let reason = error.to_string();
             if let Err(cancel_error) = cancel_stateful_wait_after_phase_guard_denial(
@@ -235,7 +269,7 @@ pub async fn process_due_stateful_waits(
                 &candidate.scope.tenant_context,
                 &candidate,
                 &reason,
-                effective_now_ms,
+                processing_now_ms,
             )
             .await
             {
@@ -258,7 +292,7 @@ pub async fn process_due_stateful_waits(
             &candidate.run_id,
             &candidate.wait_id,
             &config.claimant_id,
-            effective_now_ms,
+            processing_now_ms,
             config.lease_ms,
         )
         .await
@@ -275,7 +309,7 @@ pub async fn process_due_stateful_waits(
             }
         };
         tick.claimed += 1;
-        match complete_claimed_wait(paths, &claimed, &action, effective_now_ms).await {
+        match complete_claimed_wait(paths, &claimed, &action, processing_now_ms).await {
             Ok(outcome) => {
                 tick.max_lag_ms = tick.max_lag_ms.max(outcome.lag_ms);
                 tick.completed += 1;
@@ -298,26 +332,38 @@ fn observe_scheduler_wall_time(
     paths: &StatefulRuntimeStoragePaths,
     config: &StatefulWaitSchedulerConfig,
     now_ms: u64,
+    observed_waits: &HashSet<String>,
     tick: &mut StatefulWaitSchedulerTick,
-) -> u64 {
+) -> SchedulerClockObservation {
     let key = scheduler_clock_key(paths, config);
-    let (effective_now_ms, regression_ms) = {
+    let (effective_now_ms, regression_ms, regression_observed_waits) = {
         let mut state = SCHEDULER_CLOCK_STATE
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
             .expect("stateful wait scheduler clock state mutex poisoned");
         match state.get_mut(&key) {
-            Some(last_seen_ms) if now_ms < *last_seen_ms => {
-                let regression_ms = last_seen_ms.saturating_sub(now_ms);
-                (*last_seen_ms, Some(regression_ms))
+            Some(clock) if now_ms < clock.last_seen_ms => {
+                let regression_ms = clock.last_seen_ms.saturating_sub(now_ms);
+                (
+                    clock.last_seen_ms,
+                    Some(regression_ms),
+                    Some(clock.observed_waits.clone()),
+                )
             }
-            Some(last_seen_ms) => {
-                *last_seen_ms = now_ms;
-                (now_ms, None)
+            Some(clock) => {
+                clock.last_seen_ms = now_ms;
+                clock.observed_waits = observed_waits.clone();
+                (now_ms, None, None)
             }
             None => {
-                state.insert(key.clone(), now_ms);
-                (now_ms, None)
+                state.insert(
+                    key.clone(),
+                    SchedulerClockState {
+                        last_seen_ms: now_ms,
+                        observed_waits: observed_waits.clone(),
+                    },
+                );
+                (now_ms, None, None)
             }
         }
     };
@@ -336,7 +382,50 @@ fn observe_scheduler_wall_time(
         );
     }
 
-    effective_now_ms
+    SchedulerClockObservation {
+        effective_now_ms,
+        regression_observed_waits,
+    }
+}
+
+fn scheduler_observed_wait_ids(
+    paths: &StatefulRuntimeStoragePaths,
+    tenant: &TenantContext,
+) -> HashSet<String> {
+    load_stateful_waits(&paths.waits_path)
+        .into_iter()
+        .filter(|wait| wait.visible_to_tenant(tenant))
+        .filter(|wait| !wait.status.is_terminal())
+        .map(|wait| scheduler_wait_identity_key(&wait))
+        .collect()
+}
+
+fn scheduler_processing_now_ms(
+    wait: &StatefulWaitRecord,
+    action: &SchedulerAction,
+    now_ms: u64,
+    effective_now_ms: u64,
+    regression_observed_waits: Option<&HashSet<String>>,
+) -> Option<u64> {
+    let Some(observed_waits) = regression_observed_waits else {
+        return Some(effective_now_ms);
+    };
+    if observed_waits.contains(&scheduler_wait_identity_key(wait)) {
+        return Some(effective_now_ms);
+    }
+    (action.due_at_ms() <= now_ms).then_some(now_ms)
+}
+
+fn scheduler_wait_identity_key(wait: &StatefulWaitRecord) -> String {
+    let tenant = &wait.scope.tenant_context;
+    format!(
+        "{}:{}:{}:{}:{}",
+        tenant.org_id,
+        tenant.workspace_id,
+        tenant.deployment_id.as_deref().unwrap_or(""),
+        wait.run_id,
+        wait.wait_id
+    )
 }
 
 fn scheduler_clock_key(
@@ -1267,15 +1356,51 @@ mod tests {
         let config = StatefulWaitSchedulerConfig {
             claimant_id: "scheduler-clock-regression-test".to_string(),
             lease_ms: 500,
-            limit: 10,
+            limit: 1,
         };
-        let seed_tick = process_due_stateful_waits(&paths, 2_000, config.clone()).await;
-        assert_eq!(seed_tick.checked, 0);
-        assert_eq!(seed_tick.clock_regressions, 0);
-
-        upsert_stateful_wait(&paths.waits_path, timer_wait("wait-a", 1_900))
+        upsert_stateful_wait(&paths.waits_path, timer_wait("wait-a", 1_800))
             .await
-            .expect("insert wait");
+            .expect("insert first wait");
+        upsert_stateful_wait(&paths.waits_path, timer_wait("wait-b", 1_900))
+            .await
+            .expect("insert second wait");
+
+        let seed_tick = process_due_stateful_waits(&paths, 2_000, config.clone()).await;
+        assert_eq!(seed_tick.checked, 1);
+        assert_eq!(seed_tick.completed, 1);
+        assert_eq!(seed_tick.clock_regressions, 0);
+        let waits = list_stateful_waits(
+            &paths.waits_path,
+            &tenant,
+            StatefulWaitQuery {
+                run_id: Some("run-a"),
+                ..StatefulWaitQuery::default()
+            },
+        );
+        assert_eq!(
+            waits
+                .iter()
+                .find(|wait| wait.wait_id == "wait-a")
+                .expect("first wait")
+                .status,
+            StatefulWaitStatus::Woken
+        );
+        assert_eq!(
+            waits
+                .iter()
+                .find(|wait| wait.wait_id == "wait-b")
+                .expect("second wait")
+                .status,
+            StatefulWaitStatus::Waiting
+        );
+
+        let mut new_wait = timer_wait("wait-new", 1_500);
+        new_wait.created_at_ms = 1_050;
+        new_wait.updated_at_ms = 1_050;
+        upsert_stateful_wait(&paths.waits_path, new_wait)
+            .await
+            .expect("insert new wait after regression");
+
         let tick = process_due_stateful_waits(&paths, 1_000, config).await;
 
         assert_eq!(tick.clock_regressions, 1);
@@ -1295,10 +1420,77 @@ mod tests {
                 ..StatefulWaitQuery::default()
             },
         );
-        assert_eq!(waits[0].status, StatefulWaitStatus::Woken);
+        assert_eq!(
+            waits
+                .iter()
+                .find(|wait| wait.wait_id == "wait-b")
+                .expect("second wait")
+                .status,
+            StatefulWaitStatus::Woken
+        );
+        assert_eq!(
+            waits
+                .iter()
+                .find(|wait| wait.wait_id == "wait-new")
+                .expect("new wait")
+                .status,
+            StatefulWaitStatus::Waiting
+        );
+        let events = load_stateful_run_events(&paths.run_events_path);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].occurred_at_ms, 2_000);
+        let _ = tokio::fs::remove_dir_all(
+            paths
+                .run_events_path
+                .parent()
+                .expect("runtime root")
+                .to_path_buf(),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn scheduler_does_not_apply_regressed_future_tick_to_new_waits() {
+        let paths = paths("stateful-wait-scheduler-clock-regression-new-wait");
+        let tenant = tenant("org-a", "workspace-a");
+        let config = StatefulWaitSchedulerConfig {
+            claimant_id: "scheduler-clock-regression-new-wait-test".to_string(),
+            lease_ms: 500,
+            limit: 10,
+        };
+        let seed_tick = process_due_stateful_waits(&paths, 2_000, config.clone()).await;
+        assert_eq!(seed_tick.checked, 0);
+        assert_eq!(seed_tick.clock_regressions, 0);
+
+        let mut wait = timer_wait("wait-new", 1_500);
+        wait.created_at_ms = 1_050;
+        wait.updated_at_ms = 1_050;
+        upsert_stateful_wait(&paths.waits_path, wait)
+            .await
+            .expect("insert new wait after regression");
+
+        let early_tick = process_due_stateful_waits(&paths, 1_100, config.clone()).await;
+        assert_eq!(early_tick.clock_regressions, 1);
+        assert_eq!(early_tick.checked, 0);
+        assert_eq!(early_tick.completed, 0);
+        let waits = list_stateful_waits(
+            &paths.waits_path,
+            &tenant,
+            StatefulWaitQuery {
+                run_id: Some("run-a"),
+                ..StatefulWaitQuery::default()
+            },
+        );
+        assert_eq!(waits[0].status, StatefulWaitStatus::Waiting);
+
+        let due_tick = process_due_stateful_waits(&paths, 1_500, config).await;
+        assert_eq!(due_tick.clock_regressions, 1);
+        assert_eq!(due_tick.checked, 1);
+        assert_eq!(due_tick.completed, 1);
+        assert_eq!(due_tick.outcomes[0].lag_ms, 0);
         let events = load_stateful_run_events(&paths.run_events_path);
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].occurred_at_ms, 2_000);
+        assert_eq!(events[0].occurred_at_ms, 1_500);
         let _ = tokio::fs::remove_dir_all(
             paths
                 .run_events_path
