@@ -40,6 +40,14 @@ For end-user onboarding journeys (install, first run, desktop/CLI paths), use:
 - [Workflow Generated Variation Coverage](./WORKFLOW_GENERATED_VARIATIONS.md) - Constrained generator design and nightly workflow-variation coverage.
 - [Channel Lifecycle and Diagnostics](./CHANNELS_LIFECYCLE_AND_DIAGNOSTICS.md) - Registry-based channel runtime lifecycle, endpoint behavior, and required config keys.
 
+## Incident Monitor & Automation Webhooks
+
+- [Adversarial Scenario Packs](./incident-monitor-adversarial-scenario-packs.md) - Versioned dry-run abuse scenarios exercised against live routing, approval, and readiness logic.
+- [Governance Maturity Metrics](./incident-monitor-governance-maturity-metrics.md) - Redacted governance metrics, operator thresholds, and behavioral drift detection.
+- [Continuous Reassessment](./incident-monitor-continuous-reassessment.md) - Scheduled and change-triggered governance reassessment with versioned, fingerprint-deduplicated results.
+- [External Log Intake Demo](./incident-monitor-external-log-intake-demo.md) - End-to-end external log source intake walkthrough.
+- [Using Notion Webhooks with Tandem](./automation-v2-notion-webhooks.md) - Notion provider setup, verification-token flow, and signed-event handling for Automation V2 webhooks.
+
 ## Meta-Harness
 
 - [Optimizer Loop](./meta-harness/optimizer-loop.md) - Design contract for turning scored traces into candidate proposals.
@@ -50,8 +58,6 @@ For end-user onboarding journeys (install, first run, desktop/CLI paths), use:
 
 - [Engine CLI Guide](./ENGINE_CLI.md)
 - [Engine Testing](./ENGINE_TESTING.md)
-
-For archived planning notes, internal design docs, and working reports, see [docs/internal](./internal/).
 
 ## Release Notes
 

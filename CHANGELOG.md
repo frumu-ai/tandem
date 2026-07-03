@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.5] - Unreleased
+## [0.6.5] - 2026-07-03
 
 ### Added
 
@@ -144,6 +144,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   authority inventory, posture checks, controlled probes, assessment reports,
   route receipts, protected audit evidence, and customer-owned policy decisions
   without overclaiming compliance certification.
+- Added Incident Monitor adversarial scenario packs: a versioned, read-only
+  pack of production-mirroring abuse scenarios run in dry-run against live
+  routing/approval/readiness logic, with per-scenario pass/fail evidence, a
+  scenario-pack endpoint, and assessment-report integration.
+- Added Incident Monitor governance maturity metrics with operator-tunable
+  thresholds and behavioral drift detection over redacted approval,
+  incident-response, recurrence, and receipt-integrity signals, exposed via a
+  dedicated endpoint and the assessment report.
+- Added an Incident Monitor continuous reassessment scheduler with
+  change-triggered reviews, versioned previous/current comparisons, stable
+  finding fingerprints for duplicate suppression, and per-scope
+  next-due/last-completed/overdue schedule status on deployment cards.
+- Added native Notion webhook support for Automation V2: canonical `notion`
+  provider, `notion_hmac_sha256` signature scheme, verification-token capture
+  from the subscription handshake with a one-time authorized reveal endpoint,
+  and a Control Panel setup flow.
+- Added workflow phase-guard and MCP tool authority enforcement at the runtime
+  boundary, plus a pre-send outbox gate for outbound tool dispatch.
 
 ### Changed
 
@@ -183,9 +201,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Incident Monitor setup, source, reference, and compliance docs now distinguish
   shipped evidence/export surfaces from deployer-owned retention, escalation,
   incident-response, and turnkey SIEM integration responsibilities.
+- Incident Monitor destination publishing is now fail-closed by default:
+  `safety_defaults.block_unready_destinations` defaults to true, and automated
+  and manual publishes always block destinations that are not publish-ready
+  regardless of the flag; Recovery mode with the flag disabled remains the
+  deliberate operator escape hatch.
+- Automation V2 webhook intake now processes deliveries through a durable
+  asynchronous inbox: intake persists the raw event and responds, and a worker
+  verifies, dedupes, and queues runs from the inbox.
+- Notion webhook triggers reject Tandem secret rotation because the signing
+  secret is Notion's provider-owned verification token.
+- The protected audit ledger now appends with fsync durability at O(1) cost.
 
 ### Fixed
 
+- Destination-specific GitHub MCP servers are no longer gated on the global
+  GitHub capability flags during Incident Monitor destination readiness checks,
+  so a destination with its own connected server publishes correctly under the
+  fail-closed gate.
+- Fixed stateful wait reminders and scheduler clock regressions so timer
+  wakeups stay accurate across restarts.
 - Trimmed Incident Monitor rename changes under the CI touched-file-size guard,
   including compacting UI rename formatting and moving server service tests into
   a dedicated module.

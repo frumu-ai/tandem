@@ -2,9 +2,12 @@
 
 This is the canonical release-notes file used by release tooling.
 
-## v0.6.5 (Unreleased)
+## v0.6.5 (2026-07-03)
 
-Tandem 0.6.5 is currently in development. This train starts the stateful agent
+Tandem 0.6.5 completes the Incident Monitor production-governance suite —
+adversarial scenario packs, governance maturity metrics, a continuous
+reassessment scheduler, and fail-closed destination publishing — adds native
+Notion webhook support to Automation V2, and starts the stateful agent
 runtime work with enterprise-aware durable run scope, event, and snapshot
 foundations. Snapshot-backed automation runs now expose stable definition
 versions and `sha256:` snapshot hashes for future replay and resume checks, and
@@ -24,14 +27,15 @@ It now also includes deterministic local detector findings for common PII,
 financial, credential, secret, private-key, AWS-key, high-entropy, and simple
 PHI marker spans, with evidence hashes plus redaction/tokenization placeholder
 maps that preserve prompt structure without persisting raw matched values.
-fail closed. Automation V2 run claims are now persisted with lease metadata, and
+Automation V2 run claims are now persisted with lease metadata, and
 expired launch claims without active session or agent handles are reclaimed back
 to the queue so only one executor can safely resume the run.
-fail closed. Automation V2 webhook intake now persists tenant-scoped
-idempotency keys before creating runs, reports accepted/duplicate/conflict
-dedupe outcomes on delivery records and SDK types, and keeps original
-delivery/run correlation available after restarts so provider retries do not
-fan out duplicate automation runs.
+Automation V2 webhook intake now records durable tenant-scoped inbox events and
+idempotency keys at the edge and then verifies, dedupes, and queues runs
+asynchronously from that inbox, reporting accepted/duplicate/conflict dedupe
+outcomes on delivery records and SDK types and keeping original delivery/run
+correlation available after restarts so provider retries do not fan out
+duplicate automation runs.
 Durable stateful runs now carry explicit workflow phases, transition history,
 and allowed next phases so future long-running automation APIs can resume,
 pause, and inspect runs through a guarded state machine instead of ad hoc
@@ -231,6 +235,44 @@ default destination set.
 Linear duplicate handling preserves matched-issue status on repeated publishes
 and suppresses retrying an ambiguous failed Linear `create_issue` response that
 may already have created an external issue.
+Incident Monitor now ships production-mirroring adversarial scenario packs: a
+versioned, read-only pack of abuse scenarios (forged severity downgrades,
+cross-tenant route injection, approval bypass, unready-destination publish,
+redaction leaks) runs in dry-run against the live routing, approval, and
+readiness logic and feeds per-scenario pass/fail evidence into the security
+assessment report.
+Incident Monitor governance maturity metrics compute redacted approval,
+incident-response, recurrence, and receipt-integrity metrics over a
+configurable window, compare them against operator-tunable thresholds, and
+flag behavioral drift between windows; results are exposed through a dedicated
+endpoint and folded into the assessment report.
+Incident Monitor governance reassessment is now continuous: a background
+scheduler re-runs authority, data-readiness, routing, approval, and destination
+posture on a cadence and on governance-relevant change events (route or
+destination edits, monitored-source changes, tenant re-binds, model-policy,
+MCP, and approval-policy changes), producing versioned results with
+previous/current comparison, stable finding fingerprints that suppress
+duplicate noise, and per-scope next-due/last-completed/overdue status on
+deployment cards.
+Behavior change: Incident Monitor destination publishing is now fail-closed by
+default. `safety_defaults.block_unready_destinations` defaults to true, and
+automated and manual publishes always block a destination that is not
+publish-ready regardless of the flag; Recovery mode with the flag disabled
+remains the deliberate operator escape hatch. Destination-specific GitHub MCP
+servers are validated against their own server instead of the global GitHub
+capability flags.
+Automation V2 webhooks now support Notion natively: `notion` provider triggers
+use the `notion_hmac_sha256` signature scheme, capture Notion's
+`verification_token` from the subscription handshake without queueing a run for
+it, expose the token exactly once through an authorized reveal endpoint, verify
+`X-Notion-Signature` on subsequent events, and reject Tandem secret rotation
+because the signing secret is Notion's provider-owned token. The Control Panel
+webhook manager walks operators through the Notion verification flow.
+Workflow phase transitions and MCP tool authority are now enforced at the
+runtime boundary, and outbound tool dispatch passes through a pre-send outbox
+gate. The protected audit ledger appends with fsync durability at O(1) cost,
+and stateful wait reminder and scheduler clock regressions were fixed so timer
+wakeups stay accurate across restarts.
 
 ## v0.6.4 (2026-06-28)
 
