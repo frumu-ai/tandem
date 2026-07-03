@@ -147,6 +147,29 @@ pub async fn claim_due_stateful_wait(
     now_ms: u64,
     lease_ms: u64,
 ) -> anyhow::Result<Option<StatefulWaitRecord>> {
+    claim_due_stateful_wait_with_lease_clock(
+        path,
+        tenant,
+        run_id,
+        wait_id,
+        claimant_id,
+        now_ms,
+        now_ms,
+        lease_ms,
+    )
+    .await
+}
+
+pub async fn claim_due_stateful_wait_with_lease_clock(
+    path: &Path,
+    tenant: &TenantContext,
+    run_id: &str,
+    wait_id: &str,
+    claimant_id: &str,
+    due_now_ms: u64,
+    lease_now_ms: u64,
+    lease_ms: u64,
+) -> anyhow::Result<Option<StatefulWaitRecord>> {
     let _guard = STATEFUL_WAIT_STORE_LOCK.lock().await;
     let mut waits = try_load_stateful_waits(path)?;
     let Some(wait) = waits.iter_mut().find(|wait| {
@@ -154,18 +177,18 @@ pub async fn claim_due_stateful_wait(
     }) else {
         return Ok(None);
     };
-    if !wait_is_claimable(wait, now_ms) {
+    if !wait_is_claimable(wait, due_now_ms) {
         return Ok(None);
     }
 
     wait.status = StatefulWaitStatus::Claimed;
     wait.claimed_by = Some(claimant_id.to_string());
-    wait.claimed_at_ms = Some(now_ms);
-    wait.claim_expires_at_ms = Some(now_ms.saturating_add(lease_ms.max(1)));
+    wait.claimed_at_ms = Some(lease_now_ms);
+    wait.claim_expires_at_ms = Some(lease_now_ms.saturating_add(lease_ms.max(1)));
     wait.wake_idempotency_key = None;
     wait.event_seq = None;
     wait.completed_at_ms = None;
-    wait.updated_at_ms = now_ms;
+    wait.updated_at_ms = lease_now_ms;
     let claimed = wait.clone();
     write_stateful_waits_unlocked(path, &waits).await?;
     Ok(Some(claimed))

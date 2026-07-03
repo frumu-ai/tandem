@@ -21,9 +21,9 @@ use super::types::{
 use super::waits::{
     begin_claimed_stateful_wait_reminder_completion,
     begin_claimed_stateful_wait_timeout_completion, begin_claimed_stateful_wait_wake_completion,
-    cancel_stateful_wait_after_phase_guard_denial, claim_due_stateful_wait, due_stateful_waits,
-    finish_claimed_stateful_wait_completion, finish_claimed_stateful_wait_reminder_completion,
-    load_stateful_waits,
+    cancel_stateful_wait_after_phase_guard_denial, claim_due_stateful_wait_with_lease_clock,
+    due_stateful_waits, finish_claimed_stateful_wait_completion,
+    finish_claimed_stateful_wait_reminder_completion, load_stateful_waits,
 };
 
 pub const STATEFUL_WAIT_SCHEDULER_CLAIMANT: &str = "stateful-wait-scheduler";
@@ -286,13 +286,14 @@ pub async fn process_due_stateful_waits(
             continue;
         }
         let tenant_context = candidate.scope.tenant_context.clone();
-        let claimed = match claim_due_stateful_wait(
+        let claimed = match claim_due_stateful_wait_with_lease_clock(
             &paths.waits_path,
             &tenant_context,
             &candidate.run_id,
             &candidate.wait_id,
             &config.claimant_id,
             processing_now_ms,
+            now_ms,
             config.lease_ms,
         )
         .await
@@ -309,7 +310,7 @@ pub async fn process_due_stateful_waits(
             }
         };
         tick.claimed += 1;
-        match complete_claimed_wait(paths, &claimed, &action, processing_now_ms).await {
+        match complete_claimed_wait(paths, &claimed, &action, processing_now_ms, now_ms).await {
             Ok(outcome) => {
                 tick.max_lag_ms = tick.max_lag_ms.max(outcome.lag_ms);
                 tick.completed += 1;
@@ -419,12 +420,13 @@ fn scheduler_processing_now_ms(
 fn scheduler_wait_identity_key(wait: &StatefulWaitRecord) -> String {
     let tenant = &wait.scope.tenant_context;
     format!(
-        "{}:{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}:{}",
         tenant.org_id,
         tenant.workspace_id,
         tenant.deployment_id.as_deref().unwrap_or(""),
         wait.run_id,
-        wait.wait_id
+        wait.wait_id,
+        wait.created_at_ms
     )
 }
 
@@ -443,11 +445,12 @@ async fn complete_claimed_wait(
     paths: &StatefulRuntimeStoragePaths,
     wait: &StatefulWaitRecord,
     action: &SchedulerAction,
-    now_ms: u64,
+    event_now_ms: u64,
+    lease_now_ms: u64,
 ) -> anyhow::Result<StatefulWaitSchedulerOutcome> {
     let completion_key = action.completion_key(wait);
     let event_id = format!("stateful-wait-{completion_key}");
-    let lag_ms = now_ms.saturating_sub(action.due_at_ms());
+    let lag_ms = event_now_ms.saturating_sub(action.due_at_ms());
     let wait_status = action.wait_status();
     let run_status = action.run_status();
 
@@ -462,7 +465,7 @@ async fn complete_claimed_wait(
                 &wait.scope.tenant_context,
                 wait,
                 &completion_key,
-                now_ms,
+                lease_now_ms,
             )
             .await?
         }
@@ -472,7 +475,7 @@ async fn complete_claimed_wait(
                 &wait.scope.tenant_context,
                 wait,
                 &completion_key,
-                now_ms,
+                lease_now_ms,
             )
             .await?
         }
@@ -483,14 +486,19 @@ async fn complete_claimed_wait(
                 wait,
                 &completion_key,
                 wait_status.clone(),
-                now_ms,
+                lease_now_ms,
             )
             .await?
         }
     }
     .ok_or_else(|| anyhow::anyhow!("stateful wait completion conflict"))?;
 
-    let phase_state = match guarded_phase_state_for_wait_action(paths, &reserved, action, now_ms) {
+    let phase_state = match guarded_phase_state_for_wait_action(
+        paths,
+        &reserved,
+        action,
+        event_now_ms,
+    ) {
         Ok(phase_state) => phase_state,
         Err(error) => {
             let reason = error.to_string();
@@ -499,7 +507,7 @@ async fn complete_claimed_wait(
                 &reserved.scope.tenant_context,
                 &reserved,
                 &reason,
-                now_ms,
+                event_now_ms,
             )
             .await
             {
@@ -525,7 +533,7 @@ async fn complete_claimed_wait(
         run_id: wait.run_id.clone(),
         seq: 0,
         event_type: action.event_type().to_string(),
-        occurred_at_ms: now_ms,
+        occurred_at_ms: event_now_ms,
         scope: wait.scope.clone(),
         actor: None,
         phase_id: wait.phase_id.clone(),
@@ -555,7 +563,7 @@ async fn complete_claimed_wait(
         snapshot_id: event_id,
         run_id: wait.run_id.clone(),
         seq,
-        created_at_ms: now_ms,
+        created_at_ms: event_now_ms,
         scope: wait.scope.clone(),
         status: run_status.clone(),
         phase: phase_state.phase,
@@ -586,8 +594,8 @@ async fn complete_claimed_wait(
                 &reserved,
                 &completion_key,
                 seq,
-                now_ms.saturating_add((*remind_every_ms).max(1)),
-                now_ms,
+                event_now_ms.saturating_add((*remind_every_ms).max(1)),
+                event_now_ms,
             )
             .await?
         }
@@ -599,7 +607,7 @@ async fn complete_claimed_wait(
                 &completion_key,
                 seq,
                 wait_status.clone(),
-                now_ms,
+                event_now_ms,
             )
             .await?
         }
@@ -607,7 +615,7 @@ async fn complete_claimed_wait(
     .ok_or_else(|| anyhow::anyhow!("stateful wait completion conflict"))?;
 
     if let Err(error) =
-        record_wait_terminal_dead_letter(paths, &completed, action, seq, now_ms, lag_ms).await
+        record_wait_terminal_dead_letter(paths, &completed, action, seq, event_now_ms, lag_ms).await
     {
         tracing::warn!(
             wait_id = %completed.wait_id,
@@ -759,10 +767,11 @@ mod tests {
 
     use super::*;
     use crate::stateful_runtime::{
-        list_stateful_dead_letters, list_stateful_run_snapshots, list_stateful_waits,
-        stateful_reliability_path_from_runtime_events_path, upsert_stateful_wait,
-        StatefulRecoveryOption, StatefulReliabilityQuery, StatefulRuntimeScope, StatefulWaitKind,
-        StatefulWaitQuery, StatefulWaitTimeoutAction, StatefulWaitTimeoutPolicy,
+        claim_due_stateful_wait, list_stateful_dead_letters, list_stateful_run_snapshots,
+        list_stateful_waits, stateful_reliability_path_from_runtime_events_path,
+        upsert_stateful_wait, StatefulRecoveryOption, StatefulReliabilityQuery,
+        StatefulRuntimeScope, StatefulWaitKind, StatefulWaitQuery, StatefulWaitTimeoutAction,
+        StatefulWaitTimeoutPolicy,
     };
 
     fn tenant(org: &str, workspace: &str) -> TenantContext {
@@ -1100,6 +1109,7 @@ mod tests {
             &paths,
             &claimed,
             &SchedulerAction::WakeTimer { due_at_ms: 1_000 },
+            1_350,
             1_350,
         )
         .await
@@ -1491,6 +1501,93 @@ mod tests {
         let events = load_stateful_run_events(&paths.run_events_path);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].occurred_at_ms, 1_500);
+        let _ = tokio::fs::remove_dir_all(
+            paths
+                .run_events_path
+                .parent()
+                .expect("runtime root")
+                .to_path_buf(),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn scheduler_regression_identity_includes_wait_generation() {
+        let paths = paths("stateful-wait-scheduler-clock-regression-generation");
+        let tenant = tenant("org-a", "workspace-a");
+        let config = StatefulWaitSchedulerConfig {
+            claimant_id: "scheduler-clock-regression-generation-test".to_string(),
+            lease_ms: 500,
+            limit: 10,
+        };
+        let mut old_generation = timer_wait("wait-reused", 2_500);
+        old_generation.created_at_ms = 1_900;
+        old_generation.updated_at_ms = 1_900;
+        upsert_stateful_wait(&paths.waits_path, old_generation)
+            .await
+            .expect("insert old generation");
+        let seed_tick = process_due_stateful_waits(&paths, 2_000, config.clone()).await;
+        assert_eq!(seed_tick.checked, 0);
+        assert_eq!(seed_tick.clock_regressions, 0);
+
+        let mut new_generation = timer_wait("wait-reused", 1_500);
+        new_generation.created_at_ms = 1_050;
+        new_generation.updated_at_ms = 1_050;
+        upsert_stateful_wait(&paths.waits_path, new_generation)
+            .await
+            .expect("replace with new generation");
+
+        let early_tick = process_due_stateful_waits(&paths, 1_100, config).await;
+        assert_eq!(early_tick.clock_regressions, 1);
+        assert_eq!(early_tick.checked, 0);
+        assert_eq!(early_tick.completed, 0);
+        let waits = list_stateful_waits(
+            &paths.waits_path,
+            &tenant,
+            StatefulWaitQuery {
+                run_id: Some("run-a"),
+                ..StatefulWaitQuery::default()
+            },
+        );
+        assert_eq!(waits.len(), 1);
+        assert_eq!(waits[0].wait_id, "wait-reused");
+        assert_eq!(waits[0].created_at_ms, 1_050);
+        assert_eq!(waits[0].status, StatefulWaitStatus::Waiting);
+        let _ = tokio::fs::remove_dir_all(
+            paths
+                .run_events_path
+                .parent()
+                .expect("runtime root")
+                .to_path_buf(),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn scheduler_regression_claim_lease_uses_wall_time() {
+        let paths = paths("stateful-wait-scheduler-clock-regression-lease");
+        let tenant = tenant("org-a", "workspace-a");
+        upsert_stateful_wait(&paths.waits_path, timer_wait("wait-a", 1_900))
+            .await
+            .expect("insert wait");
+
+        let claimed = claim_due_stateful_wait_with_lease_clock(
+            &paths.waits_path,
+            &tenant,
+            "run-a",
+            "wait-a",
+            "scheduler-clock-regression-lease-test",
+            2_000,
+            1_000,
+            500,
+        )
+        .await
+        .expect("claim wait")
+        .expect("claimed wait");
+
+        assert_eq!(claimed.claimed_at_ms, Some(1_000));
+        assert_eq!(claimed.claim_expires_at_ms, Some(1_500));
+        assert_eq!(claimed.updated_at_ms, 1_000);
         let _ = tokio::fs::remove_dir_all(
             paths
                 .run_events_path
