@@ -6,10 +6,15 @@ pub mod github;
 pub mod governance_metrics;
 pub mod log_artifacts;
 pub mod log_parser;
+pub mod reassessment;
 pub mod scenarios;
 pub mod types;
 
 pub use governance_metrics::IncidentMonitorGovernanceThresholds;
+pub use reassessment::{
+    IncidentMonitorReassessmentConfig, ReassessmentComparison, ReassessmentFinding,
+    ReassessmentRecord, ReassessmentScheduleStatus, ReassessmentTrigger,
+};
 
 pub use scenarios::{
     default_scenario_pack, IncidentMonitorScenario, IncidentMonitorScenarioExpectation,

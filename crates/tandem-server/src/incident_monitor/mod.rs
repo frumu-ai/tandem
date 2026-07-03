@@ -1,5 +1,6 @@
 pub use tandem_incident_monitor::{
-    comment_summary, error_provenance, governance_metrics, log_parser, scenarios, types,
+    comment_summary, error_provenance, governance_metrics, log_parser, reassessment, scenarios,
+    types,
 };
 pub mod log_artifacts;
 pub mod log_watcher;
