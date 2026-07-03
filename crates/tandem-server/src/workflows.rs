@@ -1512,15 +1512,18 @@ async fn record_workflow_external_action(
 
     let target = workflow_external_action_target(payload, result);
     let source_id = format!("{run_id}:{}", action_row.action_id);
-    let idempotency_key = crate::sha256_hex(&[
-        workflow_id,
-        run_id,
-        &action_row.action_id,
-        &action_row.action,
-        &payload.to_string(),
-    ]);
+    let idempotency_key =
+        workflow_external_action_pre_send_idempotency_key(result).unwrap_or_else(|| {
+            crate::sha256_hex(&[
+                workflow_id,
+                run_id,
+                &action_row.action_id,
+                &action_row.action,
+                &payload.to_string(),
+            ])
+        });
     let action = crate::ExternalActionRecord {
-        action_id: format!("workflow-external-{}", &idempotency_key[..16]),
+        action_id: workflow_external_action_id(&idempotency_key),
         operation: binding.capability_id.clone(),
         status: "posted".to_string(),
         source_kind: Some("workflow".to_string()),
@@ -1550,6 +1553,27 @@ async fn record_workflow_external_action(
     };
     let recorded = state.record_external_action(action).await?;
     Ok(Some(serde_json::to_value(&recorded)?))
+}
+
+fn workflow_external_action_pre_send_idempotency_key(result: &Value) -> Option<String> {
+    result
+        .pointer("/metadata/stateful_outbox/idempotency_key")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn workflow_external_action_id(idempotency_key: &str) -> String {
+    let seed = if idempotency_key.starts_with("tool-dispatch-") {
+        crate::sha256_hex(&[idempotency_key])
+    } else {
+        idempotency_key.to_string()
+    };
+    format!(
+        "workflow-external-{}",
+        seed.chars().take(16).collect::<String>()
+    )
 }
 
 fn workflow_binding_matches_tool_name(

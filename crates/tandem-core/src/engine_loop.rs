@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tandem_observability::{emit_event_with_tenant, ObservabilityEvent, ProcessKind};
 use tandem_providers::{ChatMessage, ProviderRegistry, StreamChunk, TokenUsage};
-use tandem_tools::{validate_tool_schemas, GovernedToolDispatcher, ToolRegistry};
+use tandem_tools::{
+    validate_tool_schemas, GovernedToolDispatcher, ToolDispatchLedger, ToolRegistry,
+};
 use tandem_types::{
     ContextMode, EngineEvent, HostRuntimeContext, Message, MessagePart, MessagePartInput,
     MessageRole, ModelSpec, SamplingParams, SendMessageRequest, SharedToolProgressSink,
@@ -132,6 +134,7 @@ pub struct EngineLoop {
     permissions: PermissionManager,
     tools: ToolRegistry,
     tool_dispatcher: GovernedToolDispatcher,
+    tool_dispatch_ledger: std::sync::Arc<RwLock<std::sync::Arc<dyn ToolDispatchLedger>>>,
     cancellations: CancellationRegistry,
     host_runtime_context: HostRuntimeContext,
     workspace_overrides: std::sync::Arc<RwLock<HashMap<String, u64>>>,
@@ -160,12 +163,17 @@ impl EngineLoop {
     ) -> Self {
         Self {
             storage,
-            event_bus,
+            event_bus: event_bus.clone(),
             providers,
             plugins,
             agents,
             permissions,
             tool_dispatcher: GovernedToolDispatcher::new(tools.clone()),
+            tool_dispatch_ledger: std::sync::Arc::new(RwLock::new(std::sync::Arc::new(
+                tool_execution::EngineToolDispatchLedger {
+                    event_bus: event_bus.clone(),
+                },
+            ))),
             tools,
             cancellations,
             host_runtime_context,
@@ -186,6 +194,10 @@ impl EngineLoop {
 
     pub async fn set_tool_policy_hook(&self, hook: std::sync::Arc<dyn ToolPolicyHook>) {
         *self.tool_policy_hook.write().await = Some(hook);
+    }
+
+    pub async fn set_tool_dispatch_ledger(&self, ledger: std::sync::Arc<dyn ToolDispatchLedger>) {
+        *self.tool_dispatch_ledger.write().await = ledger;
     }
 
     pub async fn set_prompt_context_hook(&self, hook: std::sync::Arc<dyn PromptContextHook>) {
@@ -1521,12 +1533,13 @@ impl EngineLoop {
             self.plugins.transform_tool_output(result.output).await
         };
         let output = truncate_text(&output, 16_000);
+        let stored_result = stored_tool_result_value(&output, &result.metadata);
         let mut result_part = WireMessagePart::tool_result(
             session_id,
             message_id,
             tool.clone(),
             Some(args_for_side_events.clone()),
-            json!(output.clone()),
+            stored_result,
         );
         result_part.id = invoke_part_id.clone();
         self.event_bus.publish(EngineEvent::new(
@@ -1550,6 +1563,14 @@ impl EngineLoop {
             &format!("Tool `{tool}` result:\n{output}"),
             16_000,
         )))
+    }
+}
+
+fn stored_tool_result_value(output: &str, metadata: &Value) -> Value {
+    if metadata.get("stateful_outbox").is_some() {
+        json!({ "output": output, "metadata": metadata })
+    } else {
+        json!(output)
     }
 }
 

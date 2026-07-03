@@ -31,7 +31,8 @@ use tandem_enterprise_contract::{
 use tandem_memory::types::{MemorySourceAccessTarget, MemoryTier};
 use tandem_orchestrator::MissionState;
 use tandem_tools::{
-    ToolDispatchContext, ToolDispatchLedger, ToolDispatchLedgerEvent, ToolDispatchSource,
+    ToolDispatchContext, ToolDispatchLedger, ToolDispatchLedgerEvent, ToolDispatchPreSendEvent,
+    ToolDispatchPreSendReceipt, ToolDispatchSource,
 };
 use tandem_types::{
     ApprovalGateMatrix, EngineEvent, GateOutcome, GateRequest, HostRuntimeContext, MessagePart,
@@ -103,6 +104,7 @@ mod oauth_state;
 mod prompt_context_blocks;
 mod prompt_context_hook;
 mod prompt_memory_context;
+mod tool_dispatch_outbox;
 
 pub(crate) use automation_v2_run_store::*;
 pub(crate) use automation_webhook_delivery::*;
@@ -293,15 +295,25 @@ pub struct ChannelStatus {
 #[derive(Clone)]
 struct AppStateToolDispatchLedger {
     event_bus: tandem_core::EventBus,
+    runtime_events_path: PathBuf,
 }
 
 #[async_trait::async_trait]
 impl ToolDispatchLedger for AppStateToolDispatchLedger {
-    async fn record(&self, event: ToolDispatchLedgerEvent) {
+    async fn prepare_pre_send(
+        &self,
+        event: ToolDispatchPreSendEvent,
+    ) -> anyhow::Result<Option<ToolDispatchPreSendReceipt>> {
+        tool_dispatch_outbox::prepare_pre_send_outbox(&self.runtime_events_path, event).await
+    }
+
+    async fn record(&self, event: ToolDispatchLedgerEvent) -> anyhow::Result<()> {
+        tool_dispatch_outbox::complete_pre_send_outbox(&self.runtime_events_path, &event).await?;
         self.event_bus.publish(EngineEvent::new(
             "tool.dispatch.recorded",
             serde_json::to_value(event).unwrap_or(Value::Null),
         ));
+        Ok(())
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

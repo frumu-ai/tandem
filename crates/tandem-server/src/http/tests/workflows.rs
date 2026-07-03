@@ -1,7 +1,7 @@
 use super::*;
 
 use async_trait::async_trait;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::path::Path;
 use tokio::sync::Mutex;
 
@@ -13,14 +13,23 @@ struct RecordingTool {
 #[async_trait]
 impl tandem_tools::Tool for RecordingTool {
     fn schema(&self) -> tandem_types::ToolSchema {
-        tandem_types::ToolSchema::new(
+        let schema = tandem_types::ToolSchema::new(
             self.name.clone(),
             format!("Recording tool for {}", self.name),
             json!({
                 "type": "object",
                 "additionalProperties": true,
             }),
-        )
+        );
+        if self.name == "workflow_test.slack" {
+            schema.with_security(
+                tandem_types::ToolSecurityDescriptor::new()
+                    .external_side_effect()
+                    .risk_tier(tandem_types::ToolRiskTier::ExternalSend),
+            )
+        } else {
+            schema
+        }
     }
 
     async fn execute(&self, args: Value) -> anyhow::Result<tandem_types::ToolResult> {
@@ -500,6 +509,26 @@ async fn workflow_dispatch_executes_hooks_and_dedupes() {
             slack_action_output["external_action"]["source_kind"].as_str(),
             Some("workflow")
         );
+        let pre_send_key = slack_action_output
+            .pointer("/metadata/stateful_outbox/idempotency_key")
+            .and_then(Value::as_str)
+            .expect("workflow tool pre-send idempotency key");
+        assert!(pre_send_key.starts_with("tool-dispatch-"));
+        assert_eq!(
+            slack_action_output["external_action"]["idempotency_key"].as_str(),
+            Some(pre_send_key)
+        );
+        let expected_action_id = format!(
+            "workflow-external-{}",
+            crate::sha256_hex(&[pre_send_key])
+                .chars()
+                .take(16)
+                .collect::<String>()
+        );
+        assert_eq!(
+            slack_action_output["external_action"]["action_id"].as_str(),
+            Some(expected_action_id.as_str())
+        );
         let external_actions_resp = app
             .clone()
             .oneshot(
@@ -517,13 +546,19 @@ async fn workflow_dispatch_executes_hooks_and_dedupes() {
             .expect("external actions body");
         let external_actions_payload: Value =
             serde_json::from_slice(&external_actions_body).expect("external actions json");
-        assert!(external_actions_payload["actions"]
+        let workflow_external_action = external_actions_payload["actions"]
             .as_array()
-            .map(|rows| rows.iter().any(|row| {
-                row["source_kind"].as_str() == Some("workflow")
-                    && row["capability_id"].as_str() == Some("slack.post_message")
-            }))
-            .unwrap_or(false));
+            .and_then(|rows| {
+                rows.iter().find(|row| {
+                    row["source_kind"].as_str() == Some("workflow")
+                        && row["capability_id"].as_str() == Some("slack.post_message")
+                })
+            })
+            .expect("workflow external action");
+        assert_eq!(
+            workflow_external_action["idempotency_key"].as_str(),
+            Some(pre_send_key)
+        );
         let slack_context_run_id = crate::http::workflow_context_run_id(&slack_run.run_id);
         let slack_blackboard_resp = app
             .clone()
