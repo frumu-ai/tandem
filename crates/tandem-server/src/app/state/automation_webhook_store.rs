@@ -14,12 +14,12 @@ use uuid::Uuid;
 use crate::automation_v2::types::*;
 use crate::stateful_runtime::{
     append_stateful_run_event_once_with_next_seq, begin_claimed_stateful_wait_wake_completion,
-    claim_matching_stateful_webhook_wait, finish_claimed_stateful_wait_completion,
-    guarded_phase_state_from_status, list_stateful_run_snapshots, release_claimed_stateful_wait,
-    write_stateful_run_snapshot, StatefulRunEventRecord, StatefulRunSnapshotRecord,
-    StatefulRuntimeScope, StatefulRuntimeStoragePaths, StatefulWaitKind, StatefulWaitRecord,
-    StatefulWaitStatus, StatefulWebhookWaitEvent, StatefulWorkflowRunKind,
-    StatefulWorkflowRunStatus,
+    cancel_stateful_wait_after_phase_guard_denial, claim_matching_stateful_webhook_wait,
+    finish_claimed_stateful_wait_completion, guarded_phase_state_from_status,
+    list_stateful_run_snapshots, write_stateful_run_snapshot, StatefulRunEventRecord,
+    StatefulRunSnapshotRecord, StatefulRuntimeScope, StatefulRuntimeStoragePaths, StatefulWaitKind,
+    StatefulWaitRecord, StatefulWaitStatus, StatefulWebhookWaitEvent, StatefulWorkflowPhaseState,
+    StatefulWorkflowRunKind, StatefulWorkflowRunStatus,
 };
 use crate::util::time::now_ms;
 
@@ -402,6 +402,69 @@ fn stateful_webhook_wake_key(
         "webhook:{}:{}:{}",
         event.idempotency_key, wait.run_id, wait.wait_id
     )
+}
+
+fn guarded_phase_state_for_webhook_wait(
+    paths: &StatefulRuntimeStoragePaths,
+    wait: &StatefulWaitRecord,
+    received_at_ms: u64,
+) -> anyhow::Result<StatefulWorkflowPhaseState> {
+    let status = StatefulWorkflowRunStatus::Running;
+    let previous_snapshot = list_stateful_run_snapshots(
+        &paths.snapshots_root,
+        &wait.scope.tenant_context,
+        &wait.run_id,
+        Some(1),
+    )
+    .pop();
+    let previous_history = previous_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.phase_history.as_slice())
+        .unwrap_or(&[]);
+    guarded_phase_state_from_status(
+        &wait.run_id,
+        &status,
+        received_at_ms,
+        wait.phase_id.as_deref(),
+        previous_snapshot.as_ref().map(|snapshot| snapshot.phase),
+        previous_history,
+        Some("automation_webhook:wake_wait".to_string()),
+    )
+    .map_err(anyhow::Error::from)
+}
+
+async fn cancel_webhook_wait_after_phase_guard_denial(
+    paths: &StatefulRuntimeStoragePaths,
+    wait: &StatefulWaitRecord,
+    reason: &str,
+    received_at_ms: u64,
+) {
+    match cancel_stateful_wait_after_phase_guard_denial(
+        &paths.waits_path,
+        &wait.scope.tenant_context,
+        wait,
+        reason,
+        received_at_ms,
+    )
+    .await
+    {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            tracing::warn!(
+                wait_id = %wait.wait_id,
+                run_id = %wait.run_id,
+                "phase-denied webhook wait was not cancelled because it no longer matched"
+            );
+        }
+        Err(cancel_error) => {
+            tracing::warn!(
+                wait_id = %wait.wait_id,
+                run_id = %wait.run_id,
+                error = %cancel_error,
+                "failed to cancel webhook wait after phase guard denial"
+            );
+        }
+    }
 }
 
 async fn ensure_parent_dir(path: &std::path::Path) -> anyhow::Result<()> {
@@ -1112,46 +1175,19 @@ impl AppState {
         let wake_key = stateful_webhook_wake_key(&claimed_wait, &wait_event);
         let event_id = format!("stateful-webhook-wake-{wake_key}");
         let status = StatefulWorkflowRunStatus::Running;
-        let previous_snapshot = list_stateful_run_snapshots(
-            &paths.snapshots_root,
-            &trigger.tenant_context,
-            &claimed_wait.run_id,
-            Some(1),
-        )
-        .pop();
-        let previous_history = previous_snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.phase_history.as_slice())
-            .unwrap_or(&[]);
-        let phase_state = match guarded_phase_state_from_status(
-            &claimed_wait.run_id,
-            &status,
-            received_at_ms,
-            claimed_wait.phase_id.as_deref(),
-            previous_snapshot.as_ref().map(|snapshot| snapshot.phase),
-            previous_history,
-            Some("automation_webhook:wake_wait".to_string()),
-        ) {
-            Ok(phase_state) => phase_state,
-            Err(error) => {
-                if let Err(release_error) = release_claimed_stateful_wait(
-                    &paths.waits_path,
-                    &trigger.tenant_context,
-                    &claimed_wait,
-                    received_at_ms,
-                )
-                .await
-                {
-                    tracing::warn!(
-                        wait_id = %claimed_wait.wait_id,
-                        run_id = %claimed_wait.run_id,
-                        error = %release_error,
-                        "failed to release claimed webhook wait after phase guard denial"
-                    );
-                }
-                return Err(error.into());
-            }
-        };
+        if let Err(error) =
+            guarded_phase_state_for_webhook_wait(&paths, &claimed_wait, received_at_ms)
+        {
+            let reason = error.to_string();
+            cancel_webhook_wait_after_phase_guard_denial(
+                &paths,
+                &claimed_wait,
+                &reason,
+                received_at_ms,
+            )
+            .await;
+            return Err(error);
+        }
         let reserved_wait = begin_claimed_stateful_wait_wake_completion(
             &paths.waits_path,
             &trigger.tenant_context,
@@ -1161,6 +1197,21 @@ impl AppState {
         )
         .await?
         .ok_or_else(|| anyhow::anyhow!("stateful webhook wait wake conflict"))?;
+        let phase_state =
+            match guarded_phase_state_for_webhook_wait(&paths, &reserved_wait, received_at_ms) {
+                Ok(phase_state) => phase_state,
+                Err(error) => {
+                    let reason = error.to_string();
+                    cancel_webhook_wait_after_phase_guard_denial(
+                        &paths,
+                        &reserved_wait,
+                        &reason,
+                        received_at_ms,
+                    )
+                    .await;
+                    return Err(error);
+                }
+            };
         let scope = claimed_wait.scope.clone();
         let event = StatefulRunEventRecord {
             schema_version: 1,

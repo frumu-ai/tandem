@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::Context;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use tandem_types::TenantContext;
 
 use super::durable_io::{sideline_corrupt_state_file_sync, write_file_atomically};
@@ -238,6 +238,51 @@ pub async fn release_claimed_stateful_wait(
     Ok(Some(released))
 }
 
+pub async fn cancel_stateful_wait_after_phase_guard_denial(
+    path: &Path,
+    tenant: &TenantContext,
+    expected_wait: &StatefulWaitRecord,
+    reason: &str,
+    now_ms: u64,
+) -> anyhow::Result<Option<StatefulWaitRecord>> {
+    let _guard = STATEFUL_WAIT_STORE_LOCK.lock().await;
+    let mut waits = try_load_stateful_waits(path)?;
+    let Some(wait) = waits.iter_mut().find(|wait| {
+        wait.run_id == expected_wait.run_id
+            && wait.wait_id == expected_wait.wait_id
+            && wait.visible_to_tenant(tenant)
+    }) else {
+        return Ok(None);
+    };
+    if wait.status.is_terminal() {
+        return Ok(None);
+    }
+    if wait.status == StatefulWaitStatus::Claimed
+        && !claimed_wait_matches_current_claim(wait, expected_wait)
+    {
+        return Ok(None);
+    }
+    if !matches!(
+        wait.status,
+        StatefulWaitStatus::Waiting | StatefulWaitStatus::Claimed
+    ) {
+        return Ok(None);
+    }
+
+    wait.status = StatefulWaitStatus::Cancelled;
+    wait.wake_idempotency_key = Some(format!("phase-guard-denied:{}", wait.wait_id));
+    wait.event_seq = None;
+    wait.completed_at_ms = Some(now_ms);
+    wait.updated_at_ms = now_ms;
+    wait.claimed_by = None;
+    wait.claimed_at_ms = None;
+    wait.claim_expires_at_ms = None;
+    wait.metadata = Some(phase_guard_denied_metadata(wait.metadata.take(), reason));
+    let cancelled = wait.clone();
+    write_stateful_waits_unlocked(path, &waits).await?;
+    Ok(Some(cancelled))
+}
+
 pub async fn mark_stateful_wait_woken(
     path: &Path,
     tenant: &TenantContext,
@@ -330,6 +375,21 @@ pub async fn mark_stateful_wait_timeout_result(
     let completed = wait.clone();
     write_stateful_waits_unlocked(path, &waits).await?;
     Ok(Some(completed))
+}
+
+fn phase_guard_denied_metadata(metadata: Option<Value>, reason: &str) -> Value {
+    let mut object = match metadata {
+        Some(Value::Object(object)) => object,
+        Some(value) => {
+            let mut object = Map::new();
+            object.insert("previous_metadata".to_string(), value);
+            object
+        }
+        None => Map::new(),
+    };
+    object.insert("phase_guard_denied".to_string(), Value::Bool(true));
+    object.insert("phase_guard_denial_reason".to_string(), json!(reason));
+    Value::Object(object)
 }
 
 pub async fn begin_claimed_stateful_wait_wake_completion(
@@ -1245,6 +1305,64 @@ mod tests {
                 .await
                 .expect("stale release")
                 .is_none()
+        );
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn phase_guard_denial_cancels_reserved_claimed_wait() {
+        let path = temp_wait_store("stateful-waits-phase-guard-cancel");
+        let tenant_a = tenant("org-a", "workspace-a");
+        upsert_stateful_wait(
+            &path,
+            timer_wait("wait-a", "run-a", tenant_a.clone(), 1_000),
+        )
+        .await
+        .expect("insert wait");
+        let claimed = claim_due_stateful_wait(
+            &path,
+            &tenant_a,
+            "run-a",
+            "wait-a",
+            "scheduler-a",
+            1_500,
+            500,
+        )
+        .await
+        .expect("claim wait")
+        .expect("claimed wait");
+        let reserved = begin_claimed_stateful_wait_wake_completion(
+            &path, &tenant_a, &claimed, "wake-key", 1_550,
+        )
+        .await
+        .expect("reserve wait")
+        .expect("reserved wait");
+
+        let cancelled = cancel_stateful_wait_after_phase_guard_denial(
+            &path,
+            &tenant_a,
+            &reserved,
+            "terminal phase completed",
+            1_575,
+        )
+        .await
+        .expect("cancel phase-denied wait")
+        .expect("cancelled wait");
+
+        assert_eq!(cancelled.status, StatefulWaitStatus::Cancelled);
+        assert_eq!(
+            cancelled.wake_idempotency_key.as_deref(),
+            Some("phase-guard-denied:wait-a")
+        );
+        assert_eq!(cancelled.completed_at_ms, Some(1_575));
+        assert!(cancelled.claimed_by.is_none());
+        assert_eq!(
+            cancelled
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("phase_guard_denied"))
+                .and_then(|denied| denied.as_bool()),
+            Some(true)
         );
         let _ = tokio::fs::remove_file(path).await;
     }

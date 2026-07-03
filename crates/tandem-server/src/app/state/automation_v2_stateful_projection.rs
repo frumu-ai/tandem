@@ -9,6 +9,7 @@ use crate::stateful_runtime::{
     stable_definition_snapshot_hash, stateful_run_from_automation_v2, write_stateful_run_snapshot,
     StatefulRunEventQuery, StatefulRunEventRecord, StatefulRunSnapshotRecord,
     StatefulRuntimeStoragePaths, StatefulWaitKind, StatefulWorkflowRunKind,
+    StatefulWorkflowRunStatus,
 };
 
 impl AppState {
@@ -131,9 +132,10 @@ pub(crate) async fn project_automation_v2_stateful_boundaries_to_paths(
             .as_ref()
             .map(|snapshot| snapshot.phase_history.as_slice())
             .unwrap_or(&[]);
+        let phase_status = lifecycle_phase_status(&stateful_run.status, lifecycle);
         let phase_state = guarded_phase_state_from_status(
             &run.run_id,
-            &stateful_run.status,
+            &phase_status,
             lifecycle.recorded_at_ms,
             phase_id.as_deref(),
             latest_snapshot.as_ref().map(|snapshot| snapshot.phase),
@@ -453,6 +455,19 @@ fn checkpoint_summary(run: &AutomationV2RunRecord) -> Value {
         "active_session_ids": &run.active_session_ids,
         "active_instance_ids": &run.active_instance_ids,
     })
+}
+
+fn lifecycle_phase_status(
+    status: &StatefulWorkflowRunStatus,
+    lifecycle: &AutomationLifecycleRecord,
+) -> StatefulWorkflowRunStatus {
+    if *status == StatefulWorkflowRunStatus::Queued
+        && lifecycle.event == "node_retry_backoff_scheduled"
+    {
+        StatefulWorkflowRunStatus::Retrying
+    } else {
+        status.clone()
+    }
 }
 
 fn node_output_ids(run: &AutomationV2RunRecord) -> Vec<String> {
@@ -906,6 +921,100 @@ mod tests {
             latest.phase_history[1].to_phase,
             crate::stateful_runtime::StatefulWorkflowPhase::RunningPhase
         );
+
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn retry_backoff_requeue_projects_retrying_phase_snapshot() {
+        let root = std::env::temp_dir().join(format!(
+            "stateful-lifecycle-projection-retrying-{}",
+            Uuid::new_v4()
+        ));
+        let paths = StatefulRuntimeStoragePaths::new(
+            root.join("events.jsonl"),
+            root.join("snapshots"),
+            root.join("waits.json"),
+        );
+        let mut run = run_with_lifecycle();
+        run.status = AutomationRunStatus::Queued;
+        run.resume_reason = Some("retry_backoff_scheduled".to_string());
+        run.checkpoint.lifecycle_history = vec![AutomationLifecycleRecord {
+            event: "node_retry_backoff_scheduled".to_string(),
+            recorded_at_ms: 250,
+            reason: Some("node `node-a` retry scheduled after 500 ms".to_string()),
+            stop_kind: None,
+            metadata: Some(json!({
+                "node_id": "node-a",
+                "wait_kind": "retry_backoff",
+                "backoff_ms": 500,
+                "retry_after_ms": 750,
+            })),
+        }];
+        let running_phase = phase_state_from_status(
+            &run.run_id,
+            &StatefulWorkflowRunStatus::Running,
+            200,
+            Some("node-a"),
+        );
+        let seed_snapshot = StatefulRunSnapshotRecord {
+            schema_version: 1,
+            snapshot_id: "running-seed".to_string(),
+            run_id: run.run_id.clone(),
+            seq: 1,
+            created_at_ms: 200,
+            scope: StatefulRuntimeScope::from_tenant_context(run.tenant_context.clone()),
+            status: StatefulWorkflowRunStatus::Running,
+            phase: running_phase.phase,
+            phase_history: running_phase.phase_history,
+            allowed_next_phases: running_phase.allowed_next_phases,
+            phase_id: Some("node-a".to_string()),
+            source_record_kind: Some(StatefulWorkflowRunKind::AutomationV2),
+            checkpoint: None,
+            payload_digest: None,
+            workflow_definition_version: None,
+            workflow_definition_snapshot_hash: None,
+            metadata: None,
+        };
+        write_stateful_run_snapshot(&paths.snapshots_root, &seed_snapshot)
+            .await
+            .expect("write running seed snapshot");
+
+        let projected = project_automation_v2_stateful_boundaries_to_paths(&paths, &run)
+            .await
+            .expect("project retry backoff lifecycle");
+
+        assert_eq!(projected, 1);
+        let snapshots = list_stateful_run_snapshots(
+            &paths.snapshots_root,
+            &run.tenant_context,
+            &run.run_id,
+            None,
+        );
+        let retry_snapshot = snapshots
+            .iter()
+            .find(|snapshot| snapshot.status == StatefulWorkflowRunStatus::Queued)
+            .expect("retry snapshot");
+        assert_eq!(retry_snapshot.status, StatefulWorkflowRunStatus::Queued);
+        assert_eq!(
+            retry_snapshot.phase,
+            crate::stateful_runtime::StatefulWorkflowPhase::Retrying
+        );
+        let transition = retry_snapshot
+            .phase_history
+            .last()
+            .expect("phase transition");
+        assert_eq!(
+            transition.from_phase,
+            Some(crate::stateful_runtime::StatefulWorkflowPhase::RunningPhase)
+        );
+        assert_eq!(
+            transition.to_phase,
+            crate::stateful_runtime::StatefulWorkflowPhase::Retrying
+        );
+        assert!(retry_snapshot
+            .allowed_next_phases
+            .contains(&crate::stateful_runtime::StatefulWorkflowPhase::RunningPhase));
 
         let _ = tokio::fs::remove_dir_all(root).await;
     }
