@@ -114,7 +114,7 @@ pub fn due_stateful_waits(
     let mut rows = load_stateful_waits(path)
         .into_iter()
         .filter(|wait| wait.visible_to_tenant(tenant))
-        .filter(|wait| wait_is_claimable(wait, now_ms))
+        .filter(|wait| wait_is_claimable(wait, now_ms, now_ms))
         .collect::<Vec<_>>();
     sort_waits(&mut rows);
     apply_limit(&mut rows, limit);
@@ -177,7 +177,7 @@ pub async fn claim_due_stateful_wait_with_lease_clock(
     }) else {
         return Ok(None);
     };
-    if !wait_is_claimable(wait, due_now_ms) {
+    if !wait_is_claimable(wait, due_now_ms, lease_now_ms) {
         return Ok(None);
     }
 
@@ -731,12 +731,12 @@ fn optional_match(expected: Option<&str>, actual: Option<&str>) -> bool {
         .unwrap_or(true)
 }
 
-fn wait_is_claimable(wait: &StatefulWaitRecord, now_ms: u64) -> bool {
-    let due = wait_wake_is_due_at(wait, now_ms) || wait_timeout_is_due_at(wait, now_ms);
+fn wait_is_claimable(wait: &StatefulWaitRecord, due_now_ms: u64, lease_now_ms: u64) -> bool {
+    let due = wait_wake_is_due_at(wait, due_now_ms) || wait_timeout_is_due_at(wait, due_now_ms);
     if wait.status == StatefulWaitStatus::Waiting {
         return due;
     }
-    wait.status == StatefulWaitStatus::Claimed && !wait.claim_is_active_at(now_ms) && due
+    wait.status == StatefulWaitStatus::Claimed && !wait.claim_is_active_at(lease_now_ms) && due
 }
 
 fn webhook_wait_is_claimable(wait: &StatefulWaitRecord, now_ms: u64) -> bool {
@@ -1167,6 +1167,64 @@ mod tests {
         let _ = tokio::fs::remove_file(path).await;
     }
 
+    #[tokio::test]
+    async fn regressed_due_clock_does_not_expire_active_claim_lease() {
+        let path = temp_wait_store("stateful-waits-regressed-claim-lease");
+        let tenant_a = tenant("org-a", "workspace-a");
+        upsert_stateful_wait(
+            &path,
+            timer_wait("wait-a", "run-a", tenant_a.clone(), 1_000),
+        )
+        .await
+        .expect("insert wait");
+
+        let claimed = claim_due_stateful_wait_with_lease_clock(
+            &path,
+            &tenant_a,
+            "run-a",
+            "wait-a",
+            "scheduler-a",
+            2_000,
+            1_000,
+            500,
+        )
+        .await
+        .expect("claim wait")
+        .expect("claim record");
+        assert_eq!(claimed.claim_expires_at_ms, Some(1_500));
+
+        assert!(claim_due_stateful_wait_with_lease_clock(
+            &path,
+            &tenant_a,
+            "run-a",
+            "wait-a",
+            "scheduler-b",
+            2_000,
+            1_400,
+            500,
+        )
+        .await
+        .expect("active lease reclaim")
+        .is_none());
+
+        let reclaimed = claim_due_stateful_wait_with_lease_clock(
+            &path,
+            &tenant_a,
+            "run-a",
+            "wait-a",
+            "scheduler-b",
+            2_000,
+            1_500,
+            500,
+        )
+        .await
+        .expect("expired lease reclaim")
+        .expect("reclaimed record");
+        assert_eq!(reclaimed.claimed_by.as_deref(), Some("scheduler-b"));
+        assert_eq!(reclaimed.claim_expires_at_ms, Some(2_000));
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
     #[test]
     fn expired_claimed_timer_wait_without_timeout_remains_claimable() {
         let tenant_a = tenant("org-a", "workspace-a");
@@ -1176,8 +1234,8 @@ mod tests {
         wait.claimed_at_ms = Some(1_500);
         wait.claim_expires_at_ms = Some(2_000);
 
-        assert!(!wait_is_claimable(&wait, 1_999));
-        assert!(wait_is_claimable(&wait, 2_000));
+        assert!(!wait_is_claimable(&wait, 1_999, 1_999));
+        assert!(wait_is_claimable(&wait, 2_000, 2_000));
     }
 
     #[tokio::test]
