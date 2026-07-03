@@ -200,7 +200,7 @@ async fn incident_monitor_authority_inventory_payload(
 /// True unless the entry is explicitly bound to a *different* tenant. Unbound
 /// (operator-global) entries and same-tenant entries stay visible; only another
 /// tenant's clearly-attributed topology is hidden (TAN-547).
-fn incident_monitor_entry_not_other_tenant(
+pub(crate) fn incident_monitor_entry_not_other_tenant(
     tenant_id: Option<&str>,
     workspace_id: Option<&str>,
     tenant_context: &TenantContext,
@@ -210,7 +210,7 @@ fn incident_monitor_entry_not_other_tenant(
             && workspace_id.map_or(true, |value| value == tenant_context.workspace_id.as_str()))
 }
 
-fn incident_monitor_route_visible_to_tenant(
+pub(crate) fn incident_monitor_route_visible_to_tenant(
     route: &IncidentMonitorRouteConfig,
     tenant_context: &TenantContext,
 ) -> bool {
@@ -264,7 +264,7 @@ fn incident_monitor_inventory_value_visible_to_tenant(
 /// Destination ids reachable from the tenant's visible routes and projects, plus
 /// the global defaults — the set of destinations a tenant-scoped inventory may
 /// surface.
-fn incident_monitor_tenant_referenced_destination_ids(
+pub(crate) fn incident_monitor_tenant_referenced_destination_ids(
     config: &IncidentMonitorConfig,
     visible_routes: &[IncidentMonitorRouteConfig],
     tenant_context: &TenantContext,

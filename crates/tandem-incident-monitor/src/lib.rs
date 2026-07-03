@@ -3,10 +3,13 @@
 pub mod comment_summary;
 pub mod error_provenance;
 pub mod github;
+pub mod governance_metrics;
 pub mod log_artifacts;
 pub mod log_parser;
 pub mod scenarios;
 pub mod types;
+
+pub use governance_metrics::IncidentMonitorGovernanceThresholds;
 
 pub use scenarios::{
     default_scenario_pack, IncidentMonitorScenario, IncidentMonitorScenarioExpectation,

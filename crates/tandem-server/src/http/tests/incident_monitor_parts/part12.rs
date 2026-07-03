@@ -403,6 +403,16 @@ async fn incident_monitor_assessment_report_generates_markdown_and_redacted_arti
     assert!(payload["counts"]["adversarial_scenarios"]
         .as_u64()
         .is_some_and(|count| count >= 8));
+    // TAN-488: governance maturity metrics + drift are computed (dry-run,
+    // redacted) and folded into the report.
+    assert!(payload["sections"]["governance_maturity_metrics"]["metrics"]
+        .as_array()
+        .is_some_and(|rows| rows.len() == 6));
+    assert_eq!(
+        payload["sections"]["governance_maturity_metrics"]["redacted"],
+        json!(true)
+    );
+    assert!(payload["counts"]["governance_metric_breaches"].as_u64().is_some());
     assert_eq!(payload["evidence_pack"]["persisted"], json!(true));
     let artifact_path = payload["evidence_pack"]["path"]
         .as_str()
@@ -410,6 +420,7 @@ async fn incident_monitor_assessment_report_generates_markdown_and_redacted_arti
     let artifact = std::fs::read_to_string(artifact_path).expect("report artifact");
     assert!(artifact.contains("Incident Monitor Security Gap Assessment"));
     assert!(artifact.contains("adversarial_scenario_packs"));
+    assert!(artifact.contains("governance_maturity_metrics"));
     assert!(!artifact.contains("tk_admin"));
     assert!(!artifact.contains("INCIDENT_MONITOR_REPORT_SECRET"));
     assert!(!artifact.contains("secret-source-authorization-marker"));
