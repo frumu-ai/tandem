@@ -45,12 +45,12 @@ impl AppState {
         if let Some((recorded, actual)) =
             crate::stateful_runtime::automation_run_definition_snapshot_hash_mismatch(run)
         {
-            return Err(json!({
-                "reason": "definition_snapshot_hash_mismatch",
-                "recorded_snapshot_hash": recorded,
-                "actual_snapshot_hash": actual,
-                "definition_source": "automation_snapshot",
-            }));
+            tracing::warn!(
+                run_id = %run.run_id,
+                recorded_snapshot_hash = %recorded,
+                actual_snapshot_hash = %actual,
+                "automation run definition snapshot hash mismatch; using persisted snapshot for restart recovery"
+            );
         }
         match run.automation_snapshot.clone() {
             Some(snapshot) => Ok(snapshot),

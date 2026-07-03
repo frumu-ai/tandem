@@ -5,8 +5,13 @@ pub mod error_provenance;
 pub mod github;
 pub mod log_artifacts;
 pub mod log_parser;
+pub mod scenarios;
 pub mod types;
 
+pub use scenarios::{
+    default_scenario_pack, IncidentMonitorScenario, IncidentMonitorScenarioExpectation,
+    IncidentMonitorScenarioInput, IncidentMonitorScenarioPack, DEFAULT_SCENARIO_PACK_JSON,
+};
 pub use types::*;
 
 pub fn now_ms() -> u64 {

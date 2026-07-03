@@ -137,6 +137,13 @@ async fn incident_monitor_assessment_report_payload(
     } else {
         Vec::new()
     };
+    // TAN-487: run the built-in adversarial scenario pack in dry-run against the
+    // live config and fold its results into the report.
+    let scenario_pack = crate::incident_monitor_scenarios::run_incident_monitor_scenario_pack(
+        &status,
+        &tenant_context,
+        &crate::default_scenario_pack(),
+    );
     let incidents = state
         .list_incident_monitor_incidents(200)
         .await
@@ -228,6 +235,8 @@ async fn incident_monitor_assessment_report_payload(
             "routes": routes.len(),
             "findings": findings.len(),
             "probe_results": probe_results.len(),
+            "adversarial_scenarios": scenario_pack.pointer("/counts/total").and_then(Value::as_u64).unwrap_or(0),
+            "failed_adversarial_scenarios": scenario_pack.pointer("/counts/failed").and_then(Value::as_u64).unwrap_or(0),
             "incidents": incidents.len(),
             "destination_receipts": posts.len(),
             "protected_audit_events": audit_export_rows.len(),
@@ -288,6 +297,7 @@ async fn incident_monitor_assessment_report_payload(
                 "counts": probe_counts,
                 "results": probe_results,
             },
+            "adversarial_scenario_packs": scenario_pack,
             "incidents_and_evidence_refs": {
                 "counts": {
                     "incidents": incident_summaries.len(),

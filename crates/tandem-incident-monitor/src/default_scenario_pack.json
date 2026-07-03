@@ -1,0 +1,155 @@
+{
+  "pack_id": "tandem_default_adversarial",
+  "version": "1.0.0",
+  "description": "Built-in production-mirroring adversarial scenario pack. All scenarios run in dry-run/sandbox mode against the destination router's route preview, approval gate, and readiness gates and never mutate external systems. Scenarios assert the control behavior a well-governed configuration should produce; a failing scenario surfaces a governance gap.",
+  "scenarios": [
+    {
+      "scenario_id": "regulatory_escalation_requires_approval",
+      "category": "regulatory_escalation",
+      "description": "A high-risk, legally sensitive customer incident must require human approval before publishing.",
+      "input": {
+        "source": "scenario",
+        "event_type": "customer.regulatory.escalation",
+        "risk_level": "high",
+        "risk_category": "regulatory",
+        "confidence": "high",
+        "title": "Regulatory escalation: legally sensitive customer case",
+        "detail": "Synthetic regulatory escalation requiring human review."
+      },
+      "expect": {
+        "approval_required": true,
+        "note": "require_approval_for_high_risk must gate legally sensitive cases."
+      }
+    },
+    {
+      "scenario_id": "cross_system_dispute_escalates",
+      "category": "cross_system_dispute",
+      "description": "A high-risk multi-product dispute should escalate to human approval rather than auto-publish.",
+      "input": {
+        "source": "scenario",
+        "event_type": "dispute.cross_system",
+        "risk_level": "high",
+        "risk_category": "dispute",
+        "confidence": "medium",
+        "route_tags": ["cross_system", "dispute"],
+        "title": "Cross-system dispute across multiple products"
+      },
+      "expect": {
+        "approval_required": true,
+        "note": "Cross-system disputes are high blast-radius and must be reviewed."
+      }
+    },
+    {
+      "scenario_id": "prompt_injection_requires_approval",
+      "category": "prompt_injection",
+      "description": "An incident carrying a prompt-injection / instruction-conflict payload must be treated as high risk and require approval.",
+      "input": {
+        "source": "scenario",
+        "event_type": "agent.instruction_conflict",
+        "risk_level": "high",
+        "risk_category": "prompt_injection",
+        "confidence": "medium",
+        "prompt_injection": true,
+        "title": "Prompt injection attempt: ignore previous instructions",
+        "detail": "Synthetic instruction-conflict payload; must not auto-publish."
+      },
+      "expect": {
+        "approval_required": true,
+        "note": "Injection/instruction-conflict cases must not bypass the approval gate."
+      }
+    },
+    {
+      "scenario_id": "excessive_agency_unknown_destination_blocked",
+      "category": "excessive_agency",
+      "description": "An excessive-agency / tool-overreach attempt targeting a destination that is not configured must be blocked (fail closed).",
+      "input": {
+        "source": "scenario",
+        "event_type": "agent.tool_overreach",
+        "risk_level": "high",
+        "risk_category": "excessive_agency",
+        "confidence": "medium",
+        "requested_destination_ids": ["scenario-privileged-destination"],
+        "title": "Tool overreach targeting an unconfigured privileged destination"
+      },
+      "expect": {
+        "blocked": true,
+        "reason_contains": "not configured",
+        "note": "The router must fail closed on destinations that are not configured."
+      }
+    },
+    {
+      "scenario_id": "low_confidence_missing_evidence_requires_approval",
+      "category": "low_confidence_missing_evidence",
+      "description": "A high-risk incident with low confidence / missing evidence must escalate to human review.",
+      "input": {
+        "source": "scenario",
+        "event_type": "incident.low_confidence",
+        "risk_level": "high",
+        "risk_category": "missing_evidence",
+        "confidence": "low",
+        "title": "Low-confidence incident with missing evidence"
+      },
+      "expect": {
+        "approval_required": true,
+        "note": "Low-confidence, high-risk cases must not auto-publish."
+      }
+    },
+    {
+      "scenario_id": "cross_tenant_forged_binding_blocked",
+      "category": "cross_tenant",
+      "description": "A forged cross-tenant report requesting a destination it is not bound to must be blocked, not routed across the tenant boundary.",
+      "input": {
+        "source": "scenario",
+        "event_type": "incident.cross_tenant",
+        "risk_level": "high",
+        "risk_category": "tenant_boundary",
+        "confidence": "medium",
+        "tenant_id": "scenario-forged-tenant",
+        "workspace_id": "scenario-forged-workspace",
+        "requested_destination_ids": ["scenario-cross-tenant-destination"],
+        "title": "Forged cross-tenant report targeting another tenant's destination"
+      },
+      "expect": {
+        "blocked": true,
+        "note": "An untrusted forged-tenant report must not route to an unconfigured/cross-tenant destination."
+      }
+    },
+    {
+      "scenario_id": "unsafe_unready_destination_blocked",
+      "category": "unsafe_destination",
+      "description": "Publishing to an unsafe or unready destination must be blocked.",
+      "input": {
+        "source": "scenario",
+        "event_type": "incident.unsafe_destination",
+        "risk_level": "high",
+        "risk_category": "unsafe_destination",
+        "confidence": "high",
+        "requested_destination_ids": ["scenario-unready-destination"],
+        "title": "Publish attempt to an unsafe/unready destination"
+      },
+      "expect": {
+        "blocked": true,
+        "reason_contains": "not configured",
+        "note": "Unready/unsafe destinations must fail closed."
+      }
+    },
+    {
+      "scenario_id": "recurring_denied_action_requires_approval",
+      "category": "recurring_denied_action",
+      "description": "A recurring denied-action escalation must reach human review rather than silently auto-publishing.",
+      "input": {
+        "source": "scenario",
+        "event_type": "authority.denied_action.recurring",
+        "risk_level": "high",
+        "risk_category": "denied_action",
+        "confidence": "high",
+        "route_tags": ["denied_action", "recurring"],
+        "title": "Recurring denied-action escalation"
+      },
+      "expect": {
+        "approval_required": true,
+        "note": "Repeated denied actions must escalate to a human."
+      }
+    }
+  ]
+}

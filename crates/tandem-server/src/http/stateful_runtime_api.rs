@@ -2,9 +2,10 @@ use super::*;
 
 use crate::stateful_runtime::{
     list_stateful_run_snapshots as list_snapshot_records, list_stateful_waits,
-    query_stateful_run_events, read_stateful_run_snapshot_for_run, stateful_run_from_automation_v2,
-    stateful_run_from_workflow, StatefulRunEventQuery, StatefulRuntimeStoragePaths,
-    StatefulWaitQuery, StatefulWorkflowRunKind, StatefulWorkflowRunRecord,
+    load_stateful_run_events, query_stateful_run_events, read_stateful_run_snapshot_for_run,
+    stateful_run_from_automation_v2, stateful_run_from_workflow, StatefulRunEventQuery,
+    StatefulRunEventRecord, StatefulRuntimeStoragePaths, StatefulWaitQuery,
+    StatefulWorkflowRunKind, StatefulWorkflowRunRecord,
 };
 use tandem_enterprise_contract::{canonical_enterprise_scope_id, enterprise_scope_ids_match};
 use tandem_types::{
@@ -84,9 +85,20 @@ pub(super) async fn list_stateful_runs(
             .then_with(|| left.run_id.cmp(&right.run_id))
     });
     rows.truncate(limit);
+    let event_summaries =
+        stateful_run_event_summaries_by_run(&paths.run_events_path, &tenant_context);
     let runs = rows
         .into_iter()
-        .map(|run| stateful_run_response(&paths, &tenant_context, &enterprise_catalog, run, false))
+        .map(|run| {
+            stateful_run_response(
+                &paths,
+                &tenant_context,
+                &enterprise_catalog,
+                run,
+                false,
+                Some(&event_summaries),
+            )
+        })
         .collect::<Vec<_>>();
     let count = runs.len();
 
@@ -167,7 +179,14 @@ pub(super) async fn get_stateful_run(
         Some(snapshot_limit),
     );
     let enterprise_catalog = EnterpriseScopeCatalog::from_state(&state).await;
-    let mut body = stateful_run_response(&paths, &tenant_context, &enterprise_catalog, run, true);
+    let mut body = stateful_run_response(
+        &paths,
+        &tenant_context,
+        &enterprise_catalog,
+        run,
+        true,
+        None,
+    );
     if let Some(object) = body.as_object_mut() {
         object.insert("events".to_string(), json!(events));
         object.insert("snapshots".to_string(), json!(snapshots));
@@ -357,12 +376,48 @@ impl EnterpriseScopeCatalog {
     }
 }
 
+struct StatefulRunEventListSummary {
+    first_event_seq: u64,
+    latest_event: StatefulRunEventRecord,
+}
+
+fn stateful_run_event_summaries_by_run(
+    path: &std::path::Path,
+    tenant_context: &TenantContext,
+) -> HashMap<String, StatefulRunEventListSummary> {
+    let mut summaries = HashMap::<String, StatefulRunEventListSummary>::new();
+    for event in load_stateful_run_events(path)
+        .into_iter()
+        .filter(|event| event.visible_to_tenant(tenant_context))
+    {
+        match summaries.get_mut(&event.run_id) {
+            Some(summary) => {
+                summary.first_event_seq = summary.first_event_seq.min(event.seq);
+                if event.seq >= summary.latest_event.seq {
+                    summary.latest_event = event;
+                }
+            }
+            None => {
+                summaries.insert(
+                    event.run_id.clone(),
+                    StatefulRunEventListSummary {
+                        first_event_seq: event.seq,
+                        latest_event: event,
+                    },
+                );
+            }
+        }
+    }
+    summaries
+}
+
 fn stateful_run_response(
     paths: &StatefulRuntimeStoragePaths,
     tenant_context: &TenantContext,
     enterprise_catalog: &EnterpriseScopeCatalog,
     mut run: StatefulWorkflowRunRecord,
     include_details: bool,
+    event_summaries: Option<&HashMap<String, StatefulRunEventListSummary>>,
 ) -> Value {
     let latest_snapshot =
         list_snapshot_records(&paths.snapshots_root, tenant_context, &run.run_id, Some(1))
@@ -374,20 +429,36 @@ fn stateful_run_response(
             .map(|snapshot| snapshot.snapshot_id.clone());
     }
     let current_wait = current_wait_for_run(paths, tenant_context, &run.run_id);
-    let events = query_stateful_run_events(
-        &paths.run_events_path,
-        tenant_context,
-        StatefulRunEventQuery {
-            run_id: &run.run_id,
-            after_seq: None,
-            before_seq: None,
-            limit: None,
-            tail: false,
-        },
-    );
-    let latest_event = events.last().map(stateful_event_summary);
-    let first_event_seq = events.first().map(|event| event.seq);
-    let latest_event_seq = events.last().map(|event| event.seq);
+    let (latest_event, first_event_seq, latest_event_seq) = match event_summaries {
+        Some(summaries) => summaries
+            .get(&run.run_id)
+            .map(|summary| {
+                (
+                    Some(stateful_event_summary(&summary.latest_event)),
+                    Some(summary.first_event_seq),
+                    Some(summary.latest_event.seq),
+                )
+            })
+            .unwrap_or((None, None, None)),
+        None => {
+            let events = query_stateful_run_events(
+                &paths.run_events_path,
+                tenant_context,
+                StatefulRunEventQuery {
+                    run_id: &run.run_id,
+                    after_seq: None,
+                    before_seq: None,
+                    limit: None,
+                    tail: false,
+                },
+            );
+            (
+                events.last().map(stateful_event_summary),
+                events.first().map(|event| event.seq),
+                events.last().map(|event| event.seq),
+            )
+        }
+    };
     let latest_snapshot_summary = latest_snapshot.as_ref().map(stateful_snapshot_summary);
     let enterprise_scope = stateful_enterprise_scope_summary(enterprise_catalog, &run);
     let replay_boundaries = json!({
@@ -1233,6 +1304,74 @@ mod tests {
                 .unwrap_or_else(|| std::path::Path::new(".")),
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn run_event_summary_cache_tracks_visible_first_and_latest_seq() {
+        let state = stateful_test_state().await;
+        let tenant_a = tenant("org-a", "workspace-a");
+        let tenant_b = tenant("org-b", "workspace-b");
+        let paths =
+            StatefulRuntimeStoragePaths::from_runtime_events_path(&state.runtime_events_path);
+        for record in [
+            event(3, "run-a", tenant_a.clone()),
+            event(2, "run-a", tenant_b),
+            event(1, "run-a", tenant_a.clone()),
+        ] {
+            append_stateful_run_event(&paths.run_events_path, &record)
+                .await
+                .expect("append event");
+        }
+
+        let summaries = stateful_run_event_summaries_by_run(&paths.run_events_path, &tenant_a);
+        let summary = summaries.get("run-a").expect("run summary");
+
+        assert_eq!(summary.first_event_seq, 1);
+        assert_eq!(summary.latest_event.seq, 3);
+        assert_eq!(summary.latest_event.event_id, "evt-3");
+        let _ = tokio::fs::remove_dir_all(
+            paths
+                .run_events_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new(".")),
+        )
+        .await;
+    }
+
+    #[test]
+    fn run_response_treats_missing_cached_event_summary_as_empty() {
+        let tenant_a = tenant("org-a", "workspace-a");
+        let root = std::env::temp_dir().join(format!(
+            "stateful-runtime-api-empty-summary-{}",
+            Uuid::new_v4()
+        ));
+        let paths = StatefulRuntimeStoragePaths::new(
+            root.join("events.jsonl"),
+            root.join("snapshots"),
+            root.join("waits.json"),
+        );
+        let run = crate::stateful_runtime::stateful_run_from_automation_v2(&automation_run(
+            "run-without-events",
+            tenant_a.clone(),
+            AutomationRunStatus::Running,
+            4_000,
+        ));
+        let summaries = HashMap::new();
+
+        let body = stateful_run_response(
+            &paths,
+            &tenant_a,
+            &EnterpriseScopeCatalog::default(),
+            run,
+            false,
+            Some(&summaries),
+        );
+
+        assert!(body.get("latest_event").is_some_and(Value::is_null));
+        assert_eq!(
+            body["replay_boundaries"]["can_replay_from_event_log"],
+            false
+        );
     }
 
     #[tokio::test]
