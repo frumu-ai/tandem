@@ -55,7 +55,22 @@ fn incident_monitor_destination_readiness(
                         missing.push("MCP server is disconnected".to_string());
                     }
 
-                    if !status.readiness.github_read_ready || !status.readiness.github_write_ready {
+                    // `status.readiness.github_read_ready/write_ready` are resolved
+                    // from the *global* selected server, so only gate on them when
+                    // the destination actually uses the global server. A
+                    // destination with its own `mcp_server` publishes through that
+                    // server (`destination.publish_config(...)`); its capabilities
+                    // are validated by connectedness here and by the adapter's tool
+                    // resolution at execution, so gating it on the global flags
+                    // would reject valid destination-specific routes (TAN-545).
+                    let uses_global_server = destination
+                        .mcp_server
+                        .as_deref()
+                        .map_or(true, |name| Some(name) == config.mcp_server.as_deref());
+                    let global_capabilities_ok = !uses_global_server
+                        || (status.readiness.github_read_ready
+                            && status.readiness.github_write_ready);
+                    if !global_capabilities_ok {
                         missing.push("GitHub capabilities are missing".to_string());
                     }
 
@@ -67,8 +82,7 @@ fn incident_monitor_destination_readiness(
                             .as_ref()
                             .map(|row| row.connected)
                             .unwrap_or(false)
-                        && status.readiness.github_read_ready
-                        && status.readiness.github_write_ready
+                        && global_capabilities_ok
                 }
                 IncidentMonitorDestinationKind::LinearIssue => {
                     let team_valid = destination
@@ -250,4 +264,83 @@ fn linear_server_has_any_tool(server: &tandem_runtime::McpServer, candidates: &[
                 || format!("mcp.{}.{}", server.name, tool.tool_name).eq_ignore_ascii_case(candidate)
         })
     })
+}
+
+#[cfg(test)]
+mod tan545_destination_readiness_tests {
+    use super::*;
+
+    fn connected_server(name: &str) -> tandem_runtime::McpServer {
+        serde_json::from_value(serde_json::json!({
+            "name": name,
+            "transport": "stdio",
+            "connected": true,
+        }))
+        .expect("server")
+    }
+
+    fn github_destination(mcp_server: Option<&str>) -> IncidentMonitorDestinationConfig {
+        IncidentMonitorDestinationConfig {
+            destination_id: "gh".to_string(),
+            name: "GitHub".to_string(),
+            kind: IncidentMonitorDestinationKind::GithubIssue,
+            enabled: true,
+            repo: Some("acme/app".to_string()),
+            mcp_server: mcp_server.map(str::to_string),
+            ..IncidentMonitorDestinationConfig::default()
+        }
+    }
+
+    fn readiness_for(
+        destination: IncidentMonitorDestinationConfig,
+        global_mcp_server: Option<&str>,
+    ) -> IncidentMonitorDestinationReadiness {
+        let config = IncidentMonitorConfig {
+            enabled: true,
+            mcp_server: global_mcp_server.map(str::to_string),
+            destinations: vec![destination.clone()],
+            ..IncidentMonitorConfig::default()
+        };
+        // Global GitHub capabilities are absent (resolved from the global server).
+        let status = IncidentMonitorStatus {
+            destinations: vec![destination],
+            readiness: IncidentMonitorReadiness {
+                github_read_ready: false,
+                github_write_ready: false,
+                ..IncidentMonitorReadiness::default()
+            },
+            ..IncidentMonitorStatus::default()
+        };
+        let mut servers = std::collections::HashMap::new();
+        servers.insert("dest-gh".to_string(), connected_server("dest-gh"));
+        incident_monitor_destination_readiness(&config, &status, &servers)
+            .into_iter()
+            .next()
+            .expect("one readiness row")
+    }
+
+    #[test]
+    fn tan545_github_destination_with_own_server_is_ready_despite_global_caps() {
+        // A GitHub destination with its own connected MCP server publishes through
+        // that server, so it must not be gated on the global capability flags.
+        let row = readiness_for(github_destination(Some("dest-gh")), None);
+        assert!(
+            row.publish_ready,
+            "destination-specific GitHub server must be ready: {:?}",
+            row.missing
+        );
+    }
+
+    #[test]
+    fn tan545_github_destination_on_global_server_is_gated_on_global_caps() {
+        // The same connected server, but reached as the *global* server, is still
+        // gated on the global capability flags — so a genuinely unready global
+        // deployment is blocked.
+        let row = readiness_for(github_destination(None), Some("dest-gh"));
+        assert!(!row.publish_ready);
+        assert!(row
+            .missing
+            .iter()
+            .any(|reason| reason.contains("GitHub capabilities are missing")));
+    }
 }
