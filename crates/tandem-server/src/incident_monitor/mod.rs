@@ -1,4 +1,6 @@
-pub use tandem_incident_monitor::{comment_summary, error_provenance, log_parser, types};
+pub use tandem_incident_monitor::{
+    comment_summary, error_provenance, log_parser, scenarios, types,
+};
 pub mod log_artifacts;
 pub mod log_watcher;
 pub mod router;

@@ -75,6 +75,7 @@ pub mod incident_monitor_github;
 pub mod incident_monitor_linear;
 pub mod incident_monitor_local;
 pub mod incident_monitor_mcp;
+pub mod incident_monitor_scenarios;
 pub mod incident_monitor_webhook;
 pub mod mcp_catalog;
 pub mod mcp_catalog_generated;
@@ -123,6 +124,10 @@ pub use failures::{
     FailureContext,
 };
 pub use http::*;
+pub use incident_monitor::scenarios::{
+    default_scenario_pack, IncidentMonitorScenario, IncidentMonitorScenarioExpectation,
+    IncidentMonitorScenarioInput, IncidentMonitorScenarioPack,
+};
 pub use incident_monitor::types::*;
 pub use memory::types::*;
 pub use optimization::*;

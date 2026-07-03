@@ -388,12 +388,28 @@ async fn incident_monitor_assessment_report_generates_markdown_and_redacted_arti
         payload["sections"]["external_audit_export"]["route_preview"]["mutates_external_systems"],
         json!(false)
     );
+    // TAN-487: the adversarial scenario pack runs in dry-run and is folded into
+    // the report (and its persisted evidence pack).
+    assert!(
+        payload["sections"]["adversarial_scenario_packs"]["results"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty()),
+        "report should include adversarial scenario results: {payload}"
+    );
+    assert_eq!(
+        payload["sections"]["adversarial_scenario_packs"]["mutates_external_systems"],
+        json!(false)
+    );
+    assert!(payload["counts"]["adversarial_scenarios"]
+        .as_u64()
+        .is_some_and(|count| count >= 8));
     assert_eq!(payload["evidence_pack"]["persisted"], json!(true));
     let artifact_path = payload["evidence_pack"]["path"]
         .as_str()
         .expect("report artifact path");
     let artifact = std::fs::read_to_string(artifact_path).expect("report artifact");
     assert!(artifact.contains("Incident Monitor Security Gap Assessment"));
+    assert!(artifact.contains("adversarial_scenario_packs"));
     assert!(!artifact.contains("tk_admin"));
     assert!(!artifact.contains("INCIDENT_MONITOR_REPORT_SECRET"));
     assert!(!artifact.contains("secret-source-authorization-marker"));
