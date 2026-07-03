@@ -21,9 +21,10 @@ use super::types::{
 use super::waits::{
     begin_claimed_stateful_wait_reminder_completion,
     begin_claimed_stateful_wait_timeout_completion, begin_claimed_stateful_wait_wake_completion,
-    cancel_stateful_wait_after_phase_guard_denial, claim_due_stateful_wait_with_lease_clock,
-    due_stateful_waits, finish_claimed_stateful_wait_completion,
-    finish_claimed_stateful_wait_reminder_completion, load_stateful_waits,
+    cancel_stateful_wait_after_phase_guard_denial,
+    claim_due_stateful_wait_generation_with_lease_clock, due_stateful_waits,
+    finish_claimed_stateful_wait_completion, finish_claimed_stateful_wait_reminder_completion,
+    load_stateful_waits,
 };
 
 pub const STATEFUL_WAIT_SCHEDULER_CLAIMANT: &str = "stateful-wait-scheduler";
@@ -286,11 +287,12 @@ pub async fn process_due_stateful_waits(
             continue;
         }
         let tenant_context = candidate.scope.tenant_context.clone();
-        let claimed = match claim_due_stateful_wait_with_lease_clock(
+        let claimed = match claim_due_stateful_wait_generation_with_lease_clock(
             &paths.waits_path,
             &tenant_context,
             &candidate.run_id,
             &candidate.wait_id,
+            candidate.created_at_ms,
             &config.claimant_id,
             processing_now_ms,
             now_ms,
@@ -765,6 +767,7 @@ mod tests {
     use tandem_types::TenantContext;
     use uuid::Uuid;
 
+    use super::super::waits::claim_due_stateful_wait_with_lease_clock;
     use super::*;
     use crate::stateful_runtime::{
         claim_due_stateful_wait, list_stateful_dead_letters, list_stateful_run_snapshots,
