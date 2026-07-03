@@ -105,6 +105,57 @@ fn automation_webhook_trigger_from_raw_event_snapshot(
     trigger
 }
 
+fn automation_webhook_delivery_has_replayable_outcome(
+    delivery: &AutomationWebhookDeliveryRecord,
+) -> bool {
+    match &delivery.status {
+        AutomationWebhookDeliveryStatus::Accepted => {
+            delivery.queued_run_id.is_some()
+                || delivery.woken_run_id.is_some()
+                || delivery.woken_wait_id.is_some()
+        }
+        AutomationWebhookDeliveryStatus::Duplicate
+        | AutomationWebhookDeliveryStatus::Suppressed
+        | AutomationWebhookDeliveryStatus::Rejected
+        | AutomationWebhookDeliveryStatus::Disabled
+        | AutomationWebhookDeliveryStatus::Failed => true,
+        AutomationWebhookDeliveryStatus::Received => false,
+    }
+}
+
+fn automation_webhook_delivery_matches_raw_event(
+    delivery: &AutomationWebhookDeliveryRecord,
+    trigger: &AutomationWebhookTriggerRecord,
+    event: &AutomationWebhookRawEventRecord,
+) -> bool {
+    if delivery.trigger_id != trigger.trigger_id
+        || delivery.automation_id != trigger.automation_id
+        || !delivery.tenant_matches(&trigger.tenant_context)
+        || !automation_webhook_delivery_has_replayable_outcome(delivery)
+        || delivery.received_at_ms != event.received_at_ms
+        || delivery.body_digest != event.body_digest
+    {
+        return false;
+    }
+    match (&event.provider_event_id, &delivery.provider_event_id) {
+        (Some(event_id), Some(delivery_event_id)) => event_id == delivery_event_id,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn automation_webhook_delivery_replay_rank(delivery: &AutomationWebhookDeliveryRecord) -> u8 {
+    match &delivery.status {
+        AutomationWebhookDeliveryStatus::Accepted => 0,
+        AutomationWebhookDeliveryStatus::Suppressed => 1,
+        AutomationWebhookDeliveryStatus::Rejected
+        | AutomationWebhookDeliveryStatus::Disabled
+        | AutomationWebhookDeliveryStatus::Failed => 2,
+        AutomationWebhookDeliveryStatus::Duplicate => 3,
+        AutomationWebhookDeliveryStatus::Received => 4,
+    }
+}
+
 fn automation_webhook_payload_path_for_event(
     payloads_dir: &Path,
     event: &AutomationWebhookRawEventRecord,
@@ -665,6 +716,19 @@ impl AppState {
             return Ok(());
         };
         let trigger = automation_webhook_trigger_from_raw_event_snapshot(trigger, &event);
+        if let Some(delivery) = self
+            .existing_automation_webhook_delivery_for_raw_event(&trigger, &event)
+            .await
+        {
+            self.update_automation_webhook_raw_event_outcome(
+                &event.tenant_context,
+                &event.event_id,
+                &delivery,
+                crate::now_ms(),
+            )
+            .await?;
+            return Ok(());
+        }
         let payload = self
             .read_automation_webhook_raw_event_payload(&event.tenant_context, &event.event_id)
             .await?
@@ -721,6 +785,27 @@ impl AppState {
         )
         .await?;
         Ok(())
+    }
+
+    async fn existing_automation_webhook_delivery_for_raw_event(
+        &self,
+        trigger: &AutomationWebhookTriggerRecord,
+        event: &AutomationWebhookRawEventRecord,
+    ) -> Option<AutomationWebhookDeliveryRecord> {
+        self.automation_webhook_deliveries
+            .read()
+            .await
+            .values()
+            .filter(|delivery| {
+                automation_webhook_delivery_matches_raw_event(delivery, trigger, event)
+            })
+            .min_by_key(|delivery| {
+                (
+                    automation_webhook_delivery_replay_rank(delivery),
+                    delivery.delivery_id.clone(),
+                )
+            })
+            .cloned()
     }
 
     pub(crate) async fn read_automation_webhook_raw_event_payload(
