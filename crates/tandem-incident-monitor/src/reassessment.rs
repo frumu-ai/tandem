@@ -393,6 +393,37 @@ fn tenant_bindings(config: &IncidentMonitorConfig) -> Vec<(Option<String>, Optio
 /// JSON value, checking the id-bearing keys in priority order. Falls back to the
 /// deployment scope so every finding is always attributed somewhere.
 pub fn reassessment_scope_from_finding(finding: &Value) -> String {
+    // Posture findings carry the affected object under `affected_objects` as
+    // `{kind, id, ...}` entries; use the first one so two sources / workflows
+    // failing the same rule get distinct scopes (and therefore distinct
+    // fingerprints) rather than collapsing to the deployment scope.
+    if let Some(object) = finding
+        .get("affected_objects")
+        .and_then(Value::as_array)
+        .and_then(|objects| objects.first())
+    {
+        if let Some(id) = object
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let prefix = match object.get("kind").and_then(Value::as_str) {
+                Some("monitored_source") | Some("source_readiness") => Some("source"),
+                Some("incident_monitor_destination") => Some("destination"),
+                Some("automation") | Some("automation_agent") | Some("automation_node") => {
+                    Some("workflow")
+                }
+                Some("route") => Some("route"),
+                _ => None,
+            };
+            if let Some(prefix) = prefix {
+                return format!("{prefix}:{id}");
+            }
+        }
+    }
+
+    // Fallback for other finding shapes that carry a top-level id field.
     const SUBJECT_KEYS: [(&str, &str); 6] = [
         ("source_id", "source"),
         ("destination_id", "destination"),
@@ -452,6 +483,36 @@ mod tests {
             occurrence_count: 0,
             status: String::new(),
         }
+    }
+
+    #[test]
+    fn scope_reads_affected_objects_and_distinguishes_subjects() {
+        let source_a = serde_json::json!({
+            "rule_id": "source_readiness_failed",
+            "affected_objects": [{ "kind": "monitored_source", "id": "src-a" }],
+        });
+        let source_b = serde_json::json!({
+            "rule_id": "source_readiness_failed",
+            "affected_objects": [{ "kind": "source_readiness", "id": "src-b" }],
+        });
+        let automation = serde_json::json!({
+            "affected_objects": [{ "kind": "automation_agent", "id": "agent-1" }],
+        });
+        let unknown =
+            serde_json::json!({ "affected_objects": [{ "kind": "linear_issue", "id": "x" }] });
+
+        assert_eq!(reassessment_scope_from_finding(&source_a), "source:src-a");
+        assert_eq!(reassessment_scope_from_finding(&source_b), "source:src-b");
+        assert_ne!(
+            reassessment_scope_from_finding(&source_a),
+            reassessment_scope_from_finding(&source_b),
+            "two sources failing the same rule must not collapse to one scope"
+        );
+        assert_eq!(
+            reassessment_scope_from_finding(&automation),
+            "workflow:agent-1"
+        );
+        assert_eq!(reassessment_scope_from_finding(&unknown), "deployment");
     }
 
     #[test]

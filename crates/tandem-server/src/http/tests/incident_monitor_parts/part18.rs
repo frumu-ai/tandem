@@ -82,6 +82,26 @@ async fn reassessment_run_is_versioned_dry_run_and_dedups_findings() {
     assert!(!second.mutates_external_systems);
     assert!(!first.findings.is_empty(), "posture should produce findings");
 
+    // Findings carry the assessment report's evidence-ref paths (object-form
+    // {kind, path}) and a subject scope from affected_objects — not everything
+    // collapsed to the deployment scope.
+    assert!(
+        first
+            .findings
+            .iter()
+            .any(|finding| !finding.evidence_refs.is_empty()),
+        "posture findings should carry evidence refs: {:?}",
+        first.findings
+    );
+    assert!(
+        first
+            .findings
+            .iter()
+            .any(|finding| finding.scope.starts_with("source:")),
+        "source-readiness findings should scope to the source: {:?}",
+        first.findings.iter().map(|f| &f.scope).collect::<Vec<_>>()
+    );
+
     // Stable fingerprints suppress duplicate noise: the same posture is
     // recurring on the second run, not new, and occurrence counts climb.
     assert_eq!(

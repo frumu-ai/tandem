@@ -75,15 +75,13 @@ fn extract_reassessment_findings(
     let mut findings = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    let mut push = |scope: String,
+    let mut push = |fingerprint: String,
+                    scope: String,
                     rule_id: String,
                     category: String,
                     severity: String,
-                    subject: &str,
                     evidence_refs: Vec<String>,
                     findings: &mut Vec<ReassessmentFinding>| {
-        let fingerprint =
-            reassessment_finding_fingerprint(tenant_id, workspace_id, &scope, &rule_id, subject);
         if !seen.insert(fingerprint.clone()) {
             return;
         }
@@ -115,17 +113,29 @@ fn extract_reassessment_findings(
             let category = string_field(row, "category").unwrap_or_else(|| "posture".to_string());
             let severity = string_field(row, "severity").unwrap_or_else(|| "info".to_string());
             let scope = reassessment_scope_from_finding(row);
-            let subject = scope
-                .split_once(':')
-                .map(|(_, id)| id.to_string())
-                .unwrap_or_else(|| rule_id.clone());
-            let evidence_refs = string_array_field(row, "evidence_refs");
+            // Reuse the assessment report's stable per-affected-object
+            // fingerprint so distinct subjects failing the same rule stay
+            // distinct; only synthesize one for findings that lack it.
+            let fingerprint = string_field(row, "fingerprint").unwrap_or_else(|| {
+                let subject = scope
+                    .split_once(':')
+                    .map(|(_, id)| id.to_string())
+                    .unwrap_or_else(|| rule_id.clone());
+                reassessment_finding_fingerprint(
+                    tenant_id,
+                    workspace_id,
+                    &scope,
+                    &rule_id,
+                    &subject,
+                )
+            });
+            let evidence_refs = evidence_ref_paths(row);
             push(
+                fingerprint,
                 scope,
                 rule_id,
                 category,
                 severity,
-                &subject,
                 evidence_refs,
                 &mut findings,
             );
@@ -144,12 +154,19 @@ fn extract_reassessment_findings(
                 .unwrap_or_else(|| "governance".to_string());
             let severity = string_field(row, "severity").unwrap_or_else(|| "medium".to_string());
             let rule_id = format!("governance.{kind}.{subject}");
+            let fingerprint = reassessment_finding_fingerprint(
+                tenant_id,
+                workspace_id,
+                DEPLOYMENT_SCOPE,
+                &rule_id,
+                &subject,
+            );
             push(
+                fingerprint,
                 DEPLOYMENT_SCOPE.to_string(),
                 rule_id,
                 "governance_gap".to_string(),
                 severity,
-                &subject,
                 Vec::new(),
                 &mut findings,
             );
@@ -168,13 +185,21 @@ fn string_field(value: &Value, key: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn string_array_field(value: &Value, key: &str) -> Vec<String> {
-    value
-        .get(key)
+/// Evidence refs on posture findings are `{kind, path}` objects; carry their
+/// `path` (also tolerating a bare-string form) so completed reassessment
+/// history retains the references operators need to validate a finding.
+fn evidence_ref_paths(finding: &Value) -> Vec<String> {
+    finding
+        .get("evidence_refs")
         .and_then(Value::as_array)
         .map(|rows| {
             rows.iter()
-                .filter_map(Value::as_str)
+                .filter_map(|entry| {
+                    entry
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .or_else(|| entry.as_str())
+                })
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(ToString::to_string)
@@ -202,13 +227,6 @@ pub async fn compute_incident_monitor_reassessment(
     .await;
 
     let mut findings = extract_reassessment_findings(&payload, tenant_context);
-    let previous = latest_reassessment_record(state, &scope_key).await;
-    let comparison: ReassessmentComparison =
-        apply_reassessment_comparison(previous.as_ref(), &mut findings, now_ms);
-    let version = previous
-        .as_ref()
-        .map(|record| record.version + 1)
-        .unwrap_or(1);
 
     let evidence_refs = findings
         .iter()
@@ -224,29 +242,45 @@ pub async fn compute_incident_monitor_reassessment(
         )
     };
 
-    let record = ReassessmentRecord {
-        schema_version: REASSESSMENT_SCHEMA_VERSION,
-        record_id: format!("reassess-{version}-{scope_key}"),
-        scope_key: scope_key.clone(),
-        tenant_id,
-        workspace_id,
-        scope: DEPLOYMENT_SCOPE.to_string(),
-        version,
-        trigger: trigger.as_str().to_string(),
-        trigger_detail,
-        generated_at_ms: now_ms,
-        mode: "dry_run".to_string(),
-        mutates_external_systems: false,
-        findings,
-        comparison,
-        evidence_refs,
+    // Allocate the version, run the previous/current comparison, and insert
+    // under a single hold of the write lock so two concurrent runs for the same
+    // scope (e.g. a manual request overlapping a scheduler tick) cannot read the
+    // same latest record, pick the same version/record_id, and overwrite each
+    // other's history. The expensive posture computation above stays outside the
+    // lock; only the cheap in-memory comparison + insert are serialized.
+    let record = {
+        let mut guard = state.incident_monitor_reassessments.write().await;
+        let previous = guard
+            .values()
+            .filter(|record| record.scope_key == scope_key)
+            .max_by_key(|record| record.version)
+            .cloned();
+        let comparison: ReassessmentComparison =
+            apply_reassessment_comparison(previous.as_ref(), &mut findings, now_ms);
+        let version = previous
+            .as_ref()
+            .map(|record| record.version + 1)
+            .unwrap_or(1);
+        let record = ReassessmentRecord {
+            schema_version: REASSESSMENT_SCHEMA_VERSION,
+            record_id: format!("reassess-{version}-{scope_key}"),
+            scope_key: scope_key.clone(),
+            tenant_id,
+            workspace_id,
+            scope: DEPLOYMENT_SCOPE.to_string(),
+            version,
+            trigger: trigger.as_str().to_string(),
+            trigger_detail,
+            generated_at_ms: now_ms,
+            mode: "dry_run".to_string(),
+            mutates_external_systems: false,
+            findings,
+            comparison,
+            evidence_refs,
+        };
+        guard.insert(record.record_id.clone(), record.clone());
+        record
     };
-
-    state
-        .incident_monitor_reassessments
-        .write()
-        .await
-        .insert(record.record_id.clone(), record.clone());
     state.persist_incident_monitor_reassessments().await?;
 
     // Clear any pending change-trigger for this scope now that it has run.
