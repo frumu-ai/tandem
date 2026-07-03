@@ -679,6 +679,124 @@ async fn recovered_pending_gate_ignores_guard_denial_history() {
 }
 
 #[tokio::test]
+async fn approvals_pending_endpoint_scopes_results_to_request_tenant() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let tenant_a = tandem_types::TenantContext::explicit_user_workspace(
+        "org-approvals-a",
+        "workspace-a",
+        None,
+        "actor-a",
+    );
+    let tenant_b = tandem_types::TenantContext::explicit_user_workspace(
+        "org-approvals-b",
+        "workspace-b",
+        None,
+        "actor-b",
+    );
+
+    let mut automation_a = create_test_automation_v2(&state, "auto-v2-approvals-tenant-a").await;
+    automation_a.set_tenant_context(&tenant_a);
+    state
+        .put_automation_v2(automation_a.clone())
+        .await
+        .expect("store tenant a automation");
+    let run_a = state
+        .create_automation_v2_run(&automation_a, "manual")
+        .await
+        .expect("tenant a run");
+
+    let mut automation_b = create_test_automation_v2(&state, "auto-v2-approvals-tenant-b").await;
+    automation_b.set_tenant_context(&tenant_b);
+    state
+        .put_automation_v2(automation_b.clone())
+        .await
+        .expect("store tenant b automation");
+    let run_b = state
+        .create_automation_v2_run(&automation_b, "manual")
+        .await
+        .expect("tenant b run");
+
+    for (run_id, node_id) in [(&run_a.run_id, "approval-a"), (&run_b.run_id, "approval-b")] {
+        state
+            .update_automation_v2_run(run_id, |row| {
+                row.status = crate::AutomationRunStatus::AwaitingApproval;
+                row.checkpoint.awaiting_gate = Some(crate::AutomationPendingGate {
+                    node_id: node_id.to_string(),
+                    title: format!("Approval {node_id}"),
+                    instructions: None,
+                    decisions: vec!["approve".to_string()],
+                    rework_targets: vec![],
+                    requested_at_ms: crate::now_ms(),
+                    upstream_node_ids: vec![],
+                    metadata: None,
+                    expiry_policy: None,
+                });
+            })
+            .await
+            .expect("mark run awaiting approval");
+    }
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/approvals/pending")
+                .header("x-tandem-org-id", tenant_b.org_id.as_str())
+                .header("x-tandem-workspace-id", tenant_b.workspace_id.as_str())
+                .header("x-tandem-actor-id", "actor-b")
+                .body(Body::empty())
+                .expect("tenant b request"),
+        )
+        .await
+        .expect("tenant b response");
+    assert_eq!(resp.status(), 200);
+    let body = to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .expect("body bytes");
+    let payload: Value = serde_json::from_slice(&body).expect("json body");
+    let approvals = payload
+        .get("approvals")
+        .and_then(Value::as_array)
+        .expect("approvals array");
+    assert!(
+        approvals
+            .iter()
+            .any(|approval| approval.get("run_id").and_then(Value::as_str)
+                == Some(run_b.run_id.as_str())),
+        "tenant B should see its own approval"
+    );
+    assert!(
+        approvals
+            .iter()
+            .all(|approval| approval.get("run_id").and_then(Value::as_str)
+                != Some(run_a.run_id.as_str())),
+        "tenant B must not see tenant A approvals: {payload}"
+    );
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/approvals/pending?org_id=org-approvals-a&workspace_id=workspace-a")
+                .header("x-tandem-org-id", tenant_b.org_id.as_str())
+                .header("x-tandem-workspace-id", tenant_b.workspace_id.as_str())
+                .header("x-tandem-actor-id", "actor-b")
+                .body(Body::empty())
+                .expect("tenant b narrowed request"),
+        )
+        .await
+        .expect("tenant b narrowed response");
+    assert_eq!(resp.status(), 200);
+    let body = to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .expect("body bytes");
+    let payload: Value = serde_json::from_slice(&body).expect("json body");
+    assert_eq!(payload.get("count").and_then(Value::as_u64), Some(0));
+}
+
+#[tokio::test]
 async fn approvals_pending_endpoint_returns_empty_when_no_gates_pending() {
     let state = test_state().await;
     let app = app_router(state.clone());

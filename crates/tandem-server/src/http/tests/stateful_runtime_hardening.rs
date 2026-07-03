@@ -59,6 +59,17 @@ async fn get_json(state: AppState, uri: impl Into<String>, tenant: &TenantContex
     response_json(response).await
 }
 
+#[test]
+fn stateful_runtime_scope_local_implicit_does_not_see_explicit_tenant_rows() {
+    let tenant_a = tenant("org-hardening-a", "workspace-a", "operator-a");
+    let explicit_scope = StatefulRuntimeScope::from_tenant_context(tenant_a.clone());
+    let local = TenantContext::local_implicit();
+
+    assert!(explicit_scope.visible_to_tenant(&tenant_a));
+    assert!(!explicit_scope.visible_to_tenant(&local));
+    assert!(StatefulRuntimeScope::local_implicit().visible_to_tenant(&local));
+}
+
 #[tokio::test]
 async fn stateful_runtime_read_models_filter_cross_tenant_rows_with_shared_run_id() {
     let state = test_state().await;

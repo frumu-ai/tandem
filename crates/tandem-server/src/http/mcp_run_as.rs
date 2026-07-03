@@ -696,10 +696,6 @@ async fn enforce_mcp_phase_tool_authority(
     let requested_tool = mcp_tool_policy_name(server_name, tool_name);
     let resource = mcp_tool_resource_ref(&run_as.effective_tenant_context, server_name, tool_name);
     let Some(authority) = authority else {
-        if run_as.effective_tenant_context.is_local_implicit() {
-            return Ok(None);
-        }
-
         let authority = McpPhaseToolAuthority::missing();
         let reason =
             format!("MCP tool `{requested_tool}` denied because phase tool authority is missing");
@@ -1491,12 +1487,7 @@ impl McpPhaseToolAuthority {
     }
 
     fn is_unscoped_dispatch_context_authority(&self) -> bool {
-        self.allowed_tools.iter().all(|tool| tool.trim().is_empty())
-            && self.source.as_deref() == Some("tool_dispatch_context")
-            && (self.session_id.is_some()
-                || self.message_id.is_some()
-                || self.run_id.is_some()
-                || self.node_id.is_some())
+        false
     }
 }
 

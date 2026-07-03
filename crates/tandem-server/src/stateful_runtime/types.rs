@@ -66,9 +66,6 @@ impl StatefulRuntimeScope {
     }
 
     pub fn visible_to_tenant(&self, tenant: &TenantContext) -> bool {
-        if tenant.is_local_implicit() {
-            return true;
-        }
         self.tenant_context.org_id == tenant.org_id
             && self.tenant_context.workspace_id == tenant.workspace_id
             && self.tenant_context.deployment_id == tenant.deployment_id

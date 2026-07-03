@@ -1424,6 +1424,45 @@ mod fintech_policy_tests {
     }
 
     #[tokio::test]
+    async fn phase_tool_policy_denies_empty_phase_allowlist() {
+        let state = phase_tool_policy_state().await;
+        let hook = ServerToolPolicyHook::new(state.clone());
+
+        let decision = hook
+            .evaluate_tool(ToolPolicyContext {
+                session_id: "session-phase-tools".to_string(),
+                message_id: "message-phase-tools".to_string(),
+                tenant_context: Some(TenantContext::explicit(
+                    "acme-org",
+                    "acme-workspace",
+                    Some("phase-actor".to_string()),
+                )),
+                verified_tenant_context: None,
+                tool: "write".to_string(),
+                args: json!({ "path": "out.md" }),
+            })
+            .await
+            .expect("phase tool policy decision");
+
+        assert!(!decision.allowed);
+        assert!(decision
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("has no allowed tools"));
+        let decision_id = decision
+            .policy_decision_id
+            .as_deref()
+            .expect("policy decision id");
+        let stored = state
+            .get_policy_decision(decision_id)
+            .await
+            .expect("stored policy decision");
+        assert_eq!(stored.reason_code, "phase_tool_authority_empty_allowlist");
+        assert_eq!(stored.decision, PolicyDecisionEffect::Deny);
+    }
+
+    #[tokio::test]
     async fn phase_tool_policy_allows_tool_in_phase_allowlist() {
         let state = phase_tool_policy_state().await;
         state

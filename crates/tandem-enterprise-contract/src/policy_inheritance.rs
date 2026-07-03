@@ -211,6 +211,7 @@ impl EnterprisePolicyRule {
             normalize_tenant_context_scope_ids(tenant_context);
         }
         self.org_unit_id = normalize_optional_scope_id(self.org_unit_id);
+        self.resource = self.resource.map(ResourceRef::normalized);
         self.workflow_id = normalize_optional_scope_id(self.workflow_id);
         self.workflow_phase = normalize_optional_scope_id(self.workflow_phase);
         self
@@ -701,6 +702,56 @@ mod tests {
                 .as_ref()
                 .map(|source| &source.rule_id),
             Some(&"workspace-finance".to_string())
+        );
+    }
+
+    #[test]
+    fn resource_deny_matches_scope_ids_case_insensitively() {
+        let input = EnterprisePolicyInput::new(tenant())
+            .with_resource(ledger_resource())
+            .with_permission(AccessPermission::Read)
+            .with_data_class(DataClass::FinancialRecord);
+        let resolver = EnterprisePolicyResolver::new(vec![
+            EnterprisePolicyRule::new(
+                "workspace-finance-allow",
+                "finance-policy",
+                EnterprisePolicyScopeLevel::Workspace,
+                EnterprisePolicyEffect::Allow,
+            )
+            .with_tenant_context(tenant())
+            .with_permissions(vec![AccessPermission::Read])
+            .with_data_classes(vec![DataClass::FinancialRecord])
+            .with_reason("workspace_allow", "workspace default allows finance reads"),
+            EnterprisePolicyRule::new(
+                "ledger-resource-deny",
+                "finance-policy",
+                EnterprisePolicyScopeLevel::Resource,
+                EnterprisePolicyEffect::Deny,
+            )
+            .with_resource(ResourceRef::new(
+                " ACME ",
+                " Finance ",
+                ResourceKind::DataRoom,
+                " Ledger ",
+            ))
+            .with_permissions(vec![AccessPermission::Read])
+            .with_data_classes(vec![DataClass::FinancialRecord])
+            .with_reason(
+                "ledger_deny",
+                "ledger deny must match canonical resource id",
+            ),
+        ]);
+
+        let snapshot = resolver.resolve(&input, 1_000);
+
+        assert_eq!(snapshot.effect, EnterprisePolicyEffect::Deny);
+        assert_eq!(snapshot.reason_code, "ledger_deny");
+        assert_eq!(
+            snapshot
+                .decision_source
+                .as_ref()
+                .map(|source| &source.rule_id),
+            Some(&"ledger-resource-deny".to_string())
         );
     }
 

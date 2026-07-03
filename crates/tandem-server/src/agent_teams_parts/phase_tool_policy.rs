@@ -14,15 +14,11 @@ async fn evaluate_automation_phase_tool_policy(
         .engine_loop
         .get_session_allowed_tools(&ctx.session_id)
         .await;
-    if allowed_tools.is_empty() {
-        return None;
-    }
-
     let allowed_patterns = allowed_tools
         .iter()
         .map(|name| normalize_tool_name(name))
         .collect::<Vec<_>>();
-    if any_policy_matches(&allowed_patterns, tool) {
+    if !allowed_patterns.is_empty() && any_policy_matches(&allowed_patterns, tool) {
         return None;
     }
 
@@ -31,10 +27,18 @@ async fn evaluate_automation_phase_tool_policy(
         .as_deref()
         .and_then(|id| phase_policy_node_label(&run, id))
         .unwrap_or_else(|| "unknown".to_string());
-    let reason = format!(
-        "tool `{tool}` is not allowed during workflow phase `{phase}` for automation run `{}`",
-        run.run_id
-    );
+    let empty_allowlist = allowed_patterns.is_empty();
+    let reason = if empty_allowlist {
+        format!(
+            "tool `{tool}` is denied because workflow phase `{phase}` for automation run `{}` has no allowed tools",
+            run.run_id
+        )
+    } else {
+        format!(
+            "tool `{tool}` is not allowed during workflow phase `{phase}` for automation run `{}`",
+            run.run_id
+        )
+    };
     let decision_id = record_automation_phase_tool_policy_decision(
         state,
         &run,
@@ -43,6 +47,7 @@ async fn evaluate_automation_phase_tool_policy(
         &phase,
         tool,
         &allowed_patterns,
+        empty_allowlist,
         &reason,
     )
     .await;
@@ -153,6 +158,7 @@ async fn record_automation_phase_tool_policy_decision(
     phase: &str,
     tool: &str,
     allowed_tools: &[String],
+    empty_allowlist: bool,
     reason: &str,
 ) -> Option<String> {
     let decision_id = format!("policy_decision_{}", Uuid::new_v4().simple());
@@ -179,7 +185,11 @@ async fn record_automation_phase_tool_policy_decision(
         data_classes: Vec::new(),
         risk_tier: Some("workflow_phase_tool_scope".to_string()),
         decision: PolicyDecisionEffect::Deny,
-        reason_code: "phase_tool_not_allowed".to_string(),
+        reason_code: if empty_allowlist {
+            "phase_tool_authority_empty_allowlist".to_string()
+        } else {
+            "phase_tool_not_allowed".to_string()
+        },
         reason: reason.to_string(),
         policy_id: Some("workflow_phase_tool_authority".to_string()),
         grant_id: None,

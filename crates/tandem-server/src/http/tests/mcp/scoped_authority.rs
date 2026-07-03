@@ -243,7 +243,7 @@ async fn mcp_bridge_derives_phase_authority_from_dispatch_context() {
 }
 
 #[tokio::test]
-async fn mcp_bridge_allows_unscoped_dispatch_context_authority() {
+async fn mcp_bridge_denies_empty_dispatch_context_authority() {
     let state = test_state().await;
     let (endpoint, server) = spawn_fake_notion_oauth_mcp_server().await;
     state
@@ -269,17 +269,17 @@ async fn mcp_bridge_allows_unscoped_dispatch_context_authority() {
     let verified = verified_mcp_execute_context(
         &tenant,
         tandem_types::PrincipalRef::human_user("alice").with_tenant_actor_id("alice"),
-        "assertion-dispatch-unscoped-phase-tool",
+        "assertion-dispatch-empty-phase-tool",
     );
     let context = tandem_tools::ToolDispatchContext::for_tenant("test", tenant.clone())
         .with_source(
             tandem_tools::ToolDispatchSource::new("engine_loop")
-                .session("session-unscoped")
-                .message("message-unscoped"),
+                .session("session-empty")
+                .message("message-empty"),
         )
         .with_verified_tenant_context(verified);
 
-    let result = state
+    let err = state
         .tool_dispatcher
         .dispatch(
             "mcp.notion.alice_search",
@@ -287,29 +287,17 @@ async fn mcp_bridge_allows_unscoped_dispatch_context_authority() {
             context,
         )
         .await
-        .expect("unscoped dispatcher authority should not deny MCP tool");
+        .expect_err("empty dispatcher authority must deny MCP tool");
+    assert!(err.to_string().contains("PhaseToolAuthority"));
+    assert!(err.to_string().contains("has no allowed tools"));
 
-    assert_eq!(
-        result
-            .metadata
-            .pointer("/phaseToolAuthorityPreflight/reasonCode")
-            .and_then(Value::as_str),
-        Some("phase_tool_unscoped_dispatch_context")
-    );
-    assert_eq!(
-        result
-            .metadata
-            .pointer("/phaseToolAuthorityPreflight/source")
-            .and_then(Value::as_str),
-        Some("tool_dispatch_context")
-    );
     let decisions = state.list_policy_decisions(&tenant, 50).await;
     let decision = decisions
         .iter()
-        .find(|decision| decision.reason_code == "phase_tool_unscoped_dispatch_context")
-        .expect("unscoped dispatch context allow decision");
-    assert_eq!(decision.decision, tandem_types::PolicyDecisionEffect::Allow);
-    assert_eq!(decision.session_id.as_deref(), Some("session-unscoped"));
+        .find(|decision| decision.reason_code == "phase_tool_authority_empty_allowlist")
+        .expect("empty dispatch context denial decision");
+    assert_eq!(decision.decision, tandem_types::PolicyDecisionEffect::Deny);
+    assert_eq!(decision.session_id.as_deref(), Some("session-empty"));
     drop(server);
 }
 
@@ -400,6 +388,32 @@ async fn mcp_phase_tool_authority_is_required_for_explicit_tenant_calls() {
         .expect("protected audit file");
     assert!(audit.contains("\"event_type\":\"mcp.phase_tool.denied\""));
     assert!(audit.contains("phase_tool_authority_missing"));
+}
+
+#[tokio::test]
+async fn mcp_phase_tool_authority_is_required_for_local_implicit_calls() {
+    let state = test_state().await;
+    let tenant = tandem_types::TenantContext::local_implicit();
+
+    let err = crate::http::mcp::call_mcp_tool_for_tenant_with_verified_context(
+        &state,
+        "notion",
+        "alice_search",
+        json!({ "query": "roadmap" }),
+        &tenant,
+        None,
+    )
+    .await
+    .expect_err("local implicit MCP calls must include trusted phase authority");
+
+    assert!(err.contains("ToolDenied { reason: PhaseToolAuthority }"));
+    assert!(err.contains("phase tool authority is missing"));
+    let decisions = state.list_policy_decisions(&tenant, 50).await;
+    let decision = decisions
+        .iter()
+        .find(|decision| decision.reason_code == "phase_tool_authority_missing")
+        .expect("missing phase authority decision");
+    assert_eq!(decision.decision, tandem_types::PolicyDecisionEffect::Deny);
 }
 
 #[tokio::test]

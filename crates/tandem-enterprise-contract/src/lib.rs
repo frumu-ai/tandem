@@ -331,34 +331,73 @@ impl ResourceRef {
         self
     }
 
+    pub fn normalized(mut self) -> Self {
+        if let Some(organization_id) = canonical_enterprise_scope_id(&self.organization_id) {
+            self.organization_id = organization_id;
+        }
+        if self.workspace_id != "*" {
+            if let Some(workspace_id) = canonical_enterprise_scope_id(&self.workspace_id) {
+                self.workspace_id = workspace_id;
+            }
+        }
+        self.project_id = self
+            .project_id
+            .take()
+            .and_then(|project_id| canonical_enterprise_scope_id(&project_id));
+        if let Some(resource_id) = canonical_enterprise_scope_id(&self.resource_id) {
+            self.resource_id = resource_id;
+        }
+        for segment in self.parent_path.iter_mut() {
+            if let Some(id) = canonical_enterprise_scope_id(&segment.id) {
+                segment.id = id;
+            }
+        }
+        self
+    }
+
     pub fn applies_to(&self, target: &ResourceRef) -> bool {
-        if self.organization_id != target.organization_id {
+        if !enterprise_scope_ids_match(&self.organization_id, &target.organization_id) {
             return false;
         }
-        if self.workspace_id != "*" && self.workspace_id != target.workspace_id {
+        if self.workspace_id != "*"
+            && !enterprise_scope_ids_match(&self.workspace_id, &target.workspace_id)
+        {
             return false;
         }
 
         match self.resource_kind {
-            ResourceKind::Organization => self.resource_id == target.organization_id,
+            ResourceKind::Organization => {
+                enterprise_scope_ids_match(&self.resource_id, &target.organization_id)
+            }
             ResourceKind::Workspace | ResourceKind::Department => {
-                self.resource_id == target.workspace_id
+                enterprise_scope_ids_match(&self.resource_id, &target.workspace_id)
                     || self.resource_id == "*"
-                    || self.resource_id == target.resource_id
+                    || enterprise_scope_ids_match(&self.resource_id, &target.resource_id)
             }
             ResourceKind::Project => {
-                target.project_id.as_deref() == Some(self.resource_id.as_str())
-                    || target.resource_id == self.resource_id
+                target.project_id.as_deref().is_some_and(|project_id| {
+                    enterprise_scope_ids_match(&self.resource_id, project_id)
+                }) || enterprise_scope_ids_match(&self.resource_id, &target.resource_id)
             }
             _ => self.matches_resource_or_path(target),
         }
     }
 
     fn matches_resource_or_path(&self, target: &ResourceRef) -> bool {
-        if self.project_id.is_some() && self.project_id != target.project_id {
-            return false;
+        if let Some(project_id) = self.project_id.as_deref() {
+            if !target
+                .project_id
+                .as_deref()
+                .is_some_and(|target_project_id| {
+                    enterprise_scope_ids_match(project_id, target_project_id)
+                })
+            {
+                return false;
+            }
         }
-        if self.resource_kind == target.resource_kind && self.resource_id == target.resource_id {
+        if self.resource_kind == target.resource_kind
+            && enterprise_scope_ids_match(&self.resource_id, &target.resource_id)
+        {
             return self.path_prefix_applies_to(target);
         }
         self.path_prefix

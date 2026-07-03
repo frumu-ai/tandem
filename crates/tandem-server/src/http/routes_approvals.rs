@@ -6,10 +6,11 @@
 //! `POST /coder/runs/{run_id}/approve`).
 
 use axum::extract::{Query, State};
+use axum::Extension;
 use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tandem_types::{ApprovalListFilter, ApprovalSourceKind};
+use tandem_types::{ApprovalListFilter, ApprovalSourceKind, TenantContext};
 
 use super::approvals::list_pending_approvals;
 use crate::AppState;
@@ -28,16 +29,31 @@ pub(super) struct PendingApprovalsQuery {
 
 pub(super) async fn approvals_pending_list(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Query(query): Query<PendingApprovalsQuery>,
 ) -> Json<Value> {
     let source = query.source.as_deref().and_then(parse_source);
+    let query_scope_matches = query
+        .org_id
+        .as_deref()
+        .map(|org_id| org_id == tenant_context.org_id)
+        .unwrap_or(true)
+        && query
+            .workspace_id
+            .as_deref()
+            .map(|workspace_id| workspace_id == tenant_context.workspace_id)
+            .unwrap_or(true);
     let filter = ApprovalListFilter {
-        org_id: query.org_id,
-        workspace_id: query.workspace_id,
+        org_id: Some(tenant_context.org_id),
+        workspace_id: Some(tenant_context.workspace_id),
         source,
         limit: query.limit,
     };
-    let approvals = list_pending_approvals(&state, &filter).await;
+    let approvals = if query_scope_matches {
+        list_pending_approvals(&state, &filter).await
+    } else {
+        Vec::new()
+    };
     Json(json!({
         "approvals": approvals,
         "count": approvals.len(),
