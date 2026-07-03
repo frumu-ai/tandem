@@ -109,6 +109,7 @@ async fn process_stateful_wait_scheduler_tick(state: &AppState) {
 async fn process_automation_webhook_inbox_tick(state: &AppState) {
     let report = state
         .process_automation_webhook_inbox_once(AUTOMATION_WEBHOOK_INBOX_BATCH_LIMIT)
+        .boxed()
         .await;
     if report.processed > 0 || report.failed > 0 {
         tracing::info!(

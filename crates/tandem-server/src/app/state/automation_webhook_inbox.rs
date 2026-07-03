@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tandem_types::TenantContext;
@@ -460,6 +461,46 @@ impl AppState {
         Ok(Some(updated))
     }
 
+    pub(crate) async fn mark_automation_webhook_raw_event_dead_letter(
+        &self,
+        tenant_context: &TenantContext,
+        event_id: &str,
+        reason_code: impl Into<String>,
+        updated_at_ms: u64,
+    ) -> anyhow::Result<Option<AutomationWebhookRawEventRecord>> {
+        let _guard = self.automation_webhook_persistence.lock().await;
+        let events_path = automation_webhook_events_path(&self.automation_webhook_deliveries_path);
+        let mut events = load_automation_webhook_events(&events_path).await?;
+        let Some(record) = events
+            .get_mut(event_id)
+            .filter(|record| record.tenant_matches(tenant_context))
+        else {
+            return Ok(None);
+        };
+        let reason_code = reason_code.into();
+        record.status = AutomationWebhookDeliveryStatus::Failed;
+        record.rejection_reason_code = Some(reason_code.clone());
+        record.correlation = Some(AutomationWebhookCorrelationRecord {
+            outcome: AutomationWebhookCorrelationOutcome::DeadLetter,
+            event_id: Some(record.event_id.clone()),
+            delivery_id: record.delivery_id.clone(),
+            trigger_id: Some(record.trigger_id.clone()),
+            automation_id: Some(record.automation_id.clone()),
+            queued_run_id: record.queued_run_id.clone(),
+            woken_run_id: record.woken_run_id.clone(),
+            woken_wait_id: record.woken_wait_id.clone(),
+            duplicate_of_delivery_id: record.duplicate_of_delivery_id.clone(),
+            duplicate_of_run_id: record.duplicate_of_run_id.clone(),
+            idempotency_key: record.idempotency_key.clone(),
+            idempotency_record_id: record.idempotency_record_id.clone(),
+            reason_code: Some(reason_code),
+        });
+        record.updated_at_ms = updated_at_ms;
+        let updated = record.clone();
+        persist_automation_webhook_events(&events_path, events).await?;
+        Ok(Some(updated))
+    }
+
     pub(crate) async fn list_automation_webhook_raw_events(
         &self,
         tenant_context: &TenantContext,
@@ -583,7 +624,14 @@ impl AppState {
             .get_automation_webhook_trigger(&event.tenant_context, &event.trigger_id)
             .await
         else {
-            anyhow::bail!("automation webhook trigger {} is missing", event.trigger_id);
+            self.mark_automation_webhook_raw_event_dead_letter(
+                &event.tenant_context,
+                &event.event_id,
+                "webhook_trigger_missing",
+                crate::now_ms(),
+            )
+            .await?;
+            return Ok(());
         };
         let payload = self
             .read_automation_webhook_raw_event_payload(&event.tenant_context, &event.event_id)
@@ -623,14 +671,14 @@ impl AppState {
             received_at_ms: event.received_at_ms,
             verification: automation_webhook_verification_from_raw_event(&event, &trigger),
         };
-        let result = Box::pin(
+        let queue: BoxFuture<'_, anyhow::Result<AutomationWebhookQueueResult>> = Box::pin(
             self.queue_automation_v2_run_from_webhook_delivery_with_feedback_loop(
                 verified,
                 sanitize_automation_webhook_preview(&payload),
                 automation_webhook_feedback_candidate_from_raw_event(&event),
             ),
-        )
-        .await?;
+        );
+        let result = queue.await?;
         let delivery = automation_webhook_delivery_from_queue_result(result);
         self.update_automation_webhook_raw_event_outcome(
             &event.tenant_context,

@@ -1294,6 +1294,70 @@ async fn webhook_retention_prunes_expired_raw_events_payloads_and_deliveries() {
 }
 
 #[tokio::test]
+async fn webhook_inbox_dead_letters_raw_event_when_trigger_is_deleted() {
+    let state = ready_test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a");
+    insert_test_automation(&state, "automation-deleted-trigger", &tenant_a).await;
+    let created = state
+        .create_automation_webhook_trigger(create_input(
+            "automation-deleted-trigger",
+            tenant_a.clone(),
+        ))
+        .await
+        .expect("create webhook trigger");
+
+    let body = br#"{"deleted_trigger":true}"#;
+    let raw_event = state
+        .record_automation_webhook_raw_event(AutomationWebhookRawEventCreateInput {
+            trigger: created.trigger.clone(),
+            provider_event_id: Some("evt-deleted-trigger".to_string()),
+            body_digest: automation_webhook_body_digest(body),
+            verification: None,
+            feedback_loop_candidate: None,
+            headers_digest: "headers-digest".to_string(),
+            headers_redacted: json!({"x-tandem-webhook-event-id": "evt-deleted-trigger"}),
+            content_type: Some("application/json".to_string()),
+            payload: body.to_vec(),
+            received_at_ms: now_ms(),
+        })
+        .await
+        .expect("record raw event");
+    assert!(state
+        .delete_automation_webhook_trigger(&tenant_a, &created.trigger.trigger_id)
+        .await
+        .expect("delete trigger"));
+
+    let report = state.process_automation_webhook_inbox_once(10).await;
+    assert_eq!(report.checked, 1);
+    assert_eq!(report.processed, 1);
+    assert_eq!(report.failed, 0);
+
+    let updated = state
+        .get_automation_webhook_raw_event(&tenant_a, &raw_event.event_id)
+        .await
+        .expect("get raw event")
+        .expect("raw event remains inspectable");
+    assert_eq!(updated.status, AutomationWebhookDeliveryStatus::Failed);
+    assert_eq!(
+        updated.rejection_reason_code.as_deref(),
+        Some("webhook_trigger_missing")
+    );
+    assert_eq!(
+        updated
+            .correlation
+            .as_ref()
+            .map(|correlation| &correlation.outcome),
+        Some(&AutomationWebhookCorrelationOutcome::DeadLetter)
+    );
+    assert!(updated.delivery_id.is_none());
+
+    let second_report = state.process_automation_webhook_inbox_once(10).await;
+    assert_eq!(second_report.checked, 0);
+    assert_eq!(second_report.processed, 0);
+    assert_eq!(second_report.failed, 0);
+}
+
+#[tokio::test]
 async fn webhook_retry_after_orphaned_idempotency_reservation_creates_run() {
     let state = ready_test_state().await;
     let tenant_a = tenant("org-a", "workspace-a");
