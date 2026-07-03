@@ -72,6 +72,7 @@ pub mod goal_capability_learning;
 pub mod http;
 pub mod incident_monitor;
 pub mod incident_monitor_github;
+pub mod incident_monitor_governance_metrics;
 pub mod incident_monitor_linear;
 pub mod incident_monitor_local;
 pub mod incident_monitor_mcp;
@@ -124,6 +125,7 @@ pub use failures::{
     FailureContext,
 };
 pub use http::*;
+pub use incident_monitor::governance_metrics::IncidentMonitorGovernanceThresholds;
 pub use incident_monitor::scenarios::{
     default_scenario_pack, IncidentMonitorScenario, IncidentMonitorScenarioExpectation,
     IncidentMonitorScenarioInput, IncidentMonitorScenarioPack,

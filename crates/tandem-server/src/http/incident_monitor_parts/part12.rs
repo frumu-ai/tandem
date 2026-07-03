@@ -144,6 +144,22 @@ async fn incident_monitor_assessment_report_payload(
         &tenant_context,
         &crate::default_scenario_pack(),
     );
+    // TAN-488: compute governance maturity metrics + behavioral drift over the
+    // report window (redacted, dry-run) and fold them in. from_ms/to_ms are
+    // absolute timestamps, so the window is their difference.
+    let metrics_to_ms = input.to_ms.unwrap_or(generated_at_ms);
+    let metrics_window_ms = input
+        .from_ms
+        .map(|from_ms| metrics_to_ms.saturating_sub(from_ms));
+    let governance_maturity =
+        crate::incident_monitor_governance_metrics::compute_incident_monitor_governance_metrics(
+            state,
+            &tenant_context,
+            metrics_to_ms,
+            metrics_window_ms,
+            &crate::IncidentMonitorGovernanceThresholds::default(),
+        )
+        .await;
     let incidents = state
         .list_incident_monitor_incidents(200)
         .await
@@ -237,6 +253,8 @@ async fn incident_monitor_assessment_report_payload(
             "probe_results": probe_results.len(),
             "adversarial_scenarios": scenario_pack.pointer("/counts/total").and_then(Value::as_u64).unwrap_or(0),
             "failed_adversarial_scenarios": scenario_pack.pointer("/counts/failed").and_then(Value::as_u64).unwrap_or(0),
+            "governance_metric_breaches": governance_maturity.pointer("/counts/breached_metrics").and_then(Value::as_u64).unwrap_or(0),
+            "behavioral_drift_flags": governance_maturity.pointer("/counts/drift_flags").and_then(Value::as_u64).unwrap_or(0),
             "incidents": incidents.len(),
             "destination_receipts": posts.len(),
             "protected_audit_events": audit_export_rows.len(),
@@ -298,6 +316,7 @@ async fn incident_monitor_assessment_report_payload(
                 "results": probe_results,
             },
             "adversarial_scenario_packs": scenario_pack,
+            "governance_maturity_metrics": governance_maturity,
             "incidents_and_evidence_refs": {
                 "counts": {
                     "incidents": incident_summaries.len(),
