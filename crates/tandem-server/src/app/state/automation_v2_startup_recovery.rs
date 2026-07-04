@@ -250,9 +250,15 @@ impl AppState {
 
         let mut recovered = 0usize;
         for run in paused_runs {
+            // Match by run id AND tenant visibility: the waits store is shared
+            // across tenants/deployments and the same run_id can appear in more
+            // than one, so a foreign tenant's wait must never influence this
+            // run's recovery (mirrors the rest of the stateful wait API).
             let run_waits = waits
                 .iter()
-                .filter(|wait| wait.run_id == run.run_id)
+                .filter(|wait| {
+                    wait.run_id == run.run_id && wait.visible_to_tenant(&run.tenant_context)
+                })
                 .collect::<Vec<&StatefulWaitRecord>>();
             if run_waits.is_empty() {
                 continue;

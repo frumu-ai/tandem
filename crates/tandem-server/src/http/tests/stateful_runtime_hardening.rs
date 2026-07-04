@@ -1493,3 +1493,82 @@ async fn run_paused_after_its_wake_is_not_requeued() {
         .expect("run present");
     assert_eq!(run.status, AutomationRunStatus::Paused);
 }
+
+#[tokio::test]
+async fn foreign_tenant_woken_wait_does_not_requeue_run() {
+    // The waits store is shared and a run_id can collide across tenants. A
+    // `Woken` wait belonging to another tenant must not requeue this tenant's
+    // paused run (cross-tenant false positive).
+    let state = test_state().await;
+    let tenant_a = tenant("org-wake-a", "workspace-a", "operator-a");
+    let tenant_b = tenant("org-wake-b", "workspace-b", "operator-b");
+    let run_id = "run-shared-id";
+    let paths = StatefulRuntimeStoragePaths::from_runtime_events_path(&state.runtime_events_path);
+
+    state.automation_v2_runs.write().await.insert(
+        run_id.to_string(),
+        paused_run(run_id, tenant_a.clone(), 2_000),
+    );
+    let foreign_scope = StatefulRuntimeScope::from_tenant_context(tenant_b);
+    upsert_stateful_wait(
+        &paths.waits_path,
+        woken_wait("wait-foreign", run_id, foreign_scope, 2_500),
+    )
+    .await
+    .expect("seed foreign woken wait");
+
+    let recovered = state.recover_in_flight_runs().await;
+    assert_eq!(recovered, 0);
+    let run = state
+        .get_automation_v2_run(run_id)
+        .await
+        .expect("run present");
+    assert_eq!(run.status, AutomationRunStatus::Paused);
+}
+
+#[tokio::test]
+async fn foreign_active_wait_does_not_block_own_lost_wake_recovery() {
+    // A foreign tenant's active (`Waiting`) wait sharing this run_id must not
+    // make this tenant's genuinely-lost wake unrecoverable (false negative).
+    let state = test_state().await;
+    let tenant_a = tenant("org-wake-a", "workspace-a", "operator-a");
+    let tenant_b = tenant("org-wake-b", "workspace-b", "operator-b");
+    let run_id = "run-shared-id-2";
+    let paths = StatefulRuntimeStoragePaths::from_runtime_events_path(&state.runtime_events_path);
+
+    state.automation_v2_runs.write().await.insert(
+        run_id.to_string(),
+        paused_run(run_id, tenant_a.clone(), 2_000),
+    );
+    // Foreign active wait (tenant B) — must be ignored for tenant A's run.
+    upsert_stateful_wait(
+        &paths.waits_path,
+        wait_record(
+            "wait-foreign-active",
+            run_id,
+            StatefulRuntimeScope::from_tenant_context(tenant_b),
+        ),
+    )
+    .await
+    .expect("seed foreign active wait");
+    // This tenant's own lost wake.
+    upsert_stateful_wait(
+        &paths.waits_path,
+        woken_wait(
+            "wait-own",
+            run_id,
+            StatefulRuntimeScope::from_tenant_context(tenant_a),
+            2_500,
+        ),
+    )
+    .await
+    .expect("seed own woken wait");
+
+    let recovered = state.recover_in_flight_runs().await;
+    assert_eq!(recovered, 1);
+    let run = state
+        .get_automation_v2_run(run_id)
+        .await
+        .expect("run present");
+    assert_eq!(run.status, AutomationRunStatus::Queued);
+}
