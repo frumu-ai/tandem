@@ -1581,6 +1581,8 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
           }}
         >
           <p className="tcp-subtle text-xs">Manual issue intake for runtime findings.</p>
+
+          <div className="tcp-subtle text-xs font-semibold uppercase tracking-[0.2em]">Basics</div>
           <label className="grid gap-1">
             <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">Title</span>
             <input
@@ -1605,6 +1607,34 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
           </label>
           <div className="grid gap-3 md:grid-cols-2">
             <label className="grid gap-1">
+              <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">Source</span>
+              <input
+                className="tcp-input"
+                value={form.source}
+                onChange={(event) =>
+                  setForm((prev) => ({ ...prev, source: event.currentTarget.value }))
+                }
+                placeholder="manual, runtime, workflow"
+              />
+            </label>
+            <label className="grid gap-1">
+              <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">Labels</span>
+              <input
+                className="tcp-input"
+                value={form.labels}
+                onChange={(event) =>
+                  setForm((prev) => ({ ...prev, labels: event.currentTarget.value }))
+                }
+                placeholder="incident-monitor, regression"
+              />
+            </label>
+          </div>
+
+          <div className="tcp-subtle mt-2 text-xs font-semibold uppercase tracking-[0.2em]">
+            Classification
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="grid gap-1">
               <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">Severity</span>
               <select
                 className="tcp-input"
@@ -1618,28 +1648,6 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 <option value="info">Info</option>
                 <option value="critical">Critical</option>
               </select>
-            </label>
-            <label className="grid gap-1">
-              <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">Source</span>
-              <input
-                className="tcp-input"
-                value={form.source}
-                onChange={(event) =>
-                  setForm((prev) => ({ ...prev, source: event.currentTarget.value }))
-                }
-                placeholder="manual, runtime, workflow"
-              />
-            </label>
-            <label className="grid gap-1 md:col-span-2">
-              <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">Labels</span>
-              <input
-                className="tcp-input"
-                value={form.labels}
-                onChange={(event) =>
-                  setForm((prev) => ({ ...prev, labels: event.currentTarget.value }))
-                }
-                placeholder="incident-monitor, regression"
-              />
             </label>
             <label className="grid gap-1">
               <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">Confidence</span>
@@ -1669,7 +1677,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 <option value="high">High</option>
               </select>
             </label>
-            <label className="grid gap-1 md:col-span-2">
+            <label className="grid gap-1">
               <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">
                 Expected destination
               </span>
@@ -1687,88 +1695,98 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 <option value="product_opportunity">Product opportunity</option>
               </select>
             </label>
-            <label className="grid gap-1 md:col-span-2">
-              <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">Evidence refs</span>
-              <textarea
-                className="tcp-input min-h-20 resize-y"
-                value={form.evidenceRefs}
-                onChange={(event) =>
-                  setForm((prev) => ({ ...prev, evidenceRefs: event.currentTarget.value }))
-                }
-                placeholder="One artifact, log, file, URL, or context ref per line"
-              />
-            </label>
-            <label className="grid gap-1">
-              <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">Related run ID</span>
-              <input
-                className="tcp-input"
-                value={form.relatedRunId}
-                onChange={(event) =>
-                  setForm((prev) => ({ ...prev, relatedRunId: event.currentTarget.value }))
-                }
-              />
-            </label>
-            <label className="grid gap-1">
-              <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">
-                Related workflow ID
-              </span>
-              <input
-                className="tcp-input"
-                value={form.relatedWorkflowId}
-                onChange={(event) =>
-                  setForm((prev) => ({ ...prev, relatedWorkflowId: event.currentTarget.value }))
-                }
-              />
-            </label>
-            <label className="grid gap-1 md:col-span-2">
-              <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">
-                Related file / path
-              </span>
-              <input
-                className="tcp-input"
-                value={form.relatedFile}
-                onChange={(event) =>
-                  setForm((prev) => ({ ...prev, relatedFile: event.currentTarget.value }))
-                }
-              />
-            </label>
-            <label className="grid gap-1 md:col-span-2">
-              <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">
-                Reproduction notes
-              </span>
-              <textarea
-                className="tcp-input min-h-20 resize-y"
-                value={form.reproductionNotes}
-                onChange={(event) =>
-                  setForm((prev) => ({ ...prev, reproductionNotes: event.currentTarget.value }))
-                }
-              />
-            </label>
-            <label className="grid gap-1">
-              <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">
-                Expected behavior
-              </span>
-              <textarea
-                className="tcp-input min-h-20 resize-y"
-                value={form.expectedBehavior}
-                onChange={(event) =>
-                  setForm((prev) => ({ ...prev, expectedBehavior: event.currentTarget.value }))
-                }
-              />
-            </label>
-            <label className="grid gap-1">
-              <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">
-                Actual behavior
-              </span>
-              <textarea
-                className="tcp-input min-h-20 resize-y"
-                value={form.actualBehavior}
-                onChange={(event) =>
-                  setForm((prev) => ({ ...prev, actualBehavior: event.currentTarget.value }))
-                }
-              />
-            </label>
           </div>
+
+          <details className="mt-2 grid gap-3">
+            <summary className="tcp-subtle cursor-pointer text-xs font-semibold uppercase tracking-[0.2em]">
+              Evidence &amp; reproduction (optional)
+            </summary>
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="grid gap-1 md:col-span-2">
+                <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">Evidence refs</span>
+                <textarea
+                  className="tcp-input min-h-20 resize-y"
+                  value={form.evidenceRefs}
+                  onChange={(event) =>
+                    setForm((prev) => ({ ...prev, evidenceRefs: event.currentTarget.value }))
+                  }
+                  placeholder="One artifact, log, file, URL, or context ref per line"
+                />
+              </label>
+              <label className="grid gap-1">
+                <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">
+                  Related run ID
+                </span>
+                <input
+                  className="tcp-input"
+                  value={form.relatedRunId}
+                  onChange={(event) =>
+                    setForm((prev) => ({ ...prev, relatedRunId: event.currentTarget.value }))
+                  }
+                />
+              </label>
+              <label className="grid gap-1">
+                <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">
+                  Related workflow ID
+                </span>
+                <input
+                  className="tcp-input"
+                  value={form.relatedWorkflowId}
+                  onChange={(event) =>
+                    setForm((prev) => ({ ...prev, relatedWorkflowId: event.currentTarget.value }))
+                  }
+                />
+              </label>
+              <label className="grid gap-1 md:col-span-2">
+                <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">
+                  Related file / path
+                </span>
+                <input
+                  className="tcp-input"
+                  value={form.relatedFile}
+                  onChange={(event) =>
+                    setForm((prev) => ({ ...prev, relatedFile: event.currentTarget.value }))
+                  }
+                />
+              </label>
+              <label className="grid gap-1 md:col-span-2">
+                <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">
+                  Reproduction notes
+                </span>
+                <textarea
+                  className="tcp-input min-h-20 resize-y"
+                  value={form.reproductionNotes}
+                  onChange={(event) =>
+                    setForm((prev) => ({ ...prev, reproductionNotes: event.currentTarget.value }))
+                  }
+                />
+              </label>
+              <label className="grid gap-1">
+                <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">
+                  Expected behavior
+                </span>
+                <textarea
+                  className="tcp-input min-h-20 resize-y"
+                  value={form.expectedBehavior}
+                  onChange={(event) =>
+                    setForm((prev) => ({ ...prev, expectedBehavior: event.currentTarget.value }))
+                  }
+                />
+              </label>
+              <label className="grid gap-1">
+                <span className="tcp-subtle text-xs uppercase tracking-[0.18em]">
+                  Actual behavior
+                </span>
+                <textarea
+                  className="tcp-input min-h-20 resize-y"
+                  value={form.actualBehavior}
+                  onChange={(event) =>
+                    setForm((prev) => ({ ...prev, actualBehavior: event.currentTarget.value }))
+                  }
+                />
+              </label>
+            </div>
+          </details>
           <div className="flex flex-wrap justify-end gap-2">
             <button
               type="button"

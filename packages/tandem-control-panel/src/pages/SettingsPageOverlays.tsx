@@ -1,4 +1,5 @@
 import { AnimatePresence, motion } from "motion/react";
+import { useState } from "react";
 import { Badge, DetailDrawer, Toolbar } from "../ui/index.tsx";
 import { IncidentMonitorExternalProjectsPanel } from "../components/IncidentMonitorExternalProjectsPanel";
 import { EmptyState } from "./ui";
@@ -78,6 +79,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
     setMcpTransport,
     toast,
   } = controller;
+  const [hostedPathHintOpen, setHostedPathHintOpen] = useState(false);
   const safeFilteredIncidentMonitorWorkspaceDirectories = Array.isArray(
     filteredIncidentMonitorWorkspaceDirectories
   )
@@ -209,15 +211,28 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
               <p className="tcp-confirm-message">
                 Current: {incidentMonitorCurrentBrowseDir || "n/a"}
               </p>
-              <div className="mb-3 rounded-xl border border-white/10 bg-black/20 p-3 text-xs">
-                <div className="font-semibold text-slate-100">Where should I go?</div>
-                <div className="tcp-subtle mt-1">
-                  Hosted installs share Coder repositories at <code>{HOSTED_CODER_REPO_ROOT}</code>.
-                  Choose the repo folder, for example{" "}
-                  <code>{incidentMonitorSuggestedWorkspaceRoot}</code>. The{" "}
-                  <code>{HOSTED_TANDEM_DATA_ROOT}</code> folder is runtime state, not the source
-                  checkout.
+              <div className="mb-3 text-xs tcp-subtle">
+                <div className="flex items-center gap-1.5">
+                  <span>
+                    Choose the repo folder, e.g. <code>{incidentMonitorSuggestedWorkspaceRoot}</code>.
+                  </span>
+                  <button
+                    type="button"
+                    className="inline-flex items-center tcp-subtle hover:text-slate-100"
+                    aria-expanded={hostedPathHintOpen}
+                    aria-label={hostedPathHintOpen ? "Hide directory guidance" : "Show directory guidance"}
+                    onClick={() => setHostedPathHintOpen((open) => !open)}
+                  >
+                    <i data-lucide="info" className="h-3.5 w-3.5"></i>
+                  </button>
                 </div>
+                {hostedPathHintOpen ? (
+                  <div className="mt-1">
+                    Hosted installs share Coder repositories at <code>{HOSTED_CODER_REPO_ROOT}</code>.
+                    The <code>{HOSTED_TANDEM_DATA_ROOT}</code> folder is runtime state, not the source
+                    checkout.
+                  </div>
+                ) : null}
               </div>
               <div className="mb-2 flex flex-wrap gap-2">
                 <button
