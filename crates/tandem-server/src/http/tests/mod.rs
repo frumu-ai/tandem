@@ -16,6 +16,7 @@ pub(super) mod context_run_ledger;
 pub(super) mod context_run_mutation_checkpoints;
 pub(super) mod context_runs;
 pub(super) mod global;
+pub(super) mod global_tool_execute;
 pub(super) mod governance;
 pub(super) mod governance_adversarial;
 pub(super) mod governance_policy_decisions;
