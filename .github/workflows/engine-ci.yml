@@ -247,6 +247,12 @@ jobs:
       # panic locations in backtraces at a fraction of the size & link memory.
       CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
       CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
+      # Unoptimized debug builds produce very large nested futures for the
+      # deepest coder/task-runtime handler chains; the default 2 MiB test
+      # thread stack overflows on them (e.g.
+      # coder_issue_triage_execute_next_drives_task_runtime_to_completion).
+      # 16 MiB keeps those tests running instead of aborting with SIGABRT.
+      RUST_MIN_STACK: "16777216"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
