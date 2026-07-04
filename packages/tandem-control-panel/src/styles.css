@@ -3,38 +3,41 @@
 @tailwind utilities;
 
 @layer base {
+  /* Seed defaults from the default theme (electric_blue, see DEFAULT_THEME_ID in
+     tandem-theme-contract) so the first paint matches the theme JS applies on
+     mount. Previously these were charcoal/amber and flashed to blue every load. */
   :root {
     color-scheme: dark;
-    --color-background: #121212;
-    --color-surface: #141414;
-    --color-surface-elevated: #1a1a1a;
-    --color-border: rgba(245, 245, 245, 0.1);
-    --color-border-subtle: rgba(245, 245, 245, 0.06);
-    --color-primary: #f59e0b;
-    --color-primary-hover: #d97706;
-    --color-primary-muted: #b45309;
-    --color-secondary: #ef4444;
-    --color-secondary-hover: #dc2626;
+    --color-background: #0a0a0f;
+    --color-surface: #12121a;
+    --color-surface-elevated: #1a1a24;
+    --color-border: #2a2a3a;
+    --color-border-subtle: #1f1f2e;
+    --color-primary: #3b82f6;
+    --color-primary-hover: #2563eb;
+    --color-primary-muted: #1d4ed8;
+    --color-secondary: #8b5cf6;
+    --color-secondary-hover: #7c3aed;
     --color-success: #10b981;
     --color-warning: #f59e0b;
     --color-error: #ef4444;
-    --color-text: #f5f5f5;
-    --color-text-muted: rgba(245, 245, 245, 0.7);
-    --color-text-subtle: rgba(245, 245, 245, 0.5);
-    --color-glass: rgba(255, 255, 255, 0.03);
-    --color-glass-border: rgba(255, 255, 255, 0.08);
-    --font-sans: "Manrope", "Geist Sans", "Inter", system-ui, -apple-system, sans-serif;
-    --font-display: "Rubik", "Geist Sans", "Inter", system-ui, -apple-system, sans-serif;
+    --color-text: #f8fafc;
+    --color-text-muted: #94a3b8;
+    --color-text-subtle: #64748b;
+    --color-glass: rgba(18, 18, 26, 0.8);
+    --color-glass-border: rgba(255, 255, 255, 0.1);
+    --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+    --font-display: "Rubik", "Inter", system-ui, -apple-system, sans-serif;
     --font-mono:
-      "JetBrains Mono", "Geist Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+      "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
     --radius: 0px;
     --border-width: 1px;
     --border-width-strong: 2px;
     --shadow-offset: 2px 2px 0 rgba(0, 0, 0, 0.32);
     --shadow-offset-lg: 4px 4px 0 rgba(0, 0, 0, 0.32);
     --clip-primary-cta: polygon(10% 0, 100% 0, 100% 100%, 0 100%, 0 25%);
-    --tcp-glow-a: rgba(245, 158, 11, 0.16);
-    --tcp-glow-b: rgba(239, 68, 68, 0.12);
+    --tcp-glow-a: rgba(59, 130, 246, 0.16);
+    --tcp-glow-b: rgba(139, 92, 246, 0.12);
   }
 
   body {
@@ -703,6 +706,23 @@
     background: color-mix(in srgb, #991b1b 78%, var(--color-surface-elevated) 22%);
   }
 
+  /* Lower-emphasis button: transparent until hovered. Used for dismiss/secondary
+     actions (e.g. chat clarifier controls) that were previously falling back to
+     the default .tcp-btn because this class was never defined. */
+  .tcp-btn-ghost {
+    @apply tcp-btn;
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+    color: var(--color-text-muted);
+  }
+
+  .tcp-btn-ghost:hover {
+    border-color: color-mix(in srgb, var(--color-border-subtle) 90%, transparent);
+    background: color-mix(in srgb, var(--color-surface-elevated) 90%, var(--color-primary) 10%);
+    color: var(--color-text);
+  }
+
   .tcp-badge {
     @apply inline-flex items-center gap-1 rounded-none border px-2.5 py-0.5 text-xs font-medium;
   }
@@ -1162,14 +1182,6 @@
   }
 }
 
-@keyframes tcpFloatGlow {
-  0% {
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-  100% {
-    transform: translate3d(1.5rem, 1rem, 0) scale(1.08);
-  }
-}
 
 @keyframes tcpPulseDot {
   0% {
