@@ -192,7 +192,7 @@ pub fn memory_write_scope_decision_for_context(
     now_ms: u64,
 ) -> Result<KnowledgeScopeDecision, String> {
     let Some(policy) = KnowledgeScopePolicy::from_metadata(metadata)? else {
-        if source_bound_scope_required(metadata, authority_job_context) {
+        if source_bound_scope_required(partition, metadata, authority_job_context) {
             return Ok(KnowledgeScopeDecision::deny(
                 "knowledge_scope_required_for_source_bound_memory_write",
             ));
@@ -235,7 +235,7 @@ pub fn memory_promotion_scope_decision_for_context(
     now_ms: u64,
 ) -> Result<KnowledgeScopeDecision, String> {
     let Some(policy) = KnowledgeScopePolicy::from_metadata(source_metadata)? else {
-        if source_bound_scope_required(source_metadata, authority_job_context) {
+        if source_bound_scope_required(partition, source_metadata, authority_job_context) {
             return Ok(KnowledgeScopeDecision::deny(
                 "knowledge_scope_required_for_source_bound_memory_promotion",
             ));
@@ -277,11 +277,17 @@ pub fn source_bound_authority_context(
 }
 
 fn source_bound_scope_required(
+    partition: &MemoryPartition,
     metadata: Option<&Value>,
     authority_job_context: Option<&MemoryAuthorityJobContext>,
 ) -> bool {
     metadata_has_enterprise_source_binding(metadata)
-        || source_bound_authority_context(authority_job_context)
+        || authority_job_context.is_some()
+        || !memory_partition_is_local_legacy(partition)
+}
+
+fn memory_partition_is_local_legacy(partition: &MemoryPartition) -> bool {
+    partition.org_id == "local" && partition.workspace_id == "local"
 }
 
 fn source_bound_policy_denial_reason(
@@ -548,6 +554,43 @@ mod tests {
     }
 
     #[test]
+    fn non_local_write_without_scope_metadata_is_denied() {
+        let decision = memory_write_scope_decision(
+            &partition(GovernedMemoryTier::Session),
+            None,
+            1_000,
+        )
+        .expect("write decision");
+
+        assert!(!decision.allowed);
+        assert_eq!(
+            decision.reason_code,
+            "knowledge_scope_required_for_source_bound_memory_write"
+        );
+    }
+
+    #[test]
+    fn local_legacy_write_without_scope_metadata_remains_allowed() {
+        let decision = memory_write_scope_decision(
+            &MemoryPartition {
+                org_id: "local".to_string(),
+                workspace_id: "local".to_string(),
+                project_id: "local".to_string(),
+                tier: GovernedMemoryTier::Session,
+            },
+            None,
+            1_000,
+        )
+        .expect("write decision");
+
+        assert!(decision.allowed);
+        assert_eq!(
+            decision.reason_code,
+            "legacy_memory_write_without_knowledge_scope"
+        );
+    }
+
+    #[test]
     fn wildcard_workflow_phase_does_not_require_concrete_phase() {
         let mut policy = policy();
         policy.allowed_workflow_phases = vec!["*".to_string()];
@@ -620,6 +663,25 @@ mod tests {
     }
 
     #[test]
+    fn enterprise_authority_write_without_source_binding_requires_knowledge_scope_metadata() {
+        let mut context = authority_context(crate::MemoryAuthorityOperation::Write);
+        context.source_binding_id = None;
+        let decision = memory_write_scope_decision_for_context(
+            &partition(GovernedMemoryTier::Session),
+            None,
+            Some(&context),
+            1_000,
+        )
+        .expect("write decision");
+
+        assert!(!decision.allowed);
+        assert_eq!(
+            decision.reason_code,
+            "knowledge_scope_required_for_source_bound_memory_write"
+        );
+    }
+
+    #[test]
     fn source_bound_authority_promotion_requires_knowledge_scope_metadata() {
         let review = PromotionReview {
             required: true,
@@ -632,6 +694,55 @@ mod tests {
             &review,
             None,
             Some(&authority_context(crate::MemoryAuthorityOperation::Promote)),
+            1_000,
+        )
+        .expect("promotion decision");
+
+        assert!(!decision.allowed);
+        assert_eq!(
+            decision.reason_code,
+            "knowledge_scope_required_for_source_bound_memory_promotion"
+        );
+    }
+
+    #[test]
+    fn non_local_promotion_without_scope_metadata_is_denied() {
+        let review = PromotionReview {
+            required: true,
+            reviewer_id: Some("reviewer-a".to_string()),
+            approval_id: Some("approval-a".to_string()),
+        };
+        let decision = memory_promotion_scope_decision(
+            &partition(GovernedMemoryTier::Session),
+            GovernedMemoryTier::Project,
+            &review,
+            None,
+            1_000,
+        )
+        .expect("promotion decision");
+
+        assert!(!decision.allowed);
+        assert_eq!(
+            decision.reason_code,
+            "knowledge_scope_required_for_source_bound_memory_promotion"
+        );
+    }
+
+    #[test]
+    fn enterprise_authority_promotion_without_source_binding_requires_knowledge_scope_metadata() {
+        let review = PromotionReview {
+            required: true,
+            reviewer_id: Some("reviewer-a".to_string()),
+            approval_id: Some("approval-a".to_string()),
+        };
+        let mut context = authority_context(crate::MemoryAuthorityOperation::Promote);
+        context.source_binding_id = None;
+        let decision = memory_promotion_scope_decision_for_context(
+            &partition(GovernedMemoryTier::Session),
+            GovernedMemoryTier::Project,
+            &review,
+            None,
+            Some(&context),
             1_000,
         )
         .expect("promotion decision");

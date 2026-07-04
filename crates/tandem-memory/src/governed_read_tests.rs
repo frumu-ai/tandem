@@ -90,14 +90,30 @@ fn local_noop_read_filter_preserves_legacy_visibility() {
 }
 
 #[test]
-fn governed_read_filter_allows_internal_tenant_memory_with_default_boundary() {
+fn governed_read_filter_denies_missing_knowledge_scope_metadata() {
     let filter = MemoryAccessFilter::strict(tenant_strict(DataBoundary::unrestricted()), 2_000);
     let decision = filter.decision_for_global_record(&global_record(None));
 
-    assert!(decision.allowed);
+    assert!(!decision.allowed);
     assert_eq!(
         decision.reason.as_deref(),
-        Some("tenant_local_memory_allowed")
+        Some("knowledge_scope_registry_missing")
+    );
+}
+
+#[test]
+fn workflow_phase_read_filter_denies_missing_knowledge_scope_metadata() {
+    let filter = MemoryAccessFilter::strict_with_workflow_phase(
+        tenant_strict(DataBoundary::unrestricted()),
+        2_000,
+        "draft",
+    );
+    let decision = filter.decision_for_global_record(&global_record(None));
+
+    assert!(!decision.allowed);
+    assert_eq!(
+        decision.reason.as_deref(),
+        Some("knowledge_scope_registry_missing")
     );
 }
 
