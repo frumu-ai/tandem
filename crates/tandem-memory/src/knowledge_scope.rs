@@ -555,12 +555,9 @@ mod tests {
 
     #[test]
     fn non_local_write_without_scope_metadata_is_denied() {
-        let decision = memory_write_scope_decision(
-            &partition(GovernedMemoryTier::Session),
-            None,
-            1_000,
-        )
-        .expect("write decision");
+        let decision =
+            memory_write_scope_decision(&partition(GovernedMemoryTier::Session), None, 1_000)
+                .expect("write decision");
 
         assert!(!decision.allowed);
         assert_eq!(
