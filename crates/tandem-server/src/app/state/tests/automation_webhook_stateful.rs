@@ -680,6 +680,217 @@ async fn replay_does_not_cross_wire_unrelated_triggers() {
 }
 
 #[tokio::test]
+async fn replay_releases_a_different_wait_claimed_by_the_same_event() {
+    // Codex P2: `claim_matching_stateful_webhook_wait` scans *all* matching
+    // waits, not just the one just registered. If an older wait with
+    // overlapping match rules gets claimed instead, it must be released back
+    // to `Waiting` rather than left stuck `Claimed` for the full lease
+    // window (which would make it un-claimable by its own owning delivery or
+    // redelivery in the meantime).
+    let state = ready_test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a");
+    insert_test_automation(&state, "automation-non-target-claim", &tenant_a).await;
+    let created = state
+        .create_automation_webhook_trigger(create_input(
+            "automation-non-target-claim",
+            tenant_a.clone(),
+        ))
+        .await
+        .expect("create webhook trigger");
+
+    let body = br#"{"ok":true}"#;
+    let now = now_ms();
+    let raw_event = state
+        .record_automation_webhook_raw_event(AutomationWebhookRawEventCreateInput {
+            trigger: created.trigger.clone(),
+            provider_event_id: Some("evt-shared-match".to_string()),
+            body_digest: automation_webhook_body_digest(body),
+            verification: None,
+            feedback_loop_candidate: None,
+            headers_digest: "headers-digest".to_string(),
+            headers_redacted: json!({}),
+            content_type: Some("application/json".to_string()),
+            payload: body.to_vec(),
+            received_at_ms: now,
+        })
+        .await
+        .expect("record raw event");
+    let signature = automation_webhook_signature_header(&created.secret, now, body);
+    let verified = state
+        .verify_automation_webhook_request(
+            &created.trigger.public_path_token,
+            Some(&signature),
+            body,
+            Some("evt-shared-match".to_string()),
+            now,
+            300_000,
+        )
+        .await
+        .expect("request verifies");
+    let delivery = match state
+        .queue_automation_v2_run_from_webhook_delivery(verified, json!({"ok": true}))
+        .await
+        .expect("webhook accepted")
+    {
+        AutomationWebhookQueueResult::Accepted { delivery, .. } => delivery,
+        other => panic!("expected accepted webhook, got {other:?}"),
+    };
+    state
+        .update_automation_webhook_raw_event_outcome(&tenant_a, &raw_event.event_id, &delivery, now)
+        .await
+        .expect("sync raw event outcome")
+        .expect("raw event updated");
+
+    // An older wait already registered with the same (broad) match rules —
+    // `claim_matching_stateful_webhook_wait` will find this one first.
+    let paths = StatefulRuntimeStoragePaths::from_runtime_events_path(&state.runtime_events_path);
+    let older_wait = webhook_wait_record(
+        "wait-older",
+        "run-older-wait",
+        tenant_a.clone(),
+        &created.trigger.trigger_id,
+        &created.trigger.provider,
+        "evt-shared-match",
+        now.saturating_add(1),
+    );
+    upsert_stateful_wait(&paths.waits_path, older_wait)
+        .await
+        .expect("insert older wait");
+
+    // Registering a second, distinct wait with the same match rules must not
+    // leave the older wait stuck `Claimed`.
+    let new_wait = webhook_wait_record(
+        "wait-newer",
+        "run-newer-wait",
+        tenant_a.clone(),
+        &created.trigger.trigger_id,
+        &created.trigger.provider,
+        "evt-shared-match",
+        now.saturating_add(2),
+    );
+    let outcome = state
+        .register_stateful_webhook_wait_and_replay_pending(new_wait)
+        .await
+        .expect("register");
+    match outcome {
+        AutomationWebhookWaitReplayOutcome::Registered(registered) => {
+            assert_eq!(registered.status, StatefulWaitStatus::Waiting);
+        }
+        AutomationWebhookWaitReplayOutcome::Woken { wait, .. } => {
+            panic!("expected the older wait to claim the event instead, got wake for {wait:?}")
+        }
+    }
+
+    let older = list_stateful_waits(
+        &paths.waits_path,
+        &tenant_a,
+        StatefulWaitQuery {
+            run_id: Some("run-older-wait"),
+            ..StatefulWaitQuery::default()
+        },
+    );
+    assert_eq!(older.len(), 1);
+    assert_eq!(
+        older[0].status,
+        StatefulWaitStatus::Waiting,
+        "the older wait must be released back to Waiting, not left stuck Claimed"
+    );
+    assert!(older[0].claimed_by.is_none());
+    assert!(older[0].claim_expires_at_ms.is_none());
+}
+
+#[tokio::test]
+async fn replay_ignores_history_older_than_the_lookback_window() {
+    // Codex P2: a wait with broad match rules (only trigger_id +
+    // provider_event_id — no unique correlation beyond that) must not wake
+    // from delivery history that predates it by more than the replay
+    // lookback window. Otherwise registering "wait for the next webhook"
+    // could immediately resolve from stale, unrelated history.
+    let state = ready_test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a");
+    insert_test_automation(&state, "automation-stale-history", &tenant_a).await;
+    let created = state
+        .create_automation_webhook_trigger(create_input(
+            "automation-stale-history",
+            tenant_a.clone(),
+        ))
+        .await
+        .expect("create webhook trigger");
+
+    let body = br#"{"ok":true}"#;
+    let old_now = now_ms();
+    let raw_event = state
+        .record_automation_webhook_raw_event(AutomationWebhookRawEventCreateInput {
+            trigger: created.trigger.clone(),
+            provider_event_id: Some("evt-stale".to_string()),
+            body_digest: automation_webhook_body_digest(body),
+            verification: None,
+            feedback_loop_candidate: None,
+            headers_digest: "headers-digest".to_string(),
+            headers_redacted: json!({}),
+            content_type: Some("application/json".to_string()),
+            payload: body.to_vec(),
+            received_at_ms: old_now,
+        })
+        .await
+        .expect("record raw event");
+    let signature = automation_webhook_signature_header(&created.secret, old_now, body);
+    let verified = state
+        .verify_automation_webhook_request(
+            &created.trigger.public_path_token,
+            Some(&signature),
+            body,
+            Some("evt-stale".to_string()),
+            old_now,
+            300_000,
+        )
+        .await
+        .expect("request verifies");
+    let delivery = match state
+        .queue_automation_v2_run_from_webhook_delivery(verified, json!({"ok": true}))
+        .await
+        .expect("webhook accepted")
+    {
+        AutomationWebhookQueueResult::Accepted { delivery, .. } => delivery,
+        other => panic!("expected accepted webhook, got {other:?}"),
+    };
+    state
+        .update_automation_webhook_raw_event_outcome(
+            &tenant_a,
+            &raw_event.event_id,
+            &delivery,
+            old_now,
+        )
+        .await
+        .expect("sync raw event outcome")
+        .expect("raw event updated");
+
+    // A wait registers a full day later, with match rules broad enough that
+    // `wait_matches_webhook_event` would otherwise match the stale delivery.
+    let wait = webhook_wait_record(
+        "wait-much-later",
+        "run-much-later-wait",
+        tenant_a.clone(),
+        &created.trigger.trigger_id,
+        &created.trigger.provider,
+        "evt-stale",
+        old_now + 24 * 60 * 60 * 1_000,
+    );
+    let outcome = state
+        .register_stateful_webhook_wait_and_replay_pending(wait)
+        .await
+        .expect("register");
+    match outcome {
+        AutomationWebhookWaitReplayOutcome::Registered(registered) => {
+            assert_eq!(registered.status, StatefulWaitStatus::Waiting);
+        }
+        AutomationWebhookWaitReplayOutcome::Woken { .. } => {
+            panic!("a delivery far outside the lookback window must not wake the wait")
+        }
+    }
+}
+
+#[tokio::test]
 async fn buffered_webhook_wake_uses_drain_time_for_late_wait_bookkeeping() {
     let state = ready_test_state().await;
     let tenant_a = tenant("org-a", "workspace-a");

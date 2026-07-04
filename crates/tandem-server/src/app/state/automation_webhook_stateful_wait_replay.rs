@@ -12,10 +12,11 @@ use tandem_types::TenantContext;
 use crate::stateful_runtime::{
     append_stateful_run_event_once_with_next_seq, begin_claimed_stateful_wait_wake_completion,
     claim_matching_stateful_webhook_wait, finish_claimed_stateful_wait_completion,
-    stateful_webhook_wait_match_from_metadata, upsert_stateful_wait, wait_matches_webhook_event,
-    write_stateful_run_snapshot, StatefulRunEventRecord, StatefulRunSnapshotRecord,
-    StatefulRuntimeStoragePaths, StatefulWaitKind, StatefulWaitRecord, StatefulWaitStatus,
-    StatefulWebhookWaitEvent, StatefulWorkflowRunKind, StatefulWorkflowRunStatus,
+    release_claimed_stateful_wait, stateful_webhook_wait_match_from_metadata, upsert_stateful_wait,
+    wait_matches_webhook_event, write_stateful_run_snapshot, StatefulRunEventRecord,
+    StatefulRunSnapshotRecord, StatefulRuntimeStoragePaths, StatefulWaitKind, StatefulWaitRecord,
+    StatefulWaitStatus, StatefulWebhookWaitEvent, StatefulWorkflowRunKind,
+    StatefulWorkflowRunStatus,
 };
 use crate::util::time::now_ms;
 
@@ -26,6 +27,20 @@ use super::{
     AutomationWebhookRawEventRecord, AUTOMATION_WEBHOOK_STATEFUL_WAIT_CLAIMANT,
     AUTOMATION_WEBHOOK_STATEFUL_WAIT_LEASE_MS,
 };
+
+/// How far back before a wait's own creation time a recorded delivery may
+/// have arrived and still be treated as "pending" replay history (TAN-571).
+///
+/// A wait's match rules can be as broad as "any webhook for this trigger"
+/// (`StatefulWebhookWaitMatch::has_constraint` only requires *some*
+/// constraint, not a unique correlation key). Without a bound, registering a
+/// new "wait for the next webhook" would immediately match — and wake from —
+/// any older accepted delivery for that trigger, including one from long
+/// before this wait had any reason to exist. Bounding the scan to deliveries
+/// received shortly before the wait's own `created_at_ms` keeps replay
+/// limited to the actual race this fix targets (a delivery that arrived
+/// moments before its correlated wait registered), not arbitrary history.
+const WEBHOOK_WAIT_REPLAY_LOOKBACK_MS: u64 = 15 * 60 * 1000;
 
 /// Outcome of `register_stateful_webhook_wait_and_replay_pending` (TAN-571).
 pub(crate) enum AutomationWebhookWaitReplayOutcome {
@@ -122,12 +137,16 @@ impl AppState {
         // section, so the candidate scan and the resulting wake bookkeeping
         // happen atomically with respect to a concurrently arriving delivery.
         let _guard = self.automation_webhook_persistence.lock().await;
+        let earliest_replayable_at_ms = registered
+            .created_at_ms
+            .saturating_sub(WEBHOOK_WAIT_REPLAY_LOOKBACK_MS);
         let candidates = self
             .list_automation_webhook_raw_events_for_trigger(&tenant, trigger_id)
             .await;
         let Some(matching_event) = candidates.into_iter().find(|event| {
             event.status == AutomationWebhookDeliveryStatus::Accepted
                 && event.woken_wait_id.is_none()
+                && event.received_at_ms >= earliest_replayable_at_ms
                 && wait_matches_webhook_event(
                     &registered,
                     &stateful_wait_event_from_raw_event(event),
@@ -150,9 +169,23 @@ impl AppState {
             return Ok(AutomationWebhookWaitReplayOutcome::Registered(registered));
         };
         if claimed_wait.wait_id != registered.wait_id {
-            // A different (older) wait matched this event first — leave it
-            // to its own resolution; this call only replays for the wait it
-            // just registered.
+            // A different (older) wait matched this event first. Since
+            // `claim_matching_stateful_webhook_wait` already transitioned it
+            // to `Claimed` as a side effect of the match check, it must be
+            // released back to `Waiting` here — otherwise it sits claimed
+            // (and un-claimable by its own owning delivery/redelivery) for
+            // the full lease window instead of resolving through its own
+            // path.
+            if let Err(error) =
+                release_claimed_stateful_wait(&paths.waits_path, &tenant, &claimed_wait, now).await
+            {
+                tracing::warn!(
+                    wait_id = %claimed_wait.wait_id,
+                    run_id = %claimed_wait.run_id,
+                    error = %error,
+                    "failed to release a non-target wait claimed during webhook replay"
+                );
+            }
             return Ok(AutomationWebhookWaitReplayOutcome::Registered(registered));
         }
 
