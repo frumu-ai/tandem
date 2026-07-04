@@ -175,10 +175,71 @@ jobs:
           # TAN-214: golden email approval workflow (compose -> gate -> send)
           "$TEST_BIN" 'app::state::tests::automations::email_approval_golden' --nocapture
 
+  stateful-runtime-tests:
+    name: Stateful Runtime Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: stateful-runtime-tests
+
+      # TAN-574: keep stateful runtime regressions covered outside the single
+      # full-workspace nextest job. Module filters catch new tests added under
+      # the stateful runtime and webhook-stateful namespaces without extending
+      # the hand-picked fast-gate list.
+      - name: Build tandem-server stateful test binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p tandem-server --features premium-governance --lib --tests --no-run --message-format=json > tandem-server-test-messages.json
+          python - <<'INNER_PY'
+          import json
+          import os
+          import pathlib
+
+          exe = None
+          for line in pathlib.Path("tandem-server-test-messages.json").read_text().splitlines():
+              try:
+                  msg = json.loads(line)
+              except json.JSONDecodeError:
+                  continue
+              if msg.get("reason") != "compiler-artifact":
+                  continue
+              if not msg.get("profile", {}).get("test"):
+                  continue
+              target = msg.get("target", {})
+              if target.get("name") == "tandem_server" and msg.get("executable"):
+                  exe = msg["executable"]
+          if not exe:
+              raise SystemExit("no tandem_server test binary found")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
+              fh.write(f"TEST_BIN={exe}\n")
+          INNER_PY
+
+      - name: Run stateful runtime suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$TEST_BIN" stateful_runtime --nocapture
+          "$TEST_BIN" automation_webhook_stateful --nocapture
+
   workspace-tests:
     name: Workspace Tests (nextest)
     runs-on: ubuntu-latest
-    needs: workflow-runtime-fast-gate
+    needs:
+      - workflow-runtime-fast-gate
+      - stateful-runtime-tests
     timeout-minutes: 60
     env:
       # The full-workspace debug target tree is ~21 GB with default debuginfo,
