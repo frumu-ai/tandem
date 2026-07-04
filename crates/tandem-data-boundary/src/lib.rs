@@ -24,6 +24,28 @@ pub enum DataBoundaryMode {
     Enforce,
 }
 
+impl DataBoundaryMode {
+    /// Parses the `TANDEM_DATA_BOUNDARY_MODE` wire form. Returns `None` for
+    /// unrecognized values so config validation can fail loudly instead of
+    /// silently downgrading an intended `enforce` to `off`.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "off" => Some(Self::Off),
+            "audit" => Some(Self::Audit),
+            "enforce" => Some(Self::Enforce),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Audit => "audit",
+            Self::Enforce => "enforce",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderBoundaryClass {
@@ -61,6 +83,42 @@ pub enum SensitiveDataClass {
 }
 
 impl SensitiveDataClass {
+    /// Every sensitive class, for config surfaces that need "all classes".
+    pub const ALL: [Self; 11] = [
+        Self::Pii,
+        Self::Phi,
+        Self::Financial,
+        Self::Credential,
+        Self::Secret,
+        Self::SourceCode,
+        Self::CustomerData,
+        Self::EmployeeData,
+        Self::Legal,
+        Self::ProprietaryBusinessData,
+        Self::UnknownSensitive,
+    ];
+
+    /// Parses the snake_case wire form used by `TANDEM_DATA_BOUNDARY_*_CLASSES`
+    /// lists (matching this enum's serde encoding). Returns `None` for
+    /// unrecognized values so config validation can reject typos instead of
+    /// silently dropping a class from a security policy.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "pii" => Some(Self::Pii),
+            "phi" => Some(Self::Phi),
+            "financial" => Some(Self::Financial),
+            "credential" => Some(Self::Credential),
+            "secret" => Some(Self::Secret),
+            "source_code" => Some(Self::SourceCode),
+            "customer_data" => Some(Self::CustomerData),
+            "employee_data" => Some(Self::EmployeeData),
+            "legal" => Some(Self::Legal),
+            "proprietary_business_data" => Some(Self::ProprietaryBusinessData),
+            "unknown_sensitive" => Some(Self::UnknownSensitive),
+            _ => None,
+        }
+    }
+
     pub fn placeholder_label(self) -> &'static str {
         match self {
             Self::Pii => "PII",
