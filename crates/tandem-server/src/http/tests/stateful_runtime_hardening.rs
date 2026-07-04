@@ -6,11 +6,12 @@ use crate::automation_v2::types::{
     AutomationRunCheckpoint, AutomationRunStatus, AutomationV2RunRecord,
 };
 use crate::stateful_runtime::{
-    append_stateful_run_event, stateful_reliability_path_from_runtime_events_path,
-    upsert_stateful_compensation, upsert_stateful_dead_letter, upsert_stateful_outbox,
-    upsert_stateful_tool_effect, upsert_stateful_wait, write_stateful_run_snapshot,
-    StatefulCompensationRecord, StatefulCompensationStatus, StatefulDeadLetterRecord,
-    StatefulDeadLetterStatus, StatefulOutboxRecord, StatefulOutboxStatus, StatefulRecoveryOption,
+    append_stateful_run_event, list_stateful_dead_letters,
+    stateful_reliability_path_from_runtime_events_path, upsert_stateful_compensation,
+    upsert_stateful_dead_letter, upsert_stateful_outbox, upsert_stateful_tool_effect,
+    upsert_stateful_wait, write_stateful_run_snapshot, StatefulCompensationRecord,
+    StatefulCompensationStatus, StatefulDeadLetterRecord, StatefulDeadLetterStatus,
+    StatefulOutboxRecord, StatefulOutboxStatus, StatefulRecoveryOption, StatefulReliabilityQuery,
     StatefulReliabilityStoreFile, StatefulRunEventRecord, StatefulRunSnapshotRecord,
     StatefulRuntimeScope, StatefulRuntimeStoragePaths, StatefulToolEffectRecord,
     StatefulToolEffectStatus, StatefulWaitKind, StatefulWaitRecord, StatefulWaitStatus,
@@ -756,11 +757,13 @@ async fn stateful_runtime_resume_plan_surfaces_partial_failure_without_cross_ten
         .iter()
         .find(|choice| choice["choice"] == "retry_failed_effect")
         .expect("retry choice");
+    // TAN-564: a retry choice now re-drives the owning run through its governed
+    // dispatch path instead of merely recording intent.
     assert_eq!(
         retry_choice["execution_mode"],
-        json!("operator_request_record_only")
+        json!("automatic_retry_dispatch")
     );
-    assert_eq!(retry_choice["automatic_dispatch"], json!(false));
+    assert_eq!(retry_choice["automatic_dispatch"], json!(true));
     let compensation_choice = operator_choices
         .iter()
         .find(|choice| choice["choice"] == "compensate_pending_effects")
@@ -1571,4 +1574,330 @@ async fn foreign_active_wait_does_not_block_own_lost_wake_recovery() {
         .await
         .expect("run present");
     assert_eq!(run.status, AutomationRunStatus::Queued);
+}
+
+// TAN-564 — dead-letter retry actually re-executes the failed effect.
+
+/// A `Failed` run wired to a stored automation snapshot whose flow has a
+/// `review` node (→ `approval` descendant), used to exercise the dead-letter
+/// retry checkpoint reset.
+async fn failed_run_with_snapshot(
+    state: &AppState,
+    run_id: &str,
+    tenant: TenantContext,
+    blocked_node: &str,
+) -> AutomationV2RunRecord {
+    let spec =
+        crate::http::tests::global::create_test_automation_v2(state, "automation-dead-letter")
+            .await;
+    let mut run = automation_run(run_id, tenant);
+    run.automation_id = "automation-dead-letter".to_string();
+    run.automation_snapshot = Some(spec);
+    run.status = AutomationRunStatus::Failed;
+    run.checkpoint.completed_nodes = vec!["draft".to_string()];
+    run.checkpoint.blocked_nodes = vec![blocked_node.to_string()];
+    run.checkpoint.pending_nodes = Vec::new();
+    run
+}
+
+fn retry_requested_dead_letter(
+    dead_letter_id: &str,
+    run_id: &str,
+    scope: StatefulRuntimeScope,
+) -> StatefulDeadLetterRecord {
+    let mut record = dead_letter_record(dead_letter_id, run_id, scope);
+    record.status = StatefulDeadLetterStatus::RetryRequested;
+    record
+}
+
+async fn read_dead_letter(
+    state: &AppState,
+    tenant: &TenantContext,
+    run_id: &str,
+    dead_letter_id: &str,
+) -> StatefulDeadLetterRecord {
+    let path = stateful_reliability_path_from_runtime_events_path(&state.runtime_events_path);
+    list_stateful_dead_letters(
+        &path,
+        tenant,
+        StatefulReliabilityQuery {
+            run_id: Some(run_id),
+            status: None,
+            source_type: None,
+            after_id: None,
+            before_created_at_ms: None,
+            active_recovery_only: false,
+            limit: Some(50),
+        },
+    )
+    .into_iter()
+    .find(|row| row.dead_letter_id == dead_letter_id)
+    .unwrap_or_else(|| panic!("dead letter {dead_letter_id} present"))
+}
+
+#[tokio::test]
+async fn retry_requested_dead_letter_requeues_owning_run() {
+    let state = test_state().await;
+    let tenant = tenant("org-dead-letter", "workspace-a", "operator-a");
+    let scope = StatefulRuntimeScope::from_tenant_context(tenant.clone());
+    let run_id = "run-dead-letter-retry";
+    let path = stateful_reliability_path_from_runtime_events_path(&state.runtime_events_path);
+
+    let run = failed_run_with_snapshot(&state, run_id, tenant.clone(), "review").await;
+    state
+        .automation_v2_runs
+        .write()
+        .await
+        .insert(run_id.to_string(), run);
+    upsert_stateful_dead_letter(
+        &path,
+        retry_requested_dead_letter("dead-review-effect", run_id, scope),
+    )
+    .await
+    .expect("seed retry-requested dead letter");
+
+    let acted = state.dispatch_ready_stateful_dead_letter_retries().await;
+    assert_eq!(
+        acted, 1,
+        "the retry should dispatch exactly one dead letter"
+    );
+
+    let run = state
+        .get_automation_v2_run(run_id)
+        .await
+        .expect("run present");
+    assert_eq!(
+        run.status,
+        AutomationRunStatus::Queued,
+        "a requested retry must re-queue the owning run so the effect re-executes"
+    );
+    assert_eq!(
+        run.resume_reason.as_deref(),
+        Some("stateful_dead_letter_retry_dispatched")
+    );
+    assert!(
+        !run.checkpoint.blocked_nodes.contains(&"review".to_string()),
+        "the failed node must be cleared from blocked_nodes so it can re-run"
+    );
+    assert!(
+        run.checkpoint.pending_nodes.contains(&"review".to_string()),
+        "the failed node must be re-queued as pending"
+    );
+    // The descendant of the failed node is reset too (must re-run after it).
+    assert!(run
+        .checkpoint
+        .pending_nodes
+        .contains(&"approval".to_string()));
+
+    let dead_letter = read_dead_letter(&state, &tenant, run_id, "dead-review-effect").await;
+    assert_eq!(dead_letter.status, StatefulDeadLetterStatus::Retrying);
+    assert_eq!(
+        dead_letter.attempts, 3,
+        "the dispatch must bump the attempt count"
+    );
+    assert!(
+        dead_letter
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.get("retry_dispatched_at_ms"))
+            .is_some(),
+        "the dispatch time must be stamped for backoff"
+    );
+}
+
+#[tokio::test]
+async fn foreign_tenant_dead_letter_does_not_requeue_run() {
+    // The reliability store is shared across tenants; a foreign-tenant dead
+    // letter that happens to carry this run's id must never drive its recovery.
+    let state = test_state().await;
+    let tenant_a = tenant("org-dl-a", "workspace-a", "operator-a");
+    let tenant_b = tenant("org-dl-b", "workspace-b", "operator-b");
+    let run_id = "run-dead-letter-foreign";
+    let path = stateful_reliability_path_from_runtime_events_path(&state.runtime_events_path);
+
+    let run = failed_run_with_snapshot(&state, run_id, tenant_a.clone(), "review").await;
+    state
+        .automation_v2_runs
+        .write()
+        .await
+        .insert(run_id.to_string(), run);
+    upsert_stateful_dead_letter(
+        &path,
+        retry_requested_dead_letter(
+            "dead-foreign-effect",
+            run_id,
+            StatefulRuntimeScope::from_tenant_context(tenant_b),
+        ),
+    )
+    .await
+    .expect("seed foreign dead letter");
+
+    let acted = state.dispatch_ready_stateful_dead_letter_retries().await;
+    assert_eq!(
+        acted, 0,
+        "a foreign-tenant dead letter must not be acted on"
+    );
+
+    let run = state
+        .get_automation_v2_run(run_id)
+        .await
+        .expect("run present");
+    assert_eq!(
+        run.status,
+        AutomationRunStatus::Failed,
+        "the run must stay failed when only a foreign dead letter requests retry"
+    );
+}
+
+#[tokio::test]
+async fn dead_letter_retry_honors_backoff_before_redispatch() {
+    let state = test_state().await;
+    let tenant = tenant("org-dl-backoff", "workspace-a", "operator-a");
+    let scope = StatefulRuntimeScope::from_tenant_context(tenant.clone());
+    let run_id = "run-dead-letter-backoff";
+    let path = stateful_reliability_path_from_runtime_events_path(&state.runtime_events_path);
+
+    let run = failed_run_with_snapshot(&state, run_id, tenant.clone(), "review").await;
+    state
+        .automation_v2_runs
+        .write()
+        .await
+        .insert(run_id.to_string(), run);
+    // Already dispatched far in the future — its backoff window has not elapsed.
+    let mut dead_letter = retry_requested_dead_letter("dead-backoff-effect", run_id, scope);
+    dead_letter.status = StatefulDeadLetterStatus::Retrying;
+    dead_letter.metadata = Some(json!({
+        "retry_dispatched_at_ms": 9_000_000_000_000_u64,
+        "retry_backoff_ms": 4_000,
+    }));
+    upsert_stateful_dead_letter(&path, dead_letter)
+        .await
+        .expect("seed retrying dead letter");
+
+    let acted = state.dispatch_ready_stateful_dead_letter_retries().await;
+    assert_eq!(
+        acted, 0,
+        "a dead letter inside its backoff window is skipped"
+    );
+
+    let run = state
+        .get_automation_v2_run(run_id)
+        .await
+        .expect("run present");
+    assert_eq!(run.status, AutomationRunStatus::Failed);
+}
+
+#[tokio::test]
+async fn superseded_dead_letter_resolves_after_successful_replay() {
+    let state = test_state().await;
+    let tenant = tenant("org-dl-success", "workspace-a", "operator-a");
+    let scope = StatefulRuntimeScope::from_tenant_context(tenant.clone());
+    let run_id = "run-dead-letter-success";
+    let path = stateful_reliability_path_from_runtime_events_path(&state.runtime_events_path);
+
+    let run = failed_run_with_snapshot(&state, run_id, tenant.clone(), "review").await;
+    state
+        .automation_v2_runs
+        .write()
+        .await
+        .insert(run_id.to_string(), run);
+    let mut dead_letter = retry_requested_dead_letter("dead-success-effect", run_id, scope);
+    dead_letter.status = StatefulDeadLetterStatus::Retrying;
+    dead_letter.metadata = Some(json!({
+        "superseded_by_success": true,
+        "superseded_by_effect_id": "effect-success",
+        "superseded_at_ms": 1_500,
+    }));
+    upsert_stateful_dead_letter(&path, dead_letter)
+        .await
+        .expect("seed superseded dead letter");
+
+    let acted = state.dispatch_ready_stateful_dead_letter_retries().await;
+    assert_eq!(acted, 1, "a superseded dead letter is resolved");
+
+    let dead_letter = read_dead_letter(&state, &tenant, run_id, "dead-success-effect").await;
+    assert_eq!(dead_letter.status, StatefulDeadLetterStatus::Resolved);
+    assert_eq!(
+        dead_letter.operator_disposition.as_deref(),
+        Some("retry_succeeded")
+    );
+    // A resolved dead letter must not also re-drive the run.
+    let run = state
+        .get_automation_v2_run(run_id)
+        .await
+        .expect("run present");
+    assert_eq!(run.status, AutomationRunStatus::Failed);
+}
+
+#[tokio::test]
+async fn exhausted_dead_letter_is_parked_for_operator_review() {
+    let state = test_state().await;
+    let tenant = tenant("org-dl-exhausted", "workspace-a", "operator-a");
+    let scope = StatefulRuntimeScope::from_tenant_context(tenant.clone());
+    let run_id = "run-dead-letter-exhausted";
+    let path = stateful_reliability_path_from_runtime_events_path(&state.runtime_events_path);
+
+    let run = failed_run_with_snapshot(&state, run_id, tenant.clone(), "review").await;
+    state
+        .automation_v2_runs
+        .write()
+        .await
+        .insert(run_id.to_string(), run);
+    let mut dead_letter = retry_requested_dead_letter("dead-exhausted-effect", run_id, scope);
+    dead_letter.attempts = 5;
+    upsert_stateful_dead_letter(&path, dead_letter)
+        .await
+        .expect("seed exhausted dead letter");
+
+    let acted = state.dispatch_ready_stateful_dead_letter_retries().await;
+    assert_eq!(acted, 1, "an exhausted dead letter is parked");
+
+    let dead_letter = read_dead_letter(&state, &tenant, run_id, "dead-exhausted-effect").await;
+    assert_eq!(dead_letter.status, StatefulDeadLetterStatus::Ignored);
+    assert_eq!(
+        dead_letter.operator_disposition.as_deref(),
+        Some("retry_exhausted")
+    );
+    // Exhausted retries must not re-drive the run.
+    let run = state
+        .get_automation_v2_run(run_id)
+        .await
+        .expect("run present");
+    assert_eq!(run.status, AutomationRunStatus::Failed);
+}
+
+#[tokio::test]
+async fn dead_letter_retry_skips_non_recoverable_run() {
+    // A run that is already executing must never be re-driven out from under
+    // its own executor by a dead-letter retry.
+    let state = test_state().await;
+    let tenant = tenant("org-dl-active", "workspace-a", "operator-a");
+    let scope = StatefulRuntimeScope::from_tenant_context(tenant.clone());
+    let run_id = "run-dead-letter-active";
+    let path = stateful_reliability_path_from_runtime_events_path(&state.runtime_events_path);
+
+    let mut run = failed_run_with_snapshot(&state, run_id, tenant.clone(), "review").await;
+    run.status = AutomationRunStatus::Running;
+    state
+        .automation_v2_runs
+        .write()
+        .await
+        .insert(run_id.to_string(), run);
+    upsert_stateful_dead_letter(
+        &path,
+        retry_requested_dead_letter("dead-active-effect", run_id, scope),
+    )
+    .await
+    .expect("seed dead letter for active run");
+
+    let acted = state.dispatch_ready_stateful_dead_letter_retries().await;
+    assert_eq!(acted, 0, "a running run must not be re-driven");
+
+    let run = state
+        .get_automation_v2_run(run_id)
+        .await
+        .expect("run present");
+    assert_eq!(run.status, AutomationRunStatus::Running);
+    let dead_letter = read_dead_letter(&state, &tenant, run_id, "dead-active-effect").await;
+    assert_eq!(dead_letter.status, StatefulDeadLetterStatus::RetryRequested);
 }

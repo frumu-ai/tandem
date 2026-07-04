@@ -435,11 +435,22 @@ pub(super) async fn apply_stateful_run_resume_plan_action(
             Err(error) => return reliability_error("recovery_choice_event_append_failed", error),
         };
 
+    // TAN-564: for a retry choice, actually re-execute the failed effect now by
+    // re-driving the owning run through its governed dispatch path, rather than
+    // only recording intent. The dispatcher also runs on every executor tick, so
+    // this is a latency optimization, not the sole trigger.
+    let dispatched = if automatic_dispatch && input.dead_letter_id.is_some() {
+        state.dispatch_ready_stateful_dead_letter_retries().await
+    } else {
+        0
+    };
+
     Json(json!({
         "run_id": run_id,
         "choice": choice,
         "execution_mode": execution_mode,
         "automatic_dispatch": automatic_dispatch,
+        "dispatched": dispatched,
         "recorded": recorded,
         "event_seq": seq,
         "disposition": disposition,
@@ -832,16 +843,17 @@ fn recovery_choice_execution_mode(choice: &str) -> &'static str {
     match choice {
         "compensate_pending_effects" | "compensate" => "operator_runbook_record_only",
         "abandon_with_audit" | "ignore_dead_letter" => "audit_disposition_only",
-        "retry_failed_effect"
-        | "retry_dead_letter"
-        | "resume_from_checkpoint"
-        | "reconcile_external_effect" => "operator_request_record_only",
+        "retry_failed_effect" | "retry_dead_letter" => "automatic_retry_dispatch",
+        "resume_from_checkpoint" | "reconcile_external_effect" => "operator_request_record_only",
         _ => "operator_review_record_only",
     }
 }
 
-fn recovery_choice_automatic_dispatch(_choice: &str) -> bool {
-    false
+/// Whether recording this choice also kicks off automatic re-execution (TAN-564).
+/// Retry choices re-drive the owning run through its governed dispatch path via
+/// the dead-letter retry dispatcher; all other choices remain record-only.
+fn recovery_choice_automatic_dispatch(choice: &str) -> bool {
+    matches!(choice, "retry_failed_effect" | "retry_dead_letter")
 }
 
 fn compensation_status_for_choice(choice: &str) -> StatefulCompensationStatus {

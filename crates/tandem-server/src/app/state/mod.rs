@@ -88,6 +88,7 @@ use crate::{
 
 pub mod approval_message_map;
 mod automation_enterprise_delegation;
+mod automation_v2_dead_letter_retry;
 mod automation_v2_run_claims;
 mod automation_v2_run_store;
 mod automation_v2_stale_reaper;

@@ -38,7 +38,7 @@ impl AppState {
         .await;
     }
 
-    async fn automation_definition_for_restart_recovery(
+    pub(super) async fn automation_definition_for_restart_recovery(
         &self,
         run: &AutomationV2RunRecord,
     ) -> Result<AutomationV2Spec, Value> {
@@ -206,6 +206,9 @@ impl AppState {
             }
         }
         recovered += self.recover_lost_stateful_wait_wakes().await;
+        // TAN-564: re-drive any dead letters whose retry was requested before a
+        // crash so the failed effect actually re-executes on restart.
+        recovered += self.dispatch_ready_stateful_dead_letter_retries().await;
         recovered
     }
 
