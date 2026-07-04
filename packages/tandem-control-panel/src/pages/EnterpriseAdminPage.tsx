@@ -2,7 +2,10 @@ import { useMemo, useState, type ReactNode } from "react";
 import {
   AnimatedPage,
   Badge,
+  DetailDrawer,
   EmptyState,
+  IdChip,
+  KeyValueRow,
   LoadingState,
   PageHeader,
   PanelCard,
@@ -1026,16 +1029,28 @@ function OrgUnitsPanel({
   rows,
   loading,
   error,
+  onCreateNew,
 }: {
   rows: EnterpriseOrganizationUnit[];
   loading: boolean;
   error: unknown;
+  onCreateNew?: () => void;
 }) {
   return (
     <PanelCard
       title="Org units"
       subtitle="Company-defined domains"
-      actions={<Badge tone={error ? "err" : rows.length ? "ok" : "ghost"}>{rows.length}</Badge>}
+      actions={
+        <div className="flex items-center gap-2">
+          <Badge tone={error ? "err" : rows.length ? "ok" : "ghost"}>{rows.length}</Badge>
+          {onCreateNew ? (
+            <button className="tcp-btn h-7 px-2 text-xs" type="button" onClick={onCreateNew}>
+              <i data-lucide="plus"></i>
+              New
+            </button>
+          ) : null}
+        </div>
+      }
       fullHeight
     >
       {loading ? (
@@ -1091,18 +1106,30 @@ function OrgUnitMembershipsPanel({
   error,
   onSetState,
   busyMembershipId,
+  onCreateNew,
 }: {
   rows: EnterpriseOrganizationUnitMembership[];
   loading: boolean;
   error: unknown;
   onSetState: (membershipId: string, state: string) => void;
   busyMembershipId?: string | null;
+  onCreateNew?: () => void;
 }) {
   return (
     <PanelCard
       title="Org memberships"
       subtitle="Users mapped to company domains"
-      actions={<Badge tone={error ? "err" : rows.length ? "ok" : "ghost"}>{rows.length}</Badge>}
+      actions={
+        <div className="flex items-center gap-2">
+          <Badge tone={error ? "err" : rows.length ? "ok" : "ghost"}>{rows.length}</Badge>
+          {onCreateNew ? (
+            <button className="tcp-btn h-7 px-2 text-xs" type="button" onClick={onCreateNew}>
+              <i data-lucide="plus"></i>
+              New
+            </button>
+          ) : null}
+        </div>
+      }
       fullHeight
     >
       {loading ? (
@@ -1169,6 +1196,7 @@ function OrgUnitAccessGrantsPanel({
   onEffectiveMemberId,
   onSetState,
   busyGrantId,
+  onCreateNew,
 }: {
   rows: EnterpriseOrganizationUnitAccessGrant[];
   effectiveRows: EnterpriseScopedGrant[];
@@ -1178,12 +1206,23 @@ function OrgUnitAccessGrantsPanel({
   onEffectiveMemberId: (memberId: string) => void;
   onSetState: (grantId: string, state: string) => void;
   busyGrantId?: string | null;
+  onCreateNew?: () => void;
 }) {
   return (
     <PanelCard
       title="Unit access"
       subtitle="Projected resource grants"
-      actions={<Badge tone={error ? "err" : rows.length ? "ok" : "ghost"}>{rows.length}</Badge>}
+      actions={
+        <div className="flex items-center gap-2">
+          <Badge tone={error ? "err" : rows.length ? "ok" : "ghost"}>{rows.length}</Badge>
+          {onCreateNew ? (
+            <button className="tcp-btn h-7 px-2 text-xs" type="button" onClick={onCreateNew}>
+              <i data-lucide="plus"></i>
+              New
+            </button>
+          ) : null}
+        </div>
+      }
       fullHeight
     >
       <div className="mb-3 grid gap-2">
@@ -1295,6 +1334,8 @@ function ConnectorsPanel({
   onSelectImpact,
   selectedConnectorId,
   busyConnectorId,
+  onCreateNew,
+  onCreateCredentialRef,
 }: {
   rows: EnterpriseConnectorInstance[];
   loading: boolean;
@@ -1303,12 +1344,34 @@ function ConnectorsPanel({
   onSelectImpact: (connectorId: string) => void;
   selectedConnectorId?: string | null;
   busyConnectorId?: string | null;
+  onCreateNew?: () => void;
+  onCreateCredentialRef?: () => void;
 }) {
   return (
     <PanelCard
       title="Connectors"
       subtitle="Tenant-scoped ingestion lifecycle"
-      actions={<Badge tone={error ? "err" : rows.length ? "ok" : "ghost"}>{rows.length}</Badge>}
+      actions={
+        <div className="flex items-center gap-2">
+          <Badge tone={error ? "err" : rows.length ? "ok" : "ghost"}>{rows.length}</Badge>
+          {onCreateCredentialRef ? (
+            <button
+              className="tcp-btn h-7 px-2 text-xs"
+              type="button"
+              onClick={onCreateCredentialRef}
+            >
+              <i data-lucide="key-round"></i>
+              Credential ref
+            </button>
+          ) : null}
+          {onCreateNew ? (
+            <button className="tcp-btn h-7 px-2 text-xs" type="button" onClick={onCreateNew}>
+              <i data-lucide="plus"></i>
+              New
+            </button>
+          ) : null}
+        </div>
+      }
       fullHeight
     >
       {loading ? (
@@ -1516,6 +1579,7 @@ function SourceBindingsPanel({
   selectedBindingId,
   onSelectBinding,
   busyBindingId,
+  onCreateNew,
 }: {
   rows: EnterpriseSourceBinding[];
   loading: boolean;
@@ -1524,12 +1588,23 @@ function SourceBindingsPanel({
   selectedBindingId?: string | null;
   onSelectBinding: (bindingId: string) => void;
   busyBindingId?: string | null;
+  onCreateNew?: () => void;
 }) {
   return (
     <PanelCard
       title="Source bindings"
       subtitle="External sources mapped to resource scopes"
-      actions={<Badge tone={error ? "err" : rows.length ? "ok" : "ghost"}>{rows.length}</Badge>}
+      actions={
+        <div className="flex items-center gap-2">
+          <Badge tone={error ? "err" : rows.length ? "ok" : "ghost"}>{rows.length}</Badge>
+          {onCreateNew ? (
+            <button className="tcp-btn h-7 px-2 text-xs" type="button" onClick={onCreateNew}>
+              <i data-lucide="plus"></i>
+              New
+            </button>
+          ) : null}
+        </div>
+      }
       fullHeight
     >
       {loading ? (
@@ -1909,21 +1984,27 @@ function SourceObjectLifecyclePanel({
                       <div className="break-all font-medium text-tcp-text-primary">
                         {object.native_object_id || object.indexed_path}
                       </div>
-                      <div className="tcp-subtle break-all text-xs">{object.source_object_id}</div>
+                      <IdChip value={object.source_object_id} className="mt-0.5" />
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <Badge tone={object.state === "active" ? "ok" : "warn"}>{object.state}</Badge>
                       <Badge tone="info">{object.data_class}</Badge>
                     </div>
                   </div>
-                  <div className="mt-3 grid gap-2 text-xs text-tcp-text-secondary md:grid-cols-2">
-                    <div>
-                      Resource: {object.resource_ref?.resource_kind} /{" "}
-                      {object.resource_ref?.resource_id}
-                    </div>
-                    <div>Last seen: {formatLifecycleTime(object.last_seen_at_ms)}</div>
-                    <div className="break-all">Indexed path: {object.indexed_path}</div>
-                    <div>Tier: {object.tier}</div>
+                  <div className="mt-3 grid gap-x-4 md:grid-cols-2">
+                    <KeyValueRow
+                      label="Resource"
+                      value={`${object.resource_ref?.resource_kind || "—"} / ${object.resource_ref?.resource_id || "—"}`}
+                    />
+                    <KeyValueRow
+                      label="Last seen"
+                      value={formatLifecycleTime(object.last_seen_at_ms)}
+                    />
+                    <KeyValueRow
+                      label="Indexed path"
+                      value={<span className="break-all">{object.indexed_path}</span>}
+                    />
+                    <KeyValueRow label="Tier" value={object.tier} />
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2">
                     <button
@@ -2186,6 +2267,19 @@ export function EnterpriseAdminPage({ api, navigate, toast }: AppPageProps) {
   const sourceBindings = useEnterpriseSourceBindings();
   const [selectedBindingId, setSelectedBindingId] = useState<string | null>(null);
   const [selectedConnectorId, setSelectedConnectorId] = useState<string | null>(null);
+  // Which creation drawer is open, if any. Only one form is visible at a time,
+  // reachable via each monitoring panel's "+ New" action (see TAN-589) instead
+  // of all six creation forms being permanently stacked on the page.
+  const [activeForm, setActiveForm] = useState<
+    | "org-unit"
+    | "membership"
+    | "access-grant"
+    | "connector"
+    | "credential-ref"
+    | "source-binding"
+    | null
+  >(null);
+  const closeForm = () => setActiveForm(null);
   const createOrgUnit = useCreateEnterpriseOrgUnit();
   const createOrgUnitMembership = useCreateEnterpriseOrgUnitMembership();
   const createOrgUnitAccessGrant = useCreateEnterpriseOrgUnitAccessGrant();
@@ -2318,18 +2412,26 @@ export function EnterpriseAdminPage({ api, navigate, toast }: AppPageProps) {
           error={orgUnits.error || orgUnitAccessGrants.error || sourceBindings.error}
         />
 
-        <div className="grid gap-4 xl:grid-cols-3">
+        <DetailDrawer open={activeForm === "org-unit"} title="New org unit" onClose={closeForm}>
           <OrgUnitForm
             busy={createOrgUnit.isPending}
             onCreate={async (input) => {
               try {
                 await createOrgUnit.mutateAsync(input);
                 toast("ok", "Organization unit created.");
+                closeForm();
               } catch (error) {
                 toast("err", errorText(error, "Organization unit could not be created."));
               }
             }}
           />
+        </DetailDrawer>
+
+        <DetailDrawer
+          open={activeForm === "membership"}
+          title="Assign membership"
+          onClose={closeForm}
+        >
           <OrgUnitMembershipForm
             orgUnits={orgRows}
             busy={createOrgUnitMembership.isPending}
@@ -2337,11 +2439,19 @@ export function EnterpriseAdminPage({ api, navigate, toast }: AppPageProps) {
               try {
                 await createOrgUnitMembership.mutateAsync(input);
                 toast("ok", "Organization membership assigned.");
+                closeForm();
               } catch (error) {
                 toast("err", errorText(error, "Organization membership could not be assigned."));
               }
             }}
           />
+        </DetailDrawer>
+
+        <DetailDrawer
+          open={activeForm === "access-grant"}
+          title="Grant unit access"
+          onClose={closeForm}
+        >
           <OrgUnitAccessGrantForm
             orgUnits={orgRows}
             busy={createOrgUnitAccessGrant.isPending}
@@ -2349,22 +2459,34 @@ export function EnterpriseAdminPage({ api, navigate, toast }: AppPageProps) {
               try {
                 await createOrgUnitAccessGrant.mutateAsync(input);
                 toast("ok", "Organization unit access granted.");
+                closeForm();
               } catch (error) {
                 toast("err", errorText(error, "Organization unit access could not be granted."));
               }
             }}
           />
+        </DetailDrawer>
+
+        <DetailDrawer open={activeForm === "connector"} title="New connector" onClose={closeForm}>
           <ConnectorForm
             busy={createConnector.isPending}
             onCreate={async (input) => {
               try {
                 await createConnector.mutateAsync(input);
                 toast("ok", "Connector created.");
+                closeForm();
               } catch (error) {
                 toast("err", errorText(error, "Connector could not be created."));
               }
             }}
           />
+        </DetailDrawer>
+
+        <DetailDrawer
+          open={activeForm === "credential-ref"}
+          title="Attach credential reference"
+          onClose={closeForm}
+        >
           <ConnectorCredentialRefForm
             tenantPayload={payload}
             connectors={connectorRows}
@@ -2373,6 +2495,7 @@ export function EnterpriseAdminPage({ api, navigate, toast }: AppPageProps) {
               try {
                 await createConnectorCredentialRef.mutateAsync(input);
                 toast("ok", "Credential reference attached.");
+                closeForm();
               } catch (error) {
                 toast("err", errorText(error, "Credential reference could not be attached."));
               }
@@ -2386,6 +2509,13 @@ export function EnterpriseAdminPage({ api, navigate, toast }: AppPageProps) {
               }
             }}
           />
+        </DetailDrawer>
+
+        <DetailDrawer
+          open={activeForm === "source-binding"}
+          title="New source binding"
+          onClose={closeForm}
+        >
           <SourceBindingForm
             tenantPayload={payload}
             busy={createSourceBinding.isPending}
@@ -2393,15 +2523,21 @@ export function EnterpriseAdminPage({ api, navigate, toast }: AppPageProps) {
               try {
                 await createSourceBinding.mutateAsync(input);
                 toast("ok", "Source binding created.");
+                closeForm();
               } catch (error) {
                 toast("err", errorText(error, "Source binding could not be created."));
               }
             }}
           />
-        </div>
+        </DetailDrawer>
 
         <div className="grid gap-4 xl:grid-cols-4">
-          <OrgUnitsPanel rows={orgRows} loading={orgUnits.isLoading} error={orgUnits.error} />
+          <OrgUnitsPanel
+            rows={orgRows}
+            loading={orgUnits.isLoading}
+            error={orgUnits.error}
+            onCreateNew={() => setActiveForm("org-unit")}
+          />
           <OrgUnitMembershipsPanel
             rows={membershipRows}
             loading={orgUnitMemberships.isLoading}
@@ -2419,6 +2555,7 @@ export function EnterpriseAdminPage({ api, navigate, toast }: AppPageProps) {
                   toast("err", errorText(error, "Organization membership could not be updated."))
                 );
             }}
+            onCreateNew={() => setActiveForm("membership")}
           />
           <OrgUnitAccessGrantsPanel
             rows={accessGrantRows}
@@ -2440,6 +2577,7 @@ export function EnterpriseAdminPage({ api, navigate, toast }: AppPageProps) {
                   toast("err", errorText(error, "Organization unit access could not be updated."))
                 );
             }}
+            onCreateNew={() => setActiveForm("access-grant")}
           />
           <ConnectorsPanel
             rows={connectorRows}
@@ -2458,6 +2596,8 @@ export function EnterpriseAdminPage({ api, navigate, toast }: AppPageProps) {
                   toast("err", errorText(error, "Connector could not be updated."))
                 );
             }}
+            onCreateNew={() => setActiveForm("connector")}
+            onCreateCredentialRef={() => setActiveForm("credential-ref")}
           />
           <SourceBindingsPanel
             rows={bindingRows}
@@ -2478,6 +2618,7 @@ export function EnterpriseAdminPage({ api, navigate, toast }: AppPageProps) {
                   toast("err", errorText(error, "Source binding could not be updated."))
                 );
             }}
+            onCreateNew={() => setActiveForm("source-binding")}
           />
         </div>
 
