@@ -425,12 +425,16 @@ pub(super) async fn memory_put_impl_with_verified(
         return Err(StatusCode::FORBIDDEN);
     }
     let now = crate::now_ms();
-    let scope_decision = tandem_memory::memory_write_scope_decision_for_context(
-        &request.partition,
-        request.metadata.as_ref(),
-        request.authority_job_context.as_ref(),
-        now,
-    )
+    let require_scope_metadata =
+        crate::memory::policy_status::current_memory_context_policy_status().strict_required;
+    let scope_decision =
+        tandem_memory::memory_write_scope_decision_for_context_with_enterprise_mode(
+            &request.partition,
+            request.metadata.as_ref(),
+            request.authority_job_context.as_ref(),
+            require_scope_metadata,
+            now,
+        )
     .map_err(|error| {
         tracing::warn!("invalid knowledge scope metadata on memory put: {error}");
         StatusCode::FORBIDDEN

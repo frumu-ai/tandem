@@ -164,14 +164,18 @@ async fn memory_promote_impl_with_verified(
         request.to_tier
     );
     let source_outcome = promotion_source_outcome_value(&request, &source);
-    let scope_decision = tandem_memory::memory_promotion_scope_decision_for_context(
-        &request.partition,
-        request.to_tier,
-        &request.review,
-        source.metadata.as_ref(),
-        request.authority_job_context.as_ref(),
-        now,
-    )
+    let require_scope_metadata =
+        crate::memory::policy_status::current_memory_context_policy_status().strict_required;
+    let scope_decision =
+        tandem_memory::memory_promotion_scope_decision_for_context_with_enterprise_mode(
+            &request.partition,
+            request.to_tier,
+            &request.review,
+            source.metadata.as_ref(),
+            request.authority_job_context.as_ref(),
+            require_scope_metadata,
+            now,
+        )
     .map_err(|error| {
         tracing::warn!("invalid knowledge scope metadata on memory promotion: {error}");
         StatusCode::FORBIDDEN
