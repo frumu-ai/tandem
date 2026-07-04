@@ -1182,6 +1182,18 @@
   }
 }
 
+@keyframes tcpSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* lucide renders `loader-circle` as <svg class="lucide lucide-loader-circle">.
+   Spin every loader icon globally so loading states animate without each call
+   site having to add an animation class. */
+svg.lucide-loader-circle {
+  animation: tcpSpin 0.8s linear infinite;
+}
 
 @keyframes tcpPulseDot {
   0% {
@@ -1201,7 +1213,8 @@
 @media (prefers-reduced-motion: reduce) {
   .tcp-shell-glow,
   .tcp-status-pulse-dot,
-  .tcp-skeleton {
+  .tcp-skeleton,
+  svg.lucide-loader-circle {
     animation: none !important;
   }
 }

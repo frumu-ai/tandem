@@ -278,7 +278,7 @@ export function RunTimeline({
               disabled={loadingMore}
               onClick={onLoadMore}
             >
-              <i data-lucide={loadingMore ? "loader-2" : "chevrons-down"}></i>
+              <i data-lucide={loadingMore ? "loader-circle" : "chevrons-down"}></i>
               {loadingMore ? "Loading" : "Load Older"}
             </button>
           ) : null}

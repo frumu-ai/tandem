@@ -755,7 +755,7 @@ export function ControlLoopPage({ api, client, navigate, toast }: AppPageProps) 
             disabled={!contextRunId || exportingEvidence}
             onClick={exportGovernanceEvidence}
           >
-            <i data-lucide={exportingEvidence ? "loader-2" : "download"}></i>
+            <i data-lucide={exportingEvidence ? "loader-circle" : "download"}></i>
             {exportingEvidence ? "Exporting" : "Export"}
           </button>
         </Toolbar>
