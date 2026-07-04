@@ -2,6 +2,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
 import { MOTION_TOKENS, prefersReducedMotion } from "./themes.js";
 import { renderIcons } from "./icons.js";
+import { groupNavRoutes } from "./store.js";
 import { GlowLayer, IconButton, StatusPulse } from "../ui/index.tsx";
 import { TandemLogoAnimation } from "../ui/TandemLogoAnimation";
 import type { NavigationLockState } from "../pages/pageTypes";
@@ -194,51 +195,66 @@ export function AppShell({
     );
 
   const renderIconRailItems = () =>
-    navRoutes.map(([id, label, icon]) => {
-      const active = currentRoute === id;
-      const locked = providerLocked && id !== "settings";
-      const disabled = locked || navigationLocked;
-      return (
-        <button
-          key={id}
-          type="button"
-          title={label}
-          disabled={disabled}
-          className={`tcp-rail-icon ${active ? "active" : ""} ${disabled ? "locked" : ""}`}
-          onClick={() => onNavigate(id)}
-        >
-          {active ? (
-            <motion.span layoutId="tcp-icon-indicator" className="tcp-rail-icon-indicator" />
-          ) : null}
-          <i data-lucide={icon}></i>
-        </button>
-      );
+    groupNavRoutes(navRoutes).flatMap((group, groupIndex) => {
+      const buttons = group.items.map(([id, label, icon]) => {
+        const active = currentRoute === id;
+        const locked = providerLocked && id !== "settings";
+        const disabled = locked || navigationLocked;
+        return (
+          <button
+            key={id}
+            type="button"
+            title={label}
+            disabled={disabled}
+            className={`tcp-rail-icon ${active ? "active" : ""} ${disabled ? "locked" : ""}`}
+            onClick={() => onNavigate(id)}
+          >
+            {active ? (
+              <motion.span layoutId="tcp-icon-indicator" className="tcp-rail-icon-indicator" />
+            ) : null}
+            <i data-lucide={icon}></i>
+          </button>
+        );
+      });
+      return groupIndex > 0
+        ? [
+            <span key={`rail-divider-${group.label}`} className="tcp-rail-divider" aria-hidden="true" />,
+            ...buttons,
+          ]
+        : buttons;
     });
 
+  const renderContextNavButton = ([id, label, icon]: [string, string, string], mobile: boolean) => {
+    const active = currentRoute === id;
+    const locked = providerLocked && id !== "settings";
+    const disabled = locked || navigationLocked;
+    return (
+      <button
+        key={id}
+        type="button"
+        disabled={disabled}
+        className={`tcp-context-link ${active ? "active" : ""} ${disabled ? "locked" : ""}`}
+        onClick={() => {
+          onNavigate(id);
+          if (mobile) setMobileNavOpen(false);
+        }}
+      >
+        <span className="inline-flex items-center gap-2">
+          <i data-lucide={icon}></i>
+          <span>{label}</span>
+        </span>
+        {active ? <span className="tcp-context-link-dot"></span> : null}
+      </button>
+    );
+  };
+
   const renderContextNav = (mobile = false) =>
-    navRoutes.map(([id, label, icon]) => {
-      const active = currentRoute === id;
-      const locked = providerLocked && id !== "settings";
-      const disabled = locked || navigationLocked;
-      return (
-        <button
-          key={id}
-          type="button"
-          disabled={disabled}
-          className={`tcp-context-link ${active ? "active" : ""} ${disabled ? "locked" : ""}`}
-          onClick={() => {
-            onNavigate(id);
-            if (mobile) setMobileNavOpen(false);
-          }}
-        >
-          <span className="inline-flex items-center gap-2">
-            <i data-lucide={icon}></i>
-            <span>{label}</span>
-          </span>
-          {active ? <span className="tcp-context-link-dot"></span> : null}
-        </button>
-      );
-    });
+    groupNavRoutes(navRoutes).map((group) => (
+      <div key={group.label} className="grid gap-1">
+        <div className="tcp-context-section-label px-1">{group.label}</div>
+        {group.items.map((route) => renderContextNavButton(route, mobile))}
+      </div>
+    ));
 
   const contextRail = (mobile = false) => (
     <>
@@ -258,8 +274,7 @@ export function AppShell({
       ) : null}
 
       <div className={`tcp-context-section ${mobile ? "" : "xl:hidden"}`.trim()}>
-        <div className="tcp-context-section-label">Navigation</div>
-        <nav className="grid gap-1">{renderContextNav(mobile)}</nav>
+        <nav className="grid gap-4">{renderContextNav(mobile)}</nav>
       </div>
 
       {mobile ? (

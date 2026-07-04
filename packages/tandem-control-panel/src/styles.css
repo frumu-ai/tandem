@@ -123,6 +123,14 @@
     background: color-mix(in srgb, var(--color-surface) 94%, #000 6%);
   }
 
+  /* Thin separator between nav groups on the collapsed icon rail. */
+  .tcp-rail-divider {
+    width: 55%;
+    height: 1px;
+    margin: -0.25rem 0;
+    background: color-mix(in srgb, var(--color-border-subtle) 80%, transparent);
+  }
+
   .tcp-rail-brand {
     display: flex;
     align-items: center;
