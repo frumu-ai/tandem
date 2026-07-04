@@ -1538,7 +1538,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
                 {selectedTools.length ? (
                   <button
                     type="button"
-                    className="tcp-btn h-7 px-2 text-[11px]"
+                    className="tcp-btn h-7 px-2 tcp-text-caption"
                     onClick={() => setSelectedTools([])}
                   >
                     All
@@ -1594,7 +1594,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
             <div className="mb-2 flex items-center gap-2">
               <button
                 type="button"
-                className="tcp-btn h-7 px-2 text-[11px]"
+                className="tcp-btn h-7 px-2 tcp-text-caption"
                 disabled={!permissions.length || autoApproveInFlight}
                 onClick={async () => {
                   const pendingIds = permissions.map((req) => req.id).filter(Boolean);
@@ -1644,21 +1644,21 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
                       <div className="chat-pack-event-summary mt-0.5">{bits || req.id}</div>
                       <div className="mt-1 flex gap-1">
                         <button
-                          className="tcp-btn h-6 px-1.5 text-[10px]"
+                          className="tcp-btn h-6 px-1.5 tcp-text-micro"
                           disabled={busy}
                           onClick={() => void replyPermission(req.id, "once")}
                         >
                           Allow
                         </button>
                         <button
-                          className="tcp-btn h-6 px-1.5 text-[10px]"
+                          className="tcp-btn h-6 px-1.5 tcp-text-micro"
                           disabled={busy}
                           onClick={() => void replyPermission(req.id, "always")}
                         >
                           Always
                         </button>
                         <button
-                          className="tcp-btn-danger h-6 px-1.5 text-[10px]"
+                          className="tcp-btn-danger h-6 px-1.5 tcp-text-micro"
                           disabled={busy}
                           onClick={() => void replyPermission(req.id, "deny")}
                         >
@@ -1681,7 +1681,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
                 <span className="chat-rail-count">{runTimeline.length}</span>
                 <button
                   type="button"
-                  className="tcp-btn h-7 px-2 text-[11px]"
+                  className="tcp-btn h-7 px-2 tcp-text-caption"
                   onClick={resetRunTimeline}
                 >
                   <i data-lucide="trash-2"></i>
@@ -1725,7 +1725,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
               <p className="chat-rail-label">Tool Activity</p>
               <button
                 type="button"
-                className="tcp-btn h-7 px-2 text-[11px]"
+                className="tcp-btn h-7 px-2 tcp-text-caption"
                 onClick={resetToolTracking}
               >
                 <i data-lucide="trash-2"></i>

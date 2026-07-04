@@ -242,7 +242,7 @@ export function WorkflowStudioInspectorPanels(props: InspectorPanelsProps) {
                 }
               />
               {selectedNodeOutputPathPreview ? (
-                <div className="rounded-lg border border-slate-700/60 bg-slate-950/30 px-3 py-2 text-[11px] text-slate-300">
+                <div className="rounded-lg border border-slate-700/60 bg-slate-950/30 px-3 py-2 tcp-text-caption text-slate-300">
                   <div>
                     Saved as:{" "}
                     <code>
@@ -257,7 +257,7 @@ export function WorkflowStudioInspectorPanels(props: InspectorPanelsProps) {
                   ) : null}
                 </div>
               ) : (
-                <span className="text-[11px] text-slate-500">
+                <span className="tcp-text-caption text-slate-500">
                   Use the same runtime tokens here as the workflow output targets.
                 </span>
               )}
@@ -274,7 +274,7 @@ export function WorkflowStudioInspectorPanels(props: InspectorPanelsProps) {
                   })
                 }
               />
-              <span className="text-[11px] text-slate-500">
+              <span className="tcp-text-caption text-slate-500">
                 Effective contract:{" "}
                 {selectedNodeInputFiles.length
                   ? joinCsv(selectedNodeInputFiles)
@@ -293,7 +293,7 @@ export function WorkflowStudioInspectorPanels(props: InspectorPanelsProps) {
                   })
                 }
               />
-              <span className="text-[11px] text-slate-500">
+              <span className="tcp-text-caption text-slate-500">
                 Effective contract:{" "}
                 {selectedNodeOutputFiles.length
                   ? joinCsv(selectedNodeOutputFiles)
@@ -487,7 +487,7 @@ export function WorkflowStudioInspectorPanels(props: InspectorPanelsProps) {
                   <i data-lucide="wrench"></i>
                   <span>Task Tool Access</span>
                 </span>
-                <span className="flex flex-wrap items-center gap-2 text-[11px]">
+                <span className="flex flex-wrap items-center gap-2 tcp-text-caption">
                   <span className="rounded-full border border-slate-700 px-2 py-1 text-slate-300">
                     {selectedNodeToolMode === "custom"
                       ? "custom task tools"
@@ -590,7 +590,7 @@ export function WorkflowStudioInspectorPanels(props: InspectorPanelsProps) {
                     <div className="grid gap-2">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <span className="text-xs text-slate-400">Task MCP Servers</span>
-                        <span className="text-[11px] text-slate-500">
+                        <span className="tcp-text-caption text-slate-500">
                           Select runtime servers to reveal all available task tools.
                         </span>
                       </div>

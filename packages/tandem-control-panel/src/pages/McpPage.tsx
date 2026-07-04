@@ -1297,7 +1297,7 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
                           </button>
                         </div>
                         <div className="flex flex-wrap items-center gap-2 border-t border-slate-800 pt-2">
-                          <span className="text-[11px] uppercase tracking-wide text-slate-500">
+                          <span className="tcp-text-caption uppercase tracking-wide text-slate-500">
                             Provider Definition
                           </span>
                           <button className="tcp-btn" onClick={() => loadServerIntoForm(server)}>

@@ -356,14 +356,14 @@ export function CodingWorkflowsRegisterProjectPanel({
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 {linearAuthRequired ? (
-                  <a className="tcp-btn h-7 px-2.5 text-[11px]" href="#/settings?section=mcp">
+                  <a className="tcp-btn h-7 px-2.5 tcp-text-caption" href="#/settings?section=mcp">
                     <i data-lucide="plug-zap"></i>
                     Open MCP
                   </a>
                 ) : null}
                 <button
                   type="button"
-                  className="tcp-btn h-7 px-2.5 text-[11px]"
+                  className="tcp-btn h-7 px-2.5 tcp-text-caption"
                   onClick={() => refreshLinearCatalog?.()}
                   disabled={linearCatalogLoading}
                 >
@@ -464,28 +464,28 @@ export function CodingWorkflowsRegisterProjectPanel({
                         <span className="mt-2 flex flex-wrap gap-1.5">
                           {status ? (
                             <span
-                              className={`rounded-full border px-2 py-0.5 text-[11px] ${statusTone(statusType)}`}
+                              className={`rounded-full border px-2 py-0.5 tcp-text-caption ${statusTone(statusType)}`}
                             >
                               {status}
                             </span>
                           ) : null}
                           {priority ? (
-                            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-slate-200">
+                            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 tcp-text-caption text-slate-200">
                               {priority}
                             </span>
                           ) : null}
                           {targetDate ? (
-                            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-slate-200">
+                            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 tcp-text-caption text-slate-200">
                               {targetDate}
                             </span>
                           ) : null}
                           {lead ? (
-                            <span className="max-w-full truncate rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-slate-200">
+                            <span className="max-w-full truncate rounded-full border border-white/10 bg-white/5 px-2 py-0.5 tcp-text-caption text-slate-200">
                               {lead}
                             </span>
                           ) : null}
                           {issueCount ? (
-                            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-slate-200">
+                            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 tcp-text-caption text-slate-200">
                               {issueCount}
                             </span>
                           ) : null}
@@ -498,7 +498,7 @@ export function CodingWorkflowsRegisterProjectPanel({
                                 style={{ width: `${progress}%`, backgroundColor: color }}
                               />
                             </span>
-                            <span className="text-[11px] text-slate-300">{Math.round(progress)}%</span>
+                            <span className="tcp-text-caption text-slate-300">{Math.round(progress)}%</span>
                           </span>
                         ) : null}
                       </span>

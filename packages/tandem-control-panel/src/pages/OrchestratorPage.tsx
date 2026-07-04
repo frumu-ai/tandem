@@ -939,7 +939,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                       <i data-lucide="history"></i>
                       <span>{runLabelFromTimestamp(runTimestamp(run))}</span>
                     </span>
-                    <span className="tcp-subtle line-clamp-2 block text-[11px]">
+                    <span className="tcp-subtle line-clamp-2 block tcp-text-caption">
                       {String(run?.objective || "").trim() || "No objective"}
                     </span>
                   </button>
@@ -1368,7 +1368,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                     <i data-lucide="home"></i>
                   </button>
                 </div>
-                <div className="mb-2 tcp-subtle text-[11px]" style={{ overflowWrap: "anywhere" }}>
+                <div className="mb-2 tcp-subtle tcp-text-caption" style={{ overflowWrap: "anywhere" }}>
                   {runWorkspaceDir || activeWorkspaceRoot || "No workspace"}
                 </div>
                 {!runWorkspaceFileAccessAllowed ? (
@@ -1407,7 +1407,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                             <i data-lucide="file-up"></i>
                             <span className="truncate">{String(entry?.name || path)}</span>
                           </span>
-                          <span className="tcp-subtle shrink-0 text-[11px]">
+                          <span className="tcp-subtle shrink-0 tcp-text-caption">
                             {formatFileBytes(entry?.size)}
                           </span>
                         </div>
@@ -1434,7 +1434,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                           Fullscreen
                         </button>
                       ) : null}
-                      <span className="tcp-subtle text-[11px]" style={{ overflowWrap: "anywhere" }}>
+                      <span className="tcp-subtle tcp-text-caption" style={{ overflowWrap: "anywhere" }}>
                         {selectedWorkspaceFile}
                       </span>
                     </div>

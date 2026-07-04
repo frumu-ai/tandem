@@ -124,7 +124,7 @@ export function McpConnectionGrantPicker({
                       <div className="break-words font-medium text-slate-100">
                         {connection.server} · {mcpConnectionOwnerLabel(connection)}
                       </div>
-                      <div className="mt-0.5 break-words text-[11px] text-slate-500">
+                      <div className="mt-0.5 break-words tcp-text-caption text-slate-500">
                         {connection.connectionId}
                       </div>
                     </div>
@@ -138,7 +138,7 @@ export function McpConnectionGrantPicker({
                     </span>
                   </div>
                 </div>
-                <div className="flex flex-wrap gap-2 text-[11px] text-slate-400">
+                <div className="flex flex-wrap gap-2 tcp-text-caption text-slate-400">
                   <span>{mcpConnectionScopeLabel(connection)}</span>
                   <span>Tools: {connection.toolCount}</span>
                 </div>
@@ -152,7 +152,7 @@ export function McpConnectionGrantPicker({
 
       {missingGrants.length ? (
         <div className="grid gap-2 border-t border-slate-800 pt-2">
-          <div className="text-[11px] uppercase tracking-wide text-amber-200">
+          <div className="tcp-text-caption uppercase tracking-wide text-amber-200">
             Saved grants not currently visible
           </div>
           {missingGrants.map((grant) => (

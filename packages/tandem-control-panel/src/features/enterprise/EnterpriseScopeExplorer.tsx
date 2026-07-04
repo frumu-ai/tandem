@@ -53,7 +53,7 @@ function replaceRunSelectionHash(runId: string) {
 function ScopeMetric({ label, value }: { label: string; value: number }) {
   return (
     <div className="min-h-[4rem] rounded-md border border-white/10 bg-white/[0.03] px-3 py-2">
-      <div className="text-[11px] uppercase tracking-wide text-tcp-text-muted">{label}</div>
+      <div className="tcp-text-caption uppercase tracking-wide text-tcp-text-muted">{label}</div>
       <div className="mt-1 text-2xl font-semibold tabular-nums text-tcp-text-primary">{value}</div>
     </div>
   );
@@ -81,7 +81,7 @@ function ScopeList({
           <div className="flex min-w-0 items-center justify-between gap-3">
             <div className="min-w-0">
               <div className="truncate text-sm font-medium text-tcp-text-primary">{scope.label}</div>
-              <div className="mt-1 truncate text-[11px] text-tcp-text-muted">
+              <div className="mt-1 truncate tcp-text-caption text-tcp-text-muted">
                 {scope.kind === "org_unit" ? scope.orgUnitId : scope.resourceLabel}
               </div>
             </div>
@@ -102,7 +102,7 @@ function OrgTree({ nodes }: { nodes: any[] }) {
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0" style={{ paddingLeft: `${Math.min(node.depth, 4) * 0.75}rem` }}>
               <div className="truncate text-sm font-medium text-tcp-text-primary">{node.label}</div>
-              <div className="mt-1 truncate text-[11px] text-tcp-text-muted">{node.unitId}</div>
+              <div className="mt-1 truncate tcp-text-caption text-tcp-text-muted">{node.unitId}</div>
             </div>
             <Badge tone={statusTone(node.state)}>{node.state}</Badge>
           </div>
@@ -119,7 +119,7 @@ function PolicyLayers({ layers }: { layers: any[] }) {
         <div key={layer.order} className="rounded-md border border-white/10 bg-black/20 px-3 py-3">
           <div className="flex min-w-0 items-center justify-between gap-3">
             <div className="min-w-0">
-              <div className="text-[11px] uppercase tracking-wide text-tcp-text-muted">
+              <div className="tcp-text-caption uppercase tracking-wide text-tcp-text-muted">
                 {layer.order}. {layer.layer}
               </div>
               <div className="mt-1 truncate text-sm font-medium text-tcp-text-primary">{layer.source}</div>
@@ -130,7 +130,7 @@ function PolicyLayers({ layers }: { layers: any[] }) {
           {layer.overrides.length ? (
             <div className="mt-2 flex flex-wrap gap-1">
               {layer.overrides.slice(0, 4).map((override: string) => (
-                <span key={override} className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-tcp-text-muted">
+                <span key={override} className="rounded border border-white/10 px-2 py-0.5 tcp-text-caption text-tcp-text-muted">
                   {override}
                 </span>
               ))}
@@ -139,7 +139,7 @@ function PolicyLayers({ layers }: { layers: any[] }) {
           {layer.conflicts.length ? (
             <div className="mt-2 space-y-1">
               {layer.conflicts.slice(0, 3).map((conflict: string) => (
-                <div key={conflict} className="text-[11px] text-rose-200">
+                <div key={conflict} className="tcp-text-caption text-rose-200">
                   {conflict}
                 </div>
               ))}
@@ -156,7 +156,7 @@ function KnowledgeBoundary({ rows }: { rows: any[] }) {
   return (
     <div className="min-h-0 overflow-auto rounded-lg border border-white/10">
       <table className="w-full min-w-[820px] table-fixed text-left text-xs">
-        <thead className="sticky top-0 z-10 bg-black/80 text-[11px] uppercase text-tcp-text-muted backdrop-blur">
+        <thead className="sticky top-0 z-10 bg-black/80 tcp-text-caption uppercase text-tcp-text-muted backdrop-blur">
           <tr>
             <th className="w-[17rem] px-3 py-2 font-medium">Source</th>
             <th className="w-[9rem] px-3 py-2 font-medium">Visibility</th>
@@ -170,7 +170,7 @@ function KnowledgeBoundary({ rows }: { rows: any[] }) {
             <tr key={row.id || row.label} className="align-top hover:bg-white/[0.03]">
               <td className="px-3 py-3">
                 <div className="truncate text-sm font-medium text-tcp-text-primary">{row.label}</div>
-                <div className="mt-1 truncate text-[11px] text-tcp-text-muted">{row.connectorId || row.sourceType}</div>
+                <div className="mt-1 truncate tcp-text-caption text-tcp-text-muted">{row.connectorId || row.sourceType}</div>
               </td>
               <td className="px-3 py-3">
                 <Badge tone={row.visibility === "visible" ? "ok" : "err"}>{row.visibility}</Badge>
@@ -201,7 +201,7 @@ function RecentRuns({
           <div className="flex min-w-0 items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="truncate text-sm font-medium text-tcp-text-primary">{row.title}</div>
-              <div className="mt-1 flex min-w-0 flex-wrap gap-2 text-[11px] text-tcp-text-muted">
+              <div className="mt-1 flex min-w-0 flex-wrap gap-2 tcp-text-caption text-tcp-text-muted">
                 <span className="font-mono">{row.id}</span>
                 <span>{row.owner || "tenant owner"}</span>
                 <span>{formatRunTimestamp(row.updatedAtMs)}</span>
@@ -228,7 +228,7 @@ function GrantsPanel({ grants }: { grants: any[] }) {
               <div className="truncate text-sm font-medium text-tcp-text-primary">
                 {grant.grant_id || grant.grantId}
               </div>
-              <div className="mt-1 truncate text-[11px] text-tcp-text-muted">
+              <div className="mt-1 truncate tcp-text-caption text-tcp-text-muted">
                 {(grant.permissions || []).join(", ") || (grant.data_classes || []).join(", ") || "scope grant"}
               </div>
             </div>

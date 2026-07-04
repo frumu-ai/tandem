@@ -2566,7 +2566,7 @@ export function AdvancedMissionBuilderPanel({
                       {preview.mission_spec.success_criteria.map((item: any, index: number) => (
                         <span
                           key={`${String(item || "criterion")}-${index}`}
-                          className="rounded-full border border-slate-700 bg-slate-950/70 px-2 py-1 text-[11px] text-slate-300"
+                          className="rounded-full border border-slate-700 bg-slate-950/70 px-2 py-1 tcp-text-caption text-slate-300"
                         >
                           {String(item || "")}
                         </span>

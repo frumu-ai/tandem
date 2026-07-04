@@ -765,7 +765,7 @@ export function WorkflowAutomationEditDialog({
                                   {mode.label}
                                 </span>
                                 {mode.id === "team" ? (
-                                  <span className="rounded-full border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em] text-amber-200">
+                                  <span className="rounded-full border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 tcp-text-micro font-medium uppercase tracking-[0.16em] text-amber-200">
                                     Recommended
                                   </span>
                                 ) : null}
@@ -1261,7 +1261,7 @@ export function WorkflowAutomationEditDialog({
                                   <i data-lucide="shield-check"></i>
                                   <span>Approval override</span>
                                 </div>
-                                <div className="flex flex-wrap gap-2 text-[11px]">
+                                <div className="flex flex-wrap gap-2 tcp-text-caption">
                                   <span
                                     className={
                                       node.approvalOverride === "skip"
@@ -1408,7 +1408,7 @@ export function WorkflowAutomationEditDialog({
                                   <i data-lucide="cpu"></i>
                                   <span>Step model & provider</span>
                                 </div>
-                                <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                                <div className="flex flex-wrap items-center gap-2 tcp-text-caption">
                                   {node.modelProvider || node.modelId ? (
                                     <span className="tcp-badge-info">overrides workflow model</span>
                                   ) : (
@@ -1467,7 +1467,7 @@ export function WorkflowAutomationEditDialog({
                                   <i data-lucide="wrench"></i>
                                   <span>Task tool access</span>
                                 </div>
-                                <div className="flex flex-wrap gap-2 text-[11px]">
+                                <div className="flex flex-wrap gap-2 tcp-text-caption">
                                   <span className="tcp-badge-info">
                                     {nodeToolMode === "custom"
                                       ? "custom task tools"
@@ -1605,7 +1605,7 @@ export function WorkflowAutomationEditDialog({
                                       <label className="text-xs text-slate-400">
                                         Task MCP servers
                                       </label>
-                                      <span className="text-[11px] text-slate-500">
+                                      <span className="tcp-text-caption text-slate-500">
                                         Select runtime servers to reveal all available task tools.
                                       </span>
                                     </div>

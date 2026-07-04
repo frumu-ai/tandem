@@ -127,10 +127,10 @@ export function WorkflowLiveSessionLogPanel({
                     {entry.label}
                   </span>
                   {entry.sessionId ? (
-                    <span className="tcp-badge-info text-[10px]">{entry.sessionLabel}</span>
+                    <span className="tcp-badge-info tcp-text-micro">{entry.sessionLabel}</span>
                   ) : null}
                 </div>
-                <span className="tcp-subtle text-[11px]">
+                <span className="tcp-subtle tcp-text-caption">
                   {new Date(entry.at).toLocaleTimeString()}
                 </span>
               </div>
@@ -147,7 +147,7 @@ export function WorkflowLiveSessionLogPanel({
                   value={entry.parts}
                   label="Tool payloads"
                   className="mt-2"
-                  preClassName="tcp-code mt-2 max-h-40 overflow-auto text-[11px]"
+                  preClassName="tcp-code mt-2 max-h-40 overflow-auto tcp-text-caption"
                 />
               ) : null}
               {entry.kind === "event" ? (
@@ -155,7 +155,7 @@ export function WorkflowLiveSessionLogPanel({
                   value={entry.raw}
                   label="Raw event"
                   className="mt-2"
-                  preClassName="tcp-code mt-2 max-h-40 overflow-auto text-[11px]"
+                  preClassName="tcp-code mt-2 max-h-40 overflow-auto tcp-text-caption"
                 />
               ) : null}
             </div>

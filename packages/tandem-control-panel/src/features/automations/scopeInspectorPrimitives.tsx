@@ -75,7 +75,7 @@ export function listPaths(values: unknown) {
 export function kv(label: string, value: unknown) {
   return (
     <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-      <div className="tcp-subtle text-[11px] uppercase tracking-wide">{label}</div>
+      <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">{label}</div>
       <div className="mt-1 break-words text-sm text-slate-100">{String(value || "n/a")}</div>
     </div>
   );

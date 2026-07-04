@@ -1342,7 +1342,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                                   <div className="mt-1 text-xs text-slate-400">
                                     {safeString(studio?.summary) || "Studio workflow"}
                                   </div>
-                                  <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-500">
+                                  <div className="mt-2 flex flex-wrap gap-2 tcp-text-caption text-slate-500">
                                     {templateId ? (
                                       <span className="tcp-badge-info">template: {templateId}</span>
                                     ) : null}
@@ -1357,10 +1357,10 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                                   </div>
                                   {latestRun ? (
                                     <div className="mt-2 rounded-lg border border-slate-700/50 bg-slate-950/20 p-2">
-                                      <div className="text-[11px] uppercase tracking-wide text-slate-500">
+                                      <div className="tcp-text-caption uppercase tracking-wide text-slate-500">
                                         Latest Run Stability
                                       </div>
-                                      <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+                                      <div className="mt-2 flex flex-wrap gap-2 tcp-text-caption">
                                         <span className="tcp-badge-info">
                                           status: {latestRunStatus}
                                         </span>
@@ -1553,12 +1553,12 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                       }
                       placeholder="content-brief.md, approved-post.md"
                     />
-                    <span className="text-[11px] text-slate-500">
+                    <span className="tcp-text-caption text-slate-500">
                       Supported runtime tokens: {STUDIO_OUTPUT_TOKEN_GUIDE.join(", ")}. Legacy
                       patterns like <code>YYYY-MM-DD_HH-MM-SS</code> are normalized on save.
                     </span>
                     {outputPathWarnings.length ? (
-                      <div className="rounded-lg border border-amber-500/30 bg-amber-500/8 px-3 py-2 text-[11px] text-amber-100">
+                      <div className="rounded-lg border border-amber-500/30 bg-amber-500/8 px-3 py-2 tcp-text-caption text-amber-100">
                         <div className="font-medium uppercase tracking-wide text-amber-200/90">
                           Output path warnings
                         </div>
@@ -1570,7 +1570,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                       </div>
                     ) : null}
                     {outputPathPreviewRows.length ? (
-                      <div className="rounded-lg border border-slate-700/60 bg-slate-950/30 px-3 py-2 text-[11px] text-slate-300">
+                      <div className="rounded-lg border border-slate-700/60 bg-slate-950/30 px-3 py-2 tcp-text-caption text-slate-300">
                         <div className="font-medium uppercase tracking-wide text-slate-500">
                           Output path preview
                         </div>

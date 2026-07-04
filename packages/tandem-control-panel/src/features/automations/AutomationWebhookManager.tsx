@@ -427,7 +427,7 @@ export function AutomationWebhookManager({
               <option value="notion"></option>
             </datalist>
             {safeString(createDraft.provider).toLowerCase().startsWith("notion") ? (
-              <div className="text-[11px] text-sky-300/80">
+              <div className="tcp-text-caption text-sky-300/80">
                 Notion signs events with a verification token you'll copy from Tandem back into Notion after creating the trigger.
               </div>
             ) : null}
@@ -519,7 +519,7 @@ export function AutomationWebhookManager({
                     </div>
                     <span className={`tcp-badge ${statusBadgeClass(trigger.enabled ? "enabled" : "disabled")}`}>{trigger.enabled ? "Enabled" : "Disabled"}</span>
                   </div>
-                  <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-500">
+                  <div className="mt-2 flex flex-wrap gap-2 tcp-text-caption text-slate-500">
                     <span>{triggerStatus(trigger)}</span>
                     <span>{Number(counts?.total || 0)} deliveries</span>
                   </div>
@@ -682,7 +682,7 @@ export function AutomationWebhookManager({
                                 )}
                               </div>
                             </div>
-                            <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md border border-slate-800/70 bg-slate-950/70 p-2 text-[11px] leading-5 text-slate-300">
+                            <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md border border-slate-800/70 bg-slate-950/70 p-2 tcp-text-caption leading-5 text-slate-300">
                               {previewText(delivery.sanitized_preview || delivery.sanitizedPreview)}
                             </pre>
                           </div>

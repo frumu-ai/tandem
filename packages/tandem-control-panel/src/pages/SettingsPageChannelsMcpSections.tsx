@@ -312,7 +312,7 @@ export function SettingsPageChannelsMcpSections({
                     <label className="flex items-center justify-between gap-3 rounded-xl border border-slate-700/60 bg-slate-900/20 px-3 py-2 text-sm">
                       <div className="flex flex-col">
                         <span>Strict KB grounding</span>
-                        <span className="tcp-subtle text-[11px]">
+                        <span className="tcp-subtle tcp-text-caption">
                           Factual channel questions use selected MCP knowledge sources as the
                           grounding path.
                         </span>
@@ -506,7 +506,7 @@ export function SettingsPageChannelsMcpSections({
                             ? `Editing ${selectedScopeLabel}. Saving here stores a scope-specific override on top of the ${channel} default.`
                             : `Editing the ${channel} default. Pick a conversation scope to override one specific ${channel} thread, room, or chat.`}
                         </div>
-                        <div className="tcp-subtle text-[11px]">
+                        <div className="tcp-subtle tcp-text-caption">
                           {scopeOptions.length
                             ? `${scopeOptions.length} known scope${
                                 scopeOptions.length === 1 ? "" : "s"
@@ -515,7 +515,7 @@ export function SettingsPageChannelsMcpSections({
                         </div>
                       </div>
                       <label className="grid gap-1">
-                        <span className="tcp-subtle text-[11px] uppercase tracking-[0.24em]">
+                        <span className="tcp-subtle tcp-text-caption uppercase tracking-[0.24em]">
                           Conversation scope
                         </span>
                         <select
@@ -579,7 +579,7 @@ export function SettingsPageChannelsMcpSections({
                         >
                           <div className="grid gap-3 pt-3">
                             <div className="grid gap-2">
-                              <div className="tcp-subtle text-[11px] uppercase tracking-[0.24em]">
+                              <div className="tcp-subtle tcp-text-caption uppercase tracking-[0.24em]">
                                 Workflow planning
                               </div>
                               <label className="flex items-center justify-between rounded-xl border border-slate-700/60 bg-slate-950/30 px-3 py-2 text-sm">
@@ -587,7 +587,7 @@ export function SettingsPageChannelsMcpSections({
                                   <span className="font-mono text-xs">
                                     Allow workflow drafts from chat
                                   </span>
-                                  <span className="tcp-subtle text-[11px]">
+                                  <span className="tcp-subtle tcp-text-caption">
                                     Stores the `tandem.workflow_planner` pseudo-tool in this channel
                                     scope without changing the normal tool allowlist.
                                   </span>
@@ -622,7 +622,7 @@ export function SettingsPageChannelsMcpSections({
 
                             {CHANNEL_TOOL_GROUPS.map((group) => (
                               <div key={`${channel}-${group.label}`} className="grid gap-2">
-                                <div className="tcp-subtle text-[11px] uppercase tracking-[0.24em]">
+                                <div className="tcp-subtle tcp-text-caption uppercase tracking-[0.24em]">
                                   {group.label}
                                 </div>
                                 <div className="grid gap-2 md:grid-cols-2">
@@ -644,7 +644,7 @@ export function SettingsPageChannelsMcpSections({
                                         <div className="flex flex-col">
                                           <span className="font-mono text-xs">{tool}</span>
                                           {!allowed ? (
-                                            <span className="tcp-subtle text-[11px]">
+                                            <span className="tcp-subtle tcp-text-caption">
                                               Disabled by security profile
                                             </span>
                                           ) : null}
@@ -675,7 +675,7 @@ export function SettingsPageChannelsMcpSections({
                             ))}
 
                             <div className="grid gap-2">
-                              <div className="tcp-subtle text-[11px] uppercase tracking-[0.24em]">
+                              <div className="tcp-subtle tcp-text-caption uppercase tracking-[0.24em]">
                                 MCP servers
                               </div>
                               {safeMcpServers.length ? (
@@ -692,7 +692,7 @@ export function SettingsPageChannelsMcpSections({
                                         <div className="flex flex-col">
                                           <span className="font-mono text-xs">{server.name}</span>
                                           {publicDemo ? (
-                                            <span className="tcp-subtle text-[11px]">
+                                            <span className="tcp-subtle tcp-text-caption">
                                               Disabled by security profile
                                             </span>
                                           ) : null}
@@ -730,7 +730,7 @@ export function SettingsPageChannelsMcpSections({
                             </div>
 
                             <div className="grid gap-2">
-                              <div className="tcp-subtle text-[11px] uppercase tracking-[0.24em]">
+                              <div className="tcp-subtle tcp-text-caption uppercase tracking-[0.24em]">
                                 Exact MCP tools
                               </div>
                               <div className="tcp-subtle text-xs">

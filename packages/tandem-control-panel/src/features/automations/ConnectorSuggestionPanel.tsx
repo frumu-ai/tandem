@@ -163,21 +163,21 @@ export function ConnectorSuggestionPanel({ planPackage }: ConnectorSuggestionPan
       <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
         <div className="grid gap-2 sm:grid-cols-4">
           <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-            <div className="tcp-subtle text-[11px] uppercase tracking-wide">required intents</div>
+            <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">required intents</div>
             <div className="mt-1 text-slate-100">{required.length}</div>
           </div>
           <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-            <div className="tcp-subtle text-[11px] uppercase tracking-wide">mapped</div>
+            <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">mapped</div>
             <div className="mt-1 text-slate-100">{mappedCount}</div>
           </div>
           <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-            <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+            <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
               unresolved required
             </div>
             <div className="mt-1 text-slate-100">{unresolvedRequiredCount}</div>
           </div>
           <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-            <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+            <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
               unresolved optional
             </div>
             <div className="mt-1 text-slate-100">{unresolvedOptionalCount}</div>
@@ -187,7 +187,7 @@ export function ConnectorSuggestionPanel({ planPackage }: ConnectorSuggestionPan
 
       <div className="grid gap-3">
         <div className="grid gap-2">
-          <div className="tcp-subtle text-[11px] uppercase tracking-wide">Required</div>
+          <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">Required</div>
           {required.length ? (
             required.map(({ capability, intent, entry }) => (
               <div
@@ -203,13 +203,13 @@ export function ConnectorSuggestionPanel({ planPackage }: ConnectorSuggestionPan
                 </div>
                 <div className="mt-2 grid gap-2 sm:grid-cols-2">
                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">why</div>
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">why</div>
                     <div className="mt-1 break-words text-slate-100">
                       {safeString(intent?.why || entry?.why || "n/a")}
                     </div>
                   </div>
                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                       operator action
                     </div>
                     <div className="mt-1 text-slate-100">
@@ -221,17 +221,17 @@ export function ConnectorSuggestionPanel({ planPackage }: ConnectorSuggestionPan
                 </div>
                 <div className="mt-2 grid gap-2 sm:grid-cols-3">
                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                       binding type
                     </div>
                     <div className="mt-1 text-slate-100">{summaryValue(entry?.binding_type)}</div>
                   </div>
                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">binding id</div>
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">binding id</div>
                     <div className="mt-1 text-slate-100">{summaryValue(entry?.binding_id)}</div>
                   </div>
                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                       allowlist pattern
                     </div>
                     <div className="mt-1 break-words text-slate-100">
@@ -247,7 +247,7 @@ export function ConnectorSuggestionPanel({ planPackage }: ConnectorSuggestionPan
         </div>
 
         <div className="grid gap-2">
-          <div className="tcp-subtle text-[11px] uppercase tracking-wide">Optional</div>
+          <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">Optional</div>
           {optional.length ? (
             optional.map(({ capability, intent, entry }) => (
               <div
@@ -263,13 +263,13 @@ export function ConnectorSuggestionPanel({ planPackage }: ConnectorSuggestionPan
                 </div>
                 <div className="mt-2 grid gap-2 sm:grid-cols-2">
                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">why</div>
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">why</div>
                     <div className="mt-1 break-words text-slate-100">
                       {safeString(intent?.why || entry?.why || "n/a")}
                     </div>
                   </div>
                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                       operator action
                     </div>
                     <div className="mt-1 text-slate-100">
@@ -283,7 +283,7 @@ export function ConnectorSuggestionPanel({ planPackage }: ConnectorSuggestionPan
                 </div>
                 <div className="mt-2 grid gap-2 sm:grid-cols-3">
                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                       degraded mode
                     </div>
                     <div className="mt-1 text-slate-100">
@@ -291,13 +291,13 @@ export function ConnectorSuggestionPanel({ planPackage }: ConnectorSuggestionPan
                     </div>
                   </div>
                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                       binding type
                     </div>
                     <div className="mt-1 text-slate-100">{summaryValue(entry?.binding_type)}</div>
                   </div>
                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">binding id</div>
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">binding id</div>
                     <div className="mt-1 text-slate-100">{summaryValue(entry?.binding_id)}</div>
                   </div>
                 </div>
@@ -309,7 +309,7 @@ export function ConnectorSuggestionPanel({ planPackage }: ConnectorSuggestionPan
         </div>
       </div>
 
-      <div className="tcp-subtle text-[11px]">
+      <div className="tcp-subtle tcp-text-caption">
         Connector suggestions are read-only and derived from the current plan package.
       </div>
     </div>

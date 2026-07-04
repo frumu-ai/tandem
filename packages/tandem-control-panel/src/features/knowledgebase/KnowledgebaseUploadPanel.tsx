@@ -1316,7 +1316,7 @@ export function KnowledgebaseUploadPanel({
                         {row.status}
                       </div>
                       {row.result?.docId ? (
-                        <div className="tcp-subtle mt-1 truncate text-[11px]">
+                        <div className="tcp-subtle mt-1 truncate tcp-text-caption">
                           {row.result.docId}
                         </div>
                       ) : null}
@@ -1450,7 +1450,7 @@ export function KnowledgebaseUploadPanel({
                       </button>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <label className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-slate-500">
+                      <label className="flex items-center gap-2 tcp-text-caption uppercase tracking-wide text-slate-500">
                         <span>Per page</span>
                         <select
                           className="tcp-select h-8 min-w-[5.5rem] px-3 text-center text-sm font-semibold tabular-nums text-slate-100 [text-align-last:center]"

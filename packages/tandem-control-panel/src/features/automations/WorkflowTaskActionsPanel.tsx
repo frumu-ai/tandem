@@ -94,7 +94,7 @@ export function WorkflowTaskActionsPanel({
   return (
     <div className="mt-3 space-y-3">
       {selectedBoardTaskIsWorkflowNode ? (
-        <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2 text-[11px] text-slate-300">
+        <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2 tcp-text-caption text-slate-300">
           <div className="font-medium text-slate-100">Action impact</div>
           <div className="mt-1 tcp-subtle">
             {taskResetPreviewQuery.isLoading
@@ -133,7 +133,7 @@ export function WorkflowTaskActionsPanel({
               {selectedBoardTaskResetOutputPaths.map((path) => (
                 <span
                   key={path}
-                  className="rounded-full border border-slate-700/70 bg-slate-950/30 px-2 py-1 font-mono text-[11px] text-slate-300"
+                  className="rounded-full border border-slate-700/70 bg-slate-950/30 px-2 py-1 font-mono tcp-text-caption text-slate-300"
                 >
                   {path}
                 </span>
@@ -142,7 +142,7 @@ export function WorkflowTaskActionsPanel({
           ) : null}
         </div>
       ) : selectedBoardTaskIsProjectedBacklogItem ? (
-        <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2 text-[11px] text-slate-300">
+        <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2 tcp-text-caption text-slate-300">
           <div className="font-medium text-slate-100">Action impact</div>
           <div className="mt-1">
             Claiming assigns this backlog task to an agent without resetting any workflow nodes.
@@ -178,7 +178,7 @@ export function WorkflowTaskActionsPanel({
                 "Claim Task"
               )}
             </button>
-            <div className="tcp-subtle text-[11px]">
+            <div className="tcp-subtle tcp-text-caption">
               Assign this projected coding task and start its lease.
             </div>
           </div>
@@ -205,7 +205,7 @@ export function WorkflowTaskActionsPanel({
                 "Requeue Backlog Task"
               )}
             </button>
-            <div className="tcp-subtle text-[11px]">
+            <div className="tcp-subtle tcp-text-caption">
               Use when the task is blocked, failed, or its lease went stale.
             </div>
           </div>
@@ -240,7 +240,7 @@ export function WorkflowTaskActionsPanel({
                 "Continue Task"
               )}
             </button>
-            <div className="tcp-subtle text-[11px]">
+            <div className="tcp-subtle tcp-text-caption">
               {canTaskContinue
                 ? "Minimal reset: reruns the blocked task itself and preserves descendants unless they need to rerun later."
                 : selectedBoardTaskServerActionMessage}
@@ -277,7 +277,7 @@ export function WorkflowTaskActionsPanel({
                 "Retry Task"
               )}
             </button>
-            <div className="tcp-subtle text-[11px]">
+            <div className="tcp-subtle tcp-text-caption">
               {canTaskRetry
                 ? "Best for blocked or failed work that should rerun from this task downward."
                 : selectedBoardTaskServerActionMessage}
@@ -312,7 +312,7 @@ export function WorkflowTaskActionsPanel({
                 "Requeue Task"
               )}
             </button>
-            <div className="tcp-subtle text-[11px]">
+            <div className="tcp-subtle tcp-text-caption">
               Use when this task should go back onto the queue with its descendants reset.
             </div>
           </div>
@@ -345,7 +345,7 @@ export function WorkflowTaskActionsPanel({
                 "Repair Blocked Step"
               )}
             </button>
-            <div className="tcp-subtle text-[11px]">
+            <div className="tcp-subtle tcp-text-caption">
               Heavier reset/repair flow for blocked nodes when minimal continue is not enough.
             </div>
           </div>
@@ -371,7 +371,7 @@ export function WorkflowTaskActionsPanel({
                 "Retry Workflow"
               )}
             </button>
-            <div className="tcp-subtle text-[11px]">
+            <div className="tcp-subtle tcp-text-caption">
               Recover the whole run, not just this task subtree.
             </div>
           </div>

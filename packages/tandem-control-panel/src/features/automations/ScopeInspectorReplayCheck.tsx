@@ -16,7 +16,7 @@ export function ScopeInspectorReplayCheck({
   onToggleShowReplayIssues,
 }: ScopeInspectorReplayCheckProps) {
   return (
-    <div className="grid gap-1 rounded-lg border border-slate-800/70 bg-slate-950/20 p-2 text-[11px]">
+    <div className="grid gap-1 rounded-lg border border-slate-800/70 bg-slate-950/20 p-2 tcp-text-caption">
       <div className="tcp-subtle uppercase tracking-wide">Replay check</div>
       <div className="flex flex-wrap items-center gap-2 text-slate-100">
         <span className={planPackageReplay.compatible ? "text-emerald-300" : "text-amber-300"}>
@@ -47,7 +47,7 @@ export function ScopeInspectorReplayCheck({
       ) : null}
       {safeString(planPackageReplay?.previous_plan_id) ||
       safeString(planPackageReplay?.next_plan_id) ? (
-        <div className="tcp-subtle text-[11px]">
+        <div className="tcp-subtle tcp-text-caption">
           {safeString(planPackageReplay?.previous_plan_id) || "unknown"} · rev{" "}
           {String(planPackageReplay?.previous_plan_revision ?? "n/a")} {"->"}{" "}
           {safeString(planPackageReplay?.next_plan_id) || "unknown"} · rev{" "}
@@ -72,14 +72,14 @@ export function ScopeInspectorReplayCheck({
               </div>
               <div className="mt-2 grid gap-2 sm:grid-cols-2">
                 <div>
-                  <div className="tcp-subtle text-[11px] uppercase tracking-wide">previous</div>
-                  <pre className="tcp-code mt-1 max-h-24 overflow-auto text-[11px]">
+                  <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">previous</div>
+                  <pre className="tcp-code mt-1 max-h-24 overflow-auto tcp-text-caption">
                     {diffValue(entry?.previous_value)}
                   </pre>
                 </div>
                 <div>
-                  <div className="tcp-subtle text-[11px] uppercase tracking-wide">next</div>
-                  <pre className="tcp-code mt-1 max-h-24 overflow-auto text-[11px]">
+                  <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">next</div>
+                  <pre className="tcp-code mt-1 max-h-24 overflow-auto tcp-text-caption">
                     {diffValue(entry?.next_value)}
                   </pre>
                 </div>
@@ -93,7 +93,7 @@ export function ScopeInspectorReplayCheck({
           <button
             type="button"
             onClick={onToggleShowReplayIssues}
-            className="inline-flex w-fit items-center gap-2 rounded-md border border-slate-700/80 bg-slate-900/70 px-2 py-1 text-[11px] font-medium text-slate-100 transition hover:border-slate-500 hover:bg-slate-800"
+            className="inline-flex w-fit items-center gap-2 rounded-md border border-slate-700/80 bg-slate-900/70 px-2 py-1 tcp-text-caption font-medium text-slate-100 transition hover:border-slate-500 hover:bg-slate-800"
           >
             <i data-lucide={showReplayIssues ? "chevron-up" : "chevron-down"}></i>
             {showReplayIssues ? "Hide issues" : "Show issues"}
@@ -108,8 +108,8 @@ export function ScopeInspectorReplayCheck({
                     key={`${safeString(issue?.code) || "issue"}-${index}`}
                     className={
                       issue?.blocking
-                        ? "rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-[11px] text-amber-50"
-                        : "rounded-md border border-slate-800/80 bg-slate-950/30 p-2 text-[11px] text-slate-200"
+                        ? "rounded-md border border-amber-500/40 bg-amber-500/10 p-2 tcp-text-caption text-amber-50"
+                        : "rounded-md border border-slate-800/80 bg-slate-950/30 p-2 tcp-text-caption text-slate-200"
                     }
                   >
                     <div className="flex flex-wrap items-center gap-2">

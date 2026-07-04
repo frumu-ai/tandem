@@ -27,7 +27,7 @@ export function LazyJson({
   value,
   label = "Show raw JSON",
   className = "",
-  preClassName = "tcp-code mt-2 max-h-64 overflow-auto text-[11px]",
+  preClassName = "tcp-code mt-2 max-h-64 overflow-auto tcp-text-caption",
   hint,
 }: LazyJsonProps) {
   const [opened, setOpened] = useState(false);
@@ -39,7 +39,7 @@ export function LazyJson({
     >
       <summary className="cursor-pointer select-none text-xs text-slate-400 hover:text-slate-200">
         {label}
-        {hint ? <span className="ml-2 text-[10px] text-slate-500">{hint}</span> : null}
+        {hint ? <span className="ml-2 tcp-text-micro text-slate-500">{hint}</span> : null}
       </summary>
       {opened ? <pre className={preClassName}>{text}</pre> : null}
     </details>
@@ -53,7 +53,7 @@ export function LazyJson({
 export function DeferredJson({
   value,
   open,
-  className = "tcp-code mt-2 max-h-32 overflow-auto text-[11px]",
+  className = "tcp-code mt-2 max-h-32 overflow-auto tcp-text-caption",
 }: {
   value: unknown;
   open: boolean;

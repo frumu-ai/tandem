@@ -233,7 +233,7 @@ export function PlanSummaryPanel({
                         : "none"}
                     </div>
                     {extractKnowledge(step) ? (
-                      <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+                      <div className="mt-2 flex flex-wrap gap-2 tcp-text-caption">
                         <Badge tone={extractKnowledge(step)?.enabled === false ? "warn" : "ok"}>
                           {extractKnowledge(step)?.enabled === false
                             ? "knowledge off"
@@ -245,7 +245,7 @@ export function PlanSummaryPanel({
                         <Badge tone="info">
                           trust: {safeString(extractKnowledge(step)?.trust_floor || "promoted")}
                         </Badge>
-                        <span className="tcp-subtle text-[11px]">
+                        <span className="tcp-subtle tcp-text-caption">
                           subject: {safeString(extractKnowledge(step)?.subject || "inferred")}
                         </span>
                       </div>

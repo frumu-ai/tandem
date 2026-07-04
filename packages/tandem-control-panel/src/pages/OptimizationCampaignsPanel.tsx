@@ -348,7 +348,7 @@ export function OptimizationCampaignsPanel({
             </label>
             <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
               <div className="text-xs font-medium text-slate-200">Need a cheap target first?</div>
-              <div className="mt-1 text-[11px] text-slate-500">
+              <div className="mt-1 tcp-text-caption text-slate-500">
                 Create a tiny validator-backed workflow in the smoke-pack workspace, then use it as
                 the optimization source.
               </div>
@@ -418,7 +418,7 @@ export function OptimizationCampaignsPanel({
                   <option key={modelId} value={modelId} />
                 ))}
               </datalist>
-              <span className="tcp-subtle text-[11px]">
+              <span className="tcp-subtle tcp-text-caption">
                 Fixed for the whole campaign. Leave blank to use the workflow's existing model
                 settings.
               </span>
@@ -561,7 +561,7 @@ export function OptimizationCampaignsPanel({
 
               <div className="mt-4 grid gap-3 md:grid-cols-4">
                 <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
-                  <div className="text-[11px] uppercase tracking-[0.22em] text-slate-500">
+                  <div className="tcp-text-caption uppercase tracking-[0.22em] text-slate-500">
                     Status
                   </div>
                   <div className="mt-1 text-sm text-slate-100">
@@ -569,7 +569,7 @@ export function OptimizationCampaignsPanel({
                   </div>
                 </div>
                 <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
-                  <div className="text-[11px] uppercase tracking-[0.22em] text-slate-500">
+                  <div className="tcp-text-caption uppercase tracking-[0.22em] text-slate-500">
                     Pass Rate
                   </div>
                   <div className="mt-1 text-sm text-slate-100">
@@ -577,7 +577,7 @@ export function OptimizationCampaignsPanel({
                   </div>
                 </div>
                 <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
-                  <div className="text-[11px] uppercase tracking-[0.22em] text-slate-500">
+                  <div className="tcp-text-caption uppercase tracking-[0.22em] text-slate-500">
                     Unmet Reqs
                   </div>
                   <div className="mt-1 text-sm text-slate-100">
@@ -585,7 +585,7 @@ export function OptimizationCampaignsPanel({
                   </div>
                 </div>
                 <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
-                  <div className="text-[11px] uppercase tracking-[0.22em] text-slate-500">
+                  <div className="tcp-text-caption uppercase tracking-[0.22em] text-slate-500">
                     Blocked Rate
                   </div>
                   <div className="mt-1 text-sm text-slate-100">

@@ -242,7 +242,7 @@ export function RunTimeline({
                 className="grid gap-3 rounded-lg border border-white/10 bg-black/20 p-3 md:grid-cols-[8rem_minmax(0,1fr)]"
               >
                 <div className="min-w-0 text-xs text-tcp-text-tertiary">
-                  <div className="font-mono text-[11px]">{formatTime(entry.occurredAtMs)}</div>
+                  <div className="font-mono tcp-text-caption">{formatTime(entry.occurredAtMs)}</div>
                   <div className="mt-2 flex flex-wrap gap-1">
                     <Badge tone={toneBadge(entry.tone)}>{entry.source}</Badge>
                     {entry.sequence ? <Badge tone="ghost">#{entry.sequence}</Badge> : null}
@@ -256,7 +256,7 @@ export function RunTimeline({
                     <Badge tone={toneBadge(entry.tone)}>{entry.tone}</Badge>
                   </div>
                   <p className="line-clamp-2 text-xs text-tcp-text-secondary">{entry.summary}</p>
-                  <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-tcp-text-tertiary">
+                  <div className="mt-2 flex flex-wrap gap-2 tcp-text-caption text-tcp-text-tertiary">
                     {entry.actor ? <span>actor: {entry.actor}</span> : null}
                     {entry.phase ? <span>phase: {entry.phase}</span> : null}
                     {entry.nodeId ? <span>node: {entry.nodeId}</span> : null}

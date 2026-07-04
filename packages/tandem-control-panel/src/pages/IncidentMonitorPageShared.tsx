@@ -528,7 +528,7 @@ export function StatTile({
   const valueTone = STAT_TILE_TONE_TEXT[String(tone)] ?? STAT_TILE_TONE_TEXT.info;
   return (
     <div className="tcp-list-item min-h-[5rem]">
-      <div className="tcp-subtle text-[11px] uppercase tracking-[0.14em]">{humanizeLabel(label)}</div>
+      <div className="tcp-subtle tcp-text-caption uppercase tracking-[0.14em]">{humanizeLabel(label)}</div>
       <div className={`mt-2 min-w-0 truncate text-lg font-semibold ${valueTone}`}>
         {value === "" || value == null ? "n/a" : value}
       </div>

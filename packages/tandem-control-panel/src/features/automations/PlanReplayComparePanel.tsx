@@ -155,47 +155,47 @@ export function PlanReplayComparePanel({ planPackageReplay }: PlanReplayCompareP
       <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
         <div className="grid gap-2 sm:grid-cols-4">
           <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-            <div className="tcp-subtle text-[11px] uppercase tracking-wide">previous plan</div>
+            <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">previous plan</div>
             <div className="mt-1 break-words text-slate-100">
               {summaryValue(planPackageReplay?.previous_plan_id) || "n/a"}
             </div>
-            <div className="tcp-subtle text-[11px]">
+            <div className="tcp-subtle tcp-text-caption">
               rev {summaryValue(planPackageReplay?.previous_plan_revision)}
             </div>
           </div>
           <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-            <div className="tcp-subtle text-[11px] uppercase tracking-wide">next plan</div>
+            <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">next plan</div>
             <div className="mt-1 break-words text-slate-100">
               {summaryValue(planPackageReplay?.next_plan_id) || "n/a"}
             </div>
-            <div className="tcp-subtle text-[11px]">
+            <div className="tcp-subtle tcp-text-caption">
               rev {summaryValue(planPackageReplay?.next_plan_revision)}
             </div>
           </div>
           <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-            <div className="tcp-subtle text-[11px] uppercase tracking-wide">changed paths</div>
+            <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">changed paths</div>
             <div className="mt-1 text-slate-100">{diffEntries.length}</div>
           </div>
           <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-            <div className="tcp-subtle text-[11px] uppercase tracking-wide">blocking issues</div>
+            <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">blocking issues</div>
             <div className="mt-1 text-slate-100">{blockingIssues.length}</div>
           </div>
         </div>
         <div className="mt-2 grid gap-2 sm:grid-cols-3">
           <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-            <div className="tcp-subtle text-[11px] uppercase tracking-wide">scope metadata</div>
+            <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">scope metadata</div>
             <div className="mt-1 text-slate-100">
               {summaryValue(planPackageReplay?.scope_metadata_preserved)}
             </div>
           </div>
           <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-            <div className="tcp-subtle text-[11px] uppercase tracking-wide">handoff rules</div>
+            <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">handoff rules</div>
             <div className="mt-1 text-slate-100">
               {summaryValue(planPackageReplay?.handoff_rules_preserved)}
             </div>
           </div>
           <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-            <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+            <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
               credential isolation
             </div>
             <div className="mt-1 text-slate-100">
@@ -218,8 +218,8 @@ export function PlanReplayComparePanel({ planPackageReplay }: PlanReplayCompareP
                 key={`${safeString(issue?.code) || "issue"}-${index}`}
                 className={
                   issue?.blocking
-                    ? "rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-[11px] text-amber-50"
-                    : "rounded-md border border-slate-800/80 bg-slate-950/30 p-2 text-[11px] text-slate-200"
+                    ? "rounded-md border border-amber-500/40 bg-amber-500/10 p-2 tcp-text-caption text-amber-50"
+                    : "rounded-md border border-slate-800/80 bg-slate-950/30 p-2 tcp-text-caption text-slate-200"
                 }
               >
                 <div className="flex flex-wrap items-center gap-2">
@@ -267,16 +267,16 @@ export function PlanReplayComparePanel({ planPackageReplay }: PlanReplayCompareP
                       </div>
                       <div className="mt-2 grid gap-2 sm:grid-cols-2">
                         <div>
-                          <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                          <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                             previous
                           </div>
-                          <pre className="tcp-code mt-1 max-h-24 overflow-auto text-[11px]">
+                          <pre className="tcp-code mt-1 max-h-24 overflow-auto tcp-text-caption">
                             {diffValue(entry.previous_value)}
                           </pre>
                         </div>
                         <div>
-                          <div className="tcp-subtle text-[11px] uppercase tracking-wide">next</div>
-                          <pre className="tcp-code mt-1 max-h-24 overflow-auto text-[11px]">
+                          <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">next</div>
+                          <pre className="tcp-code mt-1 max-h-24 overflow-auto tcp-text-caption">
                             {diffValue(entry.next_value)}
                           </pre>
                         </div>

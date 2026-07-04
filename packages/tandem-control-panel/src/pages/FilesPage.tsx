@@ -706,7 +706,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
                           <i data-lucide="folder-open"></i>
                           <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
                             <span className="truncate">{bucket}</span>
-                            <span className="tcp-subtle text-[11px]">
+                            <span className="tcp-subtle tcp-text-caption">
                               {bucket === "uploads" ? "managed" : bucket}
                             </span>
                           </span>
@@ -883,7 +883,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
                           >
                             <i data-lucide="trash-2"></i>
                           </button>
-                          <label className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-slate-500">
+                          <label className="flex items-center gap-2 tcp-text-caption uppercase tracking-wide text-slate-500">
                             <span>Per page</span>
                             <select
                               className="tcp-select h-8 min-w-[5.5rem] px-3 text-center text-sm font-semibold tabular-nums text-slate-100 [text-align-last:center]"

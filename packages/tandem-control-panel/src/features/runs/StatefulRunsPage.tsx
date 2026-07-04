@@ -140,7 +140,7 @@ function DetailRecords({ title, rows, emptyText }: { title: string; rows: any[];
     <section className="border-t border-white/10 pt-3">
       <div className="mb-2 flex items-center justify-between gap-3">
         <h3 className="text-xs font-semibold uppercase tracking-wide text-tcp-text-muted">{title}</h3>
-        <span className="text-[11px] tabular-nums text-tcp-text-muted">{rows?.length || 0}</span>
+        <span className="tcp-text-caption tabular-nums text-tcp-text-muted">{rows?.length || 0}</span>
       </div>
       {visibleRows.length ? (
         <div className="space-y-2">
@@ -150,11 +150,11 @@ function DetailRecords({ title, rows, emptyText }: { title: string; rows: any[];
                 <span className="truncate text-xs font-medium text-tcp-text-secondary">{row.label || row.id}</span>
                 {row.status ? <Badge tone={badgeTone(row.statusGroup || row.status)}>{row.status}</Badge> : null}
               </div>
-              {row.detail ? <div className="mt-1 line-clamp-2 text-[11px] text-tcp-text-muted">{row.detail}</div> : null}
+              {row.detail ? <div className="mt-1 line-clamp-2 tcp-text-caption text-tcp-text-muted">{row.detail}</div> : null}
               {row.changes?.length ? (
                 <div className="mt-2 space-y-1">
                   {row.changes.slice(0, 4).map((change: any) => (
-                    <div key={change.key || change.label} className="grid gap-0.5 text-[10px] text-tcp-text-muted">
+                    <div key={change.key || change.label} className="grid gap-0.5 tcp-text-micro text-tcp-text-muted">
                       <span>{change.label}</span>
                       <span className="break-all font-mono text-tcp-text-secondary">
                         {change.from} -&gt; {change.to}
@@ -164,7 +164,7 @@ function DetailRecords({ title, rows, emptyText }: { title: string; rows: any[];
                 </div>
               ) : null}
               {row.seq || recordTime(row) ? (
-                <div className="mt-1 flex min-w-0 gap-2 text-[10px] text-tcp-text-muted">
+                <div className="mt-1 flex min-w-0 gap-2 tcp-text-micro text-tcp-text-muted">
                   {row.seq ? <span className="font-mono">seq {row.seq}</span> : null}
                   {recordTime(row) ? <span>{formatRunTimestamp(recordTime(row))}</span> : null}
                 </div>
@@ -236,33 +236,33 @@ function RunObservabilityPanel({
         <div className="min-h-0 space-y-4 overflow-auto pr-1">
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
-              <div className="text-[11px] uppercase tracking-wide text-tcp-text-muted">Status</div>
+              <div className="tcp-text-caption uppercase tracking-wide text-tcp-text-muted">Status</div>
               <div className="mt-1 flex items-center gap-2">
                 <Badge tone={badgeTone(selectedRow.statusGroup)}>{detail.statusLabel || selectedRow.statusLabel}</Badge>
                 {detail.isBlocked ? <Badge tone="warn">blocked</Badge> : null}
               </div>
             </div>
             <div>
-              <div className="text-[11px] uppercase tracking-wide text-tcp-text-muted">Runtime Phase</div>
+              <div className="tcp-text-caption uppercase tracking-wide text-tcp-text-muted">Runtime Phase</div>
               <div className="mt-1 truncate text-sm text-tcp-text-secondary">
                 {detail.runtimePhase || detail.phase || selectedRow.phase}
               </div>
               {detail.phase && detail.phase !== detail.runtimePhase ? (
-                <div className="mt-1 truncate text-[11px] text-tcp-text-muted">{detail.phase}</div>
+                <div className="mt-1 truncate tcp-text-caption text-tcp-text-muted">{detail.phase}</div>
               ) : null}
             </div>
             <div>
-              <div className="text-[11px] uppercase tracking-wide text-tcp-text-muted">Current Wait</div>
+              <div className="tcp-text-caption uppercase tracking-wide text-tcp-text-muted">Current Wait</div>
               <div className="mt-1 truncate text-sm text-tcp-text-secondary">
                 {detail.currentWait?.label || selectedRow.currentWait || "n/a"}
               </div>
               {detail.currentWait?.detail ? (
-                <div className="mt-1 truncate text-[11px] text-tcp-text-muted">{detail.currentWait.detail}</div>
+                <div className="mt-1 truncate tcp-text-caption text-tcp-text-muted">{detail.currentWait.detail}</div>
               ) : null}
             </div>
             <div>
-              <div className="text-[11px] uppercase tracking-wide text-tcp-text-muted">Workflow Version</div>
-              <div className="mt-1 truncate font-mono text-[11px] text-tcp-text-secondary">
+              <div className="tcp-text-caption uppercase tracking-wide text-tcp-text-muted">Workflow Version</div>
+              <div className="mt-1 truncate font-mono tcp-text-caption text-tcp-text-secondary">
                 {detail.workflowDefinitionVersion || "n/a"}
               </div>
             </div>
@@ -291,7 +291,7 @@ function RunObservabilityPanel({
             {detail.replay?.unsafeReasons?.length ? (
               <div className="mt-2 space-y-1">
                 {compactRows(detail.replay.unsafeReasons, 3).map((reason: string) => (
-                  <div key={reason} className="text-[11px] text-yellow-100">
+                  <div key={reason} className="tcp-text-caption text-yellow-100">
                     {reason}
                   </div>
                 ))}
@@ -428,7 +428,7 @@ export function StatefulRunsPage({
                 key={item.key}
                 className="min-h-[4.5rem] rounded-md border border-white/10 bg-white/[0.03] px-3 py-2"
               >
-                <div className="text-[11px] uppercase tracking-wide text-tcp-text-muted">{item.label}</div>
+                <div className="tcp-text-caption uppercase tracking-wide text-tcp-text-muted">{item.label}</div>
                 <div className="mt-1 text-2xl font-semibold tabular-nums text-tcp-text-primary">
                   {item.value}
                 </div>
@@ -457,7 +457,7 @@ export function StatefulRunsPage({
           ) : filteredRows.length ? (
             <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-white/10">
               <table className="w-full min-w-[1380px] table-fixed text-left text-xs">
-                <thead className="sticky top-0 z-10 bg-black/80 text-[11px] uppercase text-tcp-text-muted backdrop-blur">
+                <thead className="sticky top-0 z-10 bg-black/80 tcp-text-caption uppercase text-tcp-text-muted backdrop-blur">
                   <tr>
                     <th className="w-[20rem] px-3 py-2 font-medium">Run</th>
                     <th className="w-[8rem] px-3 py-2 font-medium">Status</th>
@@ -485,7 +485,7 @@ export function StatefulRunsPage({
                         <td className="px-3 py-3">
                           <div className="min-w-0">
                             <div className="truncate text-sm font-medium text-tcp-text-primary">{row.title}</div>
-                            <div className="mt-1 flex min-w-0 flex-wrap gap-2 text-[11px] text-tcp-text-muted">
+                            <div className="mt-1 flex min-w-0 flex-wrap gap-2 tcp-text-caption text-tcp-text-muted">
                               <span className="font-mono">{row.id}</span>
                               <span>{row.sourceLabel}</span>
                             </div>
@@ -498,32 +498,32 @@ export function StatefulRunsPage({
                         <td className="px-3 py-3 text-tcp-text-secondary">{row.triggerSource}</td>
                         <td className="px-3 py-3">
                           <div className="truncate text-tcp-text-secondary">{row.tenantOrg}</div>
-                          <div className="truncate text-[11px] text-tcp-text-muted">{row.tenantWorkspace}</div>
+                          <div className="truncate tcp-text-caption text-tcp-text-muted">{row.tenantWorkspace}</div>
                         </td>
                         <td className="px-3 py-3">
                           <div className="min-h-[4.25rem] rounded-md border border-white/10 bg-white/[0.025] px-2.5 py-2">
                             <div className="truncate text-tcp-text-secondary">
                               {row.orgUnitName || row.orgUnitId || "Tenant scoped"}
                             </div>
-                            <div className="mt-1 truncate font-mono text-[11px] text-tcp-text-muted">
+                            <div className="mt-1 truncate font-mono tcp-text-caption text-tcp-text-muted">
                               {row.resourceLabel || row.resourceId || "n/a"}
                             </div>
                             <div className="mt-1 flex min-w-0 flex-wrap gap-1">
                               {row.policyVersion ? (
-                                <span className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-tcp-text-muted">
+                                <span className="rounded border border-white/10 px-1.5 py-0.5 tcp-text-micro text-tcp-text-muted">
                                   {row.policyVersion}
                                 </span>
                               ) : null}
                               {row.dataClasses?.slice(0, 2).map((dataClass: string) => (
                                 <span
                                   key={dataClass}
-                                  className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-tcp-text-muted"
+                                  className="rounded border border-white/10 px-1.5 py-0.5 tcp-text-micro text-tcp-text-muted"
                                 >
                                   {dataClass}
                                 </span>
                               ))}
                               {row.knowledgeSourceCount ? (
-                                <span className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-tcp-text-muted">
+                                <span className="rounded border border-white/10 px-1.5 py-0.5 tcp-text-micro text-tcp-text-muted">
                                   {row.knowledgeSourceCount} src
                                 </span>
                               ) : null}
@@ -531,20 +531,20 @@ export function StatefulRunsPage({
                           </div>
                         </td>
                         <td className="px-3 py-3">
-                          <div className="truncate font-mono text-[11px] text-tcp-text-secondary">
+                          <div className="truncate font-mono tcp-text-caption text-tcp-text-secondary">
                             {row.workspace || "n/a"}
                           </div>
                         </td>
                         <td className="px-3 py-3">
                           <div className="line-clamp-2 text-tcp-text-secondary">{row.currentWait || "n/a"}</div>
                           {row.waitDetail ? (
-                            <div className="mt-1 truncate text-[11px] text-tcp-text-muted">{row.waitDetail}</div>
+                            <div className="mt-1 truncate tcp-text-caption text-tcp-text-muted">{row.waitDetail}</div>
                           ) : null}
                         </td>
                         <td className="px-3 py-3">
                           <div className="truncate text-tcp-text-secondary">{row.retryState}</div>
                           {row.retryDetail ? (
-                            <div className="mt-1 truncate text-[11px] text-tcp-text-muted">{row.retryDetail}</div>
+                            <div className="mt-1 truncate tcp-text-caption text-tcp-text-muted">{row.retryDetail}</div>
                           ) : null}
                         </td>
                         <td className="px-3 py-3 text-tcp-text-secondary">

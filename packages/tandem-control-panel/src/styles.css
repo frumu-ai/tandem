@@ -31,6 +31,8 @@
     --font-mono:
       "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
     --radius: 0px;
+    --font-size-caption: 11px;
+    --font-size-micro: 10px;
     --border-width: 1px;
     --border-width-strong: 2px;
     --shadow-offset: 2px 2px 0 rgba(0, 0, 0, 0.32);
@@ -770,6 +772,14 @@
   .tcp-subtle {
     @apply text-sm;
     color: var(--color-text-muted);
+  }
+
+  .tcp-text-caption {
+    font-size: var(--font-size-caption);
+  }
+
+  .tcp-text-micro {
+    font-size: var(--font-size-micro);
   }
 
   .tcp-list {
@@ -1718,7 +1728,8 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   }
 
   .chat-main-tools {
-    @apply shrink-0 rounded-md px-1.5 py-0.5 text-[10px] uppercase tracking-wider;
+    @apply shrink-0 rounded-md px-1.5 py-0.5 uppercase tracking-wider;
+    font-size: var(--font-size-micro);
     border: 1px solid color-mix(in srgb, var(--color-border-subtle) 90%, transparent);
     background: color-mix(in srgb, var(--color-surface-elevated) 90%, #000 10%);
     color: var(--color-text-muted);
@@ -1768,13 +1779,15 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   }
 
   .chat-rail-label {
-    @apply text-[10px] uppercase tracking-[0.18em];
+    @apply uppercase tracking-[0.18em];
+    font-size: var(--font-size-micro);
     color: var(--color-text-subtle);
     font-family: var(--font-mono);
   }
 
   .chat-rail-count {
-    @apply rounded-md px-1.5 py-0.5 text-[10px];
+    @apply rounded-md px-1.5 py-0.5;
+    font-size: var(--font-size-micro);
     border: 1px solid color-mix(in srgb, var(--color-border-subtle) 90%, transparent);
     color: var(--color-text-muted);
     font-family: var(--font-mono);
@@ -1789,7 +1802,8 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   }
 
   .chat-tool-pill {
-    @apply rounded-sm px-1.5 py-0.5 text-[10px] transition;
+    @apply rounded-sm px-1.5 py-0.5 transition;
+    font-size: var(--font-size-micro);
     border: 1px solid color-mix(in srgb, var(--color-border-subtle) 90%, transparent);
     background: color-mix(in srgb, var(--color-surface-elevated) 90%, #000 10%);
     color: var(--color-text-muted);
@@ -1841,12 +1855,14 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   }
 
   .chat-tool-chip {
-    @apply rounded-sm border px-1.5 py-1 text-[10px];
+    @apply rounded-sm border px-1.5 py-1;
+    font-size: var(--font-size-micro);
     font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   }
 
   .chat-tool-event {
-    @apply rounded-sm border px-1.5 py-1 text-[10px];
+    @apply rounded-sm border px-1.5 py-1;
+    font-size: var(--font-size-micro);
     font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   }
 
@@ -1888,7 +1904,7 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   }
 
   .chat-rail-empty {
-    @apply text-[11px];
+    font-size: var(--font-size-caption);
     color: var(--color-text-subtle);
   }
 
@@ -1968,7 +1984,7 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   }
 
   .chat-file-pill-size {
-    @apply text-[10px];
+    font-size: var(--font-size-micro);
     color: var(--color-text-subtle);
   }
 
@@ -2006,7 +2022,8 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   }
 
   .chat-msg-role {
-    @apply mb-1 text-[10px] uppercase tracking-[0.12em];
+    @apply mb-1 uppercase tracking-[0.12em];
+    font-size: var(--font-size-micro);
     color: var(--color-text-subtle);
   }
 
