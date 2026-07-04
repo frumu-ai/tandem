@@ -175,6 +175,19 @@ not every key.
 | `context.budget.bypassed`                                      | A component bypasses context budgeting.                 | `component`, `reason`, `sessionID`, `promptChars`                          |
 | `context.full.budget.warning` / `context.full.budget.exceeded` | Estimated full-context size crosses soft / hard budget. | `sessionID`, `messageID`, `estimatedTotalChars`, contributors              |
 
+### Data boundary
+
+Emitted by the audit-only provider-dispatch evaluation (`TANDEM_DATA_BOUNDARY_MODE`, see `docs/DATA_BOUNDARY_MODULE.md`). Payloads carry classes, counts, hashes, spans, and policy fingerprints — never raw prompt, tool, memory, or model content.
+
+| Event type                       | Fires when                                                            | Key payload fields                                                                                        |
+| -------------------------------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `data_boundary.evaluated`        | The assembled provider request was evaluated (allow/allow-with-audit). | `sessionID`, `messageID`, `providerID`, `modelID`, `action`, `finding_summary`, `payload_hash`, `policy_fingerprint`, `reason_codes`, `decision_latency_ms` |
+| `data_boundary.redacted`         | Policy decided the payload should be redacted.                        | same as `data_boundary.evaluated`                                                                          |
+| `data_boundary.tokenized`        | Policy decided the payload should be tokenized.                       | same as `data_boundary.evaluated`                                                                          |
+| `data_boundary.blocked`          | Policy decided the dispatch should be blocked (enforce mode, future). | same as `data_boundary.evaluated`                                                                          |
+| `data_boundary.approval_required`| Policy requires approval before dispatch (enforce mode, future).      | same as `data_boundary.evaluated`                                                                          |
+| `data_boundary.routed_local`     | Policy requires routing to a local/private model (enforce mode, future). | same as `data_boundary.evaluated`                                                                       |
+
 ### Tool execution & governance
 
 | Event type                                | Fires when                                                                                                                                                                    | Key payload fields                                                          |

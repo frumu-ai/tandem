@@ -19,6 +19,7 @@ use tandem_wire::WireMessagePart;
 use tokio_util::sync::CancellationToken;
 use tracing::Level;
 
+mod data_boundary_gate;
 mod loop_guards;
 mod loop_tuning;
 mod prewrite_gate;

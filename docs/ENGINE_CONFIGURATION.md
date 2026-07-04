@@ -5,6 +5,12 @@ This page is generated from the engine config registry used by `tandem-engine co
 | Variable                                      | Default               | Notes                                                                                                               |
 | --------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | `TANDEM_RUNTIME_AUTH_MODE`                    | `local_single_tenant` | Runtime trust mode: local_single_tenant, hosted_single_tenant, or enterprise_required.                              |
+| `TANDEM_DATA_BOUNDARY_MODE`                   | `off`                 | Data boundary evaluation at provider dispatch: off, audit, or enforce. Audit-only in this release; enforce does not yet block. |
+| `TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY`    | `block`               | Treatment of raw sensitive data headed to unapproved external providers: allow, audit, redact, approval, require_local, or block. |
+| `TANDEM_DATA_BOUNDARY_MAX_PAYLOAD_BYTES`      | `unset`               | Optional payload byte cap recorded by data-boundary decisions (blocks only once enforce mode lands).                |
+| `TANDEM_DATA_BOUNDARY_APPROVAL_CLASSES`       | `unset`               | Comma-separated sensitive data classes requiring approval (e.g. credential,customer_data).                          |
+| `TANDEM_DATA_BOUNDARY_REDACT_CLASSES`         | `unset`               | Comma-separated sensitive data classes to redact before external dispatch.                                          |
+| `TANDEM_DATA_BOUNDARY_BLOCK_CLASSES`          | `unset`               | Comma-separated sensitive data classes that must never leave for a provider.                                        |
 | `TANDEM_API_TOKEN`                            | `unset`               | Explicit HTTP transport bearer token. Secret value is never printed by config check.                                |
 | `TANDEM_API_TOKEN_FILE`                       | `unset`               | File containing the HTTP transport bearer token. Required in hosted/enterprise mode unless --api-token is supplied. |
 | `TANDEM_UNSAFE_NO_API_TOKEN`                  | `false`               | Local loopback development only; rejected in hosted/enterprise mode.                                                |

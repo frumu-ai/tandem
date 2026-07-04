@@ -66,6 +66,7 @@ pub mod benchmarking;
 pub mod browser;
 pub mod capability_resolver;
 pub mod config;
+pub mod data_boundary_bridge;
 pub mod eval_support;
 pub mod failures;
 pub mod goal_capability_learning;

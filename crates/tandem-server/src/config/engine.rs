@@ -119,6 +119,7 @@ impl EngineConfigReport {
             unsafe_no_api_token,
         };
 
+        validate_data_boundary_config(&mut errors);
         validate_security_invariants(&config, &mut errors);
         warnings.sort();
         warnings.dedup();
@@ -266,6 +267,76 @@ fn parse_scheduler_mode(errors: &mut Vec<String>) -> &'static str {
             }
         },
         _ => "multi",
+    }
+}
+
+/// TAN-389: `TANDEM_DATA_BOUNDARY_*` values are parsed leniently at the
+/// engine-loop call site (tandem-core reads env directly per the tunables
+/// convention), so bad values must be rejected here at startup — otherwise a
+/// typo'd `enforce` or class name would silently weaken a security policy.
+fn validate_data_boundary_config(errors: &mut Vec<String>) {
+    if let Ok(value) = std::env::var("TANDEM_DATA_BOUNDARY_MODE") {
+        if !value.trim().is_empty()
+            && tandem_data_boundary::DataBoundaryMode::parse(&value).is_none()
+        {
+            errors.push(format!(
+                "TANDEM_DATA_BOUNDARY_MODE has invalid value `{}`; expected off, audit, or enforce",
+                value.trim()
+            ));
+        }
+    }
+    if let Ok(value) = std::env::var("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY") {
+        let normalized = value.trim().to_ascii_lowercase();
+        if !normalized.is_empty()
+            && !matches!(
+                normalized.as_str(),
+                "allow"
+                    | "audit"
+                    | "redact"
+                    | "approval"
+                    | "require_local"
+                    | "required_local"
+                    | "block"
+            )
+        {
+            errors.push(format!(
+                "TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY has invalid value `{}`; expected allow, audit, redact, approval, require_local, or block",
+                value.trim()
+            ));
+        }
+    }
+    for var in [
+        "TANDEM_DATA_BOUNDARY_APPROVAL_CLASSES",
+        "TANDEM_DATA_BOUNDARY_REDACT_CLASSES",
+        "TANDEM_DATA_BOUNDARY_BLOCK_CLASSES",
+    ] {
+        let Ok(value) = std::env::var(var) else {
+            continue;
+        };
+        for entry in value.split(',') {
+            let entry = entry.trim();
+            if !entry.is_empty() && tandem_data_boundary::SensitiveDataClass::parse(entry).is_none()
+            {
+                errors.push(format!(
+                    "{var} contains unknown sensitive data class `{entry}`"
+                ));
+            }
+        }
+    }
+    if let Ok(value) = std::env::var("TANDEM_DATA_BOUNDARY_MAX_PAYLOAD_BYTES") {
+        if !value.trim().is_empty()
+            && value
+                .trim()
+                .parse::<u64>()
+                .ok()
+                .filter(|bytes| *bytes > 0)
+                .is_none()
+        {
+            errors.push(format!(
+                "TANDEM_DATA_BOUNDARY_MAX_PAYLOAD_BYTES has invalid value `{}`; expected a positive integer",
+                value.trim()
+            ));
+        }
     }
 }
 
@@ -601,6 +672,12 @@ const KNOWN_PREFIXES: &[&str] = &[
 
 const CONFIG_VARS: &[ConfigVar] = &[
     ConfigVar { name: "TANDEM_RUNTIME_AUTH_MODE", default: "local_single_tenant", notes: "Runtime trust mode: local_single_tenant, hosted_single_tenant, or enterprise_required." },
+    ConfigVar { name: "TANDEM_DATA_BOUNDARY_MODE", default: "off", notes: "Data boundary evaluation at provider dispatch: off, audit, or enforce. Audit-only in this release; enforce does not yet block." },
+    ConfigVar { name: "TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY", default: "block", notes: "Treatment of raw sensitive data headed to unapproved external providers: allow, audit, redact, approval, require_local, or block." },
+    ConfigVar { name: "TANDEM_DATA_BOUNDARY_MAX_PAYLOAD_BYTES", default: "unset", notes: "Optional payload byte cap recorded by data-boundary decisions (blocks only once enforce mode lands)." },
+    ConfigVar { name: "TANDEM_DATA_BOUNDARY_APPROVAL_CLASSES", default: "unset", notes: "Comma-separated sensitive data classes requiring approval (e.g. credential,customer_data)." },
+    ConfigVar { name: "TANDEM_DATA_BOUNDARY_REDACT_CLASSES", default: "unset", notes: "Comma-separated sensitive data classes to redact before external dispatch." },
+    ConfigVar { name: "TANDEM_DATA_BOUNDARY_BLOCK_CLASSES", default: "unset", notes: "Comma-separated sensitive data classes that must never leave for a provider." },
     ConfigVar { name: "TANDEM_API_TOKEN", default: "unset", notes: "Explicit HTTP transport bearer token. Secret value is never printed by config check." },
     ConfigVar { name: "TANDEM_API_TOKEN_FILE", default: "unset", notes: "File containing the HTTP transport bearer token. Required in hosted/enterprise mode unless --api-token is supplied." },
     ConfigVar { name: "TANDEM_UNSAFE_NO_API_TOKEN", default: "false", notes: "Local loopback development only; rejected in hosted/enterprise mode." },
@@ -768,6 +845,72 @@ mod tests {
                     .errors
                     .iter()
                     .any(|error| error.contains("Ed25519 public keys")));
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn invalid_data_boundary_config_fails_validation() {
+        with_env(
+            &[
+                ("TANDEM_DATA_BOUNDARY_MODE", Some("enforced")),
+                ("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY", Some("maybe")),
+                (
+                    "TANDEM_DATA_BOUNDARY_REDACT_CLASSES",
+                    Some("credential,super_secret_typo"),
+                ),
+                ("TANDEM_DATA_BOUNDARY_MAX_PAYLOAD_BYTES", Some("lots")),
+            ],
+            || {
+                let report = EngineConfigReport::from_env(EngineConfigOptions::default());
+                for needle in [
+                    "TANDEM_DATA_BOUNDARY_MODE",
+                    "TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY",
+                    "super_secret_typo",
+                    "TANDEM_DATA_BOUNDARY_MAX_PAYLOAD_BYTES",
+                ] {
+                    assert!(
+                        report.errors.iter().any(|error| error.contains(needle)),
+                        "expected error mentioning {needle}: {:?}",
+                        report.errors
+                    );
+                }
+            },
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn valid_data_boundary_config_passes_validation() {
+        with_env(
+            &[
+                ("TANDEM_DATA_BOUNDARY_MODE", Some("audit")),
+                ("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY", Some("redact")),
+                (
+                    "TANDEM_DATA_BOUNDARY_REDACT_CLASSES",
+                    Some("credential, customer_data"),
+                ),
+                ("TANDEM_DATA_BOUNDARY_MAX_PAYLOAD_BYTES", Some("1048576")),
+            ],
+            || {
+                let report = EngineConfigReport::from_env(EngineConfigOptions::default());
+                assert!(
+                    !report
+                        .errors
+                        .iter()
+                        .any(|error| error.contains("TANDEM_DATA_BOUNDARY")),
+                    "unexpected data boundary errors: {:?}",
+                    report.errors
+                );
+                assert!(
+                    !report
+                        .warnings
+                        .iter()
+                        .any(|warning| warning.contains("TANDEM_DATA_BOUNDARY")),
+                    "data boundary vars must be registered known vars: {:?}",
+                    report.warnings
+                );
             },
         );
     }
