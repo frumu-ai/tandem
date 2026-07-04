@@ -39,11 +39,16 @@ pub struct DataBoundaryEvaluation {
 ///
 /// * `Off` mode allows without running detection.
 /// * `Audit` mode detects and may redact/tokenize per policy, but decisions
-///   that would stop a call (block, approval, local routing) downgrade to
-///   `AllowWithAudit` with the original reason codes preserved.
+///   that would stop a call (block, approval, local routing) downgrade — to
+///   the configured span-backed transformation when one applies, otherwise to
+///   `AllowWithAudit` — with the original reason codes preserved.
 /// * `Enforce` mode blocks prohibited providers, oversized payloads, strict
 ///   fail-closed violations, and raw sensitive data headed to unapproved
 ///   external providers unless policy explicitly allows the class.
+/// * Redact/Tokenize apply only to detector-spanned classes; a class present
+///   only as a declared hint cannot be located for transformation, so
+///   transform policies on it fail closed rather than claiming a transform
+///   that did not happen.
 pub fn evaluate_data_boundary(
     request: &DataBoundaryEvaluationRequest<'_>,
     policy: &DataBoundaryPolicy,
@@ -76,16 +81,24 @@ pub fn evaluate_data_boundary(
         .unwrap_or_default();
 
     let findings = summarize_findings(&detector_findings);
-    let mut present_classes: BTreeSet<SensitiveDataClass> =
+    let detected_classes: BTreeSet<SensitiveDataClass> =
         findings.iter().map(|finding| finding.data_class).collect();
+    let mut present_classes = detected_classes.clone();
     present_classes.extend(input.data_classes.iter().copied());
 
-    let (candidate_action, mut reason_codes) =
-        candidate_enforce_action(input, policy, &present_classes);
+    let CandidateOutcome {
+        action: candidate_action,
+        mut reason_codes,
+        transform_fallback,
+    } = candidate_enforce_action(input, policy, &present_classes, &detected_classes);
 
     let action = if policy.mode == DataBoundaryMode::Audit && candidate_action.blocks_dispatch() {
         reason_codes.push("audit_mode_downgrade".to_string());
-        DataBoundaryAction::AllowWithAudit
+        // Audit mode never blocks, but a configured span-backed
+        // redaction/tokenization still applies to the downgraded dispatch —
+        // otherwise the downgrade would send raw content that policy
+        // explicitly asked to transform.
+        transform_fallback.unwrap_or(DataBoundaryAction::AllowWithAudit)
     } else {
         candidate_action
     };
@@ -163,13 +176,25 @@ fn provider_is_approved(input: &DataBoundaryInput, policy: &DataBoundaryPolicy) 
             .contains(&input.provider.provider_id)
 }
 
+/// Outcome of the enforce-mode rule pass. `transform_fallback` is the
+/// strongest span-backed Redact/Tokenize action that was triggered, kept
+/// separately so an audit-mode downgrade of a blocking action can still apply
+/// the transformation policy explicitly configured for the payload.
+struct CandidateOutcome {
+    action: DataBoundaryAction,
+    reason_codes: Vec<String>,
+    transform_fallback: Option<DataBoundaryAction>,
+}
+
 fn candidate_enforce_action(
     input: &DataBoundaryInput,
     policy: &DataBoundaryPolicy,
     present_classes: &BTreeSet<SensitiveDataClass>,
-) -> (DataBoundaryAction, Vec<String>) {
+    detected_classes: &BTreeSet<SensitiveDataClass>,
+) -> CandidateOutcome {
     let mut action = DataBoundaryAction::Allow;
     let mut reason_codes = Vec::new();
+    let mut transform_fallback: Option<DataBoundaryAction> = None;
     fn raise(
         candidate: DataBoundaryAction,
         reason: String,
@@ -234,7 +259,11 @@ fn candidate_enforce_action(
         if reason_codes.is_empty() {
             reason_codes.push("no_findings".to_string());
         }
-        return (action, reason_codes);
+        return CandidateOutcome {
+            action,
+            reason_codes,
+            transform_fallback,
+        };
     }
 
     let approved_provider = provider_is_approved(input, policy);
@@ -274,21 +303,42 @@ fn candidate_enforce_action(
                 &mut reason_codes,
             );
         }
-        if policy.tokenize_classes.contains(class) {
-            raise(
+        // Redact/Tokenize can only be honored for classes the detector can
+        // actually span. A class present only as a declared hint (e.g. a
+        // governed memory/KB label) has no locatable content to transform, so
+        // claiming Redact/Tokenize would dispatch it raw while the evidence
+        // says otherwise — fail closed instead.
+        let transformable = detected_classes.contains(class);
+        for (configured, transform_action, kind) in [
+            (
+                &policy.tokenize_classes,
                 DataBoundaryAction::Tokenize,
-                format!("tokenize_class_{label}"),
-                &mut action,
-                &mut reason_codes,
-            );
-        }
-        if policy.redact_classes.contains(class) {
-            raise(
-                DataBoundaryAction::Redact,
-                format!("redact_class_{label}"),
-                &mut action,
-                &mut reason_codes,
-            );
+                "tokenize",
+            ),
+            (&policy.redact_classes, DataBoundaryAction::Redact, "redact"),
+        ] {
+            if !configured.contains(class) {
+                continue;
+            }
+            if transformable {
+                raise(
+                    transform_action,
+                    format!("{kind}_class_{label}"),
+                    &mut action,
+                    &mut reason_codes,
+                );
+                if transform_fallback.is_none_or(|f| transform_action.precedence() > f.precedence())
+                {
+                    transform_fallback = Some(transform_action);
+                }
+            } else {
+                raise(
+                    DataBoundaryAction::Block,
+                    format!("untransformable_{kind}_class_{label}"),
+                    &mut action,
+                    &mut reason_codes,
+                );
+            }
         }
     }
 
@@ -301,7 +351,11 @@ fn candidate_enforce_action(
         );
     }
 
-    (action, reason_codes)
+    CandidateOutcome {
+        action,
+        reason_codes,
+        transform_fallback,
+    }
 }
 
 /// Group span-level detector findings into one audit-safe
@@ -662,6 +716,56 @@ mod tests {
         pol.require_local_classes = vec![SensitiveDataClass::Credential];
         let result = evaluate(&input, Some(SECRET_PAYLOAD), &pol);
         assert_eq!(result.decision.action, DataBoundaryAction::AllowWithAudit);
+    }
+
+    #[test]
+    fn hint_only_transform_class_fails_closed_in_enforce() {
+        // CustomerData arrives only as a declared hint (no detector span), so
+        // a redact policy cannot actually transform it — claiming Redact
+        // would dispatch it raw. Enforce mode must block instead.
+        let mut input = input_for(ProviderBoundaryClass::ApprovedExternal);
+        input.data_classes = vec![SensitiveDataClass::CustomerData];
+        let mut pol = policy(DataBoundaryMode::Enforce);
+        pol.redact_classes = vec![SensitiveDataClass::CustomerData];
+        let result = evaluate(&input, Some("clean payload"), &pol);
+        assert_eq!(result.decision.action, DataBoundaryAction::Block);
+        assert!(result.transformed_payload.is_none());
+        assert!(result
+            .decision
+            .reason_codes
+            .contains(&"untransformable_redact_class_customer_data".to_string()));
+
+        // In audit mode the block downgrades, and with no span-backed
+        // transformation available the honest action is AllowWithAudit —
+        // never a false Redact claim.
+        pol.mode = DataBoundaryMode::Audit;
+        let audited = evaluate(&input, Some("clean payload"), &pol);
+        assert_eq!(audited.decision.action, DataBoundaryAction::AllowWithAudit);
+        assert!(audited.transformed_payload.is_none());
+    }
+
+    #[test]
+    fn audit_downgrade_still_applies_configured_redaction() {
+        // Raw-egress Block outranks Redact, but the audit downgrade must fall
+        // back to the configured span-backed redaction rather than dispatch
+        // the raw secret as plain AllowWithAudit.
+        let input = input_for(ProviderBoundaryClass::UnapprovedExternal);
+        let mut pol = policy(DataBoundaryMode::Audit);
+        pol.redact_classes = vec![SensitiveDataClass::Credential];
+        let result = evaluate(&input, Some(SECRET_PAYLOAD), &pol);
+        assert_eq!(result.decision.action, DataBoundaryAction::Redact);
+        assert_eq!(result.event_kind, DataBoundaryEventKind::Redacted);
+        let transformed = result.transformed_payload.expect("redacted payload");
+        assert!(!transformed.contains("sk-live-abcdef1234567890"));
+        assert!(result
+            .decision
+            .reason_codes
+            .contains(&"audit_mode_downgrade".to_string()));
+        assert!(result
+            .decision
+            .reason_codes
+            .iter()
+            .any(|code| code.starts_with("raw_sensitive_to_unapproved_external_")));
     }
 
     #[test]

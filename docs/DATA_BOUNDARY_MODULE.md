@@ -108,16 +108,24 @@ even when a stronger action wins:
 * **Class rules** for every sensitive class present (detected or declared via
   `DataBoundaryInput.data_classes`): `block_classes`,
   `approval_required_classes`, `require_local_classes` (external providers
-  only), `tokenize_classes`, `redact_classes`.
+  only), `tokenize_classes`, `redact_classes`. Redact/Tokenize apply only to
+  classes the detector actually spanned; a class present only as a declared
+  hint (e.g. a governed memory/KB label) has no locatable content to
+  transform, so a transform policy on it fails closed
+  (`untransformable_redact_class_*` / `untransformable_tokenize_class_*`)
+  instead of claiming a transformation that did not happen.
 * **Raw-egress rule**: any sensitive class headed to an unapproved provider
   blocks unless the class is in `allow_raw_external_classes`. Local,
   CustomerHosted, and ApprovedExternal providers are intrinsically approved;
   UnapprovedExternal can be exempted via `approved_provider_ids` /
   `approved_provider_classes`.
 * **Audit mode never blocks**: decisions that would stop dispatch (Block,
-  RequireApproval, RouteToLocal) downgrade to `AllowWithAudit`, keeping their
-  reason codes plus `audit_mode_downgrade`. Redact/Tokenize still apply, since
-  transformation is non-blocking.
+  RequireApproval, RouteToLocal) downgrade, keeping their reason codes plus
+  `audit_mode_downgrade`. When the policy also configured a span-backed
+  redaction/tokenization for the payload, the downgrade falls back to that
+  transformation rather than dispatching the raw content; otherwise it becomes
+  `AllowWithAudit`. Redact/Tokenize themselves still apply in audit mode,
+  since transformation is non-blocking.
 * Sensitive classes with no matching rule yield `AllowWithAudit`
   (`sensitive_classes_present`); a clean payload yields `Allow`
   (`no_findings`).
