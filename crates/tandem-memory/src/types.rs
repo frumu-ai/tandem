@@ -290,12 +290,16 @@ impl MemoryAccessFilter {
         &self,
         metadata: Option<&serde_json::Value>,
     ) -> Option<GovernedReadDecision> {
-        if self.mode == GovernedReadMode::LocalNoop {
+        if self.mode == GovernedReadMode::LocalNoop || self.workflow_phase.is_none() {
             return None;
         }
-        Some(GovernedReadDecision::deny(
-            "knowledge_scope_registry_missing",
-        ))
+        if crate::knowledge_scope::metadata_has_enterprise_source_binding(metadata) {
+            Some(GovernedReadDecision::deny(
+                "knowledge_scope_registry_missing",
+            ))
+        } else {
+            None
+        }
     }
 
     pub fn decision_for_source_target(
