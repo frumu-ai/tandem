@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { renderIcons } from "../app/icons.js";
 import { ConfirmDialog } from "../components/ControlPanelDialogs";
-import { AnimatedPage, Badge, DetailDrawer, EmptyState, PanelCard } from "../ui/index.tsx";
+import { AnimatedPage, Badge, DetailDrawer, EmptyState, IdChip, PanelCard } from "../ui/index.tsx";
 import {
   QualityGateStrip,
   QueryError,
@@ -898,7 +898,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                         </label>
                         <div className="min-w-0">
                           <div className="truncate font-medium">{title}</div>
-                          <div className="tcp-subtle mt-1 break-all text-xs">{incidentId}</div>
+                          <div className="mt-1"><IdChip value={incidentId} /></div>
                         </div>
                       </div>
                       <div className="flex flex-wrap justify-end gap-2">
@@ -1130,7 +1130,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                           <div className="truncate font-medium">
                             {firstString(draft, ["title", "fingerprint"], draftId)}
                           </div>
-                          <div className="tcp-subtle mt-1 break-all text-xs">{draftId}</div>
+                          <div className="mt-1"><IdChip value={draftId} /></div>
                         </div>
                       </div>
                       <Badge tone={statusTone(draft.status)}>
@@ -1481,7 +1481,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                           <div className="truncate font-medium">
                             {firstString(post, ["title", "operation"], "GitHub post")}
                           </div>
-                          <div className="tcp-subtle mt-1 break-all text-xs">{postId}</div>
+                          <div className="mt-1"><IdChip value={postId} /></div>
                         </div>
                       </div>
                       <Badge tone={statusTone(post.status)}>

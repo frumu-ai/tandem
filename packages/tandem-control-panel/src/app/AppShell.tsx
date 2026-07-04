@@ -6,96 +6,35 @@ import { GlowLayer, IconButton, StatusPulse } from "../ui/index.tsx";
 import { TandemLogoAnimation } from "../ui/TandemLogoAnimation";
 import type { NavigationLockState } from "../pages/pageTypes";
 
+// Keep subtitles to a short descriptor — the shell header shows one line and the
+// page body carries the detail. Every primary nav route needs an entry so none
+// falls back to the generic "Control Panel" placeholder (see TAN-585).
 const ROUTE_META: Record<string, { title: string; subtitle: string }> = {
-  dashboard: {
-    title: "Overview",
-    subtitle: "Command status, activity, and fast paths into the system.",
-  },
-  chat: {
-    title: "Chat",
-    subtitle: "Session-driven conversation, tools, uploads, and live responses.",
-  },
-  planner: {
-    title: "Planner",
-    subtitle: "Advanced long-horizon intent, multi-agent planning, and governed handoff.",
-  },
-  studio: {
-    title: "Studio",
-    subtitle:
-      "Advanced template-first workflow builder with reusable role prompts and visual stages.",
-  },
-  automations: {
-    title: "Automations",
-    subtitle: "Create, Calendar, Library, and Run History.",
-  },
-  experiments: {
-    title: "Experiments",
-    subtitle: "Hidden by default. Turn this on in Settings when you need experimental surfaces.",
-  },
-  coding: {
-    title: "Coder",
-    subtitle: "Durable coder runs, project intake, and repository work.",
-  },
-  agents: {
-    title: "Agents",
-    subtitle: "Search reusable roles, inspect routines, and manage workflow-ready agent drafts.",
-  },
-  orchestrator: {
-    title: "Task Board",
-    subtitle: "Plan-driven task execution with workspace visibility and approvals.",
-  },
-  memory: {
-    title: "Memory",
-    subtitle: "Searchable memory records and operational context snapshots.",
-  },
-  runs: {
-    title: "Runs",
-    subtitle: "Live operations overview with queue state and per-run inspection.",
-  },
-  "control-loop": {
-    title: "Control Loop",
-    subtitle: "Goal, policy, approval, action, audit, and memory traceability in one view.",
-  },
-  approvals: {
-    title: "Approvals Inbox",
-    subtitle: "Pending human approvals across every workflow that has paused on a gate.",
-  },
-  settings: {
-    title: "Settings",
-    subtitle: "Provider defaults, identity, themes, and runtime diagnostics.",
-  },
-  channels: {
-    title: "Channels",
-    subtitle: "Chat integrations, tool scope, and channel configuration.",
-  },
-  "incident-monitor": {
-    title: "Incident Monitor",
-    subtitle: "Issue detection, draft review, and GitHub publishing controls.",
-  },
-  packs: {
-    title: "Packs",
-    subtitle: "Starter packs and pack installation paths.",
-  },
-  teams: {
-    title: "Teams",
-    subtitle: "Team instances, approvals, and shared execution state.",
-  },
-  mcp: {
-    title: "MCP",
-    subtitle: "Catalog, readiness, and generated integration details.",
-  },
-  files: {
-    title: "Files",
-    subtitle: "Managed uploads, artifacts, and exports.",
-  },
-  "packs-detail": {
-    title: "Packs",
-    subtitle: "Starter packs, installation paths, and detected attachments.",
-  },
-  "teams-detail": {
-    title: "Teams",
-    subtitle: "Team instances, approvals, and shared execution state.",
-  },
+  dashboard: { title: "Overview", subtitle: "Status and activity" },
+  chat: { title: "Chat", subtitle: "Sessions, tools, and uploads" },
+  planner: { title: "Planner", subtitle: "Long-horizon multi-agent planning" },
+  workflows: { title: "Workflows", subtitle: "Build and run workflows" },
+  marketplace: { title: "Marketplace", subtitle: "Templates and starter packs" },
+  studio: { title: "Studio", subtitle: "Template-first workflow builder" },
+  automations: { title: "Automations", subtitle: "Schedules, library, and run history" },
+  experiments: { title: "Experiments", subtitle: "Experimental surfaces" },
+  "enterprise-admin": { title: "Enterprise", subtitle: "Org units, access, and connectors" },
+  coding: { title: "Coder", subtitle: "Durable coder runs and repos" },
+  agents: { title: "Agents", subtitle: "Reusable roles and drafts" },
+  orchestrator: { title: "Task Board", subtitle: "Plan-driven task execution" },
+  memory: { title: "Memory", subtitle: "Records and context snapshots" },
+  runs: { title: "Runs", subtitle: "Queue state and run inspection" },
+  "control-loop": { title: "Control Loop", subtitle: "Goal-to-audit traceability" },
+  approvals: { title: "Approvals Inbox", subtitle: "Pending human approvals" },
+  settings: { title: "Settings", subtitle: "Providers, identity, and diagnostics" },
+  channels: { title: "Channels", subtitle: "Chat integrations and scope" },
+  "incident-monitor": { title: "Incident Monitor", subtitle: "Detect, review, and publish" },
+  packs: { title: "Packs", subtitle: "Starter packs" },
+  teams: { title: "Teams", subtitle: "Team instances and shared state" },
+  mcp: { title: "MCP", subtitle: "Catalog and readiness" },
+  files: { title: "Files", subtitle: "Uploads, artifacts, and exports" },
+  "packs-detail": { title: "Packs", subtitle: "Starter packs" },
+  "teams-detail": { title: "Teams", subtitle: "Team instances and shared state" },
 };
 
 const FULL_HEIGHT_ROUTES = new Set([
@@ -575,6 +514,8 @@ export function AppShell({
           </div>
         </section>
 
+        {providerGate ? <div className="tcp-main-content pb-0">{providerGate}</div> : null}
+
         <AnimatePresence initial={false} mode="popLayout">
           <motion.section
             key={routeKey}
@@ -633,8 +574,6 @@ export function AppShell({
           </motion.div>
         ) : null}
       </AnimatePresence>
-
-      <AnimatePresence>{providerGate || null}</AnimatePresence>
 
       <AnimatePresence>
         {navigationLock ? (

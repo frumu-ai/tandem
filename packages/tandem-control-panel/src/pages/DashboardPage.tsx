@@ -259,12 +259,12 @@ export function DashboardPage(props: AppPageProps) {
               is doing right now.
             </p>
             <div className="mt-3 flex flex-wrap gap-2">
-              <Badge tone={healthy ? "ok" : "warn"}>
-                {healthy ? "Engine healthy" : "Engine checking"}
-              </Badge>
-              <Badge tone={providerStatus.ready ? "ok" : "warn"}>
-                {providerStatus.ready ? providerStatus.defaultProvider : "Provider setup required"}
-              </Badge>
+              {/* Engine health and provider-setup status are shown in the shell
+                  header (and the setup banner); avoid restating them here. Keep
+                  the resolved provider name, which the header does not surface. */}
+              {providerStatus.ready && providerStatus.defaultProvider ? (
+                <Badge tone="ok">{providerStatus.defaultProvider}</Badge>
+              ) : null}
               {providerAuthDetail ? <Badge tone="info">{providerAuthDetail}</Badge> : null}
               {swarmRunning ? (
                 <StatusPulse tone="live" text={`Swarm ${swarmStatus}`} />

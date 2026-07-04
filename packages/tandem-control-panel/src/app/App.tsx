@@ -516,6 +516,26 @@ function AppBody() {
   const needsProviderOnboarding = !!providerQuery.data?.needsOnboarding;
   const providerLocked = authed && needsProviderOnboarding;
 
+  // The provider-setup prompt is a dismissible banner, not a floating modal on
+  // every route. Dismissal is session-scoped: it stays hidden while the user
+  // works, and returns next session if provider setup is still incomplete. The
+  // persistent header pill keeps the status visible after dismissal (TAN-588).
+  const [providerNoticeDismissed, setProviderNoticeDismissed] = useState(() => {
+    try {
+      return sessionStorage.getItem("tandem.providerNoticeDismissed") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const dismissProviderNotice = useCallback(() => {
+    setProviderNoticeDismissed(true);
+    try {
+      sessionStorage.setItem("tandem.providerNoticeDismissed", "1");
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+
   useEffect(() => {
     if (!providerLocked) {
       setProviderGateNoticeShown(false);
@@ -784,30 +804,32 @@ function AppBody() {
         }}
         routeKey={currentRoute}
         providerGate={
-          providerLocked && currentRoute !== "settings" ? (
-            <motion.div
-              className="tcp-confirm-overlay"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-            >
-              <motion.div
-                className="tcp-confirm-dialog"
-                initial={{ opacity: 0, y: 8, scale: 0.98 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: 6, scale: 0.98 }}
-              >
-                <h3 className="tcp-confirm-title">Provider Setup Required</h3>
-                <p className="tcp-confirm-message">
-                  Configure provider and default model in Providers to unlock all sections.
-                </p>
-                <div className="tcp-confirm-actions">
-                  <button className="tcp-btn-primary" onClick={() => navigate("settings")}>
-                    Open Providers
-                  </button>
+          providerLocked && currentRoute !== "settings" && !providerNoticeDismissed ? (
+            <div className="tcp-panel-card flex flex-wrap items-center justify-between gap-3 border-amber-500/40 px-4 py-3">
+              <div className="flex min-w-0 items-center gap-3">
+                <i data-lucide="triangle-alert" className="text-amber-300"></i>
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold">Provider setup required</div>
+                  <p className="tcp-subtle text-xs">
+                    Configure a provider and default model to unlock all sections.
+                  </p>
                 </div>
-              </motion.div>
-            </motion.div>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <button className="tcp-btn-primary" onClick={() => navigate("settings")}>
+                  Open Providers
+                </button>
+                <button
+                  type="button"
+                  className="tcp-icon-btn"
+                  title="Dismiss"
+                  aria-label="Dismiss provider setup notice"
+                  onClick={dismissProviderNotice}
+                >
+                  <i data-lucide="x"></i>
+                </button>
+              </div>
+            </div>
           ) : null
         }
       >
