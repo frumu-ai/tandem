@@ -1,4 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::LazyLock,
+};
 
 use anyhow::Context;
 use serde_json::Value;
@@ -9,8 +13,36 @@ use super::durable_io::{repair_jsonl_torn_tail, sync_parent_dir, write_file_atom
 use super::phases::phase_state_from_status;
 use super::types::{StatefulRunEventRecord, StatefulRunSnapshotRecord};
 
-static STATEFUL_RUN_EVENT_APPEND_ONCE_LOCK: tokio::sync::Mutex<()> =
-    tokio::sync::Mutex::const_new(());
+static STATEFUL_RUN_EVENT_APPEND_CURSORS: LazyLock<
+    tokio::sync::Mutex<HashMap<StatefulRunEventCursorKey, StatefulRunEventAppendCursor>>,
+> = LazyLock::new(|| tokio::sync::Mutex::new(HashMap::new()));
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct StatefulRunEventCursorKey {
+    path: PathBuf,
+    org_id: String,
+    workspace_id: String,
+    deployment_id: Option<String>,
+    run_id: String,
+}
+
+impl StatefulRunEventCursorKey {
+    fn new(path: &Path, tenant: &TenantContext, run_id: &str) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            org_id: tenant.org_id.clone(),
+            workspace_id: tenant.workspace_id.clone(),
+            deployment_id: tenant.deployment_id.clone(),
+            run_id: run_id.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+struct StatefulRunEventAppendCursor {
+    last_seq: u64,
+    event_seq_by_id: HashMap<String, u64>,
+}
 
 #[derive(Debug, Clone)]
 pub struct StatefulRuntimeStoragePaths {
@@ -54,6 +86,16 @@ pub async fn append_stateful_run_event(
     path: &Path,
     record: &StatefulRunEventRecord,
 ) -> anyhow::Result<()> {
+    let mut cursors = STATEFUL_RUN_EVENT_APPEND_CURSORS.lock().await;
+    append_stateful_run_event_unlocked(path, record).await?;
+    invalidate_stateful_run_event_cursors_for_path(&mut cursors, path);
+    Ok(())
+}
+
+async fn append_stateful_run_event_unlocked(
+    path: &Path,
+    record: &StatefulRunEventRecord,
+) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await.with_context(|| {
             format!(
@@ -90,11 +132,12 @@ pub async fn append_stateful_run_event_once(
     path: &Path,
     record: &StatefulRunEventRecord,
 ) -> anyhow::Result<bool> {
-    let _guard = STATEFUL_RUN_EVENT_APPEND_ONCE_LOCK.lock().await;
+    let mut cursors = STATEFUL_RUN_EVENT_APPEND_CURSORS.lock().await;
     if stateful_run_event_exists(path, record) {
         return Ok(false);
     }
-    append_stateful_run_event(path, record).await?;
+    append_stateful_run_event_unlocked(path, record).await?;
+    invalidate_stateful_run_event_cursors_for_path(&mut cursors, path);
     Ok(true)
 }
 
@@ -103,31 +146,21 @@ pub async fn append_stateful_run_event_once_with_next_seq(
     tenant_context: &TenantContext,
     record: &StatefulRunEventRecord,
 ) -> anyhow::Result<(bool, u64)> {
-    let _guard = STATEFUL_RUN_EVENT_APPEND_ONCE_LOCK.lock().await;
-    let rows = query_stateful_run_events(
-        path,
-        tenant_context,
-        StatefulRunEventQuery {
-            run_id: &record.run_id,
-            after_seq: None,
-            before_seq: None,
-            limit: None,
-            tail: false,
-        },
-    );
-    if let Some(existing) = rows
-        .iter()
-        .find(|existing| existing.event_id == record.event_id)
-    {
-        return Ok((false, existing.seq));
+    let mut cursors = STATEFUL_RUN_EVENT_APPEND_CURSORS.lock().await;
+    let key = StatefulRunEventCursorKey::new(path, tenant_context, &record.run_id);
+    let cursor = cursors
+        .entry(key.clone())
+        .or_insert_with(|| seed_stateful_run_event_cursor(path, &key));
+    if let Some(seq) = cursor.event_seq_by_id.get(&record.event_id).copied() {
+        return Ok((false, seq));
     }
-    let seq = rows
-        .last()
-        .map(|event| event.seq.saturating_add(1))
-        .unwrap_or(1);
+
+    let seq = cursor.last_seq.saturating_add(1).max(1);
     let mut record = record.clone();
     record.seq = seq;
-    append_stateful_run_event(path, &record).await?;
+    append_stateful_run_event_unlocked(path, &record).await?;
+    cursor.last_seq = seq;
+    cursor.event_seq_by_id.insert(record.event_id.clone(), seq);
     Ok((true, seq))
 }
 
@@ -135,6 +168,38 @@ fn stateful_run_event_exists(path: &Path, record: &StatefulRunEventRecord) -> bo
     load_stateful_run_events(path)
         .into_iter()
         .any(|existing| existing.run_id == record.run_id && existing.event_id == record.event_id)
+}
+
+fn seed_stateful_run_event_cursor(
+    path: &Path,
+    key: &StatefulRunEventCursorKey,
+) -> StatefulRunEventAppendCursor {
+    let mut cursor = StatefulRunEventAppendCursor::default();
+    for row in load_stateful_run_events(path)
+        .into_iter()
+        .filter(|row| stateful_run_event_matches_cursor_key(row, key))
+    {
+        cursor.last_seq = cursor.last_seq.max(row.seq);
+        cursor.event_seq_by_id.entry(row.event_id).or_insert(row.seq);
+    }
+    cursor
+}
+
+fn stateful_run_event_matches_cursor_key(
+    row: &StatefulRunEventRecord,
+    key: &StatefulRunEventCursorKey,
+) -> bool {
+    row.run_id == key.run_id
+        && row.scope.tenant_context.org_id == key.org_id
+        && row.scope.tenant_context.workspace_id == key.workspace_id
+        && row.scope.tenant_context.deployment_id == key.deployment_id
+}
+
+fn invalidate_stateful_run_event_cursors_for_path(
+    cursors: &mut HashMap<StatefulRunEventCursorKey, StatefulRunEventAppendCursor>,
+    path: &Path,
+) {
+    cursors.retain(|key, _| key.path != path);
 }
 
 pub fn load_stateful_run_events(path: &Path) -> Vec<StatefulRunEventRecord> {
@@ -160,6 +225,151 @@ pub fn load_stateful_run_events(path: &Path) -> Vec<StatefulRunEventRecord> {
         .collect::<Vec<_>>();
     rows.sort_by_key(|row| row.seq);
     rows
+}
+
+pub async fn compact_stateful_run_event_log(
+    path: &Path,
+    retention_ms: u64,
+    now_ms: u64,
+) -> anyhow::Result<usize> {
+    if retention_ms == 0 || !path.exists() {
+        return Ok(0);
+    }
+
+    let mut cursors = STATEFUL_RUN_EVENT_APPEND_CURSORS.lock().await;
+    repair_jsonl_torn_tail(path, "stateful run event log").await?;
+
+    let cutoff_ms = now_ms.saturating_sub(retention_ms);
+    let mut retained = Vec::new();
+    let mut compacted =
+        HashMap::<StatefulRunEventCompactionKey, StatefulRunEventCompactionSummary>::new();
+    let mut pruned = 0_usize;
+
+    for row in load_stateful_run_events(path) {
+        if row.occurred_at_ms >= cutoff_ms {
+            retained.push(row);
+            continue;
+        }
+        pruned += 1;
+        let key = StatefulRunEventCompactionKey::from_event(&row);
+        compacted
+            .entry(key)
+            .and_modify(|summary| summary.observe(&row))
+            .or_insert_with(|| StatefulRunEventCompactionSummary::from_event(&row));
+    }
+
+    if pruned == 0 {
+        return Ok(0);
+    }
+
+    retained.retain(|row| {
+        row.event_type != "stateful_runtime.event_log_compacted"
+            || !compacted.contains_key(&StatefulRunEventCompactionKey::from_event(row))
+    });
+    retained.extend(
+        compacted
+            .values()
+            .map(|summary| summary.compaction_marker(now_ms)),
+    );
+    retained.sort_by(|left, right| {
+        left.run_id
+            .cmp(&right.run_id)
+            .then_with(|| left.seq.cmp(&right.seq))
+            .then_with(|| left.event_id.cmp(&right.event_id))
+    });
+    write_stateful_run_event_rows(path, &retained).await?;
+    invalidate_stateful_run_event_cursors_for_path(&mut cursors, path);
+    Ok(pruned)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct StatefulRunEventCompactionKey {
+    run_id: String,
+    org_id: String,
+    workspace_id: String,
+    deployment_id: Option<String>,
+}
+
+impl StatefulRunEventCompactionKey {
+    fn from_event(row: &StatefulRunEventRecord) -> Self {
+        Self {
+            run_id: row.run_id.clone(),
+            org_id: row.scope.tenant_context.org_id.clone(),
+            workspace_id: row.scope.tenant_context.workspace_id.clone(),
+            deployment_id: row.scope.tenant_context.deployment_id.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct StatefulRunEventCompactionSummary {
+    key: StatefulRunEventCompactionKey,
+    compacted_through_seq: u64,
+    compacted_through_ms: u64,
+    pruned_events: usize,
+    scope: super::types::StatefulRuntimeScope,
+}
+
+impl StatefulRunEventCompactionSummary {
+    fn from_event(row: &StatefulRunEventRecord) -> Self {
+        Self {
+            key: StatefulRunEventCompactionKey::from_event(row),
+            compacted_through_seq: row.seq,
+            compacted_through_ms: row.occurred_at_ms,
+            pruned_events: 1,
+            scope: row.scope.clone(),
+        }
+    }
+
+    fn observe(&mut self, row: &StatefulRunEventRecord) {
+        self.compacted_through_seq = self.compacted_through_seq.max(row.seq);
+        self.compacted_through_ms = self.compacted_through_ms.max(row.occurred_at_ms);
+        self.pruned_events += 1;
+    }
+
+    fn compaction_marker(&self, now_ms: u64) -> StatefulRunEventRecord {
+        let compacted_through_seq = self.compacted_through_seq.to_string();
+        let digest = crate::sha256_hex(&[
+            &self.key.org_id,
+            &self.key.workspace_id,
+            self.key.deployment_id.as_deref().unwrap_or(""),
+            &self.key.run_id,
+            compacted_through_seq.as_str(),
+        ]);
+        StatefulRunEventRecord {
+            schema_version: 1,
+            event_id: format!("stateful-compaction-{digest}"),
+            run_id: self.key.run_id.clone(),
+            seq: self.compacted_through_seq,
+            event_type: "stateful_runtime.event_log_compacted".to_string(),
+            occurred_at_ms: now_ms,
+            scope: self.scope.clone(),
+            actor: None,
+            phase_id: None,
+            phase_transition: None,
+            wait_kind: None,
+            causation_id: None,
+            correlation_id: None,
+            payload: serde_json::json!({
+                "compacted_through_seq": self.compacted_through_seq,
+                "compacted_through_ms": self.compacted_through_ms,
+                "pruned_events": self.pruned_events,
+                "source": "stateful_event_log_compaction"
+            }),
+        }
+    }
+}
+
+async fn write_stateful_run_event_rows(
+    path: &Path,
+    rows: &[StatefulRunEventRecord],
+) -> anyhow::Result<()> {
+    let mut content = Vec::new();
+    for row in rows {
+        content.extend_from_slice(&serde_json::to_vec(row)?);
+        content.push(b'\n');
+    }
+    write_file_atomically(path, &content, "stateful run event log").await
 }
 
 pub fn query_stateful_run_events(
@@ -649,6 +859,111 @@ mod tests {
             rows.iter().map(|row| row.seq).collect::<Vec<_>>(),
             vec![1, 2]
         );
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn append_once_with_next_seq_uses_cursor_and_preserves_tenant_boundaries() {
+        let path = std::env::temp_dir().join(format!(
+            "stateful-runtime-events-next-seq-cursor-{}.jsonl",
+            Uuid::new_v4()
+        ));
+        let tenant_a = tenant("org-a", "workspace-a");
+        let tenant_b = tenant("org-b", "workspace-b");
+        let mut first = event(0, "run-a", tenant_a.clone());
+        first.event_id = "event-a".to_string();
+        let mut second = event(0, "run-a", tenant_a.clone());
+        second.event_id = "event-b".to_string();
+        let mut foreign = event(0, "run-a", tenant_b.clone());
+        foreign.event_id = "event-foreign".to_string();
+
+        let (_, first_seq) = append_stateful_run_event_once_with_next_seq(&path, &tenant_a, &first)
+            .await
+            .expect("append first");
+        let (_, second_seq) =
+            append_stateful_run_event_once_with_next_seq(&path, &tenant_a, &second)
+                .await
+                .expect("append second");
+        let (_, foreign_seq) =
+            append_stateful_run_event_once_with_next_seq(&path, &tenant_b, &foreign)
+                .await
+                .expect("append foreign");
+
+        assert_eq!((first_seq, second_seq, foreign_seq), (1, 2, 1));
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn compaction_prunes_old_events_and_preserves_next_sequence_marker() {
+        let path = std::env::temp_dir().join(format!(
+            "stateful-runtime-events-compact-{}.jsonl",
+            Uuid::new_v4()
+        ));
+        let tenant_a = tenant("org-a", "workspace-a");
+        for seq in 1..=3 {
+            let mut record = event(seq, "run-a", tenant_a.clone());
+            record.occurred_at_ms = seq * 100;
+            append_stateful_run_event(&path, &record)
+                .await
+                .expect("append old event");
+        }
+        let mut retained = event(4, "run-a", tenant_a.clone());
+        retained.occurred_at_ms = 900;
+        append_stateful_run_event(&path, &retained)
+            .await
+            .expect("append retained event");
+
+        let pruned = compact_stateful_run_event_log(&path, 500, 1_000)
+            .await
+            .expect("compact");
+
+        assert_eq!(pruned, 3);
+        let rows = query_stateful_run_events(
+            &path,
+            &tenant_a,
+            StatefulRunEventQuery {
+                run_id: "run-a",
+                after_seq: None,
+                before_seq: None,
+                limit: None,
+                tail: false,
+            },
+        );
+        assert_eq!(rows.iter().map(|row| row.seq).collect::<Vec<_>>(), vec![3, 4]);
+        assert_eq!(rows[0].event_type, "stateful_runtime.event_log_compacted");
+
+        let mut next = event(0, "run-a", tenant_a.clone());
+        next.event_id = "event-next".to_string();
+        let (_, next_seq) = append_stateful_run_event_once_with_next_seq(&path, &tenant_a, &next)
+            .await
+            .expect("append next");
+        assert_eq!(next_seq, 5);
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn compaction_keeps_tenant_boundaries_independent() {
+        let path = std::env::temp_dir().join(format!(
+            "stateful-runtime-events-compact-tenant-{}.jsonl",
+            Uuid::new_v4()
+        ));
+        let tenant_a = tenant("org-a", "workspace-a");
+        let tenant_b = tenant("org-b", "workspace-b");
+        for (seq, tenant_context) in [(1, tenant_a.clone()), (2, tenant_b.clone())] {
+            let mut record = event(seq, "shared-run", tenant_context);
+            record.occurred_at_ms = 100;
+            append_stateful_run_event(&path, &record)
+                .await
+                .expect("append old event");
+        }
+
+        let pruned = compact_stateful_run_event_log(&path, 500, 1_000)
+            .await
+            .expect("compact");
+
+        assert_eq!(pruned, 2);
+        assert_eq!(next_stateful_run_event_seq(&path, &tenant_a, "shared-run"), 2);
+        assert_eq!(next_stateful_run_event_seq(&path, &tenant_b, "shared-run"), 3);
         let _ = tokio::fs::remove_file(path).await;
     }
 

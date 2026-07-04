@@ -15,6 +15,9 @@ use crate::routines::types::{RoutineHistoryEvent, RoutineRunStatus};
 use crate::runtime_event_log::{
     append_runtime_event_log_row, prune_runtime_event_log, RuntimeEventLogRow,
 };
+use crate::stateful_runtime::{
+    compact_stateful_run_event_log, prune_stateful_wait_store, StatefulRuntimeStoragePaths,
+};
 use crate::util::time::now_ms;
 
 async fn wait_for_runtime_ready_or_exit(state: &AppState, component: &str) -> bool {
@@ -862,6 +865,48 @@ pub async fn run_runtime_event_log_persister(state: AppState) {
                 tracing::warn!(
                     error = %error,
                     "runtime event log persister could not prune stale events"
+                );
+            }
+        }
+
+        let stateful_paths =
+            StatefulRuntimeStoragePaths::from_runtime_events_path(&state.runtime_events_path);
+        match compact_stateful_run_event_log(
+            &stateful_paths.run_events_path,
+            retention_ms,
+            now_ms(),
+        )
+        .await
+        {
+            Ok(pruned) if pruned > 0 => {
+                tracing::info!(
+                    pruned,
+                    retention_days,
+                    "runtime event log persister compacted stale stateful events"
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "runtime event log persister could not compact stale stateful events"
+                );
+            }
+        }
+
+        match prune_stateful_wait_store(&stateful_paths.waits_path, retention_ms, now_ms()).await {
+            Ok(pruned) if pruned > 0 => {
+                tracing::info!(
+                    pruned,
+                    retention_days,
+                    "runtime event log persister pruned stale stateful waits"
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "runtime event log persister could not prune stale stateful waits"
                 );
             }
         }
