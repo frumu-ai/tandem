@@ -6,10 +6,10 @@ use crate::app::state::automation::lifecycle::automation_lifecycle_event_counts_
 use crate::stateful_runtime::{
     append_stateful_run_event_once_with_next_seq, guarded_phase_state_from_status,
     list_stateful_run_snapshots, query_stateful_run_events, read_stateful_run_snapshot_for_run,
-    stable_definition_snapshot_hash, stateful_run_from_automation_v2, write_stateful_run_snapshot,
-    StatefulRunEventQuery, StatefulRunEventRecord, StatefulRunSnapshotRecord,
-    StatefulRuntimeStoragePaths, StatefulWaitKind, StatefulWorkflowRunKind,
-    StatefulWorkflowRunStatus,
+    stable_definition_snapshot_hash, stateful_run_event_compacted_event_ids,
+    stateful_run_from_automation_v2, write_stateful_run_snapshot, StatefulRunEventQuery,
+    StatefulRunEventRecord, StatefulRunSnapshotRecord, StatefulRuntimeStoragePaths,
+    StatefulWaitKind, StatefulWorkflowRunKind, StatefulWorkflowRunStatus,
 };
 
 impl AppState {
@@ -225,6 +225,12 @@ fn projected_lifecycle_events_by_id(
     let mut projected = HashMap::new();
     let mut lifecycle_occurrences = HashMap::<String, usize>::new();
     for event in events {
+        for (event_id, seq) in stateful_run_event_compacted_event_ids(&event) {
+            projected
+                .entry(event_id.clone())
+                .or_insert(ProjectedLifecycleEvent { event_id, seq });
+        }
+
         let projected_event = ProjectedLifecycleEvent {
             event_id: event.event_id.clone(),
             seq: event.seq,
@@ -858,6 +864,41 @@ mod tests {
 
         assert_eq!(projected.event_id, legacy_id);
         assert_eq!(projected.seq, 7);
+    }
+
+    #[test]
+    fn projected_event_aliases_include_compacted_lifecycle_ids() {
+        let run = run_with_lifecycle();
+        let lifecycle_index = 1usize;
+        let lifecycle = &run.checkpoint.lifecycle_history[lifecycle_index];
+        let identity_hash = automation_lifecycle_identity_hash(&run, lifecycle);
+        let stable_id = automation_lifecycle_stateful_event_id(&run, lifecycle, &identity_hash, 0);
+        let marker = StatefulRunEventRecord {
+            schema_version: 1,
+            event_id: "stateful-compaction-run-a".to_string(),
+            run_id: run.run_id.clone(),
+            seq: 7,
+            event_type: "stateful_runtime.event_log_compacted".to_string(),
+            occurred_at_ms: lifecycle.recorded_at_ms + 1_000,
+            scope: stateful_run_from_automation_v2(&run).scope,
+            actor: None,
+            phase_id: None,
+            phase_transition: None,
+            wait_kind: None,
+            causation_id: None,
+            correlation_id: None,
+            payload: json!({
+                "compacted_event_ids": [
+                    { "event_id": stable_id.clone(), "seq": 3 }
+                ]
+            }),
+        };
+
+        let aliases = projected_lifecycle_events_by_id(&run, vec![marker]);
+        let projected = aliases.get(&stable_id).expect("compacted stable id");
+
+        assert_eq!(projected.event_id, stable_id);
+        assert_eq!(projected.seq, 3);
     }
 
     #[tokio::test]

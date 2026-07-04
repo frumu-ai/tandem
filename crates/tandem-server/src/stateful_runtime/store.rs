@@ -13,6 +13,8 @@ use super::durable_io::{repair_jsonl_torn_tail, sync_parent_dir, write_file_atom
 use super::phases::phase_state_from_status;
 use super::types::{StatefulRunEventRecord, StatefulRunSnapshotRecord};
 
+const STATEFUL_RUN_EVENT_LOG_COMPACTED_TYPE: &str = "stateful_runtime.event_log_compacted";
+
 static STATEFUL_RUN_EVENT_APPEND_CURSORS: LazyLock<
     tokio::sync::Mutex<HashMap<StatefulRunEventCursorKey, StatefulRunEventAppendCursor>>,
 > = LazyLock::new(|| tokio::sync::Mutex::new(HashMap::new()));
@@ -165,9 +167,36 @@ pub async fn append_stateful_run_event_once_with_next_seq(
 }
 
 fn stateful_run_event_exists(path: &Path, record: &StatefulRunEventRecord) -> bool {
-    load_stateful_run_events(path)
-        .into_iter()
-        .any(|existing| existing.run_id == record.run_id && existing.event_id == record.event_id)
+    load_stateful_run_events(path).into_iter().any(|existing| {
+        existing.run_id == record.run_id
+            && (existing.event_id == record.event_id
+                || stateful_run_event_compacted_event_ids(&existing)
+                    .iter()
+                    .any(|(event_id, _)| event_id == &record.event_id))
+    })
+}
+
+pub fn stateful_run_event_compacted_event_ids(row: &StatefulRunEventRecord) -> Vec<(String, u64)> {
+    if row.event_type != STATEFUL_RUN_EVENT_LOG_COMPACTED_TYPE {
+        return Vec::new();
+    }
+    row.payload
+        .get("compacted_event_ids")
+        .and_then(Value::as_array)
+        .map(|events| {
+            events
+                .iter()
+                .filter_map(|event| {
+                    let event_id = event.get("event_id")?.as_str()?.trim();
+                    if event_id.is_empty() {
+                        return None;
+                    }
+                    let seq = event.get("seq")?.as_u64()?;
+                    Some((event_id.to_string(), seq))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn seed_stateful_run_event_cursor(
@@ -182,8 +211,12 @@ fn seed_stateful_run_event_cursor(
         cursor.last_seq = cursor.last_seq.max(row.seq);
         cursor
             .event_seq_by_id
-            .entry(row.event_id)
+            .entry(row.event_id.clone())
             .or_insert(row.seq);
+        for (event_id, seq) in stateful_run_event_compacted_event_ids(&row) {
+            cursor.last_seq = cursor.last_seq.max(seq);
+            cursor.event_seq_by_id.entry(event_id).or_insert(seq);
+        }
     }
     cursor
 }
@@ -265,8 +298,16 @@ pub async fn compact_stateful_run_event_log(
         return Ok(0);
     }
 
+    for row in &retained {
+        if row.event_type == STATEFUL_RUN_EVENT_LOG_COMPACTED_TYPE {
+            let key = StatefulRunEventCompactionKey::from_event(row);
+            if let Some(summary) = compacted.get_mut(&key) {
+                summary.observe(row);
+            }
+        }
+    }
     retained.retain(|row| {
-        row.event_type != "stateful_runtime.event_log_compacted"
+        row.event_type != STATEFUL_RUN_EVENT_LOG_COMPACTED_TYPE
             || !compacted.contains_key(&StatefulRunEventCompactionKey::from_event(row))
     });
     retained.extend(
@@ -310,16 +351,20 @@ struct StatefulRunEventCompactionSummary {
     compacted_through_seq: u64,
     compacted_through_ms: u64,
     pruned_events: usize,
+    pruned_event_ids: Vec<(String, u64)>,
     scope: super::types::StatefulRuntimeScope,
 }
 
 impl StatefulRunEventCompactionSummary {
     fn from_event(row: &StatefulRunEventRecord) -> Self {
+        let mut pruned_event_ids = stateful_run_event_compacted_event_ids(row);
+        pruned_event_ids.push((row.event_id.clone(), row.seq));
         Self {
             key: StatefulRunEventCompactionKey::from_event(row),
             compacted_through_seq: row.seq,
             compacted_through_ms: row.occurred_at_ms,
             pruned_events: 1,
+            pruned_event_ids,
             scope: row.scope.clone(),
         }
     }
@@ -328,6 +373,9 @@ impl StatefulRunEventCompactionSummary {
         self.compacted_through_seq = self.compacted_through_seq.max(row.seq);
         self.compacted_through_ms = self.compacted_through_ms.max(row.occurred_at_ms);
         self.pruned_events += 1;
+        self.pruned_event_ids
+            .extend(stateful_run_event_compacted_event_ids(row));
+        self.pruned_event_ids.push((row.event_id.clone(), row.seq));
     }
 
     fn compaction_marker(&self, now_ms: u64) -> StatefulRunEventRecord {
@@ -339,12 +387,17 @@ impl StatefulRunEventCompactionSummary {
             &self.key.run_id,
             compacted_through_seq.as_str(),
         ]);
+        let compacted_event_ids = self
+            .pruned_event_ids
+            .iter()
+            .map(|(event_id, seq)| serde_json::json!({ "event_id": event_id, "seq": seq }))
+            .collect::<Vec<_>>();
         StatefulRunEventRecord {
             schema_version: 1,
             event_id: format!("stateful-compaction-{digest}"),
             run_id: self.key.run_id.clone(),
             seq: self.compacted_through_seq,
-            event_type: "stateful_runtime.event_log_compacted".to_string(),
+            event_type: STATEFUL_RUN_EVENT_LOG_COMPACTED_TYPE.to_string(),
             occurred_at_ms: now_ms,
             scope: self.scope.clone(),
             actor: None,
@@ -357,6 +410,7 @@ impl StatefulRunEventCompactionSummary {
                 "compacted_through_seq": self.compacted_through_seq,
                 "compacted_through_ms": self.compacted_through_ms,
                 "pruned_events": self.pruned_events,
+                "compacted_event_ids": compacted_event_ids,
                 "source": "stateful_event_log_compaction"
             }),
         }
@@ -936,7 +990,25 @@ mod tests {
             rows.iter().map(|row| row.seq).collect::<Vec<_>>(),
             vec![3, 4]
         );
-        assert_eq!(rows[0].event_type, "stateful_runtime.event_log_compacted");
+        assert_eq!(rows[0].event_type, STATEFUL_RUN_EVENT_LOG_COMPACTED_TYPE);
+        let compacted_ids = stateful_run_event_compacted_event_ids(&rows[0]);
+        assert_eq!(
+            compacted_ids,
+            vec![
+                ("event-1".to_string(), 1),
+                ("event-2".to_string(), 2),
+                ("event-3".to_string(), 3),
+            ]
+        );
+
+        let mut duplicate = event(0, "run-a", tenant_a.clone());
+        duplicate.event_id = "event-2".to_string();
+        let (duplicate_appended, duplicate_seq) =
+            append_stateful_run_event_once_with_next_seq(&path, &tenant_a, &duplicate)
+                .await
+                .expect("append duplicate");
+        assert!(!duplicate_appended);
+        assert_eq!(duplicate_seq, 2);
 
         let mut next = event(0, "run-a", tenant_a.clone());
         next.event_id = "event-next".to_string();
@@ -944,6 +1016,39 @@ mod tests {
             .await
             .expect("append next");
         assert_eq!(next_seq, 5);
+
+        let second_pruned = compact_stateful_run_event_log(&path, 500, 2_000)
+            .await
+            .expect("compact again");
+        assert_eq!(second_pruned, 3);
+        let rows = query_stateful_run_events(
+            &path,
+            &tenant_a,
+            StatefulRunEventQuery {
+                run_id: "run-a",
+                after_seq: None,
+                before_seq: None,
+                limit: None,
+                tail: false,
+            },
+        );
+        assert_eq!(rows.len(), 1);
+        let compacted_ids = stateful_run_event_compacted_event_ids(&rows[0]);
+        assert!(compacted_ids
+            .iter()
+            .any(|(event_id, seq)| event_id == "event-1" && *seq == 1));
+        assert!(compacted_ids
+            .iter()
+            .any(|(event_id, seq)| event_id == "event-next" && *seq == 5));
+
+        let mut old_duplicate = event(0, "run-a", tenant_a.clone());
+        old_duplicate.event_id = "event-1".to_string();
+        let (old_duplicate_appended, old_duplicate_seq) =
+            append_stateful_run_event_once_with_next_seq(&path, &tenant_a, &old_duplicate)
+                .await
+                .expect("append old duplicate");
+        assert!(!old_duplicate_appended);
+        assert_eq!(old_duplicate_seq, 1);
         let _ = tokio::fs::remove_file(path).await;
     }
 
