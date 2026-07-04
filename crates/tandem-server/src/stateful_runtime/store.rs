@@ -180,7 +180,10 @@ fn seed_stateful_run_event_cursor(
         .filter(|row| stateful_run_event_matches_cursor_key(row, key))
     {
         cursor.last_seq = cursor.last_seq.max(row.seq);
-        cursor.event_seq_by_id.entry(row.event_id).or_insert(row.seq);
+        cursor
+            .event_seq_by_id
+            .entry(row.event_id)
+            .or_insert(row.seq);
     }
     cursor
 }
@@ -929,7 +932,10 @@ mod tests {
                 tail: false,
             },
         );
-        assert_eq!(rows.iter().map(|row| row.seq).collect::<Vec<_>>(), vec![3, 4]);
+        assert_eq!(
+            rows.iter().map(|row| row.seq).collect::<Vec<_>>(),
+            vec![3, 4]
+        );
         assert_eq!(rows[0].event_type, "stateful_runtime.event_log_compacted");
 
         let mut next = event(0, "run-a", tenant_a.clone());
@@ -962,8 +968,14 @@ mod tests {
             .expect("compact");
 
         assert_eq!(pruned, 2);
-        assert_eq!(next_stateful_run_event_seq(&path, &tenant_a, "shared-run"), 2);
-        assert_eq!(next_stateful_run_event_seq(&path, &tenant_b, "shared-run"), 3);
+        assert_eq!(
+            next_stateful_run_event_seq(&path, &tenant_a, "shared-run"),
+            2
+        );
+        assert_eq!(
+            next_stateful_run_event_seq(&path, &tenant_b, "shared-run"),
+            3
+        );
         let _ = tokio::fs::remove_file(path).await;
     }
 
