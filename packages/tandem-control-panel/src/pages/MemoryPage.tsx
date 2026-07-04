@@ -254,6 +254,7 @@ export function MemoryPage({ api, client, toast }: AppPageProps) {
                 value={manualProjectId}
                 onChange={(event) => setManualProjectId(event.target.value)}
                 placeholder="project id"
+                aria-label="Project ID"
               />
               <select
                 className="tcp-select"
@@ -304,6 +305,7 @@ export function MemoryPage({ api, client, toast }: AppPageProps) {
             value={query}
             onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
             placeholder="Search memory"
+            aria-label="Search memory"
           />
           <button className="tcp-btn" onClick={() => memoryQuery.refetch()}>
             <i data-lucide="search"></i>

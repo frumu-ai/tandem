@@ -903,6 +903,8 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
             <button
               type="button"
               className="tcp-btn h-8 px-2.5 text-xs"
+              title="Refresh runs"
+              aria-label="Refresh runs"
               onClick={() => {
                 void queryClient.invalidateQueries({ queryKey: ["swarm", "runs"] });
               }}

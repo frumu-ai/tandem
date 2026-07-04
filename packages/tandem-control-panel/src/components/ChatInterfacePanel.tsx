@@ -278,6 +278,7 @@ export function ChatInterfacePanel({
                       type="button"
                       className="chat-file-pill-btn"
                       title="Open in Files"
+                      aria-label="Open attachment in Files"
                       onClick={() => onOpenAttachment(index)}
                     >
                       <i data-lucide="folder-open"></i>
@@ -288,6 +289,7 @@ export function ChatInterfacePanel({
                       type="button"
                       className="chat-file-pill-btn chat-file-pill-btn-danger"
                       title="Remove from list"
+                      aria-label="Remove attachment from list"
                       onClick={() => onRemoveAttachment(index)}
                     >
                       <i data-lucide="x"></i>
@@ -305,6 +307,7 @@ export function ChatInterfacePanel({
               type="button"
               className="chat-icon-btn chat-icon-btn-inner"
               title="Attach files"
+              aria-label="Attach files"
               disabled={attachDisabled}
               onClick={onAttach}
             >
@@ -330,6 +333,7 @@ export function ChatInterfacePanel({
             type="button"
             className="chat-send-btn"
             title={sendLabel}
+            aria-label={sendLabel}
             disabled={sendDisabled}
             onClick={onSend}
           >

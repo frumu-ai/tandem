@@ -162,6 +162,7 @@ export function FeedPage({ client, toast, navigate }: AppPageProps) {
             value={filter}
             onInput={(e) => setFilter((e.target as HTMLInputElement).value)}
             placeholder="Filter by type or payload"
+            aria-label="Filter feed by type or payload"
           />
           <FilterChip active={group === "all"} onClick={() => setGroup("all")}>
             <i data-lucide="list"></i>

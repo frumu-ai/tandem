@@ -261,7 +261,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
       <div key={id} className="tcp-card flex flex-col gap-3 group">
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-2.5 min-w-0">
-            <span className="text-xl">🧩</span>
+            <i data-lucide="blocks" className="shrink-0 text-tcp-text-tertiary"></i>
             <div className="min-w-0">
               <strong className="block truncate text-sm font-bold tracking-tight text-white mb-0.5">
                 {String(automation?.name || id || "Workflow automation")}
@@ -325,7 +325,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
             {String(automation.description)}
           </div>
         ) : (
-          <div className="tcp-subtle text-xs italic opacity-40">No description provided</div>
+          <div className="tcp-subtle text-xs italic">No description provided</div>
         )}
 
         {String(automation?.metadata?.standup?.report_path_template || "").trim() ? (
@@ -444,7 +444,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
       <div key={id} className="tcp-list-item">
         <div className="mb-1 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
-            <span>⏰</span>
+            <i data-lucide="clock" className="shrink-0 text-tcp-text-tertiary"></i>
             <strong className="truncate">{String(automation?.name || id || "Automation")}</strong>
           </div>
           <div className="flex items-center gap-2">
@@ -768,7 +768,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
               <div key={String(pack?.id || pack?.name || i)} className="tcp-list-item py-2">
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
-                    <span className="text-sm opacity-70">📦</span>
+                    <i data-lucide="package" className="shrink-0 text-tcp-text-tertiary"></i>
                     <strong className="text-xs">{String(pack?.name || pack?.id || "Pack")}</strong>
                   </div>
                   <span className="text-[10px] text-slate-500">
