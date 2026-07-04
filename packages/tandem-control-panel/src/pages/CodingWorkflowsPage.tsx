@@ -16,6 +16,10 @@ import type { AppPageProps } from "./pageTypes";
 import { LazyJson } from "../features/automations/LazyJson";
 import { CodingWorkflowsConnectingState, CodingWorkflowsDisconnectedState } from "./CodingWorkflowsDisconnectedState";
 import {
+  CodingWorkflowsRunDiagnosticsPanel,
+  runEventDiagnosticBadges,
+} from "./CodingWorkflowsRunDiagnosticsPanel";
+import {
   type CodingTab,
   type GithubRepoRef,
   type PlannerProviderOption,
@@ -1704,6 +1708,7 @@ export function CodingWorkflowsPage({
                             )}
                           </div>
                         </div>
+                        <CodingWorkflowsRunDiagnosticsPanel runDetail={runDetailQuery.data} />
                         {runEvents.length ? (
                           <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                             <div className="mb-3 text-sm font-semibold">Recent activity</div>
@@ -1733,6 +1738,15 @@ export function CodingWorkflowsPage({
                                           event.payload?.status ||
                                           ""
                                       )}
+                                    </div>
+                                  ) : null}
+                                  {runEventDiagnosticBadges(event).length ? (
+                                    <div className="flex flex-wrap gap-1">
+                                      {runEventDiagnosticBadges(event).map((badge, index) => (
+                                        <Badge key={`${badge.label}-${index}`} tone={badge.tone}>
+                                          {badge.label}
+                                        </Badge>
+                                      ))}
                                     </div>
                                   ) : null}
                                 </div>
