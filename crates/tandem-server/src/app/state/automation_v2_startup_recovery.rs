@@ -205,6 +205,117 @@ impl AppState {
                 _ => {}
             }
         }
+        recovered += self.recover_lost_stateful_wait_wakes().await;
+        recovered
+    }
+
+    /// TAN-566: re-enqueue runs whose durable wait already fired but whose
+    /// in-memory requeue was lost to a crash.
+    ///
+    /// The scheduler finalizes a due wait to a terminal `Woken` state (durably)
+    /// and only *then* requeues the run from in-memory tick state
+    /// (`apply_stateful_wait_scheduler_outcome`). A crash in that window strands
+    /// the run in `Paused` forever: the wait is terminal so the live scheduler
+    /// never revisits it, and nothing else resumes the run. On restart we detect
+    /// that signature and drive the same idempotent requeue the live path uses.
+    ///
+    /// A run is only recovered when it is `Paused`, has **no** active
+    /// (`Waiting`/`Claimed`) wait — so it is not legitimately parked on a newer
+    /// wait — and its most recent `Woken` wait fired at or after the run's last
+    /// state change (`wait.updated_at_ms >= run.updated_at_ms`), which is the
+    /// lost-wake signature and excludes runs that were re-paused or manually
+    /// paused after the wake. Timeout actions (`TimedOut`/`Escalated`) are
+    /// intentionally out of scope — their policy-specific replay is a follow-up.
+    async fn recover_lost_stateful_wait_wakes(&self) -> usize {
+        use crate::stateful_runtime::{
+            load_stateful_waits, StatefulRuntimeStoragePaths, StatefulWaitRecord,
+            StatefulWaitStatus,
+        };
+
+        let paths =
+            StatefulRuntimeStoragePaths::from_runtime_events_path(&self.runtime_events_path);
+        let waits = load_stateful_waits(&paths.waits_path);
+        if waits.is_empty() {
+            return 0;
+        }
+
+        let paused_runs = self
+            .automation_v2_runs
+            .read()
+            .await
+            .values()
+            .filter(|run| run.status == AutomationRunStatus::Paused)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let mut recovered = 0usize;
+        for run in paused_runs {
+            // Match by run id AND tenant visibility: the waits store is shared
+            // across tenants/deployments and the same run_id can appear in more
+            // than one, so a foreign tenant's wait must never influence this
+            // run's recovery (mirrors the rest of the stateful wait API).
+            let run_waits = waits
+                .iter()
+                .filter(|wait| {
+                    wait.run_id == run.run_id && wait.visible_to_tenant(&run.tenant_context)
+                })
+                .collect::<Vec<&StatefulWaitRecord>>();
+            if run_waits.is_empty() {
+                continue;
+            }
+            // Legitimately parked on a live wait — leave it for the scheduler.
+            if run_waits.iter().any(|wait| {
+                matches!(
+                    wait.status,
+                    StatefulWaitStatus::Waiting | StatefulWaitStatus::Claimed
+                )
+            }) {
+                continue;
+            }
+            let Some(wait) = run_waits
+                .iter()
+                .filter(|wait| {
+                    wait.status == StatefulWaitStatus::Woken
+                        && wait.event_seq.is_some()
+                        && wait.updated_at_ms >= run.updated_at_ms
+                })
+                .max_by_key(|wait| wait.updated_at_ms)
+            else {
+                continue;
+            };
+
+            let event_seq = wait.event_seq.unwrap_or_default();
+            let detail = format!(
+                "stateful wait `{}` woke while the run was paused; requeued after server restart",
+                wait.wait_id
+            );
+            if let Some(updated) = self
+                .requeue_automation_v2_run_from_stateful_wait_wake(
+                    &run.run_id,
+                    &wait.wait_id,
+                    "stateful_wait_wake_recovered_on_restart",
+                    event_seq,
+                    detail.clone(),
+                    json!({
+                        "wait_id": wait.wait_id,
+                        "wait_kind": wait.wait_kind,
+                        "recovered_on_restart": true,
+                    }),
+                )
+                .await
+            {
+                self.append_internal_sweep_protected_audit_event(
+                    "automation_v2.internal_sweep.stateful_wait_wake_recovered",
+                    &updated,
+                    "recover_lost_stateful_wait_wakes",
+                    "requeued_lost_wake",
+                    Some(detail),
+                    json!({ "wait_id": wait.wait_id, "event_seq": event_seq }),
+                )
+                .await;
+                recovered += 1;
+            }
+        }
         recovered
     }
 
