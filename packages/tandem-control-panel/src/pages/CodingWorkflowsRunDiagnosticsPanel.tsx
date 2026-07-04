@@ -29,6 +29,64 @@ function repoGraphWasUsed(repoContext: RepoContext | null): boolean {
 }
 
 /**
+ * TAN-276 (Codex follow-up): a run's preserved partial diffs aren't
+ * guaranteed to be surfaced as a top-level `partial_diff_artifacts` field —
+ * ACA carries them on individual events' payloads instead, either as a
+ * `partial_diff_artifacts` list (an aggregate/summary event) or a single
+ * `partial_diff_artifact` path (a per-worker timeout/retry event). Collect
+ * from both the top-level field (defensive, in case it's ever populated
+ * directly) and every event's payload, de-duplicating by patch path.
+ */
+function collectPartialDiffArtifacts(runDetail: any): PartialDiffArtifact[] {
+  const artifacts: PartialDiffArtifact[] = [];
+  const seen = new Set<string>();
+
+  const pushArtifact = (candidate: PartialDiffArtifact) => {
+    const patchPath = candidate.patch_path;
+    if (!patchPath) return;
+    const key = `${candidate.worker_id || ""}|${candidate.subtask_id || ""}|${patchPath}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    artifacts.push(candidate);
+  };
+
+  toArray(runDetail, "partial_diff_artifacts").forEach((artifact: any) => {
+    if (artifact && typeof artifact === "object") {
+      pushArtifact({
+        worker_id: artifact.worker_id,
+        subtask_id: artifact.subtask_id,
+        patch_path: artifact.patch_path,
+      });
+    }
+  });
+
+  for (const event of toArray(runDetail, "events")) {
+    const payload = event && typeof event === "object" ? event.payload : null;
+    if (!payload || typeof payload !== "object") continue;
+    const workerId = payload.worker_id;
+    const subtaskId = payload.subtask_id;
+    if (typeof payload.partial_diff_artifact === "string" && payload.partial_diff_artifact.trim()) {
+      pushArtifact({
+        worker_id: workerId,
+        subtask_id: subtaskId,
+        patch_path: payload.partial_diff_artifact,
+      });
+    }
+    toArray(payload, "partial_diff_artifacts").forEach((artifact: any) => {
+      if (artifact && typeof artifact === "object") {
+        pushArtifact({
+          worker_id: artifact.worker_id || workerId,
+          subtask_id: artifact.subtask_id || subtaskId,
+          patch_path: artifact.patch_path,
+        });
+      }
+    });
+  }
+
+  return artifacts;
+}
+
+/**
  * TAN-276: badges for a single run event's worker-retry / prompt-timeout /
  * partial-diff-recovery outcome, so those facts are visible in the timeline
  * without opening the raw run JSON. ACA's compact event payload (see
@@ -62,18 +120,16 @@ export function runEventDiagnosticBadges(event: any): DiagnosticBadge[] {
 /**
  * TAN-276: surfaces ACA's repo-graph usage and partial-diff artifacts for a
  * coder run, using fields already present on the proxied `/api/aca/runs/{id}`
- * payload (`repo_context`, `partial_diff_artifacts`) that the run detail view
- * previously fetched but never rendered.
+ * payload (`repo_context`, plus `partial_diff_artifacts`/`partial_diff_artifact`
+ * carried on individual events) that the run detail view previously fetched
+ * but never rendered.
  */
 export function CodingWorkflowsRunDiagnosticsPanel({ runDetail }: { runDetail: any }) {
   const repoContext: RepoContext | null =
     runDetail?.repo_context && typeof runDetail.repo_context === "object"
       ? runDetail.repo_context
       : null;
-  const partialDiffArtifacts = toArray(
-    runDetail,
-    "partial_diff_artifacts"
-  ) as PartialDiffArtifact[];
+  const partialDiffArtifacts = collectPartialDiffArtifacts(runDetail);
 
   if (!repoContext && !partialDiffArtifacts.length) return null;
 
