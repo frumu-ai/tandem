@@ -1360,3 +1360,117 @@ fn policy_decision(
         metadata: json!({ "hardening_fixture": true }),
     }
 }
+
+// TAN-566 — lost durable-wait wake recovery on restart.
+
+fn paused_run(run_id: &str, tenant_context: TenantContext, updated_at_ms: u64) -> AutomationV2RunRecord {
+    let mut run = automation_run(run_id, tenant_context);
+    run.status = AutomationRunStatus::Paused;
+    run.pause_reason = Some("timer wait".to_string());
+    run.updated_at_ms = updated_at_ms;
+    run
+}
+
+fn woken_wait(
+    wait_id: &str,
+    run_id: &str,
+    scope: StatefulRuntimeScope,
+    updated_at_ms: u64,
+) -> StatefulWaitRecord {
+    let mut wait = wait_record(wait_id, run_id, scope);
+    wait.wait_kind = StatefulWaitKind::Timer;
+    wait.status = StatefulWaitStatus::Woken;
+    wait.event_seq = Some(7);
+    wait.wake_idempotency_key = Some(format!("wake:{wait_id}"));
+    wait.updated_at_ms = updated_at_ms;
+    wait
+}
+
+#[tokio::test]
+async fn lost_stateful_wait_wake_requeues_paused_run_on_restart() {
+    let state = test_state().await;
+    let tenant = tenant("org-wake-recovery", "workspace-a", "operator-a");
+    let scope = StatefulRuntimeScope::from_tenant_context(tenant.clone());
+    let run_id = "run-lost-wake";
+    let paths = StatefulRuntimeStoragePaths::from_runtime_events_path(&state.runtime_events_path);
+
+    state
+        .automation_v2_runs
+        .write()
+        .await
+        .insert(run_id.to_string(), paused_run(run_id, tenant.clone(), 2_000));
+    // The wake fired (seq set) at/after the run's last state change, then the
+    // in-memory requeue was lost to a crash.
+    upsert_stateful_wait(&paths.waits_path, woken_wait("wait-woken", run_id, scope, 2_500))
+        .await
+        .expect("seed woken wait");
+
+    let recovered = state.recover_in_flight_runs().await;
+    assert_eq!(recovered, 1, "the lost wake should recover exactly one run");
+
+    let run = state
+        .get_automation_v2_run(run_id)
+        .await
+        .expect("run still present");
+    assert_eq!(
+        run.status,
+        AutomationRunStatus::Queued,
+        "a run whose durable wake was lost must be requeued on restart"
+    );
+    assert_eq!(run.resume_reason.as_deref(), Some("stateful_wait_wake_recovered_on_restart"));
+    assert!(run.pause_reason.is_none());
+}
+
+#[tokio::test]
+async fn paused_run_with_active_wait_is_not_requeued() {
+    // Legitimately parked on a live wait (Waiting) — must be left for the
+    // scheduler even if an older Woken wait also exists for the run.
+    let state = test_state().await;
+    let tenant = tenant("org-wake-recovery", "workspace-b", "operator-b");
+    let scope = StatefulRuntimeScope::from_tenant_context(tenant.clone());
+    let run_id = "run-active-wait";
+    let paths = StatefulRuntimeStoragePaths::from_runtime_events_path(&state.runtime_events_path);
+
+    state
+        .automation_v2_runs
+        .write()
+        .await
+        .insert(run_id.to_string(), paused_run(run_id, tenant.clone(), 2_000));
+    upsert_stateful_wait(&paths.waits_path, woken_wait("wait-old", run_id, scope.clone(), 2_100))
+        .await
+        .expect("seed old woken wait");
+    // wait_record defaults to StatefulWaitStatus::Waiting — an active wait.
+    upsert_stateful_wait(&paths.waits_path, wait_record("wait-active", run_id, scope))
+        .await
+        .expect("seed active wait");
+
+    let recovered = state.recover_in_flight_runs().await;
+    assert_eq!(recovered, 0);
+    let run = state.get_automation_v2_run(run_id).await.expect("run present");
+    assert_eq!(run.status, AutomationRunStatus::Paused);
+}
+
+#[tokio::test]
+async fn run_paused_after_its_wake_is_not_requeued() {
+    // The wake fired *before* the run's last state change (e.g. a manual
+    // re-pause), so wait.updated_at_ms < run.updated_at_ms — not a lost wake.
+    let state = test_state().await;
+    let tenant = tenant("org-wake-recovery", "workspace-c", "operator-c");
+    let scope = StatefulRuntimeScope::from_tenant_context(tenant.clone());
+    let run_id = "run-repaused";
+    let paths = StatefulRuntimeStoragePaths::from_runtime_events_path(&state.runtime_events_path);
+
+    state
+        .automation_v2_runs
+        .write()
+        .await
+        .insert(run_id.to_string(), paused_run(run_id, tenant.clone(), 3_000));
+    upsert_stateful_wait(&paths.waits_path, woken_wait("wait-stale", run_id, scope, 2_000))
+        .await
+        .expect("seed stale woken wait");
+
+    let recovered = state.recover_in_flight_runs().await;
+    assert_eq!(recovered, 0);
+    let run = state.get_automation_v2_run(run_id).await.expect("run present");
+    assert_eq!(run.status, AutomationRunStatus::Paused);
+}
