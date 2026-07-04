@@ -156,6 +156,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
     selectedTools,
     messages,
     sessionsOpen,
+    railDrawerOpen,
     showThinking,
     streamingText,
   ]);
