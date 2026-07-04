@@ -772,6 +772,26 @@ impl EngineLoop {
                         "toolResultCharsSaved": compacted_tool_result_chars,
                     }),
                 ));
+                // TAN-390: audit-only data-boundary evaluation of the fully
+                // assembled request, after all context assembly and before
+                // dispatch. Observes and emits evidence only — never blocks,
+                // transforms, or reroutes the provider call.
+                if let Some(boundary_event) = data_boundary_gate::evaluate_dispatch_boundary(
+                    &data_boundary_gate::DataBoundaryDispatchContext {
+                        session_id: &session_id,
+                        message_id: &user_message_id,
+                        correlation_id: correlation_ref,
+                        provider_id: provider_id.as_str(),
+                        model_id: model_id_value.as_str(),
+                        org_id: observability_org_id,
+                        workspace_id: observability_workspace_id,
+                        deployment_id: observability_tenant
+                            .and_then(|tenant| tenant.deployment_id.as_deref()),
+                    },
+                    &messages,
+                ) {
+                    self.event_bus.publish(boundary_event);
+                }
                 if full_context_mode {
                     let soft_budget_chars = full_context_soft_budget_chars();
                     let hard_budget_chars = full_context_hard_budget_chars();

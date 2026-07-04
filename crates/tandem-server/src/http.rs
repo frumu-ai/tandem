@@ -360,6 +360,7 @@ pub async fn serve_with_route_extensions(
     let session_part_persister_state = state.clone();
     let session_context_run_journaler_state = state.clone();
     let runtime_event_log_persister_state = state.clone();
+    let data_boundary_audit_bridge_state = state.clone();
     let automation_webhook_retention_reaper_state = state.clone();
     let status_indexer_state = state.clone();
     let routine_scheduler_state = state.clone();
@@ -426,6 +427,10 @@ pub async fn serve_with_route_extensions(
     let runtime_event_log_persister = tokio::spawn(crate::run_runtime_event_log_persister(
         runtime_event_log_persister_state,
     ));
+    let data_boundary_audit_bridge =
+        tokio::spawn(crate::data_boundary_bridge::run_data_boundary_audit_bridge(
+            data_boundary_audit_bridge_state,
+        ));
     let automation_webhook_retention_reaper = tokio::spawn(
         crate::run_automation_webhook_retention_reaper(automation_webhook_retention_reaper_state),
     );
@@ -620,6 +625,7 @@ pub async fn serve_with_route_extensions(
     session_part_persister.abort();
     session_context_run_journaler.abort();
     runtime_event_log_persister.abort();
+    data_boundary_audit_bridge.abort();
     automation_webhook_retention_reaper.abort();
     status_indexer.abort();
     routine_scheduler.abort();

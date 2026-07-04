@@ -1,7 +1,12 @@
 # Tandem Secure Data Boundary Module
 
-Status: first slice implemented in `crates/tandem-data-boundary` (Cycle 1 of
-the Tandem Secure Data Boundary project). Not yet wired into any runtime path.
+Status: crate foundation implemented in `crates/tandem-data-boundary`
+(Cycle 1), plus the first audit-only runtime integration (Cycle 2): the engine
+loop evaluates every assembled provider request behind
+`TANDEM_DATA_BOUNDARY_MODE` (default `off`), emits `data_boundary.*` runtime
+events, and tandem-server bridges consequential decisions into the protected
+audit ledger. Evaluation never blocks, transforms, or reroutes dispatch yet —
+enforcement is Cycle 3.
 
 > Naming note: this document describes the `tandem-data-boundary` crate — the
 > runtime boundary between assembled payloads and external LLM providers. It is
@@ -70,10 +75,12 @@ sha2, `#![forbid(unsafe_code)]`) providing:
 
 ## What it does not do yet
 
-* It is not wired into any provider dispatch, context assembly, memory, or
-  tool path — Cycle 2 adds the first audit-only integration behind
-  `TANDEM_DATA_BOUNDARY_*` config (see
-  `docs/DATA_BOUNDARY_INTEGRATION_MAP.md`).
+* The only runtime integration is the audit-only engine-loop gate at the
+  provider-dispatch seam (`data_boundary_gate.rs`, configured via
+  `TANDEM_DATA_BOUNDARY_*` — see `docs/ENGINE_CONFIGURATION.md`). Decisions
+  are never enforced yet, and the direct server sends, post-tool synthesis
+  send, and memory-distillation egress paths listed in
+  `docs/DATA_BOUNDARY_INTEGRATION_MAP.md` remain uncovered.
 * No LLM-based classification; detection is deterministic only.
 * No raw sensitive value persistence, and no reversible tokenization vault —
   the tokenization map is placeholder-only. Future persistence should go

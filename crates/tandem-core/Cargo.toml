@@ -27,6 +27,8 @@ tandem-wire = { path = "../tandem-wire", version = "0.6.6" }
 tandem-tools = { path = "../tandem-tools", version = "0.6.6" }
 tandem-providers = { path = "../tandem-providers", version = "0.6.6" }
 tandem-observability = { path = "../tandem-observability", version = "0.6.6" }
+tandem-data-boundary = { path = "../tandem-data-boundary", version = "0.6.6" }
 
 [dev-dependencies]
 tempfile = "3"
+serial_test = "3"

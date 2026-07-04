@@ -50,6 +50,7 @@ uuid = { version = "1", features = ["v4"] }
 async-trait = "0.1"
 zip = "2.4.2"
 tandem-core = { path = "../tandem-core", version = "0.6.6" }
+tandem-data-boundary = { path = "../tandem-data-boundary", version = "0.6.6" }
 tandem-providers = { path = "../tandem-providers", version = "0.6.6" }
 tandem-runtime = { path = "../tandem-runtime", version = "0.6.6" }
 tandem-tools = { path = "../tandem-tools", version = "0.6.6" }
