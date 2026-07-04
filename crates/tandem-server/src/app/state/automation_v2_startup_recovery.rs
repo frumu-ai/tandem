@@ -232,7 +232,8 @@ impl AppState {
             StatefulWaitStatus,
         };
 
-        let paths = StatefulRuntimeStoragePaths::from_runtime_events_path(&self.runtime_events_path);
+        let paths =
+            StatefulRuntimeStoragePaths::from_runtime_events_path(&self.runtime_events_path);
         let waits = load_stateful_waits(&paths.waits_path);
         if waits.is_empty() {
             return 0;
