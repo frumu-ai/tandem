@@ -2664,6 +2664,22 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   border-color: color-mix(in srgb, var(--color-error) 34%, transparent) !important;
 }
 
+/* The attribute-substring match above sees `focus-within:border-red-400/60`
+   too, since Tailwind variant class names are always present in the DOM —
+   only the *pseudo-class-gated* Tailwind rule is conditional, not the class
+   name itself. Without this override, ScopePolicyEditor's denied-paths
+   field would show an error border unconditionally instead of only on
+   focus. Restore variant-gated behavior for this specific utility. */
+#app .focus-within\:border-red-400\/60,
+#view .focus-within\:border-red-400\/60 {
+  border-color: color-mix(in srgb, var(--color-border) 90%, transparent) !important;
+}
+
+#app .focus-within\:border-red-400\/60:focus-within,
+#view .focus-within\:border-red-400\/60:focus-within {
+  border-color: color-mix(in srgb, var(--color-error) 60%, transparent) !important;
+}
+
 #app [class*="text-rose-"],
 #app [class*="text-red-"],
 #view [class*="text-rose-"],
