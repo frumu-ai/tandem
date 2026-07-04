@@ -277,6 +277,8 @@ impl EngineLoop {
                 let pinned_history_messages = loaded_history.pinned_messages;
                 let compacted_tool_results = loaded_history.compacted_tool_results;
                 let compacted_tool_result_chars = loaded_history.compacted_tool_result_chars;
+                let demoted_tool_invocations = loaded_history.demoted_tool_invocations;
+                let demoted_tool_invocation_chars = loaded_history.demoted_tool_invocation_chars;
                 let mut messages = loaded_history.messages;
                 let mut attachment_count = 0usize;
                 let mut attachment_chars = 0usize;
@@ -770,6 +772,8 @@ impl EngineLoop {
                         "pinnedHistoryMessages": pinned_history_messages,
                         "toolResultsCompacted": compacted_tool_results,
                         "toolResultCharsSaved": compacted_tool_result_chars,
+                        "staleToolInvocationsDemoted": demoted_tool_invocations,
+                        "staleToolInvocationCharsSaved": demoted_tool_invocation_chars,
                     }),
                 ));
                 // TAN-390: audit-only data-boundary evaluation of the fully

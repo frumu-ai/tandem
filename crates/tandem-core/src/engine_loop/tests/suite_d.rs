@@ -139,3 +139,148 @@ fn random_ascii_fragment(mut seed: u64) -> String {
     }
     out
 }
+
+#[tokio::test]
+async fn load_chat_history_demotes_stale_tool_invocations_with_provenance() {
+    let base = std::env::temp_dir().join(format!(
+        "tandem-core-load-chat-history-demote-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let storage = std::sync::Arc::new(Storage::new(&base).await.expect("storage"));
+    let session = Session::new(Some("chat history".to_string()), Some(".".to_string()));
+    let session_id = session.id.clone();
+    storage.save_session(session).await.expect("save session");
+
+    // 12 tool invocations: with the default keep-recent window of 8, the
+    // oldest 4 must be demoted to concise summaries with provenance handles.
+    let mut message_ids = Vec::new();
+    for index in 0..12 {
+        let payload = format!("PAYLOAD_{index}_{}", "x".repeat(5_000));
+        let message = Message::new(
+            MessageRole::Assistant,
+            vec![MessagePart::ToolInvocation {
+                tool: "grep".to_string(),
+                args: json!({"pattern": format!("needle_{index}"), "path": "src/"}),
+                result: Some(json!({"output": payload})),
+                error: None,
+            }],
+        );
+        message_ids.push(message.id.clone());
+        storage
+            .append_message(&session_id, message)
+            .await
+            .expect("append message");
+    }
+
+    let history = load_chat_history(storage, &session_id, ChatHistoryProfile::Full).await;
+    assert_eq!(history.demoted_tool_invocations, 4);
+    assert!(
+        history.demoted_tool_invocation_chars > 18_000,
+        "expected large savings, got {}",
+        history.demoted_tool_invocation_chars
+    );
+
+    let contents = history
+        .messages
+        .iter()
+        .map(|message| message.content.clone())
+        .collect::<Vec<_>>();
+    let demoted_lines = contents
+        .iter()
+        .filter(|content| content.contains("result=[stale;"))
+        .collect::<Vec<_>>();
+    assert_eq!(demoted_lines.len(), 4);
+
+    for (index, message_id) in message_ids.iter().take(4).enumerate() {
+        let line = contents
+            .iter()
+            .find(|content| content.contains(&format!("needle_{index}")))
+            .expect("demoted invocation projected");
+        // Provenance handles: source message id, original tool and args
+        // preview, and follow-up retrieval instructions.
+        assert!(line.contains("Tool grep"), "tool name kept: {line}");
+        assert!(line.contains(message_id), "message id handle kept: {line}");
+        assert!(
+            line.contains("re-run grep with the original arguments"),
+            "retrieval instructions kept: {line}"
+        );
+        assert!(line.contains("status=ok"));
+        assert!(
+            !line.contains(&format!("PAYLOAD_{index}_")),
+            "stale payload must not reach provider history: {line}"
+        );
+        assert!(
+            line.len() < 500,
+            "demoted line must be concise, got {} chars",
+            line.len()
+        );
+    }
+
+    // The 8 most recent invocations keep their (compacted) payload
+    // projection so in-flight work is unaffected.
+    for index in 4..12 {
+        let line = contents
+            .iter()
+            .find(|content| content.contains(&format!("needle_{index}")))
+            .expect("recent invocation projected");
+        assert!(
+            line.contains(&format!("PAYLOAD_{index}_")),
+            "recent result content retained: {line}"
+        );
+        assert!(!line.contains("result=[stale;"));
+    }
+}
+
+#[tokio::test]
+async fn stale_tool_invocation_demotion_preserves_errors() {
+    let base = std::env::temp_dir().join(format!(
+        "tandem-core-load-chat-history-demote-error-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let storage = std::sync::Arc::new(Storage::new(&base).await.expect("storage"));
+    let session = Session::new(Some("chat history".to_string()), Some(".".to_string()));
+    let session_id = session.id.clone();
+    storage.save_session(session).await.expect("save session");
+
+    // First (stale-destined) invocation failed; its error must stay visible.
+    let failed = Message::new(
+        MessageRole::Assistant,
+        vec![MessagePart::ToolInvocation {
+            tool: "bash".to_string(),
+            args: json!({"command": "cargo test"}),
+            result: Some(json!({"output": "y".repeat(4_000)})),
+            error: Some("EXIT_CODE_101: test suite failed".to_string()),
+        }],
+    );
+    storage
+        .append_message(&session_id, failed)
+        .await
+        .expect("append failed invocation");
+    for index in 0..8 {
+        let message = Message::new(
+            MessageRole::Assistant,
+            vec![MessagePart::ToolInvocation {
+                tool: "read".to_string(),
+                args: json!({"path": format!("src/file_{index}.rs")}),
+                result: Some(json!({"output": format!("fn f{index}() {{}}")})),
+                error: None,
+            }],
+        );
+        storage
+            .append_message(&session_id, message)
+            .await
+            .expect("append message");
+    }
+
+    let history = load_chat_history(storage, &session_id, ChatHistoryProfile::Full).await;
+    assert_eq!(history.demoted_tool_invocations, 1);
+    let demoted = history
+        .messages
+        .iter()
+        .find(|message| message.content.contains("result=[stale;"))
+        .map(|message| message.content.clone())
+        .expect("demoted failed invocation");
+    assert!(demoted.contains("error=EXIT_CODE_101: test suite failed"));
+    assert!(!demoted.contains("status=ok"));
+    assert!(!demoted.contains(&"y".repeat(200)));
+}

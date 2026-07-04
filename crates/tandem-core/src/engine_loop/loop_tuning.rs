@@ -1,3 +1,14 @@
+/// How many of the session's most recent tool invocations keep their full
+/// (compacted) projection in provider-facing history. Older invocations are
+/// demoted to a one-line summary with provenance handles — the raw records
+/// stay untouched in session storage. 0 demotes everything.
+pub(super) fn tool_result_keep_recent() -> usize {
+    std::env::var("TANDEM_TOOL_RESULT_KEEP_RECENT")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(8)
+}
+
 pub(super) fn max_tool_iterations() -> usize {
     let default_iterations = 25usize;
     std::env::var("TANDEM_MAX_TOOL_ITERATIONS")

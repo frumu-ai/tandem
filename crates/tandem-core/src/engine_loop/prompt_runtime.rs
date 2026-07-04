@@ -7,7 +7,7 @@ use tandem_wire::WireMessagePart;
 use crate::{EventBus, Storage};
 use tandem_types::{EngineEvent, MessagePart, MessagePartInput};
 
-use super::{extract_todo_candidates_from_text, truncate_text};
+use super::{extract_todo_candidates_from_text, tool_result_keep_recent, truncate_text};
 
 pub(super) async fn emit_plan_todo_fallback(
     storage: std::sync::Arc<Storage>,
@@ -168,6 +168,8 @@ pub(super) struct LoadedChatHistory {
     pub(super) pinned_messages: usize,
     pub(super) compacted_tool_results: usize,
     pub(super) compacted_tool_result_chars: usize,
+    pub(super) demoted_tool_invocations: usize,
+    pub(super) demoted_tool_invocation_chars: usize,
 }
 
 impl LoadedChatHistory {
@@ -179,6 +181,8 @@ impl LoadedChatHistory {
             pinned_messages: 0,
             compacted_tool_results: 0,
             compacted_tool_result_chars: 0,
+            demoted_tool_invocations: 0,
+            demoted_tool_invocation_chars: 0,
         }
     }
 }
@@ -198,6 +202,8 @@ pub(super) struct SourcedChatMessage {
 struct ToolResultCompactionStats {
     compacted: usize,
     chars_saved: usize,
+    demoted: usize,
+    demoted_chars_saved: usize,
 }
 
 pub(super) async fn load_chat_history(
@@ -209,6 +215,21 @@ pub(super) async fn load_chat_history(
         return LoadedChatHistory::from_messages(Vec::new());
     };
     let mut tool_compaction = ToolResultCompactionStats::default();
+    // Recency policy for tool invocations: only the most recent
+    // `tool_result_keep_recent()` invocations keep their full (compacted)
+    // projection; everything older is demoted to a one-line summary with
+    // provenance handles. Without this, every historical tool result and its
+    // uncapped args are re-sent to the provider on every iteration for the
+    // life of the session, and that accumulation dominates `historyChars` in
+    // the context.budget.final telemetry for long tool-heavy sessions.
+    let total_tool_invocations = session
+        .messages
+        .iter()
+        .flat_map(|m| m.parts.iter())
+        .filter(|part| matches!(part, MessagePart::ToolInvocation { .. }))
+        .count();
+    let stale_cutoff = total_tool_invocations.saturating_sub(tool_result_keep_recent());
+    let mut tool_invocation_ordinal = 0usize;
     let sourced = session
         .messages
         .into_iter()
@@ -227,13 +248,28 @@ pub(super) async fn load_chat_history(
                         args,
                         result,
                         error,
-                    } => summarize_tool_invocation_for_history(
-                        &tool,
-                        &args,
-                        result.as_ref(),
-                        error.as_deref(),
-                        &mut tool_compaction,
-                    ),
+                    } => {
+                        let stale = tool_invocation_ordinal < stale_cutoff;
+                        tool_invocation_ordinal += 1;
+                        if stale {
+                            demote_stale_tool_invocation_for_history(
+                                &tool,
+                                &args,
+                                result.as_ref(),
+                                error.as_deref(),
+                                &source_id,
+                                &mut tool_compaction,
+                            )
+                        } else {
+                            summarize_tool_invocation_for_history(
+                                &tool,
+                                &args,
+                                result.as_ref(),
+                                error.as_deref(),
+                                &mut tool_compaction,
+                            )
+                        }
+                    }
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -251,7 +287,67 @@ pub(super) async fn load_chat_history(
     let mut loaded = compact_chat_history_sourced(sourced, profile);
     loaded.compacted_tool_results = tool_compaction.compacted;
     loaded.compacted_tool_result_chars = tool_compaction.chars_saved;
+    loaded.demoted_tool_invocations = tool_compaction.demoted;
+    loaded.demoted_tool_invocation_chars = tool_compaction.demoted_chars_saved;
     loaded
+}
+
+const STALE_TOOL_ARGS_PREVIEW_CHARS: usize = 200;
+const STALE_TOOL_ERROR_PREVIEW_CHARS: usize = 200;
+
+/// Concise projection for a tool invocation older than the keep-recent
+/// window: what was called, whether it succeeded, and provenance handles
+/// (source message id + original tool/args) so the model can re-retrieve the
+/// data — by re-running the tool or citing the session message — instead of
+/// carrying the full payload in every subsequent provider request. The raw
+/// stored record is never mutated.
+fn demote_stale_tool_invocation_for_history(
+    tool: &str,
+    args: &Value,
+    result: Option<&Value>,
+    error: Option<&str>,
+    source_message_id: &str,
+    stats: &mut ToolResultCompactionStats,
+) -> String {
+    let args_serialized = if args.is_null() {
+        String::new()
+    } else {
+        args.to_string()
+    };
+    let result_serialized = result
+        .filter(|value| !value.is_null())
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    let raw_len = args_serialized.len() + result_serialized.len();
+
+    let mut segments = vec![format!("Tool {tool}")];
+    if !args_serialized.is_empty() {
+        segments.push(format!(
+            "args≈{}",
+            truncate_text(&args_serialized, STALE_TOOL_ARGS_PREVIEW_CHARS)
+        ));
+    }
+    // Failures stay visible even when stale: knowing an earlier attempt
+    // failed (and why) is load-bearing context that is cheap to keep.
+    if let Some(error) = error.map(str::trim).filter(|value| !value.is_empty()) {
+        segments.push(format!(
+            "error={}",
+            truncate_text(error, STALE_TOOL_ERROR_PREVIEW_CHARS)
+        ));
+    } else if !result_serialized.is_empty() {
+        segments.push("status=ok".to_string());
+    }
+    segments.push(format!(
+        "result=[stale; {} chars demoted from provider history; full record in session message {}; re-run {} with the original arguments if this data is needed again]",
+        result_serialized.len(),
+        source_message_id,
+        tool
+    ));
+    let line = segments.join(" ");
+
+    stats.demoted += 1;
+    stats.demoted_chars_saved += raw_len.saturating_sub(line.len());
+    line
 }
 
 fn summarize_tool_invocation_for_history(
@@ -946,6 +1042,8 @@ pub(super) fn compact_chat_history_sourced(
         pinned_messages: pinned_count,
         compacted_tool_results: 0,
         compacted_tool_result_chars: 0,
+        demoted_tool_invocations: 0,
+        demoted_tool_invocation_chars: 0,
     }
 }
 

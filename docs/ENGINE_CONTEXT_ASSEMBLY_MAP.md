@@ -300,6 +300,7 @@ Raw artifact preservation:
 
 - Raw tool result payloads remain in session storage.
 - Provider history gets a textual summary, with special compaction for `mcp_list`, head/tail output compaction for shell/file/search/web-style tools, and a capped preview fallback for unknown oversized result shapes.
+- Recency policy (TAN-191): only the most recent `TANDEM_TOOL_RESULT_KEEP_RECENT` (default 8) tool invocations keep their full compacted projection. Older invocations are demoted to a one-line summary — tool name, args preview, status/error, omitted char count — with provenance handles (source message id, re-run instructions) so the model can re-retrieve the data on demand. Raw stored records are never mutated. `context.budget.final` reports `staleToolInvocationsDemoted` / `staleToolInvocationCharsSaved`.
 
 Token estimation:
 
