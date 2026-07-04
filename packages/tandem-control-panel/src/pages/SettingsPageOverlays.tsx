@@ -209,15 +209,14 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
               <p className="tcp-confirm-message">
                 Current: {incidentMonitorCurrentBrowseDir || "n/a"}
               </p>
-              <div className="mb-3 rounded-xl border border-white/10 bg-black/20 p-3 text-xs">
-                <div className="font-semibold text-slate-100">Where should I go?</div>
-                <div className="tcp-subtle mt-1">
-                  Hosted installs share Coder repositories at <code>{HOSTED_CODER_REPO_ROOT}</code>.
-                  Choose the repo folder, for example{" "}
-                  <code>{incidentMonitorSuggestedWorkspaceRoot}</code>. The{" "}
-                  <code>{HOSTED_TANDEM_DATA_ROOT}</code> folder is runtime state, not the source
-                  checkout.
-                </div>
+              <div className="mb-3 flex items-center gap-1.5 text-xs tcp-subtle">
+                <span>
+                  Choose the repo folder, e.g. <code>{incidentMonitorSuggestedWorkspaceRoot}</code>.
+                </span>
+                <i
+                  data-lucide="info"
+                  title={`Hosted installs share Coder repositories at ${HOSTED_CODER_REPO_ROOT}. The ${HOSTED_TANDEM_DATA_ROOT} folder is runtime state, not the source checkout.`}
+                ></i>
               </div>
               <div className="mb-2 flex flex-wrap gap-2">
                 <button
