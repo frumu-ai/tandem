@@ -17,7 +17,7 @@ function TelemetryEventDetails({
       <summary className="cursor-pointer list-none">
         <div className="flex items-center justify-between gap-2">
           <span className="text-xs font-medium text-slate-200">{item.label}</span>
-          <span className="tcp-subtle text-[11px]">
+          <span className="tcp-subtle tcp-text-caption">
             {formatTimestampLabel(item.at)} · {item.source}
           </span>
         </div>
@@ -26,7 +26,7 @@ function TelemetryEventDetails({
       <DeferredJson
         value={item.raw}
         open={open}
-        className="tcp-code mt-2 max-h-40 overflow-auto text-[11px]"
+        className="tcp-code mt-2 max-h-40 overflow-auto tcp-text-caption"
       />
     </details>
   );
@@ -55,7 +55,7 @@ export function WorkflowRunTelemetryPanel({
         <div className="font-medium">Run Telemetry</div>
         <div className="flex w-full flex-wrap gap-1 sm:w-auto">
           <button
-            className={`tcp-btn h-7 flex-1 px-2 text-[11px] sm:flex-none ${
+            className={`tcp-btn h-7 flex-1 px-2 tcp-text-caption sm:flex-none ${
               selectedLogSource === "all"
                 ? "border-amber-400/60 bg-amber-400/10 text-amber-300"
                 : ""
@@ -65,7 +65,7 @@ export function WorkflowRunTelemetryPanel({
             all ({telemetryEvents.length})
           </button>
           <button
-            className={`tcp-btn h-7 flex-1 px-2 text-[11px] sm:flex-none ${
+            className={`tcp-btn h-7 flex-1 px-2 tcp-text-caption sm:flex-none ${
               selectedLogSource === "automations"
                 ? "border-amber-400/60 bg-amber-400/10 text-amber-300"
                 : ""
@@ -76,7 +76,7 @@ export function WorkflowRunTelemetryPanel({
           </button>
           {isWorkflowRun ? (
             <button
-              className={`tcp-btn h-7 flex-1 px-2 text-[11px] sm:flex-none ${
+              className={`tcp-btn h-7 flex-1 px-2 tcp-text-caption sm:flex-none ${
                 selectedLogSource === "context"
                   ? "border-amber-400/60 bg-amber-400/10 text-amber-300"
                   : ""
@@ -87,7 +87,7 @@ export function WorkflowRunTelemetryPanel({
             </button>
           ) : null}
           <button
-            className={`tcp-btn h-7 flex-1 px-2 text-[11px] sm:flex-none ${
+            className={`tcp-btn h-7 flex-1 px-2 tcp-text-caption sm:flex-none ${
               selectedLogSource === "global"
                 ? "border-amber-400/60 bg-amber-400/10 text-amber-300"
                 : ""

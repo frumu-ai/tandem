@@ -456,7 +456,7 @@ export function Step4Review({
                             <div className="text-xs font-medium text-slate-200">
                               {stepId}
                               {step?.kind ? (
-                                <span className="ml-2 text-[11px] uppercase tracking-wide text-slate-500">
+                                <span className="ml-2 tcp-text-caption uppercase tracking-wide text-slate-500">
                                   {String(step.kind)}
                                 </span>
                               ) : null}
@@ -596,7 +596,7 @@ export function Step4Review({
               <div className="grid gap-3">
                 {planningConversation.messages.map((message: any, index: number) => (
                   <div key={`${message?.created_at_ms || index}-${index}`} className="grid gap-1">
-                    <span className="text-[11px] uppercase tracking-wide text-slate-500">
+                    <span className="tcp-text-caption uppercase tracking-wide text-slate-500">
                       {String(message?.role || "assistant")}
                     </span>
                     <div className="text-sm text-slate-200">

@@ -101,7 +101,7 @@ function TaskCard({
             {task.title}
           </div>
           {!isExpanded && task.description ? (
-            <div className="tcp-subtle mt-1 line-clamp-1 break-words text-[11px]">
+            <div className="tcp-subtle mt-1 line-clamp-1 break-words tcp-text-caption">
               {task.description}
             </div>
           ) : null}
@@ -111,11 +111,11 @@ function TaskCard({
             {statusIcon(task.state)}
             <span>{LABELS[task.state]}</span>
           </span>
-          <span className="tcp-subtle text-[10px]">{isExpanded ? "Open" : "Tap to expand"}</span>
+          <span className="tcp-subtle tcp-text-micro">{isExpanded ? "Open" : "Tap to expand"}</span>
         </div>
       </div>
       {compactMeta.length ? (
-        <div className="mt-1 flex min-w-0 flex-wrap gap-1 text-[10px] text-slate-300">
+        <div className="mt-1 flex min-w-0 flex-wrap gap-1 tcp-text-micro text-slate-300">
           {compactMeta.slice(0, 3).map((item) => (
             <span
               key={item}
@@ -146,7 +146,7 @@ function TaskCard({
                 <div className="tcp-subtle whitespace-pre-wrap break-words">{task.description}</div>
               ) : null}
               {task.assigned_role || task.gate ? (
-                <div className="flex min-w-0 flex-wrap gap-1 text-[10px] text-slate-300">
+                <div className="flex min-w-0 flex-wrap gap-1 tcp-text-micro text-slate-300">
                   {task.assigned_role ? (
                     <span className="rounded border border-cyan-600/50 bg-cyan-950/30 px-1.5 py-0.5">
                       role: {task.assigned_role}
@@ -160,7 +160,7 @@ function TaskCard({
                 </div>
               ) : null}
               {workflowSummary && workflowSummary.runs > 0 ? (
-                <div className="flex min-w-0 flex-wrap gap-1 text-[10px] text-slate-300">
+                <div className="flex min-w-0 flex-wrap gap-1 tcp-text-micro text-slate-300">
                   <span className="rounded border border-indigo-600/50 bg-indigo-950/30 px-1.5 py-0.5">
                     workflow runs: {workflowSummary.runs}
                   </span>
@@ -185,19 +185,19 @@ function TaskCard({
                   {task.dependencies.slice(0, 4).map((dep) => (
                     <span
                       key={dep}
-                      className="rounded border border-slate-700/60 px-1.5 py-0.5 text-[10px] text-slate-300"
+                      className="rounded border border-slate-700/60 px-1.5 py-0.5 tcp-text-micro text-slate-300"
                     >
                       {"<-"} {dep}
                     </span>
                   ))}
                   {task.dependencies.length > 4 ? (
-                    <span className="rounded border border-slate-700/60 px-1.5 py-0.5 text-[10px] text-slate-300">
+                    <span className="rounded border border-slate-700/60 px-1.5 py-0.5 tcp-text-micro text-slate-300">
                       +{task.dependencies.length - 4} more
                     </span>
                   ) : null}
                 </div>
               ) : null}
-              <div className="tcp-subtle text-[10px]">Details</div>
+              <div className="tcp-subtle tcp-text-micro">Details</div>
               <div className="flex flex-wrap gap-2">
                 {task.state === "failed" && onRetryTask ? (
                   <button
@@ -333,14 +333,14 @@ export function TaskBoard({
           {currentTaskId ? (
             <button
               type="button"
-              className="rounded-full border border-emerald-400/60 bg-emerald-400/10 px-3 py-1.5 text-[11px] font-medium text-emerald-200"
+              className="rounded-full border border-emerald-400/60 bg-emerald-400/10 px-3 py-1.5 tcp-text-caption font-medium text-emerald-200"
               onClick={() => setMobileColumnKey(activeColumnKey)}
             >
               Jump to active task
             </button>
           ) : null}
           {activeAgentCount > 0 ? (
-            <span className="rounded-full border border-cyan-400/50 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-medium text-cyan-200">
+            <span className="rounded-full border border-cyan-400/50 bg-cyan-400/10 px-3 py-1.5 tcp-text-caption font-medium text-cyan-200">
               {activeAgentCount} agent{activeAgentCount === 1 ? "" : "s"} running
             </span>
           ) : null}
@@ -352,7 +352,7 @@ export function TaskBoard({
               <button
                 key={column.key}
                 type="button"
-                className={`shrink-0 rounded-full border px-3 py-1.5 text-[11px] font-medium ${
+                className={`shrink-0 rounded-full border px-3 py-1.5 tcp-text-caption font-medium ${
                   active
                     ? "border-emerald-400/60 bg-emerald-400/10 text-emerald-200"
                     : "border-slate-700/60 bg-slate-900/20 text-slate-300"
@@ -397,14 +397,14 @@ export function TaskBoard({
           {currentTaskId ? (
             <button
               type="button"
-              className="rounded-full border border-emerald-400/60 bg-emerald-400/10 px-3 py-1.5 text-[11px] font-medium text-emerald-200"
+              className="rounded-full border border-emerald-400/60 bg-emerald-400/10 px-3 py-1.5 tcp-text-caption font-medium text-emerald-200"
               onClick={scrollToCurrentTask}
             >
               Jump to active task
             </button>
           ) : null}
           {activeAgentCount > 0 ? (
-            <span className="rounded-full border border-cyan-400/50 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-medium text-cyan-200">
+            <span className="rounded-full border border-cyan-400/50 bg-cyan-400/10 px-3 py-1.5 tcp-text-caption font-medium text-cyan-200">
               {activeAgentCount} agent{activeAgentCount === 1 ? "" : "s"} running
             </span>
           ) : null}
@@ -415,7 +415,7 @@ export function TaskBoard({
                 <button
                   key={`desktop-tab-${column.key}`}
                   type="button"
-                  className={`rounded-full border px-3 py-1.5 text-[11px] font-medium ${
+                  className={`rounded-full border px-3 py-1.5 tcp-text-caption font-medium ${
                     active
                       ? "border-emerald-400/60 bg-emerald-400/10 text-emerald-200"
                       : "border-slate-700/60 bg-slate-900/20 text-slate-300"

@@ -90,13 +90,13 @@ export function WorkflowRequiredActionsPanel({
                   </span>
                 ) : null}
                 {blockingClassification ? (
-                  <span className="tcp-subtle text-[11px]">
+                  <span className="tcp-subtle tcp-text-caption">
                     {blockingClassification.replace(/_/g, " ")}
                   </span>
                 ) : null}
                 {guidance?.repairAttemptsRemaining !== null &&
                 guidance?.repairAttemptsRemaining !== undefined ? (
-                  <span className="tcp-subtle text-[11px]">
+                  <span className="tcp-subtle tcp-text-caption">
                     {String(guidance.repairAttemptsRemaining)} repair attempt
                     {Number(guidance.repairAttemptsRemaining) === 1 ? "" : "s"} left
                   </span>
@@ -173,7 +173,7 @@ export function WorkflowRequiredActionsPanel({
                   {unmet.map((item: any) => (
                     <span
                       key={`${nodeId}-${String(item)}`}
-                      className="rounded-full border border-emerald-400/25 bg-black/20 px-2 py-1 text-[11px] text-emerald-100/90"
+                      className="rounded-full border border-emerald-400/25 bg-black/20 px-2 py-1 tcp-text-caption text-emerald-100/90"
                     >
                       {String(item || "").replace(/_/g, " ")}
                     </span>
@@ -181,7 +181,7 @@ export function WorkflowRequiredActionsPanel({
                 </div>
               ) : null}
               {failureKind ? (
-                <div className="tcp-subtle mt-2 text-[11px]">failure kind: {failureKind}</div>
+                <div className="tcp-subtle mt-2 tcp-text-caption">failure kind: {failureKind}</div>
               ) : null}
             </div>
           );

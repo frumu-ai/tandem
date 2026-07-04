@@ -511,7 +511,7 @@ export function AutomationCalendar({
               />
             )}
           </div>
-          <span className="min-w-0 flex-1 truncate text-[11px] font-medium leading-none text-slate-100">
+          <span className="min-w-0 flex-1 truncate tcp-text-caption font-medium leading-none text-slate-100">
             {previewText}
           </span>
           {overflowCount > 0 ? (
@@ -520,7 +520,7 @@ export function AutomationCalendar({
             </span>
           ) : null}
           <span
-            className={`inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5 text-[11px] font-semibold tabular-nums ${
+            className={`inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5 tcp-text-caption font-semibold tabular-nums ${
               selected
                 ? "border-amber-300/70 bg-amber-300/18 text-amber-50"
                 : "border-slate-600/70 bg-slate-950/70 text-slate-100"
@@ -665,7 +665,7 @@ export function AutomationCalendar({
             {focusedSlot ? (
               <button
                 type="button"
-                className="tcp-btn h-7 px-2.5 text-[11px]"
+                className="tcp-btn h-7 px-2.5 tcp-text-caption"
                 onClick={() => syncFocusedSlot(null)}
               >
                 Clear

@@ -1009,7 +1009,7 @@ function LoopStepCard({ step, index }: { step: EvidenceStep; index: number }) {
         <i data-lucide={step.icon}></i>
       </div>
       <div className="min-w-0">
-        <div className="text-[11px] uppercase text-tcp-text-tertiary">Step {index + 1}</div>
+        <div className="tcp-text-caption uppercase text-tcp-text-tertiary">Step {index + 1}</div>
         <div className="truncate text-sm font-semibold text-tcp-text-primary">{step.label}</div>
       </div>
       <div className="min-w-0">
@@ -1076,7 +1076,7 @@ function EvidenceRow({
         </div>
         <div className="line-clamp-2 text-xs text-tcp-text-secondary">{subtitle}</div>
         {meta ? (
-          <div className="mt-1 truncate text-[11px] text-tcp-text-tertiary">{meta}</div>
+          <div className="mt-1 truncate tcp-text-caption text-tcp-text-tertiary">{meta}</div>
         ) : null}
       </div>
     </article>

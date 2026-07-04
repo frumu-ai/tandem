@@ -826,7 +826,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
               >
                 <i data-lucide="list-x"></i>
               </button>
-              <label className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-slate-500">
+              <label className="flex items-center gap-2 tcp-text-caption uppercase tracking-wide text-slate-500">
                 <span>Per page</span>
                 <select
                   className="tcp-input h-8 min-w-[4rem] px-2 text-xs leading-none"
@@ -1059,7 +1059,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
               >
                 <i data-lucide="list-x"></i>
               </button>
-              <label className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-slate-500">
+              <label className="flex items-center gap-2 tcp-text-caption uppercase tracking-wide text-slate-500">
                 <span>Per page</span>
                 <select
                   className="tcp-input h-8 min-w-[4rem] px-2 text-xs leading-none"
@@ -1390,7 +1390,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
               >
                 <i data-lucide="list-x"></i>
               </button>
-              <label className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-slate-500">
+              <label className="flex items-center gap-2 tcp-text-caption uppercase tracking-wide text-slate-500">
                 <span>Destination</span>
                 <select
                   className="tcp-input h-8 min-w-[10rem] px-2 text-xs leading-none"
@@ -1412,7 +1412,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                   })}
                 </select>
               </label>
-              <label className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-slate-500">
+              <label className="flex items-center gap-2 tcp-text-caption uppercase tracking-wide text-slate-500">
                 <span>Per page</span>
                 <select
                   className="tcp-input h-8 min-w-[4rem] px-2 text-xs leading-none"

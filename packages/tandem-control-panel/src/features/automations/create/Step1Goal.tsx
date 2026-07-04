@@ -237,7 +237,7 @@ export function Step1Goal(props: Step1GoalProps) {
             </div>
             {showArtifactPreview ? (
               <textarea
-                className="tcp-input min-h-[140px] font-mono text-[11px]"
+                className="tcp-input min-h-[140px] font-mono tcp-text-caption"
                 readOnly
                 value={String(
                   (generatedSkill?.artifacts as Record<string, string>)?.[artifactPreviewKey] || ""

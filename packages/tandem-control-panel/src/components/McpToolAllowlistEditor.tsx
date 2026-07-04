@@ -88,7 +88,7 @@ export function McpToolAllowlistEditor({
                     disabled={disabled}
                     onChange={() => toggleTool(toolName)}
                   />
-                  <span className="break-all font-mono text-[11px] leading-5">{toolName}</span>
+                  <span className="break-all font-mono tcp-text-caption leading-5">{toolName}</span>
                 </label>
               );
             })}
@@ -97,7 +97,7 @@ export function McpToolAllowlistEditor({
 
         {extraSelected.length ? (
           <div className="grid gap-2">
-            <div className="text-[11px] uppercase tracking-wide text-amber-200">
+            <div className="tcp-text-caption uppercase tracking-wide text-amber-200">
               Saved but not currently discovered
             </div>
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -115,7 +115,7 @@ export function McpToolAllowlistEditor({
                     disabled={disabled}
                     onChange={() => toggleTool(toolName)}
                   />
-                  <span className="break-all font-mono text-[11px] leading-5">{toolName}</span>
+                  <span className="break-all font-mono tcp-text-caption leading-5">{toolName}</span>
                 </label>
               ))}
             </div>
@@ -150,7 +150,7 @@ export function McpToolAllowlistEditor({
             {subtitle ? <div className="text-xs text-slate-400">{subtitle}</div> : null}
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+        <div className="flex flex-wrap items-center gap-2 tcp-text-caption text-slate-400">
           <span className="rounded-full border border-slate-700 px-2 py-1">
             {value === null || allVisibleSelected
               ? "all discovered"

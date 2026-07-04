@@ -31,7 +31,7 @@ function MeterRow({
     <div className="grid gap-1">
       <div className="flex items-center justify-between text-xs">
         <span className="tcp-subtle">{label}</span>
-        <span className="font-mono text-[11px] text-slate-200">
+        <span className="font-mono tcp-text-caption text-slate-200">
           {used.toLocaleString()}
           {unit || ""} / {max.toLocaleString()}
           {unit || ""}

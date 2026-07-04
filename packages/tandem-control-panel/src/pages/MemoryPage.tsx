@@ -364,7 +364,7 @@ export function MemoryPage({ api, client, toast }: AppPageProps) {
                     {item.auditId ? <Badge tone="ghost">audit {item.auditId}</Badge> : null}
                   </div>
                   {item.sourcePath ? (
-                    <div className="tcp-subtle mb-2 truncate text-[11px]">{item.sourcePath}</div>
+                    <div className="tcp-subtle mb-2 truncate tcp-text-caption">{item.sourcePath}</div>
                   ) : null}
 
                   <AnimatePresence initial={false} mode="wait">

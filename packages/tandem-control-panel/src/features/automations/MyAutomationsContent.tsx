@@ -268,13 +268,13 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
               </strong>
               <div className="flex flex-wrap items-center gap-1.5">
                 {categoryLabel ? (
-                  <span className="tcp-badge-ok text-[10px] py-0 px-1.5">{categoryLabel}</span>
+                  <span className="tcp-badge-ok tcp-text-micro py-0 px-1.5">{categoryLabel}</span>
                 ) : null}
                 {sourceLabel ? (
-                  <span className="tcp-badge-ghost text-[10px] py-0 px-1.5">{sourceLabel}</span>
+                  <span className="tcp-badge-ghost tcp-text-micro py-0 px-1.5">{sourceLabel}</span>
                 ) : null}
                 {String(automation?.description || "").trim() ? null : (
-                  <span className="text-[10px] text-slate-500 uppercase tracking-[0.2em]">
+                  <span className="tcp-text-micro text-slate-500 uppercase tracking-[0.2em]">
                     No description
                   </span>
                 )}
@@ -313,7 +313,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
               <i data-lucide="pencil" className="w-3.5 h-3.5"></i>
             </button>
             <span
-              className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${statusColor(status)}`}
+              className={`tcp-text-micro font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${statusColor(status)}`}
             >
               {status}
             </span>
@@ -329,12 +329,12 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
         )}
 
         {String(automation?.metadata?.standup?.report_path_template || "").trim() ? (
-          <div className="text-[10px] text-emerald-300/80 font-mono tracking-tight bg-emerald-500/10 p-1.5 rounded-md truncate">
+          <div className="tcp-text-micro text-emerald-300/80 font-mono tracking-tight bg-emerald-500/10 p-1.5 rounded-md truncate">
             report: {String(automation?.metadata?.standup?.report_path_template || "")}
           </div>
         ) : null}
 
-        <div className="tcp-subtle text-[11px] font-medium flex items-center gap-1.5">
+        <div className="tcp-subtle tcp-text-caption font-medium flex items-center gap-1.5">
           <i data-lucide="calendar" className="w-3 h-3"></i>
           {formatAutomationV2ScheduleLabel(automation?.schedule)}
         </div>
@@ -343,7 +343,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
           const savedProfile = String(automation?.execution?.profile || "").toLowerCase();
           if (!savedProfile || savedProfile === "strict") return null;
           return (
-            <div className="tcp-subtle text-[11px] font-medium flex items-center gap-1.5">
+            <div className="tcp-subtle tcp-text-caption font-medium flex items-center gap-1.5">
               <i data-lucide="shield" className="w-3 h-3"></i>
               <span>
                 Profile: <ExecutionProfilePill profile={savedProfile} />
@@ -353,7 +353,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
         })()}
 
         {createdAtMs ? (
-          <div className="tcp-subtle text-[11px] font-medium flex items-center gap-1.5">
+          <div className="tcp-subtle tcp-text-caption font-medium flex items-center gap-1.5">
             <i data-lucide="clock" className="w-3 h-3"></i>
             Created {formatAutomationCreatedAtLabel(automation)}
           </div>
@@ -361,7 +361,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
 
         <div className="mt-auto pt-3 flex flex-wrap gap-2 border-t border-white/5">
           <button
-            className="tcp-btn-primary flex-1 h-8 px-2 text-[11px]"
+            className="tcp-btn-primary flex-1 h-8 px-2 tcp-text-caption"
             onClick={() => runNowV2Mutation.mutate({ id })}
             disabled={!id || runNowV2Mutation.isPending}
             title="Run with the automation's saved execution profile"
@@ -371,13 +371,13 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
           </button>
           <details className="relative">
             <summary
-              className="tcp-btn h-8 px-2 text-[11px] list-none cursor-pointer flex items-center"
+              className="tcp-btn h-8 px-2 tcp-text-caption list-none cursor-pointer flex items-center"
               title="Run once with a profile override (does not change the saved automation)"
             >
               <i data-lucide="chevrons-up-down" className="w-3 h-3"></i>
             </summary>
             <div className="absolute right-0 top-9 z-10 grid gap-1 rounded border border-slate-700/60 bg-slate-900/95 p-2 shadow-lg">
-              <div className="text-[10px] uppercase tracking-wide text-slate-400">Run once as</div>
+              <div className="tcp-text-micro uppercase tracking-wide text-slate-400">Run once as</div>
               <ExecutionProfileToggle
                 size="sm"
                 value=""
@@ -395,11 +395,11 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
                   runNowV2Mutation.mutate({ id, executionProfile: next });
                 }}
               />
-              <div className="text-[10px] text-slate-500">Override applies to this run only.</div>
+              <div className="tcp-text-micro text-slate-500">Override applies to this run only.</div>
             </div>
           </details>
           <button
-            className="tcp-btn h-8 px-2 text-[11px]"
+            className="tcp-btn h-8 px-2 tcp-text-caption"
             onClick={() =>
               automationActionMutation.mutate({
                 action: paused ? "resume" : "pause",
@@ -552,7 +552,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
         <div className="space-y-5 mb-4">
           <div className="flex items-start justify-between gap-2">
             <div className="space-y-1">
-              <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">
+              <p className="tcp-text-caption font-medium uppercase tracking-[0.24em] text-slate-500">
                 Library
               </p>
               <p className="tcp-subtle text-xs">
@@ -568,7 +568,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
           <div className="tcp-card flex flex-col gap-3">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="space-y-1">
-                <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">
+                <p className="tcp-text-caption font-medium uppercase tracking-[0.24em] text-slate-500">
                   Filters & Sort
                 </p>
                 <p className="tcp-subtle text-xs">
@@ -614,7 +614,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
                         disabled={workflowPreferencesLoading}
                       />
                       <span
-                        className={`flex h-3.5 w-3.5 items-center justify-center rounded-sm border text-[10px] font-bold leading-none ${
+                        className={`flex h-3.5 w-3.5 items-center justify-center rounded-sm border tcp-text-micro font-bold leading-none ${
                           checked
                             ? "border-blue-300 bg-blue-400 text-slate-950"
                             : "border-white/10 bg-slate-950/70 text-transparent"
@@ -649,7 +649,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
                         disabled={workflowPreferencesLoading}
                       />
                       <span
-                        className={`flex h-3.5 w-3.5 items-center justify-center rounded-sm border text-[10px] font-bold leading-none ${
+                        className={`flex h-3.5 w-3.5 items-center justify-center rounded-sm border tcp-text-micro font-bold leading-none ${
                           checked
                             ? "border-emerald-300 bg-emerald-400 text-slate-950"
                             : "border-white/10 bg-slate-950/70 text-transparent"
@@ -688,7 +688,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
                 <section key={section.key} className="space-y-3">
                   <div className="flex items-start justify-between gap-2">
                     <div className="space-y-1">
-                      <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">
+                      <p className="tcp-text-caption font-medium uppercase tracking-[0.24em] text-slate-500">
                         {section.label}
                       </p>
                       <p className="tcp-subtle text-xs">{section.description}</p>
@@ -732,7 +732,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
           <div className="grid gap-2">
             <div className="flex items-start justify-between gap-2">
               <div className="space-y-1">
-                <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">
+                <p className="tcp-text-caption font-medium uppercase tracking-[0.24em] text-slate-500">
                   Scheduled Automations
                 </p>
                 <p className="tcp-subtle text-xs">
@@ -760,7 +760,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
 
       {viewMode === "list" && packs.length > 0 ? (
         <div className="mt-12 pt-8 border-t border-white/5 opacity-60 hover:opacity-100 transition-opacity">
-          <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold mb-3">
+          <p className="tcp-text-micro text-slate-500 uppercase tracking-widest font-bold mb-3">
             System: Installed Packs
           </p>
           <div className="grid gap-2">
@@ -771,7 +771,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
                     <i data-lucide="package" className="shrink-0 text-tcp-text-tertiary"></i>
                     <strong className="text-xs">{String(pack?.name || pack?.id || "Pack")}</strong>
                   </div>
-                  <span className="text-[10px] text-slate-500">
+                  <span className="tcp-text-micro text-slate-500">
                     {String(pack?.version || "1.0.0")}
                   </span>
                 </div>

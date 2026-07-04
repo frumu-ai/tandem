@@ -25,19 +25,19 @@ function ReceiptEntry({ entry, index }: { entry: any; index: number }) {
     >
       <summary className="cursor-pointer list-none">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-[11px] font-medium text-slate-200">
+          <span className="tcp-text-caption font-medium text-slate-200">
             {String(entry?.eventType || entry?.event_type || entry?.receiptKind || "receipt")}
           </span>
-          <span className="tcp-subtle text-[10px]">seq {String(entry?.seq || index + 1)}</span>
+          <span className="tcp-subtle tcp-text-micro">seq {String(entry?.seq || index + 1)}</span>
         </div>
-        <div className="tcp-subtle mt-0.5 text-[11px]">
+        <div className="tcp-subtle mt-0.5 tcp-text-caption">
           {String(entry?.detail || entry?.summary || "").trim() || "No summary available."}
         </div>
       </summary>
       <DeferredJson
         value={entry?.raw || entry}
         open={open}
-        className="tcp-code mt-2 max-h-32 overflow-auto text-[10px]"
+        className="tcp-code mt-2 max-h-32 overflow-auto tcp-text-micro"
       />
     </details>
   );
@@ -101,7 +101,7 @@ export function WorkflowTaskSignalsPanel({
                     <button
                       key={file}
                       type="button"
-                      className={`rounded-full border border-slate-700/70 bg-slate-950/30 px-2 py-1 font-mono text-[11px] text-slate-300 ${normalizeManagedFilesExplorerPath(file) && onOpenPath ? "cursor-pointer hover:border-sky-500/40 hover:text-sky-100" : "cursor-default"}`.trim()}
+                      className={`rounded-full border border-slate-700/70 bg-slate-950/30 px-2 py-1 font-mono tcp-text-caption text-slate-300 ${normalizeManagedFilesExplorerPath(file) && onOpenPath ? "cursor-pointer hover:border-sky-500/40 hover:text-sky-100" : "cursor-default"}`.trim()}
                       onClick={() => {
                         const normalized = normalizeManagedFilesExplorerPath(file);
                         if (!normalized || !onOpenPath) return;
@@ -124,7 +124,7 @@ export function WorkflowTaskSignalsPanel({
                   {selectedBoardTaskUndeclaredFiles.map((file) => (
                     <span
                       key={file}
-                      className="rounded-full border border-amber-500/30 bg-amber-950/20 px-2 py-1 font-mono text-[11px] text-amber-100"
+                      className="rounded-full border border-amber-500/30 bg-amber-950/20 px-2 py-1 font-mono tcp-text-caption text-amber-100"
                     >
                       {file}
                     </span>
@@ -180,7 +180,7 @@ export function WorkflowTaskSignalsPanel({
               ) && onOpenPath ? (
                 <button
                   type="button"
-                  className="ml-2 rounded-md border border-sky-500/30 bg-sky-950/20 px-2 py-0.5 text-[10px] text-sky-100"
+                  className="ml-2 rounded-md border border-sky-500/30 bg-sky-950/20 px-2 py-0.5 tcp-text-micro text-sky-100"
                   onClick={() =>
                     onOpenPath(
                       normalizeManagedFilesExplorerPath(
@@ -259,7 +259,7 @@ export function WorkflowTaskSignalsPanel({
               value={selectedBoardTaskValidationBasis}
               label="Validation basis"
               className="mt-2 rounded-md border border-slate-700/60 bg-black/10 p-2"
-              preClassName="tcp-code mt-2 max-h-40 overflow-auto text-[11px]"
+              preClassName="tcp-code mt-2 max-h-40 overflow-auto tcp-text-caption"
             />
           ) : null}
           <div className="mt-3">

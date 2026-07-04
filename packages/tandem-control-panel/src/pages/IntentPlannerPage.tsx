@@ -1182,7 +1182,7 @@ export function IntentPlannerPage({
             subtitle="Describe the mission goal."
             className="flex flex-col shrink-0"
             actions={
-              <div className="flex flex-wrap gap-2 text-[10px]">
+              <div className="flex flex-wrap gap-2 tcp-text-micro">
                 <Badge tone="ok">intent → plan</Badge>
                 {plannerDraftRestored ? <Badge tone="info">restored</Badge> : null}
               </div>
@@ -1294,7 +1294,7 @@ export function IntentPlannerPage({
           >
             <div className="tcp-chat-container flex-1">
               {plannerDraftUpdatedAtMs ? (
-                <div className="mb-3 rounded-xl border border-white/5 bg-black/20 px-3 py-2 text-[10px] text-slate-500">
+                <div className="mb-3 rounded-xl border border-white/5 bg-black/20 px-3 py-2 tcp-text-micro text-slate-500">
                   Last autosave: {new Date(plannerDraftUpdatedAtMs).toLocaleTimeString()}
                 </div>
               ) : null}

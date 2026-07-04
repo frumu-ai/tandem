@@ -285,7 +285,7 @@ export function MemoryImportDialog({
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                   {STATS.map(([key, label]) => (
                     <div key={key} className="rounded-lg border border-white/10 bg-black/10 p-2">
-                      <div className="tcp-subtle text-[11px]">{label}</div>
+                      <div className="tcp-subtle tcp-text-caption">{label}</div>
                       <div className="mt-1 font-semibold tabular-nums">
                         {Number(result[key] || 0)}
                       </div>

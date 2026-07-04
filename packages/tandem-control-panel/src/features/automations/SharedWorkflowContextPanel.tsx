@@ -102,14 +102,14 @@ export function SharedWorkflowContextPanel({
                   {kv("project", entry.pack?.projectKey || "n/a")}
                 </div>
                 {contextPackStateHint(entry) ? (
-                  <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-[11px] text-amber-100">
+                  <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 tcp-text-caption text-amber-100">
                     {contextPackStateHint(entry)}
                   </div>
                 ) : null}
                 {entry.pack?.state === "superseded" &&
                 safeString(entry.pack?.raw?.superseded_by_pack_id) ? (
                   <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-2">
-                    <div className="text-[11px] text-amber-100">
+                    <div className="tcp-text-caption text-amber-100">
                       Suggested replacement:{" "}
                       <span className="font-medium">
                         {safeString(entry.pack.raw.superseded_by_pack_id)}
@@ -118,7 +118,7 @@ export function SharedWorkflowContextPanel({
                     {onReplaceSharedContextPack ? (
                       <button
                         type="button"
-                        className="tcp-btn h-7 px-2 text-[11px]"
+                        className="tcp-btn h-7 px-2 tcp-text-caption"
                         onClick={() =>
                           onReplaceSharedContextPack(
                             entry.packId,
@@ -141,7 +141,7 @@ export function SharedWorkflowContextPanel({
         <div className="font-medium text-slate-200">Shared workflow context</div>
         <button
           type="button"
-          className="tcp-btn h-7 px-2 text-[11px]"
+          className="tcp-btn h-7 px-2 tcp-text-caption"
           onClick={onPublishCurrentContextPack}
           disabled={!workspaceRoot}
         >
@@ -149,12 +149,12 @@ export function SharedWorkflowContextPanel({
           Publish shared workflow context
         </button>
       </div>
-      <div className="tcp-subtle text-[11px]">
+      <div className="tcp-subtle tcp-text-caption">
         workspace: {workspaceRoot || "n/a"}
         {projectKey ? ` · project: ${projectKey}` : ""}
       </div>
       <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-        <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+        <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
           cross-project allowlist
         </div>
         <input
@@ -164,13 +164,13 @@ export function SharedWorkflowContextPanel({
           onChange={(event) => onAllowlistChange(event.currentTarget.value)}
           placeholder="project-b, project-c"
         />
-        <div className="tcp-subtle mt-2 text-[11px]">
+        <div className="tcp-subtle mt-2 tcp-text-caption">
           Optional comma-separated project keys for future cross-project reuse. Leave blank for
           same-project only.
         </div>
       </div>
       {contextPackStatus ? (
-        <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2 text-[11px] text-slate-200">
+        <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2 tcp-text-caption text-slate-200">
           {contextPackStatus}
         </div>
       ) : null}
@@ -218,7 +218,7 @@ export function SharedWorkflowContextPanel({
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
                       <div className="font-medium text-slate-100">{selectedContextPack.title}</div>
-                      <div className="tcp-subtle text-[11px]">
+                      <div className="tcp-subtle tcp-text-caption">
                         Published {timestampLabel(selectedContextPack.raw?.published_at_ms)}
                       </div>
                     </div>
@@ -229,7 +229,7 @@ export function SharedWorkflowContextPanel({
                       <span className="tcp-badge-info">{selectedContextPack.state}</span>
                       <button
                         type="button"
-                        className="tcp-btn h-7 px-2 text-[11px]"
+                        className="tcp-btn h-7 px-2 tcp-text-caption"
                         onClick={() => void copyContextPackId(selectedContextPack.packId)}
                       >
                         <i data-lucide="copy"></i>
@@ -275,7 +275,7 @@ export function SharedWorkflowContextPanel({
                   </div>
                   {selectedContextPack.raw?.summary ? (
                     <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                      <div className="tcp-subtle text-[11px] uppercase tracking-wide">summary</div>
+                      <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">summary</div>
                       <div className="mt-1 break-words text-sm text-slate-100">
                         {selectedContextPack.raw.summary}
                       </div>
@@ -342,13 +342,13 @@ export function SharedWorkflowContextPanel({
                             </div>
                             {binding.actor_metadata ? (
                               <div className="mt-2">
-                                <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                                <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                                   actor metadata
                                 </div>
                                 <LazyJson
                                   value={binding.actor_metadata}
                                   className="mt-1"
-                                  preClassName="tcp-code mt-1 max-h-28 overflow-auto text-[11px]"
+                                  preClassName="tcp-code mt-1 max-h-28 overflow-auto tcp-text-caption"
                                 />
                               </div>
                             ) : null}
@@ -356,21 +356,21 @@ export function SharedWorkflowContextPanel({
                         ))}
                       </div>
                     ) : (
-                      <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2 text-[11px] text-slate-400">
+                      <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2 tcp-text-caption text-slate-400">
                         No bindings recorded on this shared workflow context yet.
                       </div>
                     )}
                   </div>
                 </div>
               ) : (
-                <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-3 text-[11px] text-slate-400">
+                <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-3 tcp-text-caption text-slate-400">
                   Select a shared workflow context to inspect its provenance and bind history.
                 </div>
               )}
             </div>
           </div>
         ) : (
-          <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3 text-[11px] text-slate-400">
+          <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3 tcp-text-caption text-slate-400">
             No shared workflow contexts have been published for this workspace yet.
           </div>
         )}
@@ -391,13 +391,13 @@ export function SharedWorkflowContextPanel({
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
                       <div className="font-medium text-slate-100">{pack.title}</div>
-                      <div className="tcp-subtle text-[11px]">{pack.reason}</div>
+                      <div className="tcp-subtle tcp-text-caption">{pack.reason}</div>
                     </div>
                     <div className="flex flex-wrap items-center gap-1">
                       <span className="tcp-badge-info">{pack.state}</span>
                       <button
                         type="button"
-                        className="tcp-btn h-7 px-2 text-[11px]"
+                        className="tcp-btn h-7 px-2 tcp-text-caption"
                         onClick={() => void copyContextPackId(pack.packId)}
                       >
                         <i data-lucide="copy"></i>

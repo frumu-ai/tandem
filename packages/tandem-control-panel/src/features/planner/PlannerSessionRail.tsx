@@ -67,7 +67,7 @@ export function PlannerSessionRail({
                       <div className="truncate text-sm font-medium text-slate-100">
                         {session.title || "Untitled plan"}
                       </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                      <div className="mt-1 flex flex-wrap items-center gap-2 tcp-text-caption text-slate-500">
                         <span>{session.updatedAtLabel}</span>
                         {session.revisionCount ? <span>{session.revisionCount} rev</span> : null}
                       </div>
@@ -82,7 +82,7 @@ export function PlannerSessionRail({
                 <div className="mt-2 flex flex-wrap gap-2">
                   <button
                     type="button"
-                    className="tcp-btn h-7 px-2 text-[11px]"
+                    className="tcp-btn h-7 px-2 tcp-text-caption"
                     onClick={() => onRenameSession(session.id)}
                     title="Rename session"
                   >
@@ -90,7 +90,7 @@ export function PlannerSessionRail({
                   </button>
                   <button
                     type="button"
-                    className="tcp-btn h-7 px-2 text-[11px]"
+                    className="tcp-btn h-7 px-2 tcp-text-caption"
                     onClick={() => onDuplicateSession(session.id)}
                     title="Duplicate session"
                   >
@@ -98,7 +98,7 @@ export function PlannerSessionRail({
                   </button>
                   <button
                     type="button"
-                    className="tcp-btn h-7 px-2 text-[11px]"
+                    className="tcp-btn h-7 px-2 tcp-text-caption"
                     onClick={() => onDeleteSession(session.id)}
                     title="Delete session"
                   >

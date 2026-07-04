@@ -571,7 +571,7 @@ export function CodingWorkflowsAgentCockpit({
                       <Badge tone="warn">Pending</Badge>
                     </div>
                     {payload.body ? (
-                      <pre className="mt-2 max-h-20 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-slate-300">
+                      <pre className="mt-2 max-h-20 overflow-auto whitespace-pre-wrap break-words tcp-text-caption leading-5 text-slate-300">
                         {String(payload.body).slice(0, 700)}
                       </pre>
                     ) : null}

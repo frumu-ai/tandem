@@ -26,7 +26,7 @@ export function WorkflowBlockersPanel({ blockers }: WorkflowBlockersPanelProps) 
                 {blocker.source}
               </span>
               {blocker.at ? (
-                <span className="tcp-subtle text-[11px]">
+                <span className="tcp-subtle tcp-text-caption">
                   {new Date(blocker.at).toLocaleTimeString()}
                 </span>
               ) : null}

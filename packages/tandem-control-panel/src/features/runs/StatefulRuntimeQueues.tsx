@@ -30,7 +30,7 @@ function StatTiles({ items }: { items: Array<{ key: string; label: string; value
     <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
       {items.map((item) => (
         <div key={item.key} className="min-h-[4.25rem] rounded-md border border-white/10 bg-white/[0.03] px-3 py-2">
-          <div className="text-[11px] uppercase tracking-wide text-tcp-text-muted">{item.label}</div>
+          <div className="tcp-text-caption uppercase tracking-wide text-tcp-text-muted">{item.label}</div>
           <div className="mt-1 text-2xl font-semibold tabular-nums text-tcp-text-primary">{item.value}</div>
         </div>
       ))}
@@ -135,7 +135,7 @@ export function WebhookInboxView({ api, navigate, filters, onFiltersChange, onOp
         ) : rows.length ? (
           <div className="mt-3 min-h-0 flex-1 overflow-auto rounded-lg border border-white/10">
             <table className="w-full min-w-[1320px] table-fixed text-left text-xs">
-              <thead className="sticky top-0 z-10 bg-black/80 text-[11px] uppercase text-tcp-text-muted backdrop-blur">
+              <thead className="sticky top-0 z-10 bg-black/80 tcp-text-caption uppercase text-tcp-text-muted backdrop-blur">
                 <tr>
                   <th className="w-[19rem] px-3 py-2 font-medium">Event</th>
                   <th className="w-[8rem] px-3 py-2 font-medium">Status</th>
@@ -152,11 +152,11 @@ export function WebhookInboxView({ api, navigate, filters, onFiltersChange, onOp
                   <tr key={row.id} className="align-top hover:bg-white/[0.03]">
                     <td className="px-3 py-3">
                       <div className="truncate text-sm font-medium text-tcp-text-primary">{row.provider}</div>
-                      <div className="mt-1 flex min-w-0 flex-wrap gap-2 text-[11px] text-tcp-text-muted">
+                      <div className="mt-1 flex min-w-0 flex-wrap gap-2 tcp-text-caption text-tcp-text-muted">
                         <span>{row.providerEventKind}</span>
                         <span className="font-mono">{row.id}</span>
                       </div>
-                      <div className="mt-1 truncate text-[11px] text-tcp-text-muted">
+                      <div className="mt-1 truncate tcp-text-caption text-tcp-text-muted">
                         trigger {row.triggerId || "n/a"} / delivery {row.deliveryId || "n/a"}
                       </div>
                     </td>
@@ -167,7 +167,7 @@ export function WebhookInboxView({ api, navigate, filters, onFiltersChange, onOp
                     <td className="px-3 py-3 text-tcp-text-secondary">{row.dedupeLabel}</td>
                     <td className="px-3 py-3">
                       <div className="line-clamp-2 text-tcp-text-secondary">{row.correlationLabel}</div>
-                      {row.deadLettered ? <div className="mt-1 text-[11px] text-rose-200">Dead-letter routed</div> : null}
+                      {row.deadLettered ? <div className="mt-1 tcp-text-caption text-rose-200">Dead-letter routed</div> : null}
                     </td>
                     <td className="px-3 py-3 text-tcp-text-secondary">{row.payloadLabel}</td>
                     <td className="px-3 py-3 text-tcp-text-secondary">{formatRunTimestamp(row.receivedAtMs)}</td>
@@ -253,7 +253,7 @@ export function ApprovalWaitsView({ api, navigate, filters, onFiltersChange, onO
         ) : rows.length ? (
           <div className="mt-3 min-h-0 flex-1 overflow-auto rounded-lg border border-white/10">
             <table className="w-full min-w-[1240px] table-fixed text-left text-xs">
-              <thead className="sticky top-0 z-10 bg-black/80 text-[11px] uppercase text-tcp-text-muted backdrop-blur">
+              <thead className="sticky top-0 z-10 bg-black/80 tcp-text-caption uppercase text-tcp-text-muted backdrop-blur">
                 <tr>
                   <th className="w-[18rem] px-3 py-2 font-medium">Approval</th>
                   <th className="w-[8rem] px-3 py-2 font-medium">Status</th>
@@ -269,25 +269,25 @@ export function ApprovalWaitsView({ api, navigate, filters, onFiltersChange, onO
                   <tr key={row.id} className="align-top hover:bg-white/[0.03]">
                     <td className="px-3 py-3">
                       <div className="truncate text-sm font-medium text-tcp-text-primary">{row.title}</div>
-                      <div className="mt-1 flex min-w-0 flex-wrap gap-2 text-[11px] text-tcp-text-muted">
+                      <div className="mt-1 flex min-w-0 flex-wrap gap-2 tcp-text-caption text-tcp-text-muted">
                         <span className="font-mono">{row.id}</span>
                         <span>{row.source}</span>
                       </div>
-                      <div className="mt-1 truncate text-[11px] text-tcp-text-muted">{row.actionKind}</div>
+                      <div className="mt-1 truncate tcp-text-caption text-tcp-text-muted">{row.actionKind}</div>
                     </td>
                     <td className="px-3 py-3">
                       <Badge tone={row.statusTone}>{row.statusLabel}</Badge>
                     </td>
                     <td className="px-3 py-3">
                       <div className="truncate text-tcp-text-secondary">{row.phaseId || row.nodeId || "n/a"}</div>
-                      <div className="mt-1 truncate text-[11px] text-tcp-text-muted">
+                      <div className="mt-1 truncate tcp-text-caption text-tcp-text-muted">
                         transition {row.transitionId || "n/a"}
                       </div>
                     </td>
                     <td className="px-3 py-3">
                       <div className="text-tcp-text-secondary">{row.timeoutLabel || "no deadline"}</div>
                       {row.escalationLabel ? (
-                        <div className="mt-1 text-[11px] text-yellow-100">{row.escalationLabel}</div>
+                        <div className="mt-1 tcp-text-caption text-yellow-100">{row.escalationLabel}</div>
                       ) : null}
                     </td>
                     <td className="px-3 py-3 text-tcp-text-secondary">
@@ -445,7 +445,7 @@ export function RecoveryQueueView({ api, toast, filters, onFiltersChange, onOpen
         ) : rows.length ? (
           <div className="mt-3 min-h-0 flex-1 overflow-auto rounded-lg border border-white/10">
             <table className="w-full min-w-[1320px] table-fixed text-left text-xs">
-              <thead className="sticky top-0 z-10 bg-black/80 text-[11px] uppercase text-tcp-text-muted backdrop-blur">
+              <thead className="sticky top-0 z-10 bg-black/80 tcp-text-caption uppercase text-tcp-text-muted backdrop-blur">
                 <tr>
                   <th className="w-[17rem] px-3 py-2 font-medium">Queue Item</th>
                   <th className="w-[11rem] px-3 py-2 font-medium">Class</th>
@@ -462,11 +462,11 @@ export function RecoveryQueueView({ api, toast, filters, onFiltersChange, onOpen
                   <tr key={`${row.kind}:${row.id}`} className="align-top hover:bg-white/[0.03]">
                     <td className="px-3 py-3">
                       <div className="truncate text-sm font-medium text-tcp-text-primary">{row.operation}</div>
-                      <div className="mt-1 flex min-w-0 flex-wrap gap-2 text-[11px] text-tcp-text-muted">
+                      <div className="mt-1 flex min-w-0 flex-wrap gap-2 tcp-text-caption text-tcp-text-muted">
                         <span>{row.kindLabel}</span>
                         <span className="font-mono">{row.id}</span>
                       </div>
-                      <div className="mt-1 truncate text-[11px] text-tcp-text-muted">attempts {row.attempts}</div>
+                      <div className="mt-1 truncate tcp-text-caption text-tcp-text-muted">attempts {row.attempts}</div>
                     </td>
                     <td className="px-3 py-3 text-tcp-text-secondary">{row.categoryLabel}</td>
                     <td className="px-3 py-3">

@@ -705,7 +705,7 @@ export function ScopeInspector({
               key={candidate}
               type="button"
               aria-pressed={view === candidate}
-              className={`tcp-btn h-7 px-2 text-[11px] ${
+              className={`tcp-btn h-7 px-2 tcp-text-caption ${
                 view === candidate ? "border-amber-400/60 bg-amber-400/10 text-amber-300" : ""
               }`}
               onClick={() => setView(candidate)}
@@ -717,7 +717,7 @@ export function ScopeInspector({
             <>
               <button
                 type="button"
-                className="tcp-btn h-7 px-2 text-[11px]"
+                className="tcp-btn h-7 px-2 tcp-text-caption"
                 onClick={() =>
                   downloadJsonFile(
                     `${safeString(planPackage?.plan_id) || "plan"}-bundle.json`,
@@ -730,7 +730,7 @@ export function ScopeInspector({
               </button>
               <button
                 type="button"
-                className="tcp-btn h-7 px-2 text-[11px]"
+                className="tcp-btn h-7 px-2 tcp-text-caption"
                 onClick={async () => {
                   try {
                     await navigator.clipboard.writeText(formatJson(planPackageBundle));
@@ -744,7 +744,7 @@ export function ScopeInspector({
                 Copy bundle
               </button>
               {bundleShareStatus ? (
-                <span className="tcp-subtle text-[11px]">{bundleShareStatus}</span>
+                <span className="tcp-subtle tcp-text-caption">{bundleShareStatus}</span>
               ) : null}
             </>
           ) : null}
@@ -793,7 +793,7 @@ export function ScopeInspector({
                 </div>
                 <div className="mt-3 grid gap-2 sm:grid-cols-2">
                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                       readable paths
                     </div>
                     <div className="mt-1 break-words text-slate-100">
@@ -801,7 +801,7 @@ export function ScopeInspector({
                     </div>
                   </div>
                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                       writable paths
                     </div>
                     <div className="mt-1 break-words text-slate-100">
@@ -811,7 +811,7 @@ export function ScopeInspector({
                 </div>
                 <div className="mt-2 grid gap-2 sm:grid-cols-2">
                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                       denied paths
                     </div>
                     <div className="mt-1 break-words text-slate-100">
@@ -819,7 +819,7 @@ export function ScopeInspector({
                     </div>
                   </div>
                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                       audit visibility
                     </div>
                     <div className="mt-1 break-words text-slate-100">
@@ -830,7 +830,7 @@ export function ScopeInspector({
                   </div>
                 </div>
                 {Array.isArray(routine?.steps) && routine.steps.length ? (
-                  <div className="mt-2 text-[11px] text-slate-400">
+                  <div className="mt-2 tcp-text-caption text-slate-400">
                     steps: {routine.steps.length} · dependencies:{" "}
                     {routine.steps
                       .map((step: any) => safeString(step?.step_id || step?.id))
@@ -848,13 +848,13 @@ export function ScopeInspector({
         <div className="grid gap-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="font-medium text-slate-200">Routine dependency graph</div>
-            <div className="tcp-subtle text-[11px]">
+            <div className="tcp-subtle tcp-text-caption">
               Read-only graph derived from `routine_graph.dependencies`
             </div>
           </div>
           {modelRoutingResolution ? (
             <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
-              <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+              <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                 Model routing summary
               </div>
               <div className="mt-2 grid gap-2 sm:grid-cols-3">
@@ -871,7 +871,7 @@ export function ScopeInspector({
                   key={`layer-${layer}`}
                   className="grid min-w-[20rem] max-w-[24rem] flex-1 gap-2"
                 >
-                  <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                  <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                     Layer {layer} · {items.length} routine{items.length === 1 ? "" : "s"}
                   </div>
                   <div className="grid gap-2">
@@ -906,7 +906,7 @@ export function ScopeInspector({
                               {onOpenPromptEditor ? (
                                 <button
                                   type="button"
-                                  className="tcp-btn h-7 px-2 text-[11px]"
+                                  className="tcp-btn h-7 px-2 tcp-text-caption"
                                   onClick={onOpenPromptEditor}
                                 >
                                   <i data-lucide="arrow-right"></i>
@@ -917,14 +917,14 @@ export function ScopeInspector({
                           </div>
                           {routineStepIds.length ? (
                             <div className="mt-2">
-                              <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                              <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                                 step ids
                               </div>
                               <div className="mt-2 flex flex-wrap gap-2">
                                 {routineStepIds.map((stepId) => (
                                   <span
                                     key={`${node.routineId}-${stepId}`}
-                                    className="rounded-full border border-slate-700/80 bg-slate-900/80 px-2 py-1 text-[11px] text-slate-100"
+                                    className="rounded-full border border-slate-700/80 bg-slate-900/80 px-2 py-1 tcp-text-caption text-slate-100"
                                   >
                                     {stepId}
                                   </span>
@@ -955,7 +955,7 @@ export function ScopeInspector({
                             )}
                           </div>
                           <div className="mt-2">
-                            <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                            <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                               Upstream dependencies
                             </div>
                             {node.dependencies.length ? (
@@ -965,8 +965,8 @@ export function ScopeInspector({
                                     key={`${node.routineId}-${dependency.routineId}`}
                                     className={
                                       dependency.resolved
-                                        ? "rounded-full border border-slate-700/80 bg-slate-900/80 px-2 py-1 text-[11px] text-slate-100"
-                                        : "rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-50"
+                                        ? "rounded-full border border-slate-700/80 bg-slate-900/80 px-2 py-1 tcp-text-caption text-slate-100"
+                                        : "rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-1 tcp-text-caption text-amber-50"
                                     }
                                   >
                                     <span className="font-medium">{dependency.routineId}</span>
@@ -1013,23 +1013,23 @@ export function ScopeInspector({
                 </div>
                 <div className="mt-2 grid gap-2 sm:grid-cols-2">
                   <div>
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                       entitled connectors
                     </div>
                     <LazyJson
                       value={envelope?.entitled_connectors || []}
                       className="mt-1"
-                      preClassName="tcp-code mt-1 max-h-28 overflow-auto text-[11px]"
+                      preClassName="tcp-code mt-1 max-h-28 overflow-auto tcp-text-caption"
                     />
                   </div>
                   <div>
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                       denied connectors
                     </div>
                     <LazyJson
                       value={envelope?.denied_connectors || []}
                       className="mt-1"
-                      preClassName="tcp-code mt-1 max-h-28 overflow-auto text-[11px]"
+                      preClassName="tcp-code mt-1 max-h-28 overflow-auto tcp-text-caption"
                     />
                   </div>
                 </div>
@@ -1048,7 +1048,7 @@ export function ScopeInspector({
             {onOpenConnectorBindingsEditor ? (
               <button
                 type="button"
-                className="tcp-btn h-7 px-2 text-[11px]"
+                className="tcp-btn h-7 px-2 tcp-text-caption"
                 onClick={onOpenConnectorBindingsEditor}
               >
                 <i data-lucide="settings-2"></i>
@@ -1056,7 +1056,7 @@ export function ScopeInspector({
               </button>
             ) : null}
           </div>
-          <div className="tcp-subtle text-[11px]">
+          <div className="tcp-subtle tcp-text-caption">
             Read-only summary. Edit bindings in the workflow connector bindings block.
           </div>
           <div className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3">
@@ -1113,7 +1113,7 @@ export function ScopeInspector({
             {onOpenModelRoutingEditor ? (
               <button
                 type="button"
-                className="tcp-btn h-7 px-2 text-[11px]"
+                className="tcp-btn h-7 px-2 tcp-text-caption"
                 onClick={onOpenModelRoutingEditor}
               >
                 <i data-lucide="settings-2"></i>
@@ -1121,7 +1121,7 @@ export function ScopeInspector({
               </button>
             ) : null}
           </div>
-          <div className="tcp-subtle text-[11px]">
+          <div className="tcp-subtle tcp-text-caption">
             Read-only summary. Edit the workflow default provider/model in the workflow model
             selection block, and per-step overrides in the prompt editor cards.
           </div>
@@ -1205,7 +1205,7 @@ export function ScopeInspector({
                   </div>
                   <div className="mt-2 grid gap-2 sm:grid-cols-2">
                     <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                      <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                      <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                         required artifacts
                       </div>
                       <div className="mt-1 break-words text-slate-100">
@@ -1217,7 +1217,7 @@ export function ScopeInspector({
                       </div>
                     </div>
                     <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                      <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                      <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                         missing artifacts
                       </div>
                       <div className="mt-1 break-words text-slate-100">
@@ -1249,7 +1249,7 @@ export function ScopeInspector({
             </div>
           </div>
           <div className="grid gap-2">
-            <div className="tcp-subtle text-[11px] uppercase tracking-wide">Routine criteria</div>
+            <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">Routine criteria</div>
             {routineSuccessCriteria.length ? (
               routineSuccessCriteria.map((entry: any, index: number) => {
                 const routineId = safeString(
@@ -1289,7 +1289,7 @@ export function ScopeInspector({
                     </div>
                     <div className="mt-2 grid gap-2 sm:grid-cols-2">
                       <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                        <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                        <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                           required artifacts
                         </div>
                         <div className="mt-1 break-words text-slate-100">
@@ -1301,7 +1301,7 @@ export function ScopeInspector({
                         </div>
                       </div>
                       <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                        <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                        <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                           missing artifacts
                         </div>
                         <div className="mt-1 break-words text-slate-100">
@@ -1334,7 +1334,7 @@ export function ScopeInspector({
             )}
           </div>
           <div className="grid gap-2">
-            <div className="tcp-subtle text-[11px] uppercase tracking-wide">Step criteria</div>
+            <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">Step criteria</div>
             {stepSuccessCriteria.length ? (
               stepSuccessCriteria.map((entry: any, index: number) => {
                 const stepId = safeString(entry?.step_id || entry?.id || `step-${index + 1}`);
@@ -1372,7 +1372,7 @@ export function ScopeInspector({
                     </div>
                     <div className="mt-2 grid gap-2 sm:grid-cols-2">
                       <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                        <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                        <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                           required artifacts
                         </div>
                         <div className="mt-1 break-words text-slate-100">
@@ -1384,7 +1384,7 @@ export function ScopeInspector({
                         </div>
                       </div>
                       <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                        <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                        <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                           missing artifacts
                         </div>
                         <div className="mt-1 break-words text-slate-100">
@@ -1444,7 +1444,7 @@ export function ScopeInspector({
                 </div>
                 <div className="mt-2 grid gap-2 sm:grid-cols-2">
                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                       declared consumers
                     </div>
                     <div className="mt-1 break-words text-slate-100">
@@ -1452,7 +1452,7 @@ export function ScopeInspector({
                     </div>
                   </div>
                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                       data scope refs
                     </div>
                     <div className="mt-1 break-words text-slate-100">
@@ -1462,7 +1462,7 @@ export function ScopeInspector({
                 </div>
                 <div className="mt-2 grid gap-2 sm:grid-cols-2">
                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                       artifact ref
                     </div>
                     <div className="mt-1 break-words text-slate-100">
@@ -1470,7 +1470,7 @@ export function ScopeInspector({
                     </div>
                   </div>
                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                       freshness window
                     </div>
                     <div className="mt-1 break-words text-slate-100">
@@ -1498,23 +1498,23 @@ export function ScopeInspector({
                 </div>
                 <div className="mt-2 grid gap-2 sm:grid-cols-2">
                   <div>
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                       visible context objects
                     </div>
                     <LazyJson
                       value={partition?.visible_context_objects || []}
                       className="mt-1"
-                      preClassName="tcp-code mt-1 max-h-28 overflow-auto text-[11px]"
+                      preClassName="tcp-code mt-1 max-h-28 overflow-auto tcp-text-caption"
                     />
                   </div>
                   <div>
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                       step context bindings
                     </div>
                     <LazyJson
                       value={partition?.step_context_bindings || []}
                       className="mt-1"
-                      preClassName="tcp-code mt-1 max-h-28 overflow-auto text-[11px]"
+                      preClassName="tcp-code mt-1 max-h-28 overflow-auto tcp-text-caption"
                     />
                   </div>
                 </div>
@@ -1536,7 +1536,7 @@ export function ScopeInspector({
             </div>
             {kv("lifecycle state", approvedPlanMaterialization?.lifecycle_state)}
             {runtimePartitions.length ? (
-              <div className="mt-2 text-[11px] text-slate-400">
+              <div className="mt-2 tcp-text-caption text-slate-400">
                 The runtime context below is derived from the approved materialization.
               </div>
             ) : null}
@@ -1552,13 +1552,13 @@ export function ScopeInspector({
                 </div>
                 <div className="mt-2 grid gap-2 sm:grid-cols-2">
                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">step ids</div>
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">step ids</div>
                     <div className="mt-1 break-words text-slate-100">
                       {listPaths(routine?.step_ids)}
                     </div>
                   </div>
                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                       visible context objects
                     </div>
                     <div className="mt-1 break-words text-slate-100">
@@ -1567,13 +1567,13 @@ export function ScopeInspector({
                   </div>
                 </div>
                 <div className="mt-2">
-                  <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                  <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                     step context bindings
                   </div>
                   <LazyJson
                     value={routine?.step_context_bindings || []}
                     className="mt-1"
-                    preClassName="tcp-code mt-1 max-h-28 overflow-auto text-[11px]"
+                    preClassName="tcp-code mt-1 max-h-28 overflow-auto tcp-text-caption"
                   />
                 </div>
               </div>
@@ -1615,7 +1615,7 @@ export function ScopeInspector({
                   key={candidate}
                   type="button"
                   aria-pressed={historyVisibilityFilter === candidate}
-                  className={`tcp-btn h-7 px-2 text-[11px] ${
+                  className={`tcp-btn h-7 px-2 tcp-text-caption ${
                     historyVisibilityFilter === candidate
                       ? "border-amber-400/60 bg-amber-400/10 text-amber-300"
                       : ""
@@ -1630,7 +1630,7 @@ export function ScopeInspector({
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+            <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
               Artifact visibility
             </div>
             <div className="flex flex-wrap items-center gap-1">
@@ -1647,7 +1647,7 @@ export function ScopeInspector({
                   key={candidate}
                   type="button"
                   aria-pressed={artifactVisibilityFilter === candidate}
-                  className={`tcp-btn h-7 px-2 text-[11px] ${
+                  className={`tcp-btn h-7 px-2 tcp-text-caption ${
                     artifactVisibilityFilter === candidate
                       ? "border-amber-400/60 bg-amber-400/10 text-amber-300"
                       : ""
@@ -1659,7 +1659,7 @@ export function ScopeInspector({
               ))}
             </div>
           </div>
-          <div className="tcp-subtle text-[11px]">
+          <div className="tcp-subtle tcp-text-caption">
             Validation and history visibility, {filteredHistoryRoutines.length} routine
             {filteredHistoryRoutines.length === 1 ? "" : "s"} visible.
           </div>
@@ -1748,7 +1748,7 @@ export function ScopeInspector({
                   key={label}
                   className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2"
                 >
-                  <div className="tcp-subtle text-[11px] uppercase tracking-wide">{label}</div>
+                  <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">{label}</div>
                   <div className="mt-1">
                     {typeof value === "boolean" ? (
                       booleanBadge(value)
@@ -1771,39 +1771,39 @@ export function ScopeInspector({
               <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                 {analyticsSummary.successCoverage ? (
                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                       success coverage
                     </div>
                     <div className="mt-1 text-slate-100">
                       {analyticsSummary.successCoverage.label}
                     </div>
-                    <div className="tcp-subtle text-[11px]">
+                    <div className="tcp-subtle tcp-text-caption">
                       {analyticsSummary.successCoverage.detail}
                     </div>
                   </div>
                 ) : null}
                 {analyticsSummary.approvalReadiness ? (
                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                       approval readiness
                     </div>
                     <div className="mt-1 text-slate-100">
                       {analyticsSummary.approvalReadiness.label}
                     </div>
-                    <div className="tcp-subtle text-[11px]">
+                    <div className="tcp-subtle tcp-text-caption">
                       {analyticsSummary.approvalReadiness.detail}
                     </div>
                   </div>
                 ) : null}
                 {analyticsSummary.overlapForkRate ? (
                   <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                       overlap fork rate
                     </div>
                     <div className="mt-1 text-slate-100">
                       {analyticsSummary.overlapForkRate.label}
                     </div>
-                    <div className="tcp-subtle text-[11px]">
+                    <div className="tcp-subtle tcp-text-caption">
                       {analyticsSummary.overlapForkRate.detail}
                     </div>
                   </div>
@@ -1900,7 +1900,7 @@ export function ScopeInspector({
                     key={entry.key}
                     className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2"
                   >
-                    <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                    <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                       {entry.label}
                     </div>
                     <div className="mt-1">
@@ -1912,7 +1912,7 @@ export function ScopeInspector({
             </div>
           ) : null}
           <div className="grid gap-2">
-            <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+            <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
               Routine history visibility
             </div>
             <div className="grid gap-2">
@@ -1946,7 +1946,7 @@ export function ScopeInspector({
                         {kv("visible context objects", ownedContextObjects.length)}
                       </div>
                       <div className="mt-2">
-                        <div className="tcp-subtle text-[11px] uppercase tracking-wide">
+                        <div className="tcp-subtle tcp-text-caption uppercase tracking-wide">
                           visible context objects
                         </div>
                         <div className="mt-1 break-words text-slate-100">
@@ -1976,7 +1976,7 @@ export function ScopeInspector({
             value={validationReport || planValidationState}
             label="Raw validation payload"
             className="rounded-lg border border-slate-800/80 bg-slate-950/30 p-3"
-            preClassName="tcp-code mt-2 max-h-64 overflow-auto text-[11px]"
+            preClassName="tcp-code mt-2 max-h-64 overflow-auto tcp-text-caption"
           />
         </div>
       ) : null}

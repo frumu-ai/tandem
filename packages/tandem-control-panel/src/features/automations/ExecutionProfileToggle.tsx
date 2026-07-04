@@ -152,7 +152,7 @@ export function ExecutionProfileToggle({
           <div className="text-xs font-semibold uppercase tracking-wide text-slate-100">
             {activeSegment ? activeSegment.label : "System default"}
           </div>
-          <div className="text-[11px] text-slate-400">
+          <div className="tcp-text-caption text-slate-400">
             {activeSegment?.value
               ? activeSegment.tooltip
               : "Falls back to tenant default · Guided if none set"}
@@ -163,7 +163,7 @@ export function ExecutionProfileToggle({
       {clearable && value !== "" ? (
         <button
           type="button"
-          className="w-fit text-[11px] text-slate-400 underline-offset-2 hover:text-slate-200 hover:underline"
+          className="w-fit tcp-text-caption text-slate-400 underline-offset-2 hover:text-slate-200 hover:underline"
           disabled={disabled}
           onClick={() => onChange("")}
         >
@@ -172,7 +172,7 @@ export function ExecutionProfileToggle({
       ) : null}
 
       {showGuidance ? (
-        <div className="rounded-md border border-amber-400/20 bg-amber-950/20 px-2.5 py-2 text-[11px] leading-snug text-amber-100/90">
+        <div className="rounded-md border border-amber-400/20 bg-amber-950/20 px-2.5 py-2 tcp-text-caption leading-snug text-amber-100/90">
           If workflow runs keep failing on validation or artifact review, try loosening this
           profile: <span className="font-semibold text-amber-100">Guided</span> turns recoverable
           checks into warnings, while <span className="font-semibold text-rose-100">Lenient</span>{" "}
@@ -183,7 +183,7 @@ export function ExecutionProfileToggle({
       {hoverSegment && tooltipPos ? (
         <div
           role="tooltip"
-          className="pointer-events-none fixed z-[1000] w-64 -translate-x-1/2 rounded-md border border-slate-700/70 bg-slate-950/95 p-2.5 text-[11px] leading-snug text-slate-200 shadow-xl"
+          className="pointer-events-none fixed z-[1000] w-64 -translate-x-1/2 rounded-md border border-slate-700/70 bg-slate-950/95 p-2.5 tcp-text-caption leading-snug text-slate-200 shadow-xl"
           style={{ top: tooltipPos.top, left: tooltipPos.left }}
         >
           <div className="mb-1 font-semibold uppercase tracking-wide text-slate-100">

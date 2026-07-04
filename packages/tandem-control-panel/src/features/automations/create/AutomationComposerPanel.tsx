@@ -1250,7 +1250,7 @@ export function AutomationComposerPanel({
               <span className="tcp-badge-info">validate before create</span>
               <span className="tcp-badge-info">runNow after create</span>
             </div>
-            <pre className="mt-3 max-h-[20rem] overflow-auto rounded-xl border border-white/10 bg-black/40 p-3 text-[11px] leading-5 text-slate-200">
+            <pre className="mt-3 max-h-[20rem] overflow-auto rounded-xl border border-white/10 bg-black/40 p-3 tcp-text-caption leading-5 text-slate-200">
               {previewText || "Generate a draft to see the payload."}
             </pre>
             <div className="mt-3 flex flex-wrap gap-2">

@@ -182,7 +182,7 @@ export function IdChip({
     id.length > head + tail + 1 ? `${id.slice(0, head)}…${id.slice(-tail)}` : id;
   return (
     <span className={`inline-flex items-center gap-1 ${className}`.trim()}>
-      <code className="font-mono text-[11px] text-tcp-text-tertiary" title={id}>
+      <code className="font-mono tcp-text-caption text-tcp-text-tertiary" title={id}>
         {shortened}
       </code>
       <CopyButton value={id} label="Copy ID" />
@@ -202,7 +202,7 @@ export function KeyValueRow({
 }) {
   return (
     <div className={`flex items-baseline justify-between gap-3 py-1 ${className}`.trim()}>
-      <span className="tcp-subtle shrink-0 text-[11px] uppercase tracking-[0.14em]">{label}</span>
+      <span className="tcp-subtle shrink-0 tcp-text-caption uppercase tracking-[0.14em]">{label}</span>
       <span className="min-w-0 break-words text-right text-xs text-tcp-text-secondary">{value}</span>
     </div>
   );

@@ -173,7 +173,7 @@ export function IntentBriefPanel({
           <div className="flex-1" />
           <button
             type="button"
-            className="tcp-btn h-6 px-2 text-[10px]"
+            className="tcp-btn h-6 px-2 tcp-text-micro"
             onClick={onReset}
             title="Start a new mission and clear the current planner state"
             disabled={disabled}

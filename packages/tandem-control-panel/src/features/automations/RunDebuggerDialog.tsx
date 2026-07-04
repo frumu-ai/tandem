@@ -43,7 +43,7 @@ function RunHistoryEventDetails({
           <span className="text-xs font-medium text-slate-200">
             {String(event?.type || event?.event || event?.status || "history")}
           </span>
-          <span className="tcp-subtle text-[11px]">
+          <span className="tcp-subtle tcp-text-caption">
             {formatTimestampLabel(event?.ts_ms || event?.tsMs || event?.at || event?.timestamp_ms)}
           </span>
         </div>
@@ -60,7 +60,7 @@ function RunHistoryEventDetails({
       <DeferredJson
         value={event}
         open={open}
-        className="tcp-code mt-2 max-h-32 overflow-auto text-[11px]"
+        className="tcp-code mt-2 max-h-32 overflow-auto tcp-text-caption"
       />
     </details>
   );
@@ -626,7 +626,7 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
                                 <LazyJson
                                   value={selectedBoardTaskValidationBasis}
                                   className="mt-1"
-                                  preClassName="tcp-code mt-1 max-h-40 overflow-auto text-[11px]"
+                                  preClassName="tcp-code mt-1 max-h-40 overflow-auto tcp-text-caption"
                                 />
                               ) : (
                                 <div className="mt-1 font-medium text-slate-100">n/a</div>
@@ -681,7 +681,7 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
                                   </div>
                                   {selectedBoardTaskNodeId ? (
                                     <div className="mt-2 grid gap-2">
-                                      <div className="tcp-subtle text-[11px]">
+                                      <div className="tcp-subtle tcp-text-caption">
                                         graduation review · current:{" "}
                                         <span className="font-medium text-slate-100">
                                           {currentDisposition.replace(/_/g, " ")}
@@ -732,7 +732,7 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
                                 <LazyJson
                                   value={selectedBoardTaskReceiptLedger}
                                   className="mt-1"
-                                  preClassName="tcp-code mt-1 max-h-40 overflow-auto text-[11px]"
+                                  preClassName="tcp-code mt-1 max-h-40 overflow-auto tcp-text-caption"
                                 />
                               ) : (
                                 <div className="mt-1 font-medium text-slate-100">n/a</div>
@@ -822,7 +822,7 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
                                         </span>
                                       ) : null}
                                       {Number(receipt?.at || 0) > 0 ? (
-                                        <span className="tcp-subtle text-[11px]">
+                                        <span className="tcp-subtle tcp-text-caption">
                                           {formatTimestampLabel(receipt.at)}
                                         </span>
                                       ) : null}
@@ -834,7 +834,7 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
                                       value={receipt?.raw || receipt}
                                       label="raw record"
                                       className="mt-2"
-                                      preClassName="tcp-code mt-2 max-h-40 overflow-auto text-[11px]"
+                                      preClassName="tcp-code mt-2 max-h-40 overflow-auto tcp-text-caption"
                                     />
                                   </div>
                                 )
@@ -897,7 +897,7 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
                               normalizeManagedFilesExplorerPath(selectedBoardTaskOutputPath) ? (
                                 <button
                                   type="button"
-                                  className="ml-2 rounded-md border border-sky-500/30 bg-sky-950/20 px-2 py-0.5 text-[10px] text-sky-100"
+                                  className="ml-2 rounded-md border border-sky-500/30 bg-sky-950/20 px-2 py-0.5 tcp-text-micro text-sky-100"
                                   onClick={() =>
                                     openManagedPathInFiles(selectedBoardTaskOutputPath)
                                   }
@@ -1033,7 +1033,7 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
                                 {selectedBoardTaskUnmetResearchRequirements.map((item: any) => (
                                   <span
                                     key={item}
-                                    className="rounded-full border border-emerald-500/30 bg-emerald-950/20 px-2 py-1 text-[11px] text-emerald-100/90"
+                                    className="rounded-full border border-emerald-500/30 bg-emerald-950/20 px-2 py-1 tcp-text-caption text-emerald-100/90"
                                   >
                                     {item}
                                   </span>
@@ -1048,7 +1048,7 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
                                 {selectedBoardTaskUnreviewedRelevantPaths.map((path: any) => (
                                   <span
                                     key={path}
-                                    className="rounded-full border border-slate-700/70 bg-slate-950/30 px-2 py-1 font-mono text-[11px] text-slate-300"
+                                    className="rounded-full border border-slate-700/70 bg-slate-950/30 px-2 py-1 font-mono tcp-text-caption text-slate-300"
                                   >
                                     {path}
                                   </span>
@@ -1119,11 +1119,11 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
                                                 : "not run"}
                                           </span>
                                         </div>
-                                        <div className="mt-1 break-words font-mono text-[11px] text-slate-200">
+                                        <div className="mt-1 break-words font-mono tcp-text-caption text-slate-200">
                                           {String(result?.command || "").trim() || "n/a"}
                                         </div>
                                         {String(result?.failure || "").trim() ? (
-                                          <div className="mt-1 whitespace-pre-wrap break-words text-[11px] text-emerald-100/90">
+                                          <div className="mt-1 whitespace-pre-wrap break-words tcp-text-caption text-emerald-100/90">
                                             {String(result?.failure || "").trim()}
                                           </div>
                                         ) : null}
@@ -1152,7 +1152,7 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
                                   <button
                                     key={path}
                                     type="button"
-                                    className="rounded-full border border-slate-700/70 bg-slate-950/30 px-2 py-1 font-mono text-[11px] text-slate-200 transition hover:border-sky-500/40 hover:text-sky-100"
+                                    className="rounded-full border border-slate-700/70 bg-slate-950/30 px-2 py-1 font-mono tcp-text-caption text-slate-200 transition hover:border-sky-500/40 hover:text-sky-100"
                                     onClick={() => focusArtifactEntry(path)}
                                     title={path}
                                   >

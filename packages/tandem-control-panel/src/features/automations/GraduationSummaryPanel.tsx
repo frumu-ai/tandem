@@ -128,15 +128,15 @@ export function GraduationSummaryPanel({
 
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
         <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-          <div className="tcp-subtle text-[11px]">runs scanned</div>
+          <div className="tcp-subtle tcp-text-caption">runs scanned</div>
           <div className="mt-1 font-medium text-slate-100">{scannedRuns}</div>
         </div>
         <div className="rounded-md border border-slate-800/80 bg-slate-950/30 p-2">
-          <div className="tcp-subtle text-[11px]">node outputs scanned</div>
+          <div className="tcp-subtle tcp-text-caption">node outputs scanned</div>
           <div className="mt-1 font-medium text-slate-100">{totalScanned}</div>
         </div>
         <div className="rounded-md border border-amber-700/40 bg-amber-950/20 p-2">
-          <div className="tcp-subtle text-[11px]">relaxed outputs</div>
+          <div className="tcp-subtle tcp-text-caption">relaxed outputs</div>
           <div className="mt-1 font-medium text-amber-200">{totalRelaxed}</div>
         </div>
       </div>
@@ -158,7 +158,7 @@ export function GraduationSummaryPanel({
       ) : (
         <div className="overflow-hidden rounded-md border border-slate-800/80">
           <table className="w-full text-left text-xs">
-            <thead className="bg-slate-900/40 text-[11px] uppercase tracking-wide text-slate-400">
+            <thead className="bg-slate-900/40 tcp-text-caption uppercase tracking-wide text-slate-400">
               <tr>
                 <th className="px-2 py-1.5">Validator class</th>
                 <th className="px-2 py-1.5 text-right">Accepted</th>
@@ -190,7 +190,7 @@ export function GraduationSummaryPanel({
                   <tr key={row.key} className="border-t border-slate-800/60 text-slate-200">
                     <td className="px-2 py-1.5">
                       <div className="font-medium">{classLabel(row.key)}</div>
-                      <code className="tcp-subtle text-[10px]">{row.key}</code>
+                      <code className="tcp-subtle tcp-text-micro">{row.key}</code>
                     </td>
                     <td className="px-2 py-1.5 text-right">{row.counts.accepted || 0}</td>
                     <td className="px-2 py-1.5 text-right">{row.counts.rejected || 0}</td>

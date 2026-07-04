@@ -339,7 +339,7 @@ export function KnowledgebasePromptsPanel({
 
                         {showingDefault ? (
                           <div className="rounded border border-white/10 bg-black/30 p-2">
-                            <div className="tcp-subtle text-[10px] uppercase tracking-wide">
+                            <div className="tcp-subtle tcp-text-micro uppercase tracking-wide">
                               Built-in default
                             </div>
                             <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5">
@@ -424,7 +424,7 @@ export function KnowledgebasePromptsPanel({
                                 <li key={override.collection_id}>
                                   <button
                                     type="button"
-                                    className="tcp-btn h-6 px-2 text-[11px]"
+                                    className="tcp-btn h-6 px-2 tcp-text-caption"
                                     onClick={() => setScope(override.collection_id)}
                                   >
                                     {override.collection_id}

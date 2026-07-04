@@ -59,7 +59,7 @@ export function WorkflowArtifactsPanel({
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-medium text-slate-200">{entry.name}</span>
-                  <span className="flex items-center gap-1 text-[11px]">
+                  <span className="flex items-center gap-1 tcp-text-caption">
                     <ExperimentalArtifactBadge
                       validation={extractArtifactValidation(entry.artifact)}
                     />
@@ -73,7 +73,7 @@ export function WorkflowArtifactsPanel({
                     <button
                       key={path}
                       type="button"
-                      className={`rounded-full border border-slate-700/70 bg-slate-950/30 px-2 py-1 font-mono text-[11px] text-slate-300 ${normalizeManagedFilesExplorerPath(path) && onOpenPath ? "cursor-pointer hover:border-sky-500/40 hover:text-sky-100" : "cursor-default"}`.trim()}
+                      className={`rounded-full border border-slate-700/70 bg-slate-950/30 px-2 py-1 font-mono tcp-text-caption text-slate-300 ${normalizeManagedFilesExplorerPath(path) && onOpenPath ? "cursor-pointer hover:border-sky-500/40 hover:text-sky-100" : "cursor-default"}`.trim()}
                       onClick={() => {
                         const normalized = normalizeManagedFilesExplorerPath(path);
                         if (!normalized || !onOpenPath) return;
@@ -89,7 +89,7 @@ export function WorkflowArtifactsPanel({
               <DeferredJson
                 value={entry.artifact}
                 open={selectedArtifactKey === entry.key}
-                className="tcp-code mt-2 max-h-32 overflow-auto text-[11px]"
+                className="tcp-code mt-2 max-h-32 overflow-auto tcp-text-caption"
               />
             </details>
           ))}

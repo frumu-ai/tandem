@@ -171,7 +171,7 @@ export function WorkflowEditFlowMap({
             Select a node to jump to its prompt, model, and MCP controls.
           </div>
         </div>
-        <div className="flex flex-wrap gap-2 text-[11px]">
+        <div className="flex flex-wrap gap-2 tcp-text-caption">
           <span className="tcp-badge-info">{nodes.length} nodes</span>
           <span className="tcp-badge-info">{graph.edgeCount} dependencies</span>
           <span className="tcp-badge-info">{graph.startCount} starts</span>
@@ -221,7 +221,7 @@ export function WorkflowEditFlowMap({
                           <div className="truncate text-sm font-semibold text-slate-100">
                             {nodeTitle(node, index)}
                           </div>
-                          <div className="mt-1 truncate text-[11px] text-slate-500">{id}</div>
+                          <div className="mt-1 truncate tcp-text-caption text-slate-500">{id}</div>
                         </div>
                         <span className="tcp-badge-info shrink-0">
                           {safeString(node?.agentId || node?.agent_id) || "agent"}
@@ -252,7 +252,7 @@ export function WorkflowEditFlowMap({
                         ) : null}
                       </div>
                       {deps.length ? (
-                        <div className="mt-2 grid gap-1 text-[11px] text-slate-500">
+                        <div className="mt-2 grid gap-1 tcp-text-caption text-slate-500">
                           {deps.slice(0, 3).map((dep) => (
                             <div key={`${id}-${dep}`} className="truncate">
                               from {dep}

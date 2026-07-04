@@ -86,7 +86,7 @@ export function RoleSamplingEditor({ configText, onChange }: RoleSamplingEditorP
               <span className="text-sm font-medium">{ROLE_LABELS[role] || role}</span>
               {SAMPLING_FIELDS.map((field) => (
                 <label key={field.key} className="grid gap-1">
-                  <span className="tcp-subtle text-[11px]">{field.label}</span>
+                  <span className="tcp-subtle tcp-text-caption">{field.label}</span>
                   <input
                     className="tcp-input h-9 w-full text-xs"
                     type="number"
