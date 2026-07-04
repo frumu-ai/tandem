@@ -431,6 +431,8 @@ pub(super) async fn tool_list_for_model(State(state): State<AppState>) -> Json<V
 pub(super) struct ToolExecutionInput {
     pub tool: String,
     pub args: Option<Value>,
+    #[serde(default, alias = "scopeAllowlist")]
+    pub scope_allowlist: Vec<String>,
 }
 
 pub(super) async fn execute_tool(
@@ -453,7 +455,7 @@ pub(super) async fn execute_tool(
         tandem_tools::ToolDispatchSource::new("http_global_tool")
             .request(Uuid::new_v4().to_string()),
         tenant_context,
-        Vec::new(),
+        crate::config::channels::normalize_allowed_tools(input.scope_allowlist),
     );
     if let Some(verified_tenant_context) = verified_tenant_context {
         dispatch_context = dispatch_context.with_verified_tenant_context(verified_tenant_context);

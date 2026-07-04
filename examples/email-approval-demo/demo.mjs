@@ -270,7 +270,11 @@ function structuredToolContent(result) {
 }
 
 async function callEmailTool(api, tool, args) {
-  return api("POST", "/tool/execute", { tool, args });
+  return api("POST", "/tool/execute", {
+    tool,
+    args,
+    scope_allowlist: [DRAFT_TOOL, SEND_TOOL],
+  });
 }
 
 async function runApprovalRound({ api, workspaceDir, draft, decision, round, artifactDir }) {
