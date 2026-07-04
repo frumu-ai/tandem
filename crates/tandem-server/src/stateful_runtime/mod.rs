@@ -43,9 +43,10 @@ pub use scheduler::{
 };
 pub use store::{
     append_stateful_run_event, append_stateful_run_event_once,
-    append_stateful_run_event_once_with_next_seq, list_stateful_run_snapshots,
-    load_stateful_run_events, next_stateful_run_event_seq, query_stateful_run_events,
-    read_stateful_run_snapshot, read_stateful_run_snapshot_for_run, stateful_run_event_seq_by_id,
+    append_stateful_run_event_once_with_next_seq, compact_stateful_run_event_log,
+    list_stateful_run_snapshots, load_stateful_run_events, next_stateful_run_event_seq,
+    query_stateful_run_events, read_stateful_run_snapshot, read_stateful_run_snapshot_for_run,
+    stateful_run_event_compacted_event_ids, stateful_run_event_seq_by_id,
     stateful_run_snapshot_path, write_stateful_run_snapshot, StatefulRunEventQuery,
     StatefulRuntimeStoragePaths,
 };
@@ -57,7 +58,7 @@ pub use waits::{
     claim_matching_stateful_webhook_wait, due_stateful_waits,
     finish_claimed_stateful_wait_completion, finish_claimed_stateful_wait_reminder_completion,
     list_stateful_waits, load_stateful_waits, mark_stateful_wait_timeout_result,
-    mark_stateful_wait_woken, release_claimed_stateful_wait,
+    mark_stateful_wait_woken, prune_stateful_wait_store, release_claimed_stateful_wait,
     stateful_webhook_wait_match_from_metadata, stateful_webhook_wait_metadata,
     upsert_stateful_wait, StatefulWaitQuery,
 };

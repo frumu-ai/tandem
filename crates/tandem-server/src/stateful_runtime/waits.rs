@@ -152,6 +152,33 @@ pub async fn upsert_stateful_wait(
     Ok(wait)
 }
 
+pub async fn prune_stateful_wait_store(
+    path: &Path,
+    retention_ms: u64,
+    now_ms: u64,
+) -> anyhow::Result<usize> {
+    if retention_ms == 0 {
+        return Ok(0);
+    }
+
+    let _guard = STATEFUL_WAIT_STORE_LOCK.lock().await;
+    let mut waits = try_load_stateful_waits(path)?;
+    let original_len = waits.len();
+    if original_len == 0 {
+        return Ok(0);
+    }
+
+    let cutoff_ms = now_ms.saturating_sub(retention_ms);
+    waits.retain(|wait| !terminal_wait_is_older_than_retention_cutoff(wait, cutoff_ms));
+    let pruned = original_len.saturating_sub(waits.len());
+    if pruned == 0 {
+        return Ok(0);
+    }
+
+    write_stateful_waits_unlocked(path, &waits).await?;
+    Ok(pruned)
+}
+
 pub async fn claim_due_stateful_wait(
     path: &Path,
     tenant: &TenantContext,
@@ -831,6 +858,10 @@ fn wait_wake_is_due_at(wait: &StatefulWaitRecord, now_ms: u64) -> bool {
     wait.wake_at_ms
         .map(|wake_at_ms| wake_at_ms <= now_ms)
         .unwrap_or(false)
+}
+
+fn terminal_wait_is_older_than_retention_cutoff(wait: &StatefulWaitRecord, cutoff_ms: u64) -> bool {
+    wait.status.is_terminal() && wait.completed_at_ms.unwrap_or(wait.updated_at_ms) < cutoff_ms
 }
 
 fn wait_identity_matches(left: &StatefulWaitRecord, right: &StatefulWaitRecord) -> bool {
@@ -1674,6 +1705,122 @@ mod tests {
                 .and_then(|metadata| metadata.get("phase_guard_denied"))
                 .and_then(|denied| denied.as_bool()),
             Some(true)
+        );
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn prune_wait_store_removes_old_terminal_waits() {
+        let path = temp_wait_store("stateful-waits-prune-old-terminal");
+        let tenant_a = tenant("org-a", "workspace-a");
+        let tenant_b = tenant("org-b", "workspace-b");
+        let mut completed_old = timer_wait("old-completed", "run-a", tenant_a.clone(), 2_000);
+        completed_old.status = StatefulWaitStatus::Woken;
+        completed_old.completed_at_ms = Some(4_000);
+        completed_old.updated_at_ms = 9_000;
+        let mut updated_old = timer_wait("old-updated", "run-b", tenant_b, 3_000);
+        updated_old.status = StatefulWaitStatus::Cancelled;
+        updated_old.completed_at_ms = None;
+        updated_old.updated_at_ms = 4_999;
+        let retained = timer_wait("retained", "run-a", tenant_a, 6_000);
+
+        upsert_stateful_wait(&path, completed_old)
+            .await
+            .expect("insert completed old wait");
+        upsert_stateful_wait(&path, updated_old)
+            .await
+            .expect("insert updated old wait");
+        upsert_stateful_wait(&path, retained)
+            .await
+            .expect("insert retained wait");
+
+        let pruned = prune_stateful_wait_store(&path, 5_000, 10_000)
+            .await
+            .expect("prune wait store");
+
+        assert_eq!(pruned, 2);
+        let remaining = load_stateful_waits(&path);
+        assert_eq!(
+            remaining
+                .iter()
+                .map(|wait| (wait.run_id.as_str(), wait.wait_id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("run-a", "retained")]
+        );
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn prune_wait_store_retains_stale_non_terminal_waits() {
+        let path = temp_wait_store("stateful-waits-prune-stale-non-terminal");
+        let tenant_a = tenant("org-a", "workspace-a");
+        let mut waiting = timer_wait("stale-waiting", "run-a", tenant_a.clone(), 1_000);
+        waiting.updated_at_ms = 1_000;
+        let mut claimed = timer_wait("stale-claimed", "run-a", tenant_a, 1_100);
+        claimed.status = StatefulWaitStatus::Claimed;
+        claimed.updated_at_ms = 1_100;
+        claimed.claimed_by = Some("scheduler-a".to_string());
+        claimed.claimed_at_ms = Some(1_200);
+        claimed.claim_expires_at_ms = Some(1_300);
+
+        upsert_stateful_wait(&path, waiting)
+            .await
+            .expect("insert stale waiting wait");
+        upsert_stateful_wait(&path, claimed)
+            .await
+            .expect("insert stale claimed wait");
+
+        let pruned = prune_stateful_wait_store(&path, 5_000, 10_000)
+            .await
+            .expect("prune wait store");
+
+        assert_eq!(pruned, 0);
+        let remaining = load_stateful_waits(&path);
+        assert_eq!(
+            remaining
+                .iter()
+                .map(|wait| (wait.wait_id.as_str(), &wait.status))
+                .collect::<Vec<_>>(),
+            vec![
+                ("stale-waiting", &StatefulWaitStatus::Waiting),
+                ("stale-claimed", &StatefulWaitStatus::Claimed),
+            ]
+        );
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn prune_wait_store_retains_recent_terminal_waits() {
+        let path = temp_wait_store("stateful-waits-prune-recent-terminal");
+        let tenant_a = tenant("org-a", "workspace-a");
+        let mut at_cutoff = timer_wait("at-cutoff", "run-a", tenant_a.clone(), 1_000);
+        at_cutoff.status = StatefulWaitStatus::Woken;
+        at_cutoff.completed_at_ms = Some(5_000);
+        at_cutoff.updated_at_ms = 4_000;
+        let mut recent_fallback = timer_wait("recent-fallback", "run-a", tenant_a, 1_100);
+        recent_fallback.status = StatefulWaitStatus::TimedOut;
+        recent_fallback.completed_at_ms = None;
+        recent_fallback.updated_at_ms = 5_001;
+
+        upsert_stateful_wait(&path, at_cutoff)
+            .await
+            .expect("insert cutoff terminal wait");
+        upsert_stateful_wait(&path, recent_fallback)
+            .await
+            .expect("insert recent terminal wait");
+
+        let pruned = prune_stateful_wait_store(&path, 5_000, 10_000)
+            .await
+            .expect("prune wait store");
+
+        assert_eq!(pruned, 0);
+        let remaining = load_stateful_waits(&path);
+        assert_eq!(
+            remaining
+                .iter()
+                .map(|wait| wait.wait_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["at-cutoff", "recent-fallback"]
         );
         let _ = tokio::fs::remove_file(path).await;
     }
