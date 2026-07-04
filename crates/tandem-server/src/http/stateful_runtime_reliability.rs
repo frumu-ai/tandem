@@ -1,13 +1,14 @@
 use super::*;
 
 use crate::stateful_runtime::{
-    append_stateful_run_event_once_with_next_seq, list_stateful_compensations,
-    list_stateful_dead_letters, list_stateful_outbox, list_stateful_tool_effects,
-    load_stateful_reliability, mark_compensation_status, mark_dead_letter_disposition,
-    operator_principal, stateful_reliability_path_from_runtime_events_path,
-    stateful_run_from_automation_v2, stateful_run_from_workflow, StatefulCompensationStatus,
-    StatefulDeadLetterStatus, StatefulReliabilityQuery, StatefulRunEventRecord,
-    StatefulWorkflowRunRecord, StatefulWorkflowRunStatus, STATEFUL_RUNTIME_SCHEMA_VERSION,
+    append_stateful_run_event_once_with_next_seq, execute_stateful_compensation,
+    list_stateful_compensations, list_stateful_dead_letters, list_stateful_outbox,
+    list_stateful_tool_effects, load_stateful_reliability, mark_compensation_status,
+    mark_dead_letter_disposition, operator_principal,
+    stateful_reliability_path_from_runtime_events_path, stateful_run_from_automation_v2,
+    stateful_run_from_workflow, StatefulCompensationStatus, StatefulDeadLetterStatus,
+    StatefulReliabilityQuery, StatefulRunEventRecord, StatefulWorkflowRunRecord,
+    StatefulWorkflowRunStatus, STATEFUL_RUNTIME_SCHEMA_VERSION,
 };
 use serde::Serialize;
 use tandem_types::TenantContext;
@@ -341,6 +342,7 @@ pub(super) async fn apply_stateful_run_resume_plan_action(
     );
     let path = stateful_reliability_path_from_runtime_events_path(&state.runtime_events_path);
     let mut disposition = Value::Null;
+    let mut linked_compensation_id = input.compensation_id.clone();
 
     if let Some(dead_letter_id) = input.dead_letter_id.as_deref() {
         let (status, label) = dead_letter_status_for_choice(&choice);
@@ -356,7 +358,12 @@ pub(super) async fn apply_stateful_run_resume_plan_action(
         )
         .await
         {
-            Ok(Some(row)) => disposition = json!({ "dead_letter": row }),
+            Ok(Some(row)) => {
+                if recovery_choice_runs_compensation(&choice) && linked_compensation_id.is_none() {
+                    linked_compensation_id = row.compensation_id.clone();
+                }
+                disposition = json!({ "dead_letter": row });
+            }
             Ok(None) => {
                 return (
                     StatusCode::NOT_FOUND,
@@ -371,26 +378,60 @@ pub(super) async fn apply_stateful_run_resume_plan_action(
         }
     }
 
-    if let Some(compensation_id) = input.compensation_id.as_deref() {
-        let status = compensation_status_for_choice(&choice);
-        match mark_compensation_status(&path, &tenant_context, compensation_id, status, now).await {
-            Ok(Some(row)) => {
-                disposition = json!({
-                    "previous": disposition,
-                    "compensation": row,
-                });
+    if let Some(compensation_id) = linked_compensation_id.as_deref() {
+        if recovery_choice_runs_compensation(&choice) {
+            match execute_stateful_compensation(
+                &path,
+                &tenant_context,
+                compensation_id,
+                actor.clone(),
+                input.reason.clone(),
+                now,
+            )
+            .await
+            {
+                Ok(Some(execution)) => {
+                    disposition = json!({
+                        "previous": disposition,
+                        "compensation": execution.compensation,
+                        "compensation_execution": execution,
+                    });
+                }
+                Ok(None) => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(json!({
+                            "error": "stateful_compensation_not_found",
+                            "compensation_id": compensation_id,
+                        })),
+                    )
+                        .into_response()
+                }
+                Err(error) => return reliability_error("compensation_execution_failed", error),
             }
-            Ok(None) => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({
-                        "error": "stateful_compensation_not_found",
-                        "compensation_id": compensation_id,
-                    })),
-                )
-                    .into_response()
+        } else {
+            let status = compensation_status_for_choice(&choice);
+            match mark_compensation_status(&path, &tenant_context, compensation_id, status, now)
+                .await
+            {
+                Ok(Some(row)) => {
+                    disposition = json!({
+                        "previous": disposition,
+                        "compensation": row,
+                    });
+                }
+                Ok(None) => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(json!({
+                            "error": "stateful_compensation_not_found",
+                            "compensation_id": compensation_id,
+                        })),
+                    )
+                        .into_response()
+                }
+                Err(error) => return reliability_error("compensation_update_failed", error),
             }
-            Err(error) => return reliability_error("compensation_update_failed", error),
         }
     }
 
@@ -845,7 +886,7 @@ fn dead_letter_status_for_choice(choice: &str) -> (StatefulDeadLetterStatus, &'s
 
 fn recovery_choice_execution_mode(choice: &str) -> &'static str {
     match choice {
-        "compensate_pending_effects" | "compensate" => "operator_runbook_record_only",
+        "compensate_pending_effects" | "compensate" => "stateful_compensation_engine",
         "abandon_with_audit" | "ignore_dead_letter" => "audit_disposition_only",
         "retry_failed_effect" | "retry_dead_letter" => "automatic_retry_dispatch",
         "resume_from_checkpoint" | "reconcile_external_effect" => "operator_request_record_only",
@@ -853,11 +894,17 @@ fn recovery_choice_execution_mode(choice: &str) -> &'static str {
     }
 }
 
-/// Whether recording this choice also kicks off automatic re-execution (TAN-564).
-/// Retry choices re-drive the owning run through its governed dispatch path via
-/// the dead-letter retry dispatcher; all other choices remain record-only.
+/// Whether recording this choice also kicks off automatic recovery work.
+/// Retry choices re-drive the owning run through TAN-564's governed dispatch
+/// path, while compensation choices execute through TAN-565's compensation
+/// engine. Other choices remain record-only.
 fn recovery_choice_automatic_dispatch(choice: &str) -> bool {
     matches!(choice, "retry_failed_effect" | "retry_dead_letter")
+        || recovery_choice_runs_compensation(choice)
+}
+
+fn recovery_choice_runs_compensation(choice: &str) -> bool {
+    matches!(choice, "compensate_pending_effects" | "compensate")
 }
 
 fn compensation_status_for_choice(choice: &str) -> StatefulCompensationStatus {

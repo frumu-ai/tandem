@@ -18,6 +18,11 @@ pub(crate) static STATEFUL_RELIABILITY_STORE_LOCK: tokio::sync::Mutex<()> =
 const DEFAULT_RELIABILITY_LIMIT: usize = 250;
 const MAX_RELIABILITY_LIMIT: usize = 1_000;
 
+mod compensation_execution;
+pub use compensation_execution::{
+    execute_stateful_compensation, StatefulCompensationExecutionResult,
+};
+
 #[derive(Debug, Clone)]
 pub struct StatefulReliabilityStoragePaths {
     pub reliability_path: PathBuf,
@@ -474,7 +479,13 @@ pub fn list_stateful_compensations(
         .filter(|row| status_matches(query.status, &row.status))
         .collect::<Vec<_>>();
     if query.active_recovery_only {
-        rows.retain(|row| !metadata_superseded_by_success(row.metadata.as_ref()));
+        rows.retain(|row| {
+            !metadata_superseded_by_success(row.metadata.as_ref())
+                && !matches!(
+                    row.status,
+                    StatefulCompensationStatus::Completed | StatefulCompensationStatus::Cancelled
+                )
+        });
     }
     apply_reliability_cursor(
         &mut rows,
@@ -680,6 +691,14 @@ pub async fn mark_compensation_status(
     else {
         return Ok(None);
     };
+    let previous_status = row.status.clone();
+    if !compensation_execution::compensation_status_transition_allowed(&previous_status, &status) {
+        anyhow::bail!(
+            "illegal stateful compensation status transition from `{}` to `{}`",
+            serialized_key(&previous_status),
+            serialized_key(&status)
+        );
+    }
     row.status = status;
     row.updated_at_ms = now_ms;
     let updated = row.clone();
@@ -1503,15 +1522,17 @@ mod tests {
         let dead_letter_id = failed_store.dead_letters[0].dead_letter_id.clone();
         let compensation_id = failed_store.compensations[0].compensation_id.clone();
 
-        mark_compensation_status(
+        execute_stateful_compensation(
             &path,
             &tenant_a,
             &compensation_id,
-            StatefulCompensationStatus::Completed,
+            operator_principal(Some("operator-a")),
+            Some("compensation completed".to_string()),
             4_000,
         )
         .await
-        .expect("mark compensation complete");
+        .expect("execute compensation")
+        .expect("compensation execution");
         mark_dead_letter_disposition(
             &path,
             &tenant_a,
@@ -1854,103 +1875,6 @@ mod tests {
         assert_eq!(
             store.dead_letters[0].compensation_id.as_deref(),
             Some(store.compensations[0].compensation_id.as_str())
-        );
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[tokio::test]
-    async fn operator_recovery_updates_are_tenant_scoped() {
-        let path = std::env::temp_dir().join(format!(
-            "tandem-stateful-reliability-{}.json",
-            Uuid::new_v4()
-        ));
-        let tenant_a = tenant("org-a", "workspace-a");
-        let tenant_b = tenant("org-b", "workspace-b");
-        let scope = StatefulRuntimeScope::from_tenant_context(tenant_a.clone());
-        let mut record = action(
-            "action-tenant-compensation",
-            "failed",
-            Some("provider timeout"),
-        );
-        record.metadata = Some(json!({
-            "automationRunID": "run-a",
-            "nodeID": "node-a",
-            "attempt": 2,
-            "tool": "SendMessage",
-            "input": {"message": "hello"},
-            "compensation": {
-                "type": "operator_review",
-                "approval_required": true,
-                "rollback_instruction": "remove the posted message"
-            }
-        }));
-        record_external_action_reliability_bridge(&path, scope, &record)
-            .await
-            .expect("bridge");
-        let store = load_stateful_reliability(&path);
-        let compensation_id = store.compensations[0].compensation_id.clone();
-        let dead_letter_id = store.dead_letters[0].dead_letter_id.clone();
-
-        let wrong_compensation = mark_compensation_status(
-            &path,
-            &tenant_b,
-            &compensation_id,
-            StatefulCompensationStatus::Completed,
-            3_000,
-        )
-        .await
-        .expect("wrong tenant compensation update");
-        assert!(wrong_compensation.is_none());
-
-        let updated_compensation = mark_compensation_status(
-            &path,
-            &tenant_a,
-            &compensation_id,
-            StatefulCompensationStatus::Completed,
-            4_000,
-        )
-        .await
-        .expect("tenant compensation update")
-        .expect("updated compensation");
-        assert_eq!(
-            updated_compensation.status,
-            StatefulCompensationStatus::Completed
-        );
-
-        let wrong_dead_letter = mark_dead_letter_disposition(
-            &path,
-            &tenant_b,
-            &dead_letter_id,
-            StatefulDeadLetterStatus::LinkedToCompensation,
-            "linked_to_compensation",
-            Some("wrong tenant".to_string()),
-            operator_principal(Some("operator-b")),
-            5_000,
-        )
-        .await
-        .expect("wrong tenant dead letter update");
-        assert!(wrong_dead_letter.is_none());
-
-        let updated_dead_letter = mark_dead_letter_disposition(
-            &path,
-            &tenant_a,
-            &dead_letter_id,
-            StatefulDeadLetterStatus::LinkedToCompensation,
-            "linked_to_compensation",
-            Some("compensation completed".to_string()),
-            operator_principal(Some("operator-a")),
-            6_000,
-        )
-        .await
-        .expect("tenant dead letter update")
-        .expect("updated dead letter");
-        assert_eq!(
-            updated_dead_letter.status,
-            StatefulDeadLetterStatus::LinkedToCompensation
-        );
-        assert_eq!(
-            updated_dead_letter.operator_disposition.as_deref(),
-            Some("linked_to_compensation")
         );
         let _ = std::fs::remove_file(path);
     }

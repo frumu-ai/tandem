@@ -22,15 +22,16 @@ pub use definition::{
 };
 pub use phases::*;
 pub use reliability::{
-    list_stateful_compensations, list_stateful_dead_letters, list_stateful_outbox,
-    list_stateful_tool_effects, load_stateful_reliability, mark_compensation_status,
-    mark_dead_letter_disposition, operator_principal, record_external_action_reliability_bridge,
-    stateful_reliability_path_from_runtime_events_path, upsert_stateful_compensation,
-    upsert_stateful_dead_letter, upsert_stateful_outbox, upsert_stateful_tool_effect,
-    StatefulCompensationRecord, StatefulCompensationStatus, StatefulDeadLetterRecord,
-    StatefulDeadLetterStatus, StatefulOutboxRecord, StatefulOutboxStatus, StatefulRecoveryOption,
-    StatefulReliabilityQuery, StatefulReliabilityStoragePaths, StatefulReliabilityStoreFile,
-    StatefulToolEffectRecord, StatefulToolEffectStatus,
+    execute_stateful_compensation, list_stateful_compensations, list_stateful_dead_letters,
+    list_stateful_outbox, list_stateful_tool_effects, load_stateful_reliability,
+    mark_compensation_status, mark_dead_letter_disposition, operator_principal,
+    record_external_action_reliability_bridge, stateful_reliability_path_from_runtime_events_path,
+    upsert_stateful_compensation, upsert_stateful_dead_letter, upsert_stateful_outbox,
+    upsert_stateful_tool_effect, StatefulCompensationExecutionResult, StatefulCompensationRecord,
+    StatefulCompensationStatus, StatefulDeadLetterRecord, StatefulDeadLetterStatus,
+    StatefulOutboxRecord, StatefulOutboxStatus, StatefulRecoveryOption, StatefulReliabilityQuery,
+    StatefulReliabilityStoragePaths, StatefulReliabilityStoreFile, StatefulToolEffectRecord,
+    StatefulToolEffectStatus,
 };
 pub use reliability_retry::{
     dead_letter_retry_dispatch_count, dead_letter_retry_dispatched_at_ms,

@@ -770,9 +770,9 @@ async fn stateful_runtime_resume_plan_surfaces_partial_failure_without_cross_ten
         .expect("compensation choice");
     assert_eq!(
         compensation_choice["execution_mode"],
-        json!("operator_runbook_record_only")
+        json!("stateful_compensation_engine")
     );
-    assert_eq!(compensation_choice["automatic_dispatch"], json!(false));
+    assert_eq!(compensation_choice["automatic_dispatch"], json!(true));
     assert_payload_excludes_hidden_runtime_rows(&plan);
     let body = plan.to_string();
     assert!(!body.contains("dead-superseded"), "{body}");
