@@ -48,6 +48,10 @@ pub(super) async fn initialize_runtime(
     let runtime = build_runtime(&state_dir, Some(&state), overrides, config_path).await?;
     state.mark_ready(runtime).await?;
     let _ = state.restart_channel_listeners().await;
+    // Keep provider OAuth credentials (e.g. OpenAI Codex sign-in) fresh for
+    // channels/automations/scheduled runs without relying on the control panel
+    // being open (TAN-594).
+    state.spawn_provider_oauth_refresh();
     state.set_phase("ready").await;
     emit_event(
         tracing::Level::INFO,

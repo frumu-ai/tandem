@@ -127,6 +127,7 @@ mod routes_workflows;
 pub(crate) mod routines_automations;
 mod runtime_events;
 mod session_kb_grounding;
+mod session_run_retry;
 mod session_source;
 mod sessions;
 mod setup_understanding;

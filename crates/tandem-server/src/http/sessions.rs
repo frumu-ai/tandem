@@ -32,7 +32,7 @@ fn with_tenant_context(mut properties: Value, tenant_context: &TenantContext) ->
     properties
 }
 
-fn publish_tenant_event(
+pub(super) fn publish_tenant_event(
     state: &AppState,
     tenant_context: &TenantContext,
     event_type: &str,
@@ -1211,10 +1211,17 @@ pub(super) async fn execute_run(
     let (status, error_msg): (&str, Option<String>) = if direct_kb_outcome.is_some() {
         ("completed", None)
     } else {
-        let mut run_fut = Box::pin(state.engine_loop.run_prompt_async_with_context(
-            session_id.clone(),
+        // Wrap the run so an expired provider token (AUTHENTICATION_ERROR) is
+        // refreshed and retried once transparently before surfacing (TAN-595).
+        // The timeout/ticker below poll this future, so the retry shares the
+        // same run budget and keeps emitting heartbeats.
+        let mut run_fut = Box::pin(super::session_run_retry::run_prompt_with_auth_retry(
+            &state,
+            &session_id,
+            &run_id,
             req,
             correlation_id.clone(),
+            &tenant_context,
         ));
         let mut timeout = Box::pin(tokio::time::sleep(Duration::from_secs(60 * 10)));
         let mut ticker = tokio::time::interval(Duration::from_secs(2));

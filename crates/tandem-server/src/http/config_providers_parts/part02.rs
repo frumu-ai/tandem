@@ -183,7 +183,7 @@ async fn exchange_openai_codex_api_key(id_token: &str) -> anyhow::Result<String>
     Ok(serde_json::from_str::<OpenAiCodexApiKeyExchangeResponse>(&text)?.access_token)
 }
 
-async fn refresh_openai_codex_oauth_if_needed(
+pub(crate) async fn refresh_openai_codex_oauth_if_needed(
     state: &AppState,
     tenant_context: &TenantContext,
 ) -> anyhow::Result<()> {
