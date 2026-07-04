@@ -712,7 +712,7 @@ export function TeamsPage({ client, toast, navigate }: AppPageProps) {
                     ))}
                   </div>
                 </div>
-                <div className="rounded-[28px] border border-slate-800/80 bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.18),_transparent_45%),linear-gradient(180deg,rgba(15,23,42,0.9),rgba(2,6,23,0.96))] p-5">
+                <div className="border border-slate-800/80 bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.18),_transparent_45%),linear-gradient(180deg,rgba(15,23,42,0.9),rgba(2,6,23,0.96))] p-5">
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex items-start gap-4">
                       <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-2xl border border-cyan-400/30 bg-cyan-400/10 text-lg font-semibold text-cyan-100">

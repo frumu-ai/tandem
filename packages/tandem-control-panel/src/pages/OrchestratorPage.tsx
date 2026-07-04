@@ -2200,7 +2200,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
             onClick={() => setWorkspacePreviewFullscreen(false)}
           >
             <motion.div
-              className="relative h-[calc(100dvh-1rem)] w-[calc(100vw-1rem)] overflow-hidden rounded-[1.4rem] border border-slate-700/70 bg-slate-950 shadow-[0_28px_64px_rgba(0,0,0,0.55)]"
+              className="relative h-[calc(100dvh-1rem)] w-[calc(100vw-1rem)] overflow-hidden border border-slate-700/70 bg-slate-950 shadow-[0_28px_64px_rgba(0,0,0,0.55)]"
               initial={{ opacity: 0, y: 8, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 6, scale: 0.98 }}

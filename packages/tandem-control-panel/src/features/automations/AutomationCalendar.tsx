@@ -472,7 +472,7 @@ export function AutomationCalendar({
     const statusTone = statusToneClasses(dominantStatus);
     return (
       <div
-        className={`group relative flex h-full min-h-0 items-center overflow-hidden rounded-[0.65rem] border px-2 py-1 text-xs shadow-sm transition-colors ${
+        className={`group relative flex h-full min-h-0 items-center overflow-hidden border px-2 py-1 text-xs shadow-sm transition-colors ${
           selected
             ? "border-amber-400/80 bg-amber-400/14 text-amber-100"
             : "border-slate-700/60 bg-slate-950/86 text-slate-100"
