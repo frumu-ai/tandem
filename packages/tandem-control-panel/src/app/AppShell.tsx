@@ -1,11 +1,11 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
 import { MOTION_TOKENS, prefersReducedMotion } from "./themes.js";
-import { renderIcons } from "./icons.js";
 import { groupNavRoutes } from "./store.js";
 import { IconButton, StatusPulse } from "../ui/index.tsx";
 import { TandemLogoAnimation } from "../ui/TandemLogoAnimation";
 import type { NavigationLockState } from "../pages/pageTypes";
+import { Icon } from "../ui/Icon";
 
 // Keep subtitles to a short descriptor — the shell header shows one line and the
 // page body carries the detail. Every primary nav route needs an entry so none
@@ -107,23 +107,6 @@ export function AppShell({
   }, [currentRoute]);
 
   useEffect(() => {
-    try {
-      renderIcons();
-    } catch {}
-  }, [
-    navRoutes,
-    currentRoute,
-    mobileNavOpen,
-    statusBar.incidentMonitor?.enabled,
-    statusBar.incidentMonitor?.monitoringActive,
-    statusBar.incidentMonitor?.paused,
-    statusBar.incidentMonitor?.pendingIncidents,
-    statusBar.incidentMonitor?.blocked,
-    statusBar.approvals?.pendingCount,
-    statusBar.approvals?.checking,
-  ]);
-
-  useEffect(() => {
     setAvatarMode(avatarUrl ? "custom" : "default");
   }, [avatarUrl]);
 
@@ -212,7 +195,7 @@ export function AppShell({
             {active ? (
               <motion.span layoutId="tcp-icon-indicator" className="tcp-rail-icon-indicator" />
             ) : null}
-            <i data-lucide={icon}></i>
+            <Icon name={icon} />
           </button>
         );
       });
@@ -240,7 +223,7 @@ export function AppShell({
         }}
       >
         <span className="inline-flex items-center gap-2">
-          <i data-lucide={icon}></i>
+          <Icon name={icon} />
           <span>{label}</span>
         </span>
         {active ? <span className="tcp-context-link-dot"></span> : null}
@@ -317,7 +300,7 @@ export function AppShell({
                     if (mobile) setMobileNavOpen(false);
                   }}
                 >
-                  <i data-lucide="shield-alert"></i>
+                  <Icon name="shield-alert" />
                   <span className="tcp-incident-monitor-dot" aria-hidden="true"></span>
                   <span>{incidentMonitorState.shortLabel}</span>
                 </button>
@@ -336,7 +319,7 @@ export function AppShell({
                     if (mobile) setMobileNavOpen(false);
                   }}
                 >
-                  <i data-lucide="shield-alert"></i>
+                  <Icon name="shield-alert" />
                   <span>{pendingApprovalCount}</span>
                 </button>
               </div>
@@ -356,7 +339,7 @@ export function AppShell({
               if (mobile) setMobileNavOpen(false);
             }}
           >
-            <i data-lucide="search"></i>
+            <Icon name="search" />
             Command palette
           </button>
           <button
@@ -367,7 +350,7 @@ export function AppShell({
               if (mobile) setMobileNavOpen(false);
             }}
           >
-            <i data-lucide="paint-bucket"></i>
+            <Icon name="paint-bucket" />
             Cycle theme
           </button>
           <button
@@ -378,7 +361,7 @@ export function AppShell({
               if (mobile) setMobileNavOpen(false);
             }}
           >
-            <i data-lucide="log-out"></i>
+            <Icon name="log-out" />
             Logout
           </button>
         </div>
@@ -400,13 +383,13 @@ export function AppShell({
         <nav className="tcp-rail-nav">{renderIconRailItems()}</nav>
         <div className="tcp-rail-footer">
           <IconButton title="Command palette" onClick={onPaletteOpen} disabled={navigationLocked}>
-            <i data-lucide="search"></i>
+            <Icon name="search" />
           </IconButton>
           <IconButton title="Cycle theme" onClick={onThemeCycle} disabled={navigationLocked}>
-            <i data-lucide="paint-bucket"></i>
+            <Icon name="paint-bucket" />
           </IconButton>
           <IconButton title="Logout" onClick={onLogout} disabled={navigationLocked}>
-            <i data-lucide="log-out"></i>
+            <Icon name="log-out" />
           </IconButton>
           <div className="mt-2 flex justify-center">
             {statusBar.engineHealthy ? <StatusPulse tone="ok" /> : <StatusPulse tone="warn" />}
@@ -428,7 +411,7 @@ export function AppShell({
             disabled={navigationLocked}
             onClick={() => setMobileNavOpen(true)}
           >
-            <i data-lucide="menu"></i>
+            <Icon name="menu" />
             Menu
           </button>
           <div className="min-w-0 flex-1">
@@ -449,7 +432,7 @@ export function AppShell({
               }
               onClick={() => onNavigate("incident-monitor")}
             >
-              <i data-lucide="shield-alert"></i>
+              <Icon name="shield-alert" />
               <span className="tcp-incident-monitor-dot" aria-hidden="true"></span>
             </button>
           ) : null}
@@ -461,7 +444,7 @@ export function AppShell({
               title={approvalLabel}
               onClick={() => onNavigate("approvals")}
             >
-              <i data-lucide="shield-alert"></i>
+              <Icon name="shield-alert" />
               <span>{pendingApprovalCount}</span>
             </button>
           ) : null}
@@ -489,7 +472,7 @@ export function AppShell({
                 }
                 onClick={() => onNavigate("incident-monitor")}
               >
-                <i data-lucide="shield-alert"></i>
+                <Icon name="shield-alert" />
                 <span className="tcp-incident-monitor-dot" aria-hidden="true"></span>
                 <span>{incidentMonitorState.shortLabel}</span>
               </button>
@@ -502,7 +485,7 @@ export function AppShell({
                 title={approvalLabel}
                 onClick={() => onNavigate("approvals")}
               >
-                <i data-lucide="shield-alert"></i>
+                <Icon name="shield-alert" />
                 <span>{pendingApprovalCount}</span>
                 <span className="hidden sm:inline">
                   Approval{pendingApprovalCount === 1 ? "" : "s"}
@@ -575,7 +558,7 @@ export function AppShell({
                   <div className="tcp-subtle text-xs">{routeMeta.title}</div>
                 </div>
                 <IconButton title="Close" onClick={() => setMobileNavOpen(false)}>
-                  <i data-lucide="x"></i>
+                  <Icon name="x" />
                 </IconButton>
               </div>
               {contextRail(true)}

@@ -25,12 +25,12 @@ import {
   getActiveThemeId,
   setControlPanelTheme,
 } from "./themes.js";
-import { renderIcons } from "./icons.js";
 import { api, isTransientEngineError } from "../lib/api";
 import { useCapabilities, useSwarmStatus, useSystemHealth } from "../features/system/queries";
 import { PanelCard, StatusPulse } from "../ui/index.tsx";
 import type { RouteId } from "./routes";
 import type { NavigationLockState } from "../pages/pageTypes";
+import { Icon } from "../ui/Icon";
 
 const TOKEN_STORAGE_KEY = "tandem_control_panel_token";
 const PALETTE_HIDDEN_ROUTE_IDS = new Set<RouteId>([
@@ -240,7 +240,7 @@ function ReconnectingPage({
 
             <div className="grid gap-2 sm:grid-cols-2">
               <button type="button" className="tcp-btn-primary w-full" onClick={onRetry}>
-                <i data-lucide="refresh-cw"></i>
+                <Icon name="refresh-cw" />
                 Retry now
               </button>
               <button
@@ -257,7 +257,7 @@ function ReconnectingPage({
                   }
                 }}
               >
-                <i data-lucide="activity"></i>
+                <Icon name="activity" />
                 Check engine
               </button>
             </div>
@@ -353,44 +353,6 @@ function AppBody() {
     if (!navVisibilityHydrated.current) return;
     saveNavigationVisibility(navVisibility);
   }, [navVisibility]);
-
-  useEffect(() => {
-    try {
-      renderIcons();
-    } catch {}
-  }, [authed, navVisibility, route]);
-
-  // Icons are `<i data-lucide>` placeholders that lucide replaces with SVGs.
-  // The route-change scan above fires before async query data mounts its own
-  // icons, so late-arriving `<i data-lucide>` nodes (list rows, cards, buttons
-  // gated on query results) would otherwise stay blank. A single observer
-  // re-renders whenever new placeholders appear, covering every page without
-  // each one having to wire up its own renderIcons call.
-  //
-  // Match ONLY `<i data-lucide>` placeholders, not any `[data-lucide]`: lucide's
-  // generated `<svg>` keeps the data-lucide attribute, so a broader match would
-  // see each rendered icon as pending and re-render it every frame (a runaway
-  // observer/rAF loop). Placeholders are `<i>`, the output is `<svg>`, so keying
-  // on the tag name breaks the loop.
-  useEffect(() => {
-    if (typeof MutationObserver === "undefined") return;
-    const hasPendingIcon = (node: Node) => {
-      if (!(node instanceof Element)) return false;
-      return node.matches("i[data-lucide]") || node.querySelector("i[data-lucide]") !== null;
-    };
-    const observer = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        for (const node of mutation.addedNodes) {
-          if (hasPendingIcon(node)) {
-            renderIcons();
-            return;
-          }
-        }
-      }
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
-    return () => observer.disconnect();
-  }, []);
 
   useEffect(() => {
     if (!navigationLock) return;
@@ -802,7 +764,7 @@ function AppBody() {
           providerLocked && currentRoute !== "settings" && !providerNoticeDismissed ? (
             <div className="tcp-panel-card flex flex-wrap items-center justify-between gap-3 border-amber-500/40 px-4 py-3">
               <div className="flex min-w-0 items-center gap-3">
-                <i data-lucide="triangle-alert" className="text-amber-300"></i>
+                <Icon name="triangle-alert" className="text-amber-300" />
                 <div className="min-w-0">
                   <div className="text-sm font-semibold">Provider setup required</div>
                   <p className="tcp-subtle text-xs">
@@ -821,7 +783,7 @@ function AppBody() {
                   aria-label="Dismiss provider setup notice"
                   onClick={dismissProviderNotice}
                 >
-                  <i data-lucide="x"></i>
+                  <Icon name="x" />
                 </button>
               </div>
             </div>

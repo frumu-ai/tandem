@@ -6,7 +6,7 @@ import {
   buildDefaultKnowledgeOperatorPreferences,
   buildKnowledgeRolloutGuidance,
 } from "./plannerShared";
-import { renderIcons } from "../../app/icons.js";
+import { Icon } from "../../ui/Icon";
 
 export type PlannerTargetSurface = "automation" | "mission" | "coding" | "orchestrator";
 export type PlannerHorizon = "same_day" | "multi_day" | "weekly" | "monthly" | "mixed";
@@ -150,12 +150,6 @@ export function IntentBriefPanel({
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
 
-  useEffect(() => {
-    try {
-      renderIcons();
-    } catch {}
-  });
-
   const selectedTarget = TARGET_SURFACE_OPTIONS.find((option) => option.id === draft.targetSurface);
   const selectedHorizon = HORIZON_OPTIONS.find((option) => option.id === draft.planningHorizon);
   const knowledgeDefaults = buildDefaultKnowledgeOperatorPreferences(draft.goal).knowledge;
@@ -178,7 +172,7 @@ export function IntentBriefPanel({
             title="Start a new mission and clear the current planner state"
             disabled={disabled}
           >
-            <i data-lucide="plus" className="mr-1 h-3 w-3"></i>
+            <Icon name="plus" className="mr-1 h-3 w-3" />
             New mission
           </button>
         </div>

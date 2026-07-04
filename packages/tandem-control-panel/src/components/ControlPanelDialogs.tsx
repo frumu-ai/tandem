@@ -1,15 +1,10 @@
 import { AnimatePresence, motion } from "motion/react";
 import type { ReactNode } from "react";
 import { useEffect, useRef } from "react";
-import { renderIcons } from "../app/icons.js";
+import { Icon } from "../ui/Icon";
 
 function useDialogIconRender(active: boolean) {
   const dialogRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!active) return;
-    if (dialogRef.current) renderIcons(dialogRef.current);
-  }, [active]);
 
   return dialogRef;
 }
@@ -115,7 +110,7 @@ export function ConfirmDialog({
       actions={
         <>
           <button type="button" className="tcp-btn" onClick={onCancel}>
-            <i data-lucide="x"></i>
+            <Icon name="x" />
             {cancelLabel}
           </button>
           <button
@@ -124,7 +119,7 @@ export function ConfirmDialog({
             disabled={confirmDisabled}
             onClick={onConfirm}
           >
-            <i data-lucide={confirmIcon}></i>
+            <Icon name={confirmIcon} />
             {confirmLabel}
           </button>
         </>
@@ -194,7 +189,7 @@ export function PromptDialog({
       actions={
         <>
           <button type="button" className="tcp-btn" onClick={onCancel}>
-            <i data-lucide="x"></i>
+            <Icon name="x" />
             {cancelLabel}
           </button>
           <button
@@ -203,7 +198,7 @@ export function PromptDialog({
             disabled={confirmDisabled}
             onClick={onConfirm}
           >
-            <i data-lucide={confirmIcon}></i>
+            <Icon name={confirmIcon} />
             {confirmLabel}
           </button>
         </>

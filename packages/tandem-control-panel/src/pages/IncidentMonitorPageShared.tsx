@@ -1,4 +1,5 @@
 import { Badge, humanizeLabel } from "../ui/index.tsx";
+import { Icon } from "../ui/Icon";
 
 const STAT_TILE_TONE_TEXT: Record<string, string> = {
   ok: "text-lime-300",
@@ -115,13 +116,13 @@ function GitHubLinks({ record }: { record: AnyRecord }) {
     <div className="mt-3 flex flex-wrap gap-2">
       {issueUrl ? (
         <a className="tcp-btn h-8 px-3 text-xs" href={issueUrl} target="_blank" rel="noreferrer">
-          <i data-lucide="external-link"></i>
+          <Icon name="external-link" />
           {githubIssueLabel(record)}
         </a>
       ) : null}
       {commentUrl ? (
         <a className="tcp-btn h-8 px-3 text-xs" href={commentUrl} target="_blank" rel="noreferrer">
-          <i data-lucide="message-square"></i>
+          <Icon name="message-square" />
           GitHub comment
         </a>
       ) : null}

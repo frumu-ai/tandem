@@ -11,6 +11,7 @@ import {
 import { RunTimeline, useRunTimeline } from "../features/runs/RunTimeline";
 import { EmptyState } from "./ui";
 import type { AppPageProps } from "./pageTypes";
+import { Icon } from "../ui/Icon";
 
 type EvidenceTone = "ok" | "warn" | "info" | "ghost" | "err";
 
@@ -723,7 +724,7 @@ export function ControlLoopPage({ api, client, navigate, toast }: AppPageProps) 
                 }
               }}
             >
-              <i data-lucide="refresh-cw"></i>
+              <Icon name="refresh-cw" />
               Refresh
             </button>
           </div>
@@ -742,11 +743,11 @@ export function ControlLoopPage({ api, client, navigate, toast }: AppPageProps) 
             placeholder="Filter recent runs"
           />
           <button type="button" className="tcp-btn" onClick={() => navigate("approvals")}>
-            <i data-lucide="shield-check"></i>
+            <Icon name="shield-check" />
             Approvals
           </button>
           <button type="button" className="tcp-btn" onClick={() => navigate("memory")}>
-            <i data-lucide="database"></i>
+            <Icon name="database" />
             Memory
           </button>
           <button
@@ -755,7 +756,7 @@ export function ControlLoopPage({ api, client, navigate, toast }: AppPageProps) 
             disabled={!contextRunId || exportingEvidence}
             onClick={exportGovernanceEvidence}
           >
-            <i data-lucide={exportingEvidence ? "loader-circle" : "download"}></i>
+            <Icon name={exportingEvidence ? "loader-circle" : "download"} />
             {exportingEvidence ? "Exporting" : "Export"}
           </button>
         </Toolbar>
@@ -900,7 +901,7 @@ export function ControlLoopPage({ api, client, navigate, toast }: AppPageProps) 
                 className="tcp-btn w-fit h-8 px-3 text-xs"
                 onClick={() => setShowRawEvidence((value) => !value)}
               >
-                <i data-lucide={showRawEvidence ? "chevron-up" : "chevron-down"}></i>
+                <Icon name={showRawEvidence ? "chevron-up" : "chevron-down"} />
                 Raw evidence
               </button>
               {showRawEvidence ? (
@@ -1006,7 +1007,7 @@ function LoopStepCard({ step, index }: { step: EvidenceStep; index: number }) {
   return (
     <article className="grid gap-3 rounded-lg border border-white/10 bg-black/20 p-3 md:grid-cols-[2.5rem_10rem_minmax(0,1fr)_auto] md:items-center">
       <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-tcp-text-secondary">
-        <i data-lucide={step.icon}></i>
+        <Icon name={step.icon} />
       </div>
       <div className="min-w-0">
         <div className="tcp-text-caption uppercase text-tcp-text-tertiary">Step {index + 1}</div>
@@ -1067,7 +1068,7 @@ function EvidenceRow({
   return (
     <article className="grid grid-cols-[2rem_minmax(0,1fr)] gap-2 rounded-md border border-white/10 bg-black/20 p-2">
       <div className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-white/5">
-        <i data-lucide={icon}></i>
+        <Icon name={icon} />
       </div>
       <div className="min-w-0">
         <div className="mb-1 flex items-center justify-between gap-2">

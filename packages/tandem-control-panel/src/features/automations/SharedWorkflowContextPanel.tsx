@@ -9,6 +9,7 @@ import {
   timestampLabel,
   toArray,
 } from "./scopeInspectorPrimitives";
+import { Icon } from "../../ui/Icon";
 
 type SharedWorkflowContextPanelProps = {
   workspaceRoot: string;
@@ -126,7 +127,7 @@ export function SharedWorkflowContextPanel({
                           )
                         }
                       >
-                        <i data-lucide="refresh-cw"></i>
+                        <Icon name="refresh-cw" />
                         Swap to replacement
                       </button>
                     ) : null}
@@ -145,7 +146,7 @@ export function SharedWorkflowContextPanel({
           onClick={onPublishCurrentContextPack}
           disabled={!workspaceRoot}
         >
-          <i data-lucide="package-plus"></i>
+          <Icon name="package-plus" />
           Publish shared workflow context
         </button>
       </div>
@@ -232,7 +233,7 @@ export function SharedWorkflowContextPanel({
                         className="tcp-btn h-7 px-2 tcp-text-caption"
                         onClick={() => void copyContextPackId(selectedContextPack.packId)}
                       >
-                        <i data-lucide="copy"></i>
+                        <Icon name="copy" />
                         Copy context id
                       </button>
                     </div>
@@ -400,7 +401,7 @@ export function SharedWorkflowContextPanel({
                         className="tcp-btn h-7 px-2 tcp-text-caption"
                         onClick={() => void copyContextPackId(pack.packId)}
                       >
-                        <i data-lucide="copy"></i>
+                        <Icon name="copy" />
                         Copy context id
                       </button>
                     </div>

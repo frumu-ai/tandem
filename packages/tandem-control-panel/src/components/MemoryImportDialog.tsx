@@ -7,9 +7,9 @@ import type {
   MemoryImportTier,
   TandemClient,
 } from "@frumu/tandem-client";
-import { renderIcons } from "../app/icons.js";
 import { useEnterpriseSourceBindings } from "../features/enterprise/queries";
 import type { ToastKind } from "../pages/pageTypes";
+import { Icon } from "../ui/Icon";
 
 type ImportForm = {
   path: string;
@@ -92,11 +92,6 @@ export function MemoryImportDialog({
     });
     setResult(null);
   }, [initialPath, initialProjectId, initialTier, open]);
-
-  useEffect(() => {
-    if (!open || !dialogRef.current) return;
-    renderIcons(dialogRef.current);
-  }, [form.format, form.sourceBindingId, form.syncDeletes, form.tier, open, result]);
 
   useEffect(() => {
     if (!open || typeof window === "undefined") return undefined;
@@ -297,7 +292,7 @@ export function MemoryImportDialog({
 
             <div className="tcp-confirm-actions mt-3">
               <button type="button" className="tcp-btn" onClick={onCancel}>
-                <i data-lucide="x"></i>
+                <Icon name="x" />
                 Close
               </button>
               <button
@@ -308,7 +303,7 @@ export function MemoryImportDialog({
                 }
                 onClick={() => importMutation.mutate()}
               >
-                <i data-lucide="database-zap"></i>
+                <Icon name="database-zap" />
                 {importMutation.isPending ? "Importing..." : "Import to Memory"}
               </button>
             </div>

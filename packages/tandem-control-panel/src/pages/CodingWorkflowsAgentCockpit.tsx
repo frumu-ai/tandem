@@ -6,6 +6,7 @@ import { EmptyState } from "./ui";
 import { formatStatus, runStatus, runTitle, runUpdatedAt, toArray } from "./CodingWorkflowsHelpers";
 import { subscribeSse } from "../services/sse.js";
 import { api } from "../lib/api.ts";
+import { Icon } from "../ui/Icon";
 
 type ThreadEntry = {
   id: string;
@@ -827,7 +828,7 @@ export function CodingWorkflowsAgentCockpit({
               onClick={addFeedback}
               disabled={!draft.trim() || sendingFeedback}
             >
-              <i data-lucide="send"></i>
+              <Icon name="send" />
               {sendingFeedback ? "Sending..." : "Send feedback"}
             </button>
             {feedbackLoading ? <div className="tcp-subtle text-xs">Loading feedback...</div> : null}
@@ -838,7 +839,7 @@ export function CodingWorkflowsAgentCockpit({
         <PanelCard title="Actions" subtitle="Controls for the selected task/run">
           <div className="grid gap-2">
             <button type="button" className="tcp-btn" onClick={() => reconcileCoderRun(runId)}>
-              <i data-lucide="refresh-cw"></i>
+              <Icon name="refresh-cw" />
               Refresh state
             </button>
             <button
@@ -852,7 +853,7 @@ export function CodingWorkflowsAgentCockpit({
                   : "Available for blocked or failed Linear ACA runs."
               }
             >
-              <i data-lucide="rotate-ccw"></i>
+              <Icon name="rotate-ccw" />
               {taskResetting ? "Resetting..." : "Reset task to Backlog"}
             </button>
             <button
@@ -861,7 +862,7 @@ export function CodingWorkflowsAgentCockpit({
               onClick={() => cancelCoderRun(runId)}
               disabled={!live}
             >
-              <i data-lucide="pause"></i>
+              <Icon name="pause" />
               Pause / cancel run
             </button>
             {[
@@ -871,7 +872,7 @@ export function CodingWorkflowsAgentCockpit({
               ["x-circle", "Block task", actionUnavailable],
             ].map(([icon, label, reason]) => (
               <button key={label} type="button" className="tcp-btn" disabled title={reason}>
-                <i data-lucide={icon}></i>
+                <Icon name={icon} />
                 {label}
               </button>
             ))}

@@ -17,6 +17,7 @@ function safeString(value: unknown) {
 }
 
 import { LazyJson } from "../features/automations/LazyJson";
+import { Icon } from "../ui/Icon";
 
 function statusTone(enabled: boolean) {
   return enabled ? "ok" : "ghost";
@@ -313,7 +314,7 @@ export function PacksPage({ api, toast }: AppPageProps) {
                   disabled={!path.trim() || installMutation.isPending}
                   onClick={() => installMutation.mutate()}
                 >
-                  <i data-lucide="download"></i>
+                  <Icon name="download" />
                   Install from path
                 </button>
               </div>
@@ -471,7 +472,7 @@ export function PacksPage({ api, toast }: AppPageProps) {
                 disabled={!activeWorkflowId || runWorkflowMutation.isPending}
                 onClick={() => activeWorkflowId && runWorkflowMutation.mutate(activeWorkflowId)}
               >
-                <i data-lucide="play"></i>
+                <Icon name="play" />
                 Run workflow
               </button>
             }
@@ -622,7 +623,7 @@ export function PacksPage({ api, toast }: AppPageProps) {
                 disabled={!simulateEventType.trim() || simulateMutation.isPending}
                 onClick={() => simulateMutation.mutate()}
               >
-                <i data-lucide="flask-conical"></i>
+                <Icon name="flask-conical" />
                 Simulate
               </button>
             }
@@ -708,7 +709,7 @@ export function PacksPage({ api, toast }: AppPageProps) {
         subtitle="Real-time `workflow.*` events for the selected workflow, including run start, action completion, and failures."
         actions={
           <button className="tcp-btn" onClick={() => setLiveEvents([])}>
-            <i data-lucide="trash-2"></i>
+            <Icon name="trash-2" />
             Clear stream
           </button>
         }

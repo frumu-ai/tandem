@@ -49,7 +49,6 @@ import { useCalendarAutomationEditing } from "./useCalendarAutomationEditing";
 import { useOverlapHistoryEntries } from "./useOverlapHistoryEntries";
 import { useRunSummaryRows } from "./useRunSummaryRows";
 import { useSessionLogEntries } from "./useSessionLogEntries";
-import { useRenderAutomationIcons } from "./useRenderAutomationIcons";
 import { buildPlannerProviderOptions } from "../planner/plannerShared";
 export function MyAutomationsContainer({
   client,
@@ -1418,29 +1417,6 @@ export function MyAutomationsContainer({
     appendSessionEvent,
     queryClient,
   });
-  useRenderAutomationIcons(rootRef, [
-    activeRuns.length,
-    automations.length,
-    automationsV2.length,
-    failedRuns.length,
-    packs.length,
-    runActionMutation.isPending,
-    runEvents.length,
-    runNowMutation.isPending,
-    runNowV2Mutation.isPending,
-    runs.length,
-    sessionEvents.length,
-    workflowAutomationSections.length,
-    legacyAutomationRows.length,
-    workflowSortMode,
-    workflowPreferencesLoading,
-    updateAutomationMutation.isPending,
-    workflowRuns.length,
-    !!editDraft,
-    !!selectedBoardTask,
-    !!selectedRunId,
-    !!selectedSessionId,
-  ]);
   const {
     beginEdit,
     isPausedAutomation,

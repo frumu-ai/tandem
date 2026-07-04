@@ -1,3 +1,4 @@
+import { Icon } from "../ui/Icon";
 type ProviderOption = {
   id: string;
   models: string[];
@@ -51,7 +52,7 @@ export function ProviderModelSelector({
     <div className="grid gap-3 md:grid-cols-2">
       <label className="block text-sm">
         <div className="mb-1 flex items-center gap-2 font-medium text-slate-200">
-          <i data-lucide="cpu"></i>
+          <Icon name="cpu" />
           <span>{providerLabel}</span>
         </div>
         <select
@@ -80,7 +81,7 @@ export function ProviderModelSelector({
       </label>
       <label className="block text-sm">
         <div className="mb-1 flex items-center gap-2 font-medium text-slate-200">
-          <i data-lucide="sparkles"></i>
+          <Icon name="sparkles" />
           <span>{modelLabel}</span>
         </div>
         <input

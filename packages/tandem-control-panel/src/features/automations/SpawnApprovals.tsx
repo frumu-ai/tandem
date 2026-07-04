@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { EmptyState } from "../../pages/ui";
+import { Icon } from "../../ui/Icon";
 
 function toArray(input: any, key: string) {
   if (Array.isArray(input)) return input;
@@ -59,14 +60,14 @@ export function SpawnApprovals({ client, toast }: { client: any; toast: any }) {
                     className="tcp-btn-primary h-7 px-2 text-xs"
                     onClick={() => replyMutation.mutate({ requestId, decision: "approve" })}
                   >
-                    <i data-lucide="badge-check"></i>
+                    <Icon name="badge-check" />
                     Approve
                   </button>
                   <button
                     className="tcp-btn-danger h-7 px-2 text-xs"
                     onClick={() => replyMutation.mutate({ requestId, decision: "deny" })}
                   >
-                    <i data-lucide="x"></i>
+                    <Icon name="x" />
                     Deny
                   </button>
                 </div>

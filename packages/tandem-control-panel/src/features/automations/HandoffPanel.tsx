@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "motion/react";
 import { useState } from "react";
+import { Icon } from "../../ui/Icon";
 
 function formatTs(ms: number) {
   if (!ms) return "—";
@@ -54,8 +55,8 @@ function HandoffRow({
             )}
           </div>
         </div>
-        <i
-          data-lucide={open ? "chevron-up" : "chevron-down"}
+        <Icon
+          name={open ? "chevron-up" : "chevron-down"}
           className="mt-0.5 h-4 w-4 shrink-0 opacity-60"
         />
       </button>

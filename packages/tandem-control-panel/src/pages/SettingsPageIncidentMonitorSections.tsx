@@ -3,6 +3,7 @@ import { IncidentMonitorExternalProjectsPanel } from "../components/IncidentMoni
 import { Badge, PanelCard, Toolbar } from "../ui/index.tsx";
 import { useSettingsPageController, HOSTED_CODER_REPO_ROOT } from "./SettingsPageController";
 import { EmptyState } from "./ui";
+import { Icon } from "../ui/Icon";
 
 type SettingsPageControllerState = ReturnType<typeof useSettingsPageController>;
 
@@ -217,7 +218,7 @@ export function SettingsPageIncidentMonitorSections({
                   ]).then(() => toast("ok", "Incident Monitor status refreshed."))
                 }
               >
-                <i data-lucide="refresh-cw"></i>
+                <Icon name="refresh-cw" />
               </button>
               <button
                 className="tcp-icon-btn"
@@ -241,13 +242,13 @@ export function SettingsPageIncidentMonitorSections({
                   })
                 }
               >
-                <i
-                  data-lucide={
+                <Icon
+                  name={
                     incidentMonitorPaused || incidentMonitorStatus.runtime?.paused
                       ? "play"
                       : "pause"
                   }
-                ></i>
+                 />
               </button>
               <button
                 className="tcp-icon-btn"
@@ -256,7 +257,7 @@ export function SettingsPageIncidentMonitorSections({
                 disabled={refreshIncidentMonitorBindingsMutation.isPending}
                 onClick={() => refreshIncidentMonitorBindingsMutation.mutate()}
               >
-                <i data-lucide="rotate-cw"></i>
+                <Icon name="rotate-cw" />
               </button>
               <button
                 className="tcp-icon-btn"
@@ -264,7 +265,7 @@ export function SettingsPageIncidentMonitorSections({
                 aria-label="Copy debug payload"
                 onClick={() => void copyIncidentMonitorDebugPayload()}
               >
-                <i data-lucide="copy"></i>
+                <Icon name="copy" />
               </button>
               <button
                 className="tcp-icon-btn"
@@ -272,7 +273,7 @@ export function SettingsPageIncidentMonitorSections({
                 aria-label="Open GitHub MCP guide"
                 onClick={() => setGithubMcpGuideOpen(true)}
               >
-                <i data-lucide="book-open"></i>
+                <Icon name="book-open" />
               </button>
             </div>
           }
@@ -324,7 +325,7 @@ export function SettingsPageIncidentMonitorSections({
                         setIncidentMonitorWorkspaceRoot(incidentMonitorSuggestedWorkspaceRoot)
                       }
                     >
-                      <i data-lucide="badge-check"></i>
+                      <Icon name="badge-check" />
                       Use recommended path
                     </button>
                     <button
@@ -336,7 +337,7 @@ export function SettingsPageIncidentMonitorSections({
                         setIncidentMonitorWorkspaceBrowserOpen(true);
                       }}
                     >
-                      <i data-lucide="folder-open"></i>
+                      <Icon name="folder-open" />
                       Browse synced repos
                     </button>
                   </div>
@@ -352,7 +353,7 @@ export function SettingsPageIncidentMonitorSections({
                       setIncidentMonitorWorkspaceBrowserOpen(true);
                     }}
                   >
-                    <i data-lucide="folder-open"></i>
+                    <Icon name="folder-open" />
                     Browse
                   </button>
                   <input
@@ -367,7 +368,7 @@ export function SettingsPageIncidentMonitorSections({
                     onClick={() => setIncidentMonitorWorkspaceRoot("")}
                     disabled={!incidentMonitorWorkspaceRoot}
                   >
-                    <i data-lucide="x"></i>
+                    <Icon name="x" />
                     Clear
                   </button>
                 </div>
@@ -707,7 +708,7 @@ export function SettingsPageIncidentMonitorSections({
                     disabled={incidentMonitorRoutePreviewMutation.isPending}
                     onClick={() => incidentMonitorRoutePreviewMutation.mutate()}
                   >
-                    <i data-lucide="route"></i>
+                    <Icon name="route" />
                     Preview
                   </button>
                   {routePreviewEffectiveDestinations.map((destinationId: string) => (
@@ -774,7 +775,7 @@ export function SettingsPageIncidentMonitorSections({
                 aria-label="Save Incident Monitor settings"
                 onClick={() => saveIncidentMonitorMutation.mutate()}
               >
-                <i data-lucide="save"></i>
+                <Icon name="save" />
                 {saveIncidentMonitorMutation.isPending ? "Saving..." : null}
               </button>
               <button
@@ -783,7 +784,7 @@ export function SettingsPageIncidentMonitorSections({
                 aria-label="Add MCP server"
                 onClick={() => openMcpModal()}
               >
-                <i data-lucide="plus"></i>
+                <Icon name="plus" />
               </button>
               <button
                 className="tcp-icon-btn"
@@ -791,7 +792,7 @@ export function SettingsPageIncidentMonitorSections({
                 aria-label="Open setup guide"
                 onClick={() => setGithubMcpGuideOpen(true)}
               >
-                <i data-lucide="external-link"></i>
+                <Icon name="external-link" />
               </button>
               <button
                 className="tcp-icon-btn"
@@ -800,7 +801,7 @@ export function SettingsPageIncidentMonitorSections({
                 disabled={refreshIncidentMonitorBindingsMutation.isPending}
                 onClick={() => refreshIncidentMonitorBindingsMutation.mutate()}
               >
-                <i data-lucide="rotate-cw"></i>
+                <Icon name="rotate-cw" />
               </button>
               <button
                 className="tcp-icon-btn"
@@ -808,7 +809,7 @@ export function SettingsPageIncidentMonitorSections({
                 aria-label="Copy debug payload"
                 onClick={() => void copyIncidentMonitorDebugPayload()}
               >
-                <i data-lucide="copy"></i>
+                <Icon name="copy" />
               </button>
               {selectedIncidentMonitorServer ? (
                 <button
@@ -831,11 +832,11 @@ export function SettingsPageIncidentMonitorSections({
                     })
                   }
                 >
-                  <i
-                    data-lucide={
+                  <Icon
+                    name={
                       selectedIncidentMonitorServer.connected ? "refresh-cw" : "plug-zap"
                     }
-                  ></i>
+                   />
                 </button>
               ) : null}
             </div>
@@ -1085,7 +1086,7 @@ export function SettingsPageIncidentMonitorSections({
                             })
                           }
                         >
-                          <i data-lucide="rotate-cw"></i>
+                          <Icon name="rotate-cw" />
                         </button>
                         {incident.triage_run_id ? (
                           <span className="tcp-subtle text-xs">
@@ -1156,7 +1157,7 @@ export function SettingsPageIncidentMonitorSections({
                               })
                             }
                           >
-                            <i data-lucide="check"></i>
+                            <Icon name="check" />
                             {incidentMonitorDraftDecisionMutation.isPending ? "Updating..." : null}
                           </button>
                           <button
@@ -1171,7 +1172,7 @@ export function SettingsPageIncidentMonitorSections({
                               })
                             }
                           >
-                            <i data-lucide="x"></i>
+                            <Icon name="x" />
                           </button>
                         </div>
                       ) : null}
@@ -1188,7 +1189,7 @@ export function SettingsPageIncidentMonitorSections({
                               })
                             }
                           >
-                            <i data-lucide="shield-alert"></i>
+                            <Icon name="shield-alert" />
                           </button>
                           <button
                             className="tcp-icon-btn"
@@ -1201,7 +1202,7 @@ export function SettingsPageIncidentMonitorSections({
                               })
                             }
                           >
-                            <i data-lucide="refresh-cw"></i>
+                            <Icon name="refresh-cw" />
                           </button>
                         </div>
                       ) : null}
@@ -1214,7 +1215,7 @@ export function SettingsPageIncidentMonitorSections({
                               target="_blank"
                               rel="noreferrer"
                             >
-                              <i data-lucide="external-link"></i>
+                              <Icon name="external-link" />
                               Open issue
                             </a>
                           ) : null}
@@ -1225,7 +1226,7 @@ export function SettingsPageIncidentMonitorSections({
                               target="_blank"
                               rel="noreferrer"
                             >
-                              <i data-lucide="message-square"></i>
+                              <Icon name="message-square" />
                               Open comment
                             </a>
                           ) : null}
@@ -1245,7 +1246,7 @@ export function SettingsPageIncidentMonitorSections({
                               })
                             }
                           >
-                            <i data-lucide="sparkles"></i>
+                            <Icon name="sparkles" />
                           </button>
                         </div>
                       ) : null}
@@ -1285,7 +1286,7 @@ export function SettingsPageIncidentMonitorSections({
                             target="_blank"
                             rel="noreferrer"
                           >
-                            <i data-lucide="external-link"></i>
+                            <Icon name="external-link" />
                             Open issue
                           </a>
                         ) : null}
@@ -1296,7 +1297,7 @@ export function SettingsPageIncidentMonitorSections({
                             target="_blank"
                             rel="noreferrer"
                           >
-                            <i data-lucide="message-square"></i>
+                            <Icon name="message-square" />
                             Open comment
                           </a>
                         ) : null}

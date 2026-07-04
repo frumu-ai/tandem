@@ -21,6 +21,7 @@ import {
   workflowBlockedNodeCount as fallbackWorkflowBlockedNodeCount,
   workflowCompletedNodeCount as fallbackWorkflowCompletedNodeCount,
 } from "../orchestration/workflowStability";
+import { Icon } from "../../ui/Icon";
 
 function RunHistoryEventDetails({
   event,
@@ -295,7 +296,7 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
                     className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent"
                   />
                 ) : (
-                  <i data-lucide="skip-forward"></i>
+                  <Icon name="skip-forward" />
                 )}
                 {workflowTaskContinueMutation.isPending ? "Continuing..." : "Continue"}
               </button>
@@ -335,7 +336,7 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
                     className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent"
                   />
                 ) : (
-                  <i data-lucide="rotate-ccw"></i>
+                  <Icon name="rotate-ccw" />
                 )}
                 {runDebuggerRetryNodeId
                   ? workflowTaskRetryMutation.isPending
@@ -362,7 +363,7 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
                 !(runStatus === "paused" || isActiveRunStatus(runStatus))
               }
             >
-              <i data-lucide={runStatus === "paused" ? "play" : "pause"}></i>
+              <Icon name={runStatus === "paused" ? "play" : "pause"} />
               {runStatus === "paused" ? "Resume" : "Pause"}
             </button>
             {isWorkflowRun ? (
@@ -382,16 +383,16 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
                 }
                 title="Force stop this workflow run and clear active sessions"
               >
-                <i data-lucide="square"></i>
+                <Icon name="square" />
                 {runActionMutation.isPending ? pendingRunActionLabel : "Cancel"}
               </button>
             ) : null}
             <button className="tcp-btn h-8 w-full px-2 text-xs sm:w-auto" onClick={onRefresh}>
-              <i data-lucide="refresh-cw"></i>
+              <Icon name="refresh-cw" />
               Refresh
             </button>
             <button className="tcp-btn h-8 w-full px-2 text-xs sm:w-auto" onClick={onClose}>
-              <i data-lucide="x"></i>
+              <Icon name="x" />
               Close
             </button>
           </div>
@@ -445,7 +446,7 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
                         aria-label="Close task details"
                         onClick={() => onSelectBoardTaskId("")}
                       >
-                        <i data-lucide="x-circle"></i>
+                        <Icon name="x-circle" />
                       </button>
                     </div>
                     <div className="grid gap-2 pr-1 text-sm text-slate-200">
@@ -1319,7 +1320,7 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
                   <div className="mb-2 flex items-center justify-between gap-2">
                     <div className="font-medium">Raw Run Payload</div>
                     <button className="tcp-btn h-7 px-2 text-xs" onClick={onCopyFullDebugContext}>
-                      <i data-lucide="copy-plus"></i>
+                      <Icon name="copy-plus" />
                       Copy all debug context
                     </button>
                   </div>
@@ -1339,7 +1340,7 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
         </div>
         <div className="tcp-confirm-actions mt-3">
           <button className="tcp-btn" onClick={() => onSelectRunId("")}>
-            <i data-lucide="x"></i>
+            <Icon name="x" />
             Close
           </button>
         </div>

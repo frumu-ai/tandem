@@ -46,6 +46,7 @@ import {
   runUpdatedAt,
   toArray,
 } from "./CodingWorkflowsHelpers";
+import { Icon } from "../ui/Icon";
 
 const LINEAR_CATALOG_TIMEOUT_MS = 8_000;
 
@@ -1084,7 +1085,7 @@ export function CodingWorkflowsPage({
                 onClick={syncSelectedRepo}
                 disabled={!selectedProjectSlug || repoSyncing}
               >
-                <i data-lucide={repoSyncing ? "loader-circle" : "refresh-cw"}></i>
+                <Icon name={repoSyncing ? "loader-circle" : "refresh-cw"} />
                 {repoSyncing ? "Syncing" : "Sync repo"}
               </button>
             </div>
@@ -1120,7 +1121,7 @@ export function CodingWorkflowsPage({
             className={`tcp-settings-tab tcp-settings-tab-underline ${tab === item.id ? "active" : ""}`}
             onClick={() => setTab(item.id)}
           >
-            <i data-lucide={item.icon}></i>
+            <Icon name={item.icon} />
             {item.label}
           </button>
         ))}
@@ -1460,7 +1461,7 @@ export function CodingWorkflowsPage({
                                               className="tcp-btn tcp-btn-secondary h-8 px-3 text-xs"
                                               onClick={() => inspectAcaRun(activeGithubRun)}
                                             >
-                                              <i data-lucide="terminal"></i>
+                                              <Icon name="terminal" />
                                               View live run
                                             </button>
                                           ) : null}
@@ -1556,7 +1557,7 @@ export function CodingWorkflowsPage({
                       }}
                       disabled={!selectedRunId}
                     >
-                      <i data-lucide="terminal"></i>
+                      <Icon name="terminal" />
                       Open console view
                     </button>
                     <button
@@ -1564,7 +1565,7 @@ export function CodingWorkflowsPage({
                       className="tcp-btn h-8 px-3 text-xs"
                       onClick={() => setRunDetailOpen((prev) => !prev)}
                     >
-                      <i data-lucide={runDetailOpen ? "chevron-down" : "chevron-right"}></i>
+                      <Icon name={runDetailOpen ? "chevron-down" : "chevron-right"} />
                       {runDetailOpen ? "Collapse" : "Expand"}
                     </button>
                   </div>
@@ -1780,7 +1781,7 @@ export function CodingWorkflowsPage({
                   className="tcp-btn h-8 px-3 text-xs"
                   onClick={() => setLiveLogsOpen((prev) => !prev)}
                 >
-                  <i data-lucide={liveLogsOpen ? "chevron-down" : "chevron-right"}></i>
+                  <Icon name={liveLogsOpen ? "chevron-down" : "chevron-right"} />
                   {liveLogsOpen ? "Collapse" : "Expand"}
                 </button>
               }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Icon } from "./Icon";
 
 // Shared data-display primitives. These replace the per-page reimplementations
 // of status tones, relative timestamps, copyable IDs, and key/value rows that
@@ -159,7 +160,7 @@ export function CopyButton({
         }
       }}
     >
-      <i data-lucide={copied ? "check" : "copy"}></i>
+      <Icon name={copied ? "check" : "copy"} />
     </button>
   );
 }

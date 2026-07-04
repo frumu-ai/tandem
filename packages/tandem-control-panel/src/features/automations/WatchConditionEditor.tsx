@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Icon } from "../../ui/Icon";
 
 type WatchCondition =
   | {
@@ -63,7 +64,7 @@ export function WatchConditionEditor({ value, onChange, automations = [] }: Prop
         >
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <i data-lucide="zap" className="h-3.5 w-3.5 text-amber-400" />
+              <Icon name="zap" className="h-3.5 w-3.5 text-amber-400" />
               <span className="text-xs font-medium text-amber-300">HandoffAvailable</span>
             </div>
             <button
@@ -72,7 +73,7 @@ export function WatchConditionEditor({ value, onChange, automations = [] }: Prop
               onClick={() => remove(i)}
               title="Remove condition"
             >
-              <i data-lucide="x" />
+              <Icon name="x" />
             </button>
           </div>
 
@@ -120,16 +121,16 @@ export function WatchConditionEditor({ value, onChange, automations = [] }: Prop
       {adding ? (
         <div className="flex gap-2">
           <button type="button" className="tcp-btn flex-1" onClick={add}>
-            <i data-lucide="zap" />
+            <Icon name="zap" />
             Add HandoffAvailable condition
           </button>
           <button type="button" className="tcp-btn" onClick={() => setAdding(false)}>
-            <i data-lucide="x" />
+            <Icon name="x" />
           </button>
         </div>
       ) : (
         <button type="button" className="tcp-btn w-full text-xs" onClick={() => setAdding(true)}>
-          <i data-lucide="plus" />
+          <Icon name="plus" />
           Add watch condition
         </button>
       )}

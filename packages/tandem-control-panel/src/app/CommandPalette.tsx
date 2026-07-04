@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
+import { Icon } from "../ui/Icon";
 
 export type PaletteAction = {
   id: string;
@@ -95,7 +96,7 @@ export function CommandPalette({
                     }}
                   >
                     <span className="inline-flex items-center gap-1.5">
-                      <i data-lucide="list"></i>
+                      <Icon name="list" />
                       <span>{action.label}</span>
                     </span>
                     <span className="tcp-subtle text-xs">{action.group}</span>

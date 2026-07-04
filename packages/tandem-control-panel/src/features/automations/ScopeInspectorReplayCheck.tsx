@@ -1,4 +1,5 @@
 import { diffValue, safeString, toArray } from "./scopeInspectorPrimitives";
+import { Icon } from "../../ui/Icon";
 
 type ScopeInspectorReplayCheckProps = {
   planPackageReplay: any;
@@ -95,7 +96,7 @@ export function ScopeInspectorReplayCheck({
             onClick={onToggleShowReplayIssues}
             className="inline-flex w-fit items-center gap-2 rounded-md border border-slate-700/80 bg-slate-900/70 px-2 py-1 tcp-text-caption font-medium text-slate-100 transition hover:border-slate-500 hover:bg-slate-800"
           >
-            <i data-lucide={showReplayIssues ? "chevron-up" : "chevron-down"}></i>
+            <Icon name={showReplayIssues ? "chevron-up" : "chevron-down"} />
             {showReplayIssues ? "Hide issues" : "Show issues"}
           </button>
           {showReplayIssues ? (

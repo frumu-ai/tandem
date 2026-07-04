@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import type { RefObject } from "react";
 import { LazyJson } from "./LazyJson";
+import { Icon } from "../../ui/Icon";
 
 type WorkflowLiveSessionLogPanelProps = {
   selectedSessionId: string;
@@ -75,11 +76,11 @@ export function WorkflowLiveSessionLogPanel({
             disabled={!sessionLogEntries.length}
             onClick={onCopySessionLog}
           >
-            <i data-lucide="copy"></i>
+            <Icon name="copy" />
             Copy session log
           </button>
           <button className="tcp-btn h-7 px-2 text-xs" onClick={onJumpToLatest}>
-            <i data-lucide="arrow-down"></i>
+            <Icon name="arrow-down" />
             Jump to latest
           </button>
         </div>

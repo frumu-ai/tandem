@@ -24,6 +24,7 @@ import {
   uniqueChannelValues,
   useSettingsPageController,
 } from "./SettingsPageController";
+import { Icon } from "../ui/Icon";
 
 type SettingsPageControllerState = ReturnType<typeof useSettingsPageController>;
 
@@ -112,7 +113,7 @@ export function SettingsPageChannelsMcpSections({
                 {connectedChannelCount}/{CHANNEL_NAMES.length} connected
               </Badge>
               <button className="tcp-btn" onClick={() => void invalidateChannels()}>
-                <i data-lucide="refresh-cw"></i>
+                <Icon name="refresh-cw" />
                 Refresh channels
               </button>
             </Toolbar>
@@ -416,7 +417,7 @@ export function SettingsPageChannelsMcpSections({
                       disabled={saveChannelMutation.isPending || !channelSettingsDirty}
                       onClick={() => saveChannelMutation.mutate(channel)}
                     >
-                      <i data-lucide="save"></i>
+                      <Icon name="save" />
                       Save
                     </button>
                     {channel === "discord" ? (
@@ -425,7 +426,7 @@ export function SettingsPageChannelsMcpSections({
                         disabled={verifyChannelMutation.isPending}
                         onClick={() => verifyChannelMutation.mutate("discord")}
                       >
-                        <i data-lucide="shield-check"></i>
+                        <Icon name="shield-check" />
                         Verify
                       </button>
                     ) : null}
@@ -434,7 +435,7 @@ export function SettingsPageChannelsMcpSections({
                       disabled={deleteChannelMutation.isPending || !hasSavedConfig}
                       onClick={() => deleteChannelMutation.mutate(channel)}
                     >
-                      <i data-lucide="trash-2"></i>
+                      <Icon name="trash-2" />
                       Remove
                     </button>
                   </div>
@@ -489,12 +490,12 @@ export function SettingsPageChannelsMcpSections({
                           }
                         >
                           <span>{channelToolScopeOpen[channel] ? "Hide" : "Show"}</span>
-                          <i
-                            data-lucide="chevron-down"
+                          <Icon
+                            name="chevron-down"
                             className={`h-4 w-4 transition-transform duration-200 ${
                               channelToolScopeOpen[channel] ? "rotate-180" : ""
                             }`}
-                          ></i>
+                           />
                         </button>
                       </div>
                     </div>
@@ -855,11 +856,11 @@ export function SettingsPageChannelsMcpSections({
                 Channel scopes
               </button>
               <button className="tcp-btn-primary" onClick={() => openMcpModal()}>
-                <i data-lucide="plus"></i>
+                <Icon name="plus" />
                 Add MCP server
               </button>
               <button className="tcp-btn" onClick={() => void invalidateMcp()}>
-                <i data-lucide="refresh-cw"></i>
+                <Icon name="refresh-cw" />
                 Reload
               </button>
             </div>
@@ -1015,7 +1016,7 @@ export function SettingsPageChannelsMcpSections({
                 <EmptyState text="No MCP servers configured." />
                 <div className="flex justify-start">
                   <button className="tcp-btn-primary" onClick={() => openMcpModal()}>
-                    <i data-lucide="plus"></i>
+                    <Icon name="plus" />
                     Add MCP server
                   </button>
                 </div>

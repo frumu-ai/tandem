@@ -53,6 +53,7 @@ import {
   SourceBindingsPanel,
   SourceObjectLifecyclePanel,
 } from "./enterprise-admin/panels.tsx";
+import { Icon } from "../ui/Icon";
 
 export function EnterpriseAdminPage({ api, navigate, toast }: AppPageProps) {
   const orgUnits = useEnterpriseOrgUnits();
@@ -179,11 +180,11 @@ export function EnterpriseAdminPage({ api, navigate, toast }: AppPageProps) {
         actions={
           <Toolbar>
             <button className="tcp-btn" type="button" onClick={refreshEnterpriseState}>
-              <i data-lucide="refresh-cw"></i>
+              <Icon name="refresh-cw" />
               Refresh
             </button>
             <button className="tcp-btn" type="button" onClick={() => navigate("settings")}>
-              <i data-lucide="settings"></i>
+              <Icon name="settings" />
               Settings
             </button>
           </Toolbar>

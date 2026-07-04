@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Badge, PanelCard } from "../../ui/index.tsx";
 import { PlannerMetricGrid, PlannerSubsection } from "./plannerPrimitives";
 import { listNamedPlannerDrafts, listPlannerDraftHistory } from "./plannerDraftStorage";
-import { renderIcons } from "../../app/icons.js";
+import { Icon } from "../../ui/Icon";
 
 function safeString(value: unknown) {
   return String(value || "").trim();
@@ -43,12 +43,6 @@ export function PlannerDraftList({
   const [query, setQuery] = useState("");
   const [showAutosaves, setShowAutosaves] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-
-  useEffect(() => {
-    try {
-      renderIcons();
-    } catch {}
-  });
 
   const drafts = listNamedPlannerDrafts(storagePrefix);
   const history = listPlannerDraftHistory(historyKey);
@@ -181,7 +175,7 @@ export function PlannerDraftList({
                     className="tcp-btn"
                     onClick={() => onOpenDraft(draft.storageKey)}
                   >
-                    <i data-lucide="folder-open" className="mr-1 h-3 w-3"></i>
+                    <Icon name="folder-open" className="mr-1 h-3 w-3" />
                     Reopen draft
                   </button>
 
@@ -196,7 +190,7 @@ export function PlannerDraftList({
                           setConfirmDelete(null);
                         }}
                       >
-                        <i data-lucide="trash-2" className="mr-1 h-3 w-3"></i>
+                        <Icon name="trash-2" className="mr-1 h-3 w-3" />
                         Confirm
                       </button>
                       <button
@@ -213,7 +207,7 @@ export function PlannerDraftList({
                       className="tcp-btn"
                       onClick={() => setConfirmDelete(draft.storageKey)}
                     >
-                      <i data-lucide="trash-2" className="mr-1 h-3 w-3"></i>
+                      <Icon name="trash-2" className="mr-1 h-3 w-3" />
                       Delete
                     </button>
                   )}
@@ -234,7 +228,7 @@ export function PlannerDraftList({
               className="tcp-btn w-full justify-start text-xs"
               onClick={() => setShowAutosaves(true)}
             >
-              <i data-lucide="chevron-down" className="mr-1 h-3 w-3"></i>
+              <Icon name="chevron-down" className="mr-1 h-3 w-3" />
               Show {history.length} autosaved snapshots
             </button>
           ) : filteredHistory.length ? (
@@ -297,7 +291,7 @@ export function PlannerDraftList({
                       className="tcp-btn"
                       onClick={() => onOpenHistory(entry.entryId)}
                     >
-                      <i data-lucide="folder-open" className="mr-1 h-3 w-3"></i>
+                      <Icon name="folder-open" className="mr-1 h-3 w-3" />
                       Reopen autosave
                     </button>
 
@@ -312,7 +306,7 @@ export function PlannerDraftList({
                             setConfirmDelete(null);
                           }}
                         >
-                          <i data-lucide="trash-2" className="mr-1 h-3 w-3"></i>
+                          <Icon name="trash-2" className="mr-1 h-3 w-3" />
                           Confirm
                         </button>
                         <button
@@ -329,7 +323,7 @@ export function PlannerDraftList({
                         className="tcp-btn"
                         onClick={() => setConfirmDelete(entry.entryId)}
                       >
-                        <i data-lucide="trash-2" className="mr-1 h-3 w-3"></i>
+                        <Icon name="trash-2" className="mr-1 h-3 w-3" />
                         Delete
                       </button>
                     )}

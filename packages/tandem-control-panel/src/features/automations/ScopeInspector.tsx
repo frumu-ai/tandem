@@ -35,6 +35,7 @@ import type {
   ScopeInspectorProps,
   ScopeView,
 } from "./scopeInspectorPrimitives";
+import { Icon } from "../../ui/Icon";
 
 export function ScopeInspector({
   planPackage,
@@ -725,7 +726,7 @@ export function ScopeInspector({
                   )
                 }
               >
-                <i data-lucide="download"></i>
+                <Icon name="download" />
                 Export bundle
               </button>
               <button
@@ -740,7 +741,7 @@ export function ScopeInspector({
                   }
                 }}
               >
-                <i data-lucide="copy"></i>
+                <Icon name="copy" />
                 Copy bundle
               </button>
               {bundleShareStatus ? (
@@ -909,7 +910,7 @@ export function ScopeInspector({
                                   className="tcp-btn h-7 px-2 tcp-text-caption"
                                   onClick={onOpenPromptEditor}
                                 >
-                                  <i data-lucide="arrow-right"></i>
+                                  <Icon name="arrow-right" />
                                   Open in editor
                                 </button>
                               ) : null}
@@ -1051,7 +1052,7 @@ export function ScopeInspector({
                 className="tcp-btn h-7 px-2 tcp-text-caption"
                 onClick={onOpenConnectorBindingsEditor}
               >
-                <i data-lucide="settings-2"></i>
+                <Icon name="settings-2" />
                 Edit connectors
               </button>
             ) : null}
@@ -1116,7 +1117,7 @@ export function ScopeInspector({
                 className="tcp-btn h-7 px-2 tcp-text-caption"
                 onClick={onOpenModelRoutingEditor}
               >
-                <i data-lucide="settings-2"></i>
+                <Icon name="settings-2" />
                 Edit routing
               </button>
             ) : null}

@@ -1,4 +1,5 @@
 import { AnimatedPage, Badge, LoadingState, PanelCard } from "../ui/index.tsx";
+import { Icon } from "../ui/Icon";
 
 type Props = {
   acaReason: string;
@@ -58,11 +59,11 @@ export function CodingWorkflowsDisconnectedState({
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
                 <button type="button" className="tcp-btn" onClick={navigateSettings}>
-                  <i data-lucide="settings"></i>
+                  <Icon name="settings" />
                   Open ACA setup
                 </button>
                 <button type="button" className="tcp-btn" onClick={refreshAcaConnection}>
-                  <i data-lucide="refresh-cw"></i>
+                  <Icon name="refresh-cw" />
                   Retry connection
                 </button>
               </div>

@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
-import { renderIcons } from "../app/icons.js";
 import { workflowLatestStabilitySnapshot } from "../features/orchestration/workflowStability";
 import { useSystemHealth } from "../features/system/queries";
 import {

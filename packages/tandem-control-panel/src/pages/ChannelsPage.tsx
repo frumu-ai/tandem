@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ChannelName } from "@frumu/tandem-client";
 import { PageCard, EmptyState } from "./ui";
 import type { AppPageProps } from "./pageTypes";
+import { Icon } from "../ui/Icon";
 
 export function ChannelsPage({ client, toast }: AppPageProps) {
   const queryClient = useQueryClient();
@@ -88,7 +89,7 @@ export function ChannelsPage({ client, toast }: AppPageProps) {
                     className="tcp-btn h-7 px-2 text-xs"
                     onClick={() => reconnectMutation.mutate(name)}
                   >
-                    <i data-lucide="refresh-cw"></i>
+                    <Icon name="refresh-cw" />
                     Reconnect
                   </button>
                 </div>

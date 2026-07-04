@@ -9,6 +9,7 @@ import {
   runTimelinePageEventCount,
   runTimelineRequestPath,
 } from "../../../lib/runs/run-timeline.js";
+import { Icon } from "../../ui/Icon";
 
 type RunTimelineEntry = {
   id: string;
@@ -221,7 +222,7 @@ export function RunTimeline({
       actions={
         onRefresh ? (
           <IconButton title="Refresh timeline" aria-label="Refresh timeline" onClick={onRefresh}>
-            <i data-lucide="refresh-cw"></i>
+            <Icon name="refresh-cw" />
           </IconButton>
         ) : null
       }
@@ -278,7 +279,7 @@ export function RunTimeline({
               disabled={loadingMore}
               onClick={onLoadMore}
             >
-              <i data-lucide={loadingMore ? "loader-circle" : "chevrons-down"}></i>
+              <Icon name={loadingMore ? "loader-circle" : "chevrons-down"} />
               {loadingMore ? "Loading" : "Load Older"}
             </button>
           ) : null}

@@ -6,6 +6,7 @@ import { AnimatedPage, DetailDrawer, FilterChip, PanelCard, Toolbar } from "../u
 import { EmptyState } from "./ui";
 import { LazyJson } from "../features/automations/LazyJson";
 import type { AppPageProps } from "./pageTypes";
+import { Icon } from "../ui/Icon";
 
 function eventTypeOf(data: any) {
   return data?.type || data?.event || "event";
@@ -146,11 +147,11 @@ export function FeedPage({ client, toast, navigate }: AppPageProps) {
               {hideNoise ? "noise hidden" : "noise visible"}
             </span>
             <button className="tcp-btn" onClick={() => setEvents([])}>
-              <i data-lucide="trash-2"></i>
+              <Icon name="trash-2" />
               Clear feed
             </button>
             <button className="tcp-btn" onClick={() => navigate("packs-detail")}>
-              <i data-lucide="package"></i>
+              <Icon name="package" />
               Pack library
             </button>
           </div>
@@ -165,16 +166,16 @@ export function FeedPage({ client, toast, navigate }: AppPageProps) {
             aria-label="Filter feed by type or payload"
           />
           <FilterChip active={group === "all"} onClick={() => setGroup("all")}>
-            <i data-lucide="list"></i>
+            <Icon name="list" />
             All
           </FilterChip>
           <FilterChip active={hideNoise} onClick={() => setHideNoise((prev) => !prev)}>
-            <i data-lucide={hideNoise ? "filter" : "filter-x"}></i>
+            <Icon name={hideNoise ? "filter" : "filter-x"} />
             {hideNoise ? "Hide noise" : "Show noise"}
           </FilterChip>
           {groupedTypes.slice(0, 8).map(([type, count]) => (
             <FilterChip key={type} active={group === type} onClick={() => setGroup(type)}>
-              <i data-lucide="activity"></i>
+              <Icon name="activity" />
               {type} ({count})
             </FilterChip>
           ))}
@@ -225,7 +226,7 @@ export function FeedPage({ client, toast, navigate }: AppPageProps) {
                           navigate("packs-detail");
                         }}
                       >
-                        <i data-lucide="package"></i>
+                        <Icon name="package" />
                         Open pack library
                       </button>
                       {path ? (
@@ -236,7 +237,7 @@ export function FeedPage({ client, toast, navigate }: AppPageProps) {
                             installFromPath(path);
                           }}
                         >
-                          <i data-lucide="download"></i>
+                          <Icon name="download" />
                           Install from path
                         </button>
                       ) : null}
@@ -248,7 +249,7 @@ export function FeedPage({ client, toast, navigate }: AppPageProps) {
                             installFromAttachment(x.data);
                           }}
                         >
-                          <i data-lucide="paperclip"></i>
+                          <Icon name="paperclip" />
                           Install attachment
                         </button>
                       ) : null}
@@ -263,7 +264,7 @@ export function FeedPage({ client, toast, navigate }: AppPageProps) {
                           navigate("orchestrator");
                         }}
                       >
-                        <i data-lucide="workflow"></i>
+                        <Icon name="workflow" />
                         Open task board
                       </button>
                       <button
@@ -273,7 +274,7 @@ export function FeedPage({ client, toast, navigate }: AppPageProps) {
                           navigate("packs-detail");
                         }}
                       >
-                        <i data-lucide="package"></i>
+                        <Icon name="package" />
                         Open workflow lab
                       </button>
                     </div>

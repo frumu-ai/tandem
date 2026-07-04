@@ -13,6 +13,7 @@ import {
   normalizeMcpName,
   useSettingsPageController,
 } from "./SettingsPageController";
+import { Icon } from "../ui/Icon";
 
 type SettingsPageControllerState = ReturnType<typeof useSettingsPageController>;
 
@@ -157,7 +158,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                 target="_blank"
                 rel="noreferrer"
               >
-                <i data-lucide="external-link"></i>
+                <Icon name="external-link" />
                 GitHub MCP README
               </a>
               <a
@@ -166,7 +167,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                 target="_blank"
                 rel="noreferrer"
               >
-                <i data-lucide="external-link"></i>
+                <Icon name="external-link" />
                 GitHub Docs
               </a>
             </div>
@@ -223,7 +224,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                     aria-label={hostedPathHintOpen ? "Hide directory guidance" : "Show directory guidance"}
                     onClick={() => setHostedPathHintOpen((open) => !open)}
                   >
-                    <i data-lucide="info" className="h-3.5 w-3.5"></i>
+                    <Icon name="info" className="h-3.5 w-3.5" />
                   </button>
                 </div>
                 {hostedPathHintOpen ? (
@@ -243,7 +244,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                   }}
                   disabled={!incidentMonitorWorkspaceParentDir}
                 >
-                  <i data-lucide="arrow-up-circle"></i>
+                  <Icon name="arrow-up-circle" />
                   Up
                 </button>
                 <button
@@ -253,7 +254,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                     setIncidentMonitorWorkspaceBrowserSearch("");
                   }}
                 >
-                  <i data-lucide="folder-git-2"></i>
+                  <Icon name="folder-git-2" />
                   Synced repos
                 </button>
                 <button
@@ -269,7 +270,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                     );
                   }}
                 >
-                  <i data-lucide="badge-check"></i>
+                  <Icon name="badge-check" />
                   Select This Folder
                 </button>
                 <button
@@ -279,7 +280,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                     setIncidentMonitorWorkspaceBrowserSearch("");
                   }}
                 >
-                  <i data-lucide="x"></i>
+                  <Icon name="x" />
                   Close
                 </button>
               </div>
@@ -304,7 +305,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                         className="tcp-list-item mb-1 w-full text-left"
                         onClick={() => setIncidentMonitorWorkspaceBrowserDir(entryPath)}
                       >
-                        <i data-lucide="folder-open"></i>
+                        <Icon name="folder-open" />
                         <span className="min-w-0">
                           <span className="block truncate">
                             {String(entry?.name || entry?.path || "")}
@@ -375,7 +376,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
 
           <Toolbar>
             <button className="tcp-btn" onClick={() => void browserStatus.refetch()}>
-              <i data-lucide="refresh-cw"></i>
+              <Icon name="refresh-cw" />
               Refresh browser status
             </button>
             <button
@@ -383,7 +384,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
               onClick={() => installBrowserMutation.mutate()}
               disabled={installBrowserMutation.isPending}
             >
-              <i data-lucide="download"></i>
+              <Icon name="download" />
               {installBrowserMutation.isPending ? "Installing sidecar..." : "Install sidecar"}
             </button>
             <button
@@ -391,7 +392,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
               onClick={() => smokeTestBrowserMutation.mutate()}
               disabled={smokeTestBrowserMutation.isPending}
             >
-              <i data-lucide="globe"></i>
+              <Icon name="globe" />
               {smokeTestBrowserMutation.isPending ? "Running smoke test..." : "Run smoke test"}
             </button>
             <button
@@ -404,7 +405,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                   )
               }
             >
-              <i data-lucide="activity"></i>
+              <Icon name="activity" />
               Re-run diagnostics
             </button>
           </Toolbar>
@@ -523,7 +524,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                   className="tcp-btn h-8 px-2"
                   onClick={() => setMcpModalOpen(false)}
                 >
-                  <i data-lucide="x"></i>
+                  <Icon name="x" />
                 </button>
               </div>
 
@@ -542,7 +543,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                     }`}
                     onClick={() => setMcpModalTab("catalog")}
                   >
-                    <i data-lucide="blocks"></i>
+                    <Icon name="blocks" />
                     Built-in catalog
                   </button>
                   <button
@@ -552,7 +553,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                     }`}
                     onClick={() => setMcpModalTab("manual")}
                   >
-                    <i data-lucide="square-pen"></i>
+                    <Icon name="square-pen" />
                     Manual
                   </button>
                 </div>
@@ -570,7 +571,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                         className="tcp-btn h-8 px-3 text-xs"
                         onClick={() => void mcpCatalogQuery.refetch()}
                       >
-                        <i data-lucide="refresh-cw"></i>
+                        <Icon name="refresh-cw" />
                         Refresh
                       </button>
                     </div>
@@ -667,7 +668,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                                     target="_blank"
                                     rel="noreferrer"
                                   >
-                                    <i data-lucide="external-link"></i>
+                                    <Icon name="external-link" />
                                     Docs
                                   </a>
                                 ) : null}
@@ -821,7 +822,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                             ])
                           }
                         >
-                          <i data-lucide="plus"></i>
+                          <Icon name="plus" />
                           Add header
                         </button>
                       </div>
@@ -913,7 +914,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                     className="tcp-btn-primary"
                     disabled={mcpSaveMutation.isPending}
                   >
-                    <i data-lucide="save"></i>
+                    <Icon name="save" />
                     {mcpOauthStartsAfterSave
                       ? "Save MCP server and start sign-in"
                       : "Save MCP server"}

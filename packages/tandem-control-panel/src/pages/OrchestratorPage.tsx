@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { renderIcons } from "../app/icons.js";
 import { normalizeMessages } from "../features/chat/messages";
 import { renderMarkdownSafe } from "../lib/markdown";
 import { BudgetMeter } from "../features/orchestration/BudgetMeter";
@@ -17,6 +16,7 @@ import {
 import { EmptyState } from "./ui";
 import { LazyJson } from "../features/automations/LazyJson";
 import type { AppPageProps } from "./pageTypes";
+import { Icon } from "../ui/Icon";
 
 const DEFAULT_BUDGET: BudgetUsage = {
   max_iterations: 500,
@@ -847,26 +847,6 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
     setHistoryOpen(false);
     setRevisionFeedback("");
   }, [clearSelectedRunId]);
-  useEffect(() => {
-    const root = rootRef.current;
-    if (!root) return;
-    renderIcons(root);
-  }, [
-    composeMode,
-    historyOpen,
-    orderedRuns,
-    runId,
-    runStatus,
-    runWorkspaceDir,
-    runWorkspaceDirectories.length,
-    runWorkspaceFiles.length,
-    selectedWorkspaceFile,
-    selectedWorkspaceText,
-    selectedKanbanTaskId,
-    selectedVerificationId,
-    workspacePreviewFullscreen,
-    taskRenderSignature,
-  ]);
 
   const noRunYet = !runId;
   const isPlanning = runStatus === "planning" || runStatus === "queued";
@@ -896,7 +876,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
       >
         <div className="chat-sessions-header">
           <h3 className="chat-sessions-title">
-            <i data-lucide="history"></i>
+            <Icon name="history" />
             History
           </h3>
           <div className="flex items-center gap-1">
@@ -909,7 +889,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                 void queryClient.invalidateQueries({ queryKey: ["swarm", "runs"] });
               }}
             >
-              <i data-lucide="refresh-cw"></i>
+              <Icon name="refresh-cw" />
             </button>
           </div>
         </div>
@@ -936,7 +916,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                     }}
                   >
                     <span className="mb-0.5 inline-flex items-center gap-1 text-xs font-medium">
-                      <i data-lucide="history"></i>
+                      <Icon name="history" />
                       <span>{runLabelFromTimestamp(runTimestamp(run))}</span>
                     </span>
                     <span className="tcp-subtle line-clamp-2 block tcp-text-caption">
@@ -983,7 +963,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                     title="History"
                     onClick={() => setHistoryOpen((prev) => !prev)}
                   >
-                    <i data-lucide="history"></i>
+                    <Icon name="history" />
                   </button>
                   <span>Task Board</span>
                 </div>
@@ -1010,7 +990,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                       setWorkspaceBrowserOpen(true);
                     }}
                   >
-                    <i data-lucide="folder-open"></i>
+                    <Icon name="folder-open" />
                     Browse
                   </button>
                   <input
@@ -1032,7 +1012,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                     onClick={() => startMutation.mutate()}
                     disabled={startMutation.isPending || !canSend}
                   >
-                    <i data-lucide="send"></i>
+                    <Icon name="send" />
                     Send
                   </button>
                   <button
@@ -1040,7 +1020,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                     type="button"
                     onClick={() => setShowAdvanced((prev) => !prev)}
                   >
-                    <i data-lucide="sliders-horizontal"></i>
+                    <Icon name="sliders-horizontal" />
                     {showAdvanced ? "Hide Advanced" : "Show Advanced"}
                   </button>
                 </div>
@@ -1093,7 +1073,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                   }}
                   disabled={!workspaceParentDir}
                 >
-                  <i data-lucide="arrow-up-circle"></i>
+                  <Icon name="arrow-up-circle" />
                   Up
                 </button>
                 <button
@@ -1106,7 +1086,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                     toast("ok", `Workspace selected: ${workspaceCurrentBrowseDir}`);
                   }}
                 >
-                  <i data-lucide="badge-check"></i>
+                  <Icon name="badge-check" />
                   Select This Folder
                 </button>
                 <button
@@ -1116,7 +1096,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                     setWorkspaceBrowserSearch("");
                   }}
                 >
-                  <i data-lucide="x"></i>
+                  <Icon name="x" />
                   Close
                 </button>
               </div>
@@ -1136,7 +1116,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                       className="tcp-list-item mb-1 w-full text-left"
                       onClick={() => setWorkspaceBrowserDir(String(entry?.path || ""))}
                     >
-                      <i data-lucide="folder-open"></i>
+                      <Icon name="folder-open" />
                       {String(entry?.name || entry?.path || "")}
                     </button>
                   ))
@@ -1172,7 +1152,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                     title="History"
                     onClick={() => setHistoryOpen((prev) => !prev)}
                   >
-                    <i data-lucide="history"></i>
+                    <Icon name="history" />
                   </button>
                   <button
                     type="button"
@@ -1180,7 +1160,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                     title="Back to start"
                     onClick={goToStartView}
                   >
-                    <i data-lucide="arrow-left-to-line"></i>
+                    <Icon name="arrow-left-to-line" />
                   </button>
                   <span>Task Board Run</span>
                 </div>
@@ -1189,7 +1169,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
               <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
                 <span className={statusBadgeClass(runStatus)}>{runStatus || "unknown"}</span>
                 <span className="inline-flex items-center gap-1 tcp-subtle">
-                  <i data-lucide="history"></i>
+                  <Icon name="history" />
                   <span>
                     {runLabelFromTimestamp(
                       runQuery.data?.run?.updated_at_ms || runQuery.data?.run?.created_at_ms
@@ -1236,7 +1216,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                         })
                       }
                     >
-                      <i data-lucide="pencil"></i>
+                      <Icon name="pencil" />
                       Rework Plan
                     </button>
                     <button
@@ -1248,7 +1228,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                         })
                       }
                     >
-                      <i data-lucide="play"></i>
+                      <Icon name="play" />
                       Execute Plan
                     </button>
                     <button
@@ -1256,7 +1236,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                       disabled={discardMutation.isPending}
                       onClick={() => discardMutation.mutate(runId)}
                     >
-                      <i data-lucide="trash-2"></i>
+                      <Icon name="trash-2" />
                       Discard Plan
                     </button>
                   </div>
@@ -1272,7 +1252,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                         actionMutation.mutate({ path: "/api/orchestrator/pause", body: { runId } })
                       }
                     >
-                      <i data-lucide="square"></i>
+                      <Icon name="square" />
                       Pause
                     </button>
                   ) : null}
@@ -1283,7 +1263,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                         actionMutation.mutate({ path: "/api/orchestrator/resume", body: { runId } })
                       }
                     >
-                      <i data-lucide="play"></i>
+                      <Icon name="play" />
                       Resume
                     </button>
                   ) : null}
@@ -1297,7 +1277,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                         })
                       }
                     >
-                      <i data-lucide="rotate-cw"></i>
+                      <Icon name="rotate-cw" />
                       Continue Run
                     </button>
                   ) : null}
@@ -1308,12 +1288,12 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                         actionMutation.mutate({ path: "/api/orchestrator/cancel", body: { runId } })
                       }
                     >
-                      <i data-lucide="x"></i>
+                      <Icon name="x" />
                       Cancel
                     </button>
                   ) : null}
                   <button className="tcp-btn" onClick={goToStartView}>
-                    <i data-lucide="plus"></i>
+                    <Icon name="plus" />
                     New Prompt
                   </button>
                 </div>
@@ -1337,7 +1317,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                     onClick={() => void runWorkspaceQuery.refetch()}
                     disabled={!activeWorkspaceRoot}
                   >
-                    <i data-lucide="refresh-cw"></i>
+                    <Icon name="refresh-cw" />
                   </button>
                 </div>
                 <div className="mb-2 flex flex-wrap gap-2">
@@ -1352,7 +1332,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                       setRunWorkspaceDir(runWorkspaceParent);
                     }}
                   >
-                    <i data-lucide="arrow-up-circle"></i>
+                    <Icon name="arrow-up-circle" />
                   </button>
                   <button
                     type="button"
@@ -1365,7 +1345,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                       setRunWorkspaceDir(activeWorkspaceRoot);
                     }}
                   >
-                    <i data-lucide="home"></i>
+                    <Icon name="home" />
                   </button>
                 </div>
                 <div className="mb-2 tcp-subtle tcp-text-caption" style={{ overflowWrap: "anywhere" }}>
@@ -1387,7 +1367,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                         onClick={() => setRunWorkspaceDir(path)}
                       >
                         <span className="inline-flex items-center gap-2">
-                          <i data-lucide="folder-open"></i>
+                          <Icon name="folder-open" />
                           <span>{String(entry?.name || path)}</span>
                         </span>
                       </button>
@@ -1404,7 +1384,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                       >
                         <div className="flex items-center justify-between gap-2">
                           <span className="inline-flex min-w-0 items-center gap-2">
-                            <i data-lucide="file-up"></i>
+                            <Icon name="file-up" />
                             <span className="truncate">{String(entry?.name || path)}</span>
                           </span>
                           <span className="tcp-subtle shrink-0 tcp-text-caption">
@@ -1430,7 +1410,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                           className="tcp-btn h-7 px-2 text-xs"
                           onClick={() => setWorkspacePreviewFullscreen(true)}
                         >
-                          <i data-lucide="fullscreen"></i>
+                          <Icon name="fullscreen" />
                           Fullscreen
                         </button>
                       ) : null}
@@ -1498,7 +1478,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                             className="tcp-btn h-7 px-2 text-xs"
                             onClick={() => setSelectedVerificationId(item.id)}
                           >
-                            <i data-lucide="search"></i>
+                            <Icon name="search" />
                             View details
                           </button>
                           <button
@@ -1518,7 +1498,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                               }
                             }}
                           >
-                            <i data-lucide="copy-plus"></i>
+                            <Icon name="copy-plus" />
                             Copy feedback
                           </button>
                         </div>
@@ -1879,7 +1859,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                     aria-label="Clear workflow events"
                     onClick={() => setWorkflowEvents([])}
                   >
-                    <i data-lucide="trash-2"></i>
+                    <Icon name="trash-2" />
                   </button>
                 </div>
                 {workflowEvents.length ? (
@@ -1969,7 +1949,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                           className="tcp-btn h-8 px-2"
                           onClick={() => setSelectedKanbanTaskId("")}
                         >
-                          <i data-lucide="x"></i>
+                          <Icon name="x" />
                         </button>
                       </div>
 
@@ -2119,7 +2099,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                           className="tcp-btn h-8 px-2"
                           onClick={() => setSelectedVerificationId("")}
                         >
-                          <i data-lucide="x"></i>
+                          <Icon name="x" />
                         </button>
                       </div>
 
@@ -2162,7 +2142,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                                 }
                               }}
                             >
-                              <i data-lucide="copy-plus"></i>
+                              <Icon name="copy-plus" />
                               Copy feedback
                             </button>
                           </div>
@@ -2221,7 +2201,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                     className="tcp-btn h-8 px-3 text-xs"
                     onClick={() => void runWorkspaceReadQuery.refetch()}
                   >
-                    <i data-lucide="refresh-cw"></i>
+                    <Icon name="refresh-cw" />
                     Refresh
                   </button>
                   <button
@@ -2231,7 +2211,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                     title="Close preview"
                     onClick={() => setWorkspacePreviewFullscreen(false)}
                   >
-                    <i data-lucide="x"></i>
+                    <Icon name="x" />
                   </button>
                 </div>
               </div>
@@ -2266,7 +2246,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                 }}
                 disabled={!workspaceParentDir}
               >
-                <i data-lucide="arrow-up-circle"></i>
+                <Icon name="arrow-up-circle" />
                 Up
               </button>
               <button
@@ -2279,7 +2259,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                   toast("ok", `Workspace selected: ${workspaceCurrentBrowseDir}`);
                 }}
               >
-                <i data-lucide="badge-check"></i>
+                <Icon name="badge-check" />
                 Select This Folder
               </button>
               <button
@@ -2289,7 +2269,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                   setWorkspaceBrowserSearch("");
                 }}
               >
-                <i data-lucide="x"></i>
+                <Icon name="x" />
                 Close
               </button>
             </div>
@@ -2309,7 +2289,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                     className="tcp-list-item mb-1 w-full text-left"
                     onClick={() => setWorkspaceBrowserDir(String(entry?.path || ""))}
                   >
-                    <i data-lucide="folder-open"></i>
+                    <Icon name="folder-open" />
                     {String(entry?.name || entry?.path || "")}
                   </button>
                 ))

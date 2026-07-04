@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from "motion/react";
 import { MOTION_TOKENS } from "../app/themes.js";
+import { Icon } from "./Icon";
 
 function ThemeSwatches({ theme }: { theme: any }) {
   const background = theme?.cssVars?.["--color-background"] || "#000000";
@@ -88,7 +89,7 @@ export function ThemePicker({
                   exit={{ opacity: 0, scale: 0.86 }}
                   transition={MOTION_TOKENS.spring.snappy}
                 >
-                  <i data-lucide="badge-check"></i>
+                  <Icon name="badge-check" />
                   Active
                 </motion.span>
               ) : null}

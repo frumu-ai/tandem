@@ -2,6 +2,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MOTION_TOKENS, prefersReducedMotion } from "../app/themes.js";
 import { TandemLogoAnimation } from "./TandemLogoAnimation";
+import { Icon } from "./Icon";
 
 function useReducedMotionPreference() {
   const [reduced, setReduced] = useState(() => prefersReducedMotion());
@@ -425,7 +426,7 @@ export function DetailDrawer({
             <div className="tcp-drawer-head">
               <div className="min-w-0">{title ? <h3 className="tcp-title">{title}</h3> : null}</div>
               <IconButton title="Close drawer" onClick={onClose}>
-                <i data-lucide="x"></i>
+                <Icon name="x" />
               </IconButton>
             </div>
             <div className="min-h-0 flex-1 overflow-auto p-4">{children}</div>

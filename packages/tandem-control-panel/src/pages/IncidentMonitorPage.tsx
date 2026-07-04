@@ -1,6 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { renderIcons } from "../app/icons.js";
 import { ConfirmDialog } from "../components/ControlPanelDialogs";
 import { AnimatedPage, Badge, DetailDrawer, EmptyState, IdChip, PanelCard } from "../ui/index.tsx";
 import {
@@ -11,6 +10,7 @@ import {
   StatTile,
 } from "./IncidentMonitorPageShared";
 import type { AppPageProps } from "./pageTypes";
+import { Icon } from "../ui/Icon";
 
 const LIST_PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 const DEFAULT_LIST_PAGE_SIZE = 10;
@@ -579,30 +579,6 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
       return Array.from(next);
     });
   };
-
-  useEffect(() => {
-    if (rootRef.current) renderIcons(rootRef.current);
-  }, [
-    incidents.length,
-    drafts.length,
-    posts.length,
-    destinations.length,
-    postDestinationFilter,
-    selectedIncidentIds.length,
-    selectedDraftIds.length,
-    selectedPostIds.length,
-    safeIncidentPage,
-    safeDraftPage,
-    safePostPage,
-    incidentPageSize,
-    draftPageSize,
-    postPageSize,
-    incidentsCollapsed,
-    draftsCollapsed,
-    postsCollapsed,
-    reportOpen,
-    !!detail,
-  ]);
   const enabled = !!config.enabled;
   const paused = !!runtime.paused || !!config.paused;
   const ingestReady = !!readiness.ingest_ready;
@@ -640,7 +616,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 className="tcp-btn-primary h-8 px-3 text-xs"
                 onClick={() => setReportOpen(true)}
               >
-                <i data-lucide="file-plus"></i>
+                <Icon name="file-plus" />
                 Report issue
               </button>
               <button
@@ -661,7 +637,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                   ]).then(() => toast("ok", "Incident Monitor refreshed."));
                 }}
               >
-                <i data-lucide="refresh-cw"></i>
+                <Icon name="refresh-cw" />
                 Refresh
               </button>
               <button
@@ -670,7 +646,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 disabled={statusMutation.isPending}
                 onClick={() => statusMutation.mutate("recompute")}
               >
-                <i data-lucide="rotate-cw"></i>
+                <Icon name="rotate-cw" />
                 Recompute
               </button>
               <button
@@ -679,7 +655,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 disabled={statusMutation.isPending}
                 onClick={() => statusMutation.mutate(paused ? "resume" : "pause")}
               >
-                <i data-lucide={paused ? "play" : "pause"}></i>
+                <Icon name={paused ? "play" : "pause"} />
                 {paused ? "Resume" : "Pause"}
               </button>
               <button
@@ -688,7 +664,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 disabled={statusMutation.isPending}
                 onClick={() => statusMutation.mutate("debug")}
               >
-                <i data-lucide="shield-alert"></i>
+                <Icon name="shield-alert" />
                 Debug
               </button>
             </div>
@@ -780,7 +756,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 aria-label={incidentsCollapsed ? "Expand incidents" : "Collapse incidents"}
                 onClick={() => setIncidentsCollapsed((value) => !value)}
               >
-                <i data-lucide={incidentsCollapsed ? "chevron-down" : "chevron-up"}></i>
+                <Icon name={incidentsCollapsed ? "chevron-down" : "chevron-up"} />
               </button>
               <Badge tone="ghost">{incidentPageLabel}</Badge>
               <Badge tone={selectedIncidentIds.length ? "info" : "ghost"}>
@@ -794,7 +770,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 onClick={selectAllVisibleIncidents}
                 disabled={!pagedIncidents.length}
               >
-                <i data-lucide="square-check-big"></i>
+                <Icon name="square-check-big" />
               </button>
               <button
                 type="button"
@@ -804,7 +780,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 onClick={() => setSelectedIncidentIds([])}
                 disabled={!selectedIncidentIds.length}
               >
-                <i data-lucide="x"></i>
+                <Icon name="x" />
               </button>
               <button
                 type="button"
@@ -814,7 +790,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 onClick={() => setDeleteIncidentsConfirm({ ids: selectedIncidentIds, all: false })}
                 disabled={!selectedIncidentIds.length || deleteIncidentsMutation.isPending}
               >
-                <i data-lucide="trash-2"></i>
+                <Icon name="trash-2" />
               </button>
               <button
                 type="button"
@@ -824,7 +800,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 onClick={() => setDeleteIncidentsConfirm({ ids: [], all: true })}
                 disabled={!incidents.length || deleteIncidentsMutation.isPending}
               >
-                <i data-lucide="list-x"></i>
+                <Icon name="list-x" />
               </button>
               <label className="flex items-center gap-2 tcp-text-caption uppercase tracking-wide text-slate-500">
                 <span>Per page</span>
@@ -851,7 +827,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 onClick={() => setIncidentPage((page) => clampPage(page - 1, incidentPageCount))}
                 disabled={safeIncidentPage <= 1}
               >
-                <i data-lucide="chevron-left"></i>
+                <Icon name="chevron-left" />
               </button>
               <button
                 type="button"
@@ -861,7 +837,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 onClick={() => setIncidentPage((page) => clampPage(page + 1, incidentPageCount))}
                 disabled={safeIncidentPage >= incidentPageCount}
               >
-                <i data-lucide="chevron-right"></i>
+                <Icon name="chevron-right" />
               </button>
             </div>
           }
@@ -942,7 +918,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                         disabled={incidentMutation.isPending}
                         onClick={() => incidentMutation.mutate({ action: "view", incident })}
                       >
-                        <i data-lucide="file-search"></i>
+                        <Icon name="file-search" />
                         View
                       </button>
                       <button
@@ -951,7 +927,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                         disabled={incidentMutation.isPending}
                         onClick={() => incidentMutation.mutate({ action: "replay", incident })}
                       >
-                        <i data-lucide="rotate-cw"></i>
+                        <Icon name="rotate-cw" />
                         Replay incident
                       </button>
                       <button
@@ -962,7 +938,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                           incidentMutation.mutate({ action: "route-preview", incident })
                         }
                       >
-                        <i data-lucide="route"></i>
+                        <Icon name="route" />
                         Route preview
                       </button>
                       {incident.draft_id ? (
@@ -972,7 +948,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                           disabled={incidentMutation.isPending}
                           onClick={() => incidentMutation.mutate({ action: "triage", incident })}
                         >
-                          <i data-lucide="sparkles"></i>
+                          <Icon name="sparkles" />
                           Create triage run
                         </button>
                       ) : null}
@@ -982,7 +958,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                         disabled={deleteIncidentsMutation.isPending}
                         onClick={() => setDeleteIncidentsConfirm({ ids: [incidentId], all: false })}
                       >
-                        <i data-lucide="trash-2"></i>
+                        <Icon name="trash-2" />
                         Delete
                       </button>
                     </div>
@@ -1013,7 +989,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 aria-label={draftsCollapsed ? "Expand drafts" : "Collapse drafts"}
                 onClick={() => setDraftsCollapsed((value) => !value)}
               >
-                <i data-lucide={draftsCollapsed ? "chevron-down" : "chevron-up"}></i>
+                <Icon name={draftsCollapsed ? "chevron-down" : "chevron-up"} />
               </button>
               <Badge tone="ghost">{draftPageLabel}</Badge>
               <Badge tone={selectedDraftIds.length ? "info" : "ghost"}>
@@ -1027,7 +1003,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 onClick={selectAllVisibleDrafts}
                 disabled={!pagedDrafts.length}
               >
-                <i data-lucide="square-check-big"></i>
+                <Icon name="square-check-big" />
               </button>
               <button
                 type="button"
@@ -1037,7 +1013,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 onClick={() => setSelectedDraftIds([])}
                 disabled={!selectedDraftIds.length}
               >
-                <i data-lucide="x"></i>
+                <Icon name="x" />
               </button>
               <button
                 type="button"
@@ -1047,7 +1023,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 onClick={() => setDeleteDraftsConfirm({ ids: selectedDraftIds, all: false })}
                 disabled={!selectedDraftIds.length || deleteDraftsMutation.isPending}
               >
-                <i data-lucide="trash-2"></i>
+                <Icon name="trash-2" />
               </button>
               <button
                 type="button"
@@ -1057,7 +1033,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 onClick={() => setDeleteDraftsConfirm({ ids: [], all: true })}
                 disabled={!drafts.length || deleteDraftsMutation.isPending}
               >
-                <i data-lucide="list-x"></i>
+                <Icon name="list-x" />
               </button>
               <label className="flex items-center gap-2 tcp-text-caption uppercase tracking-wide text-slate-500">
                 <span>Per page</span>
@@ -1084,7 +1060,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 onClick={() => setDraftPage((page) => clampPage(page - 1, draftPageCount))}
                 disabled={safeDraftPage <= 1}
               >
-                <i data-lucide="chevron-left"></i>
+                <Icon name="chevron-left" />
               </button>
               <button
                 type="button"
@@ -1094,7 +1070,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 onClick={() => setDraftPage((page) => clampPage(page + 1, draftPageCount))}
                 disabled={safeDraftPage >= draftPageCount}
               >
-                <i data-lucide="chevron-right"></i>
+                <Icon name="chevron-right" />
               </button>
             </div>
           }
@@ -1168,7 +1144,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                         disabled={draftMutation.isPending}
                         onClick={() => draftMutation.mutate({ action: "view", draft })}
                       >
-                        <i data-lucide="file-search"></i>
+                        <Icon name="file-search" />
                         View
                       </button>
                       <button
@@ -1185,7 +1161,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                           })
                         }
                       >
-                        <i data-lucide="check"></i>
+                        <Icon name="check" />
                         Approve
                       </button>
                       <button
@@ -1202,7 +1178,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                           })
                         }
                       >
-                        <i data-lucide="x"></i>
+                        <Icon name="x" />
                         Deny
                       </button>
                       <button
@@ -1211,7 +1187,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                         disabled={draftMutation.isPending}
                         onClick={() => draftMutation.mutate({ action: "triage-run", draft })}
                       >
-                        <i data-lucide="sparkles"></i>
+                        <Icon name="sparkles" />
                         Triage run
                       </button>
                       <button
@@ -1220,7 +1196,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                         disabled={draftMutation.isPending}
                         onClick={() => draftMutation.mutate({ action: "triage-summary", draft })}
                       >
-                        <i data-lucide="clipboard-list"></i>
+                        <Icon name="clipboard-list" />
                         Triage summary
                       </button>
                       <button
@@ -1229,7 +1205,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                         disabled={draftMutation.isPending}
                         onClick={() => draftMutation.mutate({ action: "issue-draft", draft })}
                       >
-                        <i data-lucide="square-pen"></i>
+                        <Icon name="square-pen" />
                         Issue draft
                       </button>
                       <button
@@ -1238,7 +1214,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                         disabled={draftMutation.isPending}
                         onClick={() => draftMutation.mutate({ action: "route-preview", draft })}
                       >
-                        <i data-lucide="route"></i>
+                        <Icon name="route" />
                         Route preview
                       </button>
                       <button
@@ -1278,7 +1254,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                           });
                         }}
                       >
-                        <i data-lucide="shield-alert"></i>
+                        <Icon name="shield-alert" />
                         Publish
                       </button>
                       <button
@@ -1287,7 +1263,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                         disabled={draftMutation.isPending}
                         onClick={() => draftMutation.mutate({ action: "recheck", draft })}
                       >
-                        <i data-lucide="refresh-cw"></i>
+                        <Icon name="refresh-cw" />
                         Recheck match
                       </button>
                       {draftIssueUrl ? (
@@ -1297,7 +1273,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                           target="_blank"
                           rel="noreferrer"
                         >
-                          <i data-lucide="external-link"></i>
+                          <Icon name="external-link" />
                           {githubIssueLabel(draft)}
                         </a>
                       ) : null}
@@ -1308,7 +1284,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                           target="_blank"
                           rel="noreferrer"
                         >
-                          <i data-lucide="message-square"></i>
+                          <Icon name="message-square" />
                           GitHub comment
                         </a>
                       ) : null}
@@ -1318,7 +1294,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                         disabled={deleteDraftsMutation.isPending}
                         onClick={() => setDeleteDraftsConfirm({ ids: [draftId], all: false })}
                       >
-                        <i data-lucide="trash-2"></i>
+                        <Icon name="trash-2" />
                         Delete
                       </button>
                     </div>
@@ -1344,7 +1320,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 aria-label={postsCollapsed ? "Expand posts" : "Collapse posts"}
                 onClick={() => setPostsCollapsed((value) => !value)}
               >
-                <i data-lucide={postsCollapsed ? "chevron-down" : "chevron-up"}></i>
+                <Icon name={postsCollapsed ? "chevron-down" : "chevron-up"} />
               </button>
               <Badge tone="ghost">{postPageLabel}</Badge>
               <Badge tone={selectedPostIds.length ? "info" : "ghost"}>
@@ -1358,7 +1334,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 onClick={selectAllVisiblePosts}
                 disabled={!pagedPosts.length}
               >
-                <i data-lucide="square-check-big"></i>
+                <Icon name="square-check-big" />
               </button>
               <button
                 type="button"
@@ -1368,7 +1344,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 onClick={() => setSelectedPostIds([])}
                 disabled={!selectedPostIds.length}
               >
-                <i data-lucide="x"></i>
+                <Icon name="x" />
               </button>
               <button
                 type="button"
@@ -1378,7 +1354,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 onClick={() => setDeletePostsConfirm({ ids: selectedPostIds, all: false })}
                 disabled={!selectedPostIds.length || deletePostsMutation.isPending}
               >
-                <i data-lucide="trash-2"></i>
+                <Icon name="trash-2" />
               </button>
               <button
                 type="button"
@@ -1388,7 +1364,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 onClick={() => setDeletePostsConfirm({ ids: [], all: true })}
                 disabled={!posts.length || deletePostsMutation.isPending}
               >
-                <i data-lucide="list-x"></i>
+                <Icon name="list-x" />
               </button>
               <label className="flex items-center gap-2 tcp-text-caption uppercase tracking-wide text-slate-500">
                 <span>Destination</span>
@@ -1437,7 +1413,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 onClick={() => setPostPage((page) => clampPage(page - 1, postPageCount))}
                 disabled={safePostPage <= 1}
               >
-                <i data-lucide="chevron-left"></i>
+                <Icon name="chevron-left" />
               </button>
               <button
                 type="button"
@@ -1447,7 +1423,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                 onClick={() => setPostPage((page) => clampPage(page + 1, postPageCount))}
                 disabled={safePostPage >= postPageCount}
               >
-                <i data-lucide="chevron-right"></i>
+                <Icon name="chevron-right" />
               </button>
             </div>
           }
@@ -1522,7 +1498,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                           target="_blank"
                           rel="noreferrer"
                         >
-                          <i data-lucide="external-link"></i>
+                          <Icon name="external-link" />
                           {githubIssueLabel(post)}
                         </a>
                       ) : null}
@@ -1533,7 +1509,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                           target="_blank"
                           rel="noreferrer"
                         >
-                          <i data-lucide="message-square"></i>
+                          <Icon name="message-square" />
                           GitHub comment
                         </a>
                       ) : null}
@@ -1543,7 +1519,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
                         disabled={deletePostsMutation.isPending}
                         onClick={() => setDeletePostsConfirm({ ids: [postId], all: false })}
                       >
-                        <i data-lucide="trash-2"></i>
+                        <Icon name="trash-2" />
                         Delete
                       </button>
                     </div>
@@ -1794,7 +1770,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
               onClick={() => setForm(emptyReporterForm)}
               disabled={reportMutation.isPending}
             >
-              <i data-lucide="eraser"></i>
+              <Icon name="eraser" />
               Clear
             </button>
             <button
@@ -1803,7 +1779,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
               onClick={() => setReportOpen(false)}
               disabled={reportMutation.isPending}
             >
-              <i data-lucide="x"></i>
+              <Icon name="x" />
               Cancel
             </button>
             <button
@@ -1811,7 +1787,7 @@ export function IncidentMonitorPage({ client, toast }: AppPageProps) {
               className="tcp-btn-primary h-8 px-3 text-xs"
               disabled={reportMutation.isPending}
             >
-              <i data-lucide="send"></i>
+              <Icon name="send" />
               {reportMutation.isPending ? "Submitting..." : "Submit report"}
             </button>
           </div>

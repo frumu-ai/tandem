@@ -2,9 +2,9 @@ import { useEffect, useState } from "react";
 import { AnimatedPage } from "../ui/index.tsx";
 import { StatefulRunsPage } from "../features/runs/StatefulRunsPage";
 import { ApprovalWaitsView, RecoveryQueueView, WebhookInboxView } from "../features/runs/StatefulRuntimeQueues";
-import { renderIcons } from "../app/icons.js";
 import type { AppPageProps } from "./pageTypes";
 import { DEFAULT_STATEFUL_RUN_FILTERS } from "../../lib/runs/stateful-runs.js";
+import { Icon } from "../ui/Icon";
 
 type RunsSurface = "runs" | "webhooks" | "approvals" | "recovery";
 
@@ -25,12 +25,6 @@ export function RunsPage({ api, client, navigate, toast }: AppPageProps) {
   const [surface, setSurface] = useState<RunsSurface>("runs");
   const [filters, setFilters] = useState(DEFAULT_STATEFUL_RUN_FILTERS);
 
-  useEffect(() => {
-    try {
-      renderIcons();
-    } catch {}
-  }, [surface]);
-
   const openRun = (runId: string) => {
     replaceRunSelectionHash(runId);
     setSurface("runs");
@@ -46,7 +40,7 @@ export function RunsPage({ api, client, navigate, toast }: AppPageProps) {
             className={`tcp-filter-chip ${surface === item.id ? "active" : ""}`}
             onClick={() => setSurface(item.id)}
           >
-            <i data-lucide={item.icon}></i>
+            <Icon name={item.icon} />
             {item.label}
           </button>
         ))}
