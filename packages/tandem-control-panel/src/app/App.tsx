@@ -365,6 +365,33 @@ function AppBody() {
     } catch {}
   }, [authed, navVisibility, route]);
 
+  // Icons are `<i data-lucide>` placeholders that lucide replaces with SVGs.
+  // The route-change scan above fires before async query data mounts its own
+  // icons, so late-arriving `<i data-lucide>` nodes (list rows, cards, buttons
+  // gated on query results) would otherwise stay blank. A single observer
+  // re-renders whenever new placeholders appear, covering every page without
+  // each one having to wire up its own renderIcons call. Replacing an <i> with
+  // an <svg> is not itself an added `[data-lucide]` node, so this never loops.
+  useEffect(() => {
+    if (typeof MutationObserver === "undefined") return;
+    const hasPendingIcon = (node: Node) => {
+      if (!(node instanceof Element)) return false;
+      return node.matches("[data-lucide]") || node.querySelector("[data-lucide]") !== null;
+    };
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (hasPendingIcon(node)) {
+            renderIcons();
+            return;
+          }
+        }
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
+
   useEffect(() => {
     if (!navigationLock) return;
     if (route === "automations") return;
