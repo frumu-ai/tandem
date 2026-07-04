@@ -8,6 +8,9 @@ use tandem_types::{PrincipalKind, PrincipalRef, TenantContext};
 use crate::routines::types::ExternalActionRecord;
 
 use super::durable_io::{sideline_corrupt_state_file_sync, write_file_atomically};
+use super::reliability_retry::{
+    mark_reliability_row_superseded_by_success, metadata_superseded_by_success,
+};
 use super::types::{StatefulRuntimeScope, STATEFUL_RUNTIME_SCHEMA_VERSION};
 
 pub(crate) static STATEFUL_RELIABILITY_STORE_LOCK: tokio::sync::Mutex<()> =
@@ -196,6 +199,12 @@ impl StatefulToolEffectRecord {
 pub enum StatefulDeadLetterStatus {
     Open,
     RetryRequested,
+    /// A retry has been dispatched (the owning run was re-driven through its
+    /// governed execution path) and is in flight. Distinct from
+    /// `RetryRequested` so the background dispatcher does not re-drive the same
+    /// dead letter until it either succeeds (→ superseded/`Resolved`) or fails
+    /// again (→ a fresh `Open` dead letter from the reliability bridge).
+    Retrying,
     Ignored,
     LinkedToCompensation,
     Resolved,
@@ -623,58 +632,6 @@ fn dead_letter_is_pristine(row: &StatefulDeadLetterRecord) -> bool {
 
 fn compensation_is_pristine(row: &StatefulCompensationRecord) -> bool {
     row.status == StatefulCompensationStatus::Proposed && row.receipt_effect_id.is_none()
-}
-
-fn mark_reliability_row_superseded_by_success(
-    metadata: &mut Option<Value>,
-    effect: &StatefulToolEffectRecord,
-    outbox_id: Option<&str>,
-) {
-    let mut object = match metadata.take() {
-        Some(Value::Object(object)) => object,
-        Some(value) => {
-            let mut object = Map::new();
-            object.insert("previous_metadata".to_string(), value);
-            object
-        }
-        None => Map::new(),
-    };
-    object.insert("superseded_by_success".to_string(), Value::Bool(true));
-    object.insert(
-        "superseded_by_effect_id".to_string(),
-        Value::String(effect.effect_id.clone()),
-    );
-    object.insert(
-        "superseded_at_ms".to_string(),
-        Value::Number(effect.updated_at_ms.into()),
-    );
-    if let Some(outbox_id) = outbox_id {
-        object.insert(
-            "superseded_by_outbox_id".to_string(),
-            Value::String(outbox_id.to_string()),
-        );
-    }
-    *metadata = Some(Value::Object(object));
-}
-
-fn metadata_superseded_by_success(metadata: Option<&Value>) -> bool {
-    let Some(metadata) = metadata else {
-        return false;
-    };
-    let marked_success = metadata
-        .get("superseded_by_success")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let has_effect_id = metadata
-        .get("superseded_by_effect_id")
-        .and_then(Value::as_str)
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false);
-    let has_timestamp = metadata
-        .get("superseded_at_ms")
-        .and_then(Value::as_u64)
-        .is_some();
-    marked_success && has_effect_id && has_timestamp
 }
 
 pub async fn mark_dead_letter_disposition(

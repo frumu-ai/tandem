@@ -106,6 +106,16 @@ async fn process_stateful_wait_scheduler_tick(state: &AppState) {
     }
 }
 
+async fn process_dead_letter_retry_tick(state: &AppState) {
+    let acted = state.dispatch_ready_stateful_dead_letter_retries().await;
+    if acted > 0 {
+        tracing::info!(
+            acted,
+            "stateful dead-letter retry dispatcher re-drove dead letters"
+        );
+    }
+}
+
 async fn process_automation_webhook_inbox_tick(state: &AppState) {
     let report = state
         .process_automation_webhook_inbox_once(AUTOMATION_WEBHOOK_INBOX_BATCH_LIMIT)
@@ -150,6 +160,7 @@ async fn run_automation_v2_executor_single(state: AppState) {
 
         process_stateful_wait_scheduler_tick(&state).await;
         process_automation_webhook_inbox_tick(&state).await;
+        process_dead_letter_retry_tick(&state).await;
 
         if active.is_empty() {
             if let Some(run) = state.claim_next_queued_automation_v2_run().await {
@@ -190,6 +201,7 @@ async fn run_automation_v2_executor_multi(state: AppState) {
 
         process_stateful_wait_scheduler_tick(&state).await;
         process_automation_webhook_inbox_tick(&state).await;
+        process_dead_letter_retry_tick(&state).await;
 
         let capacity = {
             let scheduler = state.automation_scheduler.read().await;

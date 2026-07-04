@@ -4,6 +4,7 @@ mod durable_io;
 mod outbox_reconcile;
 pub mod phases;
 pub mod reliability;
+mod reliability_retry;
 pub mod scheduler;
 pub mod store;
 pub mod types;
@@ -30,6 +31,10 @@ pub use reliability::{
     StatefulDeadLetterStatus, StatefulOutboxRecord, StatefulOutboxStatus, StatefulRecoveryOption,
     StatefulReliabilityQuery, StatefulReliabilityStoragePaths, StatefulReliabilityStoreFile,
     StatefulToolEffectRecord, StatefulToolEffectStatus,
+};
+pub use reliability_retry::{
+    dead_letter_retry_dispatch_count, dead_letter_retry_dispatched_at_ms,
+    dead_letter_superseded_by_success, mark_dead_letter_retry_dispatched,
 };
 pub use scheduler::{
     process_due_stateful_waits, StatefulWaitSchedulerConfig, StatefulWaitSchedulerOutcome,
