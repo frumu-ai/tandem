@@ -1691,9 +1691,18 @@ async fn retry_requested_dead_letter_requeues_owning_run() {
 
     let dead_letter = read_dead_letter(&state, &tenant, run_id, "dead-review-effect").await;
     assert_eq!(dead_letter.status, StatefulDeadLetterStatus::Retrying);
+    // The node/tool `attempts` field is untouched — the dispatcher tracks its
+    // own retry count separately so a dead letter born on a high node attempt
+    // is not pre-exhausted.
+    assert_eq!(dead_letter.attempts, 2);
     assert_eq!(
-        dead_letter.attempts, 3,
-        "the dispatch must bump the attempt count"
+        dead_letter
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.get("retry_dispatch_count"))
+            .and_then(|value| value.as_u64()),
+        Some(1),
+        "the dispatch must increment the dispatcher retry count"
     );
     assert!(
         dead_letter
@@ -1844,7 +1853,10 @@ async fn exhausted_dead_letter_is_parked_for_operator_review() {
         .await
         .insert(run_id.to_string(), run);
     let mut dead_letter = retry_requested_dead_letter("dead-exhausted-effect", run_id, scope);
-    dead_letter.attempts = 5;
+    dead_letter.status = StatefulDeadLetterStatus::Retrying;
+    // Five dispatcher retries already recorded — the cap counts these, not the
+    // node/tool `attempts` field.
+    dead_letter.metadata = Some(json!({ "retry_dispatch_count": 5 }));
     upsert_stateful_dead_letter(&path, dead_letter)
         .await
         .expect("seed exhausted dead letter");
@@ -1900,4 +1912,52 @@ async fn dead_letter_retry_skips_non_recoverable_run() {
     assert_eq!(run.status, AutomationRunStatus::Running);
     let dead_letter = read_dead_letter(&state, &tenant, run_id, "dead-active-effect").await;
     assert_eq!(dead_letter.status, StatefulDeadLetterStatus::RetryRequested);
+}
+
+#[tokio::test]
+async fn dead_letter_born_on_high_node_attempt_still_retries() {
+    // Regression: `attempts` is the node/tool execution attempt at creation
+    // (already at the executor cap for required-tool nodes). The retry cap must
+    // count *dispatcher* retries, so the first requested retry must still
+    // re-drive the run even when `attempts` is high.
+    let state = test_state().await;
+    let tenant = tenant("org-dl-high-attempt", "workspace-a", "operator-a");
+    let scope = StatefulRuntimeScope::from_tenant_context(tenant.clone());
+    let run_id = "run-dead-letter-high-attempt";
+    let path = stateful_reliability_path_from_runtime_events_path(&state.runtime_events_path);
+
+    let run = failed_run_with_snapshot(&state, run_id, tenant.clone(), "review").await;
+    state
+        .automation_v2_runs
+        .write()
+        .await
+        .insert(run_id.to_string(), run);
+    let mut dead_letter = retry_requested_dead_letter("dead-high-attempt-effect", run_id, scope);
+    // Node/tool attempts already at the executor cap — must NOT pre-exhaust.
+    dead_letter.attempts = 5;
+    upsert_stateful_dead_letter(&path, dead_letter)
+        .await
+        .expect("seed dead letter");
+
+    let acted = state.dispatch_ready_stateful_dead_letter_retries().await;
+    assert_eq!(
+        acted, 1,
+        "a high node-attempt count must not block the first dispatcher retry"
+    );
+
+    let run = state
+        .get_automation_v2_run(run_id)
+        .await
+        .expect("run present");
+    assert_eq!(run.status, AutomationRunStatus::Queued);
+    let dead_letter = read_dead_letter(&state, &tenant, run_id, "dead-high-attempt-effect").await;
+    assert_eq!(dead_letter.status, StatefulDeadLetterStatus::Retrying);
+    assert_eq!(
+        dead_letter
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.get("retry_dispatch_count"))
+            .and_then(|value| value.as_u64()),
+        Some(1)
+    );
 }

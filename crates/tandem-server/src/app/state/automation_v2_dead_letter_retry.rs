@@ -1,10 +1,11 @@
 use super::*;
 
 use crate::stateful_runtime::{
-    dead_letter_retry_dispatched_at_ms, dead_letter_superseded_by_success,
-    load_stateful_reliability, mark_dead_letter_disposition, mark_dead_letter_retry_dispatched,
-    operator_principal, stateful_reliability_path_from_runtime_events_path,
-    StatefulDeadLetterRecord, StatefulDeadLetterStatus, StatefulRecoveryOption,
+    dead_letter_retry_dispatch_count, dead_letter_retry_dispatched_at_ms,
+    dead_letter_superseded_by_success, load_stateful_reliability, mark_dead_letter_disposition,
+    mark_dead_letter_retry_dispatched, operator_principal,
+    stateful_reliability_path_from_runtime_events_path, StatefulDeadLetterRecord,
+    StatefulDeadLetterStatus, StatefulRecoveryOption,
 };
 
 /// Cap on automatic re-drives of a single dead letter before it is parked for
@@ -88,8 +89,13 @@ impl AppState {
                 }
                 continue;
             }
-            // Park a permanently-failing dead letter for operator review.
-            if dead_letter.attempts >= MAX_DEAD_LETTER_RETRY_ATTEMPTS {
+            // Cap on *dispatcher* retries — counted separately from the
+            // record's `attempts` (which is the node/tool execution attempt at
+            // creation time, so a dead letter born on a high node attempt must
+            // not look pre-exhausted). Park a permanently-failing dead letter
+            // for operator review.
+            let dispatch_count = dead_letter_retry_dispatch_count(&dead_letter);
+            if dispatch_count >= MAX_DEAD_LETTER_RETRY_ATTEMPTS {
                 if self
                     .exhaust_dead_letter_retries(&path, &run.tenant_context, &dead_letter, now)
                     .await
@@ -105,7 +111,7 @@ impl AppState {
                 continue;
             }
             // Honor exponential backoff between automatic re-drives.
-            let backoff_ms = dead_letter_retry_backoff_ms(dead_letter.attempts);
+            let backoff_ms = dead_letter_retry_backoff_ms(dispatch_count);
             if let Some(dispatched_at) = dead_letter_retry_dispatched_at_ms(&dead_letter) {
                 if now < dispatched_at.saturating_add(backoff_ms) {
                     continue;
@@ -119,7 +125,7 @@ impl AppState {
                 continue;
             }
             requeued_runs.insert(run_id.clone());
-            let next_backoff = dead_letter_retry_backoff_ms(dead_letter.attempts + 1);
+            let next_backoff = dead_letter_retry_backoff_ms(dispatch_count + 1);
             if matches!(
                 mark_dead_letter_retry_dispatched(
                     &path,
@@ -316,8 +322,8 @@ impl AppState {
                 StatefulDeadLetterStatus::Ignored,
                 "retry_exhausted",
                 Some(format!(
-                    "automatic retries exhausted after {} attempts; parked for operator review",
-                    dead_letter.attempts
+                    "automatic retries exhausted after {} dispatch attempts; parked for operator review",
+                    dead_letter_retry_dispatch_count(dead_letter)
                 )),
                 operator_principal(Some(DEAD_LETTER_DISPATCHER_ACTOR)),
                 now_ms,

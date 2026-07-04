@@ -825,7 +825,11 @@ fn recovery_status_needs_plan(status: &StatefulWorkflowRunStatus) -> bool {
 
 fn dead_letter_status_for_choice(choice: &str) -> (StatefulDeadLetterStatus, &'static str) {
     match choice {
-        "retry_failed_effect" | "retry_dead_letter" | "resume_from_checkpoint" => {
+        // Only the explicit retry choices flip a dead letter to `RetryRequested`
+        // (which the dispatcher consumes). `resume_from_checkpoint` is a
+        // record-only run resume, not a dead-letter retry, so it must NOT be
+        // re-driven by the dispatcher — it falls through to the reviewed default.
+        "retry_failed_effect" | "retry_dead_letter" => {
             (StatefulDeadLetterStatus::RetryRequested, "retry_requested")
         }
         "compensate_pending_effects" | "compensate" => (
