@@ -370,13 +370,18 @@ function AppBody() {
   // icons, so late-arriving `<i data-lucide>` nodes (list rows, cards, buttons
   // gated on query results) would otherwise stay blank. A single observer
   // re-renders whenever new placeholders appear, covering every page without
-  // each one having to wire up its own renderIcons call. Replacing an <i> with
-  // an <svg> is not itself an added `[data-lucide]` node, so this never loops.
+  // each one having to wire up its own renderIcons call.
+  //
+  // Match ONLY `<i data-lucide>` placeholders, not any `[data-lucide]`: lucide's
+  // generated `<svg>` keeps the data-lucide attribute, so a broader match would
+  // see each rendered icon as pending and re-render it every frame (a runaway
+  // observer/rAF loop). Placeholders are `<i>`, the output is `<svg>`, so keying
+  // on the tag name breaks the loop.
   useEffect(() => {
     if (typeof MutationObserver === "undefined") return;
     const hasPendingIcon = (node: Node) => {
       if (!(node instanceof Element)) return false;
-      return node.matches("[data-lucide]") || node.querySelector("[data-lucide]") !== null;
+      return node.matches("i[data-lucide]") || node.querySelector("i[data-lucide]") !== null;
     };
     const observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {

@@ -1202,7 +1202,8 @@ svg.lucide-loader-circle {
 @media (prefers-reduced-motion: reduce) {
   .tcp-shell-glow,
   .tcp-status-pulse-dot,
-  .tcp-skeleton {
+  .tcp-skeleton,
+  svg.lucide-loader-circle {
     animation: none !important;
   }
 }
