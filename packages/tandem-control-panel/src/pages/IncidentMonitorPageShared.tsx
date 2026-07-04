@@ -1,4 +1,12 @@
-import { Badge } from "../ui/index.tsx";
+import { Badge, humanizeLabel } from "../ui/index.tsx";
+
+const STAT_TILE_TONE_TEXT: Record<string, string> = {
+  ok: "text-lime-300",
+  warn: "text-amber-300",
+  err: "text-rose-300",
+  ghost: "tcp-subtle",
+  info: "text-tcp-text-primary",
+};
 
 type AnyRecord = Record<string, any>;
 
@@ -517,12 +525,12 @@ export function StatTile({
   value: any;
   tone?: any;
 }) {
+  const valueTone = STAT_TILE_TONE_TEXT[String(tone)] ?? STAT_TILE_TONE_TEXT.info;
   return (
     <div className="tcp-list-item min-h-[5rem]">
-      <div className="tcp-subtle text-xs uppercase tracking-[0.18em]">{label}</div>
-      <div className="mt-2 flex items-center justify-between gap-2">
-        <div className="min-w-0 truncate text-lg font-semibold">{value}</div>
-        <Badge tone={tone}>{String(value || "n/a")}</Badge>
+      <div className="tcp-subtle text-[11px] uppercase tracking-[0.14em]">{humanizeLabel(label)}</div>
+      <div className={`mt-2 min-w-0 truncate text-lg font-semibold ${valueTone}`}>
+        {value === "" || value == null ? "n/a" : value}
       </div>
     </div>
   );
