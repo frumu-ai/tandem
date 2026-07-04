@@ -4,6 +4,7 @@ packages:
 
 allowBuilds:
   '@frumu/tandem': true
+  esbuild: true
 minimumReleaseAgeExclude:
-  - '@frumu/tandem-client@0.6.0'
-  - '@frumu/tandem@0.6.0'
+  - '@frumu/tandem-client'
+  - '@frumu/tandem'

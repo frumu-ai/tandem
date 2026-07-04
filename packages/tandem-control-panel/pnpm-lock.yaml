@@ -9,11 +9,11 @@ importers:
   .:
     dependencies:
       '@frumu/tandem':
-        specifier: ^0.6.5
-        version: 0.6.5
+        specifier: ^0.6.6
+        version: 0.6.6
       '@frumu/tandem-client':
-        specifier: ^0.6.5
-        version: 0.6.5
+        specifier: ^0.6.6
+        version: 0.6.6
       '@fullcalendar/core':
         specifier: 6.1.20
         version: 6.1.20
@@ -365,12 +365,12 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@frumu/tandem-client@0.6.5':
-    resolution: {integrity: sha512-+4V84fR2KJ/0bwktSgtS47D6CLZL5kKcJBJQ3+E9GalxZh25y45vyA4uJX7HQlgy46cI0CqBeLdVZiWMfTEX0A==}
+  '@frumu/tandem-client@0.6.6':
+    resolution: {integrity: sha512-7eFRlkvrqe2qSh8T/bro8ryZShSfHUGXI2/TUsYz+KSihZVkSpegudWCt2LAPh+sESeBfba2D3oesdzZ7CjazA==}
     engines: {node: '>=18'}
 
-  '@frumu/tandem@0.6.5':
-    resolution: {integrity: sha512-OX7rdaQofeeDNp8YM62OoYz0+V066R92ogvcVTqCzPAAXj4QlEMWB2bFCzjr4I70b+xRUu5RlR04nAcHz1HF6Q==}
+  '@frumu/tandem@0.6.6':
+    resolution: {integrity: sha512-63PqWXnbESEgyHIs6V2eF80GfQdkyqMt3yVn8/03B8GrW24cbOvFO7RklGAcOeSQciloWzY3/BEifGpDaLNoIg==}
     cpu: [x64, arm64]
     os: [darwin, linux, win32]
     hasBin: true
@@ -1861,11 +1861,11 @@ snapshots:
   '@esbuild/win32-x64@0.27.7':
     optional: true
 
-  '@frumu/tandem-client@0.6.5':
+  '@frumu/tandem-client@0.6.6':
     dependencies:
       zod: 4.4.3
 
-  '@frumu/tandem@0.6.5': {}
+  '@frumu/tandem@0.6.6': {}
 
   '@fullcalendar/core@6.1.20':
     dependencies:
