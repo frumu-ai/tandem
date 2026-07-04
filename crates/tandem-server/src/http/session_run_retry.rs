@@ -16,15 +16,37 @@ use serde_json::json;
 
 use super::sessions::{dispatch_error_code, publish_tenant_event};
 use crate::http::AppState;
-use tandem_types::{SendMessageRequest, TenantContext};
+use tandem_types::{ModelSpec, SendMessageRequest, TenantContext};
 
 const OPENAI_CODEX_PROVIDER_ID: &str = "openai-codex";
 
-/// Whether an `AUTHENTICATION_ERROR` for this tenant is worth a transparent
-/// refresh-and-retry: true only when a refreshable OpenAI Codex OAuth
-/// credential exists. Plain API-key auth failures are genuinely bad keys, so
-/// retrying them only wastes a run.
-fn codex_oauth_retry_applicable(tenant_context: &TenantContext) -> bool {
+/// Whether an `AUTHENTICATION_ERROR` for this run is worth a transparent
+/// refresh-and-retry.
+///
+/// True only when the run actually targets the Codex OAuth provider *and* a
+/// refreshable credential exists. Resolving the run's provider mirrors the
+/// engine's own route resolution (`resolve_model_route`): the request model's
+/// provider wins, otherwise the session model's. Gating on the resolved
+/// provider matters because a tenant can have a saved Codex OAuth credential
+/// while a given run uses an unrelated API-key provider (Anthropic,
+/// OpenRouter, …) — a bad key there must not trigger a Codex refresh and a
+/// wasted rerun.
+fn run_targets_codex_oauth(
+    tenant_context: &TenantContext,
+    request_model: Option<&ModelSpec>,
+    session_model: Option<&ModelSpec>,
+) -> bool {
+    let provider_id = request_model
+        .map(|model| model.provider_id.trim())
+        .filter(|provider| !provider.is_empty())
+        .or_else(|| {
+            session_model
+                .map(|model| model.provider_id.trim())
+                .filter(|provider| !provider.is_empty())
+        });
+    if provider_id != Some(OPENAI_CODEX_PROVIDER_ID) {
+        return false;
+    }
     tandem_core::load_provider_oauth_credential_for_tenant(tenant_context, OPENAI_CODEX_PROVIDER_ID)
         .is_some()
 }
@@ -51,9 +73,20 @@ pub(super) async fn run_prompt_with_auth_retry(
         Err(err) => err,
     };
 
-    if dispatch_error_code(&err.to_string()) != "AUTHENTICATION_ERROR"
-        || !codex_oauth_retry_applicable(tenant_context)
-    {
+    if dispatch_error_code(&err.to_string()) != "AUTHENTICATION_ERROR" {
+        return Err(err);
+    }
+    // Only retry when this run actually targets the Codex OAuth provider.
+    let session_model = state
+        .storage
+        .get_session(session_id)
+        .await
+        .and_then(|session| session.model);
+    if !run_targets_codex_oauth(
+        tenant_context,
+        retry_req.model.as_ref(),
+        session_model.as_ref(),
+    ) {
         return Err(err);
     }
 
