@@ -1324,6 +1324,17 @@ impl AppState {
         automation_id: Option<&str>,
         limit: usize,
     ) -> Vec<AutomationV2RunRecord> {
+        self.list_automation_v2_runs_scoped(automation_id, None, None, limit)
+            .await
+    }
+
+    pub async fn list_automation_v2_runs_scoped(
+        &self,
+        automation_id: Option<&str>,
+        org_id: Option<&str>,
+        workspace_id: Option<&str>,
+        limit: usize,
+    ) -> Vec<AutomationV2RunRecord> {
         let mut merged = self
             .automation_v2_runs
             .read()
@@ -1348,6 +1359,10 @@ impl AppState {
         let mut rows = merged
             .into_values()
             .filter(|row| automation_id.is_none_or(|id| row.automation_id == id))
+            .filter(|row| org_id.is_none_or(|id| row.tenant_context.org_id == id))
+            .filter(|row| {
+                workspace_id.is_none_or(|id| row.tenant_context.workspace_id == id)
+            })
             .collect::<Vec<_>>();
         rows.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
         rows.truncate(limit.clamp(1, 500));

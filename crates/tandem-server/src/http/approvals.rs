@@ -54,7 +54,14 @@ pub async fn list_pending_approvals(
         .map(|source| matches!(source, ApprovalSourceKind::AutomationV2))
         .unwrap_or(true)
     {
-        let runs = state.list_automation_v2_runs(None, MAX_PENDING_LIMIT).await;
+        let runs = state
+            .list_automation_v2_runs_scoped(
+                None,
+                filter.org_id.as_deref(),
+                filter.workspace_id.as_deref(),
+                MAX_PENDING_LIMIT,
+            )
+            .await;
         for listed_run in runs.iter() {
             let run = state
                 .get_automation_v2_run(&listed_run.run_id)
@@ -90,7 +97,16 @@ pub async fn list_pending_approvals(
         .map(|source| matches!(source, ApprovalSourceKind::Workflow))
         .unwrap_or(true)
     {
-        let runs = state.list_workflow_runs(None, MAX_PENDING_LIMIT).await;
+        let mut runs = state
+            .workflow_runs
+            .read()
+            .await
+            .values()
+            .filter(|run| workflow_tenant_matches(filter, run))
+            .cloned()
+            .collect::<Vec<_>>();
+        runs.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+        runs.truncate(MAX_PENDING_LIMIT);
         for run in runs.iter() {
             if run.status != tandem_workflows::WorkflowRunStatus::AwaitingApproval {
                 continue;
