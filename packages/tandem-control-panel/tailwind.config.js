@@ -34,6 +34,7 @@ export default {
       fontFamily: {
         sans: ["var(--font-sans)"],
         mono: ["var(--font-mono)"],
+        display: ["var(--font-display)"],
       },
       boxShadow: {
         soft: "var(--shadow-offset)",

@@ -4,7 +4,6 @@ type Props = {
   acaReason: string;
   acaStatusText: string;
   configPath?: string;
-  engineAvailable: boolean;
   missingFields: string[];
   navigateSettings: () => void;
   refreshAcaConnection: () => void;
@@ -24,7 +23,6 @@ export function CodingWorkflowsDisconnectedState({
   acaReason,
   acaStatusText,
   configPath,
-  engineAvailable,
   missingFields,
   navigateSettings,
   refreshAcaConnection,
@@ -41,9 +39,6 @@ export function CodingWorkflowsDisconnectedState({
               can load registered projects, task intake, and live run details.
             </p>
             <div className="mt-3 flex flex-wrap gap-2">
-              <Badge tone={engineAvailable ? "ok" : "warn"}>
-                {engineAvailable ? "Engine healthy" : "Engine unavailable"}
-              </Badge>
               <Badge tone="warn">ACA disconnected</Badge>
             </div>
             <div className="mt-4 rounded-2xl border border-yellow-500/20 bg-yellow-500/10 p-4">
@@ -53,9 +48,6 @@ export function CodingWorkflowsDisconnectedState({
               </p>
               <div className="mt-3 grid gap-2 text-xs text-yellow-100/90">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge tone={engineAvailable ? "ok" : "warn"}>
-                    {engineAvailable ? "Engine healthy" : "Engine unavailable"}
-                  </Badge>
                   <Badge tone="warn">{acaReason || "aca_disconnected"}</Badge>
                 </div>
                 <div>{acaStatusText}</div>

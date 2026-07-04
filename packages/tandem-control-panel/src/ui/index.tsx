@@ -26,10 +26,6 @@ function clampNumber(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
-export function GlowLayer({ className = "", children }: { className?: string; children?: any }) {
-  return <div className={`tcp-glow-layer ${className}`.trim()}>{children}</div>;
-}
-
 export function AnimatedPage({ className = "", children }: { className?: string; children?: any }) {
   const reducedMotion = useReducedMotionPreference();
   return (
@@ -306,7 +302,6 @@ export function EmptyState({
 }) {
   return (
     <div className={`tcp-empty-state ${className}`.trim()}>
-      <div className="tcp-empty-state-orb"></div>
       <div className="relative z-10">
         <div className="tcp-empty-state-title">{title}</div>
         <p className="tcp-subtle mt-1">{text}</p>
@@ -359,7 +354,6 @@ export function PageHeader({
 }) {
   return (
     <RevealCard className={`tcp-page-header ${className}`.trim()}>
-      <GlowLayer className="tcp-page-header-glow" />
       <div className="relative z-10 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div className="min-w-0">
           {eyebrow ? <div className="tcp-page-eyebrow">{eyebrow}</div> : null}

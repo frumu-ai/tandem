@@ -4,11 +4,6 @@ import { TandemLogoAnimation } from "../../ui/TandemLogoAnimation";
 export function PlanGenerationAnimation() {
   return (
     <div className="relative flex aspect-square w-full items-center justify-center overflow-hidden rounded-none border border-white/5 bg-black/40">
-      <div className="absolute inset-0 opacity-20">
-        <div className="tcp-shell-glow tcp-shell-glow-a opacity-50" />
-        <div className="tcp-shell-glow tcp-shell-glow-b opacity-30" />
-      </div>
-
       <div className="relative z-10 grid w-full gap-5 px-6 py-6">
         <TandemLogoAnimation className="mx-auto aspect-square w-full max-w-[17rem]" mode="panel" />
         <div className="grid gap-2">

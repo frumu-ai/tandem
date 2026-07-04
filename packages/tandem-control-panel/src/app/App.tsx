@@ -28,7 +28,7 @@ import {
 import { renderIcons } from "./icons.js";
 import { api, isTransientEngineError } from "../lib/api";
 import { useCapabilities, useSwarmStatus, useSystemHealth } from "../features/system/queries";
-import { GlowLayer, PanelCard, StatusPulse } from "../ui/index.tsx";
+import { PanelCard, StatusPulse } from "../ui/index.tsx";
 import type { RouteId } from "./routes";
 import type { NavigationLockState } from "../pages/pageTypes";
 
@@ -202,11 +202,6 @@ function ReconnectingPage({
 
   return (
     <main className="relative min-h-screen overflow-hidden px-5 py-8">
-      <GlowLayer className="tcp-shell-background">
-        <div className="tcp-shell-glow tcp-shell-glow-a"></div>
-        <div className="tcp-shell-glow tcp-shell-glow-b"></div>
-      </GlowLayer>
-
       <div className="relative z-10 mx-auto grid min-h-[calc(100vh-4rem)] w-full max-w-6xl items-center gap-6 lg:grid-cols-[1.05fr_0.95fr]">
         <section className="grid gap-4">
           <div className="tcp-page-eyebrow">Tandem Control</div>

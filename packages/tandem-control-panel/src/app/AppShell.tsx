@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { MOTION_TOKENS, prefersReducedMotion } from "./themes.js";
 import { renderIcons } from "./icons.js";
 import { groupNavRoutes } from "./store.js";
-import { GlowLayer, IconButton, StatusPulse } from "../ui/index.tsx";
+import { IconButton, StatusPulse } from "../ui/index.tsx";
 import { TandemLogoAnimation } from "../ui/TandemLogoAnimation";
 import type { NavigationLockState } from "../pages/pageTypes";
 
@@ -260,7 +260,6 @@ export function AppShell({
     <>
       {mobile ? (
         <div className="tcp-context-hero">
-          <GlowLayer className="tcp-context-hero-glow" />
           <div className="relative z-10 flex items-center gap-3">
             <div className="tcp-brand-avatar h-11 w-11">{renderAvatar()}</div>
             <div className="min-w-0">
@@ -389,11 +388,6 @@ export function AppShell({
 
   return (
     <div className={`tcp-shell ${currentRoute === "chat" ? "tcp-shell-chat" : ""}`.trim()}>
-      <GlowLayer className="tcp-shell-background">
-        <div className="tcp-shell-glow tcp-shell-glow-a"></div>
-        <div className="tcp-shell-glow tcp-shell-glow-b"></div>
-      </GlowLayer>
-
       <aside className="tcp-icon-rail hidden xl:flex">
         <button
           type="button"

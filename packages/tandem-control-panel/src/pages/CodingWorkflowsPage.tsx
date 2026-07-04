@@ -1024,7 +1024,6 @@ export function CodingWorkflowsPage({
         acaReason={acaReason}
         acaStatusText={acaStatusText}
         configPath={String(caps.data?.control_panel_config_path || "")}
-        engineAvailable={engineAvailable}
         missingFields={controlPanelConfigMissing}
         navigateSettings={() => navigate("settings")}
         refreshAcaConnection={refreshAcaConnection}
@@ -1045,9 +1044,6 @@ export function CodingWorkflowsPage({
             <div className="mt-3 flex flex-wrap gap-2">
               <Badge tone={acaHealth.data?.status === "healthy" ? "ok" : "warn"}>
                 {acaHealth.data?.status === "healthy" ? "ACA healthy" : "ACA checking"}
-              </Badge>
-              <Badge tone={healthy ? "ok" : "warn"}>
-                {healthy ? "Engine healthy" : "Engine checking"}
               </Badge>
               {selectedProjectTaskSourceType === "linear" ? (
                 <Badge tone={linearConnected ? "ok" : "warn"}>
