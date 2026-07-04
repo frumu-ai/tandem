@@ -303,7 +303,7 @@ export function AgentStandupBuilder({
           <div className="text-xs font-medium uppercase tracking-[0.24em] text-emerald-300">
             Agent Standup
           </div>
-          <h3 className="mt-1 text-lg font-semibold text-white">
+          <h3 className="mt-1 text-lg font-semibold text-tcp-text-primary">
             Build a scheduled standup from saved agents
           </h3>
           <p className="mt-1 text-sm text-slate-300">

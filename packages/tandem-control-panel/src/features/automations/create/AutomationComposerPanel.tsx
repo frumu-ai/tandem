@@ -875,7 +875,7 @@ export function AutomationComposerPanel({
             <div className="text-xs uppercase tracking-[0.24em] text-amber-200/80">
               AI-first workflow composer
             </div>
-            <h3 className="text-lg font-semibold text-white">
+            <h3 className="text-lg font-semibold text-tcp-text-primary">
               Build automations by talking to Tandem
             </h3>
             <p className="max-w-2xl text-sm text-slate-300">
@@ -1033,7 +1033,7 @@ export function AutomationComposerPanel({
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Draft ready</div>
-              <div className="text-sm font-semibold text-white">
+              <div className="text-sm font-semibold text-tcp-text-primary">
                 Review and create the automation
               </div>
             </div>
@@ -1163,7 +1163,7 @@ export function AutomationComposerPanel({
                 <div className="text-xs uppercase tracking-[0.24em] text-slate-500">
                   Runbook replay
                 </div>
-                <h4 className="text-sm font-semibold text-white">What the automation will do</h4>
+                <h4 className="text-sm font-semibold text-tcp-text-primary">What the automation will do</h4>
               </div>
               <button
                 type="button"
@@ -1188,7 +1188,7 @@ export function AutomationComposerPanel({
                   return (
                     <div key={stepId} className="rounded-xl border border-white/10 bg-black/20 p-3">
                       <div className="flex items-center justify-between gap-2">
-                        <div className="text-sm font-medium text-white">
+                        <div className="text-sm font-medium text-tcp-text-primary">
                           {index + 1}. {objective}
                         </div>
                         <span className="tcp-badge-info">{titleCase(role)}</span>
@@ -1218,7 +1218,7 @@ export function AutomationComposerPanel({
                 <div className="text-xs uppercase tracking-[0.24em] text-slate-500">
                   Payload preview
                 </div>
-                <h4 className="text-sm font-semibold text-white">automationV2.create body</h4>
+                <h4 className="text-sm font-semibold text-tcp-text-primary">automationV2.create body</h4>
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -1305,7 +1305,7 @@ export function AutomationComposerPanel({
             <div className="text-xs uppercase tracking-[0.24em] text-slate-500">
               Docs-aware context
             </div>
-            <div className="mt-2 text-sm font-semibold text-white">
+            <div className="mt-2 text-sm font-semibold text-tcp-text-primary">
               Resources for agents and developers
             </div>
             <div className="mt-3 grid gap-2 text-sm text-slate-300">
@@ -1340,7 +1340,7 @@ export function AutomationComposerPanel({
                 Created automation
               </div>
               <div className="mt-2 grid gap-2">
-                <div className="text-sm text-white">
+                <div className="text-sm text-tcp-text-primary">
                   Automation ID: <code>{createdAutomationId}</code>
                 </div>
                 <div className="text-sm text-slate-300">

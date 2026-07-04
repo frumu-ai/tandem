@@ -482,8 +482,8 @@ export function SignalMetadataGrid({ record }: { record: AnyRecord }) {
     <div className="tcp-subtle mt-3 grid gap-1 rounded-md border border-white/10 bg-white/[0.03] p-3 text-xs md:grid-cols-2">
       {rows.map(([label, value]) => (
         <div key={label} className="min-w-0">
-          <span className="text-white/60">{label}: </span>
-          <span className="break-words text-white/80">{value}</span>
+          <span className="text-tcp-text-secondary">{label}: </span>
+          <span className="break-words text-tcp-text-primary">{value}</span>
         </div>
       ))}
     </div>

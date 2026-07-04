@@ -728,7 +728,7 @@ export function TeamsPage({ client, toast, navigate }: AppPageProps) {
                       </div>
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
-                          <strong className="text-white">{personalityName}</strong>
+                          <strong className="text-tcp-text-primary">{personalityName}</strong>
                           <span className="tcp-badge-info">{form.role}</span>
                         </div>
                         <div className="mt-1 text-xs text-slate-400">

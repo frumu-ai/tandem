@@ -263,7 +263,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
           <div className="flex items-center gap-2.5 min-w-0">
             <i data-lucide="blocks" className="shrink-0 text-tcp-text-tertiary"></i>
             <div className="min-w-0">
-              <strong className="block truncate text-sm font-bold tracking-tight text-white mb-0.5">
+              <strong className="block truncate text-sm font-bold tracking-tight text-tcp-text-primary mb-0.5">
                 {String(automation?.name || id || "Workflow automation")}
               </strong>
               <div className="flex flex-wrap items-center gap-1.5">

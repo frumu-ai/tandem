@@ -1273,7 +1273,7 @@ export function CreateWizard({
                 onClick={() => done && setStep(num)}
               >
                 <span
-                  className={`flex h-5 w-5 items-center justify-center rounded-full text-xs font-bold ${active ? "bg-amber-500 text-black" : done ? "bg-slate-600 text-white" : "bg-slate-800 text-slate-500"}`}
+                  className={`flex h-5 w-5 items-center justify-center rounded-full text-xs font-bold ${active ? "bg-amber-500 text-black" : done ? "bg-slate-600 text-tcp-text-primary" : "bg-slate-800 text-slate-500"}`}
                 >
                   {done ? "✓" : num}
                 </span>

@@ -30,6 +30,9 @@ export default {
         warn: "var(--color-warning)",
         err: "var(--color-error)",
         info: "var(--color-primary)",
+        "tcp-text-primary": "var(--color-text)",
+        "tcp-text-secondary": "var(--color-text-muted)",
+        "tcp-text-tertiary": "var(--color-text-subtle)",
       },
       fontFamily: {
         sans: ["var(--font-sans)"],

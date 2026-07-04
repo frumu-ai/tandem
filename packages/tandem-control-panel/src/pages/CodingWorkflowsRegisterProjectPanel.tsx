@@ -441,7 +441,7 @@ export function CodingWorkflowsRegisterProjectPanel({
                       aria-checked={selected}
                       className={`grid min-h-[72px] w-full grid-cols-[auto_minmax(0,1fr)_auto] gap-3 border-b border-white/10 px-3 py-3 text-left transition last:border-b-0 sm:px-4 ${
                         selected
-                          ? "bg-sky-500/12 text-white"
+                          ? "bg-sky-500/12 text-tcp-text-primary"
                           : "bg-transparent text-slate-100 hover:bg-white/[0.04]"
                       }`}
                       onClick={() => selectLinearProject(project)}

@@ -442,14 +442,14 @@
   }
 
   .tcp-incident-monitor-pill.incidents {
-    color: #fca5a5;
-    border-color: color-mix(in srgb, #ef4444 42%, transparent);
-    background: color-mix(in srgb, #7f1d1d 24%, var(--color-surface-elevated) 76%);
+    color: color-mix(in srgb, var(--color-error) 76%, white 24%);
+    border-color: color-mix(in srgb, var(--color-error) 42%, transparent);
+    background: color-mix(in srgb, var(--color-error) 24%, var(--color-surface-elevated) 76%);
   }
 
   .tcp-incident-monitor-pill.blocked {
-    color: #fcd34d;
-    border-color: color-mix(in srgb, #f59e0b 42%, transparent);
+    color: color-mix(in srgb, var(--color-warning) 76%, white 24%);
+    border-color: color-mix(in srgb, var(--color-warning) 42%, transparent);
   }
 
   .tcp-incident-monitor-pill.paused {
@@ -457,8 +457,8 @@
   }
 
   .tcp-incident-monitor-pill.ready {
-    color: #86efac;
-    border-color: color-mix(in srgb, #22c55e 34%, transparent);
+    color: color-mix(in srgb, var(--color-success) 76%, white 24%);
+    border-color: color-mix(in srgb, var(--color-success) 34%, transparent);
   }
 
   .tcp-approval-pill {
@@ -471,10 +471,10 @@
     font-size: 0.72rem;
     font-weight: 800;
     letter-spacing: 0.02em;
-    color: #fde68a;
-    border: 1px solid color-mix(in srgb, #f59e0b 48%, transparent);
-    background: color-mix(in srgb, #78350f 22%, var(--color-surface-elevated) 78%);
-    box-shadow: 0 0 0 1px color-mix(in srgb, #f59e0b 8%, transparent);
+    color: color-mix(in srgb, var(--color-warning) 70%, white 30%);
+    border: 1px solid color-mix(in srgb, var(--color-warning) 48%, transparent);
+    background: color-mix(in srgb, var(--color-warning) 22%, var(--color-surface-elevated) 78%);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-warning) 8%, transparent);
     transition:
       border-color 150ms ease,
       background 150ms ease,
@@ -483,9 +483,9 @@
   }
 
   .tcp-approval-pill:hover {
-    border-color: color-mix(in srgb, #fbbf24 64%, transparent);
-    background: color-mix(in srgb, #78350f 32%, var(--color-surface-elevated) 68%);
-    box-shadow: 0 0 0 1px color-mix(in srgb, #f59e0b 18%, transparent);
+    border-color: color-mix(in srgb, var(--color-warning) 64%, transparent);
+    background: color-mix(in srgb, var(--color-warning) 32%, var(--color-surface-elevated) 68%);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-warning) 18%, transparent);
   }
 
   .tcp-approval-pill svg {
@@ -574,11 +574,11 @@
   }
 
   .tcp-status-pulse.ok {
-    color: #86efac;
+    color: color-mix(in srgb, var(--color-success) 76%, white 24%);
   }
 
   .tcp-status-pulse.warn {
-    color: #fcd34d;
+    color: color-mix(in srgb, var(--color-warning) 76%, white 24%);
   }
 
   .tcp-status-pulse.live {
@@ -731,7 +731,8 @@
   }
 
   .tcp-title {
-    @apply text-lg font-semibold tracking-tight text-slate-100;
+    @apply text-lg font-semibold tracking-tight;
+    color: var(--color-text);
   }
 
   .tcp-subtle {
@@ -2006,11 +2007,11 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   }
 
   .chat-timeline-ok {
-    border-color: color-mix(in srgb, #34d399 34%, transparent);
+    border-color: color-mix(in srgb, var(--color-success) 34%, transparent);
   }
 
   .chat-timeline-failed {
-    border-color: color-mix(in srgb, #fb7185 42%, transparent);
+    border-color: color-mix(in srgb, var(--color-error) 42%, transparent);
   }
 
   .chat-pack-event-title {
@@ -2260,11 +2261,19 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
 }
 
 .dashboard-bar-fill.completed {
-  background: linear-gradient(90deg, rgba(16, 185, 129, 0.52), rgba(110, 231, 183, 0.95));
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--color-success) 52%, transparent),
+    color-mix(in srgb, var(--color-success) 95%, white 30%)
+  );
 }
 
 .dashboard-bar-fill.failed {
-  background: linear-gradient(90deg, rgba(244, 63, 94, 0.52), rgba(251, 113, 133, 0.95));
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--color-error) 52%, transparent),
+    color-mix(in srgb, var(--color-error) 95%, white 30%)
+  );
 }
 
 .dashboard-bar-fill.running {
@@ -2276,19 +2285,35 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
 }
 
 .dashboard-bar-fill.queued {
-  background: linear-gradient(90deg, rgba(245, 158, 11, 0.52), rgba(253, 224, 71, 0.92));
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--color-warning) 52%, transparent),
+    color-mix(in srgb, var(--color-warning) 92%, white 35%)
+  );
 }
 
 .dashboard-bar-fill.scheduled {
-  background: linear-gradient(90deg, rgba(245, 158, 11, 0.55), rgba(251, 191, 36, 0.95));
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--color-warning) 55%, transparent),
+    color-mix(in srgb, var(--color-warning) 95%, white 40%)
+  );
 }
 
 .dashboard-bar-fill.manual {
-  background: linear-gradient(90deg, rgba(100, 116, 139, 0.6), rgba(148, 163, 184, 0.95));
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--color-text-muted) 60%, transparent),
+    color-mix(in srgb, var(--color-text-muted) 95%, white 30%)
+  );
 }
 
 .dashboard-bar-fill.paused {
-  background: linear-gradient(90deg, rgba(217, 119, 6, 0.55), rgba(251, 191, 36, 0.95));
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--color-warning) 55%, black 15%),
+    color-mix(in srgb, var(--color-warning) 95%, white 40%)
+  );
 }
 
 .dashboard-kpis {
@@ -2595,8 +2620,16 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
 
 #app .text-slate-200,
 #app .text-zinc-200,
+#app .text-slate-100,
+#app .text-zinc-100,
+#app .text-slate-50,
+#app .text-zinc-50,
 #view .text-slate-200,
-#view .text-zinc-200 {
+#view .text-zinc-200,
+#view .text-slate-100,
+#view .text-zinc-100,
+#view .text-slate-50,
+#view .text-zinc-50 {
   color: var(--color-text) !important;
 }
 
@@ -2618,13 +2651,24 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
 }
 
 #app [class*="bg-rose-"],
-#view [class*="bg-rose-"] {
+#app [class*="bg-red-"],
+#view [class*="bg-rose-"],
+#view [class*="bg-red-"] {
   background: color-mix(in srgb, var(--color-error) 14%, transparent) !important;
 }
 
 #app [class*="border-rose-"],
-#view [class*="border-rose-"] {
+#app [class*="border-red-"],
+#view [class*="border-rose-"],
+#view [class*="border-red-"] {
   border-color: color-mix(in srgb, var(--color-error) 34%, transparent) !important;
+}
+
+#app [class*="text-rose-"],
+#app [class*="text-red-"],
+#view [class*="text-rose-"],
+#view [class*="text-red-"] {
+  color: color-mix(in srgb, var(--color-error) 82%, var(--color-text) 18%) !important;
 }
 
 #app [class*="bg-slate-"],
@@ -2892,12 +2936,12 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
 }
 
 .fc {
-  --fc-border-color: rgba(71, 85, 105, 0.55);
-  --fc-neutral-bg-color: rgba(15, 23, 42, 0.95);
+  --fc-border-color: color-mix(in srgb, var(--color-border) 55%, transparent);
+  --fc-neutral-bg-color: color-mix(in srgb, var(--color-surface-elevated) 95%, transparent);
   --fc-page-bg-color: transparent;
-  --fc-today-bg-color: rgba(245, 158, 11, 0.08);
-  --fc-now-indicator-color: rgba(245, 158, 11, 0.9);
-  color: rgb(226, 232, 240);
+  --fc-today-bg-color: color-mix(in srgb, var(--color-primary) 8%, transparent);
+  --fc-now-indicator-color: color-mix(in srgb, var(--color-primary) 90%, transparent);
+  color: var(--color-text);
 }
 
 .fc,
@@ -2917,62 +2961,62 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
 .fc .fc-toolbar-title {
   font-size: 1.15rem;
   font-weight: 700;
-  color: rgb(241, 245, 249);
+  color: var(--color-text);
 }
 
 .fc .fc-button {
   border-radius: var(--radius);
-  border: 1px solid rgba(71, 85, 105, 0.65);
-  background: rgba(15, 23, 42, 0.95);
-  color: rgb(226, 232, 240);
+  border: 1px solid color-mix(in srgb, var(--color-border) 65%, transparent);
+  background: color-mix(in srgb, var(--color-surface-elevated) 95%, transparent);
+  color: var(--color-text);
   box-shadow: none;
   text-transform: none;
 }
 
 .fc .fc-button:hover {
-  background: rgba(30, 41, 59, 0.98);
+  background: color-mix(in srgb, var(--color-surface-elevated) 82%, var(--color-primary) 18%);
 }
 
 .fc .fc-button:focus {
-  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.24);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 24%, transparent);
 }
 
 .fc .fc-button-primary:not(:disabled).fc-button-active,
 .fc .fc-button-primary:not(:disabled):active {
-  background: rgba(180, 121, 31, 0.35);
-  border-color: rgba(245, 158, 11, 0.65);
-  color: rgb(252, 211, 77);
+  background: color-mix(in srgb, var(--color-primary) 35%, transparent);
+  border-color: color-mix(in srgb, var(--color-primary) 65%, transparent);
+  color: color-mix(in srgb, var(--color-primary) 70%, white 30%);
 }
 
 .fc .fc-scrollgrid,
 .fc .fc-scrollgrid-section > td {
-  border-color: rgba(71, 85, 105, 0.55);
+  border-color: color-mix(in srgb, var(--color-border) 55%, transparent);
 }
 
 .fc .fc-scrollgrid {
   border-radius: var(--radius);
   overflow: hidden;
-  background: rgba(2, 6, 23, 0.35);
+  background: color-mix(in srgb, var(--color-background) 35%, transparent);
 }
 
 .fc .fc-col-header-cell,
 .fc .fc-timegrid-axis,
 .fc .fc-timegrid-slot {
-  border-color: rgba(71, 85, 105, 0.45);
+  border-color: color-mix(in srgb, var(--color-border) 45%, transparent);
 }
 
 .fc .fc-col-header-cell-cushion,
 .fc .fc-timegrid-axis-cushion,
 .fc .fc-timegrid-slot-label-cushion {
-  color: rgb(148, 163, 184);
+  color: var(--color-text-muted);
 }
 
 .fc .fc-day-today {
-  background: rgba(245, 158, 11, 0.06);
+  background: color-mix(in srgb, var(--color-primary) 6%, transparent);
 }
 
 .fc .fc-timegrid-now-indicator-line {
-  border-color: rgba(245, 158, 11, 0.95);
+  border-color: color-mix(in srgb, var(--color-primary) 95%, transparent);
 }
 
 .fc .fc-timegrid-slot {
@@ -2982,7 +3026,7 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
 .fc .fc-timegrid-col-frame,
 .fc .fc-timegrid-col-bg,
 .fc .fc-scrollgrid-sync-table {
-  background: rgba(2, 6, 23, 0.2);
+  background: color-mix(in srgb, var(--color-background) 20%, transparent);
 }
 
 .fc .fc-event {
@@ -3005,10 +3049,10 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   justify-content: center;
   min-height: 1.5rem;
   margin: 0.125rem 0;
-  border: 1px dashed rgba(148, 163, 184, 0.35);
+  border: 1px dashed color-mix(in srgb, var(--color-text-muted) 35%, transparent);
   border-radius: var(--radius);
-  background: rgba(15, 23, 42, 0.86);
-  color: rgb(191, 219, 254);
+  background: color-mix(in srgb, var(--color-surface-elevated) 86%, transparent);
+  color: color-mix(in srgb, var(--color-primary) 82%, var(--color-text) 18%);
   font-size: 0.7rem;
   font-weight: 600;
   letter-spacing: 0.01em;
@@ -3016,19 +3060,19 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
 
 .fc .fc-timegrid-more-link:hover,
 .fc .tcp-calendar-more-link:hover {
-  border-color: rgba(96, 165, 250, 0.45);
-  background: rgba(30, 41, 59, 0.96);
-  color: rgb(224, 242, 254);
+  border-color: var(--tcp-hover-border-primary);
+  background: color-mix(in srgb, var(--color-surface-elevated) 96%, var(--color-primary) 4%);
+  color: color-mix(in srgb, var(--color-primary) 70%, var(--color-text) 30%);
 }
 
 .fc .tcp-calendar-slot-focus {
   background: linear-gradient(
     90deg,
-    rgba(245, 158, 11, 0.18) 0%,
-    rgba(245, 158, 11, 0.08) 22%,
-    rgba(15, 23, 42, 0) 100%
+    color-mix(in srgb, var(--color-primary) 18%, transparent) 0%,
+    color-mix(in srgb, var(--color-primary) 8%, transparent) 22%,
+    transparent 100%
   );
-  box-shadow: inset 3px 0 0 rgba(245, 158, 11, 0.9);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--color-primary) 90%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {
