@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { PanelCard, StatusPulse } from "../ui/index.tsx";
+import { Icon } from "../ui/Icon";
 
 export function LoginPage({
   loginMutation,
@@ -67,7 +68,7 @@ export function LoginPage({
                   if (hostedLoginUrl) window.location.assign(hostedLoginUrl);
                 }}
               >
-                <i data-lucide="log-in"></i>
+                <Icon name="log-in" />
                 Sign in with Tandem
               </button>
               <button
@@ -84,7 +85,7 @@ export function LoginPage({
                   }
                 }}
               >
-                <i data-lucide="activity"></i>
+                <Icon name="activity" />
                 Check engine
               </button>
               <div className={`min-h-[1.2rem] text-sm ${ok ? "text-lime-300" : "text-rose-300"}`}>
@@ -130,7 +131,7 @@ export function LoginPage({
                   type="submit"
                   className="tcp-btn-primary w-full"
                 >
-                  <i data-lucide="key-round"></i>
+                  <Icon name="key-round" />
                   Sign in
                 </button>
                 <button
@@ -147,7 +148,7 @@ export function LoginPage({
                     }
                   }}
                 >
-                  <i data-lucide="activity"></i>
+                  <Icon name="activity" />
                   Check engine
                 </button>
               </div>

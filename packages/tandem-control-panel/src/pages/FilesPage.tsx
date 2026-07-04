@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { renderIcons } from "../app/icons.js";
 import { renderMarkdownSafe } from "../lib/markdown";
 import { useCapabilities } from "../features/system/queries.ts";
 import { KnowledgebaseUploadPanel } from "../features/knowledgebase/KnowledgebaseUploadPanel";
@@ -16,6 +15,7 @@ import {
   normalizeManagedFilesExplorerPath,
   parentManagedFilesExplorerDir,
 } from "../features/files/explorerHandoff";
+import { Icon } from "../ui/Icon";
 
 const EXPLORER_BUCKETS = ["uploads", "artifacts", "exports"];
 const TEXT_PREVIEW_KINDS = new Set(["text", "markdown", "json", "yaml"]);
@@ -236,26 +236,6 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
     TEXT_PREVIEW_KINDS.has(selectedPreviewKind) &&
     selectedTextPreview.data?.previewable !== false;
   const selectedPreviewLoading = selectedTextPreview.isFetching && selectedPreviewable;
-
-  useEffect(() => {
-    if (rootRef.current) renderIcons(rootRef.current);
-  }, [
-    currentCount,
-    directories.length,
-    files.length,
-    filePage,
-    filePageSize,
-    pagedFiles.length,
-    selectedFileCount,
-    selectedPath,
-    selectedPreviewKind,
-    selectedDirectory,
-    uploadRows.length,
-    rootDir,
-    fileSurface,
-    filesPanelCollapsed,
-    selectedTextPreview.data?.previewable,
-  ]);
 
   const uploadOne = useMutation({
     mutationFn: ({
@@ -569,7 +549,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
               onClick={() => uploadInputRef.current?.click()}
               disabled={uploadOne.isPending}
             >
-              <i data-lucide="upload"></i>
+              <Icon name="upload" />
             </button>
             {isWorkspaceMode ? (
               <button
@@ -580,7 +560,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
                 onClick={() => uploadFolderInputRef.current?.click()}
                 disabled={uploadOne.isPending}
               >
-                <i data-lucide="folder-up"></i>
+                <Icon name="folder-up" />
               </button>
             ) : null}
             <button
@@ -595,7 +575,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
               }
               aria-label="Create folder"
             >
-              <i data-lucide="folder-plus"></i>
+              <Icon name="folder-plus" />
             </button>
             <button
               type="button"
@@ -604,7 +584,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
               aria-label="Import to Memory"
               onClick={openMemoryImport}
             >
-              <i data-lucide="database-zap"></i>
+              <Icon name="database-zap" />
             </button>
             <button
               type="button"
@@ -613,7 +593,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
               aria-label="Refresh files"
               onClick={() => void filesQuery.refetch()}
             >
-              <i data-lucide="refresh-cw"></i>
+              <Icon name="refresh-cw" />
             </button>
             <button
               type="button"
@@ -623,7 +603,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
               onClick={openParent}
               disabled={!rootDir}
             >
-              <i data-lucide="corner-up-left"></i>
+              <Icon name="corner-up-left" />
             </button>
             <button
               type="button"
@@ -632,7 +612,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
               aria-label={filesPanelCollapsed ? "Expand files" : "Collapse files"}
               onClick={() => setFilesPanelCollapsed((current) => !current)}
             >
-              <i data-lucide={filesPanelCollapsed ? "chevron-down" : "chevron-up"}></i>
+              <Icon name={filesPanelCollapsed ? "chevron-down" : "chevron-up"} />
             </button>
           </Toolbar>
         }
@@ -669,7 +649,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
                         : "Workspace file browsing is not available on this deployment"
                   }
                 >
-                  <i data-lucide="folder-code"></i>
+                  <Icon name="folder-code" />
                   Workspace
                 </button>
                 <button
@@ -679,7 +659,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
                   }`.trim()}
                   onClick={() => switchFileSurface("managed")}
                 >
-                  <i data-lucide="archive"></i>
+                  <Icon name="archive" />
                   Managed
                 </button>
               </div>
@@ -690,7 +670,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
                   className={`tcp-list-item w-full text-left ${!rootDir ? "border-sky-500/40 bg-sky-950/20" : ""}`}
                   onClick={openRoot}
                 >
-                  <i data-lucide="hard-drive"></i>
+                  <Icon name="hard-drive" />
                   {isWorkspaceMode ? "Workspace root" : "Root"}
                 </button>
                 {!isWorkspaceMode
@@ -703,7 +683,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
                           className={`tcp-list-item w-full text-left ${active ? "border-sky-500/40 bg-sky-950/20" : ""}`}
                           onClick={() => openDirectory(bucket)}
                         >
-                          <i data-lucide="folder-open"></i>
+                          <Icon name="folder-open" />
                           <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
                             <span className="truncate">{bucket}</span>
                             <span className="tcp-subtle tcp-text-caption">
@@ -819,7 +799,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
                           className={`tcp-list-item w-full text-left ${active ? "border-sky-500/40 bg-sky-950/20" : ""}`}
                           onClick={() => openDirectory(path)}
                         >
-                          <i data-lucide="folder-open"></i>
+                          <Icon name="folder-open" />
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center justify-between gap-2">
                               <strong className="truncate">{String(entry?.name || path)}</strong>
@@ -851,7 +831,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
                             onClick={openMemoryImport}
                             disabled={!selectedFileCount}
                           >
-                            <i data-lucide="database-zap"></i>
+                            <Icon name="database-zap" />
                           </button>
                           <button
                             type="button"
@@ -861,7 +841,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
                             onClick={selectAllFiles}
                             disabled={!files.length}
                           >
-                            <i data-lucide="square-check-big"></i>
+                            <Icon name="square-check-big" />
                           </button>
                           <button
                             type="button"
@@ -871,7 +851,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
                             onClick={clearSelectedFiles}
                             disabled={!selectedFileCount}
                           >
-                            <i data-lucide="x"></i>
+                            <Icon name="x" />
                           </button>
                           <button
                             type="button"
@@ -881,7 +861,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
                             onClick={openDeleteSelectedFiles}
                             disabled={!selectedFileCount}
                           >
-                            <i data-lucide="trash-2"></i>
+                            <Icon name="trash-2" />
                           </button>
                           <label className="flex items-center gap-2 tcp-text-caption uppercase tracking-wide text-slate-500">
                             <span>Per page</span>
@@ -912,7 +892,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
                             }
                             disabled={safeFilePage <= 1}
                           >
-                            <i data-lucide="chevron-left"></i>
+                            <Icon name="chevron-left" />
                           </button>
                           <button
                             type="button"
@@ -924,7 +904,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
                             }
                             disabled={safeFilePage >= filePageCount}
                           >
-                            <i data-lucide="chevron-right"></i>
+                            <Icon name="chevron-right" />
                           </button>
                         </div>
                       </div>
@@ -962,7 +942,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
                                     setSelectedPath((current) => (current === path ? "" : path))
                                   }
                                 >
-                                  <i data-lucide="file-text"></i>
+                                  <Icon name="file-text" />
                                   <div className="min-w-0 flex-1">
                                     <div className="flex items-center justify-between gap-2">
                                       <strong className="truncate">{entry.name || path}</strong>
@@ -1006,7 +986,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
                   title="Download file"
                   aria-label="Download file"
                 >
-                  <i data-lucide="download"></i>
+                  <Icon name="download" />
                 </a>
               ) : selectedDirectory ? (
                 <button
@@ -1016,7 +996,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
                   aria-label="Open folder"
                   onClick={() => openDirectory(selectedPath)}
                 >
-                  <i data-lucide="folder-open"></i>
+                  <Icon name="folder-open" />
                 </button>
               ) : null
             }
@@ -1137,7 +1117,7 @@ export function FilesPage({ api, client, toast }: AppPageProps) {
                     className="tcp-btn-primary justify-center"
                     onClick={openMemoryImport}
                   >
-                    <i data-lucide="database-zap"></i>
+                    <Icon name="database-zap" />
                     Import to Memory
                   </button>
                 </div>

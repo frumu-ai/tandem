@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
-import { renderIcons } from "../app/icons.js";
 import { EmptyState } from "./ui";
 import { ProviderModelSelector } from "../components/ProviderModelSelector";
 import { ScheduleBuilder } from "../features/automations/ScheduleBuilder";
@@ -9,6 +8,7 @@ import type { ScheduleValue } from "../features/automations/scheduleValue";
 import { buildPlannerProviderOptions } from "../features/planner/plannerShared";
 import { TimezoneField } from "../features/automations/TimezoneField";
 import { isValidTimezone } from "../features/automations/timezone";
+import { Icon } from "../ui/Icon";
 
 type ProviderOption = {
   id: string;
@@ -270,29 +270,6 @@ export function AgentStandupBuilder({
     onError: (error) => toast("err", error instanceof Error ? error.message : String(error)),
   });
 
-  useEffect(() => {
-    const root = rootRef.current;
-    if (!root) return;
-    renderIcons(root);
-  }, [
-    name,
-    workspaceRoot,
-    timezone,
-    scheduleValue.scheduleKind,
-    scheduleValue.cronExpression,
-    scheduleValue.intervalSeconds,
-    reportPathTemplate,
-    participantTemplateIds.join(","),
-    modelDraft.provider,
-    modelDraft.model,
-    templates.length,
-    workspaceBrowserOpen,
-    workspaceBrowserSearch,
-    composeMutation.isPending,
-    createMutation.isPending,
-    !!preview,
-  ]);
-
   return (
     <div
       ref={rootRef}
@@ -332,7 +309,7 @@ export function AgentStandupBuilder({
               setWorkspaceBrowserOpen(true);
             }}
           >
-            <i data-lucide="folder-open"></i>
+            <Icon name="folder-open" />
             Browse
           </button>
           <input
@@ -347,7 +324,7 @@ export function AgentStandupBuilder({
             onClick={() => onWorkspaceRootChange("")}
             disabled={!workspaceRoot}
           >
-            <i data-lucide="x"></i>
+            <Icon name="x" />
             Clear
           </button>
         </div>
@@ -451,7 +428,7 @@ export function AgentStandupBuilder({
           disabled={composeMutation.isPending || !templates.length}
           onClick={() => composeMutation.mutate()}
         >
-          <i data-lucide="file-search"></i>
+          <Icon name="file-search" />
           {composeMutation.isPending ? "Composing…" : "Preview Standup Workflow"}
         </button>
         <button
@@ -460,7 +437,7 @@ export function AgentStandupBuilder({
           disabled={createMutation.isPending || !templates.length}
           onClick={() => createMutation.mutate()}
         >
-          <i data-lucide="rocket"></i>
+          <Icon name="rocket" />
           {createMutation.isPending ? "Creating…" : "Create Standup Automation"}
         </button>
       </div>
@@ -527,7 +504,7 @@ export function AgentStandupBuilder({
                 }}
                 disabled={!workspaceParentDir}
               >
-                <i data-lucide="arrow-left-to-line"></i>
+                <Icon name="arrow-left-to-line" />
                 Up
               </button>
               <button
@@ -542,7 +519,7 @@ export function AgentStandupBuilder({
                 }}
                 disabled={!workspaceCurrentBrowseDir}
               >
-                <i data-lucide="badge-check"></i>
+                <Icon name="badge-check" />
                 Select This Folder
               </button>
               <button
@@ -553,7 +530,7 @@ export function AgentStandupBuilder({
                   setWorkspaceBrowserSearch("");
                 }}
               >
-                <i data-lucide="x"></i>
+                <Icon name="x" />
                 Close
               </button>
             </div>
@@ -577,7 +554,7 @@ export function AgentStandupBuilder({
                     onClick={() => setWorkspaceBrowserDir(String(entry?.path || ""))}
                   >
                     <span className="inline-flex items-center gap-2">
-                      <i data-lucide="folder-open"></i>
+                      <Icon name="folder-open" />
                       <span>{String(entry?.name || entry?.path || "")}</span>
                     </span>
                   </button>

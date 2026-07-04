@@ -3,6 +3,7 @@ import { ThemePicker } from "../ui/ThemePicker.tsx";
 import { Badge, PanelCard, Toolbar } from "../ui/index.tsx";
 import { EmptyState } from "./ui";
 import { useSettingsPageController } from "./SettingsPageController";
+import { Icon } from "../ui/Icon";
 
 type SettingsPageControllerState = ReturnType<typeof useSettingsPageController>;
 
@@ -83,7 +84,7 @@ export function SettingsPageSearchIdentityThemeSections({
                   testSearchMutation.isPending
                 }
               >
-                <i data-lucide={testSearchMutation.isPending ? "loader-circle" : "search"}></i>
+                <Icon name={testSearchMutation.isPending ? "loader-circle" : "search"} />
                 {testSearchMutation.isPending ? "Testing..." : "Test search"}
               </button>
               <button
@@ -102,7 +103,7 @@ export function SettingsPageSearchIdentityThemeSections({
                   !searchSettingsQuery.data?.available || saveSearchSettingsMutation.isPending
                 }
               >
-                <i data-lucide="save"></i>
+                <Icon name="save" />
                 Save
               </button>
             </Toolbar>
@@ -221,7 +222,7 @@ export function SettingsPageSearchIdentityThemeSections({
                       testSearchMutation.isPending
                     }
                   >
-                    <i data-lucide={testSearchMutation.isPending ? "loader-circle" : "play"}></i>
+                    <Icon name={testSearchMutation.isPending ? "loader-circle" : "play"} />
                     {testSearchMutation.isPending ? "Running..." : "Run test"}
                   </button>
                 </div>
@@ -389,7 +390,7 @@ export function SettingsPageSearchIdentityThemeSections({
                   !schedulerSettingsQuery.data?.available || saveSchedulerSettingsMutation.isPending
                 }
               >
-                <i data-lucide="save"></i>
+                <Icon name="save" />
                 Save
               </button>
             </Toolbar>
@@ -464,7 +465,7 @@ export function SettingsPageSearchIdentityThemeSections({
                   refreshIdentityStatus().then(() => toast("ok", "Identity refreshed."))
                 }
               >
-                <i data-lucide="refresh-cw"></i>
+                <Icon name="refresh-cw" />
                 Refresh identity
               </button>
               <button
@@ -472,7 +473,7 @@ export function SettingsPageSearchIdentityThemeSections({
                 onClick={() => saveIdentityMutation.mutate()}
                 disabled={saveIdentityMutation.isPending}
               >
-                <i data-lucide="save"></i>
+                <Icon name="save" />
                 Save
               </button>
             </Toolbar>
@@ -503,7 +504,7 @@ export function SettingsPageSearchIdentityThemeSections({
                     aria-label="Upload avatar"
                     onClick={() => avatarInputRef.current?.click()}
                   >
-                    <i data-lucide="pencil"></i>
+                    <Icon name="pencil" />
                   </button>
                   <button
                     className="tcp-icon-btn"
@@ -511,7 +512,7 @@ export function SettingsPageSearchIdentityThemeSections({
                     aria-label="Clear avatar"
                     onClick={() => setBotAvatarUrl("")}
                   >
-                    <i data-lucide="trash-2"></i>
+                    <Icon name="trash-2" />
                   </button>
                 </Toolbar>
               </div>

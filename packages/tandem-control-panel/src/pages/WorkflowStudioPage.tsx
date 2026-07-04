@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
-import { renderIcons } from "../app/icons.js";
 import { workflowLatestStabilitySnapshot } from "../features/orchestration/workflowStability";
 import { useSystemHealth } from "../features/system/queries";
 import {
@@ -87,6 +86,7 @@ import {
   toArray,
   validateWorkspaceRootInput,
 } from "./workflowStudioUtils";
+import { Icon } from "../ui/Icon";
 
 type StudioMcpServerRow = {
   name: string;
@@ -386,21 +386,6 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
     );
     setCatalogAgentHandoff(null);
   }, [catalogAgentHandoff, draft.nodes, selectedNodeId, toast]);
-  useEffect(() => {
-    try {
-      renderIcons();
-    } catch {}
-  }, [
-    draft,
-    selectedNodeId,
-    selectedTemplateLoadId,
-    templatesOpen,
-    savedWorkflowsOpen,
-    studioAutomations.length,
-    templateRows.length,
-    workspaceBrowserOpen,
-    workspaceBrowserSearch,
-  ]);
   const workspaceBrowserQuery = useQuery({
     queryKey: ["studio", "workspace-browser", workspaceBrowserDir],
     enabled: workspaceBrowserOpen && !!workspaceBrowserDir,
@@ -1169,15 +1154,15 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                 applyTemplate(draft.starterTemplateId || STUDIO_TEMPLATE_CATALOG[0].id)
               }
             >
-              <i data-lucide="rotate-ccw"></i>
+              <Icon name="rotate-ccw" />
               Reset From Template
             </button>
             <button className="tcp-btn inline-flex items-center gap-2" onClick={addAgent}>
-              <i data-lucide="user-plus"></i>
+              <Icon name="user-plus" />
               Add Agent
             </button>
             <button className="tcp-btn inline-flex items-center gap-2" onClick={addNode}>
-              <i data-lucide="plus"></i>
+              <Icon name="plus" />
               Add Stage
             </button>
             <button
@@ -1185,7 +1170,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
               disabled={saveMutation.isPending}
               onClick={() => saveMutation.mutate()}
             >
-              <i data-lucide={saveMutation.isPending ? "loader-circle" : "save"}></i>
+              <Icon name={saveMutation.isPending ? "loader-circle" : "save"} />
               {saveMutation.isPending ? "Saving..." : "Save Workflow"}
             </button>
           </div>
@@ -1202,10 +1187,10 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                     aria-expanded={templatesOpen}
                     onClick={() => setTemplatesOpen((open) => !open)}
                   >
-                    <i
-                      data-lucide={templatesOpen ? "chevron-down" : "chevron-right"}
+                    <Icon
+                      name={templatesOpen ? "chevron-down" : "chevron-right"}
                       className="text-slate-400"
-                    ></i>
+                     />
                     <div className="min-w-0">
                       <div className="text-sm font-semibold text-slate-100">Starter Templates</div>
                       <div className="text-xs text-slate-400">
@@ -1247,10 +1232,10 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                     aria-expanded={savedWorkflowsOpen}
                     onClick={() => setSavedWorkflowsOpen((open) => !open)}
                   >
-                    <i
-                      data-lucide={savedWorkflowsOpen ? "chevron-down" : "chevron-right"}
+                    <Icon
+                      name={savedWorkflowsOpen ? "chevron-down" : "chevron-right"}
                       className="text-slate-400"
-                    ></i>
+                     />
                     <div className="min-w-0">
                       <div className="text-sm font-semibold text-slate-100">
                         Saved Studio Workflows
@@ -1394,7 +1379,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                                         openAutomationInStudio(automation);
                                       }}
                                     >
-                                      <i data-lucide="folder-open"></i>
+                                      <Icon name="folder-open" />
                                       Open
                                     </button>
                                     <button
@@ -1410,7 +1395,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                                         }
                                       }}
                                     >
-                                      <i data-lucide="play"></i>
+                                      <Icon name="play" />
                                       {health.isBroken ? "Repair & Open" : "Run Now"}
                                     </button>
                                     <button
@@ -1423,7 +1408,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                                         });
                                       }}
                                     >
-                                      <i data-lucide="trash-2"></i>
+                                      <Icon name="trash-2" />
                                       {isDeleting ? "Deleting..." : "Delete"}
                                     </button>
                                   </div>
@@ -1453,7 +1438,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                     onClick={() => saveMutation.mutate()}
                     disabled={saveMutation.isPending}
                   >
-                    <i data-lucide={saveMutation.isPending ? "loader-circle" : "save"}></i>
+                    <Icon name={saveMutation.isPending ? "loader-circle" : "save"} />
                     {saveMutation.isPending ? "Saving..." : "Save Repaired Workflow"}
                   </button>
                 }
@@ -1518,7 +1503,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                           setWorkspaceBrowserOpen(true);
                         }}
                       >
-                        <i data-lucide="folder-open"></i>
+                        <Icon name="folder-open" />
                         Browse
                       </button>
                       <input
@@ -1533,7 +1518,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                         onClick={() => updateDraft({ workspaceRoot: "" })}
                         disabled={!draft.workspaceRoot}
                       >
-                        <i data-lucide="x"></i>
+                        <Icon name="x" />
                         Clear
                       </button>
                     </div>
@@ -1842,7 +1827,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                       }}
                       disabled={!workspaceParentDir}
                     >
-                      <i data-lucide="arrow-left-to-line"></i>
+                      <Icon name="arrow-left-to-line" />
                       Up
                     </button>
                     <button
@@ -1857,7 +1842,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                       }}
                       disabled={!workspaceCurrentBrowseDir}
                     >
-                      <i data-lucide="badge-check"></i>
+                      <Icon name="badge-check" />
                       Select This Folder
                     </button>
                     <button
@@ -1868,7 +1853,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                         setWorkspaceBrowserSearch("");
                       }}
                     >
-                      <i data-lucide="x"></i>
+                      <Icon name="x" />
                       Close
                     </button>
                   </div>
@@ -1892,7 +1877,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                           onClick={() => setWorkspaceBrowserDir(String(entry?.path || ""))}
                         >
                           <span className="inline-flex items-center gap-2">
-                            <i data-lucide="folder-open"></i>
+                            <Icon name="folder-open" />
                             <span>{String(entry?.name || entry?.path || "")}</span>
                           </span>
                         </button>
@@ -1929,7 +1914,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                       className="tcp-btn inline-flex items-center gap-2"
                       onClick={() => setDeleteConfirm(null)}
                     >
-                      <i data-lucide="x"></i>
+                      <Icon name="x" />
                       Cancel
                     </button>
                     <button
@@ -1941,7 +1926,7 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                         })
                       }
                     >
-                      <i data-lucide="trash-2"></i>
+                      <Icon name="trash-2" />
                       {deleteAutomationMutation.isPending ? "Deleting..." : "Delete workflow"}
                     </button>
                   </div>

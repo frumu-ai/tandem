@@ -4,7 +4,6 @@ import { motion } from "motion/react";
 import { McpToolAllowlistEditor } from "../../components/McpToolAllowlistEditor";
 import { ProviderModelSelector } from "../../components/ProviderModelSelector";
 import { WorkspaceDirectoryPicker } from "../../components/WorkspaceDirectoryPicker";
-import { renderIcons } from "../../app/icons.js";
 import { api } from "../../lib/api";
 import { ScheduleBuilder } from "./ScheduleBuilder";
 import { TimezoneField } from "./TimezoneField";
@@ -16,6 +15,7 @@ import { HandoffPanel } from "./HandoffPanel";
 import { ExecutionProfileToggle } from "./ExecutionProfileToggle";
 import { WorkflowEditFlowMap } from "./WorkflowEditFlowMap";
 import { AutomationWebhookManager } from "./AutomationWebhookManager";
+import { Icon } from "../../ui/Icon";
 
 function normalizeMcpNamespaceSegment(raw: string) {
   let out = "";
@@ -66,11 +66,6 @@ function mcpToolsForServers(servers: any[], selectedServerNames: string[]) {
 
 function useDialogIconRender(active: boolean) {
   const rootRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!active) return;
-    if (rootRef.current) renderIcons(rootRef.current);
-  }, [active]);
 
   return rootRef;
 }
@@ -245,7 +240,7 @@ export function LegacyAutomationEditDialog({
                 }
               >
                 <span className="flex items-center gap-2">
-                  <i data-lucide={editDraft.requiresApproval ? "shield-alert" : "shield-check"}></i>
+                  <Icon name={editDraft.requiresApproval ? "shield-alert" : "shield-check"} />
                   {editDraft.requiresApproval
                     ? "Manual approvals enabled"
                     : "Fully automated enabled"}
@@ -325,7 +320,7 @@ export function LegacyAutomationEditDialog({
         </div>
         <div className="tcp-confirm-actions mt-3">
           <button className="tcp-btn" onClick={() => setEditDraft(null)}>
-            <i data-lucide="x-circle"></i>
+            <Icon name="x-circle" />
             Cancel
           </button>
           <button
@@ -333,7 +328,7 @@ export function LegacyAutomationEditDialog({
             onClick={() => editDraft && updateAutomationMutation.mutate(editDraft)}
             disabled={updateAutomationMutation.isPending}
           >
-            <i data-lucide="check"></i>
+            <Icon name="check" />
             Save
           </button>
         </div>
@@ -369,10 +364,10 @@ export function AccordionSection({
       >
         <div className="flex items-center gap-2">
           {icon && (
-            <i
-              data-lucide={icon}
+            <Icon
+              name={icon}
               className={`h-4 w-4 ${headerStyle === "violet" ? "text-violet-400" : "text-slate-400"}`}
-            ></i>
+             />
           )}
           <div>
             <div
@@ -389,10 +384,10 @@ export function AccordionSection({
             )}
           </div>
         </div>
-        <i
-          data-lucide={open ? "chevron-up" : "chevron-down"}
+        <Icon
+          name={open ? "chevron-up" : "chevron-down"}
           className="h-4 w-4 text-slate-500 shrink-0 ml-4"
-        ></i>
+         />
       </button>
       {open && (
         <div
@@ -526,7 +521,7 @@ export function WorkflowAutomationEditDialog({
             </div>
           </div>
           <button className="tcp-btn h-9 w-9 px-0" onClick={() => setWorkflowEditDraft(null)}>
-            <i data-lucide="x"></i>
+            <Icon name="x" />
           </button>
         </div>
         <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 py-4">
@@ -657,7 +652,7 @@ export function WorkflowAutomationEditDialog({
                   className="tcp-btn h-9 px-3 text-sm"
                   onClick={() => downloadWorkflowRecoveryBundle(workflowEditDraft)}
                 >
-                  <i data-lucide="download"></i>
+                  <Icon name="download" />
                   Export recovery JSON
                 </button>
                 <button
@@ -671,7 +666,7 @@ export function WorkflowAutomationEditDialog({
                   }
                   disabled={!String(workflowEditDraft.recoveryPrompt || "").trim()}
                 >
-                  <i data-lucide="refresh-cw"></i>
+                  <Icon name="refresh-cw" />
                   Re-create from prompt
                 </button>
               </div>
@@ -1258,7 +1253,7 @@ export function WorkflowAutomationEditDialog({
                             <summary className="cursor-pointer list-none">
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-300">
-                                  <i data-lucide="shield-check"></i>
+                                  <Icon name="shield-check" />
                                   <span>Approval override</span>
                                 </div>
                                 <div className="flex flex-wrap gap-2 tcp-text-caption">
@@ -1405,7 +1400,7 @@ export function WorkflowAutomationEditDialog({
                             <summary className="cursor-pointer list-none">
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-300">
-                                  <i data-lucide="cpu"></i>
+                                  <Icon name="cpu" />
                                   <span>Step model & provider</span>
                                 </div>
                                 <div className="flex flex-wrap items-center gap-2 tcp-text-caption">
@@ -1464,7 +1459,7 @@ export function WorkflowAutomationEditDialog({
                             <summary className="cursor-pointer list-none">
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-300">
-                                  <i data-lucide="wrench"></i>
+                                  <Icon name="wrench" />
                                   <span>Task tool access</span>
                                 </div>
                                 <div className="flex flex-wrap gap-2 tcp-text-caption">
@@ -1772,11 +1767,11 @@ export function WorkflowAutomationEditDialog({
             }}
             disabled={!workflowEditDraft?.automationId || exportingAutomation}
           >
-            <i data-lucide="download"></i>
+            <Icon name="download" />
             {exportingAutomation ? "Exporting..." : "Export JSON"}
           </button>
           <button className="tcp-btn" onClick={() => setWorkflowEditDraft(null)}>
-            <i data-lucide="x-circle"></i>
+            <Icon name="x-circle" />
             Cancel
           </button>
           <button
@@ -1790,7 +1785,7 @@ export function WorkflowAutomationEditDialog({
             }
             disabled={!workflowEditDraft?.automationId || runNowV2Mutation.isPending}
           >
-            <i data-lucide="play"></i>
+            <Icon name="play" />
             {runNowV2Mutation.isPending ? "Starting..." : "Run now"}
           </button>
           <button
@@ -1800,7 +1795,7 @@ export function WorkflowAutomationEditDialog({
             }
             disabled={updateWorkflowAutomationMutation.isPending}
           >
-            <i data-lucide="check"></i>
+            <Icon name="check" />
             {updateWorkflowAutomationMutation.isPending ? "Saving..." : "Save"}
           </button>
         </div>
@@ -1839,7 +1834,7 @@ export function DeleteAutomationDialog({
         </p>
         <div className="tcp-confirm-actions mt-3">
           <button className="tcp-btn" onClick={() => setDeleteConfirm(null)}>
-            <i data-lucide="x"></i>
+            <Icon name="x" />
             Cancel
           </button>
           <button
@@ -1858,7 +1853,7 @@ export function DeleteAutomationDialog({
               )
             }
           >
-            <i data-lucide="trash-2"></i>
+            <Icon name="trash-2" />
             {automationActionMutation.isPending ? "Deleting..." : "Delete automation"}
           </button>
         </div>

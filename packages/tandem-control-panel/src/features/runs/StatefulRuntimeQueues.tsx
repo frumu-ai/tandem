@@ -14,6 +14,7 @@ import {
 import { formatRunTimestamp } from "../../../lib/runs/stateful-runs.js";
 import type { AppPageProps } from "../../pages/pageTypes";
 import { StatefulRunFilterBar } from "./StatefulRunFilters";
+import { Icon } from "../../ui/Icon";
 
 type RuntimeQueueProps = Pick<AppPageProps, "api" | "navigate" | "toast"> & {
   filters: any;
@@ -41,7 +42,7 @@ function StatTiles({ items }: { items: Array<{ key: string; label: string; value
 function RunButton({ runId, onOpenRun }: { runId: string; onOpenRun: (runId: string) => void }) {
   return runId ? (
     <button type="button" className="tcp-btn h-7 px-2 text-xs" onClick={() => onOpenRun(runId)} title="Open run">
-      <i data-lucide="external-link"></i>
+      <Icon name="external-link" />
     </button>
   ) : null;
 }
@@ -103,11 +104,11 @@ export function WebhookInboxView({ api, navigate, filters, onFiltersChange, onOp
               onClick={() => eventsQuery.refetch()}
               disabled={eventsQuery.isFetching}
             >
-              <i data-lucide="refresh-cw"></i>
+              <Icon name="refresh-cw" />
               Refresh
             </button>
             <button type="button" className="tcp-btn h-8 px-3 text-xs" onClick={() => navigate("automations")}>
-              <i data-lucide="bot"></i>
+              <Icon name="bot" />
               Automations
             </button>
           </Toolbar>
@@ -180,7 +181,7 @@ export function WebhookInboxView({ api, navigate, filters, onFiltersChange, onOp
                           onClick={() => navigate("automations")}
                           title="Open trigger manager"
                         >
-                          <i data-lucide="list-tree"></i>
+                          <Icon name="list-tree" />
                         </button>
                       </div>
                     </td>
@@ -222,11 +223,11 @@ export function ApprovalWaitsView({ api, navigate, filters, onFiltersChange, onO
               onClick={() => approvalsQuery.refetch()}
               disabled={approvalsQuery.isFetching}
             >
-              <i data-lucide="refresh-cw"></i>
+              <Icon name="refresh-cw" />
               Refresh
             </button>
             <button type="button" className="tcp-btn h-8 px-3 text-xs" onClick={() => navigate("approvals")}>
-              <i data-lucide="shield-check"></i>
+              <Icon name="shield-check" />
               Decisions
             </button>
           </Toolbar>
@@ -308,7 +309,7 @@ export function ApprovalWaitsView({ api, navigate, filters, onFiltersChange, onO
                           onClick={() => navigate("approvals")}
                           title="Open approvals inbox"
                         >
-                          <i data-lucide="shield-check"></i>
+                          <Icon name="shield-check" />
                         </button>
                       </div>
                     </td>
@@ -418,7 +419,7 @@ export function RecoveryQueueView({ api, toast, filters, onFiltersChange, onOpen
               onClick={() => reliabilityQuery.refetch()}
               disabled={reliabilityQuery.isFetching}
             >
-              <i data-lucide="refresh-cw"></i>
+              <Icon name="refresh-cw" />
               Refresh
             </button>
           </Toolbar>

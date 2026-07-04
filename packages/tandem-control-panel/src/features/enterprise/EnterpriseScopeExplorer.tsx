@@ -17,6 +17,7 @@ import type {
   EnterpriseSourceBinding,
   EnterpriseSourceObjectLifecycle,
 } from "./queries";
+import { Icon } from "../../ui/Icon";
 
 type EnterpriseScopeExplorerProps = {
   api: AppPageProps["api"];
@@ -208,7 +209,7 @@ function RecentRuns({
               </div>
             </div>
             <button type="button" className="tcp-btn h-7 px-2 text-xs" onClick={() => onOpenRun(row.id)}>
-              <i data-lucide="external-link"></i>
+              <Icon name="external-link" />
             </button>
           </div>
         </div>
@@ -304,7 +305,7 @@ export function EnterpriseScopeExplorer({
             onClick={() => runsQuery.refetch()}
             disabled={runsQuery.isFetching}
           >
-            <i data-lucide="refresh-cw"></i>
+            <Icon name="refresh-cw" />
             Runs
           </button>
         </Toolbar>

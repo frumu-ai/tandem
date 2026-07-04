@@ -1,12 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { renderIcons } from "../app/icons.js";
 import { AgentStandupBuilder } from "./AgentStandupBuilder";
 import { PageCard, EmptyState } from "./ui";
 import { useCapabilities } from "../features/system/queries.ts";
 import type { AppPageProps } from "./pageTypes";
 import agentCatalog from "../generated/agent-catalog.json";
 import { detectBrowserTimezone } from "../features/automations/timezone";
+import { Icon } from "../ui/Icon";
 
 type AgentCatalogCategory = {
   id: string;
@@ -311,27 +311,6 @@ export function TeamsPage({ client, toast, navigate }: AppPageProps) {
       .filter((category) => category.agents.length > 0);
   }, [filteredCatalogAgents]);
 
-  useEffect(() => {
-    const root = rootRef.current;
-    if (!root) return;
-    renderIcons(root);
-  }, [
-    templates.length,
-    instances.length,
-    approvals.length,
-    form.role,
-    form.templateId,
-    form.displayName,
-    form.avatarUrl,
-    form.modelProvider,
-    form.modelId,
-    form.systemPrompt,
-    editingTemplateId,
-    templateMutation.isPending,
-    deleteMutation.isPending,
-    replyMutation.isPending,
-  ]);
-
   const [copiedPath, setCopiedPath] = useState("");
 
   const copyCatalogPath = async (path: string) => {
@@ -558,7 +537,7 @@ export function TeamsPage({ client, toast, navigate }: AppPageProps) {
                           title="Pre-fill the agent creation form from this catalog entry"
                           onClick={() => importFromCatalog(entry)}
                         >
-                          <i data-lucide="download"></i>
+                          <Icon name="download" />
                           Import as Agent
                         </button>
                         <button
@@ -566,7 +545,7 @@ export function TeamsPage({ client, toast, navigate }: AppPageProps) {
                           title="Open this agent in Studio (new tab)"
                           onClick={() => seedStudioFromCatalog(entry)}
                         >
-                          <i data-lucide="external-link"></i>
+                          <Icon name="external-link" />
                           Studio ↗
                         </button>
                         <button
@@ -578,7 +557,7 @@ export function TeamsPage({ client, toast, navigate }: AppPageProps) {
                           title="Copy source path to clipboard"
                           onClick={() => void copyCatalogPath(entry.source_path)}
                         >
-                          <i data-lucide={copiedPath === entry.source_path ? "check" : "copy"}></i>
+                          <Icon name={copiedPath === entry.source_path ? "check" : "copy"} />
                           {copiedPath === entry.source_path ? "Copied" : "Copy path"}
                         </button>
                       </div>
@@ -745,7 +724,7 @@ export function TeamsPage({ client, toast, navigate }: AppPageProps) {
                         aria-label="Upload avatar"
                         onClick={() => avatarInputRef.current?.click()}
                       >
-                        <i data-lucide="pencil"></i>
+                        <Icon name="pencil" />
                       </button>
                       <button
                         type="button"
@@ -759,7 +738,7 @@ export function TeamsPage({ client, toast, navigate }: AppPageProps) {
                           }))
                         }
                       >
-                        <i data-lucide="trash-2"></i>
+                        <Icon name="trash-2" />
                       </button>
                     </div>
                   </div>
@@ -811,7 +790,7 @@ export function TeamsPage({ client, toast, navigate }: AppPageProps) {
                   disabled={templateMutation.isPending}
                   onClick={() => templateMutation.mutate()}
                 >
-                  <i data-lucide="save"></i>
+                  <Icon name="save" />
                   {editingTemplateId ? "Update Agent" : "Create Agent"}
                 </button>
                 {hasDraft && (
@@ -823,7 +802,7 @@ export function TeamsPage({ client, toast, navigate }: AppPageProps) {
                       setForm(EMPTY_FORM);
                     }}
                   >
-                    <i data-lucide="rotate-ccw"></i>
+                    <Icon name="rotate-ccw" />
                     Reset
                   </button>
                 )}
@@ -879,7 +858,7 @@ export function TeamsPage({ client, toast, navigate }: AppPageProps) {
                               });
                             }}
                           >
-                            <i data-lucide="pencil"></i>
+                            <Icon name="pencil" />
                             Edit
                           </button>
                           <button
@@ -887,7 +866,7 @@ export function TeamsPage({ client, toast, navigate }: AppPageProps) {
                             className="tcp-btn-danger h-7 px-2 text-xs"
                             onClick={() => deleteMutation.mutate(template.templateId)}
                           >
-                            <i data-lucide="trash-2"></i>
+                            <Icon name="trash-2" />
                             Delete
                           </button>
                         </div>
@@ -957,7 +936,7 @@ export function TeamsPage({ client, toast, navigate }: AppPageProps) {
                         className="tcp-btn h-7 px-2 text-xs"
                         onClick={() => replyMutation.mutate({ requestId, decision: "approve" })}
                       >
-                        <i data-lucide="badge-check"></i>
+                        <Icon name="badge-check" />
                         Approve
                       </button>
                       <button
@@ -965,7 +944,7 @@ export function TeamsPage({ client, toast, navigate }: AppPageProps) {
                         className="tcp-btn-danger h-7 px-2 text-xs"
                         onClick={() => replyMutation.mutate({ requestId, decision: "deny" })}
                       >
-                        <i data-lucide="x"></i>
+                        <Icon name="x" />
                         Deny
                       </button>
                     </div>

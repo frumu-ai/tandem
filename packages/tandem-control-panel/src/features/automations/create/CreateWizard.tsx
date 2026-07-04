@@ -13,6 +13,7 @@ import {
 } from "../../planner/plannerShared";
 import type { ExecutionProfile } from "../AutomationsRunHelpers";
 import type { NavigationLockState } from "../../../pages/pageTypes";
+import { Icon } from "../../../ui/Icon";
 
 type ExecutionMode = "single" | "team" | "swarm";
 type WizardExecutionProfile = "" | ExecutionProfile;
@@ -1257,7 +1258,7 @@ export function CreateWizard({
           onClick={() => importAutomationFileRef.current?.click()}
           disabled={importAutomationMutation.isPending}
         >
-          <i data-lucide="upload"></i>
+          <Icon name="upload" />
           {importAutomationMutation.isPending ? "Importing..." : "Import JSON"}
         </button>
       </div>

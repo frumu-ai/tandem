@@ -25,6 +25,7 @@ import type {
   EnterpriseOrganizationUnit,
   RotateEnterpriseConnectorCredentialRefInput,
 } from "../../features/enterprise/queries";
+import { Icon } from "../../ui/Icon";
 
 export function ConnectorForm({
   onCreate,
@@ -97,7 +98,7 @@ export function ConnectorForm({
         </div>
         <div className="flex justify-end">
           <button className="tcp-btn tcp-btn-primary" type="submit" disabled={busy}>
-            <i data-lucide="plug"></i>
+            <Icon name="plug" />
             {busy ? "Creating" : "Create connector"}
           </button>
         </div>
@@ -286,7 +287,7 @@ export function ConnectorCredentialRefForm({
             type="submit"
             disabled={busy || !selectedConnectorId}
           >
-            <i data-lucide={mode === "rotate" ? "rotate-cw" : "key-round"}></i>
+            <Icon name={mode === "rotate" ? "rotate-cw" : "key-round"} />
             {busy ? "Saving" : mode === "rotate" ? "Rotate ref" : "Attach ref"}
           </button>
         </div>
@@ -391,7 +392,7 @@ export function OrgUnitForm({
         </div>
         <div className="flex justify-end">
           <button className="tcp-btn tcp-btn-primary" type="submit" disabled={busy}>
-            <i data-lucide="plus"></i>
+            <Icon name="plus" />
             {busy ? "Creating" : "Create unit"}
           </button>
         </div>
@@ -505,7 +506,7 @@ export function OrgUnitMembershipForm({
         </div>
         <div className="flex justify-end">
           <button className="tcp-btn tcp-btn-primary" type="submit" disabled={busy || !unitId}>
-            <i data-lucide="user-plus"></i>
+            <Icon name="user-plus" />
             {busy ? "Assigning" : "Assign member"}
           </button>
         </div>
@@ -675,7 +676,7 @@ export function OrgUnitAccessGrantForm({
             type="submit"
             disabled={busy || !unitId || !permissions.length || !dataClasses.length}
           >
-            <i data-lucide="shield-plus"></i>
+            <Icon name="shield-plus" />
             {busy ? "Granting" : "Create grant"}
           </button>
         </div>
@@ -847,7 +848,7 @@ export function SourceBindingForm({
         </div>
         <div className="flex justify-end">
           <button className="tcp-btn tcp-btn-primary" type="submit" disabled={busy}>
-            <i data-lucide="plus"></i>
+            <Icon name="plus" />
             {busy ? "Creating" : "Create binding"}
           </button>
         </div>

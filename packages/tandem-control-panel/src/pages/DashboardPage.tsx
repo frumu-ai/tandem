@@ -16,6 +16,7 @@ import { LazyJson } from "../features/automations/LazyJson";
 import { GraduationSummaryPanel } from "../features/automations/GraduationSummaryPanel";
 import { formatCompactNumber } from "../lib/format";
 import type { AppPageProps } from "./pageTypes";
+import { Icon } from "../ui/Icon";
 
 function toArray(input: any, key: string) {
   if (Array.isArray(input)) return input;
@@ -422,7 +423,7 @@ export function DashboardPage(props: AppPageProps) {
                     onClick={() => navigate("chat")}
                   >
                     <div className="font-medium inline-flex items-center gap-2">
-                      <i data-lucide="messages-square"></i>
+                      <Icon name="messages-square" />
                       {String(session.title || session.id || "Session")}
                     </div>
                     <div className="tcp-subtle mt-1 text-xs">
@@ -447,7 +448,7 @@ export function DashboardPage(props: AppPageProps) {
                   {workflowContextRows.length} recent
                 </Badge>
                 <button className="tcp-btn" onClick={() => navigate("orchestrator")}>
-                  <i data-lucide="workflow"></i>
+                  <Icon name="workflow" />
                   Open task board
                 </button>
               </Toolbar>
@@ -501,7 +502,7 @@ export function DashboardPage(props: AppPageProps) {
               <Toolbar className="mb-3">
                 <Badge tone="info">{routineRows.length} loaded</Badge>
                 <button className="tcp-btn" onClick={() => navigate("automations")}>
-                  <i data-lucide="bot"></i>
+                  <Icon name="bot" />
                   Manage
                 </button>
               </Toolbar>
@@ -530,7 +531,7 @@ export function DashboardPage(props: AppPageProps) {
               <div className="grid gap-2">
                 <div className="tcp-list-item">
                   <div className="font-medium inline-flex items-center gap-2">
-                    <i data-lucide="activity"></i>
+                    <Icon name="activity" />
                     Engine endpoint
                   </div>
                   <div className="tcp-subtle mt-1 text-xs">
@@ -539,14 +540,14 @@ export function DashboardPage(props: AppPageProps) {
                 </div>
                 <div className="tcp-list-item">
                   <div className="font-medium inline-flex items-center gap-2">
-                    <i data-lucide="radio"></i>
+                    <Icon name="radio" />
                     Swarm
                   </div>
                   <div className="tcp-subtle mt-1 text-xs">Status: {swarmStatus}</div>
                 </div>
                 <div className="tcp-list-item">
                   <div className="font-medium inline-flex items-center gap-2">
-                    <i data-lucide="database"></i>
+                    <Icon name="database" />
                     Memory & runs
                   </div>
                   <div className="mt-2 flex flex-wrap gap-2">

@@ -1,5 +1,6 @@
 import { Badge, PanelCard } from "../ui/index.tsx";
 import type { GithubRepoRef, TaskSourceType } from "./CodingWorkflowsHelpers";
+import { Icon } from "../ui/Icon";
 
 type LinearCatalog = {
   ok?: boolean;
@@ -357,7 +358,7 @@ export function CodingWorkflowsRegisterProjectPanel({
               <div className="flex flex-wrap items-center gap-2">
                 {linearAuthRequired ? (
                   <a className="tcp-btn h-7 px-2.5 tcp-text-caption" href="#/settings?section=mcp">
-                    <i data-lucide="plug-zap"></i>
+                    <Icon name="plug-zap" />
                     Open MCP
                   </a>
                 ) : null}
@@ -367,7 +368,7 @@ export function CodingWorkflowsRegisterProjectPanel({
                   onClick={() => refreshLinearCatalog?.()}
                   disabled={linearCatalogLoading}
                 >
-                  <i data-lucide="refresh-cw"></i>
+                  <Icon name="refresh-cw" />
                   Refresh Linear
                 </button>
               </div>
@@ -450,7 +451,7 @@ export function CodingWorkflowsRegisterProjectPanel({
                         className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border"
                         style={{ borderColor: color, backgroundColor: `${color}1f`, color }}
                       >
-                        <i data-lucide={linearProjectIcon(project)} className="h-4 w-4"></i>
+                        <Icon name={linearProjectIcon(project)} className="h-4 w-4" />
                       </span>
                       <span className="min-w-0">
                         <span className="block break-words text-sm font-semibold leading-5">
@@ -510,7 +511,7 @@ export function CodingWorkflowsRegisterProjectPanel({
                         }`}
                         aria-hidden="true"
                       >
-                        <i data-lucide="check" className="h-3.5 w-3.5"></i>
+                        <Icon name="check" className="h-3.5 w-3.5" />
                       </span>
                     </button>
                   );

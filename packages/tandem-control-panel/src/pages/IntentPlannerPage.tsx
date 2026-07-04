@@ -39,7 +39,7 @@ import {
   normalizePlannerConversationMessages,
   type PlannerProviderOption,
 } from "../features/planner/plannerShared";
-import { renderIcons } from "../app/icons.js";
+import { Icon } from "../ui/Icon";
 
 type ClarifierOption = {
   id: string;
@@ -669,12 +669,6 @@ export function IntentPlannerPage({
   }, [draftKey]);
 
   useEffect(() => {
-    try {
-      renderIcons();
-    } catch {}
-  });
-
-  useEffect(() => {
     if (!plannerDraftHydrated) return;
     const snapshot = {
       name: namedDraftName,
@@ -1278,7 +1272,7 @@ export function IntentPlannerPage({
                   onClick={() => void startPlanning()}
                   disabled={isPlanning}
                 >
-                  <i data-lucide={hasPlan ? "refresh-cw" : "play"} className="mr-1 h-3 w-3"></i>
+                  <Icon name={hasPlan ? "refresh-cw" : "play"} className="mr-1 h-3 w-3" />
                   {hasPlan ? "Regenerate" : "Start planning"}
                 </button>
                 <button
@@ -1287,7 +1281,7 @@ export function IntentPlannerPage({
                   onClick={() => void resetPlan()}
                   title="Reset session"
                 >
-                  <i data-lucide="rotate-ccw"></i>
+                  <Icon name="rotate-ccw" />
                 </button>
               </div>
             }

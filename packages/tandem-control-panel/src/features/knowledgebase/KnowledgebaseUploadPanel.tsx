@@ -1,10 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { renderIcons } from "../../app/icons.js";
 import { renderMarkdownSafe } from "../../lib/markdown";
 import { ConfirmDialog } from "../../components/ControlPanelDialogs";
 import { Badge, EmptyState, PanelCard, Toolbar } from "../../ui/index.tsx";
+import { Icon } from "../../ui/Icon";
 
 type KnowledgebaseCollection = {
   collection_id: string;
@@ -421,7 +421,7 @@ export function KnowledgebaseUploadPanel({
               onClick={() => void selectedDocumentQuery.refetch()}
               disabled={!selectedDocumentKey}
             >
-              <i data-lucide="refresh-cw"></i>
+              <Icon name="refresh-cw" />
               <span className="sr-only">Refresh preview</span>
             </button>
             <button
@@ -432,7 +432,7 @@ export function KnowledgebaseUploadPanel({
               onClick={() => void copySelectedDocument()}
               disabled={!selectedPreviewContent.trim()}
             >
-              <i data-lucide="copy"></i>
+              <Icon name="copy" />
               <span className="sr-only">Copy document content</span>
             </button>
             <button
@@ -449,7 +449,7 @@ export function KnowledgebaseUploadPanel({
               }
               disabled={!selectedDocumentCanMutate}
             >
-              <i data-lucide="trash-2"></i>
+              <Icon name="trash-2" />
               <span className="sr-only">Delete document</span>
             </button>
           </div>
@@ -513,7 +513,7 @@ export function KnowledgebaseUploadPanel({
                 className="tcp-btn h-7 px-2 text-xs"
                 onClick={() => void saveSelectedDocument()}
               >
-                <i data-lucide="save"></i>
+                <Icon name="save" />
                 Save
               </button>
             </div>
@@ -547,7 +547,7 @@ export function KnowledgebaseUploadPanel({
                 }}
                 disabled={!selectedPreviewContent.trim()}
               >
-                <i data-lucide="square-pen"></i>
+                <Icon name="square-pen" />
                 <span className="sr-only">Edit document</span>
               </button>
               <button
@@ -557,7 +557,7 @@ export function KnowledgebaseUploadPanel({
                 aria-label="Collapse preview"
                 onClick={() => setPreviewExpanded(false)}
               >
-                <i data-lucide="chevron-up"></i>
+                <Icon name="chevron-up" />
                 <span className="sr-only">Collapse preview</span>
               </button>
             </div>
@@ -597,7 +597,7 @@ export function KnowledgebaseUploadPanel({
                 aria-label="Open content"
                 onClick={() => setPreviewExpanded(true)}
               >
-                <i data-lucide="chevron-down"></i>
+                <Icon name="chevron-down" />
                 <span className="sr-only">Open content</span>
               </button>
               <button
@@ -613,7 +613,7 @@ export function KnowledgebaseUploadPanel({
                 }}
                 disabled={!selectedPreviewContent.trim()}
               >
-                <i data-lucide="square-pen"></i>
+                <Icon name="square-pen" />
                 <span className="sr-only">Edit in place</span>
               </button>
             </div>
@@ -663,34 +663,6 @@ export function KnowledgebaseUploadPanel({
       uploadClearOrderRef.current.clear();
     };
   }, []);
-
-  useEffect(() => {
-    if (panelRef.current) renderIcons(panelRef.current);
-  }, [
-    collections.length,
-    collectionOptions.length,
-    rows.length,
-    documentPage,
-    documentPageSize,
-    documentTotal,
-    documentOffset,
-    documentLimit,
-    currentCollection,
-    isUploading,
-    knowledgebaseAvailable,
-    documents.length,
-    pagedDocuments.length,
-    selectedDocumentKey,
-    selectedDocumentRef,
-    selectedDocumentCount,
-    documentSearch,
-    selectedDocumentQuery.data,
-    selectedDocumentQuery.isFetching,
-    previewExpanded,
-    editMode,
-    panelCollapsed,
-    documentListCollapsed,
-  ]);
 
   const clearFinishedUploads = () => {
     for (const row of rows) {
@@ -1113,7 +1085,7 @@ export function KnowledgebaseUploadPanel({
             onClick={() => uploadInputRef.current?.click()}
             disabled={isUploading}
           >
-            <i data-lucide="upload"></i>
+            <Icon name="upload" />
           </button>
           <button
             type="button"
@@ -1123,7 +1095,7 @@ export function KnowledgebaseUploadPanel({
             onClick={() => folderInputRef.current?.click()}
             disabled={isUploading}
           >
-            <i data-lucide="folder-up"></i>
+            <Icon name="folder-up" />
           </button>
           <button
             type="button"
@@ -1132,7 +1104,7 @@ export function KnowledgebaseUploadPanel({
             aria-label="Refresh collections"
             onClick={() => void collectionsQuery.refetch()}
           >
-            <i data-lucide="refresh-cw"></i>
+            <Icon name="refresh-cw" />
           </button>
           <button
             type="button"
@@ -1141,7 +1113,7 @@ export function KnowledgebaseUploadPanel({
             aria-label="Reindex knowledgebase"
             onClick={reindex}
           >
-            <i data-lucide="sparkles"></i>
+            <Icon name="sparkles" />
           </button>
           <button
             type="button"
@@ -1150,7 +1122,7 @@ export function KnowledgebaseUploadPanel({
             aria-label={panelCollapsed ? "Expand knowledgebase" : "Collapse knowledgebase"}
             onClick={() => setPanelCollapsed((current) => !current)}
           >
-            <i data-lucide={panelCollapsed ? "chevron-down" : "chevron-up"}></i>
+            <Icon name={panelCollapsed ? "chevron-down" : "chevron-up"} />
           </button>
         </Toolbar>
       }
@@ -1196,10 +1168,10 @@ export function KnowledgebaseUploadPanel({
                 )}
                 <option value="__custom__">Create new collection...</option>
               </select>
-              <i
-                data-lucide="chevron-down"
+              <Icon
+                name="chevron-down"
                 className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"
-              ></i>
+               />
             </div>
             {customCollectionSelected ? (
               <input
@@ -1224,7 +1196,7 @@ export function KnowledgebaseUploadPanel({
                   setCollectionId("");
                 }}
               >
-                <i data-lucide="plus"></i>
+                <Icon name="plus" />
               </button>
             )}
             <div className="flex shrink-0 gap-2">
@@ -1258,7 +1230,7 @@ export function KnowledgebaseUploadPanel({
                 onClick={() => uploadInputRef.current?.click()}
                 disabled={!currentCollection || isUploading}
               >
-                <i data-lucide="files"></i>
+                <Icon name="files" />
               </button>
               <button
                 type="button"
@@ -1268,7 +1240,7 @@ export function KnowledgebaseUploadPanel({
                 title="Select a local folder and upload all matching docs inside it"
                 aria-label="Select a local folder"
               >
-                <i data-lucide="folder-open"></i>
+                <Icon name="folder-open" />
               </button>
             </div>
           </div>
@@ -1298,7 +1270,7 @@ export function KnowledgebaseUploadPanel({
                   aria-label="Clear finished uploads"
                   onClick={clearFinishedUploads}
                 >
-                  <i data-lucide="x"></i>
+                  <Icon name="x" />
                 </button>
               ) : null}
             </div>
@@ -1367,7 +1339,7 @@ export function KnowledgebaseUploadPanel({
                 onClick={() => void documentsQuery.refetch()}
                 disabled={!currentCollection}
               >
-                <i data-lucide="refresh-cw"></i>
+                <Icon name="refresh-cw" />
               </button>
               <button
                 type="button"
@@ -1384,7 +1356,7 @@ export function KnowledgebaseUploadPanel({
                 }
                 onClick={() => setDocumentListCollapsed((current) => !current)}
               >
-                <i data-lucide={documentListCollapsed ? "chevron-down" : "chevron-up"}></i>
+                <Icon name={documentListCollapsed ? "chevron-down" : "chevron-up"} />
               </button>
             </div>
           </div>
@@ -1426,7 +1398,7 @@ export function KnowledgebaseUploadPanel({
                         onClick={selectVisibleDocuments}
                         disabled={!documents.length}
                       >
-                        <i data-lucide="square-check-big"></i>
+                        <Icon name="square-check-big" />
                       </button>
                       <button
                         type="button"
@@ -1436,7 +1408,7 @@ export function KnowledgebaseUploadPanel({
                         onClick={clearSelectedDocuments}
                         disabled={!selectedDocumentCount}
                       >
-                        <i data-lucide="x"></i>
+                        <Icon name="x" />
                       </button>
                       <button
                         type="button"
@@ -1446,7 +1418,7 @@ export function KnowledgebaseUploadPanel({
                         onClick={openBulkDeleteDialog}
                         disabled={!selectedDocumentCount}
                       >
-                        <i data-lucide="trash-2"></i>
+                        <Icon name="trash-2" />
                       </button>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
@@ -1479,7 +1451,7 @@ export function KnowledgebaseUploadPanel({
                         }
                         disabled={safeDocumentPage <= 1}
                       >
-                        <i data-lucide="chevron-left"></i>
+                        <Icon name="chevron-left" />
                       </button>
                       <button
                         type="button"
@@ -1491,7 +1463,7 @@ export function KnowledgebaseUploadPanel({
                         }
                         disabled={safeDocumentPage >= visibleDocumentPageCount}
                       >
-                        <i data-lucide="chevron-right"></i>
+                        <Icon name="chevron-right" />
                       </button>
                     </div>
                   </div>

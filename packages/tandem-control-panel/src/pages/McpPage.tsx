@@ -13,6 +13,7 @@ import {
 } from "../features/mcp/mcpConnections";
 import type { AppPageProps } from "./pageTypes";
 import { PageCard } from "./ui";
+import { Icon } from "../ui/Icon";
 
 type McpServer = {
   name: string;
@@ -935,7 +936,7 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
                 onClick={() => void handleAdd(true)}
                 disabled={actionMutation.isPending}
               >
-                <i data-lucide="plug-zap"></i>
+                <Icon name="plug-zap" />
                 Add + Connect My Account
               </button>
             </div>
@@ -961,7 +962,7 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
                 onInput={(event) => setCatalogSearch((event.target as HTMLInputElement).value)}
               />
               <button className="tcp-btn" onClick={() => void catalogQuery.refetch()}>
-                <i data-lucide="refresh-cw"></i>
+                <Icon name="refresh-cw" />
                 Refresh
               </button>
             </div>
@@ -1174,7 +1175,7 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
           >
             <div className="mb-3 flex items-center justify-end">
               <button className="tcp-btn" onClick={() => void invalidateMcp()}>
-                <i data-lucide="refresh-cw"></i>
+                <Icon name="refresh-cw" />
                 Reload
               </button>
             </div>
@@ -1284,7 +1285,7 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
                               })
                             }
                           >
-                            <i data-lucide="user-plus"></i>
+                            <Icon name="user-plus" />
                             Connect My Account
                           </button>
                           <button
@@ -1292,7 +1293,7 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
                             disabled={actionMutation.isPending}
                             onClick={() => actionMutation.mutate({ action: "refresh", server })}
                           >
-                            <i data-lucide="refresh-cw"></i>
+                            <Icon name="refresh-cw" />
                             Refresh My Connection
                           </button>
                         </div>
@@ -1366,7 +1367,7 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
                 placeholder="github.list_issues,github.create_pull_request"
               />
               <button className="tcp-btn" onClick={() => readinessMutation.mutate()}>
-                <i data-lucide="shield-check"></i>
+                <Icon name="shield-check" />
                 Check
               </button>
             </div>

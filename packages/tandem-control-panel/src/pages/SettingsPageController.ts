@@ -2,7 +2,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JsonObject } from "@frumu/tandem-client";
-import { renderIcons } from "../app/icons.js";
 import { renderMarkdownSafe } from "../lib/markdown";
 import { ProviderModelSelector } from "../components/ProviderModelSelector";
 import { McpToolAllowlistEditor } from "../components/McpToolAllowlistEditor";
@@ -3569,33 +3568,6 @@ export function useSettingsPageController({
   const defaultNavigationRows = navigationRows.filter((row) => row.defaultVisible);
   const advancedNavigationRows = navigationRows.filter((row) => !row.defaultVisible);
   const hiddenAdvancedNavigationCount = advancedNavigationRows.filter((row) => !row.enabled).length;
-
-  useEffect(() => {
-    const root = rootRef.current;
-    if (root) renderIcons(root);
-    else renderIcons();
-  }, [
-    activeSection,
-    incidentMonitorEnabled,
-    incidentMonitorPaused,
-    incidentMonitorWorkspaceRoot,
-    incidentMonitorMcpServer,
-    incidentMonitorStatus.readiness?.runtime_ready,
-    incidentMonitorStatus.runtime?.monitoring_active,
-    incidentMonitorStatus.runtime?.paused,
-    incidentMonitorStatus.runtime?.pending_incidents,
-    incidentMonitorStatus.pending_drafts,
-    incidentMonitorDrafts.length,
-    incidentMonitorIncidents.length,
-    refreshIncidentMonitorBindingsMutation.isPending,
-    incidentMonitorPauseResumeMutation.isPending,
-    incidentMonitorDraftDecisionMutation.isPending,
-    incidentMonitorReplayIncidentMutation.isPending,
-    incidentMonitorTriageRunMutation.isPending,
-    saveIncidentMonitorMutation.isPending,
-    mcpActionMutation.isPending,
-    saveSearchSettingsMutation.isPending,
-  ]);
 
   return {
     activeSection: activeSection,

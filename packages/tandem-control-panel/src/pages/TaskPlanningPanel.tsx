@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useQueryClient } from "@tanstack/react-query";
-import { renderIcons } from "../app/icons.js";
 import {
   clearPlannerComposerDraft,
   clearSelectedPlannerSession,
@@ -1851,24 +1850,6 @@ export function TaskPlanningPanel({
     !!plannerDiagnostics ||
     planningChangeSummary.length > 0 ||
     (Array.isArray(planningConversation?.messages) && planningConversation.messages.length > 0);
-
-  useEffect(() => {
-    if (rootRef.current) renderIcons(rootRef.current);
-  }, [
-    clarification.status,
-    displayTasks.length,
-    hasPlannerResponse,
-    isPlanning,
-    plannerError,
-    planPreview,
-    planningChangeSummary.length,
-    planningConversation,
-    plannerSessionSummaries.length,
-    selectedSessionId,
-    sessionsOpen,
-    publishStatus,
-    saveStatus,
-  ]);
 
   return (
     <TaskPlanningPanelView

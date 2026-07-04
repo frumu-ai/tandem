@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
-import { renderIcons } from "../../app/icons.js";
 import { ConfirmDialog } from "../../components/ControlPanelDialogs";
 import { Badge, PanelCard, Toolbar } from "../../ui/index.tsx";
+import { Icon } from "../../ui/Icon";
 
 type PromptCollectionOverride = {
   collection_id: string;
@@ -207,11 +207,8 @@ export function KnowledgebasePromptsPanel({
             title={collapsed ? "Expand prompts" : "Collapse prompts"}
             aria-label={collapsed ? "Expand prompts" : "Collapse prompts"}
             onClick={() => setCollapsed((value) => !value)}
-            ref={(el) => {
-              if (el) renderIcons(el);
-            }}
           >
-            <i data-lucide={collapsed ? "chevron-down" : "chevron-up"} aria-hidden="true" />
+            <Icon name={collapsed ? "chevron-down" : "chevron-up"} aria-hidden="true" />
           </button>
         </Toolbar>
       }

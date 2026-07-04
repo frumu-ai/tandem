@@ -15,6 +15,7 @@ import type {
   EnterpriseSourceBinding,
   EnterpriseSourceObjectLifecycle,
 } from "../../features/enterprise/queries";
+import { Icon } from "../../ui/Icon";
 
 export function OrgUnitsPanel({
   rows,
@@ -36,7 +37,7 @@ export function OrgUnitsPanel({
           <Badge tone={error ? "err" : rows.length ? "ok" : "ghost"}>{rows.length}</Badge>
           {onCreateNew ? (
             <button className="tcp-btn h-7 px-2 text-xs" type="button" onClick={onCreateNew}>
-              <i data-lucide="plus"></i>
+              <Icon name="plus" />
               New
             </button>
           ) : null}
@@ -115,7 +116,7 @@ export function OrgUnitMembershipsPanel({
           <Badge tone={error ? "err" : rows.length ? "ok" : "ghost"}>{rows.length}</Badge>
           {onCreateNew ? (
             <button className="tcp-btn h-7 px-2 text-xs" type="button" onClick={onCreateNew}>
-              <i data-lucide="plus"></i>
+              <Icon name="plus" />
               New
             </button>
           ) : null}
@@ -208,7 +209,7 @@ export function OrgUnitAccessGrantsPanel({
           <Badge tone={error ? "err" : rows.length ? "ok" : "ghost"}>{rows.length}</Badge>
           {onCreateNew ? (
             <button className="tcp-btn h-7 px-2 text-xs" type="button" onClick={onCreateNew}>
-              <i data-lucide="plus"></i>
+              <Icon name="plus" />
               New
             </button>
           ) : null}
@@ -344,13 +345,13 @@ export function ConnectorsPanel({
               type="button"
               onClick={onCreateCredentialRef}
             >
-              <i data-lucide="key-round"></i>
+              <Icon name="key-round" />
               Credential ref
             </button>
           ) : null}
           {onCreateNew ? (
             <button className="tcp-btn h-7 px-2 text-xs" type="button" onClick={onCreateNew}>
-              <i data-lucide="plus"></i>
+              <Icon name="plus" />
               New
             </button>
           ) : null}
@@ -437,7 +438,7 @@ export function ConnectorsPanel({
                     disabled={selectedConnectorId === connector.connector_id}
                     onClick={() => onSelectImpact(connector.connector_id)}
                   >
-                    <i data-lucide="radar"></i>
+                    <Icon name="radar" />
                     Impact
                   </button>
                 </div>
@@ -583,7 +584,7 @@ export function SourceBindingsPanel({
           <Badge tone={error ? "err" : rows.length ? "ok" : "ghost"}>{rows.length}</Badge>
           {onCreateNew ? (
             <button className="tcp-btn h-7 px-2 text-xs" type="button" onClick={onCreateNew}>
-              <i data-lucide="plus"></i>
+              <Icon name="plus" />
               New
             </button>
           ) : null}
@@ -653,7 +654,7 @@ export function SourceBindingsPanel({
                     onClick={() => onSelectBinding(binding.binding_id)}
                     disabled={selectedBindingId === binding.binding_id}
                   >
-                    <i data-lucide="list-tree"></i>
+                    <Icon name="list-tree" />
                     Objects
                   </button>
                 </div>
@@ -745,7 +746,7 @@ export function GoogleDriveOperationsPanel({
               disabled={preflightBusy || importBusy || reindexBusy}
               onClick={onPreflight}
             >
-              <i data-lucide="radar"></i>
+              <Icon name="radar" />
               Preflight
             </button>
             <button
@@ -761,7 +762,7 @@ export function GoogleDriveOperationsPanel({
                 })
               }
             >
-              <i data-lucide="download-cloud"></i>
+              <Icon name="download-cloud" />
               Import
             </button>
             <button
@@ -777,7 +778,7 @@ export function GoogleDriveOperationsPanel({
                 })
               }
             >
-              <i data-lucide="refresh-cw"></i>
+              <Icon name="refresh-cw" />
               Reindex binding
             </button>
           </div>
@@ -993,7 +994,7 @@ export function SourceObjectLifecyclePanel({
                       disabled={isBusy}
                       onClick={() => onReindex(object.source_object_id)}
                     >
-                      <i data-lucide="refresh-cw"></i>
+                      <Icon name="refresh-cw" />
                       Reindex
                     </button>
                     <button
@@ -1002,7 +1003,7 @@ export function SourceObjectLifecyclePanel({
                       disabled={isBusy}
                       onClick={() => beginRescope(object)}
                     >
-                      <i data-lucide="move-horizontal"></i>
+                      <Icon name="move-horizontal" />
                       Re-scope
                     </button>
                     <button
@@ -1011,7 +1012,7 @@ export function SourceObjectLifecyclePanel({
                       disabled={isBusy}
                       onClick={() => onDelete(object.source_object_id)}
                     >
-                      <i data-lucide="trash-2"></i>
+                      <Icon name="trash-2" />
                       Delete
                     </button>
                   </div>
@@ -1077,7 +1078,7 @@ export function SourceObjectLifecyclePanel({
                   type="submit"
                   disabled={busyObjectId === selectedObject.source_object_id}
                 >
-                  <i data-lucide="shield-check"></i>
+                  <Icon name="shield-check" />
                   Apply scope
                 </button>
               </div>

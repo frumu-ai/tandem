@@ -1,3 +1,4 @@
+import { Icon } from "../../ui/Icon";
 interface ScopePolicy {
   readable_paths?: string[] | null;
   writable_paths?: string[] | null;
@@ -68,7 +69,7 @@ export function ScopePolicyEditor({ value, onChange }: Props) {
             onClick={clear}
             title="Clear all paths (open policy)"
           >
-            <i data-lucide="shield-off" />
+            <Icon name="shield-off" />
             Clear
           </button>
         )}

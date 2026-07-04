@@ -1,6 +1,6 @@
 import { useEffect } from "react";
-import { renderIcons } from "../../app/icons.js";
 import { seedAutomationPlanner } from "../chat/chatPageHelpers";
+import { Icon } from "../../ui/Icon";
 
 type ActiveTab = "create" | "calendar" | "list" | "running";
 type CreateMode = "simple" | "advanced" | "composer";
@@ -8,7 +8,7 @@ type CreateMode = "simple" | "advanced" | "composer";
 function SectionTitle({ icon, label }: { icon: string; label: string }) {
   return (
     <span className="inline-flex items-center gap-2">
-      <i data-lucide={icon} className="h-4 w-4 text-amber-300/90"></i>
+      <Icon name={icon} className="h-4 w-4 text-amber-300/90" />
       <span>{label}</span>
     </span>
   );
@@ -96,11 +96,6 @@ export function AutomationsPageTabs({
   MyAutomationsComponent,
   AdvancedMissionBuilderPanelComponent,
 }: AutomationsPageTabsProps) {
-  useEffect(() => {
-    try {
-      renderIcons();
-    } catch {}
-  }, [tab, createMode, composerEnabled]);
 
   const tabs: { id: ActiveTab; label: string; icon: string }[] = [
     { id: "create", label: "Create", icon: "sparkles" },
@@ -139,7 +134,7 @@ export function AutomationsPageTabs({
                 : "text-slate-400 hover:text-slate-200"
             }`}
           >
-            <i data-lucide={entry.icon}></i>
+            <Icon name={entry.icon} />
             <span>{entry.label}</span>
           </button>
         ))}

@@ -4,6 +4,7 @@ import {
   plannerSessionStatusLabel,
   plannerSessionStatusTone,
 } from "./plannerShared";
+import { Icon } from "../../ui/Icon";
 
 type PlannerSessionRailProps = {
   sessions: PlannerSessionSummary[];
@@ -38,7 +39,7 @@ export function PlannerSessionRail({
           </div>
         </div>
         <button type="button" className="tcp-btn shrink-0" onClick={onCreateSession}>
-          <i data-lucide="plus"></i>
+          <Icon name="plus" />
           New plan
         </button>
       </div>
@@ -86,7 +87,7 @@ export function PlannerSessionRail({
                     onClick={() => onRenameSession(session.id)}
                     title="Rename session"
                   >
-                    <i data-lucide="pencil"></i>
+                    <Icon name="pencil" />
                   </button>
                   <button
                     type="button"
@@ -94,7 +95,7 @@ export function PlannerSessionRail({
                     onClick={() => onDuplicateSession(session.id)}
                     title="Duplicate session"
                   >
-                    <i data-lucide="copy"></i>
+                    <Icon name="copy" />
                   </button>
                   <button
                     type="button"
@@ -102,7 +103,7 @@ export function PlannerSessionRail({
                     onClick={() => onDeleteSession(session.id)}
                     title="Delete session"
                   >
-                    <i data-lucide="trash-2"></i>
+                    <Icon name="trash-2" />
                   </button>
                 </div>
               </article>
@@ -115,7 +116,7 @@ export function PlannerSessionRail({
               Start a new plan when you are ready to create the first draft thread.
             </div>
             <button type="button" className="tcp-btn mt-3" onClick={onCreateSession}>
-              <i data-lucide="plus"></i>
+              <Icon name="plus" />
               Start new plan
             </button>
           </div>

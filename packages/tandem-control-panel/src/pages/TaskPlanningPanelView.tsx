@@ -6,6 +6,7 @@ import { renderMarkdownSafe } from "../lib/markdown";
 import { PlannerDiagnosticsPanel } from "../features/planner/PlannerDiagnosticsPanel";
 import { PlannerSessionRail } from "../features/planner/PlannerSessionRail";
 import { ConfirmDialog, PromptDialog } from "../components/ControlPanelDialogs";
+import { Icon } from "../ui/Icon";
 
 export function TaskPlanningPanelView(props: any) {
   const { rootRef, session, planner, status, provider, actions, dialogs } = props as any;
@@ -152,7 +153,7 @@ export function TaskPlanningPanelView(props: any) {
               className="tcp-btn xl:hidden"
               onClick={() => setSessionsOpen(true)}
             >
-              <i data-lucide="history"></i>
+              <Icon name="history" />
               Sessions
             </button>
           }
@@ -312,7 +313,7 @@ export function TaskPlanningPanelView(props: any) {
                       }
                       disabled={!selectedSessionId || isPlanning}
                     >
-                      <i data-lucide="pencil"></i>
+                      <Icon name="pencil" />
                       Rename
                     </button>
                     <button
@@ -325,7 +326,7 @@ export function TaskPlanningPanelView(props: any) {
                       }
                       disabled={!selectedSessionId || isPlanning}
                     >
-                      <i data-lucide="copy"></i>
+                      <Icon name="copy" />
                       Duplicate
                     </button>
                     <button
@@ -336,7 +337,7 @@ export function TaskPlanningPanelView(props: any) {
                       }
                       disabled={!selectedSessionId || isPlanning}
                     >
-                      <i data-lucide="trash-2"></i>
+                      <Icon name="trash-2" />
                       Delete
                     </button>
                     <button
@@ -344,7 +345,7 @@ export function TaskPlanningPanelView(props: any) {
                       className="tcp-btn h-8 px-2 text-xs xl:hidden"
                       onClick={() => setSessionsOpen(true)}
                     >
-                      <i data-lucide="history"></i>
+                      <Icon name="history" />
                       Sessions
                     </button>
                   </div>
@@ -386,7 +387,7 @@ export function TaskPlanningPanelView(props: any) {
                       onClick={createNewPlannerSession}
                       disabled={isPlanning}
                     >
-                      <i data-lucide="plus"></i>
+                      <Icon name="plus" />
                       Start new plan
                     </button>
                   </div>
@@ -428,7 +429,7 @@ export function TaskPlanningPanelView(props: any) {
                   onClick={() => void previewMutation(plannerInput || goal)}
                   disabled={isPlanning}
                 >
-                  <i data-lucide="refresh-cw"></i>
+                  <Icon name="refresh-cw" />
                   Regenerate plan
                 </button>
               ) : null}
@@ -438,7 +439,7 @@ export function TaskPlanningPanelView(props: any) {
                 onClick={() => void resetMutation()}
                 disabled={resetting || isPlanning}
               >
-                <i data-lucide="rotate-ccw"></i>
+                <Icon name="rotate-ccw" />
                 {resetting ? "Resetting…" : "Reset plan"}
               </button>
               <button
@@ -456,7 +457,7 @@ export function TaskPlanningPanelView(props: any) {
                   isPlanning || (!plannerInput && !notes && !plannerError && !plannerDiagnostics)
                 }
               >
-                <i data-lucide="eraser"></i>
+                <Icon name="eraser" />
                 Clear composer and warnings
               </button>
               <button
@@ -511,7 +512,7 @@ export function TaskPlanningPanelView(props: any) {
                 }}
                 disabled={isPlanning}
               >
-                <i data-lucide="save"></i>
+                <Icon name="save" />
                 Sync session
               </button>
               <button
@@ -526,7 +527,7 @@ export function TaskPlanningPanelView(props: any) {
                 }}
                 disabled={isPlanning}
               >
-                <i data-lucide="copy"></i>
+                <Icon name="copy" />
                 Copy markdown
               </button>
             </div>
@@ -639,11 +640,11 @@ export function TaskPlanningPanelView(props: any) {
                       }
                       onClick={() => void publishTasks()}
                     >
-                      <i
-                        data-lucide={
+                      <Icon
+                        name={
                           isGitHubProject && canPublishToGitHub ? "badge-check" : "arrow-up-circle"
                         }
-                      ></i>
+                       />
                       {publishing
                         ? "Publishing…"
                         : isGitHubProject && canPublishToGitHub

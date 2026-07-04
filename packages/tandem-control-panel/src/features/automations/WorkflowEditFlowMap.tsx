@@ -1,4 +1,5 @@
 import { useMemo } from "preact/hooks";
+import { Icon } from "../../ui/Icon";
 
 type WorkflowEditFlowMapProps = {
   nodes: any[];
@@ -271,7 +272,7 @@ export function WorkflowEditFlowMap({
                   aria-hidden="true"
                 >
                   <span className="h-10 w-px bg-slate-800"></span>
-                  <i data-lucide="arrow-right"></i>
+                  <Icon name="arrow-right" />
                   <span className="h-10 w-px bg-slate-800"></span>
                 </div>
               ) : null}

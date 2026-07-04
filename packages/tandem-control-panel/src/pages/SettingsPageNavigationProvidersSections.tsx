@@ -12,6 +12,7 @@ import {
   providerCatalogSubtitle,
   useSettingsPageController,
 } from "./SettingsPageController";
+import { Icon } from "../ui/Icon";
 
 type SettingsPageControllerState = ReturnType<typeof useSettingsPageController>;
 
@@ -174,7 +175,7 @@ export function SettingsPageNavigationProvidersSections({
                             : "border-slate-700/70 bg-slate-950/30 text-slate-300"
                         }`}
                       >
-                        <i data-lucide={row.icon}></i>
+                        <Icon name={row.icon} />
                       </span>
                       <div className="min-w-0">
                         <div className="font-medium">{row.label}</div>
@@ -228,7 +229,7 @@ export function SettingsPageNavigationProvidersSections({
                             : "border-slate-700/70 bg-slate-950/30 text-slate-300"
                         }`}
                       >
-                        <i data-lucide={row.icon}></i>
+                        <Icon name={row.icon} />
                       </span>
                       <div className="min-w-0">
                         <div className="font-medium">{row.label}</div>
@@ -277,7 +278,7 @@ export function SettingsPageNavigationProvidersSections({
                   installConfigQuery.refetch().then(() => toast("ok", "Install config refreshed."))
                 }
               >
-                <i data-lucide="refresh-cw"></i>
+                <Icon name="refresh-cw" />
                 Refresh
               </button>
               <button
@@ -286,7 +287,7 @@ export function SettingsPageNavigationProvidersSections({
                 onClick={() => saveInstallConfigMutation.mutate()}
                 disabled={saveInstallConfigMutation.isPending}
               >
-                <i data-lucide="save"></i>
+                <Icon name="save" />
                 Save config
               </button>
             </div>
@@ -501,7 +502,7 @@ export function SettingsPageNavigationProvidersSections({
                   refreshProviderStatus().then(() => toast("ok", "Provider status refreshed."))
                 }
               >
-                <i data-lucide="refresh-cw"></i>
+                <Icon name="refresh-cw" />
                 Refresh provider
               </button>
             </div>
@@ -517,7 +518,7 @@ export function SettingsPageNavigationProvidersSections({
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <div className="font-medium inline-flex items-center gap-2">
-                    <i data-lucide={providerDefaultsOpen ? "chevron-down" : "chevron-right"}></i>
+                    <Icon name={providerDefaultsOpen ? "chevron-down" : "chevron-right"} />
                     <span>
                       {providerDefaultsOpen ? "Hide provider catalog" : "Show provider catalog"}
                     </span>
@@ -561,11 +562,11 @@ export function SettingsPageNavigationProvidersSections({
                       <div className="flex items-center justify-between gap-3">
                         <div>
                           <div className="font-medium inline-flex items-center gap-2">
-                            <i
-                              data-lucide={
+                            <Icon
+                              name={
                                 customProviderFormOpen ? "chevron-down" : "chevron-right"
                               }
-                            ></i>
+                             />
                             <span>
                               {customProviderFormOpen
                                 ? "Hide custom provider form"
@@ -668,7 +669,7 @@ export function SettingsPageNavigationProvidersSections({
                                 type="submit"
                                 disabled={saveCustomProviderMutation.isPending}
                               >
-                                <i data-lucide="plus"></i>
+                                <Icon name="plus" />
                                 Save custom provider
                               </button>
                             </div>
@@ -707,7 +708,7 @@ export function SettingsPageNavigationProvidersSections({
                                   setProviderDefaultsOpen(true);
                                 }}
                               >
-                                <i data-lucide="square-pen"></i>
+                                <Icon name="square-pen" />
                                 Edit
                               </button>
                             </div>
@@ -820,7 +821,7 @@ export function SettingsPageNavigationProvidersSections({
                                   target="_blank"
                                   rel="noreferrer"
                                 >
-                                  <i data-lucide="external-link"></i>
+                                  <Icon name="external-link" />
                                   Get API key
                                 </a>
                               </div>
@@ -845,7 +846,7 @@ export function SettingsPageNavigationProvidersSections({
                                   }
                                 />
                                 <button className="tcp-btn" type="submit">
-                                  <i data-lucide="badge-check"></i>
+                                  <Icon name="badge-check" />
                                   Apply
                                 </button>
                               </div>
@@ -1020,7 +1021,7 @@ export function SettingsPageNavigationProvidersSections({
                                           })
                                         }
                                       >
-                                        <i data-lucide="upload"></i>
+                                        <Icon name="upload" />
                                         {oauthConnected
                                           ? "Replace hosted Codex session"
                                           : "Import pasted auth.json"}
@@ -1034,7 +1035,7 @@ export function SettingsPageNavigationProvidersSections({
                                         }
                                         onClick={() => codexAuthInputRef.current?.click()}
                                       >
-                                        <i data-lucide="file-up"></i>
+                                        <Icon name="file-up" />
                                         Choose auth.json file
                                       </button>
                                       {localCodexSessionAvailable ? (
@@ -1058,7 +1059,7 @@ export function SettingsPageNavigationProvidersSections({
                                             });
                                           }}
                                         >
-                                          <i data-lucide="link-2"></i>
+                                          <Icon name="link-2" />
                                           Use Local Codex Session
                                         </button>
                                       ) : null}
@@ -1076,7 +1077,7 @@ export function SettingsPageNavigationProvidersSections({
                                             })
                                           }
                                         >
-                                          <i data-lucide="sparkles"></i>
+                                          <Icon name="sparkles" />
                                           Use for Tandem Runs
                                         </button>
                                       ) : null}
@@ -1095,7 +1096,7 @@ export function SettingsPageNavigationProvidersSections({
                                           })
                                         }
                                       >
-                                        <i data-lucide="unlink"></i>
+                                        <Icon name="unlink" />
                                         Disconnect
                                       </button>
                                     </div>
@@ -1116,7 +1117,7 @@ export function SettingsPageNavigationProvidersSections({
                                         })
                                       }
                                     >
-                                      <i data-lucide="log-in"></i>
+                                      <Icon name="log-in" />
                                       {oauthConnected
                                         ? "Reconnect Codex Account"
                                         : "Connect Codex Account"}
@@ -1144,7 +1145,7 @@ export function SettingsPageNavigationProvidersSections({
                                           });
                                         }}
                                       >
-                                        <i data-lucide="link-2"></i>
+                                        <Icon name="link-2" />
                                         Use Local Codex Session
                                       </button>
                                     ) : null}
@@ -1162,7 +1163,7 @@ export function SettingsPageNavigationProvidersSections({
                                           })
                                         }
                                       >
-                                        <i data-lucide="sparkles"></i>
+                                        <Icon name="sparkles" />
                                         Use for Tandem Runs
                                       </button>
                                     ) : null}
@@ -1180,7 +1181,7 @@ export function SettingsPageNavigationProvidersSections({
                                         })
                                       }
                                     >
-                                      <i data-lucide="unlink"></i>
+                                      <Icon name="unlink" />
                                       Disconnect
                                     </button>
                                     {oauthPending ? (
@@ -1195,7 +1196,7 @@ export function SettingsPageNavigationProvidersSections({
                                           )
                                         }
                                       >
-                                        <i data-lucide="external-link"></i>
+                                        <Icon name="external-link" />
                                         Open Codex
                                       </button>
                                     ) : null}
@@ -1224,7 +1225,7 @@ export function SettingsPageNavigationProvidersSections({
                                   )}
                                 />
                                 <button className="tcp-btn" type="submit">
-                                  <i data-lucide="save"></i>
+                                  <Icon name="save" />
                                   Save
                                 </button>
                               </form>

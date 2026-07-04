@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { renderIcons } from "../app/icons.js";
 import { collapseMcpAllowedToolsSelection, normalizeMcpToolNames } from "../features/mcp/mcpTools";
+import { Icon } from "../ui/Icon";
 
 type McpToolAllowlistEditorProps = {
   title: string;
@@ -41,10 +41,6 @@ export function McpToolAllowlistEditor({
     discovered.length > 0 &&
     visibleSelectedCount === discovered.length &&
     extraSelected.length === 0;
-
-  useEffect(() => {
-    if (rootRef.current) renderIcons(rootRef.current);
-  }, [collapsed, discovered.length, extraSelected.length, visibleSelectedCount]);
 
   const setSelection = (next: string[] | null) => {
     if (disabled) return;
@@ -139,8 +135,8 @@ export function McpToolAllowlistEditor({
               aria-expanded={!collapsed}
               onClick={() => setCollapsed((value) => !value)}
             >
-              <i
-                data-lucide="chevron-down"
+              <Icon
+                name="chevron-down"
                 className={`block h-4 w-4 transition-transform ${collapsed ? "" : "rotate-180"}`}
               />
             </button>

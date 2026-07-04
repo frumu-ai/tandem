@@ -11,6 +11,7 @@ import {
 } from "../../../lib/runs/stateful-runs.js";
 import type { AppPageProps } from "../../pages/pageTypes";
 import { StatefulRunFilterBar } from "./StatefulRunFilters";
+import { Icon } from "../../ui/Icon";
 
 type RunsProps = Pick<AppPageProps, "api" | "client" | "navigate">;
 type RunListRequest = Pick<AppPageProps, "api" | "client">;
@@ -206,7 +207,7 @@ function RunObservabilityPanel({
         <div className="space-y-3 text-sm text-tcp-text-secondary">
           <p>Context run details are available from the Orchestrator surface.</p>
           <button type="button" className="tcp-btn h-8 px-3 text-xs" onClick={onOpen}>
-            <i data-lucide="external-link"></i>
+            <Icon name="external-link" />
             Open
           </button>
         </div>
@@ -222,7 +223,7 @@ function RunObservabilityPanel({
       actions={
         <Toolbar>
           <button type="button" className="tcp-btn h-8 px-3 text-xs" onClick={onOpen}>
-            <i data-lucide="external-link"></i>
+            <Icon name="external-link" />
             Open
           </button>
         </Toolbar>
@@ -407,7 +408,7 @@ export function StatefulRunsPage({
               onClick={() => runsQuery.refetch()}
               disabled={runsQuery.isFetching}
             >
-              <i data-lucide="refresh-cw"></i>
+              <Icon name="refresh-cw" />
               Refresh
             </button>
             <button
@@ -415,7 +416,7 @@ export function StatefulRunsPage({
               className="tcp-btn h-8 px-3 text-xs"
               onClick={() => navigate("automations")}
             >
-              <i data-lucide="bot"></i>
+              <Icon name="bot" />
               Automations
             </button>
           </Toolbar>
@@ -561,7 +562,7 @@ export function StatefulRunsPage({
                               }}
                               title="Inspect run detail"
                             >
-                              <i data-lucide="search"></i>
+                              <Icon name="search" />
                             </button>
                             <button
                               type="button"
@@ -572,7 +573,7 @@ export function StatefulRunsPage({
                               }}
                               title={`Open ${row.sourceLabel.toLowerCase()} view`}
                             >
-                              <i data-lucide="external-link"></i>
+                              <Icon name="external-link" />
                             </button>
                           </div>
                         </td>

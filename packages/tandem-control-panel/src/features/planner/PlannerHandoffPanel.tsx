@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Badge, PanelCard } from "../../ui/index.tsx";
 import type { IntentBriefDraft } from "./IntentBriefPanel";
+import { Icon } from "../../ui/Icon";
 
 const AUTOMATION_PLANNER_SEED_KEY = "tandem.automations.plannerSeed";
 const CODING_TASK_PLANNING_HANDOFF_KEY = "tandem.intent-planner.codingTaskHandoff.v1";
@@ -177,23 +178,23 @@ export function PlannerHandoffPanel({
 
         <div className="flex flex-wrap gap-2">
           <button type="button" className="tcp-btn" onClick={seedAutomationDraft}>
-            <i data-lucide="bot" className="mr-1 h-3 w-3"></i>
+            <Icon name="bot" className="mr-1 h-3 w-3" />
             Create automation draft
           </button>
           <button type="button" className="tcp-btn" onClick={() => navigate("studio")}>
-            <i data-lucide="network" className="mr-1 h-3 w-3"></i>
+            <Icon name="network" className="mr-1 h-3 w-3" />
             Open in mission builder
           </button>
           <button type="button" className="tcp-btn" onClick={seedCodingBundle}>
-            <i data-lucide="code" className="mr-1 h-3 w-3"></i>
+            <Icon name="code" className="mr-1 h-3 w-3" />
             Publish Coder task bundle
           </button>
           <button type="button" className="tcp-btn" onClick={() => navigate("orchestrator")}>
-            <i data-lucide="sparkles" className="mr-1 h-3 w-3"></i>
+            <Icon name="sparkles" className="mr-1 h-3 w-3" />
             Open task board
           </button>
           <button type="button" className="tcp-btn-primary" onClick={() => void exportBundle()}>
-            <i data-lucide="download" className="mr-1 h-3 w-3"></i>
+            <Icon name="download" className="mr-1 h-3 w-3" />
             Export plan bundle
           </button>
         </div>

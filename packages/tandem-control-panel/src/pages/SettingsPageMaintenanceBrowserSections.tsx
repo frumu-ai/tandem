@@ -1,6 +1,7 @@
 import { AnimatePresence, motion } from "motion/react";
 import { Badge, PanelCard, Toolbar } from "../ui/index.tsx";
 import { useSettingsPageController } from "./SettingsPageController";
+import { Icon } from "../ui/Icon";
 
 type SettingsPageControllerState = ReturnType<typeof useSettingsPageController>;
 
@@ -53,7 +54,7 @@ export function SettingsPageMaintenanceBrowserSections({
                   void systemHealthQuery.refetch();
                 }}
               >
-                <i data-lucide="refresh-cw"></i>
+                <Icon name="refresh-cw" />
                 Refresh root
               </button>
               <button
@@ -66,7 +67,7 @@ export function SettingsPageMaintenanceBrowserSections({
                 }
                 disabled={worktreeCleanupMutation.isPending || !worktreeCleanupRepoRoot.trim()}
               >
-                <i data-lucide="search"></i>
+                <Icon name="search" />
                 Preview stale worktrees
               </button>
               <button
@@ -79,7 +80,7 @@ export function SettingsPageMaintenanceBrowserSections({
                 }
                 disabled={worktreeCleanupMutation.isPending || !worktreeCleanupRepoRoot.trim()}
               >
-                <i data-lucide="trash-2"></i>
+                <Icon name="trash-2" />
                 {worktreeCleanupMutation.isPending
                   ? "Cleaning up..."
                   : worktreeCleanupDryRun
@@ -256,7 +257,7 @@ export function SettingsPageMaintenanceBrowserSections({
           actions={
             <Toolbar>
               <button className="tcp-btn" onClick={() => void browserStatus.refetch()}>
-                <i data-lucide="refresh-cw"></i>
+                <Icon name="refresh-cw" />
                 Refresh browser status
               </button>
               <button
@@ -264,7 +265,7 @@ export function SettingsPageMaintenanceBrowserSections({
                 onClick={() => installBrowserMutation.mutate()}
                 disabled={installBrowserMutation.isPending}
               >
-                <i data-lucide="download"></i>
+                <Icon name="download" />
                 {installBrowserMutation.isPending ? "Installing sidecar..." : "Install sidecar"}
               </button>
               <button
@@ -272,11 +273,11 @@ export function SettingsPageMaintenanceBrowserSections({
                 onClick={() => smokeTestBrowserMutation.mutate()}
                 disabled={smokeTestBrowserMutation.isPending}
               >
-                <i data-lucide="globe"></i>
+                <Icon name="globe" />
                 {smokeTestBrowserMutation.isPending ? "Running smoke test..." : "Run smoke test"}
               </button>
               <button className="tcp-btn" onClick={() => setDiagnosticsOpen(true)}>
-                <i data-lucide="activity"></i>
+                <Icon name="activity" />
                 Diagnostics
               </button>
             </Toolbar>

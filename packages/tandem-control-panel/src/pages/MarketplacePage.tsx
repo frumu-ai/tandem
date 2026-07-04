@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { AnimatedPage, Badge, PageHeader, PanelCard, SplitView } from "../ui/index";
 import { EmptyState } from "./ui";
 import type { AppPageProps } from "./pageTypes";
+import { Icon } from "../ui/Icon";
 
 type FeaturedMarketplacePack = {
   packId: string;
@@ -98,11 +99,11 @@ export function MarketplacePage(_props: AppPageProps) {
           </div>
           <div className="flex flex-wrap gap-2">
             <button className="tcp-btn-primary" type="button" disabled>
-              <i data-lucide="search"></i>
+              <Icon name="search" />
               Search marketplace
             </button>
             <button className="tcp-btn" type="button" disabled>
-              <i data-lucide="external-link"></i>
+              <Icon name="external-link" />
               Open tandem.ac
             </button>
           </div>

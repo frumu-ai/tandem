@@ -1,7 +1,6 @@
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { renderIcons } from "../app/icons.js";
 import { renderMarkdownSafe } from "../lib/markdown";
 import { ChatInterfacePanel } from "../components/ChatInterfacePanel";
 import { DetailDrawer } from "../ui/index.tsx";
@@ -60,6 +59,7 @@ import {
   type UploadFile,
   type UploadProgressRow,
 } from "../features/chat/chatPageHelpers";
+import { Icon } from "../ui/Icon";
 
 const CHAT_UPLOAD_DIR = "uploads";
 
@@ -142,24 +142,6 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
       if (maxStreamTimerRef.current) window.clearTimeout(maxStreamTimerRef.current);
     };
   }, []);
-
-  useEffect(() => {
-    const root = rootRef.current;
-    if (root) renderIcons(root);
-  }, [
-    sessions,
-    uploads,
-    uploadRows,
-    permissions,
-    toolActivity,
-    runTimeline,
-    selectedTools,
-    messages,
-    sessionsOpen,
-    railDrawerOpen,
-    showThinking,
-    streamingText,
-  ]);
 
   useEffect(() => {
     saveStoredSessionId(selectedSessionId);
@@ -1307,7 +1289,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
                         });
                       }}
                     >
-                      {selected ? <i data-lucide="check"></i> : null}
+                      {selected ? <Icon name="check" /> : null}
                       {tool}
                     </button>
                   );
@@ -1421,7 +1403,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
                   className="tcp-btn h-7 px-2 tcp-text-caption"
                   onClick={resetRunTimeline}
                 >
-                  <i data-lucide="trash-2"></i>
+                  <Icon name="trash-2" />
                   Clear
                 </button>
               </div>
@@ -1465,7 +1447,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
                 className="tcp-btn h-7 px-2 tcp-text-caption"
                 onClick={resetToolTracking}
               >
-                <i data-lucide="trash-2"></i>
+                <Icon name="trash-2" />
                 Clear
               </button>
             </div>
@@ -1513,7 +1495,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
       >
         <div className="chat-sessions-header">
           <h3 className="chat-sessions-title">
-            <i data-lucide="history"></i>
+            <Icon name="history" />
             Sessions
           </h3>
           <div className="flex items-center gap-1">
@@ -1525,7 +1507,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
                 setSessionsOpen(false);
               }}
             >
-              <i data-lucide="plus"></i>
+              <Icon name="plus" />
               New
             </button>
             <button
@@ -1533,7 +1515,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
               className="tcp-btn h-8 px-2.5 text-xs"
               onClick={() => void refreshSessions()}
             >
-              <i data-lucide="refresh-cw"></i>
+              <Icon name="refresh-cw" />
             </button>
           </div>
         </div>
@@ -1565,7 +1547,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
                   title="Delete session"
                   onClick={() => setDeleteConfirm({ id: session.id, title: session.title })}
                 >
-                  <i data-lucide="trash-2"></i>
+                  <Icon name="trash-2" />
                 </button>
               </motion.div>
             ))}
@@ -1598,7 +1580,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
               title="Sessions"
               onClick={() => setSessionsOpen((prev) => !prev)}
             >
-              <i data-lucide="history"></i>
+              <Icon name="history" />
             </button>
             <div className="chat-main-dot"></div>
             <h3 className="tcp-title chat-main-title">{sessionTitle}</h3>
@@ -1615,7 +1597,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
               title="Tools, approvals, and activity"
               onClick={() => setRailDrawerOpen(true)}
             >
-              <i data-lucide="panel-right-open"></i>
+              <Icon name="panel-right-open" />
             </button>
           </header>
 
@@ -1743,7 +1725,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
                     className="chat-planner-nudge-action"
                     onClick={openWorkflowPlannerFromPrompt}
                   >
-                    <i data-lucide="workflow"></i>
+                    <Icon name="workflow" />
                     Open workflow planner
                   </button>
                   <span className="chat-planner-nudge-hint">for this message</span>
@@ -1753,7 +1735,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
                     title="Dismiss"
                     onClick={() => setWorkflowNudgeDismissedFor(workflowNudgePrompt)}
                   >
-                    <i data-lucide="x"></i>
+                    <Icon name="x" />
                   </button>
                 </div>
               ) : null
@@ -1808,7 +1790,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
               </p>
               <div className="tcp-confirm-actions">
                 <button type="button" className="tcp-btn" onClick={() => setDeleteConfirm(null)}>
-                  <i data-lucide="x"></i>
+                  <Icon name="x" />
                   Cancel
                 </button>
                 <button
@@ -1820,7 +1802,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
                     )
                   }
                 >
-                  <i data-lucide="trash-2"></i>
+                  <Icon name="trash-2" />
                   Delete session
                 </button>
               </div>

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageCard, EmptyState } from "./ui";
 import type { AppPageProps } from "./pageTypes";
+import { Icon } from "../ui/Icon";
 
 function toArray(input: any, key: string) {
   if (Array.isArray(input)) return input;
@@ -52,7 +53,7 @@ export function AgentsPage({ client, toast }: AppPageProps) {
                       className="tcp-btn h-7 px-2 text-xs"
                       onClick={() => runNowMutation.mutate(id)}
                     >
-                      <i data-lucide="play"></i>
+                      <Icon name="play" />
                       Run now
                     </button>
                   </div>

@@ -13,6 +13,7 @@ import {
   type ProviderOption,
   type StudioRepairState,
 } from "./workflowStudioUtils";
+import { Icon } from "../ui/Icon";
 
 type InspectorPanelsProps = {
   draft: any;
@@ -168,7 +169,7 @@ export function WorkflowStudioInspectorPanels(props: InspectorPanelsProps) {
             onClick={removeSelectedNode}
             disabled={!selectedNode}
           >
-            <i data-lucide="trash-2"></i>
+            <Icon name="trash-2" />
             Remove Stage
           </button>
         }
@@ -451,7 +452,7 @@ export function WorkflowStudioInspectorPanels(props: InspectorPanelsProps) {
                           updateNode(selectedNode.nodeId, { dependsOn });
                         }}
                       >
-                        <i data-lucide={enabled ? "check" : "plus"}></i>
+                        <Icon name={enabled ? "check" : "plus"} />
                         {node.title}
                       </button>
                     );
@@ -484,7 +485,7 @@ export function WorkflowStudioInspectorPanels(props: InspectorPanelsProps) {
             <details className="rounded-xl border border-slate-700/60 bg-slate-950/30 p-3">
               <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-2 text-sm text-slate-100">
                 <span className="inline-flex items-center gap-2 font-medium">
-                  <i data-lucide="wrench"></i>
+                  <Icon name="wrench" />
                   <span>Task Tool Access</span>
                 </span>
                 <span className="flex flex-wrap items-center gap-2 tcp-text-caption">
@@ -704,7 +705,7 @@ export function WorkflowStudioInspectorPanels(props: InspectorPanelsProps) {
             onClick={removeSelectedAgent}
             disabled={!selectedAgent}
           >
-            <i data-lucide="trash-2"></i>
+            <Icon name="trash-2" />
             Remove Agent
           </button>
         }
@@ -770,7 +771,7 @@ export function WorkflowStudioInspectorPanels(props: InspectorPanelsProps) {
                       })
                     }
                   >
-                    <i data-lucide="unlink"></i>
+                    <Icon name="unlink" />
                     Detach
                   </button>
                 ) : null}
@@ -795,7 +796,7 @@ export function WorkflowStudioInspectorPanels(props: InspectorPanelsProps) {
                   disabled={!selectedTemplateLoadId}
                   onClick={loadTemplateIntoSelectedAgent}
                 >
-                  <i data-lucide="download"></i>
+                  <Icon name="download" />
                   Load Template
                 </button>
               </div>

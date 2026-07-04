@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
-import { renderIcons } from "../app/icons.js";
 import { EmptyState } from "../ui/index.tsx";
+import { Icon } from "../ui/Icon";
 
 export function WorkspaceDirectoryPicker({
   value,
@@ -44,17 +44,13 @@ export function WorkspaceDirectoryPicker({
     .trim()
     .toLowerCase();
 
-  useEffect(() => {
-    if (rootRef.current) renderIcons(rootRef.current);
-  }, [open, directories.length]);
-
   return (
     <div ref={rootRef} className="contents">
       <label className="grid gap-2">
         <span className="text-xs uppercase tracking-wide text-slate-500">{label}</span>
         <div className="grid gap-2 md:grid-cols-[auto_1fr_auto]">
           <button className="tcp-btn h-10 px-3" type="button" onClick={onOpen}>
-            <i data-lucide="folder-open"></i>
+            <Icon name="folder-open" />
             Browse
           </button>
           <input
@@ -90,7 +86,7 @@ export function WorkspaceDirectoryPicker({
                 onClick={onBrowseParent}
                 disabled={!parentDir}
               >
-                <i data-lucide="arrow-up"></i>
+                <Icon name="arrow-up" />
                 Up
               </button>
               <button
@@ -122,7 +118,7 @@ export function WorkspaceDirectoryPicker({
                     type="button"
                     onClick={() => onBrowseDirectory(String(entry?.path || ""))}
                   >
-                    <i data-lucide="folder-open"></i>
+                    <Icon name="folder-open" />
                     <span>{String(entry?.name || entry?.path || "")}</span>
                   </button>
                 ))

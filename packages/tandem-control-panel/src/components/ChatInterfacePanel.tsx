@@ -1,8 +1,8 @@
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
-import { renderIcons } from "../app/icons.js";
 import { renderMarkdownSafe } from "../lib/markdown";
+import { Icon } from "../ui/Icon";
 
 export type ChatInterfaceMessage = {
   id: string;
@@ -120,10 +120,6 @@ export function ChatInterfacePanel({
       // ignore selection failures on older browsers
     }
   }, [autoFocusKey, inputDisabled]);
-
-  useEffect(() => {
-    if (panelRef.current) renderIcons(panelRef.current);
-  }, [attachments, inputValue, messages, quickReplies, sendDisabled, showThinking, streamingText]);
 
   const assistantLabel = botIdentity?.botName || "Assistant";
 
@@ -281,7 +277,7 @@ export function ChatInterfacePanel({
                       aria-label="Open attachment in Files"
                       onClick={() => onOpenAttachment(index)}
                     >
-                      <i data-lucide="folder-open"></i>
+                      <Icon name="folder-open" />
                     </button>
                   ) : null}
                   {onRemoveAttachment ? (
@@ -292,7 +288,7 @@ export function ChatInterfacePanel({
                       aria-label="Remove attachment from list"
                       onClick={() => onRemoveAttachment(index)}
                     >
-                      <i data-lucide="x"></i>
+                      <Icon name="x" />
                     </button>
                   ) : null}
                 </span>
@@ -311,7 +307,7 @@ export function ChatInterfacePanel({
               disabled={attachDisabled}
               onClick={onAttach}
             >
-              <i data-lucide="paperclip"></i>
+              <Icon name="paperclip" />
             </button>
           ) : null}
           <textarea
@@ -337,7 +333,7 @@ export function ChatInterfacePanel({
             disabled={sendDisabled}
             onClick={onSend}
           >
-            <i data-lucide="send"></i>
+            <Icon name="send" />
           </button>
         </div>
       </div>

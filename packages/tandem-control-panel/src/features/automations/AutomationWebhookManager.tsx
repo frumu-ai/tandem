@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
-import { renderIcons } from "../../app/icons.js";
+import { Icon } from "../../ui/Icon";
 
 const DATA_CLASS_OPTIONS = [
   "public",
@@ -237,10 +237,6 @@ export function AutomationWebhookManager({
     });
   }, [effectiveTriggerId]);
 
-  useEffect(() => {
-    if (rootRef.current) renderIcons(rootRef.current);
-  });
-
   const invalidate = async () => {
     await queryClient.invalidateQueries({ queryKey });
     if (effectiveTriggerId) {
@@ -364,7 +360,7 @@ export function AutomationWebhookManager({
               className="tcp-btn h-8 px-3 text-xs"
               onClick={() => setRevealedSecret(null)}
             >
-              <i data-lucide="check"></i>
+              <Icon name="check" />
               Saved
             </button>
           </div>
@@ -377,7 +373,7 @@ export function AutomationWebhookManager({
               className="tcp-btn h-8 w-8 px-0"
               onClick={() => void copyText(revealedSecret.secret).then((ok) => ok && toast?.("ok", "Secret copied."))}
             >
-              <i data-lucide="copy"></i>
+              <Icon name="copy" />
             </button>
           </div>
         </div>
@@ -397,7 +393,7 @@ export function AutomationWebhookManager({
             onClick={() => void invalidate()}
             disabled={triggersQuery.isFetching}
           >
-            <i data-lucide="refresh-cw"></i>
+            <Icon name="refresh-cw" />
             Refresh
           </button>
         </div>
@@ -490,7 +486,7 @@ export function AutomationWebhookManager({
             disabled={createMutation.isPending || !safeString(createDraft.provider)}
             onClick={() => createMutation.mutate()}
           >
-            <i data-lucide="plus"></i>
+            <Icon name="plus" />
             {createMutation.isPending ? "Creating..." : "Create trigger"}
           </button>
         </div>
@@ -545,7 +541,7 @@ export function AutomationWebhookManager({
                     {callbackUrl(selectedTrigger) || "No callback URL"}
                   </code>
                   <button type="button" className="tcp-btn h-8 w-8 px-0" onClick={() => void copyCallback(selectedTrigger)}>
-                    <i data-lucide="copy"></i>
+                    <Icon name="copy" />
                   </button>
                 </div>
               </div>
@@ -573,7 +569,7 @@ export function AutomationWebhookManager({
                       disabled={!verification.tokenAvailable || revealTokenMutation.isPending}
                       onClick={() => revealTokenMutation.mutate()}
                     >
-                      <i data-lucide="key-round"></i>
+                      <Icon name="key-round" />
                       {verification.tokenAvailable ? "Reveal verification token" : "No token to reveal"}
                     </button>
                   </div>
@@ -613,17 +609,17 @@ export function AutomationWebhookManager({
 
               <div className="flex flex-wrap gap-2">
                 <button type="button" className="tcp-btn h-9 px-3 text-sm" disabled={updateMutation.isPending || !effectiveTriggerId} onClick={() => updateMutation.mutate()}>
-                  <i data-lucide="save"></i>
+                  <Icon name="save" />
                   {updateMutation.isPending ? "Saving..." : "Save trigger"}
                 </button>
                 {notionVerification(selectedTrigger) ? null : (
                   <button type="button" className="tcp-btn h-9 px-3 text-sm" disabled={rotateMutation.isPending || !effectiveTriggerId} onClick={() => rotateMutation.mutate()}>
-                    <i data-lucide="rotate-cw"></i>
+                    <Icon name="rotate-cw" />
                     {rotateMutation.isPending ? "Rotating..." : "Rotate secret"}
                   </button>
                 )}
                 <button type="button" className="tcp-btn h-9 px-3 text-sm" disabled={disableMutation.isPending || !effectiveTriggerId || selectedTrigger.enabled === false} onClick={() => disableMutation.mutate()}>
-                  <i data-lucide="pause-circle"></i>
+                  <Icon name="pause-circle" />
                   {disableMutation.isPending ? "Disabling..." : "Disable"}
                 </button>
                 <button
@@ -634,7 +630,7 @@ export function AutomationWebhookManager({
                     if (window.confirm("Delete this webhook trigger?")) deleteMutation.mutate();
                   }}
                 >
-                  <i data-lucide="trash-2"></i>
+                  <Icon name="trash-2" />
                   {deleteMutation.isPending ? "Deleting..." : "Delete"}
                 </button>
               </div>
@@ -646,7 +642,7 @@ export function AutomationWebhookManager({
                     <div className="text-xs text-slate-500">{deliveries.length} visible for this trigger</div>
                   </div>
                   <button type="button" className="tcp-btn h-8 px-3 text-xs" onClick={() => void deliveriesQuery.refetch()} disabled={deliveriesQuery.isFetching}>
-                    <i data-lucide="refresh-cw"></i>
+                    <Icon name="refresh-cw" />
                     Refresh
                   </button>
                 </div>

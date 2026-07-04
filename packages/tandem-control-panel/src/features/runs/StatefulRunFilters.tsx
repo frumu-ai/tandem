@@ -4,6 +4,7 @@ import {
   RUN_STATUS_FILTERS,
   normalizeStatefulRunFilters,
 } from "../../../lib/runs/stateful-runs.js";
+import { Icon } from "../../ui/Icon";
 
 type StatefulRunFilterBarProps = {
   filters: any;
@@ -144,7 +145,7 @@ export function StatefulRunFilterBar({ filters, onFiltersChange }: StatefulRunFi
           onClick={() => onFiltersChange(DEFAULT_STATEFUL_RUN_FILTERS)}
           disabled={!hasFilters}
         >
-          <i data-lucide="x"></i>
+          <Icon name="x" />
           Clear
         </button>
       </div>

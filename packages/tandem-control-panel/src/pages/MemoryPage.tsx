@@ -6,6 +6,7 @@ import { renderMarkdownSafe } from "../lib/markdown";
 import { AnimatedPage, Badge, PanelCard, Toolbar } from "../ui/index.tsx";
 import { EmptyState } from "./ui";
 import type { AppPageProps } from "./pageTypes";
+import { Icon } from "../ui/Icon";
 
 type MemoryView = "knowledge" | "runtime" | "all";
 
@@ -221,11 +222,11 @@ export function MemoryPage({ api, client, toast }: AppPageProps) {
               </Badge>
             )}
             <button type="button" className="tcp-btn-primary" onClick={() => setImportOpen(true)}>
-              <i data-lucide="database-zap"></i>
+              <Icon name="database-zap" />
               Import Knowledge
             </button>
             <button type="button" className="tcp-btn" onClick={() => setManualOpen((v) => !v)}>
-              <i data-lucide="plus"></i>
+              <Icon name="plus" />
               Add Memory
             </button>
           </>
@@ -272,7 +273,7 @@ export function MemoryPage({ api, client, toast }: AppPageProps) {
                 disabled={!manualContent.trim() || addMemoryMutation.isPending}
                 onClick={() => addMemoryMutation.mutate()}
               >
-                <i data-lucide="save"></i>
+                <Icon name="save" />
                 Save
               </button>
             </div>
@@ -308,7 +309,7 @@ export function MemoryPage({ api, client, toast }: AppPageProps) {
             aria-label="Search memory"
           />
           <button className="tcp-btn" onClick={() => memoryQuery.refetch()}>
-            <i data-lucide="search"></i>
+            <Icon name="search" />
             Search
           </button>
         </Toolbar>
@@ -337,7 +338,7 @@ export function MemoryPage({ api, client, toast }: AppPageProps) {
                           deleteMutation.mutate(item.id);
                         }}
                       >
-                        <i data-lucide="trash-2"></i>
+                        <Icon name="trash-2" />
                         Delete
                       </button>
                     </div>

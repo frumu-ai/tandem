@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef } from "react";
-import { renderIcons } from "../app/icons.js";
 import type { StudioMcpConnectionGrant } from "../features/studio/schema";
 import {
   mcpConnectionClassLabel,
@@ -12,6 +11,7 @@ import {
   normalizeMcpConnectionGrants,
   type McpConnectionSummary,
 } from "../features/mcp/mcpConnections";
+import { Icon } from "../ui/Icon";
 
 type McpConnectionGrantPickerProps = {
   title: string;
@@ -56,10 +56,6 @@ export function McpConnectionGrantPicker({
     [grants, visibleConnectionKeys]
   );
 
-  useEffect(() => {
-    if (rootRef.current) renderIcons(rootRef.current);
-  }, [connections.length, grants.length, missingGrants.length]);
-
   const setGrants = (next: StudioMcpConnectionGrant[]) => {
     onChange(normalizeMcpConnectionGrants(next));
   };
@@ -90,7 +86,7 @@ export function McpConnectionGrantPicker({
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-sm font-medium text-slate-100">
-            <i data-lucide="key-round" className="h-4 w-4"></i>
+            <Icon name="key-round" className="h-4 w-4" />
             <span>{title}</span>
           </div>
           {subtitle ? <div className="mt-1 text-xs text-slate-400">{subtitle}</div> : null}
@@ -169,7 +165,7 @@ export function McpConnectionGrantPicker({
                 className="tcp-btn h-7 px-2 text-xs"
                 onClick={() => removeGrant(grant)}
               >
-                <i data-lucide="x"></i>
+                <Icon name="x" />
                 Remove
               </button>
             </div>

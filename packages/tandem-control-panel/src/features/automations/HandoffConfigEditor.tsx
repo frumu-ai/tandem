@@ -1,3 +1,4 @@
+import { Icon } from "../../ui/Icon";
 interface HandoffConfig {
   inbox_dir?: string | null;
   approved_dir?: string | null;
@@ -43,7 +44,7 @@ export function HandoffConfigEditor({ value, onChange }: Props) {
           onClick={reset}
           title="Reset to defaults"
         >
-          <i data-lucide="rotate-ccw" />
+          <Icon name="rotate-ccw" />
           Reset
         </button>
       </div>
@@ -61,7 +62,7 @@ export function HandoffConfigEditor({ value, onChange }: Props) {
         onClick={() => update({ auto_approve: !cfg.auto_approve })}
       >
         <span className="flex items-center gap-2">
-          <i data-lucide={cfg.auto_approve ? "zap" : "lock"} className="h-3.5 w-3.5" />
+          <Icon name={cfg.auto_approve ? "zap" : "lock"} className="h-3.5 w-3.5" />
           {cfg.auto_approve
             ? "Auto-approve — handoffs move directly to approved/"
             : "Manual approval — handoffs wait in inbox/ until reviewed"}

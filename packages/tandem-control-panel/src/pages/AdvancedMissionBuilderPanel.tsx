@@ -2,7 +2,6 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/ho
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import YAML from "yaml";
 import type { TandemClient } from "@frumu/tandem-client";
-import { renderIcons } from "../app/icons.js";
 import { buildPlannerProviderOptions } from "../features/planner/plannerShared";
 import { ProviderModelSelector } from "../components/ProviderModelSelector";
 import {
@@ -13,6 +12,7 @@ import {
   type MissionBuilderScheduleDefaults,
 } from "../features/mission-builder/shared";
 import type { NavigationLockState } from "./pageTypes";
+import { Icon } from "../ui/Icon";
 
 type ApiFn = (path: string, init?: RequestInit) => Promise<any>;
 
@@ -384,7 +384,7 @@ function Section({
     <div className="rounded-xl border border-slate-700/50 bg-slate-950/50 p-4">
       <div className="mb-3">
         <div className="flex items-center gap-2 text-sm font-semibold text-slate-100">
-          {icon ? <i data-lucide={icon}></i> : null}
+          {icon ? <Icon name={icon} /> : null}
           <span>{title}</span>
         </div>
         {subtitle ? <div className="tcp-subtle mt-1 text-xs">{subtitle}</div> : null}
@@ -472,7 +472,7 @@ function ToggleChip({
       disabled={disabled}
     >
       <span className="inline-flex items-center gap-2">
-        {icon ? <i data-lucide={icon}></i> : null}
+        {icon ? <Icon name={icon} /> : null}
         <span>{label}</span>
       </span>
     </button>
@@ -533,7 +533,7 @@ function WorkspaceDirectoryPicker({
         <div className="mb-1 font-medium text-slate-200">Workspace root</div>
         <div className="grid gap-2 md:grid-cols-[auto_1fr_auto]">
           <button className="tcp-btn h-10 px-3" type="button" onClick={onOpen}>
-            <i data-lucide="folder-open"></i>
+            <Icon name="folder-open" />
             Browse
           </button>
           <input
@@ -543,7 +543,7 @@ function WorkspaceDirectoryPicker({
             placeholder="No local directory selected. Use Browse."
           />
           <button className="tcp-btn h-10 px-3" type="button" onClick={onClear} disabled={!value}>
-            <i data-lucide="x"></i>
+            <Icon name="x" />
             Clear
           </button>
         </div>
@@ -566,7 +566,7 @@ function WorkspaceDirectoryPicker({
                 onClick={onBrowseParent}
                 disabled={!parentDir}
               >
-                <i data-lucide="arrow-left-to-line"></i>
+                <Icon name="arrow-left-to-line" />
                 Up
               </button>
               <button
@@ -575,11 +575,11 @@ function WorkspaceDirectoryPicker({
                 onClick={onSelectDirectory}
                 disabled={!currentDir}
               >
-                <i data-lucide="badge-check"></i>
+                <Icon name="badge-check" />
                 Select This Folder
               </button>
               <button className="tcp-btn" type="button" onClick={onClose}>
-                <i data-lucide="x"></i>
+                <Icon name="x" />
                 Close
               </button>
             </div>
@@ -601,7 +601,7 @@ function WorkspaceDirectoryPicker({
                     onClick={() => onBrowseDirectory(String(entry?.path || ""))}
                   >
                     <span className="inline-flex items-center gap-2">
-                      <i data-lucide="folder-open"></i>
+                      <Icon name="folder-open" />
                       <span>{String(entry?.name || entry?.path || "")}</span>
                     </span>
                   </button>
@@ -881,13 +881,6 @@ export function AdvancedMissionBuilderPanel({
   }, [workspaceBrowserSearch, workspaceDirectories]);
   const workspaceRootError = validateWorkspaceRootInput(blueprint.workspace_root || workspaceRoot);
   const canEditMissionDetails = draftReady || !!editingAutomation;
-
-  useEffect(() => {
-    try {
-      if (rootRef.current) renderIcons(rootRef.current);
-      else renderIcons();
-    } catch {}
-  }, [activeTab, showGuide, preview, busy, blueprint, teamModel, workstreamModels, reviewModels]);
 
   const effectiveBlueprint = useMemo(() => {
     return {
@@ -1268,7 +1261,7 @@ export function AdvancedMissionBuilderPanel({
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <button className="tcp-btn h-8 px-3 text-xs" onClick={() => setShowGuide(true)}>
-            <i data-lucide="book-open"></i>
+            <Icon name="book-open" />
             How this works
           </button>
           <span className="tcp-subtle text-xs">Start from example:</span>
@@ -1278,7 +1271,7 @@ export function AdvancedMissionBuilderPanel({
               className="tcp-btn h-8 px-3 text-xs"
               onClick={() => applyStarterPreset(preset.id)}
             >
-              <i data-lucide={STARTER_PRESET_ICON_BY_ID[preset.id] || "sparkles"}></i>
+              <Icon name={STARTER_PRESET_ICON_BY_ID[preset.id] || "sparkles"} />
               {preset.label}
             </button>
           ))}
@@ -1552,7 +1545,7 @@ export function AdvancedMissionBuilderPanel({
                 onClick={() => void generateMissionDraft()}
                 disabled={busy === "generate"}
               >
-                <i data-lucide={busy === "generate" ? "loader-circle" : "sparkles"}></i>
+                <Icon name={busy === "generate" ? "loader-circle" : "sparkles"} />
                 {busy === "generate" ? "Generating..." : "Generate mission draft"}
               </button>
               <button
@@ -1563,7 +1556,7 @@ export function AdvancedMissionBuilderPanel({
                 }}
                 disabled={!selectedIntentPresetId}
               >
-                <i data-lucide="sparkles"></i>
+                <Icon name="sparkles" />
                 Load example draft
               </button>
             </div>
@@ -1615,7 +1608,7 @@ export function AdvancedMissionBuilderPanel({
                   type="button"
                   onClick={copyMissionPrompt}
                 >
-                  <i data-lucide="copy"></i>
+                  <Icon name="copy" />
                   Copy authoring prompt
                 </button>
               </div>
@@ -1646,7 +1639,7 @@ export function AdvancedMissionBuilderPanel({
                 type="button"
                 onClick={importMissionDraft}
               >
-                <i data-lucide="file-input"></i>
+                <Icon name="file-input" />
                 Import draft
               </button>
             </div>
@@ -1884,7 +1877,7 @@ export function AdvancedMissionBuilderPanel({
           </InlineHint>
           <div className="flex justify-end">
             <button className="tcp-btn h-8 px-3 text-xs" onClick={addWorkstream}>
-              <i data-lucide="plus"></i>
+              <Icon name="plus" />
               Add workstream
             </button>
           </div>
@@ -2124,7 +2117,7 @@ export function AdvancedMissionBuilderPanel({
           </InlineHint>
           <div className="flex justify-between gap-2">
             <button className="tcp-btn h-8 px-3 text-xs" onClick={addReviewStage}>
-              <i data-lucide="plus"></i>
+              <Icon name="plus" />
               Add review stage
             </button>
             <button
@@ -2143,7 +2136,7 @@ export function AdvancedMissionBuilderPanel({
                 })
               }
             >
-              <i data-lucide="copy-plus"></i>
+              <Icon name="copy-plus" />
               Add phase
             </button>
           </div>
@@ -2403,7 +2396,7 @@ export function AdvancedMissionBuilderPanel({
               disabled={busy === "preview"}
               onClick={() => void compilePreview()}
             >
-              <i data-lucide="refresh-cw"></i>
+              <Icon name="refresh-cw" />
               {busy === "preview" ? "Compiling..." : "Compile preview"}
             </button>
             <button
@@ -2411,7 +2404,7 @@ export function AdvancedMissionBuilderPanel({
               disabled={busy === "apply"}
               onClick={() => void saveMission()}
             >
-              <i data-lucide={editingAutomation ? "save" : "arrow-up-circle"}></i>
+              <Icon name={editingAutomation ? "save" : "arrow-up-circle"} />
               {busy === "apply"
                 ? "Saving..."
                 : editingAutomation

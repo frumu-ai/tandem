@@ -7,6 +7,7 @@ import { SettingsPageIncidentMonitorSections } from "./SettingsPageIncidentMonit
 import { SettingsPageMaintenanceBrowserSections } from "./SettingsPageMaintenanceBrowserSections";
 import { SettingsPageOverlays } from "./SettingsPageOverlays";
 import type { AppPageProps } from "./pageTypes";
+import { Icon } from "../ui/Icon";
 
 export function SettingsPage(props: AppPageProps) {
   const controller = useSettingsPageController(props);
@@ -26,7 +27,7 @@ export function SettingsPage(props: AppPageProps) {
               }`}
               onClick={() => setActiveSection(section.id)}
             >
-              <i data-lucide={section.icon}></i>
+              <Icon name={section.icon} />
               {section.label}
             </button>
           ))}
