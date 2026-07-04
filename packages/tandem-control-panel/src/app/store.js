@@ -58,6 +58,41 @@ export const NAV_ROUTES = NAV_ROUTE_ORDER.map((routeId) => {
   return route;
 });
 
+// Ordered sidebar sections. Grouping the flat 19-item list by what the user is
+// trying to do (build -> operate -> govern -> system) makes the nav scannable
+// and clarifies overlapping surfaces (planner/orchestrator, workflows/studio).
+export const NAV_GROUPS = [
+  { label: "Overview", routeIds: ["dashboard"] },
+  { label: "Build", routeIds: ["chat", "planner", "studio", "workflows", "automations"] },
+  { label: "Operate", routeIds: ["runs", "orchestrator", "coding", "incident-monitor"] },
+  { label: "Govern", routeIds: ["approvals", "control-loop", "enterprise-admin"] },
+  { label: "System", routeIds: ["agents", "memory", "files", "marketplace", "experiments", "settings"] },
+];
+
+// Group an (already visibility-filtered) list of nav routes into the ordered
+// sections above. Groups with no visible routes are dropped; any visible route
+// not assigned to a group falls into a trailing "More" section so a newly added
+// route can never silently disappear from the sidebar.
+export function groupNavRoutes(routes) {
+  const byId = new Map(routes.map((route) => [route[0], route]));
+  const assigned = new Set();
+  const groups = [];
+  for (const group of NAV_GROUPS) {
+    const items = [];
+    for (const id of group.routeIds) {
+      const route = byId.get(id);
+      if (route) {
+        items.push(route);
+        assigned.add(id);
+      }
+    }
+    if (items.length) groups.push({ label: group.label, items });
+  }
+  const rest = routes.filter((route) => !assigned.has(route[0]));
+  if (rest.length) groups.push({ label: "More", items: rest });
+  return groups;
+}
+
 export const providerHints = {
   openai: {
     label: "OpenAI",
