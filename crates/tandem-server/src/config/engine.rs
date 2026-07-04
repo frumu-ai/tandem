@@ -852,7 +852,7 @@ mod tests {
     #[test]
     #[serial]
     fn invalid_data_boundary_config_fails_validation() {
-        with_env(
+        with_data_boundary_env(
             &[
                 ("TANDEM_DATA_BOUNDARY_MODE", Some("enforced")),
                 ("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY", Some("maybe")),
@@ -883,7 +883,7 @@ mod tests {
     #[test]
     #[serial]
     fn valid_data_boundary_config_passes_validation() {
-        with_env(
+        with_data_boundary_env(
             &[
                 ("TANDEM_DATA_BOUNDARY_MODE", Some("audit")),
                 ("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY", Some("redact")),
@@ -925,6 +925,32 @@ mod tests {
                 .iter()
                 .any(|warning| warning.contains("TANDEM_TYPOED_SETTING")));
         });
+    }
+
+    /// Like `with_env`, but scoped strictly to TANDEM_DATA_BOUNDARY_* vars so
+    /// these tests (which hold the `data_boundary_env` lock rather than the
+    /// default config lock) can never clobber vars owned by other config tests.
+    fn with_data_boundary_env<F: FnOnce()>(pairs: &[(&str, Option<&str>)], f: F) {
+        assert!(pairs
+            .iter()
+            .all(|(name, _)| name.starts_with("TANDEM_DATA_BOUNDARY_")));
+        let saved = pairs
+            .iter()
+            .map(|(name, _)| (*name, std::env::var(name).ok()))
+            .collect::<Vec<_>>();
+        for (name, value) in pairs {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+        f();
+        for (name, value) in saved {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
     }
 
     fn with_env<F: FnOnce()>(pairs: &[(&str, Option<&str>)], f: F) {

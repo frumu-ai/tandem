@@ -20,6 +20,15 @@ use tandem_data_boundary::{
 use tandem_providers::ChatMessage;
 use tandem_types::EngineEvent;
 
+/// For `data:` URLs, the byte length of the metadata prefix (through the
+/// comma) that is safe and useful to scan; `None` for every other URL form.
+fn data_url_scan_prefix_len(url: &str) -> Option<usize> {
+    if !url.trim_start().to_ascii_lowercase().starts_with("data:") {
+        return None;
+    }
+    Some(url.find(',').map(|comma| comma + 1).unwrap_or(url.len()))
+}
+
 pub(super) fn data_boundary_mode() -> DataBoundaryMode {
     std::env::var("TANDEM_DATA_BOUNDARY_MODE")
         .ok()
@@ -115,13 +124,30 @@ pub(super) fn evaluate_dispatch_boundary(
     let policy = data_boundary_policy_from_env(mode);
 
     // The assembled request text, rebuilt transiently for detection only —
-    // never stored, logged, or attached to the emitted event.
+    // never stored, logged, or attached to the emitted event. Attachment URLs
+    // are dispatched to providers too (as image_url/input_image), so they are
+    // part of what crosses the boundary and must be scanned: signed URLs and
+    // query tokens are exactly where credentials leak.
     let mut payload_text = String::new();
     for message in messages {
         payload_text.push_str(&message.role);
         payload_text.push_str(": ");
         payload_text.push_str(&message.content);
         payload_text.push('\n');
+        for attachment in &message.attachments {
+            let tandem_providers::ChatAttachment::ImageUrl { url } = attachment;
+            payload_text.push_str("attachment: ");
+            if let Some(prefix_len) = data_url_scan_prefix_len(url) {
+                // Inline data: URLs embed base64 image bytes; scanning the
+                // body would flood findings with high-entropy false positives
+                // on every image prompt. Record scheme/mediatype only.
+                payload_text.push_str(&url[..prefix_len]);
+                payload_text.push_str("<data elided>");
+            } else {
+                payload_text.push_str(url);
+            }
+            payload_text.push('\n');
+        }
     }
 
     let input = DataBoundaryInput {
@@ -152,7 +178,7 @@ pub(super) fn evaluate_dispatch_boundary(
         action_tags: Vec::new(),
     };
 
-    let evaluation = evaluate_data_boundary(
+    let mut evaluation = evaluate_data_boundary(
         &DataBoundaryEvaluationRequest {
             input: &input,
             payload: Some(&payload_text),
@@ -162,12 +188,22 @@ pub(super) fn evaluate_dispatch_boundary(
     );
     drop(payload_text);
 
+    // This gate enforces nothing — the raw messages dispatch unchanged, and
+    // any transformed payload the evaluation produced is discarded. Emitting
+    // the decision's own event kind (redacted/tokenized/blocked/...) would
+    // therefore claim an outcome that never happened to the dispatched
+    // payload. Everything emits as `data_boundary.evaluated`; the decided
+    // action and would-be event kind ride along as evidence, and the
+    // enforcement kinds stay reserved for the enforce-mode integration
+    // (TAN-394).
+    let decided_event_kind = evaluation.event_kind;
+    drop(evaluation.transformed_payload.take());
     let boundary_event = DataBoundaryEvent::from_decision(
         format!(
             "dbe_{}",
             evaluation.decision.decision_id.trim_start_matches("dbd_")
         ),
-        evaluation.event_kind,
+        tandem_data_boundary::DataBoundaryEventKind::Evaluated,
         chrono::Utc::now().timestamp_millis().max(0) as u64,
         started.elapsed().as_millis() as u64,
         &evaluation.decision,
@@ -186,6 +222,11 @@ pub(super) fn evaluate_dispatch_boundary(
         map.insert("modelID".to_string(), json!(ctx.model_id));
         map.insert("mode".to_string(), json!(mode.as_str()));
         map.insert("auditOnly".to_string(), json!(true));
+        map.insert("enforced".to_string(), json!(false));
+        map.insert(
+            "decidedEventKind".to_string(),
+            json!(decided_event_kind.event_name()),
+        );
     }
 
     Some(EngineEvent::new(
@@ -258,6 +299,74 @@ mod tests {
             .as_str()
             .unwrap_or_default()
             .starts_with("sha256:"));
+    }
+
+    #[test]
+    #[serial_test::serial(data_boundary_env)]
+    fn transform_decisions_emit_evaluated_evidence_without_claiming_enforcement() {
+        // Codex P1 (PR #1785): the audit-only gate dispatches the raw
+        // messages, so a redact decision must not emit
+        // `data_boundary.redacted` — that would claim a transformation that
+        // never reached the provider.
+        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "audit");
+        std::env::set_var("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY", "redact");
+        let messages = vec![chat("user", "use api_key=sk-live-abcdef1234567890")];
+        let event = evaluate_dispatch_boundary(&ctx(), &messages).expect("event");
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY");
+
+        assert_eq!(event.event_type, "data_boundary.evaluated");
+        assert_eq!(event.properties["action"], "redact");
+        assert_eq!(event.properties["enforced"], false);
+        assert_eq!(
+            event.properties["decidedEventKind"],
+            "data_boundary.redacted"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(data_boundary_env)]
+    fn attachment_urls_are_scanned_but_data_url_bodies_are_elided() {
+        // Codex P2 (PR #1785): attachment URLs dispatch to providers, so a
+        // signed URL carrying a credential must produce findings — while an
+        // inline data: URL's base64 image body must not flood findings with
+        // high-entropy false positives.
+        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "audit");
+        let signed = ChatMessage {
+            role: "user".to_string(),
+            content: "see attached".to_string(),
+            attachments: vec![tandem_providers::ChatAttachment::ImageUrl {
+                url: "https://cdn.example.com/img.png?api_key=sk-live-abcdef1234567890".to_string(),
+            }],
+        };
+        let event = evaluate_dispatch_boundary(&ctx(), &[signed]).expect("event");
+        assert!(
+            event.properties["finding_summary"]["total_findings"]
+                .as_u64()
+                .unwrap_or(0)
+                > 0,
+            "credential in attachment URL must be detected"
+        );
+
+        let inline = ChatMessage {
+            role: "user".to_string(),
+            content: "see attached".to_string(),
+            attachments: vec![tandem_providers::ChatAttachment::ImageUrl {
+                url: format!(
+                    "data:image/png;base64,{}",
+                    "iVBORw0KGgoAAAANSUhEUg".repeat(40)
+                ),
+            }],
+        };
+        let event = evaluate_dispatch_boundary(&ctx(), &[inline]).expect("event");
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
+        assert_eq!(
+            event.properties["finding_summary"]["total_findings"]
+                .as_u64()
+                .unwrap_or(u64::MAX),
+            0,
+            "inline image bytes must not register as findings"
+        );
     }
 
     #[test]

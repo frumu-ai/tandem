@@ -1,6 +1,8 @@
 // TAN-392: audit-mode data-boundary integration tests. The engine loop reads
-// TANDEM_DATA_BOUNDARY_* at dispatch time, so these tests guard the env with
-// an RAII restore + a serial group, per the observability_metrics.rs pattern.
+// TANDEM_DATA_BOUNDARY_* at dispatch time and EngineConfigReport::from_env
+// validates the same vars, so these tests guard the env with an RAII restore
+// and share the DEFAULT serial group with the config::engine tests — a named
+// group would let the two families race on the same process environment.
 
 struct DataBoundaryEnvGuard {
     name: &'static str,
@@ -127,7 +129,7 @@ async fn collect_events_until_run_finished(
 }
 
 #[tokio::test]
-#[serial_test::serial(data_boundary_env)]
+#[serial_test::serial]
 async fn data_boundary_audit_mode_records_findings_and_allows_provider_call() {
     let _mode = DataBoundaryEnvGuard::set("TANDEM_DATA_BOUNDARY_MODE", Some("audit"));
     let state = test_state().await;
@@ -177,7 +179,7 @@ async fn data_boundary_audit_mode_records_findings_and_allows_provider_call() {
 }
 
 #[tokio::test]
-#[serial_test::serial(data_boundary_env)]
+#[serial_test::serial]
 async fn data_boundary_off_mode_emits_no_boundary_events() {
     let _mode = DataBoundaryEnvGuard::set("TANDEM_DATA_BOUNDARY_MODE", None);
     let state = test_state().await;
@@ -207,7 +209,7 @@ async fn data_boundary_off_mode_emits_no_boundary_events() {
 }
 
 #[tokio::test]
-#[serial_test::serial(data_boundary_env)]
+#[serial_test::serial]
 async fn data_boundary_bridge_writes_protected_audit_without_raw_content() {
     let _mode = DataBoundaryEnvGuard::set("TANDEM_DATA_BOUNDARY_MODE", Some("audit"));
     let state = test_state().await;
