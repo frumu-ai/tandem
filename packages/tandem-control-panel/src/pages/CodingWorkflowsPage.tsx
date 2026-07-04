@@ -1803,7 +1803,7 @@ export function CodingWorkflowsPage({
                         ))}
                       </select>
                     ) : (
-                      <div className="tcp-subtle text-sm">No logs available yet.</div>
+                      <EmptyState text="No logs available yet." />
                     )}
                     {selectedLogName && logTailQuery.data?.lines ? (
                       <pre className="max-h-80 overflow-auto rounded-2xl border border-white/10 bg-black/30 p-4 text-xs leading-6 text-slate-200">

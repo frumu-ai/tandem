@@ -1460,10 +1460,12 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                         __html: renderMarkdownSafe(selectedWorkspaceText),
                       }}
                     />
-                  ) : (
+                  ) : selectedWorkspaceText ? (
                     <pre className="tcp-code max-h-[260px] overflow-auto whitespace-pre-wrap break-words">
-                      {selectedWorkspaceText || "No text content."}
+                      {selectedWorkspaceText}
                     </pre>
+                  ) : (
+                    <EmptyState text="No text content." />
                   )}
                 </div>
               ) : null}

@@ -2465,7 +2465,7 @@ export function AdvancedMissionBuilderPanel({
                       ))}
                     </div>
                   ) : (
-                    <div className="tcp-subtle text-xs">No validation warnings.</div>
+                    <EmptyState text="No validation warnings." />
                   )}
                 </div>
                 <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-3">
@@ -2616,7 +2616,7 @@ export function AdvancedMissionBuilderPanel({
                       ))}
                     </div>
                   ) : (
-                    <div className="tcp-subtle text-xs">No compiled work items returned.</div>
+                    <EmptyState text="No compiled work items returned." />
                   )}
                 </div>
               </div>
