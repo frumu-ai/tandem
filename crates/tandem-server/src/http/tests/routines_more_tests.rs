@@ -380,6 +380,10 @@ async fn automation_tool_policy_hook_denies_writes_to_read_only_source_truth_fil
         .add_automation_v2_session(&run.run_id, &session_id)
         .await
         .expect("linked automation session");
+    state
+        .engine_loop
+        .set_session_allowed_tools(&session_id, vec!["write".to_string()])
+        .await;
 
     let hook = crate::agent_teams::ServerToolPolicyHook::new(state.clone());
     let decision = hook

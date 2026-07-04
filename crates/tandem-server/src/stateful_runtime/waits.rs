@@ -121,6 +121,20 @@ pub fn due_stateful_waits(
     rows
 }
 
+pub(crate) fn due_stateful_waits_for_scheduler(
+    path: &Path,
+    now_ms: u64,
+    limit: Option<usize>,
+) -> Vec<StatefulWaitRecord> {
+    let mut rows = load_stateful_waits(path)
+        .into_iter()
+        .filter(|wait| wait_is_claimable(wait, now_ms, now_ms))
+        .collect::<Vec<_>>();
+    sort_waits(&mut rows);
+    apply_limit(&mut rows, limit);
+    rows
+}
+
 pub async fn upsert_stateful_wait(
     path: &Path,
     wait: StatefulWaitRecord,

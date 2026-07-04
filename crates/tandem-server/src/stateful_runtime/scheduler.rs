@@ -22,7 +22,7 @@ use super::waits::{
     begin_claimed_stateful_wait_reminder_completion,
     begin_claimed_stateful_wait_timeout_completion, begin_claimed_stateful_wait_wake_completion,
     cancel_stateful_wait_after_phase_guard_denial,
-    claim_due_stateful_wait_version_with_lease_clock, due_stateful_waits,
+    claim_due_stateful_wait_version_with_lease_clock, due_stateful_waits_for_scheduler,
     finish_claimed_stateful_wait_completion, finish_claimed_stateful_wait_reminder_completion,
     load_stateful_waits,
 };
@@ -226,9 +226,8 @@ pub async fn process_due_stateful_waits(
     now_ms: u64,
     config: StatefulWaitSchedulerConfig,
 ) -> StatefulWaitSchedulerTick {
-    let tenant = TenantContext::local_implicit();
     let mut tick = StatefulWaitSchedulerTick::default();
-    let observed_waits = scheduler_observed_wait_ids(paths, &tenant);
+    let observed_waits = scheduler_observed_wait_ids(paths);
     let clock = observe_scheduler_wall_time(paths, &config, now_ms, &observed_waits, &mut tick);
     let regression_tick = clock.regression_observed_waits.is_some();
     let candidate_limit = if regression_tick {
@@ -236,9 +235,8 @@ pub async fn process_due_stateful_waits(
     } else {
         Some(config.limit)
     };
-    let mut candidates = due_stateful_waits(
+    let mut candidates = due_stateful_waits_for_scheduler(
         &paths.waits_path,
-        &tenant,
         clock.effective_now_ms,
         candidate_limit,
     )
@@ -403,13 +401,9 @@ fn observe_scheduler_wall_time(
     }
 }
 
-fn scheduler_observed_wait_ids(
-    paths: &StatefulRuntimeStoragePaths,
-    tenant: &TenantContext,
-) -> HashSet<String> {
+fn scheduler_observed_wait_ids(paths: &StatefulRuntimeStoragePaths) -> HashSet<String> {
     load_stateful_waits(&paths.waits_path)
         .into_iter()
-        .filter(|wait| wait.visible_to_tenant(tenant))
         .filter(|wait| !wait.status.is_terminal())
         .map(|wait| scheduler_wait_identity_key(&wait))
         .collect()

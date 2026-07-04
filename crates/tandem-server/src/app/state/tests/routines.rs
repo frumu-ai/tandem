@@ -695,7 +695,25 @@ async fn record_external_action_reliability_scope_does_not_trust_unresolved_meta
         .is_empty(),
         "writer-controlled metadata must not make unresolved rows visible to the spoofed tenant"
     );
+    let unattributed_tenant = TenantContext::explicit_user_workspace(
+        "unattributed",
+        "unresolved-external-action",
+        None,
+        "system",
+    );
     assert_eq!(
+        crate::stateful_runtime::list_stateful_outbox(
+            &reliability_path,
+            &unattributed_tenant,
+            crate::stateful_runtime::StatefulReliabilityQuery {
+                limit: Some(10),
+                ..Default::default()
+            },
+        )
+        .len(),
+        1
+    );
+    assert!(
         crate::stateful_runtime::list_stateful_outbox(
             &reliability_path,
             &TenantContext::local_implicit(),
@@ -704,8 +722,8 @@ async fn record_external_action_reliability_scope_does_not_trust_unresolved_meta
                 ..Default::default()
             },
         )
-        .len(),
-        1
+        .is_empty(),
+        "local implicit must not list explicit unattributed reliability rows"
     );
 }
 
