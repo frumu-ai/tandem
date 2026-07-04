@@ -707,57 +707,24 @@ impl AppState {
         startup.last_error = Some(error.into());
     }
 
-    pub async fn channel_statuses(&self) -> std::collections::HashMap<String, ChannelStatus> {
-        let runtime = self.channels_runtime.lock().await;
-        let mut status = runtime.statuses.clone();
-        let diagnostics = runtime.diagnostics.read().await;
-        for spec in registered_channels() {
-            let entry = status
-                .entry(spec.name.to_string())
-                .or_insert(ChannelStatus {
-                    enabled: false,
-                    connected: false,
-                    last_error: None,
-                    active_sessions: 0,
-                    meta: json!({}),
-                });
-            let mut meta = entry.meta.as_object().cloned().unwrap_or_default();
-            if let Some(diag) = diagnostics.get(spec.name) {
-                entry.last_error = diag.last_error.clone().or_else(|| entry.last_error.clone());
-                meta.insert("state".to_string(), Value::String(diag.state.to_string()));
-                meta.insert(
-                    "last_error_code".to_string(),
-                    diag.last_error_code
-                        .map(|code| Value::String(code.to_string()))
-                        .unwrap_or(Value::Null),
-                );
-                meta.insert(
-                    "last_reconnect_at".to_string(),
-                    diag.last_reconnect_at
-                        .map(|value| Value::Number(value.into()))
-                        .unwrap_or(Value::Null),
-                );
-                meta.insert(
-                    "listener_start_count".to_string(),
-                    Value::Number(serde_json::Number::from(diag.listener_start_count)),
-                );
-            } else {
-                meta.insert("state".to_string(), Value::String("stopped".to_string()));
-                meta.insert("last_error_code".to_string(), Value::Null);
-                meta.insert("last_reconnect_at".to_string(), Value::Null);
-                meta.insert(
-                    "listener_start_count".to_string(),
-                    Value::Number(0u64.into()),
-                );
-            }
-            entry.meta = Value::Object(meta);
-        }
-        status
-    }
-
     pub async fn restart_channel_listeners(&self) -> anyhow::Result<()> {
         let effective = self.config.get_effective_value().await;
-        let parsed: EffectiveAppConfig = serde_json::from_value(effective).unwrap_or_default();
+        // Parse failures previously fell through to `Default` silently, which
+        // zeroes out every channel (they look unconfigured) with no signal —
+        // an unrelated malformed config field could take all channels down
+        // with nothing in the logs. Log loudly before falling back (TAN-598).
+        let parsed: EffectiveAppConfig = match serde_json::from_value(effective) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                tracing::error!(
+                    target: "tandem_server::channels",
+                    %error,
+                    "failed to parse effective config for channel startup; \
+                     treating channels as unconfigured until this is resolved"
+                );
+                EffectiveAppConfig::default()
+            }
+        };
         self.configure_web_ui(parsed.web_ui.enabled, parsed.web_ui.path_prefix.clone());
 
         let diagnostics = tandem_channels::new_channel_runtime_diagnostics();
