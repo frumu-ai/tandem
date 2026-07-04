@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { renderIcons } from "../app/icons.js";
 import { renderMarkdownSafe } from "../lib/markdown";
 import { ChatInterfacePanel } from "../components/ChatInterfacePanel";
+import { DetailDrawer } from "../ui/index.tsx";
 import type { AppPageProps } from "./pageTypes";
 import {
   type ChatSession,
@@ -102,6 +103,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
 
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [railDrawerOpen, setRailDrawerOpen] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState(loadStoredSessionId());
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
@@ -1258,274 +1260,8 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
     navigate("planner");
   };
 
-  return (
-    <div
-      ref={rootRef}
-      className="chat-layout chat-layout-fill min-w-0 min-h-0 h-full w-full flex-1"
-    >
-      <motion.aside
-        className={`chat-sessions-panel ${sessionsOpen ? "open" : ""}`}
-        initial={false}
-        animate={
-          reducedMotion
-            ? { x: sessionsOpen ? 0 : "-104%" }
-            : { x: sessionsOpen ? 0 : "-104%", transition: { duration: 0.18, ease: "easeOut" } }
-        }
-      >
-        <div className="chat-sessions-header">
-          <h3 className="chat-sessions-title">
-            <i data-lucide="history"></i>
-            Sessions
-          </h3>
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              className="tcp-btn h-8 px-2.5 text-xs"
-              onClick={() => {
-                void createSession().catch((error) => toast("err", toTextError(error)));
-                setSessionsOpen(false);
-              }}
-            >
-              <i data-lucide="plus"></i>
-              New
-            </button>
-            <button
-              type="button"
-              className="tcp-btn h-8 px-2.5 text-xs"
-              onClick={() => void refreshSessions()}
-            >
-              <i data-lucide="refresh-cw"></i>
-            </button>
-          </div>
-        </div>
-
-        <div className="chat-session-list">
-          <AnimatePresence>
-            {sessions.map((session) => (
-              <motion.div
-                key={session.id}
-                className="chat-session-row"
-                initial={reducedMotion ? false : { opacity: 0, y: 6 }}
-                animate={reducedMotion ? undefined : { opacity: 1, y: 0 }}
-                exit={reducedMotion ? undefined : { opacity: 0, y: -6 }}
-              >
-                <button
-                  type="button"
-                  className={`chat-session-btn ${session.id === selectedSessionId ? "active" : ""}`}
-                  title={session.id}
-                  onClick={() => {
-                    setSelectedSessionId(session.id);
-                    setSessionsOpen(false);
-                  }}
-                >
-                  <span className="block truncate">{session.title}</span>
-                </button>
-                <button
-                  type="button"
-                  className="chat-session-del"
-                  title="Delete session"
-                  onClick={() => setDeleteConfirm({ id: session.id, title: session.title })}
-                >
-                  <i data-lucide="trash-2"></i>
-                </button>
-              </motion.div>
-            ))}
-          </AnimatePresence>
-
-          {!sessions.length ? <p className="chat-rail-empty px-1 py-2">No sessions yet.</p> : null}
-        </div>
-      </motion.aside>
-
-      <AnimatePresence>
-        {sessionsOpen ? (
-          <motion.button
-            type="button"
-            className="chat-scrim open"
-            aria-label="Close sessions"
-            initial={reducedMotion ? false : { opacity: 0 }}
-            animate={reducedMotion ? undefined : { opacity: 1 }}
-            exit={reducedMotion ? undefined : { opacity: 0 }}
-            onClick={() => setSessionsOpen(false)}
-          />
-        ) : null}
-      </AnimatePresence>
-
-      <div className="chat-workspace min-h-0 min-w-0">
-        <section className="chat-main-shell flex min-h-0 min-w-0 flex-col overflow-hidden">
-          <header className="chat-main-header shrink-0">
-            <button
-              type="button"
-              className="chat-icon-btn h-8 w-8"
-              title="Sessions"
-              onClick={() => setSessionsOpen((prev) => !prev)}
-            >
-              <i data-lucide="history"></i>
-            </button>
-            <div className="chat-main-dot"></div>
-            <h3 className="tcp-title chat-main-title">{sessionTitle}</h3>
-            {availableTools.length ? (
-              <span className="chat-main-tools">
-                {selectedTools.length
-                  ? `${selectedTools.length} enabled`
-                  : `${availableTools.length} tools`}
-              </span>
-            ) : null}
-          </header>
-
-          {setupCard ? (
-            <div className="mx-3 mb-2 rounded-xl border border-amber-500/30 bg-amber-500/8 p-3">
-              <div className="mb-2 flex items-start justify-between gap-3">
-                <div>
-                  <div className="tcp-title text-sm">{setupCard.title}</div>
-                  <div className="tcp-subtle text-sm">{setupCard.body}</div>
-                </div>
-                <button
-                  type="button"
-                  className="tcp-btn tcp-btn-ghost"
-                  onClick={() => setSetupCard(null)}
-                >
-                  Dismiss
-                </button>
-              </div>
-              {setupCard.clarifier ? (
-                <div className="mb-2 flex flex-wrap gap-2">
-                  {setupCard.clarifier.options.map((option) => (
-                    <button
-                      key={option.id}
-                      type="button"
-                      className="tcp-btn tcp-btn-ghost"
-                      onClick={() => {
-                        const isWorkflowPlanner = option.id.startsWith("workflow_planner_");
-                        setSetupCard({
-                          title:
-                            option.id === "provider_setup"
-                              ? "Provider setup"
-                              : option.id === "integration_setup"
-                                ? "Tool connection"
-                                : isWorkflowPlanner
-                                  ? "Workflow planning"
-                                  : "Automation setup",
-                          body:
-                            option.id === "provider_setup"
-                              ? "Open Providers to configure a provider."
-                              : option.id === "integration_setup"
-                                ? "Open MCP to connect the tool you need."
-                                : isWorkflowPlanner
-                                  ? "Open the planner to answer the missing workflow details."
-                                  : "Open Automations to build the workflow.",
-                          cta:
-                            option.id === "provider_setup"
-                              ? "Open Providers"
-                              : option.id === "integration_setup"
-                                ? "Open MCP"
-                                : isWorkflowPlanner
-                                  ? "Open Planner"
-                                  : "Open Automations",
-                          actionType:
-                            option.id === "provider_setup"
-                              ? "open_provider_setup"
-                              : option.id === "integration_setup"
-                                ? "open_mcp_setup"
-                                : isWorkflowPlanner
-                                  ? "open_planner"
-                                  : "open_automations",
-                          payload: setupCard.payload,
-                        });
-                      }}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-              <button
-                type="button"
-                className="tcp-btn"
-                onClick={() => {
-                  if (setupCard.actionType === "open_provider_setup") navigate("settings");
-                  else if (setupCard.actionType === "open_mcp_setup") navigate("mcp");
-                  else if (setupCard.actionType === "open_planner") {
-                    seedWorkflowPlanner(setupCard.payload);
-                    navigate("planner");
-                  } else if (setupCard.actionType === "open_automations") {
-                    seedAutomationPlanner(setupCard.payload);
-                    navigate("automations");
-                  }
-                }}
-              >
-                {setupCard.cta}
-              </button>
-            </div>
-          ) : null}
-
-          <ChatInterfacePanel
-            messages={messages.map((m) => ({
-              id: m.id,
-              role: m.role,
-              displayRole: m.displayRole,
-              text: m.text,
-              markdown: m.markdown,
-            }))}
-            emptyText="No messages yet. Send a prompt to start."
-            inputValue={prompt}
-            inputPlaceholder="Ask anything... (Enter to send, Shift+Enter newline)"
-            sendLabel="Send"
-            onInputChange={setPrompt}
-            onSend={() => void sendPrompt()}
-            sendDisabled={sending}
-            inputDisabled={sending}
-            botIdentity={{ botName: identity.botName, botAvatarUrl: identity.botAvatarUrl }}
-            streamingText={streamingText}
-            showThinking={showThinking}
-            thinkingText="Thinking"
-            attachments={uploads.map((u) => ({ path: u.path, name: u.path, size: u.size }))}
-            onOpenAttachment={(index) => {
-              const file = uploads[index];
-              if (!file?.path) return;
-              openFilesExplorer(navigate, { path: file.path });
-            }}
-            onRemoveAttachment={(index) => setUploads((prev) => prev.filter((_, i) => i !== index))}
-            onAttach={() => fileInputRef.current?.click()}
-            attachDisabled={sending}
-            statusTitle={sending && !showThinking && !streamingText ? "Sending…" : ""}
-            composerAccessory={
-              showWorkflowNudge ? (
-                <div className="chat-planner-nudge" role="status">
-                  <button
-                    type="button"
-                    className="chat-planner-nudge-action"
-                    onClick={openWorkflowPlannerFromPrompt}
-                  >
-                    <i data-lucide="workflow"></i>
-                    Open workflow planner
-                  </button>
-                  <span className="chat-planner-nudge-hint">for this message</span>
-                  <button
-                    type="button"
-                    className="chat-planner-nudge-dismiss"
-                    title="Dismiss"
-                    onClick={() => setWorkflowNudgeDismissedFor(workflowNudgePrompt)}
-                  >
-                    <i data-lucide="x"></i>
-                  </button>
-                </div>
-              ) : null
-            }
-          />
-
-          <input
-            ref={fileInputRef}
-            type="file"
-            className="hidden"
-            multiple
-            onChange={(event) => {
-              void uploadFiles((event.target as HTMLInputElement).files);
-              (event.target as HTMLInputElement).value = "";
-            }}
-          />
-        </section>
-
-        <aside className="chat-right-rail hidden min-h-0 flex-col overflow-hidden xl:flex">
+  const railSections = (
+    <>
           <section className="chat-rail-section chat-rail-tools-section">
             <div className="mb-2 flex items-center justify-between">
               <p className="chat-rail-label">Tools</p>
@@ -1757,8 +1493,296 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
               )}
             </div>
           </section>
+    </>
+  );
+
+  return (
+    <div
+      ref={rootRef}
+      className="chat-layout chat-layout-fill min-w-0 min-h-0 h-full w-full flex-1"
+    >
+      <motion.aside
+        className={`chat-sessions-panel ${sessionsOpen ? "open" : ""}`}
+        initial={false}
+        animate={
+          reducedMotion
+            ? { x: sessionsOpen ? 0 : "-104%" }
+            : { x: sessionsOpen ? 0 : "-104%", transition: { duration: 0.18, ease: "easeOut" } }
+        }
+      >
+        <div className="chat-sessions-header">
+          <h3 className="chat-sessions-title">
+            <i data-lucide="history"></i>
+            Sessions
+          </h3>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              className="tcp-btn h-8 px-2.5 text-xs"
+              onClick={() => {
+                void createSession().catch((error) => toast("err", toTextError(error)));
+                setSessionsOpen(false);
+              }}
+            >
+              <i data-lucide="plus"></i>
+              New
+            </button>
+            <button
+              type="button"
+              className="tcp-btn h-8 px-2.5 text-xs"
+              onClick={() => void refreshSessions()}
+            >
+              <i data-lucide="refresh-cw"></i>
+            </button>
+          </div>
+        </div>
+
+        <div className="chat-session-list">
+          <AnimatePresence>
+            {sessions.map((session) => (
+              <motion.div
+                key={session.id}
+                className="chat-session-row"
+                initial={reducedMotion ? false : { opacity: 0, y: 6 }}
+                animate={reducedMotion ? undefined : { opacity: 1, y: 0 }}
+                exit={reducedMotion ? undefined : { opacity: 0, y: -6 }}
+              >
+                <button
+                  type="button"
+                  className={`chat-session-btn ${session.id === selectedSessionId ? "active" : ""}`}
+                  title={session.id}
+                  onClick={() => {
+                    setSelectedSessionId(session.id);
+                    setSessionsOpen(false);
+                  }}
+                >
+                  <span className="block truncate">{session.title}</span>
+                </button>
+                <button
+                  type="button"
+                  className="chat-session-del"
+                  title="Delete session"
+                  onClick={() => setDeleteConfirm({ id: session.id, title: session.title })}
+                >
+                  <i data-lucide="trash-2"></i>
+                </button>
+              </motion.div>
+            ))}
+          </AnimatePresence>
+
+          {!sessions.length ? <p className="chat-rail-empty px-1 py-2">No sessions yet.</p> : null}
+        </div>
+      </motion.aside>
+
+      <AnimatePresence>
+        {sessionsOpen ? (
+          <motion.button
+            type="button"
+            className="chat-scrim open"
+            aria-label="Close sessions"
+            initial={reducedMotion ? false : { opacity: 0 }}
+            animate={reducedMotion ? undefined : { opacity: 1 }}
+            exit={reducedMotion ? undefined : { opacity: 0 }}
+            onClick={() => setSessionsOpen(false)}
+          />
+        ) : null}
+      </AnimatePresence>
+
+      <div className="chat-workspace min-h-0 min-w-0">
+        <section className="chat-main-shell flex min-h-0 min-w-0 flex-col overflow-hidden">
+          <header className="chat-main-header shrink-0">
+            <button
+              type="button"
+              className="chat-icon-btn h-8 w-8"
+              title="Sessions"
+              onClick={() => setSessionsOpen((prev) => !prev)}
+            >
+              <i data-lucide="history"></i>
+            </button>
+            <div className="chat-main-dot"></div>
+            <h3 className="tcp-title chat-main-title">{sessionTitle}</h3>
+            {availableTools.length ? (
+              <span className="chat-main-tools">
+                {selectedTools.length
+                  ? `${selectedTools.length} enabled`
+                  : `${availableTools.length} tools`}
+              </span>
+            ) : null}
+            <button
+              type="button"
+              className="chat-icon-btn h-8 w-8 ml-auto xl:hidden"
+              title="Tools, approvals, and activity"
+              onClick={() => setRailDrawerOpen(true)}
+            >
+              <i data-lucide="panel-right-open"></i>
+            </button>
+          </header>
+
+          {setupCard ? (
+            <div className="mx-3 mb-2 rounded-xl border border-amber-500/30 bg-amber-500/8 p-3">
+              <div className="mb-2 flex items-start justify-between gap-3">
+                <div>
+                  <div className="tcp-title text-sm">{setupCard.title}</div>
+                  <div className="tcp-subtle text-sm">{setupCard.body}</div>
+                </div>
+                <button
+                  type="button"
+                  className="tcp-btn tcp-btn-ghost"
+                  onClick={() => setSetupCard(null)}
+                >
+                  Dismiss
+                </button>
+              </div>
+              {setupCard.clarifier ? (
+                <div className="mb-2 flex flex-wrap gap-2">
+                  {setupCard.clarifier.options.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      className="tcp-btn tcp-btn-ghost"
+                      onClick={() => {
+                        const isWorkflowPlanner = option.id.startsWith("workflow_planner_");
+                        setSetupCard({
+                          title:
+                            option.id === "provider_setup"
+                              ? "Provider setup"
+                              : option.id === "integration_setup"
+                                ? "Tool connection"
+                                : isWorkflowPlanner
+                                  ? "Workflow planning"
+                                  : "Automation setup",
+                          body:
+                            option.id === "provider_setup"
+                              ? "Open Providers to configure a provider."
+                              : option.id === "integration_setup"
+                                ? "Open MCP to connect the tool you need."
+                                : isWorkflowPlanner
+                                  ? "Open the planner to answer the missing workflow details."
+                                  : "Open Automations to build the workflow.",
+                          cta:
+                            option.id === "provider_setup"
+                              ? "Open Providers"
+                              : option.id === "integration_setup"
+                                ? "Open MCP"
+                                : isWorkflowPlanner
+                                  ? "Open Planner"
+                                  : "Open Automations",
+                          actionType:
+                            option.id === "provider_setup"
+                              ? "open_provider_setup"
+                              : option.id === "integration_setup"
+                                ? "open_mcp_setup"
+                                : isWorkflowPlanner
+                                  ? "open_planner"
+                                  : "open_automations",
+                          payload: setupCard.payload,
+                        });
+                      }}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              <button
+                type="button"
+                className="tcp-btn"
+                onClick={() => {
+                  if (setupCard.actionType === "open_provider_setup") navigate("settings");
+                  else if (setupCard.actionType === "open_mcp_setup") navigate("mcp");
+                  else if (setupCard.actionType === "open_planner") {
+                    seedWorkflowPlanner(setupCard.payload);
+                    navigate("planner");
+                  } else if (setupCard.actionType === "open_automations") {
+                    seedAutomationPlanner(setupCard.payload);
+                    navigate("automations");
+                  }
+                }}
+              >
+                {setupCard.cta}
+              </button>
+            </div>
+          ) : null}
+
+          <ChatInterfacePanel
+            messages={messages.map((m) => ({
+              id: m.id,
+              role: m.role,
+              displayRole: m.displayRole,
+              text: m.text,
+              markdown: m.markdown,
+            }))}
+            emptyText="No messages yet. Send a prompt to start."
+            inputValue={prompt}
+            inputPlaceholder="Ask anything... (Enter to send, Shift+Enter newline)"
+            sendLabel="Send"
+            onInputChange={setPrompt}
+            onSend={() => void sendPrompt()}
+            sendDisabled={sending}
+            inputDisabled={sending}
+            botIdentity={{ botName: identity.botName, botAvatarUrl: identity.botAvatarUrl }}
+            streamingText={streamingText}
+            showThinking={showThinking}
+            thinkingText="Thinking"
+            attachments={uploads.map((u) => ({ path: u.path, name: u.path, size: u.size }))}
+            onOpenAttachment={(index) => {
+              const file = uploads[index];
+              if (!file?.path) return;
+              openFilesExplorer(navigate, { path: file.path });
+            }}
+            onRemoveAttachment={(index) => setUploads((prev) => prev.filter((_, i) => i !== index))}
+            onAttach={() => fileInputRef.current?.click()}
+            attachDisabled={sending}
+            statusTitle={sending && !showThinking && !streamingText ? "Sending…" : ""}
+            composerAccessory={
+              showWorkflowNudge ? (
+                <div className="chat-planner-nudge" role="status">
+                  <button
+                    type="button"
+                    className="chat-planner-nudge-action"
+                    onClick={openWorkflowPlannerFromPrompt}
+                  >
+                    <i data-lucide="workflow"></i>
+                    Open workflow planner
+                  </button>
+                  <span className="chat-planner-nudge-hint">for this message</span>
+                  <button
+                    type="button"
+                    className="chat-planner-nudge-dismiss"
+                    title="Dismiss"
+                    onClick={() => setWorkflowNudgeDismissedFor(workflowNudgePrompt)}
+                  >
+                    <i data-lucide="x"></i>
+                  </button>
+                </div>
+              ) : null
+            }
+          />
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            className="hidden"
+            multiple
+            onChange={(event) => {
+              void uploadFiles((event.target as HTMLInputElement).files);
+              (event.target as HTMLInputElement).value = "";
+            }}
+          />
+        </section>
+
+        <aside className="chat-right-rail hidden min-h-0 flex-col overflow-hidden xl:flex">
+          {railSections}
         </aside>
       </div>
+
+      <DetailDrawer
+        open={railDrawerOpen}
+        title="Tools, approvals & activity"
+        onClose={() => setRailDrawerOpen(false)}
+      >
+        <div className="grid gap-4">{railSections}</div>
+      </DetailDrawer>
 
       <AnimatePresence>
         {deleteConfirm ? (

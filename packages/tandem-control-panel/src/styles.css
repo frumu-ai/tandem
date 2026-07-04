@@ -2112,11 +2112,6 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   }
 }
 
-.hero-svg {
-  width: 100%;
-  height: 130px;
-}
-
 .chip-hero {
   overflow: visible;
 }
@@ -2316,52 +2311,6 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   color: var(--color-text-subtle);
   text-transform: uppercase;
   letter-spacing: 0.06em;
-}
-
-.dashboard-histogram {
-  height: 172px;
-  border: 1px solid color-mix(in srgb, var(--color-border-subtle) 88%, transparent);
-  border-radius: var(--radius);
-  background: color-mix(in srgb, var(--color-surface-elevated) 95%, #000 5%);
-  padding: 0.5rem 0.45rem 0.45rem;
-  display: grid;
-  grid-template-columns: repeat(12, minmax(0, 1fr));
-  gap: 0.35rem;
-  align-items: end;
-}
-
-.dashboard-histogram-bin {
-  height: 100%;
-  display: grid;
-  grid-template-rows: auto 1fr auto;
-  align-items: end;
-  gap: 0.2rem;
-}
-
-.dashboard-histogram-count {
-  text-align: center;
-  font-size: 0.66rem;
-  color: var(--color-text-muted);
-  font-family: var(--font-mono);
-}
-
-.dashboard-histogram-bar {
-  display: block;
-  width: 100%;
-  border-radius: var(--radius);
-  border: 1px solid var(--tcp-hover-border-primary);
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--color-primary) 82%, transparent),
-    color-mix(in srgb, var(--color-primary-muted) 96%, transparent)
-  );
-  min-height: 8%;
-}
-
-.dashboard-histogram-label {
-  text-align: center;
-  font-size: 0.62rem;
-  color: var(--color-text-subtle);
 }
 
 .agents-tabs {
@@ -2995,7 +2944,7 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
 }
 
 .fc .fc-view-harness {
-  min-height: 44rem;
+  min-height: clamp(24rem, 60vh, 44rem);
 }
 
 .fc .fc-timegrid-more-link,
