@@ -2,6 +2,51 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.6.6 (2026-07-04)
+
+Tandem 0.6.6 fixes a production reliability gap in channel messaging: Telegram,
+Discord, and Slack replies (along with automations and scheduled runs) could
+fail with `AUTHENTICATION_ERROR` once the OpenAI Codex OAuth access token
+expired, because the token was previously only refreshed as a side effect of
+the control panel polling its own status endpoint. An engine-side background
+task now keeps that credential fresh on its own schedule, and any run that
+still hits an expired token refreshes and retries once transparently before
+surfacing an error to the channel. Channel status reporting was also
+corrected so a connected listener no longer shows as disconnected from a
+stale boot-time snapshot, and a config parse failure that used to silently
+disable every channel now logs loudly instead.
+This release also continues hardening the stateful automation runtime:
+retrying a dead-lettered tool effect now actually re-executes it through the
+normal governed dispatch path instead of only recording intent, a new
+compensation execution engine drives `compensate_pending_effects` recovery
+choices through an auditable runtime path with idempotent completions, and a
+startup-recovery sweep replays durable-wait wakes that could previously be
+lost if the engine crashed between finalizing a wait and requeuing its run.
+Webhook intake retention no longer runs a synchronous full-tenant prune
+inline on every request (now bounded by a hard event cap and handled by the
+existing background reaper), and an early-arriving correlated webhook now
+replays against a wait registered just after it arrives instead of orphaning
+its run. Three security hardening passes landed alongside this work:
+knowledge-scope memory governance now fails closed for records missing
+scope metadata, stateful runtime tenant scoping was tightened across
+approvals and MCP phase tool authority, and unsigned dev-mode webhook
+signatures can no longer be enabled outside local single-tenant mode
+regardless of the opt-in flag.
+The Control Panel received a substantial design-consistency pass: a real
+`Icon` component replaces the previous DOM-scan/MutationObserver icon
+mechanism that could drop or duplicate icons under Preact's diffing;
+hardcoded colors that broke the Porcelain light theme (most visibly,
+near-invisible panel headings) and an off-theme calendar were routed through
+theme tokens; border-radius, caption/micro text sizes, and dead glow/glass
+CSS were consolidated onto single mechanisms; the sidebar's 19 routes are now
+grouped into labeled sections; Enterprise Admin's six creation forms moved
+into on-demand drawers; and a dismissible setup banner replaced the floating
+onboarding modal. Several smaller fixes round out the pass: the chat right
+rail is now reachable on tablet/small-laptop widths via a drawer, a blocked
+automation status no longer renders as success-green, first paint no longer
+flashes the wrong theme, and a handful of icon-only controls gained
+accessible names.
+
 ## v0.6.5 (2026-07-03)
 
 Tandem 0.6.5 completes the Incident Monitor production-governance suite —

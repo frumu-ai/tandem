@@ -5,6 +5,132 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.6] - 2026-07-04
+
+### Added
+
+- Added a stateful compensation execution engine: choosing a
+  `compensate_pending_effects` recovery action now drives an auditable runtime
+  execution path (claimed-then-sent compensation outbox row, a deterministic
+  receipt effect, and completion of linked dead letters) instead of only
+  recording operator intent, and the generic compensation status setter no
+  longer allows illegal lifecycle jumps directly from `Proposed` to
+  `Completed`.
+- Added stateful runtime retention cleanup: an event-log append cursor avoids
+  repeatedly scanning/sorting the full run log on next-sequence appends, and
+  event-log compaction plus terminal wait-store pruning are wired into the
+  existing runtime retention sweep.
+- Added a dedicated CI job for `tandem-server` stateful runtime tests, run as
+  a focused module-filtered job ahead of (and gating) the full workspace
+  nextest run.
+- Added `repo_context` (context-bundle vs. fallback source, path scope, index
+  status) and `partial_diff_artifacts` (worker/subtask/patch path) to the
+  Control Panel coder run detail view, plus first-class retry/failure/
+  partial-diff-state badges on run timeline events, so ACA repo-graph usage
+  and recovery activity are visible without reading raw run JSON.
+- Added shared Control Panel data-display primitives (`StatusBadge`,
+  `RelativeTime`, `CopyButton`, `IdChip`, `KeyValueRow`) and adopted them on
+  the Incident Monitor page.
+- Added a real `Icon` Preact/JSX component (backed by a 134-entry lucide
+  registry) replacing the DOM-scan/MutationObserver icon-rendering mechanism
+  across the Control Panel, plus an `icon-registry` test guard so an
+  unregistered icon name can no longer silently render blank.
+- Added grouped sidebar navigation sections (Overview, Build, Operate,
+  Govern, System) in place of one flat 19-route list.
+- Added a dismissible "Provider Setup Required" banner (session-scoped) in
+  place of the floating onboarding modal that previously overlapped content
+  on every route.
+
+### Changed
+
+- Enterprise Admin's six creation forms (org unit, membership, access grant,
+  connector, credential ref, source binding) now open in drawers from their
+  target panel's header instead of always rendering above the monitoring
+  panels.
+- Unified border-radius across the Control Panel onto a single
+  `var(--radius)` token/explicit-pill mechanism, removing a ~60-selector
+  `!important` override block and the conflicting raw declarations it existed
+  to suppress.
+- Tokenized the dominant `text-[11px]`/`text-[10px]` arbitrary-value literals
+  (380+ occurrences) into `--font-size-caption`/`--font-size-micro` variables
+  and reusable classes.
+- Removed dead glow/glass CSS (`GlowLayer` and related classes, all
+  permanently invisible), deduplicated repeated rule pairs, and removed the
+  Coder page's redundant duplicate "Engine healthy" status badges in favor of
+  the single header pill.
+- Trimmed verbose route subtitles and the Incident Monitor directory-picker
+  explainer text; grouped the Report Issue form into collapsible sections.
+
+### Fixed
+
+- Fixed Telegram/Discord/Slack channel replies (and automations/scheduled
+  runs) failing with `AUTHENTICATION_ERROR` once the OpenAI Codex OAuth
+  access token expired. The token was previously only refreshed as a side
+  effect of the control panel polling `GET /provider/auth`; an engine-side
+  background task now keeps it fresh independent of the panel, and a run
+  that still hits an expired token now refreshes and retries once
+  transparently before surfacing an error (TAN-594, TAN-595).
+- Fixed `/channels/status` reporting a channel as disconnected from a
+  boot-time snapshot even while its listener was actually running; `connected`
+  is now derived from live supervisor diagnostics. Also replaced a silent
+  `unwrap_or_default()` fallback on channel config parse failures with a
+  logged error, so a malformed config field no longer disables every channel
+  without a trace (TAN-597, TAN-598).
+- Fixed retrying a dead-lettered tool effect only recording intent
+  (`RetryRequested`) without re-executing anything; retries now re-drive the
+  owning run through the normal governed dispatch path (tenant assertion →
+  tool authority → pre-send outbox gate → receipt), with exponential backoff
+  and an attempt cap (TAN-564).
+- Fixed durable-wait wakes being lost if the engine crashed between a
+  scheduler finalizing a wait as `Woken` and requeuing the run from
+  in-memory state, stranding the run `Paused` forever; a startup-recovery
+  sweep now detects and replays the lost requeue (TAN-566).
+- Fixed webhook intake retention running a full synchronous prune (a scan and
+  file rewrite across every tenant's retained events) inline under a
+  single global lock on every webhook request; retention is now handled only
+  by the existing background reaper, with a hard 50k-event retention cap
+  added alongside the existing time-based expiry. Also fixed an
+  early-arriving correlated webhook orphaning its run instead of waking it:
+  registering a wait now replays against already-recorded matching
+  deliveries (TAN-570, TAN-571).
+- Fixed 24 Control Panel icon names being used without being registered
+  (rendering blank), icons mounted after async data loading staying blank
+  (added a MutationObserver-driven re-render), and frozen loader-circle spin
+  animations (TAN-576, TAN-577, TAN-579).
+- Fixed hardcoded colors breaking the Porcelain (light) theme — most
+  visibly, every `PanelCard` heading rendering near-invisible pale text on a
+  white background — plus an off-theme FullCalendar, by routing the affected
+  classes and the calendar block through theme tokens (TAN-581).
+- Fixed the chat right rail (Tools, Approvals, Run Timeline, Tool Activity)
+  being completely unreachable below the 1280px breakpoint; it now opens
+  from a drawer on narrower viewports. Also capped the Automations calendar's
+  fixed minimum height so it no longer forces a hard scroll on short
+  viewports (TAN-592).
+- Fixed a blocked automation status rendering in the "success" green color,
+  a charcoal→blue theme flash on first paint (now resolved by applying the
+  persisted theme before first paint), and an undefined `.tcp-btn-ghost`
+  class silently falling back to the default button style (TAN-580, TAN-582).
+- Fixed several icon-only buttons and placeholder-only inputs missing
+  accessible names, and replaced emoji glyphs used as icons with the
+  matching registered lucide icons (TAN-590, TAN-591).
+
+### Security
+
+- Knowledge-scope memory governance now fails closed for unscoped records:
+  governed strict reads deny records/chunks missing knowledge-scope metadata
+  instead of bypassing the access filter, and non-local memory writes/
+  promotions require knowledge-scope metadata even when source-binding
+  metadata is omitted (TAN-572).
+- Hardened stateful runtime tenant scoping: `/approvals/pending` is now
+  scoped to the authenticated tenant, local-implicit cross-tenant visibility
+  into stateful runtime scopes was removed, and MCP phase tool authority is
+  now denied outright when missing or empty rather than falling through
+  (TAN-563, TAN-567, TAN-568, TAN-569).
+- Unsigned dev-mode webhook signature verification can no longer be enabled
+  outside local single-tenant mode, even with the opt-in flag set — the
+  runtime now refuses it whenever the effective auth mode or a configured
+  hosted control-plane URL indicates a production posture (TAN-575).
+
 ## [0.6.5] - 2026-07-03
 
 ### Added
