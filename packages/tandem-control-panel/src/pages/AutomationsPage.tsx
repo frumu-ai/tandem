@@ -1440,7 +1440,7 @@ export function MyAutomations({
       return "tcp-badge-warn";
     }
     if (normalizedStatus === "blocked") {
-      return "border border-emerald-400/60 bg-emerald-400/10 text-emerald-200";
+      return "tcp-badge-blocked";
     }
     if (
       normalizedStatus === "failed" ||
