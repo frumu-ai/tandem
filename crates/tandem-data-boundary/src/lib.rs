@@ -5,6 +5,16 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod evaluate;
+
+pub use evaluate::{evaluate_data_boundary, DataBoundaryEvaluation, DataBoundaryEvaluationRequest};
+
+/// Stable content hash for boundary inputs and monitoring dedupe. The result
+/// is safe to log and never reveals payload content.
+pub fn payload_hash(payload: &[u8]) -> String {
+    sha256_hex(payload)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DataBoundaryMode {
@@ -22,6 +32,16 @@ pub enum ProviderBoundaryClass {
     ApprovedExternal,
     UnapprovedExternal,
     Prohibited,
+    /// Caller could not classify the provider. Strict policies fail closed on
+    /// this value; permissive policies treat it like `UnapprovedExternal`.
+    Unknown,
+}
+
+impl ProviderBoundaryClass {
+    /// Providers that keep payloads inside the company boundary.
+    pub fn is_internal(self) -> bool {
+        matches!(self, Self::Local | Self::CustomerHosted)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -194,6 +214,22 @@ pub struct DataBoundaryPolicy {
     pub approval_required_classes: Vec<SensitiveDataClass>,
     #[serde(default)]
     pub block_classes: Vec<SensitiveDataClass>,
+    /// Sensitive classes that must never leave for an external provider and
+    /// should be routed to a local/private model instead.
+    #[serde(default)]
+    pub require_local_classes: Vec<SensitiveDataClass>,
+    /// Sensitive classes policy explicitly allows to reach unapproved external
+    /// providers in raw form. Empty means no raw sensitive data may cross.
+    #[serde(default)]
+    pub allow_raw_external_classes: Vec<SensitiveDataClass>,
+    /// Fail closed (block in enforce mode) when tenant context is missing or
+    /// the provider boundary class is `Unknown`.
+    #[serde(default)]
+    pub strict_fail_closed: bool,
+    /// Payloads larger than this are refused in enforce mode to bound
+    /// uncontrolled spend from payload/retry expansion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_payload_bytes: Option<u64>,
     #[serde(default)]
     pub action_tags: Vec<String>,
 }
@@ -346,6 +382,9 @@ pub struct DataBoundaryEvent {
     pub event_name: String,
     pub event_kind: DataBoundaryEventKind,
     pub emitted_at_ms: u64,
+    /// How long the boundary evaluation took, for monitoring dispatch overhead.
+    #[serde(default)]
+    pub decision_latency_ms: u64,
     pub tenant: DataBoundaryTenantRef,
     pub provider: DataBoundaryProviderRef,
     pub operation: DataBoundaryOperationRef,
@@ -367,6 +406,7 @@ impl DataBoundaryEvent {
         event_id: impl Into<String>,
         event_kind: DataBoundaryEventKind,
         emitted_at_ms: u64,
+        decision_latency_ms: u64,
         decision: &DataBoundaryDecision,
         evidence_refs: Vec<DataBoundaryEvidenceRef>,
     ) -> Self {
@@ -375,6 +415,7 @@ impl DataBoundaryEvent {
             event_name: event_kind.event_name().to_string(),
             event_kind,
             emitted_at_ms,
+            decision_latency_ms,
             tenant: decision.tenant.clone(),
             provider: decision.provider.clone(),
             operation: decision.operation.clone(),
@@ -1369,6 +1410,7 @@ mod tests {
             "dbe_001",
             DataBoundaryEventKind::Blocked,
             42,
+            3,
             &decision,
             vec![DataBoundaryEvidenceRef {
                 kind: DataBoundaryEvidenceKind::PayloadHash,
@@ -1393,6 +1435,7 @@ mod tests {
             "dbe_001",
             DataBoundaryEventKind::Blocked,
             42,
+            3,
             &decision,
             Vec::new(),
         );
