@@ -799,7 +799,16 @@ pub fn stateful_webhook_wait_match_from_metadata(
         .and_then(|value| serde_json::from_value(value.clone()).ok())
 }
 
-fn wait_matches_webhook_event(wait: &StatefulWaitRecord, event: &StatefulWebhookWaitEvent) -> bool {
+/// Whether `event` satisfies `wait`'s webhook match rules. `pub` (rather than
+/// private to this module) so callers that need to match a webhook event
+/// against a *specific* wait — e.g. TAN-571's replay-on-registration, which
+/// checks a single newly-registered wait against historical deliveries
+/// rather than scanning the whole wait store — can reuse this exact logic
+/// instead of re-implementing it.
+pub fn wait_matches_webhook_event(
+    wait: &StatefulWaitRecord,
+    event: &StatefulWebhookWaitEvent,
+) -> bool {
     let Some(match_rules) = stateful_webhook_wait_match_from_metadata(wait.metadata.as_ref())
     else {
         return false;

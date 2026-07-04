@@ -16,7 +16,8 @@ use crate::stateful_runtime::{
     append_stateful_run_event_once_with_next_seq, begin_claimed_stateful_wait_wake_completion,
     cancel_stateful_wait_after_phase_guard_denial, claim_matching_stateful_webhook_wait,
     finish_claimed_stateful_wait_completion, guarded_phase_state_from_status,
-    list_stateful_run_snapshots, write_stateful_run_snapshot, StatefulRunEventRecord,
+    list_stateful_run_snapshots, stateful_webhook_wait_match_from_metadata, upsert_stateful_wait,
+    wait_matches_webhook_event, write_stateful_run_snapshot, StatefulRunEventRecord,
     StatefulRunSnapshotRecord, StatefulRuntimeScope, StatefulRuntimeStoragePaths, StatefulWaitKind,
     StatefulWaitRecord, StatefulWaitStatus, StatefulWebhookWaitEvent, StatefulWorkflowPhaseState,
     StatefulWorkflowRunKind, StatefulWorkflowRunStatus,
@@ -36,8 +37,8 @@ type HmacSha256 = Hmac<Sha256>;
 
 const AUTOMATION_WEBHOOK_SCHEMA_VERSION: u32 = 1;
 const AUTOMATION_WEBHOOK_SECRET_PROVIDER: &str = "tandem_automation_webhooks";
-const AUTOMATION_WEBHOOK_STATEFUL_WAIT_CLAIMANT: &str = "automation_webhook_router";
-const AUTOMATION_WEBHOOK_STATEFUL_WAIT_LEASE_MS: u64 = 30_000;
+pub(crate) const AUTOMATION_WEBHOOK_STATEFUL_WAIT_CLAIMANT: &str = "automation_webhook_router";
+pub(crate) const AUTOMATION_WEBHOOK_STATEFUL_WAIT_LEASE_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AutomationWebhookTriggersFile {
@@ -403,7 +404,7 @@ fn automation_webhook_stateful_wait_event(
     }
 }
 
-fn stateful_webhook_wake_key(
+pub(crate) fn stateful_webhook_wake_key(
     wait: &StatefulWaitRecord,
     event: &StatefulWebhookWaitEvent,
 ) -> String {
@@ -413,7 +414,7 @@ fn stateful_webhook_wake_key(
     )
 }
 
-fn guarded_phase_state_for_webhook_wait(
+pub(crate) fn guarded_phase_state_for_webhook_wait(
     paths: &StatefulRuntimeStoragePaths,
     wait: &StatefulWaitRecord,
     received_at_ms: u64,
@@ -442,7 +443,7 @@ fn guarded_phase_state_for_webhook_wait(
     .map_err(anyhow::Error::from)
 }
 
-async fn cancel_webhook_wait_after_phase_guard_denial(
+pub(crate) async fn cancel_webhook_wait_after_phase_guard_denial(
     paths: &StatefulRuntimeStoragePaths,
     wait: &StatefulWaitRecord,
     reason: &str,

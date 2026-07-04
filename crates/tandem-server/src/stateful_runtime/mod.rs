@@ -60,5 +60,5 @@ pub use waits::{
     list_stateful_waits, load_stateful_waits, mark_stateful_wait_timeout_result,
     mark_stateful_wait_woken, prune_stateful_wait_store, release_claimed_stateful_wait,
     stateful_webhook_wait_match_from_metadata, stateful_webhook_wait_metadata,
-    upsert_stateful_wait, StatefulWaitQuery,
+    upsert_stateful_wait, wait_matches_webhook_event, StatefulWaitQuery,
 };

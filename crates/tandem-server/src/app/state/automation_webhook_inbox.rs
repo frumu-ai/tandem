@@ -288,38 +288,81 @@ async fn remove_raw_payload_if_present(path: &Path) -> anyhow::Result<bool> {
     }
 }
 
+/// Hard cap on retained raw webhook events across all tenants and triggers,
+/// enforced alongside the time-based retention window (TAN-570). Without
+/// this, a high-volume tenant (or an attacker with a valid signing secret)
+/// can grow `events.json` unboundedly for the full 30-day time window, since
+/// retention was previously time-only. Oldest-first eviction keeps the most
+/// recent (most operationally relevant) deliveries.
+const MAX_RETAINED_AUTOMATION_WEBHOOK_EVENTS: usize = 50_000;
+
+async fn remove_automation_webhook_event(
+    payloads_dir: &Path,
+    events: &mut HashMap<String, AutomationWebhookRawEventRecord>,
+    event_id: &str,
+    report: &mut AutomationWebhookRetentionPruneReport,
+    delivery_ids: &mut HashSet<String>,
+) -> anyhow::Result<()> {
+    let Some(event) = events.remove(event_id) else {
+        return Ok(());
+    };
+    report.pruned_events += 1;
+    if let Some(delivery_id) = event.delivery_id.as_ref() {
+        delivery_ids.insert(delivery_id.clone());
+    }
+    let payload_path = automation_webhook_payload_path_for_event(payloads_dir, &event);
+    if remove_raw_payload_if_present(&payload_path).await? {
+        report.pruned_payloads += 1;
+    }
+    Ok(())
+}
+
 async fn prune_automation_webhook_events_locked(
     events_path: &PathBuf,
     payloads_dir: &Path,
     events: &mut HashMap<String, AutomationWebhookRawEventRecord>,
     now_ms: u64,
 ) -> anyhow::Result<(AutomationWebhookRetentionPruneReport, HashSet<String>)> {
+    let mut report = AutomationWebhookRetentionPruneReport::default();
+    let mut delivery_ids = HashSet::new();
+
     let expired_event_ids = events
         .iter()
         .filter(|(_, event)| automation_webhook_event_is_expired(event, now_ms))
         .map(|(event_id, _)| event_id.clone())
         .collect::<Vec<_>>();
-    if expired_event_ids.is_empty() {
-        return Ok((
-            AutomationWebhookRetentionPruneReport::default(),
-            HashSet::new(),
-        ));
+    for event_id in expired_event_ids {
+        remove_automation_webhook_event(
+            payloads_dir,
+            events,
+            &event_id,
+            &mut report,
+            &mut delivery_ids,
+        )
+        .await?;
     }
 
-    let mut report = AutomationWebhookRetentionPruneReport::default();
-    let mut delivery_ids = HashSet::new();
-    for event_id in expired_event_ids {
-        let Some(event) = events.remove(&event_id) else {
-            continue;
-        };
-        report.pruned_events += 1;
-        if let Some(delivery_id) = event.delivery_id.as_ref() {
-            delivery_ids.insert(delivery_id.clone());
+    if events.len() > MAX_RETAINED_AUTOMATION_WEBHOOK_EVENTS {
+        let mut oldest_first = events
+            .iter()
+            .map(|(event_id, event)| (event_id.clone(), event.received_at_ms))
+            .collect::<Vec<_>>();
+        oldest_first.sort_by_key(|(_, received_at_ms)| *received_at_ms);
+        let overflow = events.len() - MAX_RETAINED_AUTOMATION_WEBHOOK_EVENTS;
+        for (event_id, _) in oldest_first.into_iter().take(overflow) {
+            remove_automation_webhook_event(
+                payloads_dir,
+                events,
+                &event_id,
+                &mut report,
+                &mut delivery_ids,
+            )
+            .await?;
         }
-        let payload_path = automation_webhook_payload_path_for_event(payloads_dir, &event);
-        if remove_raw_payload_if_present(&payload_path).await? {
-            report.pruned_payloads += 1;
-        }
+    }
+
+    if report.pruned_events == 0 {
+        return Ok((report, delivery_ids));
     }
     persist_automation_webhook_events(events_path, events.clone()).await?;
     Ok((report, delivery_ids))
@@ -397,6 +440,19 @@ impl AppState {
         Ok(report)
     }
 
+    /// Record an inbound webhook's raw event on the fast-ack path.
+    ///
+    /// TAN-570: this used to run the full retention prune (a scan over every
+    /// retained event/delivery across *all* tenants, plus a full-file
+    /// rewrite) inline, under the single process-wide
+    /// `automation_webhook_persistence` mutex, on every single webhook
+    /// request — so intake latency scaled with total retained volume and one
+    /// busy tenant's backlog serialized every other tenant's webhook receipt.
+    /// Retention (time *and* count based, see
+    /// `prune_automation_webhook_events_locked`) is already enforced
+    /// independently by the hourly `run_automation_webhook_retention_reaper`
+    /// background task, so this path now only does the O(1) work needed to
+    /// durably record the event: write the payload, insert, rewrite the map.
     pub(crate) async fn record_automation_webhook_raw_event(
         &self,
         input: AutomationWebhookRawEventCreateInput,
@@ -411,21 +467,6 @@ impl AppState {
         write_raw_payload_atomically(&payload_path, &input.payload).await?;
 
         let mut events = load_automation_webhook_events(&events_path).await?;
-        let (_report, delivery_ids) = prune_automation_webhook_events_locked(
-            &events_path,
-            &payloads_dir,
-            &mut events,
-            input.received_at_ms,
-        )
-        .await?;
-        self.prune_automation_webhook_deliveries_for_events_locked(&delivery_ids)
-            .await?;
-        let protected_delivery_ids = retained_automation_webhook_delivery_ids(&events);
-        self.prune_rejection_only_automation_webhook_deliveries_locked(
-            &protected_delivery_ids,
-            input.received_at_ms,
-        )
-        .await?;
         let trigger_id = input.trigger.trigger_id.clone();
         let automation_id = input.trigger.automation_id.clone();
         let enterprise_scope = input.trigger.enterprise_scope();
@@ -511,6 +552,27 @@ impl AppState {
         updated_at_ms: u64,
     ) -> anyhow::Result<Option<AutomationWebhookRawEventRecord>> {
         let _guard = self.automation_webhook_persistence.lock().await;
+        self.update_automation_webhook_raw_event_outcome_locked(
+            tenant_context,
+            event_id,
+            delivery,
+            updated_at_ms,
+        )
+        .await
+    }
+
+    /// Same as `update_automation_webhook_raw_event_outcome`, for callers
+    /// that already hold `automation_webhook_persistence` (e.g. TAN-571's
+    /// replay-on-registration, which needs the raw-event scan and the
+    /// resulting outcome update to happen under the same lock so a
+    /// concurrent live delivery can't interleave between them).
+    pub(crate) async fn update_automation_webhook_raw_event_outcome_locked(
+        &self,
+        tenant_context: &TenantContext,
+        event_id: &str,
+        delivery: &AutomationWebhookDeliveryRecord,
+        updated_at_ms: u64,
+    ) -> anyhow::Result<Option<AutomationWebhookRawEventRecord>> {
         let events_path = automation_webhook_events_path(&self.automation_webhook_deliveries_path);
         let mut events = load_automation_webhook_events(&events_path).await?;
         let Some(record) = events
@@ -868,5 +930,137 @@ fn automation_webhook_delivery_from_queue_result(
         | AutomationWebhookQueueResult::Woken { delivery, .. }
         | AutomationWebhookQueueResult::Suppressed { delivery }
         | AutomationWebhookQueueResult::Rejected { delivery, .. } => delivery,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tandem_types::TenantContext;
+
+    fn raw_event(event_id: &str, received_at_ms: u64) -> AutomationWebhookRawEventRecord {
+        AutomationWebhookRawEventRecord {
+            event_id: event_id.to_string(),
+            trigger_id: "trigger-a".to_string(),
+            automation_id: "automation-a".to_string(),
+            tenant_context: TenantContext::explicit_user_workspace(
+                "org-a",
+                "workspace-a",
+                None,
+                "actor-a",
+            ),
+            enterprise_scope: None,
+            provider: "generic".to_string(),
+            provider_event_kind: None,
+            provider_event_id: None,
+            body_digest: format!("digest-{event_id}"),
+            headers_digest: "headers-digest".to_string(),
+            headers_redacted: Value::Null,
+            content_type: None,
+            verification_scheme: None,
+            verification_provider: None,
+            verification_reason_code: None,
+            feedback_loop_candidate: None,
+            // No real payload file is created for this event, so retention
+            // eviction's `remove_raw_payload_if_present` call is a no-op
+            // (NotFound) — this test only exercises the in-memory eviction
+            // bookkeeping, not on-disk payload lifecycle (already covered by
+            // `webhook_retention_prunes_expired_raw_events_payloads_and_deliveries`).
+            payload_ref: format!("raw_payloads/{event_id}.body"),
+            payload_bytes: 0,
+            status: AutomationWebhookDeliveryStatus::Received,
+            received_at_ms,
+            updated_at_ms: received_at_ms,
+            delivery_id: None,
+            queued_run_id: None,
+            rejection_reason_code: None,
+            idempotency_key: None,
+            idempotency_record_id: None,
+            dedupe_result: None,
+            dedupe_reason_code: None,
+            duplicate_of_delivery_id: None,
+            duplicate_of_run_id: None,
+            woken_run_id: None,
+            woken_wait_id: None,
+            feedback_loop: None,
+            correlation: None,
+            retention_policy: AutomationWebhookEventRetentionPolicy {
+                // Far in the future — time-based expiry must not be what
+                // evicts these events in this test, only the count cap.
+                delete_after_ms: Some(received_at_ms + 365 * 24 * 60 * 60 * 1_000),
+                ..AutomationWebhookEventRetentionPolicy::default()
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn prune_evicts_oldest_events_beyond_the_retention_count_cap() {
+        // TAN-570: retention was previously time-only, so a high-volume
+        // tenant (or an attacker with a valid signing secret) could grow
+        // `events.json` unboundedly within the 30-day window. Beyond the
+        // count cap, the oldest events must be evicted regardless of how far
+        // off their time-based expiry still is.
+        let root = std::env::temp_dir().join(format!("tandem-webhook-cap-test-{}", Uuid::new_v4()));
+        let events_path = root.join("events.json");
+        let payloads_dir = root.join("raw_payloads");
+
+        let overflow = 7usize;
+        let total = MAX_RETAINED_AUTOMATION_WEBHOOK_EVENTS + overflow;
+        let mut events = HashMap::with_capacity(total);
+        for index in 0..total {
+            let event_id = format!("event-{index:06}");
+            // Ascending received_at_ms — event-000000 is the oldest.
+            events.insert(event_id.clone(), raw_event(&event_id, index as u64));
+        }
+
+        let (report, _delivery_ids) =
+            prune_automation_webhook_events_locked(&events_path, &payloads_dir, &mut events, 0)
+                .await
+                .expect("prune");
+
+        assert_eq!(report.pruned_events, overflow);
+        assert_eq!(events.len(), MAX_RETAINED_AUTOMATION_WEBHOOK_EVENTS);
+        for index in 0..overflow {
+            let evicted_id = format!("event-{index:06}");
+            assert!(
+                !events.contains_key(&evicted_id),
+                "the oldest events must be evicted first"
+            );
+        }
+        for index in overflow..total {
+            let retained_id = format!("event-{index:06}");
+            assert!(
+                events.contains_key(&retained_id),
+                "events within the cap must be retained"
+            );
+        }
+
+        let _ = tokio::fs::remove_dir_all(&root).await;
+    }
+
+    #[tokio::test]
+    async fn prune_is_a_no_op_when_nothing_is_expired_or_over_the_cap() {
+        let root =
+            std::env::temp_dir().join(format!("tandem-webhook-cap-noop-test-{}", Uuid::new_v4()));
+        let events_path = root.join("events.json");
+        let payloads_dir = root.join("raw_payloads");
+
+        let mut events = HashMap::new();
+        events.insert("event-a".to_string(), raw_event("event-a", 0));
+        events.insert("event-b".to_string(), raw_event("event-b", 1));
+
+        let (report, delivery_ids) =
+            prune_automation_webhook_events_locked(&events_path, &payloads_dir, &mut events, 0)
+                .await
+                .expect("prune");
+
+        assert_eq!(report, AutomationWebhookRetentionPruneReport::default());
+        assert!(delivery_ids.is_empty());
+        assert_eq!(events.len(), 2);
+        // Nothing pruned means nothing to persist — the events file must not
+        // even be created.
+        assert!(!events_path.exists());
+
+        let _ = tokio::fs::remove_dir_all(&root).await;
     }
 }

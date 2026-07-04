@@ -338,6 +338,347 @@ async fn duplicate_webhook_redelivery_wakes_late_registered_wait() {
     assert_eq!(state.automation_v2_runs.read().await.len(), 1);
 }
 
+// TAN-571 — replay-on-registration (reopen of TAN-524): a correlated webhook
+// that arrives *before* its wait is registered must not depend on a provider
+// redelivery to wake the run. `register_stateful_webhook_wait_and_replay_pending`
+// scans already-recorded deliveries at registration time instead.
+
+fn webhook_wait_record(
+    wait_id: &str,
+    run_id: &str,
+    tenant: TenantContext,
+    trigger_id: &str,
+    provider: &str,
+    provider_event_id: &str,
+    now: u64,
+) -> StatefulWaitRecord {
+    StatefulWaitRecord {
+        schema_version: 1,
+        wait_id: wait_id.to_string(),
+        run_id: run_id.to_string(),
+        wait_kind: StatefulWaitKind::Webhook,
+        status: StatefulWaitStatus::Waiting,
+        scope: StatefulRuntimeScope::from_tenant_context(tenant),
+        phase_id: Some("phase-wait".to_string()),
+        reason: Some("awaiting correlated webhook".to_string()),
+        created_at_ms: now,
+        updated_at_ms: now,
+        wake_at_ms: None,
+        timeout_policy: None,
+        event_seq: None,
+        wake_idempotency_key: None,
+        claimed_by: None,
+        claimed_at_ms: None,
+        claim_expires_at_ms: None,
+        completed_at_ms: None,
+        metadata: Some(stateful_webhook_wait_metadata(
+            StatefulWebhookWaitMatch {
+                trigger_id: Some(trigger_id.to_string()),
+                provider: Some(provider.to_string()),
+                provider_event_id: Some(provider_event_id.to_string()),
+                ..StatefulWebhookWaitMatch::default()
+            },
+            None,
+        )),
+    }
+}
+
+#[tokio::test]
+async fn early_delivery_wakes_run_immediately_on_wait_registration() {
+    let state = ready_test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a");
+    insert_test_automation(&state, "automation-early-webhook", &tenant_a).await;
+    let created = state
+        .create_automation_webhook_trigger(create_input(
+            "automation-early-webhook",
+            tenant_a.clone(),
+        ))
+        .await
+        .expect("create webhook trigger");
+
+    // The webhook arrives *before* anything registers a matching wait — today
+    // this always creates a new (orphan) run, since nothing is waiting yet.
+    // Mirrors the real flow: fast-ack records the raw event first, then the
+    // inbox drain queues the run and syncs the raw event's outcome — this is
+    // what `register_stateful_webhook_wait_and_replay_pending` scans.
+    let body = br#"{"ok":true}"#;
+    let now = now_ms();
+    let signature = automation_webhook_signature_header(&created.secret, now, body);
+    let raw_event = state
+        .record_automation_webhook_raw_event(AutomationWebhookRawEventCreateInput {
+            trigger: created.trigger.clone(),
+            provider_event_id: Some("evt-early".to_string()),
+            body_digest: automation_webhook_body_digest(body),
+            verification: None,
+            feedback_loop_candidate: None,
+            headers_digest: "headers-digest".to_string(),
+            headers_redacted: json!({}),
+            content_type: Some("application/json".to_string()),
+            payload: body.to_vec(),
+            received_at_ms: now,
+        })
+        .await
+        .expect("record raw event");
+    let early = state
+        .verify_automation_webhook_request(
+            &created.trigger.public_path_token,
+            Some(&signature),
+            body,
+            Some("evt-early".to_string()),
+            now,
+            300_000,
+        )
+        .await
+        .expect("early request verifies");
+    let early_delivery = match state
+        .queue_automation_v2_run_from_webhook_delivery(early, json!({"ok": true}))
+        .await
+        .expect("early webhook accepted")
+    {
+        AutomationWebhookQueueResult::Accepted { delivery, .. } => delivery,
+        other => panic!("expected accepted early webhook, got {other:?}"),
+    };
+    assert!(early_delivery.queued_run_id.is_some());
+    assert!(early_delivery.woken_run_id.is_none());
+    state
+        .update_automation_webhook_raw_event_outcome(
+            &tenant_a,
+            &raw_event.event_id,
+            &early_delivery,
+            now,
+        )
+        .await
+        .expect("sync raw event outcome")
+        .expect("raw event updated");
+
+    // The correlated run only now registers its wait — no redelivery ever
+    // arrives. Without replay-on-registration this wait would hang to
+    // timeout; `register_stateful_webhook_wait_and_replay_pending` must
+    // instead find the already-recorded delivery and wake immediately.
+    let wait_run_id = "run-early-webhook-wait";
+    let wait = webhook_wait_record(
+        "wait-early-webhook",
+        wait_run_id,
+        tenant_a.clone(),
+        &created.trigger.trigger_id,
+        &created.trigger.provider,
+        "evt-early",
+        now.saturating_add(1),
+    );
+    let outcome = state
+        .register_stateful_webhook_wait_and_replay_pending(wait)
+        .await
+        .expect("register and replay");
+    let (woken_wait, delivery) = match outcome {
+        AutomationWebhookWaitReplayOutcome::Woken { wait, delivery } => (wait, delivery),
+        AutomationWebhookWaitReplayOutcome::Registered(_) => {
+            panic!("expected the early delivery to be replayed and wake the wait")
+        }
+    };
+    assert_eq!(woken_wait.status, StatefulWaitStatus::Woken);
+    assert_eq!(woken_wait.wait_id, "wait-early-webhook");
+    assert_eq!(delivery.delivery_id, early_delivery.delivery_id);
+    assert_eq!(delivery.woken_run_id.as_deref(), Some(wait_run_id));
+    assert_eq!(
+        delivery.woken_wait_id.as_deref(),
+        Some("wait-early-webhook")
+    );
+
+    // The delivery/raw-event pair is now marked woken, so a second
+    // registration attempt (e.g. a retry after a crash) does not replay it
+    // again.
+    let raw_events = state
+        .list_automation_webhook_raw_events_for_trigger(&tenant_a, &created.trigger.trigger_id)
+        .await;
+    let matching_event = raw_events
+        .iter()
+        .find(|event| event.provider_event_id.as_deref() == Some("evt-early"))
+        .expect("raw event recorded");
+    assert_eq!(
+        matching_event.woken_wait_id.as_deref(),
+        Some("wait-early-webhook")
+    );
+}
+
+#[tokio::test]
+async fn replay_never_wakes_from_a_rejected_delivery() {
+    // Security-critical: a delivery that failed signature verification must
+    // never wake a run, even if its (attacker-controlled) correlation fields
+    // happen to match a wait's rules.
+    let state = ready_test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a");
+    insert_test_automation(&state, "automation-rejected-webhook", &tenant_a).await;
+    let created = state
+        .create_automation_webhook_trigger(create_input(
+            "automation-rejected-webhook",
+            tenant_a.clone(),
+        ))
+        .await
+        .expect("create webhook trigger");
+
+    let body = br#"{"ok":true}"#;
+    let now = now_ms();
+    // A raw event is recorded (fast-ack happens before verification/policy
+    // outcome is known), but the delivery is explicitly `Rejected` — this is
+    // the precise scenario the `status == Accepted` filter must exclude:
+    // matching correlation fields on a payload that was never accepted.
+    let raw_event = state
+        .record_automation_webhook_raw_event(AutomationWebhookRawEventCreateInput {
+            trigger: created.trigger.clone(),
+            provider_event_id: Some("evt-rejected".to_string()),
+            body_digest: automation_webhook_body_digest(body),
+            verification: None,
+            feedback_loop_candidate: None,
+            headers_digest: "headers-digest".to_string(),
+            headers_redacted: json!({}),
+            content_type: Some("application/json".to_string()),
+            payload: body.to_vec(),
+            received_at_ms: now,
+        })
+        .await
+        .expect("record raw event");
+    let rejected_delivery = state
+        .record_automation_webhook_rejection(
+            &created.trigger,
+            Some("evt-rejected".to_string()),
+            automation_webhook_body_digest(body),
+            AutomationWebhookDeliveryStatus::Rejected,
+            "bad_signature",
+            now,
+            json!({"ok": true}),
+            None,
+        )
+        .await
+        .expect("record rejection");
+    state
+        .update_automation_webhook_raw_event_outcome(
+            &tenant_a,
+            &raw_event.event_id,
+            &rejected_delivery,
+            now,
+        )
+        .await
+        .expect("sync raw event outcome")
+        .expect("raw event updated");
+
+    let wait = webhook_wait_record(
+        "wait-rejected-webhook",
+        "run-rejected-webhook-wait",
+        tenant_a.clone(),
+        &created.trigger.trigger_id,
+        &created.trigger.provider,
+        "evt-rejected",
+        now.saturating_add(1),
+    );
+    let outcome = state
+        .register_stateful_webhook_wait_and_replay_pending(wait)
+        .await
+        .expect("register");
+    match outcome {
+        AutomationWebhookWaitReplayOutcome::Registered(registered) => {
+            assert_eq!(registered.status, StatefulWaitStatus::Waiting);
+        }
+        AutomationWebhookWaitReplayOutcome::Woken { .. } => {
+            panic!("a rejected delivery must never wake a wait")
+        }
+    }
+}
+
+#[tokio::test]
+async fn replay_does_not_cross_wire_unrelated_triggers() {
+    // Raw events are scanned scoped to the *registering wait's own trigger
+    // and tenant* (`list_automation_webhook_raw_events_for_trigger`) — an
+    // unrelated tenant's trigger using the same provider_event_id by
+    // coincidence must never wake this tenant's wait. This is what keeps
+    // replay from accidentally cross-wiring two unrelated automations that
+    // happen to reuse the same correlation id.
+    let state = ready_test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a");
+    let tenant_b = tenant("org-b", "workspace-b");
+    insert_test_automation(&state, "automation-tenant-a", &tenant_a).await;
+    insert_test_automation(&state, "automation-tenant-b", &tenant_b).await;
+    let created_a = state
+        .create_automation_webhook_trigger(create_input("automation-tenant-a", tenant_a.clone()))
+        .await
+        .expect("create tenant a trigger");
+    let created_b = state
+        .create_automation_webhook_trigger(create_input("automation-tenant-b", tenant_b.clone()))
+        .await
+        .expect("create tenant b trigger");
+
+    let body = br#"{"ok":true}"#;
+    let now = now_ms();
+    let signature_b = automation_webhook_signature_header(&created_b.secret, now, body);
+    let raw_event_b = state
+        .record_automation_webhook_raw_event(AutomationWebhookRawEventCreateInput {
+            trigger: created_b.trigger.clone(),
+            provider_event_id: Some("evt-shared-id".to_string()),
+            body_digest: automation_webhook_body_digest(body),
+            verification: None,
+            feedback_loop_candidate: None,
+            headers_digest: "headers-digest".to_string(),
+            headers_redacted: json!({}),
+            content_type: Some("application/json".to_string()),
+            payload: body.to_vec(),
+            received_at_ms: now,
+        })
+        .await
+        .expect("record tenant b raw event");
+    let early_b = state
+        .verify_automation_webhook_request(
+            &created_b.trigger.public_path_token,
+            Some(&signature_b),
+            body,
+            Some("evt-shared-id".to_string()),
+            now,
+            300_000,
+        )
+        .await
+        .expect("tenant b request verifies");
+    let delivery_b = match state
+        .queue_automation_v2_run_from_webhook_delivery(early_b, json!({"ok": true}))
+        .await
+        .expect("tenant b webhook accepted")
+    {
+        AutomationWebhookQueueResult::Accepted { delivery, .. } => delivery,
+        other => panic!("expected tenant b webhook accepted, got {other:?}"),
+    };
+    state
+        .update_automation_webhook_raw_event_outcome(
+            &tenant_b,
+            &raw_event_b.event_id,
+            &delivery_b,
+            now,
+        )
+        .await
+        .expect("sync tenant b raw event outcome")
+        .expect("tenant b raw event updated");
+
+    // Tenant A registers a wait against tenant A's own trigger, using the
+    // same provider_event_id — it must not be woken by tenant B's delivery.
+    let wait = webhook_wait_record(
+        "wait-tenant-a",
+        "run-tenant-a-wait",
+        tenant_a.clone(),
+        &created_a.trigger.trigger_id,
+        &created_a.trigger.provider,
+        "evt-shared-id",
+        now.saturating_add(1),
+    );
+    let outcome = state
+        .register_stateful_webhook_wait_and_replay_pending(wait)
+        .await
+        .expect("register");
+    match outcome {
+        AutomationWebhookWaitReplayOutcome::Registered(registered) => {
+            assert_eq!(registered.status, StatefulWaitStatus::Waiting);
+        }
+        AutomationWebhookWaitReplayOutcome::Woken { .. } => {
+            panic!("a foreign tenant's delivery must never wake this tenant's wait")
+        }
+    }
+}
+
 #[tokio::test]
 async fn buffered_webhook_wake_uses_drain_time_for_late_wait_bookkeeping() {
     let state = ready_test_state().await;
