@@ -29,8 +29,31 @@ const RISK_OPTIONS = [
   "money_movement_contract",
 ];
 
+const LINEAR_PROVIDER = "linear";
+const LINEAR_SIGNATURE_SCHEME = "linear_hmac_sha256";
+const NOTION_SIGNATURE_SCHEME = "notion_hmac_sha256";
+const UNSIGNED_DEV_MODE_SCHEME = "unsigned_dev_mode";
+
+const SIGNATURE_SCHEME_OPTIONS = [
+  { value: "", label: "Provider default" },
+  { value: "hmac_sha256_v1", label: "Tandem HMAC SHA-256" },
+  { value: "github_hmac_sha256", label: "GitHub HMAC SHA-256" },
+  { value: LINEAR_SIGNATURE_SCHEME, label: "Linear HMAC SHA-256" },
+  { value: NOTION_SIGNATURE_SCHEME, label: "Notion HMAC SHA-256" },
+  { value: "shared_secret_header_v1", label: "Shared secret header" },
+  { value: UNSIGNED_DEV_MODE_SCHEME, label: "Unsigned dev mode" },
+];
+
 function safeString(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function canonicalProvider(value: unknown) {
+  const normalized = safeString(value).toLowerCase();
+  if (normalized === "linear.app") return LINEAR_PROVIDER;
+  if (normalized === "notion.so" || normalized === "notion.com") return "notion";
+  if (normalized === "github.com" || normalized === "gh") return "github";
+  return normalized;
 }
 
 function triggerId(trigger: any) {
@@ -42,7 +65,73 @@ function deliveryId(delivery: any) {
 }
 
 function callbackUrl(trigger: any) {
-  return safeString(trigger?.callback_url || trigger?.callbackUrl || trigger?.callback_path || trigger?.callbackPath);
+  return safeString(
+    trigger?.callback_url || trigger?.callbackUrl || trigger?.callback_path || trigger?.callbackPath
+  );
+}
+
+function triggerProvider(trigger: any) {
+  return canonicalProvider(
+    trigger?.provider_metadata?.canonical_provider ||
+      trigger?.providerMetadata?.canonicalProvider ||
+      trigger?.provider
+  );
+}
+
+function isLinearProvider(value: unknown) {
+  return canonicalProvider(value) === LINEAR_PROVIDER;
+}
+
+function signatureScheme(trigger: any) {
+  return safeString(
+    trigger?.signature_scheme ||
+      trigger?.signatureScheme ||
+      trigger?.provider_metadata?.verification?.signature_scheme ||
+      trigger?.providerMetadata?.verification?.signatureScheme
+  );
+}
+
+function recommendedSignatureScheme(provider: unknown, current = "") {
+  if (isLinearProvider(provider)) return LINEAR_SIGNATURE_SCHEME;
+  if (canonicalProvider(provider) === "notion") return NOTION_SIGNATURE_SCHEME;
+  return current;
+}
+
+function secretStatus(trigger: any) {
+  const raw = trigger?.secret_status || trigger?.secretStatus;
+  return raw && typeof raw === "object" ? raw : {};
+}
+
+function linearSecretConfigured(trigger: any) {
+  const providerStatus =
+    trigger?.provider_secret_status ||
+    trigger?.providerSecretStatus ||
+    trigger?.linear_secret_status ||
+    trigger?.linearSecretStatus;
+  if (providerStatus && typeof providerStatus === "object") {
+    return providerStatus.configured === true || providerStatus.secret_configured === true;
+  }
+  if (
+    trigger?.provider_secret_configured === true ||
+    trigger?.providerSecretConfigured === true ||
+    trigger?.linear_secret_configured === true ||
+    trigger?.linearSecretConfigured === true
+  ) {
+    return true;
+  }
+  const status = secretStatus(trigger) as any;
+  const source = safeString(
+    status.source || status.secret_source || status.secretSource
+  ).toLowerCase();
+  if (
+    status.provider_owned === true ||
+    status.providerOwned === true ||
+    source === "provider" ||
+    source === LINEAR_PROVIDER
+  ) {
+    return status.configured === true;
+  }
+  return false;
 }
 
 function notionVerification(trigger: any): {
@@ -92,7 +181,8 @@ function formatTime(ms: unknown) {
 function statusBadgeClass(status: string) {
   const normalized = String(status || "").toLowerCase();
   if (normalized === "accepted" || normalized === "enabled") return "tcp-badge-ok";
-  if (normalized === "rejected" || normalized === "failed" || normalized === "disabled") return "tcp-badge-err";
+  if (normalized === "rejected" || normalized === "failed" || normalized === "disabled")
+    return "tcp-badge-err";
   if (normalized === "duplicate") return "tcp-badge-warn";
   return "tcp-badge-info";
 }
@@ -119,12 +209,15 @@ async function copyText(value: string) {
 }
 
 function normalizeCreateDraft(draft: any) {
+  const provider = safeString(draft.provider) || "generic";
+  const scheme = safeString(draft.signatureScheme);
   const payload: Record<string, unknown> = {
     name: safeString(draft.name),
-    provider: safeString(draft.provider) || "generic",
+    provider,
     enabled: draft.enabled !== false,
     default_data_class: safeString(draft.defaultDataClass) || "internal",
   };
+  if (scheme) payload.signature_scheme = scheme;
   const eventKind = safeString(draft.providerEventKind);
   if (eventKind) payload.provider_event_kind = eventKind;
   const risk = safeString(draft.defaultRiskTier);
@@ -139,6 +232,7 @@ function normalizeUpdateDraft(draft: any) {
     name: safeString(draft.name),
     provider: safeString(draft.provider) || "generic",
     provider_event_kind: safeString(draft.providerEventKind) || null,
+    signature_scheme: safeString(draft.signatureScheme) || null,
     enabled: draft.enabled !== false,
     default_data_class: safeString(draft.defaultDataClass) || "internal",
     default_risk_tier: safeString(draft.defaultRiskTier) || null,
@@ -152,6 +246,47 @@ function previewText(value: unknown) {
   } catch {
     return String(value);
   }
+}
+
+function deliveryReason(delivery: any) {
+  return safeString(
+    delivery?.rejection_reason_code ||
+      delivery?.rejectionReasonCode ||
+      delivery?.verification_reason_code ||
+      delivery?.verificationReasonCode
+  );
+}
+
+function isBadSignatureDelivery(delivery: any) {
+  return deliveryReason(delivery).toLowerCase() === "bad_signature";
+}
+
+function deliveryRunId(delivery: any) {
+  return safeString(
+    delivery?.queued_run_id ||
+      delivery?.queuedRunID ||
+      delivery?.woken_run_id ||
+      delivery?.wokenRunID
+  );
+}
+
+function callProviderSecretReplace(
+  api: any,
+  automationId: string,
+  triggerIdValue: string,
+  secret: string
+) {
+  const input = { provider: LINEAR_PROVIDER, secret };
+  const method =
+    api?.replaceWebhookProviderSecret ||
+    api?.replaceWebhookTriggerProviderSecret ||
+    api?.importWebhookProviderSecret ||
+    api?.importWebhookTriggerSecret ||
+    api?.setWebhookProviderSecret;
+  if (!method) {
+    throw new Error("This engine build does not expose Linear signing secret import yet.");
+  }
+  return method.call(api, automationId, triggerIdValue, input);
 }
 
 export function AutomationWebhookManager({
@@ -170,11 +305,18 @@ export function AutomationWebhookManager({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const queryClient = useQueryClient();
   const [selectedTriggerId, setSelectedTriggerId] = useState("");
-  const [revealedSecret, setRevealedSecret] = useState<{ triggerId: string; secret: string; label?: string; hint?: string } | null>(null);
+  const [revealedSecret, setRevealedSecret] = useState<{
+    triggerId: string;
+    secret: string;
+    label?: string;
+    hint?: string;
+  } | null>(null);
+  const [linearSecretDraft, setLinearSecretDraft] = useState("");
   const [createDraft, setCreateDraft] = useState({
     name: "",
     provider: "generic",
     providerEventKind: "",
+    signatureScheme: "",
     defaultDataClass: "internal",
     defaultRiskTier: "",
     owningOrgUnitId: "",
@@ -184,6 +326,7 @@ export function AutomationWebhookManager({
     name: "",
     provider: "generic",
     providerEventKind: "",
+    signatureScheme: "",
     defaultDataClass: "internal",
     defaultRiskTier: "",
     enabled: true,
@@ -200,7 +343,8 @@ export function AutomationWebhookManager({
     ? ((triggersQuery.data as any).triggers as any[])
     : [];
   const selectedTrigger = useMemo(
-    () => triggers.find((trigger) => triggerId(trigger) === selectedTriggerId) || triggers[0] || null,
+    () =>
+      triggers.find((trigger) => triggerId(trigger) === selectedTriggerId) || triggers[0] || null,
     [selectedTriggerId, triggers]
   );
   const effectiveTriggerId = triggerId(selectedTrigger);
@@ -230,11 +374,15 @@ export function AutomationWebhookManager({
     setEditDraft({
       name: safeString(selectedTrigger.name || selectedTrigger.provider) || "Webhook trigger",
       provider: safeString(selectedTrigger.provider) || "generic",
-      providerEventKind: safeString(selectedTrigger.provider_event_kind || selectedTrigger.providerEventKind),
+      providerEventKind: safeString(
+        selectedTrigger.provider_event_kind || selectedTrigger.providerEventKind
+      ),
+      signatureScheme: signatureScheme(selectedTrigger),
       defaultDataClass: defaultDataClass(selectedTrigger),
       defaultRiskTier: defaultRiskTier(selectedTrigger),
       enabled: selectedTrigger.enabled !== false,
     });
+    setLinearSecretDraft("");
   }, [effectiveTriggerId]);
 
   const invalidate = async () => {
@@ -247,23 +395,47 @@ export function AutomationWebhookManager({
   };
 
   const createMutation = useMutation({
-    mutationFn: async () => client.automationsV2.createWebhookTrigger(automationId, normalizeCreateDraft(createDraft)),
+    mutationFn: async () =>
+      client.automationsV2.createWebhookTrigger(automationId, normalizeCreateDraft(createDraft)),
     onSuccess: async (payload: any) => {
       const nextTrigger = payload?.trigger;
       const nextTriggerId = triggerId(nextTrigger);
       const secret = safeString(payload?.new_secret || payload?.newSecret);
+      const nextIsLinear = isLinearProvider(nextTrigger?.provider || createDraft.provider);
       if (nextTriggerId) setSelectedTriggerId(nextTriggerId);
-      if (secret) setRevealedSecret({ triggerId: nextTriggerId, secret });
+      if (secret && !nextIsLinear) setRevealedSecret({ triggerId: nextTriggerId, secret });
       setCreateDraft({
         name: "",
         provider: "generic",
         providerEventKind: "",
+        signatureScheme: "",
         defaultDataClass: "internal",
         defaultRiskTier: "",
         owningOrgUnitId: "",
         enabled: true,
       });
-      toast?.("ok", "Webhook trigger created.");
+      toast?.(
+        "ok",
+        nextIsLinear
+          ? "Linear webhook trigger created. Import the Linear signing secret before sending live deliveries."
+          : "Webhook trigger created."
+      );
+      await invalidate();
+    },
+    onError: (error) => toast?.("err", error instanceof Error ? error.message : String(error)),
+  });
+
+  const replaceLinearSecretMutation = useMutation({
+    mutationFn: async () =>
+      callProviderSecretReplace(
+        client?.automationsV2,
+        automationId,
+        effectiveTriggerId,
+        linearSecretDraft
+      ),
+    onSuccess: async () => {
+      setLinearSecretDraft("");
+      toast?.("ok", "Linear signing secret imported.");
       await invalidate();
     },
     onError: (error) => toast?.("err", error instanceof Error ? error.message : String(error)),
@@ -284,7 +456,8 @@ export function AutomationWebhookManager({
   });
 
   const rotateMutation = useMutation({
-    mutationFn: async () => client.automationsV2.rotateWebhookSecret(automationId, effectiveTriggerId),
+    mutationFn: async () =>
+      client.automationsV2.rotateWebhookSecret(automationId, effectiveTriggerId),
     onSuccess: async (payload: any) => {
       const secret = safeString(payload?.new_secret || payload?.newSecret);
       if (secret) setRevealedSecret({ triggerId: effectiveTriggerId, secret });
@@ -314,7 +487,8 @@ export function AutomationWebhookManager({
   });
 
   const disableMutation = useMutation({
-    mutationFn: async () => client.automationsV2.disableWebhookTrigger(automationId, effectiveTriggerId),
+    mutationFn: async () =>
+      client.automationsV2.disableWebhookTrigger(automationId, effectiveTriggerId),
     onSuccess: async () => {
       toast?.("ok", "Webhook trigger disabled.");
       await invalidate();
@@ -323,7 +497,8 @@ export function AutomationWebhookManager({
   });
 
   const deleteMutation = useMutation({
-    mutationFn: async () => client.automationsV2.deleteWebhookTrigger(automationId, effectiveTriggerId),
+    mutationFn: async () =>
+      client.automationsV2.deleteWebhookTrigger(automationId, effectiveTriggerId),
     onSuccess: async () => {
       toast?.("ok", "Webhook trigger deleted.");
       setSelectedTriggerId("");
@@ -344,15 +519,45 @@ export function AutomationWebhookManager({
     onOpenRunningView?.();
   };
 
+  const setCreateProvider = (provider: string) => {
+    setCreateDraft((draft) => ({
+      ...draft,
+      provider,
+      signatureScheme: recommendedSignatureScheme(provider, draft.signatureScheme),
+    }));
+  };
+
+  const setEditProvider = (provider: string) => {
+    setEditDraft((draft) => ({
+      ...draft,
+      provider,
+      signatureScheme: recommendedSignatureScheme(provider, draft.signatureScheme),
+    }));
+  };
+
+  const createProviderIsLinear = isLinearProvider(createDraft.provider);
+  const createSignatureIsUnsigned = createDraft.signatureScheme === UNSIGNED_DEV_MODE_SCHEME;
+  const selectedProviderIsLinear =
+    !!selectedTrigger && triggerProvider(selectedTrigger) === LINEAR_PROVIDER;
+  const selectedSignature = signatureScheme(selectedTrigger);
+  const selectedLinearSecretConfigured =
+    selectedProviderIsLinear && linearSecretConfigured(selectedTrigger);
+  const latestLinearBadSignature = selectedProviderIsLinear
+    ? deliveries.find(isBadSignatureDelivery)
+    : null;
+
   return (
     <div ref={rootRef} className="grid gap-4">
       {revealedSecret ? (
         <div className="rounded-lg border border-amber-400/40 bg-amber-400/10 p-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <div className="text-sm font-semibold text-amber-100">{revealedSecret.label || "New secret"}</div>
+              <div className="text-sm font-semibold text-amber-100">
+                {revealedSecret.label || "New secret"}
+              </div>
               <div className="mt-1 text-xs text-amber-200/80">
-                {revealedSecret.hint || "This secret is shown once. Store it before closing or rotating again."}
+                {revealedSecret.hint ||
+                  "This secret is shown once. Store it before closing or rotating again."}
               </div>
             </div>
             <button
@@ -371,7 +576,11 @@ export function AutomationWebhookManager({
             <button
               type="button"
               className="tcp-btn h-8 w-8 px-0"
-              onClick={() => void copyText(revealedSecret.secret).then((ok) => ok && toast?.("ok", "Secret copied."))}
+              onClick={() =>
+                void copyText(revealedSecret.secret).then(
+                  (ok) => ok && toast?.("ok", "Secret copied.")
+                )
+              }
             >
               <Icon name="copy" />
             </button>
@@ -404,7 +613,12 @@ export function AutomationWebhookManager({
             <input
               className="tcp-input"
               value={createDraft.name}
-              onInput={(event) => setCreateDraft((draft) => ({ ...draft, name: (event.target as HTMLInputElement).value }))}
+              onInput={(event) =>
+                setCreateDraft((draft) => ({
+                  ...draft,
+                  name: (event.target as HTMLInputElement).value,
+                }))
+              }
               placeholder="GitHub issues"
             />
           </div>
@@ -414,17 +628,21 @@ export function AutomationWebhookManager({
               className="tcp-input"
               list="tcp-webhook-providers"
               value={createDraft.provider}
-              onInput={(event) => setCreateDraft((draft) => ({ ...draft, provider: (event.target as HTMLInputElement).value }))}
+              onInput={(event) => setCreateProvider((event.target as HTMLInputElement).value)}
               placeholder="generic"
             />
             <datalist id="tcp-webhook-providers">
               <option value="generic"></option>
               <option value="github"></option>
+              <option value="gitlab"></option>
+              <option value="linear"></option>
               <option value="notion"></option>
+              <option value="stripe"></option>
             </datalist>
             {safeString(createDraft.provider).toLowerCase().startsWith("notion") ? (
               <div className="tcp-text-caption text-sky-300/80">
-                Notion signs events with a verification token you'll copy from Tandem back into Notion after creating the trigger.
+                Notion signs events with a verification token you'll copy from Tandem back into
+                Notion after creating the trigger.
               </div>
             ) : null}
           </div>
@@ -433,16 +651,55 @@ export function AutomationWebhookManager({
             <input
               className="tcp-input"
               value={createDraft.providerEventKind}
-              onInput={(event) => setCreateDraft((draft) => ({ ...draft, providerEventKind: (event.target as HTMLInputElement).value }))}
+              onInput={(event) =>
+                setCreateDraft((draft) => ({
+                  ...draft,
+                  providerEventKind: (event.target as HTMLInputElement).value,
+                }))
+              }
               placeholder="issues.opened"
             />
+          </div>
+          <div className="grid gap-1">
+            <label className="text-xs text-slate-400">Signature scheme</label>
+            <select
+              className="tcp-input"
+              value={createDraft.signatureScheme}
+              onChange={(event) =>
+                setCreateDraft((draft) => ({
+                  ...draft,
+                  signatureScheme: (event.target as HTMLSelectElement).value,
+                }))
+              }
+            >
+              {SIGNATURE_SCHEME_OPTIONS.map((option) => (
+                <option key={option.value || "default"} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            {createProviderIsLinear && createDraft.signatureScheme !== LINEAR_SIGNATURE_SCHEME ? (
+              <div className="tcp-text-caption text-amber-300/90">
+                Linear production webhooks should use <code>{LINEAR_SIGNATURE_SCHEME}</code>.
+              </div>
+            ) : null}
+            {createSignatureIsUnsigned ? (
+              <div className="tcp-text-caption text-red-300/90">
+                Unsigned dev mode is only for local tests. Do not use it with public HTTPS URLs.
+              </div>
+            ) : null}
           </div>
           <div className="grid gap-1">
             <label className="text-xs text-slate-400">Org unit</label>
             <input
               className="tcp-input"
               value={createDraft.owningOrgUnitId}
-              onInput={(event) => setCreateDraft((draft) => ({ ...draft, owningOrgUnitId: (event.target as HTMLInputElement).value }))}
+              onInput={(event) =>
+                setCreateDraft((draft) => ({
+                  ...draft,
+                  owningOrgUnitId: (event.target as HTMLInputElement).value,
+                }))
+              }
               placeholder="department-id"
             />
           </div>
@@ -451,10 +708,17 @@ export function AutomationWebhookManager({
             <select
               className="tcp-input"
               value={createDraft.defaultDataClass}
-              onChange={(event) => setCreateDraft((draft) => ({ ...draft, defaultDataClass: (event.target as HTMLSelectElement).value }))}
+              onChange={(event) =>
+                setCreateDraft((draft) => ({
+                  ...draft,
+                  defaultDataClass: (event.target as HTMLSelectElement).value,
+                }))
+              }
             >
               {DATA_CLASS_OPTIONS.map((option) => (
-                <option key={option} value={option}>{formatLabel(option)}</option>
+                <option key={option} value={option}>
+                  {formatLabel(option)}
+                </option>
               ))}
             </select>
           </div>
@@ -463,20 +727,45 @@ export function AutomationWebhookManager({
             <select
               className="tcp-input"
               value={createDraft.defaultRiskTier}
-              onChange={(event) => setCreateDraft((draft) => ({ ...draft, defaultRiskTier: (event.target as HTMLSelectElement).value }))}
+              onChange={(event) =>
+                setCreateDraft((draft) => ({
+                  ...draft,
+                  defaultRiskTier: (event.target as HTMLSelectElement).value,
+                }))
+              }
             >
               {RISK_OPTIONS.map((option) => (
-                <option key={option || "none"} value={option}>{option ? formatLabel(option) : "None"}</option>
+                <option key={option || "none"} value={option}>
+                  {option ? formatLabel(option) : "None"}
+                </option>
               ))}
             </select>
           </div>
         </div>
+        {createProviderIsLinear ? (
+          <div className="grid gap-2 rounded-md border border-sky-500/30 bg-sky-500/5 p-3 text-xs text-slate-300">
+            <div className="font-semibold text-sky-200">Linear setup checklist</div>
+            <div className="grid gap-1 text-slate-400">
+              <div>Linear Settings -&gt; API -&gt; Webhooks</div>
+              <div>Data change events: Issues</div>
+              <div>Team selection: desired teams, or all public teams</div>
+              <div>
+                Project filtering happens in the Tandem automation guard, not in the Linear webhook.
+              </div>
+            </div>
+          </div>
+        ) : null}
         <div className="flex flex-wrap items-center justify-between gap-2">
           <label className="flex items-center gap-2 text-xs text-slate-300">
             <input
               type="checkbox"
               checked={createDraft.enabled}
-              onChange={(event) => setCreateDraft((draft) => ({ ...draft, enabled: (event.target as HTMLInputElement).checked }))}
+              onChange={(event) =>
+                setCreateDraft((draft) => ({
+                  ...draft,
+                  enabled: (event.target as HTMLInputElement).checked,
+                }))
+              }
             />
             Enabled on create
           </label>
@@ -510,10 +799,36 @@ export function AutomationWebhookManager({
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <div className="truncate text-sm font-semibold text-slate-100">{safeString(trigger.name) || safeString(trigger.provider) || id}</div>
-                      <div className="mt-1 truncate text-xs text-slate-500">{safeString(trigger.provider)} · {safeString(trigger.provider_event_kind || trigger.providerEventKind) || "any event"}</div>
+                      <div className="truncate text-sm font-semibold text-slate-100">
+                        {safeString(trigger.name) || safeString(trigger.provider) || id}
+                      </div>
+                      <div className="mt-1 truncate text-xs text-slate-500">
+                        {safeString(trigger.provider)} ·{" "}
+                        {safeString(trigger.provider_event_kind || trigger.providerEventKind) ||
+                          "any event"}
+                      </div>
+                      {triggerProvider(trigger) === LINEAR_PROVIDER ? (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <span
+                            className={`tcp-badge ${linearSecretConfigured(trigger) ? "tcp-badge-ok" : "tcp-badge-warn"}`}
+                          >
+                            {linearSecretConfigured(trigger)
+                              ? "Linear secret configured"
+                              : "Linear secret missing"}
+                          </span>
+                          <span
+                            className={`tcp-badge ${signatureScheme(trigger) === LINEAR_SIGNATURE_SCHEME ? "tcp-badge-ok" : "tcp-badge-warn"}`}
+                          >
+                            {signatureScheme(trigger) || "default signature"}
+                          </span>
+                        </div>
+                      ) : null}
                     </div>
-                    <span className={`tcp-badge ${statusBadgeClass(trigger.enabled ? "enabled" : "disabled")}`}>{trigger.enabled ? "Enabled" : "Disabled"}</span>
+                    <span
+                      className={`tcp-badge ${statusBadgeClass(trigger.enabled ? "enabled" : "disabled")}`}
+                    >
+                      {trigger.enabled ? "Enabled" : "Disabled"}
+                    </span>
                   </div>
                   <div className="mt-2 flex flex-wrap gap-2 tcp-text-caption text-slate-500">
                     <span>{triggerStatus(trigger)}</span>
@@ -528,10 +843,16 @@ export function AutomationWebhookManager({
             <div className="grid gap-3 rounded-lg border border-slate-800/70 bg-slate-950/25 p-3">
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <div className="text-sm font-semibold text-slate-100">{safeString(selectedTrigger.name) || "Webhook trigger"}</div>
+                  <div className="text-sm font-semibold text-slate-100">
+                    {safeString(selectedTrigger.name) || "Webhook trigger"}
+                  </div>
                   <div className="mt-1 truncate text-xs text-slate-500">{effectiveTriggerId}</div>
                 </div>
-                <span className={`tcp-badge ${statusBadgeClass(selectedTrigger.enabled ? "enabled" : "disabled")}`}>{selectedTrigger.enabled ? "Enabled" : "Disabled"}</span>
+                <span
+                  className={`tcp-badge ${statusBadgeClass(selectedTrigger.enabled ? "enabled" : "disabled")}`}
+                >
+                  {selectedTrigger.enabled ? "Enabled" : "Disabled"}
+                </span>
               </div>
 
               <div className="grid gap-2 rounded-md border border-slate-800/70 bg-black/20 p-2">
@@ -540,7 +861,11 @@ export function AutomationWebhookManager({
                   <code className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-xs text-slate-300">
                     {callbackUrl(selectedTrigger) || "No callback URL"}
                   </code>
-                  <button type="button" className="tcp-btn h-8 w-8 px-0" onClick={() => void copyCallback(selectedTrigger)}>
+                  <button
+                    type="button"
+                    className="tcp-btn h-8 w-8 px-0"
+                    onClick={() => void copyCallback(selectedTrigger)}
+                  >
                     <Icon name="copy" />
                   </button>
                 </div>
@@ -554,14 +879,19 @@ export function AutomationWebhookManager({
                 return (
                   <div className="grid gap-2 rounded-md border border-sky-500/30 bg-sky-500/5 p-2">
                     <div className="flex items-center justify-between gap-2">
-                      <div className="text-xs uppercase tracking-[0.16em] text-sky-300">Notion verification</div>
-                      <span className={`tcp-badge ${verification.status === "active" ? "tcp-badge-ok" : "tcp-badge-info"}`}>
+                      <div className="text-xs uppercase tracking-[0.16em] text-sky-300">
+                        Notion verification
+                      </div>
+                      <span
+                        className={`tcp-badge ${verification.status === "active" ? "tcp-badge-ok" : "tcp-badge-info"}`}
+                      >
                         {label}
                       </span>
                     </div>
                     <div className="text-xs text-slate-400">
-                      Paste the callback URL into your Notion connection's Webhooks tab. When Notion sends its
-                      verification token, reveal it here (once) and paste it back into Notion to activate the subscription.
+                      Paste the callback URL into your Notion connection's Webhooks tab. When Notion
+                      sends its verification token, reveal it here (once) and paste it back into
+                      Notion to activate the subscription.
                     </div>
                     <button
                       type="button"
@@ -570,55 +900,244 @@ export function AutomationWebhookManager({
                       onClick={() => revealTokenMutation.mutate()}
                     >
                       <Icon name="key-round" />
-                      {verification.tokenAvailable ? "Reveal verification token" : "No token to reveal"}
+                      {verification.tokenAvailable
+                        ? "Reveal verification token"
+                        : "No token to reveal"}
                     </button>
                   </div>
                 );
               })()}
 
+              {selectedProviderIsLinear ? (
+                <div className="grid gap-3 rounded-md border border-sky-500/30 bg-sky-500/5 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="text-xs uppercase tracking-[0.16em] text-sky-300">
+                        Linear setup
+                      </div>
+                      <div className="mt-1 text-xs text-slate-400">
+                        Use this callback URL in Linear, then paste Linear's signing secret here.
+                      </div>
+                    </div>
+                    <span
+                      className={`tcp-badge ${selectedLinearSecretConfigured ? "tcp-badge-ok" : "tcp-badge-warn"}`}
+                    >
+                      {selectedLinearSecretConfigured
+                        ? "Signing secret configured"
+                        : "Signing secret not configured"}
+                    </span>
+                  </div>
+                  <div className="grid gap-2 rounded-md border border-slate-800/70 bg-black/20 p-2">
+                    <div className="text-xs text-slate-400">Linear URL field</div>
+                    <div className="flex min-w-0 items-center gap-2">
+                      <code className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-xs text-slate-300">
+                        {callbackUrl(selectedTrigger) || "No callback URL"}
+                      </code>
+                      <button
+                        type="button"
+                        className="tcp-btn h-8 w-8 px-0"
+                        onClick={() => void copyCallback(selectedTrigger)}
+                      >
+                        <Icon name="copy" />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="grid gap-1 text-xs text-slate-400">
+                    <div>Linear Settings -&gt; API -&gt; Webhooks</div>
+                    <div>URL: the Tandem callback URL above</div>
+                    <div>Data change events: Issues</div>
+                    <div>Team selection: desired teams, or all public teams</div>
+                    <div>Keep project filtering in the Tandem automation guard.</div>
+                  </div>
+                  {selectedSignature !== LINEAR_SIGNATURE_SCHEME ? (
+                    <div className="rounded-md border border-amber-400/30 bg-amber-400/10 p-2 text-xs text-amber-100">
+                      This trigger is using <code>{selectedSignature || "provider default"}</code>.
+                      Linear production deliveries should use <code>{LINEAR_SIGNATURE_SCHEME}</code>
+                      .
+                    </div>
+                  ) : null}
+                  {selectedSignature === UNSIGNED_DEV_MODE_SCHEME ? (
+                    <div className="rounded-md border border-red-400/30 bg-red-400/10 p-2 text-xs text-red-100">
+                      Unsigned dev mode is not safe for public HTTPS URLs.
+                    </div>
+                  ) : null}
+                  <div className="grid gap-2 md:grid-cols-[1fr_auto]">
+                    <input
+                      className="tcp-input"
+                      type="password"
+                      value={linearSecretDraft}
+                      onInput={(event) =>
+                        setLinearSecretDraft((event.target as HTMLInputElement).value)
+                      }
+                      placeholder="Paste Linear signing secret"
+                      autoComplete="off"
+                    />
+                    <button
+                      type="button"
+                      className="tcp-btn h-9 px-3 text-sm"
+                      disabled={
+                        !safeString(linearSecretDraft) ||
+                        !effectiveTriggerId ||
+                        replaceLinearSecretMutation.isPending
+                      }
+                      onClick={() => replaceLinearSecretMutation.mutate()}
+                    >
+                      <Icon name="key-round" />
+                      {replaceLinearSecretMutation.isPending ? "Importing..." : "Import secret"}
+                    </button>
+                  </div>
+                  {latestLinearBadSignature ? (
+                    <div className="rounded-md border border-amber-400/30 bg-amber-400/10 p-2 text-xs text-amber-100">
+                      Latest signature failure at{" "}
+                      {formatTime(
+                        latestLinearBadSignature.received_at_ms ||
+                          latestLinearBadSignature.receivedAtMs
+                      )}
+                      . Re-import the Linear signing secret if deliveries now show{" "}
+                      <code>bad_signature</code>.
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
               <div className="grid gap-2 md:grid-cols-2">
                 <div className="grid gap-1">
                   <label className="text-xs text-slate-400">Name</label>
-                  <input className="tcp-input" value={editDraft.name} onInput={(event) => setEditDraft((draft) => ({ ...draft, name: (event.target as HTMLInputElement).value }))} />
+                  <input
+                    className="tcp-input"
+                    value={editDraft.name}
+                    onInput={(event) =>
+                      setEditDraft((draft) => ({
+                        ...draft,
+                        name: (event.target as HTMLInputElement).value,
+                      }))
+                    }
+                  />
                 </div>
                 <div className="grid gap-1">
                   <label className="text-xs text-slate-400">Provider</label>
-                  <input className="tcp-input" value={editDraft.provider} onInput={(event) => setEditDraft((draft) => ({ ...draft, provider: (event.target as HTMLInputElement).value }))} />
+                  <input
+                    className="tcp-input"
+                    value={editDraft.provider}
+                    onInput={(event) => setEditProvider((event.target as HTMLInputElement).value)}
+                  />
                 </div>
                 <div className="grid gap-1">
                   <label className="text-xs text-slate-400">Event kind</label>
-                  <input className="tcp-input" value={editDraft.providerEventKind} onInput={(event) => setEditDraft((draft) => ({ ...draft, providerEventKind: (event.target as HTMLInputElement).value }))} />
+                  <input
+                    className="tcp-input"
+                    value={editDraft.providerEventKind}
+                    onInput={(event) =>
+                      setEditDraft((draft) => ({
+                        ...draft,
+                        providerEventKind: (event.target as HTMLInputElement).value,
+                      }))
+                    }
+                  />
+                </div>
+                <div className="grid gap-1">
+                  <label className="text-xs text-slate-400">Signature scheme</label>
+                  <select
+                    className="tcp-input"
+                    value={editDraft.signatureScheme}
+                    onChange={(event) =>
+                      setEditDraft((draft) => ({
+                        ...draft,
+                        signatureScheme: (event.target as HTMLSelectElement).value,
+                      }))
+                    }
+                  >
+                    {SIGNATURE_SCHEME_OPTIONS.map((option) => (
+                      <option key={option.value || "default"} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div className="grid gap-1">
                   <label className="text-xs text-slate-400">Data class</label>
-                  <select className="tcp-input" value={editDraft.defaultDataClass} onChange={(event) => setEditDraft((draft) => ({ ...draft, defaultDataClass: (event.target as HTMLSelectElement).value }))}>
-                    {DATA_CLASS_OPTIONS.map((option) => <option key={option} value={option}>{formatLabel(option)}</option>)}
+                  <select
+                    className="tcp-input"
+                    value={editDraft.defaultDataClass}
+                    onChange={(event) =>
+                      setEditDraft((draft) => ({
+                        ...draft,
+                        defaultDataClass: (event.target as HTMLSelectElement).value,
+                      }))
+                    }
+                  >
+                    {DATA_CLASS_OPTIONS.map((option) => (
+                      <option key={option} value={option}>
+                        {formatLabel(option)}
+                      </option>
+                    ))}
                   </select>
                 </div>
                 <div className="grid gap-1">
                   <label className="text-xs text-slate-400">Risk tier</label>
-                  <select className="tcp-input" value={editDraft.defaultRiskTier} onChange={(event) => setEditDraft((draft) => ({ ...draft, defaultRiskTier: (event.target as HTMLSelectElement).value }))}>
-                    {RISK_OPTIONS.map((option) => <option key={option || "none"} value={option}>{option ? formatLabel(option) : "None"}</option>)}
+                  <select
+                    className="tcp-input"
+                    value={editDraft.defaultRiskTier}
+                    onChange={(event) =>
+                      setEditDraft((draft) => ({
+                        ...draft,
+                        defaultRiskTier: (event.target as HTMLSelectElement).value,
+                      }))
+                    }
+                  >
+                    {RISK_OPTIONS.map((option) => (
+                      <option key={option || "none"} value={option}>
+                        {option ? formatLabel(option) : "None"}
+                      </option>
+                    ))}
                   </select>
                 </div>
                 <label className="flex items-center gap-2 self-end pb-2 text-xs text-slate-300">
-                  <input type="checkbox" checked={editDraft.enabled} onChange={(event) => setEditDraft((draft) => ({ ...draft, enabled: (event.target as HTMLInputElement).checked }))} />
+                  <input
+                    type="checkbox"
+                    checked={editDraft.enabled}
+                    onChange={(event) =>
+                      setEditDraft((draft) => ({
+                        ...draft,
+                        enabled: (event.target as HTMLInputElement).checked,
+                      }))
+                    }
+                  />
                   Enabled
                 </label>
               </div>
 
               <div className="flex flex-wrap gap-2">
-                <button type="button" className="tcp-btn h-9 px-3 text-sm" disabled={updateMutation.isPending || !effectiveTriggerId} onClick={() => updateMutation.mutate()}>
+                <button
+                  type="button"
+                  className="tcp-btn h-9 px-3 text-sm"
+                  disabled={updateMutation.isPending || !effectiveTriggerId}
+                  onClick={() => updateMutation.mutate()}
+                >
                   <Icon name="save" />
                   {updateMutation.isPending ? "Saving..." : "Save trigger"}
                 </button>
-                {notionVerification(selectedTrigger) ? null : (
-                  <button type="button" className="tcp-btn h-9 px-3 text-sm" disabled={rotateMutation.isPending || !effectiveTriggerId} onClick={() => rotateMutation.mutate()}>
+                {notionVerification(selectedTrigger) || selectedProviderIsLinear ? null : (
+                  <button
+                    type="button"
+                    className="tcp-btn h-9 px-3 text-sm"
+                    disabled={rotateMutation.isPending || !effectiveTriggerId}
+                    onClick={() => rotateMutation.mutate()}
+                  >
                     <Icon name="rotate-cw" />
                     {rotateMutation.isPending ? "Rotating..." : "Rotate secret"}
                   </button>
                 )}
-                <button type="button" className="tcp-btn h-9 px-3 text-sm" disabled={disableMutation.isPending || !effectiveTriggerId || selectedTrigger.enabled === false} onClick={() => disableMutation.mutate()}>
+                <button
+                  type="button"
+                  className="tcp-btn h-9 px-3 text-sm"
+                  disabled={
+                    disableMutation.isPending ||
+                    !effectiveTriggerId ||
+                    selectedTrigger.enabled === false
+                  }
+                  onClick={() => disableMutation.mutate()}
+                >
                   <Icon name="pause-circle" />
                   {disableMutation.isPending ? "Disabling..." : "Disable"}
                 </button>
@@ -639,9 +1158,16 @@ export function AutomationWebhookManager({
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <div className="text-sm font-semibold text-slate-100">Recent deliveries</div>
-                    <div className="text-xs text-slate-500">{deliveries.length} visible for this trigger</div>
+                    <div className="text-xs text-slate-500">
+                      {deliveries.length} visible for this trigger
+                    </div>
                   </div>
-                  <button type="button" className="tcp-btn h-8 px-3 text-xs" onClick={() => void deliveriesQuery.refetch()} disabled={deliveriesQuery.isFetching}>
+                  <button
+                    type="button"
+                    className="tcp-btn h-8 px-3 text-xs"
+                    onClick={() => void deliveriesQuery.refetch()}
+                    disabled={deliveriesQuery.isFetching}
+                  >
                     <Icon name="refresh-cw" />
                     Refresh
                   </button>
@@ -651,26 +1177,58 @@ export function AutomationWebhookManager({
                     {deliveries.map((delivery) => {
                       const id = deliveryId(delivery);
                       const status = safeString(delivery.status) || "received";
-                      const runId = safeString(delivery?.queued_run_id || delivery?.queuedRunID);
+                      const runId = deliveryRunId(delivery);
+                      const providerEventId = safeString(
+                        delivery.provider_event_id || delivery.providerEventID
+                      );
+                      const reason = deliveryReason(delivery);
                       return (
-                        <details key={id} className="rounded-lg border border-slate-800/70 bg-black/20 p-3">
+                        <details
+                          key={id}
+                          className="rounded-lg border border-slate-800/70 bg-black/20 p-3"
+                        >
                           <summary className="cursor-pointer list-none">
                             <div className="flex flex-wrap items-center justify-between gap-2">
                               <div className="min-w-0">
-                                <div className="truncate text-sm font-medium text-slate-200">{id || "delivery"}</div>
-                                <div className="mt-1 text-xs text-slate-500">{formatTime(delivery.received_at_ms || delivery.receivedAtMs)}</div>
+                                <div className="truncate text-sm font-medium text-slate-200">
+                                  {id || "delivery"}
+                                </div>
+                                <div className="mt-1 text-xs text-slate-500">
+                                  {formatTime(delivery.received_at_ms || delivery.receivedAtMs)}
+                                </div>
                               </div>
-                              <span className={`tcp-badge ${statusBadgeClass(status)}`}>{formatLabel(status)}</span>
+                              <span className={`tcp-badge ${statusBadgeClass(status)}`}>
+                                {formatLabel(status)}
+                              </span>
                             </div>
                           </summary>
                           <div className="mt-3 grid gap-2 text-xs text-slate-400">
                             <div className="grid gap-1 md:grid-cols-2">
-                              <div>event: <code>{safeString(delivery.provider_event_id || delivery.providerEventID) || "n/a"}</code></div>
-                              <div>digest: <code>{safeString(delivery.body_digest || delivery.bodyDigest) || "n/a"}</code></div>
-                              <div>reason: <code>{safeString(delivery.rejection_reason_code || delivery.rejectionReasonCode) || "n/a"}</code></div>
                               <div>
-                                run: {runId ? (
-                                  <button type="button" className="text-amber-200 underline decoration-amber-400/40 underline-offset-2" onClick={() => openQueuedRun(runId)}>
+                                event: <code>{providerEventId || "n/a"}</code>
+                              </div>
+                              <div>
+                                digest:{" "}
+                                <code>
+                                  {safeString(delivery.body_digest || delivery.bodyDigest) || "n/a"}
+                                </code>
+                              </div>
+                              <div>
+                                reason: <code>{reason || "n/a"}</code>
+                              </div>
+                              {selectedProviderIsLinear ? (
+                                <div>
+                                  Linear delivery: <code>{providerEventId || id || "n/a"}</code>
+                                </div>
+                              ) : null}
+                              <div>
+                                run:{" "}
+                                {runId ? (
+                                  <button
+                                    type="button"
+                                    className="text-amber-200 underline decoration-amber-400/40 underline-offset-2"
+                                    onClick={() => openQueuedRun(runId)}
+                                  >
                                     {runId}
                                   </button>
                                 ) : (

@@ -2979,6 +2979,16 @@ export interface AutomationWebhookVerificationTokenResponse {
   trigger?: AutomationWebhookTriggerResponse["trigger"];
 }
 
+export interface AutomationWebhookProviderSecretInput {
+  provider?: string;
+  secret: string;
+}
+
+export interface AutomationWebhookProviderSecretResponse extends AutomationWebhookTriggerResponse {
+  secret_status?: AutomationWebhookSecretStatus;
+  secretStatus?: AutomationWebhookSecretStatus;
+}
+
 export interface AutomationWebhookDeleteResponse {
   ok?: boolean;
   deleted?: boolean;
