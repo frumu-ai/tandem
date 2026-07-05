@@ -447,19 +447,48 @@ pub(super) fn evaluate_dispatch_boundary(
     }
 }
 
-/// TAN-397: audit-only guard for payload sources that become prompt context
-/// (tool/MCP results, hook-injected memory/docs/KB). Always evaluates with an
-/// audit-mode policy — enforcement stays at the provider-dispatch choke
-/// point, which re-scans the fully assembled request. Returns an event only
-/// when the source carries findings, so clean sources add no event volume.
-pub(super) fn evaluate_context_source(
-    session_id: &str,
+/// What the scanned payload source belongs to: an interactive session or an
+/// automation run (workflow artifacts fold into prompts before any session
+/// exists). The id lands in the event as `sessionID` or `runID` accordingly,
+/// so operators never see a run id masquerading as a session.
+#[derive(Debug, Clone, Copy)]
+pub enum ContextSourceScope<'a> {
+    Session(&'a str),
+    AutomationRun(&'a str),
+}
+
+impl<'a> ContextSourceScope<'a> {
+    fn id(&self) -> &'a str {
+        match self {
+            Self::Session(id) | Self::AutomationRun(id) => id,
+        }
+    }
+
+    fn property_key(&self) -> &'static str {
+        match self {
+            Self::Session(_) => "sessionID",
+            Self::AutomationRun(_) => "runID",
+        }
+    }
+}
+
+/// TAN-397/TAN-600: audit-only guard for payload sources that become prompt
+/// context (tool/MCP results, hook-injected memory/docs/KB, workflow
+/// artifacts). Always evaluates with an audit-mode policy — enforcement
+/// stays at the provider-dispatch choke point, which re-scans the fully
+/// assembled request. Returns an event only when the source carries
+/// findings, so clean sources add no event volume. Public so server-side
+/// prompt builders (automation artifact folding) share this exact policy
+/// parsing and event shape instead of growing a second implementation.
+pub fn evaluate_context_source(
+    scope: ContextSourceScope<'_>,
     source_kind: &str,
     tool_name: Option<&str>,
     content: &str,
     operation_kind: DataBoundaryOperationKind,
     tenant_context: Option<&TenantContext>,
 ) -> Option<EngineEvent> {
+    let scope_id = scope.id();
     if data_boundary_mode() == DataBoundaryMode::Off {
         return None;
     }
@@ -479,7 +508,7 @@ pub(super) fn evaluate_context_source(
         })
         .unwrap_or_default();
     let input = DataBoundaryInput {
-        input_id: format!("dbi_src_{session_id}"),
+        input_id: format!("dbi_src_{scope_id}"),
         tenant,
         provider: DataBoundaryProviderRef {
             provider_id: "pending_dispatch".to_string(),
@@ -522,7 +551,7 @@ pub(super) fn evaluate_context_source(
     );
     let mut properties = serde_json::to_value(&boundary_event).unwrap_or_else(|_| json!({}));
     if let Value::Object(ref mut map) = properties {
-        map.insert("sessionID".to_string(), json!(session_id));
+        map.insert(scope.property_key().to_string(), json!(scope_id));
         map.insert("sourceKind".to_string(), json!(source_kind));
         map.insert("mode".to_string(), json!(data_boundary_mode().as_str()));
         map.insert("toolName".to_string(), json!(tool_name));
@@ -857,7 +886,7 @@ mod tests {
         tenant.org_id = "org-src".to_string();
         tenant.workspace_id = "workspace-src".to_string();
         let event = evaluate_context_source(
-            "session-1",
+            ContextSourceScope::Session("session-1"),
             "tool_result",
             Some("web_fetch"),
             "api_key=sk-live-abcdef1234567890",
@@ -867,9 +896,10 @@ mod tests {
         .expect("findings must produce an event");
         assert_eq!(event.properties["tenant"]["organization_id"], "org-src");
         assert_eq!(event.properties["tenant"]["workspace_id"], "workspace-src");
+        assert_eq!(event.properties["sessionID"], "session-1");
 
         let implicit = evaluate_context_source(
-            "session-1",
+            ContextSourceScope::Session("session-1"),
             "tool_result",
             Some("web_fetch"),
             "api_key=sk-live-abcdef1234567890",

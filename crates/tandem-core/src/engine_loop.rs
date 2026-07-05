@@ -20,6 +20,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::Level;
 
 mod data_boundary_gate;
+pub use data_boundary_gate::{evaluate_context_source, ContextSourceScope};
 mod loop_guards;
 mod loop_tuning;
 mod prewrite_gate;
@@ -1538,7 +1539,7 @@ impl EngineLoop {
         // it is persisted and becomes prompt context. Never alters the
         // result; enforcement happens at provider dispatch.
         if let Some(boundary_event) = data_boundary_gate::evaluate_context_source(
-            session_id,
+            data_boundary_gate::ContextSourceScope::Session(session_id),
             "tool_result",
             Some(&tool),
             &output,

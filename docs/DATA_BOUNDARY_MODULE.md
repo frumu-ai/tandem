@@ -86,8 +86,9 @@ sha2, `#![forbid(unsafe_code)]`) providing:
 
 * Enforcement covers the main engine-loop dispatch seam only. The direct
   server sends, post-tool synthesis send, and memory-distillation egress
-  paths listed in `docs/DATA_BOUNDARY_INTEGRATION_MAP.md` remain uncovered,
-  and workflow-artifact guard hooks are a tracked follow-up.
+  paths listed in `docs/DATA_BOUNDARY_INTEGRATION_MAP.md` remain uncovered.
+  Workflow-artifact prompt folding is guarded audit-only (TAN-600,
+  `sourceKind: workflow_artifact`) at the automation executor.
 * `RouteToLocal` has no routing capability: enforce mode fails closed with
   `route_to_local_unavailable` per the routing contract.
 * Approval asks reuse the generic permission surface; `always`-style standing
