@@ -1033,3 +1033,157 @@ async fn webhook_event_routes_enforce_automation_visibility_before_payloads() {
         .expect("outsider run events");
     assert_eq!(outsider_run_resp.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn linear_trigger_create_and_secret_import_flow() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    create_automation(&app, "auto-linear-mgmt").await;
+
+    // Creating a Linear trigger never reveals the placeholder secret — the real
+    // signing secret lives in Linear's UI and must be imported by the operator.
+    let create_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "POST",
+            "/automations/v2/auto-linear-mgmt/webhook-triggers",
+            "org-a",
+            "workspace-a",
+            "actor-a",
+            Some(json!({ "name": "Linear", "provider": "linear" })),
+        ))
+        .await
+        .expect("create linear trigger");
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let created = response_json(create_resp).await;
+    assert_eq!(
+        created
+            .pointer("/verification_pending")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(created.get("new_secret").is_none());
+    assert_eq!(
+        created
+            .pointer("/trigger/signature_scheme")
+            .and_then(Value::as_str),
+        Some("linear_hmac_sha256")
+    );
+    assert_eq!(
+        created
+            .pointer("/trigger/secret_status/configured")
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        created
+            .pointer("/trigger/verification_status/status")
+            .and_then(Value::as_str),
+        Some("awaiting_secret")
+    );
+    let trigger_id = created
+        .pointer("/trigger/trigger_id")
+        .and_then(Value::as_str)
+        .expect("trigger id")
+        .to_string();
+
+    // A different tenant cannot import a secret into this trigger.
+    let cross_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "POST",
+            format!("/automations/v2/auto-linear-mgmt/webhook-triggers/{trigger_id}/import-secret"),
+            "org-b",
+            "workspace-b",
+            "actor-b",
+            Some(json!({ "secret": "lin_wh_cross_tenant" })),
+        ))
+        .await
+        .expect("cross import");
+    assert_ne!(cross_resp.status(), StatusCode::OK);
+
+    // An empty secret is refused.
+    let empty_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "POST",
+            format!("/automations/v2/auto-linear-mgmt/webhook-triggers/{trigger_id}/import-secret"),
+            "org-a",
+            "workspace-a",
+            "actor-a",
+            Some(json!({ "secret": "   " })),
+        ))
+        .await
+        .expect("empty import");
+    assert_eq!(empty_resp.status(), StatusCode::BAD_REQUEST);
+
+    // The authorized owner imports the Linear signing secret; the response
+    // reflects the configured state but never echoes the secret.
+    let import_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "POST",
+            format!("/automations/v2/auto-linear-mgmt/webhook-triggers/{trigger_id}/import-secret"),
+            "org-a",
+            "workspace-a",
+            "actor-a",
+            Some(json!({ "secret": "lin_wh_real_secret_value" })),
+        ))
+        .await
+        .expect("import");
+    assert_eq!(import_resp.status(), StatusCode::OK);
+    let imported = response_json(import_resp).await;
+    assert!(!imported.to_string().contains("lin_wh_real_secret_value"));
+    assert_eq!(
+        imported
+            .pointer("/trigger/secret_status/configured")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        imported
+            .pointer("/trigger/verification_status/status")
+            .and_then(Value::as_str),
+        Some("secret_imported")
+    );
+    let first_version = imported
+        .pointer("/trigger/secret_status/secret_version")
+        .and_then(Value::as_u64)
+        .expect("secret version");
+
+    // Rotating to a Tandem-generated secret is refused for provider-owned flows.
+    let rotate_resp = app
+        .clone()
+        .oneshot(tenant_request(
+            "POST",
+            format!("/automations/v2/auto-linear-mgmt/webhook-triggers/{trigger_id}/rotate-secret"),
+            "org-a",
+            "workspace-a",
+            "actor-a",
+            Some(json!({})),
+        ))
+        .await
+        .expect("rotate");
+    assert_eq!(rotate_resp.status(), StatusCode::BAD_REQUEST);
+
+    // Re-import (after rotating the secret in Linear's UI) bumps the version.
+    let reimport_resp = app
+        .oneshot(tenant_request(
+            "POST",
+            format!("/automations/v2/auto-linear-mgmt/webhook-triggers/{trigger_id}/import-secret"),
+            "org-a",
+            "workspace-a",
+            "actor-a",
+            Some(json!({ "secret": "lin_wh_rotated_secret_value" })),
+        ))
+        .await
+        .expect("re-import");
+    assert_eq!(reimport_resp.status(), StatusCode::OK);
+    let reimported = response_json(reimport_resp).await;
+    assert_eq!(
+        reimported
+            .pointer("/trigger/secret_status/secret_version")
+            .and_then(Value::as_u64),
+        Some(first_version + 1)
+    );
+}

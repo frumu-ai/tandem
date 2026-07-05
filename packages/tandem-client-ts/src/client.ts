@@ -3692,6 +3692,24 @@ class AutomationsV2 {
     );
   }
 
+  /**
+   * Import (or replace) a provider-owned signing secret for a webhook trigger.
+   * Linear generates its signing secret in Linear's webhook settings UI; the
+   * operator pastes it here to activate a `linear_hmac_sha256` trigger, which
+   * fails closed until the secret is imported. Re-import replaces the secret
+   * after a Linear-side rotation. The secret is never returned by any endpoint.
+   */
+  async importWebhookProviderSecret(
+    id: string,
+    triggerId: string,
+    secret: string
+  ): Promise<AutomationWebhookTriggerResponse & { ok?: boolean }> {
+    return this.req<AutomationWebhookTriggerResponse & { ok?: boolean }>(
+      `/automations/v2/${encodeURIComponent(id)}/webhook-triggers/${encodeURIComponent(triggerId)}/import-secret`,
+      { method: "POST", body: JSON.stringify({ secret }) }
+    );
+  }
+
   async listWebhookDeliveries(
     id: string,
     triggerId: string,

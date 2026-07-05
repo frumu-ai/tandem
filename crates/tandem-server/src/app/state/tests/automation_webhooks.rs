@@ -1604,3 +1604,54 @@ async fn webhook_queue_serializes_duplicate_delivery_race() {
         .await;
     assert_eq!(deliveries.len(), 2);
 }
+
+#[tokio::test]
+async fn patching_provider_to_linear_forces_scheme_and_starts_lifecycle() {
+    // Codex P2 on #1799: a PATCH that changes only `provider` to `linear` (no
+    // signature_scheme in the payload) must still pin the Linear scheme and
+    // start the provider-owned-secret lifecycle, or the trigger is advertised
+    // as Linear while its stale scheme rejects real Linear deliveries.
+    let state = ready_test_state().await;
+    let tenant_a = tenant("org-a", "workspace-a");
+    insert_test_automation(&state, "automation-provider-patch", &tenant_a).await;
+
+    // A generic trigger starts on the Tandem HMAC scheme with no Linear state.
+    let created = state
+        .create_automation_webhook_trigger(create_input(
+            "automation-provider-patch",
+            tenant_a.clone(),
+        ))
+        .await
+        .expect("create trigger");
+    assert_eq!(
+        created.trigger.signature_scheme,
+        AutomationWebhookSignatureScheme::HmacSha256V1
+    );
+    assert!(created.trigger.linear_verification.is_none());
+
+    // PATCH provider -> linear only (no signature_scheme).
+    let updated = state
+        .update_automation_webhook_trigger(
+            &tenant_a,
+            "automation-provider-patch",
+            &created.trigger.trigger_id,
+            AutomationWebhookTriggerUpdateInput {
+                provider: Some("linear.app".to_string()),
+                ..AutomationWebhookTriggerUpdateInput::default()
+            },
+            Some("actor-a".to_string()),
+        )
+        .await
+        .expect("patch provider to linear");
+    assert_eq!(updated.provider, "linear");
+    assert_eq!(
+        updated.signature_scheme,
+        AutomationWebhookSignatureScheme::LinearHmacSha256,
+        "provider patch must force the Linear scheme"
+    );
+    let verification = updated
+        .linear_verification
+        .as_ref()
+        .expect("linear lifecycle started");
+    assert!(!verification.secret_configured());
+}

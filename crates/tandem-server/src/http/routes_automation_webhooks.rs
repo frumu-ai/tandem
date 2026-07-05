@@ -26,6 +26,7 @@ const AUTOMATION_WEBHOOK_SIGNATURE_HEADER: &str = "x-tandem-webhook-signature";
 const AUTOMATION_WEBHOOK_LEGACY_SIGNATURE_HEADER: &str = "x-tandem-signature";
 const AUTOMATION_WEBHOOK_GITHUB_SIGNATURE_HEADER: &str = "x-hub-signature-256";
 const AUTOMATION_WEBHOOK_NOTION_SIGNATURE_HEADER: &str = "x-notion-signature";
+const AUTOMATION_WEBHOOK_LINEAR_SIGNATURE_HEADER: &str = "linear-signature";
 const AUTOMATION_WEBHOOK_SHARED_SECRET_HEADER: &str = "x-tandem-webhook-secret";
 const AUTOMATION_WEBHOOK_ORIGIN_ACTION_HEADER: &str = "x-tandem-origin-action-id";
 const AUTOMATION_WEBHOOK_ORIGIN_RUN_HEADER: &str = "x-tandem-origin-run-id";
@@ -205,6 +206,10 @@ fn signature_headers_from_request(headers: &HeaderMap) -> AutomationWebhookSigna
     .with_notion_signature(header_str(
         headers,
         AUTOMATION_WEBHOOK_NOTION_SIGNATURE_HEADER,
+    ))
+    .with_linear_signature(header_str(
+        headers,
+        AUTOMATION_WEBHOOK_LINEAR_SIGNATURE_HEADER,
     ))
     .with_tandem_signed_allow_self_feedback(header_str(
         headers,
@@ -521,6 +526,10 @@ fn verification_rejection_delivery(
             AutomationWebhookDeliveryStatus::Failed,
             "missing_secret_material",
         )),
+        AutomationWebhookVerificationError::ProviderSecretNotImported => Some((
+            AutomationWebhookDeliveryStatus::Rejected,
+            "provider_secret_not_imported",
+        )),
         AutomationWebhookVerificationError::UnsignedDevModeDisabled => Some((
             AutomationWebhookDeliveryStatus::Rejected,
             "unsigned_dev_mode_disabled",
@@ -540,6 +549,7 @@ fn verification_error_response(error: &AutomationWebhookVerificationError) -> Re
         | AutomationWebhookVerificationError::StaleTimestamp
         | AutomationWebhookVerificationError::BadSignature
         | AutomationWebhookVerificationError::MissingSecretMaterial
+        | AutomationWebhookVerificationError::ProviderSecretNotImported
         | AutomationWebhookVerificationError::UnsignedDevModeDisabled => {
             webhook_public_response(StatusCode::UNAUTHORIZED, "rejected")
         }

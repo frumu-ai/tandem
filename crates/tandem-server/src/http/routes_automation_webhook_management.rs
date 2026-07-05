@@ -44,6 +44,10 @@ pub(super) fn apply(router: Router<AppState>) -> Router<AppState> {
             post(reveal_webhook_verification_token),
         )
         .route(
+            "/automations/v2/{id}/webhook-triggers/{trigger_id}/import-secret",
+            post(import_webhook_provider_secret),
+        )
+        .route(
             "/automations/v2/{id}/webhook-triggers/{trigger_id}/deliveries",
             get(list_webhook_deliveries),
         )
@@ -580,6 +584,7 @@ fn provider_metadata(trigger: &AutomationWebhookTriggerRecord) -> Value {
         trigger.signature_scheme,
         AutomationWebhookSignatureScheme::GithubHmacSha256
             | AutomationWebhookSignatureScheme::NotionHmacSha256
+            | AutomationWebhookSignatureScheme::LinearHmacSha256
     );
     json!({
         "canonical_provider": canonical_provider.as_str(),
@@ -636,7 +641,7 @@ fn trigger_value(
         "signature_scheme": trigger.signature_scheme,
         "signatureScheme": trigger.signature_scheme,
         "secret_status": {
-            "configured": true,
+            "configured": trigger_secret_configured(trigger),
             "secret_version": trigger.secret.secret_version,
             "secretVersion": trigger.secret.secret_version,
             "created_at_ms": trigger.secret.created_at_ms,
@@ -656,18 +661,28 @@ fn trigger_value(
         "lastAcceptedAtMs": trigger.last_accepted_at_ms,
         "last_rejected_at_ms": trigger.last_rejected_at_ms,
         "lastRejectedAtMs": trigger.last_rejected_at_ms,
-        "verification_status": notion_verification_value(trigger),
-        "verificationStatus": notion_verification_value(trigger),
+        "verification_status": provider_verification_value(trigger),
+        "verificationStatus": provider_verification_value(trigger),
         "delivery_counts": delivery_counts(deliveries),
         "deliveryCounts": delivery_counts(deliveries),
     })
 }
 
-/// Notion provider verification state for the Control Panel — never includes the
-/// token itself, only the status and whether a one-time reveal is available.
-fn notion_verification_value(trigger: &AutomationWebhookTriggerRecord) -> Value {
-    match trigger.notion_verification.as_ref() {
-        Some(verification) => json!({
+/// Whether the trigger has usable signing-secret material. Always true for
+/// Tandem-generated secrets; false for a Linear trigger whose provider-owned
+/// signing secret has not been imported yet (deliveries fail closed until then).
+fn trigger_secret_configured(trigger: &AutomationWebhookTriggerRecord) -> bool {
+    match trigger.linear_verification.as_ref() {
+        Some(verification) => verification.secret_configured(),
+        None => true,
+    }
+}
+
+/// Provider-owned verification state for the Control Panel — never includes
+/// secret material, only lifecycle status.
+fn provider_verification_value(trigger: &AutomationWebhookTriggerRecord) -> Value {
+    if let Some(verification) = trigger.notion_verification.as_ref() {
+        return json!({
             "provider": "notion",
             "status": verification.status.as_str(),
             "token_available": verification.token_available_for_reveal(),
@@ -678,9 +693,21 @@ fn notion_verification_value(trigger: &AutomationWebhookTriggerRecord) -> Value 
             "tokenRevealedAtMs": verification.token_revealed_at_ms,
             "verified_at_ms": verification.verified_at_ms,
             "verifiedAtMs": verification.verified_at_ms,
-        }),
-        None => Value::Null,
+        });
     }
+    if let Some(verification) = trigger.linear_verification.as_ref() {
+        return json!({
+            "provider": "linear",
+            "status": verification.status.as_str(),
+            "secret_configured": verification.secret_configured(),
+            "secretConfigured": verification.secret_configured(),
+            "secret_imported_at_ms": verification.secret_imported_at_ms,
+            "secretImportedAtMs": verification.secret_imported_at_ms,
+            "verified_at_ms": verification.verified_at_ms,
+            "verifiedAtMs": verification.verified_at_ms,
+        });
+    }
+    Value::Null
 }
 
 fn delivery_value(delivery: &AutomationWebhookDeliveryRecord) -> Value {
@@ -955,10 +982,13 @@ async fn create_webhook_trigger(
         }),
     )
     .await;
-    // Notion is a provider-owned-secret flow: the real signing secret is the
-    // verification token Notion POSTs later, so we never reveal the placeholder
-    // secret generated at creation — the operator waits for the token instead.
-    if result.trigger.notion_verification.is_some() {
+    // Notion and Linear are provider-owned-secret flows: the real signing secret
+    // is Notion's later-POSTed verification token or Linear's UI-displayed
+    // signing secret (imported by the operator), so we never reveal the
+    // placeholder secret generated at creation — surfacing it would invite the
+    // operator to paste a value the provider can never sign with.
+    if result.trigger.notion_verification.is_some() || result.trigger.linear_verification.is_some()
+    {
         return Ok(Json(json!({
             "trigger": trigger_value(&result.trigger, &[], &headers),
             "secret_one_time": false,
@@ -1185,13 +1215,15 @@ async fn rotate_webhook_secret(
     .await?;
     let trigger =
         load_trigger_for_mutation(&state, &tenant_context, verified, &id, &trigger_id).await?;
-    // Notion triggers sign with a provider-owned verification token; rotating to
-    // a Tandem-generated secret would break verification and the reveal.
+    // Notion and Linear triggers sign with a provider-owned secret (Notion's
+    // verification token, Linear's signing secret); rotating to a
+    // Tandem-generated secret would break verification. Linear secrets are
+    // replaced by re-importing from Linear's UI instead.
     if trigger.is_provider_owned_secret() {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
             "AUTOMATION_WEBHOOK_ROTATE_UNSUPPORTED",
-            "provider-owned-secret (notion) webhook triggers cannot rotate a Tandem secret",
+            "provider-owned-secret (notion/linear) webhook triggers cannot rotate a Tandem secret",
         ));
     }
     let actor_id = actor_id_for_records(&tenant_context, &request_principal, verified);
@@ -1290,6 +1322,76 @@ async fn reveal_webhook_verification_token(
         "token_one_time": true,
         "tokenOneTime": true,
         "trigger": trigger.map(|trigger| trigger_value(&trigger, &deliveries, &headers)),
+    })))
+}
+
+#[derive(Deserialize)]
+struct WebhookProviderSecretImportRequest {
+    secret: String,
+}
+
+/// Import (or replace) a provider-owned signing secret for a trigger — the
+/// operator pastes the secret shown in the provider's UI (Linear webhook
+/// settings) into Tandem. The inverse of the Notion reveal flow: the secret
+/// flows into Tandem and is never returned by any endpoint afterwards.
+async fn import_webhook_provider_secret(
+    State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
+    headers: HeaderMap,
+    Path((id, trigger_id)): Path<(String, String)>,
+    Json(request): Json<WebhookProviderSecretImportRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let verified = verified_tenant_context.as_ref().map(|context| &context.0);
+    let _automation = load_automation_for_mutation(
+        &state,
+        &tenant_context,
+        &request_principal,
+        verified,
+        &headers,
+        &id,
+        false,
+    )
+    .await?;
+    let _trigger =
+        load_trigger_for_mutation(&state, &tenant_context, verified, &id, &trigger_id).await?;
+    let actor_id = actor_id_for_records(&tenant_context, &request_principal, verified);
+    let trigger = state
+        .import_automation_webhook_linear_secret(
+            &tenant_context,
+            &id,
+            &trigger_id,
+            &request.secret,
+            actor_id,
+        )
+        .await
+        .map_err(|error| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "AUTOMATION_WEBHOOK_SECRET_IMPORT_FAILED",
+                error.to_string(),
+            )
+        })?;
+    let deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(&tenant_context, &trigger_id)
+        .await;
+    append_webhook_audit(
+        &state,
+        "automation.webhook_trigger.secret_imported",
+        &tenant_context,
+        audit_actor(&tenant_context, &request_principal, verified),
+        json!({
+            "automationID": id,
+            "triggerID": trigger_id,
+            "provider": trigger.provider,
+            "secretVersion": trigger.secret.secret_version,
+        }),
+    )
+    .await;
+    Ok(Json(json!({
+        "ok": true,
+        "trigger": trigger_value(&trigger, &deliveries, &headers),
     })))
 }
 
