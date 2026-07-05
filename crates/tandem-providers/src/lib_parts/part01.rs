@@ -1114,6 +1114,14 @@ fn add_openai_responses_provider(
         .default_model
         .clone()
         .unwrap_or_else(|| default_model.to_string());
+    // Heal a persisted openai-codex default that has been retired from the
+    // catalog so the registry built at startup/reload never serves an
+    // unsupported model as the provider default.
+    let configured_default_model = if id == "openai-codex" {
+        openai_codex_effective_default_model(Some(&configured_default_model))
+    } else {
+        configured_default_model
+    };
     providers.push(Arc::new(OpenAIResponsesProvider {
         id: id.to_string(),
         name: name.to_string(),

@@ -144,9 +144,16 @@ pub fn default_model_spec_from_effective_config(config: &Value) -> Option<ModelS
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|v| !v.is_empty())?;
+    // Heal a retired openai-codex default so automations/routines that dispatch
+    // this as the request model don't hit a provider 400 for an unsupported model.
+    let model_id = if provider_id == "openai-codex" {
+        tandem_providers::openai_codex_effective_default_model(Some(model_id))
+    } else {
+        model_id.to_string()
+    };
     Some(ModelSpec {
         provider_id: provider_id.to_string(),
-        model_id: model_id.to_string(),
+        model_id,
     })
 }
 

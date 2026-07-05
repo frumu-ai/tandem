@@ -105,6 +105,7 @@ mod provider_auth_resolution_tests {
 
     #[test]
     fn openai_codex_default_model_validation_rejects_retired_models() {
+        use tandem_providers::{openai_codex_effective_default_model, openai_codex_model_is_supported};
         // The retired phantom `gpt-5.1-codex-max` must not be honored as a saved
         // default; a stale config falls back to the compiled default so channel
         // runs (which read this default fresh) stop hitting a provider 400.
@@ -113,6 +114,19 @@ mod provider_auth_resolution_tests {
         assert!(openai_codex_model_is_supported("gpt-5.6"));
         // The compiled fallback must itself always be a supported model.
         assert!(openai_codex_model_is_supported(OPENAI_CODEX_DEFAULT_MODEL));
+        // A retired saved default heals to the compiled default; a valid one is kept.
+        assert_eq!(
+            openai_codex_effective_default_model(Some("gpt-5.1-codex-max")),
+            OPENAI_CODEX_DEFAULT_MODEL
+        );
+        assert_eq!(
+            openai_codex_effective_default_model(Some("gpt-5.6")),
+            "gpt-5.6"
+        );
+        assert_eq!(
+            openai_codex_effective_default_model(None),
+            OPENAI_CODEX_DEFAULT_MODEL
+        );
     }
 }
 

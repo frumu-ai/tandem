@@ -86,7 +86,7 @@ struct OpenAiCodexApiKeyExchangeResponse {
 const OPENAI_CODEX_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const OPENAI_CODEX_OAUTH_ISSUER: &str = "https://auth.openai.com";
 const OPENAI_CODEX_PROVIDER_ID: &str = "openai-codex";
-const OPENAI_CODEX_DEFAULT_MODEL: &str = "gpt-5.5";
+const OPENAI_CODEX_DEFAULT_MODEL: &str = tandem_providers::OPENAI_CODEX_DEFAULT_MODEL;
 const OPENAI_CODEX_API_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const OPENAI_CODEX_OAUTH_REFRESH_SKEW_MS: u64 = 5 * 60 * 1000;
 const OPENAI_CODEX_LOCAL_CALLBACK_ADDR: &str = "127.0.0.1:1455";
@@ -254,7 +254,20 @@ pub(super) async fn patch_config_identity(
 
 pub(super) async fn config_providers(State(state): State<AppState>) -> Json<Value> {
     let cfg = state.config.get_effective_value().await;
-    let providers = redacted(cfg.get("providers").cloned().unwrap_or_else(|| json!({})));
+    let mut providers = redacted(cfg.get("providers").cloned().unwrap_or_else(|| json!({})));
+    // Heal a persisted openai-codex default that has been retired from the
+    // catalog. Channel dispatchers fetch this endpoint fresh on every run and
+    // send the returned default as the request model, so an unsupported value
+    // here makes every channel reply fail with a provider 400.
+    if let Some(codex) = providers
+        .get_mut(OPENAI_CODEX_PROVIDER_ID)
+        .and_then(Value::as_object_mut)
+    {
+        let resolved = tandem_providers::openai_codex_effective_default_model(
+            codex.get("default_model").and_then(Value::as_str),
+        );
+        codex.insert("default_model".to_string(), Value::String(resolved));
+    }
     let default_provider = cfg.get("default_provider").cloned().unwrap_or(Value::Null);
     Json(json!({
         "providers": providers,

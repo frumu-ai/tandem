@@ -311,12 +311,6 @@ fn openai_codex_default_model_from_layer(layers: &Value, layer: &str) -> Option<
         .map(ToString::to_string)
 }
 
-fn openai_codex_model_is_supported(model: &str) -> bool {
-    openai_codex_supported_model_rows()
-        .iter()
-        .any(|(id, _)| *id == model)
-}
-
 async fn openai_codex_runtime_default_model(state: &AppState) -> String {
     let layers = state.config.get_layers_value().await;
     for layer in ["cli", "env", "managed", "project", "global"] {
@@ -326,7 +320,7 @@ async fn openai_codex_runtime_default_model(state: &AppState) -> String {
             // every run — including channels that fetch this default fresh — fail
             // with a provider 400, so skip stale values and fall back to the
             // compiled default rather than trusting the saved config blindly.
-            if openai_codex_model_is_supported(&model) {
+            if tandem_providers::openai_codex_model_is_supported(&model) {
                 return model;
             }
         }

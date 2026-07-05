@@ -427,6 +427,29 @@ pub fn openai_codex_supported_model_rows() -> &'static [(&'static str, &'static 
     ]
 }
 
+/// Compiled fallback openai-codex default model. Always a member of
+/// `openai_codex_supported_model_rows`.
+pub const OPENAI_CODEX_DEFAULT_MODEL: &str = "gpt-5.5";
+
+pub fn openai_codex_model_is_supported(model: &str) -> bool {
+    let model = model.trim();
+    openai_codex_supported_model_rows()
+        .iter()
+        .any(|(id, _)| *id == model)
+}
+
+/// Resolve a usable openai-codex default model. Honors a configured value only
+/// while it remains in the catalog; a value that has since been retired (e.g.
+/// `gpt-5.1-codex-max`) falls back to the compiled default so channel and
+/// automation runs — which read this default and dispatch it as the request
+/// model — stop hitting a provider 400 for an unsupported model.
+pub fn openai_codex_effective_default_model(configured: Option<&str>) -> String {
+    match configured.map(str::trim).filter(|model| !model.is_empty()) {
+        Some(model) if openai_codex_model_is_supported(model) => model.to_string(),
+        _ => OPENAI_CODEX_DEFAULT_MODEL.to_string(),
+    }
+}
+
 fn codex_supported_models(context_window: usize) -> Vec<ModelInfo> {
     openai_codex_supported_model_rows()
         .iter()
