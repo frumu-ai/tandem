@@ -836,7 +836,7 @@ pub(super) async fn ingest_run_messages(
                             channel_tag: None,
                             host_tag: ctx.host_tag.clone(),
                             metadata: Some(json!({"role": "user"})),
-                            provenance: Some(json!({"origin_event_type": "session.run.finished", "origin_message_id": message.id, "origin_session_id": session_id})),
+                            provenance: Some(json!({"origin_event_type": "session.run.finished", "origin_message_id": message.id, "origin_session_id": session_id, "tenant_context": ctx.tenant_context})),
                             redaction_status: "passed".to_string(),
                             redaction_count: 0,
                             visibility: "private".to_string(),
@@ -868,7 +868,7 @@ pub(super) async fn ingest_run_messages(
                             channel_tag: None,
                             host_tag: ctx.host_tag.clone(),
                             metadata: Some(json!({"role": "assistant"})),
-                            provenance: Some(json!({"origin_event_type": "session.run.finished", "origin_message_id": message.id, "origin_session_id": session_id})),
+                            provenance: Some(json!({"origin_event_type": "session.run.finished", "origin_message_id": message.id, "origin_session_id": session_id, "tenant_context": ctx.tenant_context})),
                             redaction_status: "passed".to_string(),
                             redaction_count: 0,
                             visibility: "private".to_string(),
@@ -948,9 +948,10 @@ pub(super) async fn ingest_run_messages(
                                 channel_tag: None,
                                 host_tag: ctx.host_tag.clone(),
                                 metadata: None,
-                                provenance: Some(
-                                    json!({"origin_event_type": "session.run.finished"}),
-                                ),
+                                provenance: Some(json!({
+                                    "origin_event_type": "session.run.finished",
+                                    "tenant_context": ctx.tenant_context,
+                                })),
                                 redaction_status: "passed".to_string(),
                                 redaction_count: 0,
                                 visibility: "private".to_string(),
@@ -1119,6 +1120,27 @@ pub(super) async fn ingest_event_memory_records(
     .await;
 }
 
+/// Resolve the owner subject for records ingested from a run, using the same
+/// subject resolution the mutation guard and `memory_list` apply. This keeps an
+/// authenticated actor's ingested run memory owned by their resolved subject
+/// rather than the raw run client id, so they can list, demote, and delete their
+/// own memory in governed mode (the ownership guard in `memory_delete` /
+/// `memory_demote` compares against exactly this value). In local-unrestricted
+/// mode the run client id remains the subject, matching the prompt-injection
+/// reader.
+pub(super) fn ingested_memory_owner_subject(
+    tenant_context: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+    run_client_id: &str,
+) -> String {
+    if crate::memory::subject::local_memory_subjects_are_unrestricted(tenant_context, verified) {
+        return crate::memory::subject::normalize_memory_subject(Some(run_client_id));
+    }
+    crate::memory::subject::request_memory_subject(tenant_context, verified, None)
+        .map(|resolution| resolution.subject)
+        .unwrap_or_else(|_| crate::memory::subject::normalize_memory_subject(Some(run_client_id)))
+}
+
 pub(super) async fn run_global_memory_ingestor(state: AppState) {
     if !state.wait_until_ready_or_failed(120, 250).await {
         tracing::warn!("global memory ingestor: skipped because runtime did not become ready");
@@ -1142,7 +1164,7 @@ pub(super) async fn run_global_memory_ingestor(state: AppState) {
                             .get("startedAtMs")
                             .and_then(|v| v.as_u64())
                             .unwrap_or_else(crate::now_ms);
-                        let user_id = event
+                        let run_client_id = event
                             .properties
                             .get("clientID")
                             .and_then(|v| v.as_str())
@@ -1156,6 +1178,19 @@ pub(super) async fn run_global_memory_ingestor(state: AppState) {
                             .and_then(|v| v.as_str())
                             .map(ToString::to_string);
                         let tenant_context = event_tenant_context(&event).unwrap_or_default();
+                        // Own ingested run memory under the same subject the read
+                        // and mutation paths resolve, so governed actors can manage
+                        // their own memory (never their raw run client id).
+                        let verified = state
+                            .storage
+                            .get_session(&session_id)
+                            .await
+                            .and_then(|session| session.verified_tenant_context);
+                        let user_id = ingested_memory_owner_subject(
+                            &tenant_context,
+                            verified.as_ref(),
+                            &run_client_id,
+                        );
                         by_session.insert(
                             session_id,
                             RunMemoryContext {
