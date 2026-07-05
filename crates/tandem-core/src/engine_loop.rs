@@ -126,6 +126,30 @@ This tool error is recoverable in the current turn. Adjust the arguments, use a 
     )
 }
 
+/// Inject the trusted parent execution context into a batch sub-call's args.
+///
+/// The reserved `__`-prefixed keys are engine-injected execution context
+/// (session id, project id, channel scope, workspace root, …). They must never
+/// be honored from model-supplied sub-call args — otherwise a batch sub-call
+/// could forge its channel scope or session identity and bypass memory scope
+/// isolation (TAN-603). Any model-supplied value for these keys is stripped
+/// first, then the parent's trusted value is written where present. Where the
+/// parent has no value the key stays absent (fail closed) rather than retaining
+/// a forged one.
+fn inject_batch_sub_call_context(
+    sub_obj: &mut serde_json::Map<String, Value>,
+    parent_context: &[(&str, Option<&str>)],
+) {
+    for (key, _) in parent_context {
+        sub_obj.remove(*key);
+    }
+    for (key, value) in parent_context {
+        if let Some(value) = value {
+            sub_obj.insert((*key).to_string(), Value::String((*value).to_string()));
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct EngineLoop {
     storage: std::sync::Arc<Storage>,
@@ -1298,46 +1322,19 @@ impl EngineLoop {
 
                 // 5. Inject parent execution context into sub-call args.
                 if let Some(sub_obj) = sub_args.as_object_mut() {
-                    if let Some(ref v) = ctx_workspace_root {
-                        sub_obj
-                            .entry("__workspace_root")
-                            .or_insert_with(|| Value::String(v.clone()));
-                    }
-                    if let Some(ref v) = ctx_effective_cwd {
-                        sub_obj
-                            .entry("__effective_cwd")
-                            .or_insert_with(|| Value::String(v.clone()));
-                    }
-                    if let Some(ref v) = ctx_session_id {
-                        sub_obj
-                            .entry("__session_id")
-                            .or_insert_with(|| Value::String(v.clone()));
-                    }
-                    if let Some(ref v) = ctx_project_id {
-                        sub_obj
-                            .entry("__project_id")
-                            .or_insert_with(|| Value::String(v.clone()));
-                    }
-                    if let Some(ref v) = ctx_channel_platform {
-                        sub_obj
-                            .entry("__channel_platform")
-                            .or_insert_with(|| Value::String(v.clone()));
-                    }
-                    if let Some(ref v) = ctx_channel_user_id {
-                        sub_obj
-                            .entry("__channel_user_id")
-                            .or_insert_with(|| Value::String(v.clone()));
-                    }
-                    if let Some(ref v) = ctx_channel_scope_id {
-                        sub_obj
-                            .entry("__channel_scope_id")
-                            .or_insert_with(|| Value::String(v.clone()));
-                    }
-                    if let Some(ref v) = ctx_channel_scope_kind {
-                        sub_obj
-                            .entry("__channel_scope_kind")
-                            .or_insert_with(|| Value::String(v.clone()));
-                    }
+                    inject_batch_sub_call_context(
+                        sub_obj,
+                        &[
+                            ("__workspace_root", ctx_workspace_root.as_deref()),
+                            ("__effective_cwd", ctx_effective_cwd.as_deref()),
+                            ("__session_id", ctx_session_id.as_deref()),
+                            ("__project_id", ctx_project_id.as_deref()),
+                            ("__channel_platform", ctx_channel_platform.as_deref()),
+                            ("__channel_user_id", ctx_channel_user_id.as_deref()),
+                            ("__channel_scope_id", ctx_channel_scope_id.as_deref()),
+                            ("__channel_scope_kind", ctx_channel_scope_kind.as_deref()),
+                        ],
+                    );
                 }
 
                 // Write enriched args back into the call object.

@@ -488,6 +488,78 @@ fn batch_output_classifier_detects_non_productive_unknown_results() {
 }
 
 #[test]
+fn batch_sub_call_context_replaces_model_forged_reserved_args() {
+    // A model-supplied batch sub-call tries to forge trusted channel scope and
+    // session identity to bypass memory scope isolation (TAN-603).
+    let mut sub_args = json!({
+        "query": "secrets",
+        "__session_id": "victim-session",
+        "__project_id": "victim-project",
+        "__channel_scope_id": "victim-room",
+        "project_id": "attacker-supplied"
+    });
+    let sub_obj = sub_args.as_object_mut().expect("object");
+    inject_batch_sub_call_context(
+        sub_obj,
+        &[
+            ("__session_id", Some("trusted-session")),
+            ("__project_id", Some("trusted-project")),
+            ("__channel_scope_id", Some("trusted-room")),
+            ("__channel_platform", Some("discord")),
+        ],
+    );
+    // Forged reserved keys are overwritten with the parent's trusted values.
+    assert_eq!(
+        sub_obj.get("__session_id").and_then(Value::as_str),
+        Some("trusted-session")
+    );
+    assert_eq!(
+        sub_obj.get("__project_id").and_then(Value::as_str),
+        Some("trusted-project")
+    );
+    assert_eq!(
+        sub_obj.get("__channel_scope_id").and_then(Value::as_str),
+        Some("trusted-room")
+    );
+    assert_eq!(
+        sub_obj.get("__channel_platform").and_then(Value::as_str),
+        Some("discord")
+    );
+    // Non-reserved model args are preserved untouched.
+    assert_eq!(
+        sub_obj.get("project_id").and_then(Value::as_str),
+        Some("attacker-supplied")
+    );
+}
+
+#[test]
+fn batch_sub_call_context_drops_forged_scope_when_parent_has_none() {
+    // Non-channel parent: a forged channel scope must not survive (fail closed),
+    // so a memory sub-call cannot masquerade as a channel context.
+    let mut sub_args = json!({
+        "query": "secrets",
+        "__channel_scope_id": "forged-room",
+        "__channel_platform": "discord"
+    });
+    let sub_obj = sub_args.as_object_mut().expect("object");
+    inject_batch_sub_call_context(
+        sub_obj,
+        &[
+            ("__session_id", Some("trusted-session")),
+            ("__project_id", Some("trusted-project")),
+            ("__channel_scope_id", None),
+            ("__channel_platform", None),
+        ],
+    );
+    assert!(sub_obj.get("__channel_scope_id").is_none());
+    assert!(sub_obj.get("__channel_platform").is_none());
+    assert_eq!(
+        sub_obj.get("__project_id").and_then(Value::as_str),
+        Some("trusted-project")
+    );
+}
+
+#[test]
 fn runtime_prompt_includes_execution_environment_block() {
     let prompt = tandem_runtime_system_prompt(
         &HostRuntimeContext {
