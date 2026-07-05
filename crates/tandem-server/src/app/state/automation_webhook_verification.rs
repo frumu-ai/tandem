@@ -610,11 +610,9 @@ fn parse_tandem_signature_header(
 
 /// Parse a bare-hex signature header value (Linear's format — no `sha256=`
 /// prefix).
-fn parse_bare_hex_signature(
-    header: &str,
-) -> Result<Vec<u8>, AutomationWebhookVerificationError> {
-    let signature = hex_decode(header.trim())
-        .ok_or(AutomationWebhookVerificationError::MalformedSignature)?;
+fn parse_bare_hex_signature(header: &str) -> Result<Vec<u8>, AutomationWebhookVerificationError> {
+    let signature =
+        hex_decode(header.trim()).ok_or(AutomationWebhookVerificationError::MalformedSignature)?;
     if signature.is_empty() {
         return Err(AutomationWebhookVerificationError::MalformedSignature);
     }
@@ -923,12 +921,14 @@ mod tests {
 
         // A webhookTimestamp outside the tolerance window rejects even though the
         // signature itself is valid (replayed payload keeps its signed timestamp).
-        let stale_body =
-            format!(r#"{{"action":"create","webhookTimestamp":{}}}"#, now - tolerance - 1);
+        let stale_body = format!(
+            r#"{{"action":"create","webhookTimestamp":{}}}"#,
+            now - tolerance - 1
+        );
         let stale_header =
             linear_automation_webhook_signature_header(secret, stale_body.as_bytes());
-        let stale_headers = AutomationWebhookSignatureHeaders::default()
-            .with_linear_signature(Some(&stale_header));
+        let stale_headers =
+            AutomationWebhookSignatureHeaders::default().with_linear_signature(Some(&stale_header));
         assert_eq!(
             verify_automation_webhook_signature(AutomationWebhookSignatureVerificationContext {
                 provider: "linear",
@@ -944,11 +944,14 @@ mod tests {
         );
 
         // A fresh timestamp inside the window verifies.
-        let fresh_body = format!(r#"{{"action":"create","webhookTimestamp":{}}}"#, now - 1_000);
+        let fresh_body = format!(
+            r#"{{"action":"create","webhookTimestamp":{}}}"#,
+            now - 1_000
+        );
         let fresh_header =
             linear_automation_webhook_signature_header(secret, fresh_body.as_bytes());
-        let fresh_headers = AutomationWebhookSignatureHeaders::default()
-            .with_linear_signature(Some(&fresh_header));
+        let fresh_headers =
+            AutomationWebhookSignatureHeaders::default().with_linear_signature(Some(&fresh_header));
         verify_automation_webhook_signature(AutomationWebhookSignatureVerificationContext {
             provider: "linear",
             scheme: &AutomationWebhookSignatureScheme::LinearHmacSha256,
@@ -965,8 +968,8 @@ mod tests {
         // replay without breaking the signature.
         let no_ts_body = br#"{"action":"create"}"#;
         let no_ts_header = linear_automation_webhook_signature_header(secret, no_ts_body);
-        let no_ts_headers = AutomationWebhookSignatureHeaders::default()
-            .with_linear_signature(Some(&no_ts_header));
+        let no_ts_headers =
+            AutomationWebhookSignatureHeaders::default().with_linear_signature(Some(&no_ts_header));
         verify_automation_webhook_signature(AutomationWebhookSignatureVerificationContext {
             provider: "linear",
             scheme: &AutomationWebhookSignatureScheme::LinearHmacSha256,

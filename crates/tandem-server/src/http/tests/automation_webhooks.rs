@@ -1830,7 +1830,10 @@ async fn linear_secret_import_enables_signed_events_and_dedupes() {
         accepted.verification_scheme,
         Some(AutomationWebhookSignatureScheme::LinearHmacSha256)
     );
-    assert_eq!(accepted.provider_event_id.as_deref(), Some("lin-delivery-2"));
+    assert_eq!(
+        accepted.provider_event_id.as_deref(),
+        Some("lin-delivery-2")
+    );
     assert!(accepted.queued_run_id.is_some());
 
     // First verified event flips the lifecycle to active.

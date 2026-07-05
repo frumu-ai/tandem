@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::automation_webhook_store::AutomationWebhookSecretMaterialRecord;
-use crate::automation_v2::types::{AutomationWebhookDeliveryRecord, AutomationWebhookTriggerRecord};
+use crate::automation_v2::types::{
+    AutomationWebhookDeliveryRecord, AutomationWebhookTriggerRecord,
+};
 
 const AUTOMATION_WEBHOOK_SCHEMA_VERSION: u32 = 1;
 
