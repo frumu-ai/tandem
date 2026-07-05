@@ -151,6 +151,8 @@ import type {
   AutomationWebhookDeleteResponse,
   AutomationWebhookDeliveryListResponse,
   AutomationWebhookDeliveryResponse,
+  AutomationWebhookProviderSecretInput,
+  AutomationWebhookProviderSecretResponse,
   AutomationWebhookTriggerCreateInput,
   AutomationWebhookTriggerListResponse,
   AutomationWebhookTriggerResponse,
@@ -245,6 +247,7 @@ type PayloadAlias = readonly [snakeCase: string, camelCase: string];
 
 const webhookTriggerCreateAliases = [
   ["provider_event_kind", "providerEventKind"],
+  ["signature_scheme", "signatureScheme"],
   ["owning_org_unit_id", "owningOrgUnitId"],
   ["resource_scope", "resourceScope"],
   ["default_data_class", "defaultDataClass"],
@@ -253,6 +256,7 @@ const webhookTriggerCreateAliases = [
 
 const webhookTriggerUpdateAliases = [
   ["provider_event_kind", "providerEventKind"],
+  ["signature_scheme", "signatureScheme"],
   ["default_data_class", "defaultDataClass"],
   ["default_risk_tier", "defaultRiskTier"],
 ] as const satisfies readonly PayloadAlias[];
@@ -3702,12 +3706,21 @@ class AutomationsV2 {
   async importWebhookProviderSecret(
     id: string,
     triggerId: string,
-    secret: string
-  ): Promise<AutomationWebhookTriggerResponse & { ok?: boolean }> {
-    return this.req<AutomationWebhookTriggerResponse & { ok?: boolean }>(
+    input: string | AutomationWebhookProviderSecretInput
+  ): Promise<AutomationWebhookProviderSecretResponse> {
+    const secret = typeof input === "string" ? input : input.secret;
+    return this.req<AutomationWebhookProviderSecretResponse>(
       `/automations/v2/${encodeURIComponent(id)}/webhook-triggers/${encodeURIComponent(triggerId)}/import-secret`,
       { method: "POST", body: JSON.stringify({ secret }) }
     );
+  }
+
+  async replaceWebhookProviderSecret(
+    id: string,
+    triggerId: string,
+    input: AutomationWebhookProviderSecretInput
+  ): Promise<AutomationWebhookProviderSecretResponse> {
+    return this.importWebhookProviderSecret(id, triggerId, input);
   }
 
   async listWebhookDeliveries(
