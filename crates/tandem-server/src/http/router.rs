@@ -120,6 +120,10 @@ pub(super) fn build_router(state: AppState, route_extensions: &[super::RouteRegi
         axum::routing::get(super::audit_stream::audit_ledger_export),
     );
     router = router.route(
+        "/audit/data-boundary/monitoring",
+        axum::routing::get(super::data_boundary_monitoring::get_data_boundary_monitoring),
+    );
+    router = router.route(
         "/metrics",
         axum::routing::get(super::observability_metrics::prometheus_metrics),
     );

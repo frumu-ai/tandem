@@ -804,6 +804,11 @@ impl EngineLoop {
                 // config) can block, transform, or require approval. Blocked
                 // dispatches mirror the hard-budget guard's abort path so the
                 // session surfaces a clear, audit-safe error.
+                // A local-implicit tenant context means tenancy was never
+                // positively established — the boundary must see no tenant at
+                // all, so strict policies can fail closed on it (TAN-400).
+                let boundary_tenant =
+                    observability_tenant.filter(|tenant| !tenant.is_local_implicit());
                 match data_boundary_gate::evaluate_dispatch_boundary(
                     &data_boundary_gate::DataBoundaryDispatchContext {
                         session_id: &session_id,
@@ -811,9 +816,9 @@ impl EngineLoop {
                         correlation_id: correlation_ref,
                         provider_id: provider_id.as_str(),
                         model_id: model_id_value.as_str(),
-                        org_id: observability_org_id,
-                        workspace_id: observability_workspace_id,
-                        deployment_id: observability_tenant
+                        org_id: boundary_tenant.map(|tenant| tenant.org_id.as_str()),
+                        workspace_id: boundary_tenant.map(|tenant| tenant.workspace_id.as_str()),
+                        deployment_id: boundary_tenant
                             .and_then(|tenant| tenant.deployment_id.as_deref()),
                     },
                     &messages,

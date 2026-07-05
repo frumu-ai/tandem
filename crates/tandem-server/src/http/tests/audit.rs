@@ -404,3 +404,215 @@ async fn recover_in_flight_runs_records_attributed_protected_audit() {
         Some("queued_for_resume")
     );
 }
+
+// TAN-398: operator monitoring read model over data_boundary.* ledger records.
+
+async fn seed_boundary_ledger_event(
+    state: &AppState,
+    org_id: &str,
+    workspace_id: &str,
+    event_type: &str,
+    payload: serde_json::Value,
+) {
+    let mut tenant = TenantContext::local_implicit();
+    tenant.org_id = org_id.to_string();
+    tenant.workspace_id = workspace_id.to_string();
+    crate::audit::append_protected_audit_event(
+        state,
+        event_type,
+        &tenant,
+        Some("session-monitoring-test".to_string()),
+        payload,
+    )
+    .await
+    .expect("seed ledger event");
+}
+
+fn boundary_payload(
+    action: &str,
+    provider_id: &str,
+    boundary_class: &str,
+    payload_hash: &str,
+    by_class: serde_json::Value,
+) -> serde_json::Value {
+    json!({
+        "action": action,
+        "provider": {
+            "provider_id": provider_id,
+            "model_id": format!("{provider_id}-model"),
+            "boundary_class": boundary_class,
+        },
+        "classificationSource": "env_mapping",
+        "payload_hash": payload_hash,
+        "policy_fingerprint": "sha256:policy-a",
+        "finding_summary": {
+            "total_findings": 2,
+            "by_class": by_class,
+        },
+        "reason_codes": ["test_seed"],
+    })
+}
+
+#[tokio::test]
+async fn data_boundary_monitoring_aggregates_tenant_scoped_counts() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    // Tenant A: two blocks with the SAME payload hash (dedupe), one redact,
+    // one approval, and one source-guard observation.
+    for _ in 0..2 {
+        seed_boundary_ledger_event(
+            &state,
+            "org-a",
+            "workspace-a",
+            "data_boundary.blocked",
+            boundary_payload(
+                "block",
+                "openai",
+                "unapproved_external",
+                "sha256:dup",
+                json!({"credential": 1, "pii": 1}),
+            ),
+        )
+        .await;
+    }
+    seed_boundary_ledger_event(
+        &state,
+        "org-a",
+        "workspace-a",
+        "data_boundary.redacted",
+        boundary_payload(
+            "redact",
+            "openai",
+            "approved_external",
+            "sha256:redact-1",
+            json!({"credential": 1}),
+        ),
+    )
+    .await;
+    seed_boundary_ledger_event(
+        &state,
+        "org-a",
+        "workspace-a",
+        "data_boundary.approval_required",
+        boundary_payload(
+            "require_approval",
+            "anthropic",
+            "approved_external",
+            "sha256:approval-1",
+            json!({"pii": 2}),
+        ),
+    )
+    .await;
+    let mut source_payload = boundary_payload(
+        "allow_with_audit",
+        "openai",
+        "approved_external",
+        "sha256:source-1",
+        json!({"secret": 1}),
+    );
+    source_payload["sourceKind"] = json!("tool_result");
+    seed_boundary_ledger_event(
+        &state,
+        "org-a",
+        "workspace-a",
+        "data_boundary.evaluated",
+        source_payload,
+    )
+    .await;
+    // Tenant B's event must never appear in tenant A's read model.
+    seed_boundary_ledger_event(
+        &state,
+        "org-b",
+        "workspace-b",
+        "data_boundary.blocked",
+        boundary_payload(
+            "block",
+            "openai",
+            "unapproved_external",
+            "sha256:other-tenant",
+            json!({"credential": 1}),
+        ),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(protected_audit_request(
+            "/audit/data-boundary/monitoring",
+            "org-a",
+            "workspace-a",
+        ))
+        .await
+        .expect("monitoring response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let body: serde_json::Value = serde_json::from_slice(&body).expect("json");
+
+    assert_eq!(body["totals"]["events"], 5);
+    assert_eq!(body["totals"]["unique_payload_hashes"], 4);
+    assert_eq!(body["totals"]["repeat_payload_events"], 1);
+    assert_eq!(body["counts"]["by_action"]["block"], 2);
+    assert_eq!(body["counts"]["by_action"]["redact"], 1);
+    assert_eq!(body["counts"]["by_action"]["require_approval"], 1);
+    assert_eq!(body["counts"]["by_provider"]["openai"], 4);
+    assert_eq!(body["counts"]["by_provider"]["anthropic"], 1);
+    assert_eq!(
+        body["counts"]["by_provider_boundary_class"]["unapproved_external"],
+        2
+    );
+    assert_eq!(body["counts"]["by_sensitive_class"]["credential"], 3);
+    assert_eq!(body["counts"]["by_sensitive_class"]["pii"], 4);
+    assert_eq!(body["counts"]["by_source_kind"]["tool_result"], 1);
+    assert_eq!(
+        body["counts"]["by_policy_fingerprint"]["sha256:policy-a"],
+        5
+    );
+    assert_eq!(
+        body["counts"]["by_tenant"]["org-a/workspace-a/-"], 5,
+        "tenant B events must not leak into tenant A's read model: {body}"
+    );
+    assert!(body["counts"]["by_tenant"]
+        .as_object()
+        .expect("by_tenant object")
+        .keys()
+        .all(|key| key.starts_with("org-a/")));
+    let serialized = serde_json::to_string(&body).expect("json");
+    assert!(!serialized.contains("sha256:other-tenant"));
+
+    // Dimension filters narrow the same read model.
+    let resp = app
+        .oneshot(protected_audit_request(
+            "/audit/data-boundary/monitoring?action=block",
+            "org-a",
+            "workspace-a",
+        ))
+        .await
+        .expect("filtered response");
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let body: serde_json::Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(body["totals"]["events"], 2);
+    assert!(body["counts"]["by_action"]["redact"].is_null());
+}
+
+#[tokio::test]
+async fn data_boundary_monitoring_requires_admin_principal() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/audit/data-boundary/monitoring")
+                .header("x-tandem-actor-id", "not-an-admin")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}

@@ -13,7 +13,8 @@ fails closed on `RouteToLocal` (no routing capability yet — see
 `TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES` (unmapped providers — including
 builtin loopback ids, whose base URLs can be reconfigured to remote
 endpoints — stay `unknown`); `TANDEM_DATA_BOUNDARY_STRICT` fails closed on
-unclassified providers or missing tenant context. Audit-only guard hooks also scan tool/MCP results and
+unclassified providers or missing tenant context (a local-implicit tenant
+counts as missing — tenancy must be positively established). Audit-only guard hooks also scan tool/MCP results and
 prompt-context-hook injections as they enter context.
 
 > Naming note: this document describes the `tandem-data-boundary` crate — the
