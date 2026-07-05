@@ -1594,4 +1594,31 @@ mod tests {
         assert_eq!(channel_memory_subject_client_id("telegram", ""), None);
         assert_eq!(channel_memory_subject_client_id("telegram", "   "), None);
     }
+
+    // Senders can be raw display names (Telegram falls back to first_name), so the
+    // subject must stay a valid HTTP header value or the run errors before dispatch.
+    #[test]
+    fn channel_memory_subject_is_header_safe_for_non_ascii_senders() {
+        for sender in ["José", "张伟", "a b\tc", "name😀"] {
+            let subject = channel_memory_subject_client_id("telegram", sender)
+                .expect("non-empty sender yields a subject");
+            assert!(
+                subject.is_ascii(),
+                "subject {subject:?} must be ASCII-only for header safety"
+            );
+            assert!(
+                reqwest::header::HeaderValue::from_str(&subject).is_ok(),
+                "subject {subject:?} must be a valid header value"
+            );
+        }
+        // Encoding stays injective: distinct senders keep distinct subjects.
+        assert_ne!(
+            channel_memory_subject_client_id("telegram", "José"),
+            channel_memory_subject_client_id("telegram", "Jose")
+        );
+        assert_eq!(
+            channel_memory_subject_client_id("telegram", "José").as_deref(),
+            Some("telegram:Jos%C3%A9")
+        );
+    }
 }

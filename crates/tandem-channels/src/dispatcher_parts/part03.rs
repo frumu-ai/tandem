@@ -204,12 +204,38 @@ async fn set_channel_workflow_planner_session_id(
 /// the run-memory ingestor (write) and the prompt-injection hook (read) use to
 /// scope global memory. Returns `None` when the sender is unknown so the caller
 /// omits the header and the server applies its own default.
+/// Percent-encode a channel/sender segment down to unreserved ASCII so the
+/// resulting subject is always a valid HTTP header value. Platform senders can
+/// be raw display names (e.g. Telegram falls back to `first_name` when no
+/// username is set), so bytes like those in `José` or `张伟` would otherwise make
+/// reqwest reject the `x-tandem-client-id` header and error the run. Encoding is
+/// deterministic and injective, so distinct senders keep distinct subjects.
+fn encode_memory_subject_segment(segment: &str) -> String {
+    let mut encoded = String::with_capacity(segment.len());
+    for &byte in segment.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => {
+                encoded.push('%');
+                encoded.push_str(&format!("{byte:02X}"));
+            }
+        }
+    }
+    encoded
+}
+
 pub(crate) fn channel_memory_subject_client_id(channel: &str, sender: &str) -> Option<String> {
     let sender = sender.trim();
     if sender.is_empty() {
         return None;
     }
-    Some(format!("{}:{}", channel.trim(), sender))
+    Some(format!(
+        "{}:{}",
+        encode_memory_subject_segment(channel.trim()),
+        encode_memory_subject_segment(sender)
+    ))
 }
 
 async fn run_in_session(
