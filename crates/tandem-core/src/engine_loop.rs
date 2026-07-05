@@ -1534,6 +1534,18 @@ impl EngineLoop {
             self.plugins.transform_tool_output(result.output).await
         };
         let output = truncate_text(&output, 16_000);
+        // TAN-397: audit-only boundary scan of the raw tool/MCP result before
+        // it is persisted and becomes prompt context. Never alters the
+        // result; enforcement happens at provider dispatch.
+        if let Some(boundary_event) = data_boundary_gate::evaluate_context_source(
+            session_id,
+            "tool_result",
+            Some(&tool),
+            &output,
+            tandem_data_boundary::DataBoundaryOperationKind::ToolCall,
+        ) {
+            self.event_bus.publish(boundary_event);
+        }
         let stored_result = stored_tool_result_value(&output, &result.metadata);
         let mut result_part = WireMessagePart::tool_result(
             session_id,

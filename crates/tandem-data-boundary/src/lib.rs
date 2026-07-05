@@ -64,6 +64,33 @@ impl ProviderBoundaryClass {
     pub fn is_internal(self) -> bool {
         matches!(self, Self::Local | Self::CustomerHosted)
     }
+
+    /// Parses the snake_case wire form used by provider-classification config
+    /// (matching this enum's serde encoding). Returns `None` for unrecognized
+    /// values so config validation can reject typos instead of silently
+    /// classifying a provider more permissively than intended.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "local" => Some(Self::Local),
+            "customer_hosted" => Some(Self::CustomerHosted),
+            "approved_external" => Some(Self::ApprovedExternal),
+            "unapproved_external" => Some(Self::UnapprovedExternal),
+            "prohibited" => Some(Self::Prohibited),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::CustomerHosted => "customer_hosted",
+            Self::ApprovedExternal => "approved_external",
+            Self::UnapprovedExternal => "unapproved_external",
+            Self::Prohibited => "prohibited",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

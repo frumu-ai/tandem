@@ -146,8 +146,11 @@ async fn data_boundary_audit_mode_records_findings_and_allows_provider_call() {
     let events = collect_events_until_run_finished(&mut rx).await;
     let boundary_event = events
         .iter()
-        .find(|event| event.event_type.starts_with("data_boundary."))
-        .expect("data_boundary event emitted in audit mode");
+        .find(|event| {
+            event.event_type.starts_with("data_boundary.")
+                && event.properties["operation"]["kind"] == "provider_request"
+        })
+        .expect("data_boundary dispatch event emitted in audit mode");
 
     assert_eq!(boundary_event.event_type, "data_boundary.evaluated");
     assert_eq!(boundary_event.properties["action"], "allow_with_audit");
@@ -252,5 +255,261 @@ async fn data_boundary_bridge_writes_protected_audit_without_raw_content() {
     assert!(
         !crate::data_boundary_bridge::record_data_boundary_protected_audit(&state, &allow_event)
             .await
+    );
+}
+
+/// Records the messages the provider actually received, so enforcement tests
+/// can prove what crossed (or never crossed) the boundary.
+struct CapturingBoundaryProvider {
+    captured: Arc<std::sync::Mutex<Option<Vec<ChatMessage>>>>,
+}
+
+#[async_trait]
+impl Provider for CapturingBoundaryProvider {
+    fn info(&self) -> ProviderInfo {
+        ProviderInfo {
+            id: "boundary-test".to_string(),
+            name: "Boundary Capture".to_string(),
+            models: vec![ModelInfo {
+                id: "boundary-test-1".to_string(),
+                provider_id: "boundary-test".to_string(),
+                display_name: "Boundary Test 1".to_string(),
+                context_window: 32_000,
+            }],
+        }
+    }
+
+    async fn complete(&self, _prompt: &str, _model_override: Option<&str>) -> anyhow::Result<String> {
+        Ok("ok".to_string())
+    }
+
+    async fn stream(
+        &self,
+        messages: Vec<ChatMessage>,
+        _model_override: Option<&str>,
+        _tool_mode: ToolMode,
+        _tools: Option<Vec<ToolSchema>>,
+        _sampling: tandem_types::SamplingParams,
+        _cancel: CancellationToken,
+    ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
+        *self.captured.lock().expect("captured lock") = Some(messages);
+        Ok(Box::pin(stream::iter(vec![
+            Ok(StreamChunk::TextDelta("all done".to_string())),
+            Ok(StreamChunk::Done {
+                finish_reason: "stop".to_string(),
+                usage: None,
+            }),
+        ])))
+    }
+}
+
+async fn capturing_boundary_session(
+    state: &AppState,
+) -> (String, Arc<std::sync::Mutex<Option<Vec<ChatMessage>>>>) {
+    let captured = Arc::new(std::sync::Mutex::new(None));
+    state
+        .providers
+        .replace_for_test(
+            vec![Arc::new(CapturingBoundaryProvider {
+                captured: captured.clone(),
+            })],
+            Some("boundary-test".to_string()),
+        )
+        .await;
+    let mut session = Session::new(Some("data-boundary".to_string()), Some(".".to_string()));
+    session.model = Some(ModelSpec {
+        provider_id: "boundary-test".to_string(),
+        model_id: "boundary-test-1".to_string(),
+    });
+    let session_id = session.id.clone();
+    state.storage.save_session(session).await.expect("save session");
+    (session_id, captured)
+}
+
+fn run_finished_status(events: &[EngineEvent]) -> String {
+    events
+        .iter()
+        .find(|event| event.event_type == "session.run.finished")
+        .and_then(|event| event.properties.get("status"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn data_boundary_enforce_blocks_sensitive_dispatch_to_unclassified_provider() {
+    let _mode = DataBoundaryEnvGuard::set("TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
+    let state = test_state().await;
+    let (session_id, captured) = capturing_boundary_session(&state).await;
+    let mut rx = state.event_bus.subscribe();
+    let app = app_router(state);
+
+    let resp = app
+        .oneshot(boundary_prompt_request(&session_id))
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let events = collect_events_until_run_finished(&mut rx).await;
+    assert_eq!(run_finished_status(&events), "error");
+    let blocked = events
+        .iter()
+        .find(|event| event.event_type == "data_boundary.blocked")
+        .expect("blocked event");
+    assert_eq!(blocked.properties["enforced"], true);
+    let serialized = serde_json::to_string(&blocked.properties).expect("json");
+    assert!(!serialized.contains(BOUNDARY_TEST_SECRET));
+    assert!(
+        captured.lock().expect("captured lock").is_none(),
+        "provider must never receive a blocked dispatch"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn data_boundary_enforce_redacts_dispatched_payload_for_approved_provider() {
+    let _mode = DataBoundaryEnvGuard::set("TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
+    let _classes = DataBoundaryEnvGuard::set(
+        "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
+        Some("boundary-test=approved_external"),
+    );
+    let _redact = DataBoundaryEnvGuard::set(
+        "TANDEM_DATA_BOUNDARY_REDACT_CLASSES",
+        Some("credential,pii,secret"),
+    );
+    let state = test_state().await;
+    let (session_id, captured) = capturing_boundary_session(&state).await;
+    let mut rx = state.event_bus.subscribe();
+    let app = app_router(state);
+
+    let resp = app
+        .oneshot(boundary_prompt_request(&session_id))
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let events = collect_events_until_run_finished(&mut rx).await;
+    assert_ne!(run_finished_status(&events), "error");
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "data_boundary.redacted"));
+
+    let dispatched = captured
+        .lock()
+        .expect("captured lock")
+        .clone()
+        .expect("provider called with transformed payload");
+    let joined = dispatched
+        .iter()
+        .map(|message| message.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !joined.contains(BOUNDARY_TEST_SECRET),
+        "raw secret must not reach the provider: {joined}"
+    );
+    assert!(joined.contains("[REDACTED:"));
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn data_boundary_approval_denied_blocks_dispatch() {
+    let _mode = DataBoundaryEnvGuard::set("TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
+    let _classes = DataBoundaryEnvGuard::set(
+        "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
+        Some("boundary-test=approved_external"),
+    );
+    let _approval = DataBoundaryEnvGuard::set(
+        "TANDEM_DATA_BOUNDARY_APPROVAL_CLASSES",
+        Some("credential"),
+    );
+    let state = test_state().await;
+    let (session_id, captured) = capturing_boundary_session(&state).await;
+    let mut rx = state.event_bus.subscribe();
+    let app = app_router(state.clone());
+
+    let resp = app
+        .oneshot(boundary_prompt_request(&session_id))
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // Answer the approval ask as soon as it surfaces.
+    let request_id = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let event = rx.recv().await.expect("event");
+            if event.event_type == "permission.asked"
+                && event.properties["tool"] == "data_boundary_egress"
+            {
+                let serialized = serde_json::to_string(&event.properties).expect("json");
+                assert!(
+                    !serialized.contains(BOUNDARY_TEST_SECRET),
+                    "approval ask must carry safe evidence only: {serialized}"
+                );
+                return event.properties["requestID"]
+                    .as_str()
+                    .expect("request id")
+                    .to_string();
+            }
+        }
+    })
+    .await
+    .expect("permission ask timeout");
+    assert!(state.permissions.reply(&request_id, "deny").await);
+
+    let events = collect_events_until_run_finished(&mut rx).await;
+    assert_eq!(run_finished_status(&events), "error");
+    assert!(
+        captured.lock().expect("captured lock").is_none(),
+        "denied approval must never dispatch the raw payload"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn data_boundary_approval_granted_dispatches_original_payload() {
+    let _mode = DataBoundaryEnvGuard::set("TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
+    let _classes = DataBoundaryEnvGuard::set(
+        "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
+        Some("boundary-test=approved_external"),
+    );
+    let _approval = DataBoundaryEnvGuard::set(
+        "TANDEM_DATA_BOUNDARY_APPROVAL_CLASSES",
+        Some("credential"),
+    );
+    let state = test_state().await;
+    let (session_id, captured) = capturing_boundary_session(&state).await;
+    let mut rx = state.event_bus.subscribe();
+    let app = app_router(state.clone());
+
+    let resp = app
+        .oneshot(boundary_prompt_request(&session_id))
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let request_id = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let event = rx.recv().await.expect("event");
+            if event.event_type == "permission.asked"
+                && event.properties["tool"] == "data_boundary_egress"
+            {
+                return event.properties["requestID"]
+                    .as_str()
+                    .expect("request id")
+                    .to_string();
+            }
+        }
+    })
+    .await
+    .expect("permission ask timeout");
+    assert!(state.permissions.reply(&request_id, "once").await);
+
+    let events = collect_events_until_run_finished(&mut rx).await;
+    assert_ne!(run_finished_status(&events), "error");
+    assert!(
+        captured.lock().expect("captured lock").is_some(),
+        "explicit approval dispatches the payload"
     );
 }

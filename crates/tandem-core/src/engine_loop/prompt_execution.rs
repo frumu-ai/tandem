@@ -365,6 +365,28 @@ impl EngineLoop {
                         Ok(Ok(result)) => {
                             messages = result.messages;
                             hook_stats = result.stats;
+                            // TAN-397: audit-only boundary scan of what the
+                            // prompt context hook injected (memory/docs/KB/
+                            // identity blocks appended beyond the pre-hook
+                            // message count). Observational only.
+                            if messages.len() > pre_hook_message_count {
+                                let injected = messages[pre_hook_message_count..]
+                                    .iter()
+                                    .map(|message| message.content.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                if let Some(boundary_event) =
+                                    data_boundary_gate::evaluate_context_source(
+                                        &session_id,
+                                        "prompt_context_hook",
+                                        None,
+                                        &injected,
+                                        tandem_data_boundary::DataBoundaryOperationKind::ContextAssembly,
+                                    )
+                                {
+                                    self.event_bus.publish(boundary_event);
+                                }
+                            }
                         }
                         Ok(Err(err)) => {
                             self.event_bus.publish(EngineEvent::new(
@@ -776,11 +798,13 @@ impl EngineLoop {
                         "staleToolInvocationCharsSaved": demoted_tool_invocation_chars,
                     }),
                 ));
-                // TAN-390: audit-only data-boundary evaluation of the fully
+                // TAN-390/TAN-394: data-boundary evaluation of the fully
                 // assembled request, after all context assembly and before
-                // dispatch. Observes and emits evidence only — never blocks,
-                // transforms, or reroutes the provider call.
-                if let Some(boundary_event) = data_boundary_gate::evaluate_dispatch_boundary(
+                // dispatch. Audit mode observes only; enforce mode (explicit
+                // config) can block, transform, or require approval. Blocked
+                // dispatches mirror the hard-budget guard's abort path so the
+                // session surfaces a clear, audit-safe error.
+                match data_boundary_gate::evaluate_dispatch_boundary(
                     &data_boundary_gate::DataBoundaryDispatchContext {
                         session_id: &session_id,
                         message_id: &user_message_id,
@@ -794,7 +818,60 @@ impl EngineLoop {
                     },
                     &messages,
                 ) {
-                    self.event_bus.publish(boundary_event);
+                    data_boundary_gate::DataBoundaryDispatchOutcome::Off => {}
+                    data_boundary_gate::DataBoundaryDispatchOutcome::Proceed { event } => {
+                        self.event_bus.publish(event);
+                    }
+                    data_boundary_gate::DataBoundaryDispatchOutcome::ProceedTransformed {
+                        event,
+                        messages: transformed,
+                    } => {
+                        self.event_bus.publish(event);
+                        messages = transformed;
+                    }
+                    data_boundary_gate::DataBoundaryDispatchOutcome::RequireApproval {
+                        event,
+                        evidence,
+                        denial_reason,
+                    } => {
+                        self.event_bus.publish(event);
+                        let pending = self
+                            .permissions
+                            .ask_for_session(Some(&session_id), "data_boundary_egress", evidence)
+                            .await;
+                        let (reply, timed_out) = self
+                            .permissions
+                            .wait_for_reply_with_timeout(
+                                &pending.id,
+                                cancel.clone(),
+                                Some(Duration::from_millis(permission_wait_timeout_ms() as u64)),
+                            )
+                            .await;
+                        let approved = matches!(
+                            reply.as_deref(),
+                            Some("once") | Some("always") | Some("allow")
+                        );
+                        if !approved {
+                            // Deny, cancel, and timeout all fail closed: the
+                            // raw payload dispatches only on explicit
+                            // approval.
+                            let detail = format!(
+                                "{denial_reason} ({})",
+                                if timed_out {
+                                    "approval timed out"
+                                } else {
+                                    "approval denied"
+                                }
+                            );
+                            self.mark_session_run_failed(&session_id, &detail).await;
+                            anyhow::bail!("{detail}");
+                        }
+                    }
+                    data_boundary_gate::DataBoundaryDispatchOutcome::Blocked { event, reason } => {
+                        self.event_bus.publish(event);
+                        self.mark_session_run_failed(&session_id, &reason).await;
+                        anyhow::bail!("{reason}");
+                    }
                 }
                 if full_context_mode {
                     let soft_budget_chars = full_context_soft_budget_chars();
