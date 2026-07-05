@@ -2066,6 +2066,10 @@ async fn process_channel_message(
     let effective_allowlist =
         build_channel_tool_allowlist(route.tool_allowlist.as_ref(), &tool_prefs, security_profile);
 
+    // Per-user memory subject so two users of the same bot never share memory
+    // (TAN-601); see channel_memory_subject_client_id.
+    let memory_client_id = channel_memory_subject_client_id(&msg.channel, &msg.sender);
+
     let response = run_in_session(
         &session_id,
         &prompt_content,
@@ -2079,6 +2083,7 @@ async fn process_channel_message(
         effective_allowlist.as_ref(),
         &msg.channel,
         Some(effective_strict_kb_grounding),
+        memory_client_id.as_deref(),
     )
     .await;
     if let Err(e) = channel.stop_typing(&msg.reply_target).await {
