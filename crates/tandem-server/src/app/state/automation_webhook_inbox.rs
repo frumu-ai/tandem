@@ -123,6 +123,30 @@ fn automation_webhook_delivery_has_replayable_outcome(
     }
 }
 
+fn apply_automation_webhook_delivery_to_raw_event(
+    record: &mut AutomationWebhookRawEventRecord,
+    delivery: &AutomationWebhookDeliveryRecord,
+    event_id: Option<String>,
+    updated_at_ms: u64,
+) {
+    record.status = delivery.status.clone();
+    record.delivery_id = Some(delivery.delivery_id.clone());
+    record.queued_run_id = delivery.queued_run_id.clone();
+    record.rejection_reason_code = delivery.rejection_reason_code.clone();
+    record.idempotency_key = delivery.idempotency_key.clone();
+    record.idempotency_record_id = delivery.idempotency_record_id.clone();
+    record.dedupe_result = delivery.dedupe_result.clone();
+    record.dedupe_reason_code = delivery.dedupe_reason_code.clone();
+    record.duplicate_of_delivery_id = delivery.duplicate_of_delivery_id.clone();
+    record.duplicate_of_run_id = delivery.duplicate_of_run_id.clone();
+    record.woken_run_id = delivery.woken_run_id.clone();
+    record.woken_wait_id = delivery.woken_wait_id.clone();
+    record.enterprise_scope = delivery.enterprise_scope.clone();
+    record.feedback_loop = delivery.feedback_loop.clone();
+    record.correlation = Some(automation_webhook_delivery_correlation(delivery, event_id));
+    record.updated_at_ms = updated_at_ms;
+}
+
 fn automation_webhook_delivery_matches_raw_event(
     delivery: &AutomationWebhookDeliveryRecord,
     trigger: &AutomationWebhookTriggerRecord,
@@ -457,6 +481,24 @@ impl AppState {
         &self,
         input: AutomationWebhookRawEventCreateInput,
     ) -> anyhow::Result<AutomationWebhookRawEventRecord> {
+        self.record_automation_webhook_raw_event_inner(input, None)
+            .await
+    }
+
+    pub(crate) async fn record_automation_webhook_raw_event_with_delivery(
+        &self,
+        input: AutomationWebhookRawEventCreateInput,
+        delivery: &AutomationWebhookDeliveryRecord,
+    ) -> anyhow::Result<AutomationWebhookRawEventRecord> {
+        self.record_automation_webhook_raw_event_inner(input, Some(delivery))
+            .await
+    }
+
+    async fn record_automation_webhook_raw_event_inner(
+        &self,
+        input: AutomationWebhookRawEventCreateInput,
+        delivery: Option<&AutomationWebhookDeliveryRecord>,
+    ) -> anyhow::Result<AutomationWebhookRawEventRecord> {
         let _guard = self.automation_webhook_persistence.lock().await;
         let events_path = automation_webhook_events_path(&self.automation_webhook_deliveries_path);
         let payloads_dir =
@@ -473,7 +515,7 @@ impl AppState {
         let delete_after_ms = input
             .received_at_ms
             .checked_add(AutomationWebhookEventRetentionPolicy::default().raw_payload_retention_ms);
-        let record = AutomationWebhookRawEventRecord {
+        let mut record = AutomationWebhookRawEventRecord {
             event_id: event_id.clone(),
             trigger_id: trigger_id.clone(),
             automation_id: automation_id.clone(),
@@ -539,6 +581,14 @@ impl AppState {
                 ..AutomationWebhookEventRetentionPolicy::default()
             },
         };
+        if let Some(delivery) = delivery {
+            apply_automation_webhook_delivery_to_raw_event(
+                &mut record,
+                delivery,
+                Some(event_id.clone()),
+                input.received_at_ms,
+            );
+        }
         events.insert(event_id, record.clone());
         persist_automation_webhook_events(&events_path, events).await?;
         Ok(record)
@@ -581,25 +631,12 @@ impl AppState {
         else {
             return Ok(None);
         };
-        record.status = delivery.status.clone();
-        record.delivery_id = Some(delivery.delivery_id.clone());
-        record.queued_run_id = delivery.queued_run_id.clone();
-        record.rejection_reason_code = delivery.rejection_reason_code.clone();
-        record.idempotency_key = delivery.idempotency_key.clone();
-        record.idempotency_record_id = delivery.idempotency_record_id.clone();
-        record.dedupe_result = delivery.dedupe_result.clone();
-        record.dedupe_reason_code = delivery.dedupe_reason_code.clone();
-        record.duplicate_of_delivery_id = delivery.duplicate_of_delivery_id.clone();
-        record.duplicate_of_run_id = delivery.duplicate_of_run_id.clone();
-        record.woken_run_id = delivery.woken_run_id.clone();
-        record.woken_wait_id = delivery.woken_wait_id.clone();
-        record.enterprise_scope = delivery.enterprise_scope.clone();
-        record.feedback_loop = delivery.feedback_loop.clone();
-        record.correlation = Some(automation_webhook_delivery_correlation(
+        apply_automation_webhook_delivery_to_raw_event(
+            record,
             delivery,
-            Some(record.event_id.clone()),
-        ));
-        record.updated_at_ms = updated_at_ms;
+            Some(event_id.to_string()),
+            updated_at_ms,
+        );
         let updated = record.clone();
         persist_automation_webhook_events(&events_path, events).await?;
         Ok(Some(updated))

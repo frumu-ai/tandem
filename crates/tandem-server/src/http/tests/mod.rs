@@ -6,6 +6,7 @@ pub(super) mod approvals_aggregator;
 pub(super) mod audit;
 pub(super) mod automation_webhook_management;
 pub(super) mod automation_webhooks;
+pub(super) mod automation_webhooks_linear;
 pub(super) mod capabilities;
 pub(super) mod channel_automation_drafts;
 pub(super) mod channel_interactions;

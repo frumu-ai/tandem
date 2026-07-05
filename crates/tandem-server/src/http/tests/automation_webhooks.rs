@@ -1880,99 +1880,65 @@ async fn linear_secret_import_enables_signed_events_and_dedupes() {
         .await
         .expect("response");
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    drain_webhook_inbox(&state).await;
+    let report = state.process_automation_webhook_inbox_once(100).await;
+    assert_eq!(report.checked, 0);
+    assert_eq!(report.failed, 0);
     assert_eq!(state.automation_v2_runs.read().await.len(), 1);
-}
-
-#[tokio::test]
-async fn linear_secret_reimport_bumps_version_and_old_secret_stops_verifying() {
-    let state = test_state().await;
-    let tenant_context = tenant("org-a", "workspace-a");
-    let created = setup_linear_webhook(&state, "automation-linear-c", &tenant_context).await;
-    let app = app_router(state.clone());
-
-    let first_secret = "lin_wh_first_secret";
-    let second_secret = "lin_wh_second_secret";
-    state
-        .import_automation_webhook_linear_secret(
+    let deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(
             &tenant_context,
-            "automation-linear-c",
             &created.trigger.trigger_id,
-            first_secret,
-            None,
         )
-        .await
-        .expect("first import");
-    // Operator rotates the secret in Linear's UI and re-imports it.
-    let reimported = state
-        .import_automation_webhook_linear_secret(
+        .await;
+    let rejected = deliveries
+        .iter()
+        .find(|delivery| delivery.provider_event_id.as_deref() == Some("lin-delivery-3"))
+        .expect("rejected delivery");
+    assert_eq!(rejected.status, AutomationWebhookDeliveryStatus::Rejected);
+    assert_eq!(
+        rejected.rejection_reason_code.as_deref(),
+        Some("bad_signature")
+    );
+    assert_eq!(rejected.verification_provider.as_deref(), Some("linear"));
+    assert_eq!(
+        rejected.verification_scheme,
+        Some(AutomationWebhookSignatureScheme::LinearHmacSha256)
+    );
+    assert!(rejected.queued_run_id.is_none());
+    let raw_events = state
+        .list_automation_webhook_raw_events_for_trigger(
             &tenant_context,
-            "automation-linear-c",
             &created.trigger.trigger_id,
-            second_secret,
-            None,
         )
+        .await;
+    let rejected_event = raw_events
+        .iter()
+        .find(|event| event.provider_event_id.as_deref() == Some("lin-delivery-3"))
+        .expect("rejected raw event");
+    assert_eq!(
+        rejected_event.status,
+        AutomationWebhookDeliveryStatus::Rejected
+    );
+    assert_eq!(
+        rejected_event.delivery_id.as_deref(),
+        Some(rejected.delivery_id.as_str())
+    );
+    assert_eq!(
+        rejected_event.rejection_reason_code.as_deref(),
+        Some("bad_signature")
+    );
+    assert_eq!(
+        rejected_event.verification_provider.as_deref(),
+        Some("linear")
+    );
+    assert_eq!(
+        rejected_event.verification_scheme,
+        Some(AutomationWebhookSignatureScheme::LinearHmacSha256)
+    );
+    let persisted_payload = state
+        .read_automation_webhook_raw_event_payload(&tenant_context, &rejected_event.event_id)
         .await
-        .expect("second import");
-    assert_eq!(reimported.secret.secret_version, 3);
-
-    // Events signed with the superseded secret are rejected...
-    let body = br#"{"action":"create","type":"Issue"}"#;
-    let resp = app
-        .clone()
-        .oneshot(linear_signed_request(
-            &created.trigger.public_path_token,
-            first_secret,
-            body,
-            "lin-delivery-old",
-        ))
-        .await
-        .expect("response");
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    // ...while the re-imported secret verifies.
-    let resp = app
-        .oneshot(linear_signed_request(
-            &created.trigger.public_path_token,
-            second_secret,
-            body,
-            "lin-delivery-new",
-        ))
-        .await
-        .expect("response");
-    assert_eq!(resp.status(), StatusCode::ACCEPTED);
-
-    // Empty and oversized imports are refused.
-    assert!(state
-        .import_automation_webhook_linear_secret(
-            &tenant_context,
-            "automation-linear-c",
-            &created.trigger.trigger_id,
-            "   ",
-            None,
-        )
-        .await
-        .is_err());
-    assert!(state
-        .import_automation_webhook_linear_secret(
-            &tenant_context,
-            "automation-linear-c",
-            &created.trigger.trigger_id,
-            &"x".repeat(2048),
-            None,
-        )
-        .await
-        .is_err());
-
-    // Import is scheme-scoped: a generic (Tandem HMAC) trigger refuses it.
-    let generic = setup_webhook(&state, "automation-linear-c-generic", &tenant_context).await;
-    assert!(state
-        .import_automation_webhook_linear_secret(
-            &tenant_context,
-            "automation-linear-c-generic",
-            &generic.trigger.trigger_id,
-            "some_secret",
-            None,
-        )
-        .await
-        .is_err());
+        .expect("raw payload read")
+        .expect("raw payload");
+    assert_eq!(persisted_payload, attacker_body);
 }
