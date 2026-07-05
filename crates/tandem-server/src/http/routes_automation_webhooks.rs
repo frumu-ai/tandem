@@ -372,8 +372,11 @@ fn preview_for_rejected_body(body: &[u8], body_digest: &str) -> Value {
 
 fn verification_error_allows_raw_payload_persistence(
     error: &AutomationWebhookVerificationError,
+    trigger: &AutomationWebhookTriggerRecord,
 ) -> bool {
     matches!(error, AutomationWebhookVerificationError::ReplayDetected)
+        || (trigger.provider == "linear"
+            && matches!(error, AutomationWebhookVerificationError::BadSignature))
 }
 
 async fn record_raw_event_for_trigger(
@@ -451,7 +454,7 @@ async fn record_verification_rejection(
         &trigger,
         reason_code,
     ));
-    let raw_event = if verification_error_allows_raw_payload_persistence(error) {
+    let raw_event = if verification_error_allows_raw_payload_persistence(error, &trigger) {
         match record_raw_event_for_trigger(
             state,
             &trigger,

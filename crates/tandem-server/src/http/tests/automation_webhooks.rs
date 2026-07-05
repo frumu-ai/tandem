@@ -1754,6 +1754,73 @@ async fn linear_trigger_fails_closed_until_secret_imported() {
 }
 
 #[tokio::test]
+async fn linear_disabled_trigger_rejects_without_queueing() {
+    let state = test_state().await;
+    let tenant_context = tenant("org-a", "workspace-a");
+    let created = setup_linear_webhook(&state, "automation-linear-disabled", &tenant_context).await;
+    let secret = "lin_wh_disabled_secret";
+    state
+        .import_automation_webhook_linear_secret(
+            &tenant_context,
+            "automation-linear-disabled",
+            &created.trigger.trigger_id,
+            secret,
+            None,
+        )
+        .await
+        .expect("import linear secret");
+    state
+        .disable_automation_webhook_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+            Some("actor-a".to_string()),
+        )
+        .await
+        .expect("disable trigger");
+    let app = app_router(state.clone());
+    let body = br#"{"action":"create","type":"Issue"}"#;
+
+    let resp = app
+        .oneshot(linear_signed_request(
+            &created.trigger.public_path_token,
+            secret,
+            body,
+            "lin-delivery-disabled",
+        ))
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::GONE);
+    assert!(state.automation_v2_runs.read().await.is_empty());
+
+    let deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+        )
+        .await;
+    assert_eq!(deliveries.len(), 1);
+    let disabled = &deliveries[0];
+    assert_eq!(disabled.status, AutomationWebhookDeliveryStatus::Disabled);
+    assert_eq!(
+        disabled.rejection_reason_code.as_deref(),
+        Some("trigger_disabled")
+    );
+    assert_eq!(disabled.verification_provider.as_deref(), Some("linear"));
+    assert_eq!(
+        disabled.verification_scheme,
+        Some(AutomationWebhookSignatureScheme::LinearHmacSha256)
+    );
+    assert!(disabled.queued_run_id.is_none());
+    assert!(state
+        .list_automation_webhook_raw_events_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id
+        )
+        .await
+        .is_empty());
+}
+
+#[tokio::test]
 async fn linear_secret_import_enables_signed_events_and_dedupes() {
     let state = test_state().await;
     let tenant_context = tenant("org-a", "workspace-a");
@@ -1830,7 +1897,10 @@ async fn linear_secret_import_enables_signed_events_and_dedupes() {
         accepted.verification_scheme,
         Some(AutomationWebhookSignatureScheme::LinearHmacSha256)
     );
-    assert_eq!(accepted.provider_event_id.as_deref(), Some("lin-delivery-2"));
+    assert_eq!(
+        accepted.provider_event_id.as_deref(),
+        Some("lin-delivery-2")
+    );
     assert!(accepted.queued_run_id.is_some());
 
     // First verified event flips the lifecycle to active.
@@ -1879,6 +1949,63 @@ async fn linear_secret_import_enables_signed_events_and_dedupes() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     drain_webhook_inbox(&state).await;
     assert_eq!(state.automation_v2_runs.read().await.len(), 1);
+    let deliveries = state
+        .list_automation_webhook_deliveries_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+        )
+        .await;
+    let rejected = deliveries
+        .iter()
+        .find(|delivery| delivery.provider_event_id.as_deref() == Some("lin-delivery-3"))
+        .expect("rejected delivery");
+    assert_eq!(rejected.status, AutomationWebhookDeliveryStatus::Rejected);
+    assert_eq!(
+        rejected.rejection_reason_code.as_deref(),
+        Some("bad_signature")
+    );
+    assert_eq!(rejected.verification_provider.as_deref(), Some("linear"));
+    assert_eq!(
+        rejected.verification_scheme,
+        Some(AutomationWebhookSignatureScheme::LinearHmacSha256)
+    );
+    assert!(rejected.queued_run_id.is_none());
+    let raw_events = state
+        .list_automation_webhook_raw_events_for_trigger(
+            &tenant_context,
+            &created.trigger.trigger_id,
+        )
+        .await;
+    let rejected_event = raw_events
+        .iter()
+        .find(|event| event.provider_event_id.as_deref() == Some("lin-delivery-3"))
+        .expect("rejected raw event");
+    assert_eq!(
+        rejected_event.status,
+        AutomationWebhookDeliveryStatus::Rejected
+    );
+    assert_eq!(
+        rejected_event.delivery_id.as_deref(),
+        Some(rejected.delivery_id.as_str())
+    );
+    assert_eq!(
+        rejected_event.rejection_reason_code.as_deref(),
+        Some("bad_signature")
+    );
+    assert_eq!(
+        rejected_event.verification_provider.as_deref(),
+        Some("linear")
+    );
+    assert_eq!(
+        rejected_event.verification_scheme,
+        Some(AutomationWebhookSignatureScheme::LinearHmacSha256)
+    );
+    let persisted_payload = state
+        .read_automation_webhook_raw_event_payload(&tenant_context, &rejected_event.event_id)
+        .await
+        .expect("raw payload read")
+        .expect("raw payload");
+    assert_eq!(persisted_payload, attacker_body);
 }
 
 #[tokio::test]
