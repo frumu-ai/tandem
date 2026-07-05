@@ -295,12 +295,14 @@ export function AutomationWebhookManager({
   toast,
   onSelectRunId,
   onOpenRunningView,
+  onTriggersChanged,
 }: {
   client: any;
   automationId: string;
   toast?: (kind: string, message: string) => void;
   onSelectRunId?: (runId: string) => void;
   onOpenRunningView?: () => void;
+  onTriggersChanged?: () => void | Promise<void>;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const queryClient = useQueryClient();
@@ -392,6 +394,7 @@ export function AutomationWebhookManager({
         queryKey: ["automations", "webhook-deliveries", automationId, effectiveTriggerId],
       });
     }
+    await onTriggersChanged?.();
   };
 
   const createMutation = useMutation({

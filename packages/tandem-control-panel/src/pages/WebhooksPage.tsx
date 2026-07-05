@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { AutomationWebhookManager } from "../features/automations/AutomationWebhookManager";
 import { AnimatedPage, EmptyState, LoadingState } from "../ui/index.tsx";
@@ -29,8 +29,22 @@ function triggerId(trigger: any) {
   return safeString(trigger?.trigger_id || trigger?.triggerID);
 }
 
+function canonicalProvider(value: unknown) {
+  const normalized = safeString(value).toLowerCase();
+  if (normalized === "linear.app") return "linear";
+  if (normalized === "notion.so" || normalized === "notion.com") return "notion";
+  if (normalized === "github.com" || normalized === "gh") return "github";
+  return normalized;
+}
+
 function triggerProvider(trigger: any) {
-  return safeString(trigger?.provider).toLowerCase() || "generic";
+  return (
+    canonicalProvider(
+      trigger?.provider_metadata?.canonical_provider ||
+        trigger?.providerMetadata?.canonicalProvider ||
+        trigger?.provider
+    ) || "generic"
+  );
 }
 
 function triggerEventKind(trigger: any) {
@@ -158,6 +172,7 @@ function TriggerSummary({ trigger }: { trigger: any }) {
 }
 
 export function WebhooksPage({ client, toast }: AppPageProps) {
+  const queryClient = useQueryClient();
   const [selectedAutomationId, setSelectedAutomationId] = useState(() =>
     safeString(hashParams().get("automation"))
   );
@@ -265,6 +280,10 @@ export function WebhooksPage({ client, toast }: AppPageProps) {
 
   const openQueuedRun = (runId: string) => {
     openRunHash(runId);
+  };
+
+  const invalidateHubInventory = async () => {
+    await queryClient.invalidateQueries({ queryKey: ["webhooks-hub", "automations"] });
   };
 
   return (
@@ -450,6 +469,7 @@ export function WebhooksPage({ client, toast }: AppPageProps) {
                 toast={toast}
                 onSelectRunId={openQueuedRun}
                 onOpenRunningView={() => {}}
+                onTriggersChanged={invalidateHubInventory}
               />
             </div>
           ) : rowsQuery.isLoading ? (
