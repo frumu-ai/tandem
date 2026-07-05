@@ -18,6 +18,7 @@ const ROUTE_META: Record<string, { title: string; subtitle: string }> = {
   marketplace: { title: "Marketplace", subtitle: "Templates and starter packs" },
   studio: { title: "Studio", subtitle: "Template-first workflow builder" },
   automations: { title: "Automations", subtitle: "Schedules, library, and run history" },
+  webhooks: { title: "Webhooks", subtitle: "External triggers and deliveries" },
   experiments: { title: "Experiments", subtitle: "Experimental surfaces" },
   "enterprise-admin": { title: "Enterprise", subtitle: "Org units, access, and connectors" },
   coding: { title: "Coder", subtitle: "Durable coder runs and repos" },
@@ -41,6 +42,7 @@ const ROUTE_META: Record<string, { title: string; subtitle: string }> = {
 const FULL_HEIGHT_ROUTES = new Set([
   "chat",
   "automations",
+  "webhooks",
   "approvals",
   "files",
   "runs",

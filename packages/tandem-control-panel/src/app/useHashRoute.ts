@@ -46,7 +46,9 @@ export function useHashRoute(options: HashRouteOptions = {}) {
       }
       return false;
     }
-    if (window.location.hash !== `#/${next}`) {
+    const nextHash = `#/${next}`;
+    const currentHash = window.location.hash || "";
+    if (currentHash !== nextHash && !currentHash.startsWith(`${nextHash}?`)) {
       setHashRoute(next);
       return true;
     }

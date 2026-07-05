@@ -7,6 +7,7 @@ export const ROUTES = [
   ["marketplace", "Marketplace", "globe"],
   ["studio", "Studio", "blocks"],
   ["automations", "Automations", "bot"],
+  ["webhooks", "Webhooks", "webhook"],
   ["experiments", "Experiments", "flask-conical"],
   ["enterprise-admin", "Enterprise", "shield"],
   ["coding", "Coder", "code"],
@@ -37,6 +38,7 @@ const NAV_ROUTE_ORDER = [
   "marketplace",
   "studio",
   "automations",
+  "webhooks",
   "experiments",
   "enterprise-admin",
   "coding",
@@ -64,7 +66,7 @@ export const NAV_ROUTES = NAV_ROUTE_ORDER.map((routeId) => {
 export const NAV_GROUPS = [
   { label: "Overview", routeIds: ["dashboard"] },
   { label: "Build", routeIds: ["chat", "planner", "studio", "workflows", "automations"] },
-  { label: "Operate", routeIds: ["runs", "orchestrator", "coding", "incident-monitor"] },
+  { label: "Operate", routeIds: ["runs", "webhooks", "orchestrator", "coding", "incident-monitor"] },
   { label: "Govern", routeIds: ["approvals", "control-loop", "enterprise-admin"] },
   { label: "System", routeIds: ["agents", "memory", "files", "marketplace", "experiments", "settings"] },
 ];
