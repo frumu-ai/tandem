@@ -187,24 +187,66 @@ pub(crate) async fn refresh_openai_codex_oauth_if_needed(
     state: &AppState,
     tenant_context: &TenantContext,
 ) -> anyhow::Result<()> {
+    refresh_openai_codex_oauth(state, tenant_context, false).await
+}
+
+pub(crate) async fn refresh_openai_codex_oauth_now(
+    state: &AppState,
+    tenant_context: &TenantContext,
+) -> anyhow::Result<()> {
+    refresh_openai_codex_oauth(state, tenant_context, true).await
+}
+
+async fn refresh_openai_codex_oauth(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    force: bool,
+) -> anyhow::Result<()> {
     let Some(mut credential) = tandem_core::load_provider_oauth_credential_for_tenant(
         tenant_context,
         OPENAI_CODEX_PROVIDER_ID,
     ) else {
         return Ok(());
     };
-    if credential.managed_by != "tandem" {
-        return if tenant_context.is_local_implicit() {
-            refresh_openai_codex_cli_oauth_if_needed(state).await
-        } else {
-            Ok(())
-        };
+    if credential.managed_by == "codex-cli" && tenant_context.is_local_implicit() {
+        let _ = refresh_openai_codex_cli_oauth_from_disk_if_newer(state).await;
+        if let Some(updated) = tandem_core::load_provider_oauth_credential_for_tenant(
+            tenant_context,
+            OPENAI_CODEX_PROVIDER_ID,
+        ) {
+            credential = updated;
+        }
+    }
+    if !openai_codex_oauth_refreshable_in_process(&credential) {
+        return Ok(());
     }
     let now = crate::now_ms();
-    if credential.expires_at_ms > now.saturating_add(OPENAI_CODEX_OAUTH_REFRESH_SKEW_MS) {
+    if !force && credential.expires_at_ms > now.saturating_add(OPENAI_CODEX_OAUTH_REFRESH_SKEW_MS) {
         return Ok(());
     }
 
+    let managed_by = credential.managed_by.clone();
+    let refreshed = match refresh_openai_codex_oauth_credential(credential).await {
+        Ok(refreshed) => refreshed,
+        Err(error) => {
+            publish_openai_codex_reauth_required(state, tenant_context, &managed_by, &error).await;
+            return Err(error);
+        }
+    };
+    persist_refreshed_openai_codex_oauth(state, tenant_context, refreshed).await?;
+    Ok(())
+}
+
+fn openai_codex_oauth_refreshable_in_process(
+    credential: &tandem_core::OAuthProviderCredential,
+) -> bool {
+    matches!(credential.managed_by.as_str(), "tandem" | "codex-cli")
+        && !credential.refresh_token.trim().is_empty()
+}
+
+async fn refresh_openai_codex_oauth_credential(
+    mut credential: tandem_core::OAuthProviderCredential,
+) -> anyhow::Result<tandem_core::OAuthProviderCredential> {
     let response = reqwest::Client::new()
         .post(format!("{OPENAI_CODEX_OAUTH_ISSUER}/oauth/token"))
         .header("content-type", "application/json")
@@ -236,22 +278,31 @@ pub(crate) async fn refresh_openai_codex_oauth_if_needed(
     credential.expires_at_ms = expires_at_ms;
     if let Some(id_token) = id_token {
         if let Ok(api_key) = exchange_openai_codex_api_key(id_token).await {
-            credential.api_key = Some(api_key.clone());
-            if tenant_context.is_local_implicit() {
-                state
-                    .auth
-                    .write()
-                    .await
-                    .insert(OPENAI_CODEX_PROVIDER_ID.to_string(), api_key);
-            }
+            credential.api_key = Some(api_key);
         }
     }
+    Ok(credential)
+}
+
+async fn persist_refreshed_openai_codex_oauth(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    credential: tandem_core::OAuthProviderCredential,
+) -> anyhow::Result<()> {
+    let api_key = credential.api_key.clone();
     let _ = tandem_core::set_provider_oauth_credential_for_tenant(
         tenant_context,
         OPENAI_CODEX_PROVIDER_ID,
         credential,
     )?;
     if tenant_context.is_local_implicit() {
+        if let Some(api_key) = api_key {
+            state
+                .auth
+                .write()
+                .await
+                .insert(OPENAI_CODEX_PROVIDER_ID.to_string(), api_key);
+        }
         ensure_openai_codex_runtime_provider(state).await;
         state
             .providers
@@ -261,7 +312,42 @@ pub(crate) async fn refresh_openai_codex_oauth_if_needed(
     Ok(())
 }
 
-async fn refresh_openai_codex_cli_oauth_if_needed(state: &AppState) -> anyhow::Result<()> {
+async fn publish_openai_codex_reauth_required(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    managed_by: &str,
+    error: &anyhow::Error,
+) {
+    let now = crate::now_ms();
+    state.event_bus.publish(crate::EngineEvent::new(
+        "provider.oauth.reauth_required",
+        json!({
+            "providerID": OPENAI_CODEX_PROVIDER_ID,
+            "managedBy": managed_by,
+            "tenantContext": tenant_context.clone(),
+            "status": "reauth_required",
+            "reason": "refresh_failed",
+            "error": error.to_string(),
+            "occurredAtMs": now,
+        }),
+    ));
+    let _ = crate::audit::append_protected_audit_event(
+        state,
+        "provider.oauth.reauth_required",
+        tenant_context,
+        tenant_context.actor_id.clone(),
+        json!({
+            "providerID": OPENAI_CODEX_PROVIDER_ID,
+            "managedBy": managed_by,
+            "reason": "refresh_failed",
+            "error": error.to_string(),
+            "occurredAtMs": now,
+        }),
+    )
+    .await;
+}
+
+async fn refresh_openai_codex_cli_oauth_from_disk_if_newer(state: &AppState) -> anyhow::Result<()> {
     let Some(existing) = tandem_core::load_provider_oauth_credential(OPENAI_CODEX_PROVIDER_ID)
     else {
         return Ok(());
@@ -273,7 +359,7 @@ async fn refresh_openai_codex_cli_oauth_if_needed(state: &AppState) -> anyhow::R
     let Some(incoming) = tandem_core::load_openai_codex_cli_oauth_credential() else {
         return Ok(());
     };
-    if existing == incoming {
+    if existing == incoming || incoming.expires_at_ms <= existing.expires_at_ms {
         return Ok(());
     }
 

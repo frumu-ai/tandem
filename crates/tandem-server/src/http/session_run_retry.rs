@@ -102,8 +102,7 @@ pub(super) async fn run_prompt_with_auth_retry(
         json!({ "sessionID": session_id, "runID": run_id }),
     );
     if let Err(refresh_err) =
-        crate::http::config_providers::refresh_openai_codex_oauth_if_needed(state, tenant_context)
-            .await
+        crate::http::config_providers::refresh_openai_codex_oauth_now(state, tenant_context).await
     {
         tracing::warn!(
             session_id = %session_id,

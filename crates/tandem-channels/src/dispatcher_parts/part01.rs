@@ -2093,7 +2093,8 @@ async fn process_channel_message(
         );
     }
 
-    let reply = response.unwrap_or_else(|e| format!("⚠️ Error: {e}"));
+    let raw_reply = response.unwrap_or_else(|e| format!("⚠️ Error: {e}"));
+    let reply = channel_safe_reply_text(&raw_reply);
     let (reply_text, image_urls) = extract_image_urls_and_clean_text(&reply);
     if let Err(e) =
         send_redacted(channel.as_ref(), &reply_text, &msg.reply_target, image_urls).await

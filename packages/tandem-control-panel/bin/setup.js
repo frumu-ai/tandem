@@ -883,10 +883,14 @@ async function installServices() {
             : {}),
         }
       : {};
+  const effectivePanelPublicUrl = controlPanelPublicBaseUrl();
   const engineEnv = {
     ...engineEnvBase,
     TANDEM_API_TOKEN: token,
     TANDEM_STATE_DIR: stateDir,
+    ...(effectivePanelPublicUrl
+      ? { TANDEM_CONTROL_PANEL_PUBLIC_URL: effectivePanelPublicUrl }
+      : {}),
     ...searchEnv,
     TANDEM_ENABLE_GLOBAL_MEMORY: existingEngineEnv.TANDEM_ENABLE_GLOBAL_MEMORY || "1",
     TANDEM_DISABLE_TOOL_GUARD_BUDGETS: existingEngineEnv.TANDEM_DISABLE_TOOL_GUARD_BUDGETS || "0",
@@ -915,6 +919,9 @@ async function installServices() {
   const panelEnv = {
     ...existingPanelEnv,
     TANDEM_CONTROL_PANEL_PORT: String(PORTAL_PORT),
+    ...(effectivePanelPublicUrl
+      ? { TANDEM_CONTROL_PANEL_PUBLIC_URL: effectivePanelPublicUrl }
+      : {}),
     TANDEM_ENGINE_URL: ENGINE_URL,
     TANDEM_CONTROL_PANEL_AUTO_START_ENGINE: panelAutoStart,
     TANDEM_CONTROL_PANEL_ENGINE_TOKEN: token,
@@ -1700,6 +1707,7 @@ async function ensureEngineRunning() {
 
   const url = new URL(ENGINE_URL);
   managedEngineToken = CONFIGURED_ENGINE_TOKEN || `tk_${randomBytes(16).toString("hex")}`;
+  const panelPublicUrl = controlPanelPublicBaseUrl();
 
   log(`Starting Tandem Engine at ${ENGINE_URL}...`);
   engineProcess = spawn(
@@ -1716,6 +1724,7 @@ async function ensureEngineRunning() {
       env: {
         ...process.env,
         TANDEM_API_TOKEN: managedEngineToken,
+        ...(panelPublicUrl ? { TANDEM_CONTROL_PANEL_PUBLIC_URL: panelPublicUrl } : {}),
         TANDEM_DISABLE_TOOL_GUARD_BUDGETS: process.env.TANDEM_DISABLE_TOOL_GUARD_BUDGETS || "0",
         TANDEM_TOOL_ROUTER_ENABLED: process.env.TANDEM_TOOL_ROUTER_ENABLED || "0",
         TANDEM_PROMPT_CONTEXT_HOOK_TIMEOUT_MS:

@@ -578,7 +578,7 @@ async fn provider_oauth_authorize_uses_hosted_public_callback_for_codex() {
         .expect("authorizationUrl");
     assert!(
         authorization_url.contains(
-            "redirect_uri=https%3A%2F%2Ft-999.hosted.tandem.ac%2Fprovider%2Fopenai-codex%2Foauth%2Fcallback"
+            "redirect_uri=https%3A%2F%2Ft-999.hosted.tandem.ac%2Fapi%2Fengine%2Fprovider%2Fopenai-codex%2Foauth%2Fcallback"
         ),
         "expected hosted callback in authorization URL, got {authorization_url}"
     );
@@ -592,9 +592,56 @@ async fn provider_oauth_authorize_uses_hosted_public_callback_for_codex() {
     assert_eq!(session.provider_id, "openai-codex");
     assert_eq!(
         session.redirect_uri,
-        "https://t-999.hosted.tandem.ac/provider/openai-codex/oauth/callback"
+        "https://t-999.hosted.tandem.ac/api/engine/provider/openai-codex/oauth/callback"
     );
     assert_eq!(session.status, "pending");
+}
+
+#[tokio::test]
+async fn provider_oauth_authorize_uses_forwarded_panel_origin_for_codex() {
+    let state = test_state().await;
+    state.set_server_base_url("http://127.0.0.1:39731".to_string());
+
+    let app = app_router(state.clone());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/provider/openai-codex/oauth/authorize")
+        .header("x-forwarded-proto", "https")
+        .header("x-forwarded-host", "panel.example.com")
+        .body(Body::empty())
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(payload.get("ok").and_then(Value::as_bool), Some(true));
+
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .expect("session_id")
+        .to_string();
+    let authorization_url = payload
+        .get("authorizationUrl")
+        .and_then(Value::as_str)
+        .expect("authorizationUrl");
+    assert!(
+        authorization_url.contains(
+            "redirect_uri=https%3A%2F%2Fpanel.example.com%2Fapi%2Fengine%2Fprovider%2Fopenai-codex%2Foauth%2Fcallback"
+        ),
+        "expected forwarded panel callback in authorization URL, got {authorization_url}"
+    );
+    assert!(
+        !authorization_url.contains("localhost%3A1455"),
+        "did not expect localhost callback in panel authorization URL: {authorization_url}"
+    );
+
+    let sessions = state.oauth.provider_sessions().read().await;
+    let session = sessions.get(&session_id).expect("stored oauth session");
+    assert_eq!(
+        session.redirect_uri,
+        "https://panel.example.com/api/engine/provider/openai-codex/oauth/callback"
+    );
 }
 
 #[tokio::test]
