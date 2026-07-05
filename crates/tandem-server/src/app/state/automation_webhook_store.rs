@@ -24,6 +24,11 @@ use crate::stateful_runtime::{
 };
 use crate::util::time::now_ms;
 
+use super::automation_webhook_store_files::{
+    parse_automation_webhook_deliveries_file, parse_automation_webhook_secret_material_file,
+    parse_automation_webhook_triggers_file, serialize_automation_webhook_deliveries_file,
+    serialize_automation_webhook_secret_material_file, serialize_automation_webhook_triggers_file,
+};
 use super::{
     automation_webhook_accepted_delivery, automation_webhook_delivery_correlation,
     automation_webhook_delivery_matches_key, automation_webhook_rejection_delivery,
@@ -35,34 +40,9 @@ use super::{
 
 type HmacSha256 = Hmac<Sha256>;
 
-const AUTOMATION_WEBHOOK_SCHEMA_VERSION: u32 = 1;
 const AUTOMATION_WEBHOOK_SECRET_PROVIDER: &str = "tandem_automation_webhooks";
 pub(crate) const AUTOMATION_WEBHOOK_STATEFUL_WAIT_CLAIMANT: &str = "automation_webhook_router";
 pub(crate) const AUTOMATION_WEBHOOK_STATEFUL_WAIT_LEASE_MS: u64 = 30_000;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct AutomationWebhookTriggersFile {
-    #[serde(default)]
-    schema_version: u32,
-    #[serde(default)]
-    triggers: HashMap<String, AutomationWebhookTriggerRecord>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct AutomationWebhookDeliveriesFile {
-    #[serde(default)]
-    schema_version: u32,
-    #[serde(default)]
-    deliveries: HashMap<String, AutomationWebhookDeliveryRecord>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct AutomationWebhookSecretMaterialFile {
-    #[serde(default)]
-    schema_version: u32,
-    #[serde(default)]
-    secrets: HashMap<String, AutomationWebhookSecretMaterialRecord>,
-}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct AutomationWebhookSecretMaterialRecord {
@@ -150,99 +130,6 @@ pub(crate) enum AutomationWebhookQueueResult {
     },
 }
 
-fn parse_automation_webhook_triggers_file(
-    raw: &str,
-) -> anyhow::Result<HashMap<String, AutomationWebhookTriggerRecord>> {
-    if raw.trim().is_empty() || raw.trim() == "{}" {
-        return Ok(HashMap::new());
-    }
-    let value: Value = serde_json::from_str(raw)
-        .context("failed to parse automation webhook triggers state file")?;
-    if value.get("schema_version").is_none() {
-        return serde_json::from_value(value)
-            .context("failed to parse legacy automation webhook trigger map");
-    }
-    let file = serde_json::from_value::<AutomationWebhookTriggersFile>(value)
-        .context("failed to parse versioned automation webhook triggers state file")?;
-    ensure_supported_schema(file.schema_version, "automation webhook triggers")?;
-    Ok(file.triggers)
-}
-
-fn parse_automation_webhook_deliveries_file(
-    raw: &str,
-) -> anyhow::Result<HashMap<String, AutomationWebhookDeliveryRecord>> {
-    if raw.trim().is_empty() || raw.trim() == "{}" {
-        return Ok(HashMap::new());
-    }
-    let value: Value = serde_json::from_str(raw)
-        .context("failed to parse automation webhook deliveries state file")?;
-    if value.get("schema_version").is_none() {
-        return serde_json::from_value(value)
-            .context("failed to parse legacy automation webhook delivery map");
-    }
-    let file = serde_json::from_value::<AutomationWebhookDeliveriesFile>(value)
-        .context("failed to parse versioned automation webhook deliveries state file")?;
-    ensure_supported_schema(file.schema_version, "automation webhook deliveries")?;
-    Ok(file.deliveries)
-}
-
-fn parse_automation_webhook_secret_material_file(
-    raw: &str,
-) -> anyhow::Result<HashMap<String, AutomationWebhookSecretMaterialRecord>> {
-    if raw.trim().is_empty() || raw.trim() == "{}" {
-        return Ok(HashMap::new());
-    }
-    let value: Value = serde_json::from_str(raw)
-        .context("failed to parse automation webhook secret material state file")?;
-    if value.get("schema_version").is_none() {
-        return serde_json::from_value(value)
-            .context("failed to parse legacy automation webhook secret material map");
-    }
-    let file = serde_json::from_value::<AutomationWebhookSecretMaterialFile>(value)
-        .context("failed to parse versioned automation webhook secret material state file")?;
-    ensure_supported_schema(file.schema_version, "automation webhook secret material")?;
-    Ok(file.secrets)
-}
-
-fn ensure_supported_schema(schema_version: u32, label: &str) -> anyhow::Result<()> {
-    if schema_version > AUTOMATION_WEBHOOK_SCHEMA_VERSION {
-        anyhow::bail!(
-            "{label} schema version {schema_version} is newer than supported version {AUTOMATION_WEBHOOK_SCHEMA_VERSION}"
-        );
-    }
-    Ok(())
-}
-
-fn serialize_automation_webhook_triggers_file(
-    triggers: HashMap<String, AutomationWebhookTriggerRecord>,
-) -> anyhow::Result<String> {
-    serde_json::to_string_pretty(&AutomationWebhookTriggersFile {
-        schema_version: AUTOMATION_WEBHOOK_SCHEMA_VERSION,
-        triggers,
-    })
-    .context("failed to serialize automation webhook triggers state file")
-}
-
-fn serialize_automation_webhook_deliveries_file(
-    deliveries: HashMap<String, AutomationWebhookDeliveryRecord>,
-) -> anyhow::Result<String> {
-    serde_json::to_string_pretty(&AutomationWebhookDeliveriesFile {
-        schema_version: AUTOMATION_WEBHOOK_SCHEMA_VERSION,
-        deliveries,
-    })
-    .context("failed to serialize automation webhook deliveries state file")
-}
-
-fn serialize_automation_webhook_secret_material_file(
-    secrets: HashMap<String, AutomationWebhookSecretMaterialRecord>,
-) -> anyhow::Result<String> {
-    serde_json::to_string_pretty(&AutomationWebhookSecretMaterialFile {
-        schema_version: AUTOMATION_WEBHOOK_SCHEMA_VERSION,
-        secrets,
-    })
-    .context("failed to serialize automation webhook secret material state file")
-}
-
 pub(crate) fn tenant_context_matches(left: &TenantContext, right: &TenantContext) -> bool {
     left.org_id == right.org_id
         && left.workspace_id == right.workspace_id
@@ -277,7 +164,7 @@ fn new_secret() -> String {
     )
 }
 
-fn secret_ref_for_trigger(
+pub(crate) fn secret_ref_for_trigger(
     tenant_context: &TenantContext,
     trigger_id: &str,
     secret_version: u64,
@@ -711,6 +598,13 @@ impl AppState {
         if is_notion {
             requested_scheme = AutomationWebhookSignatureScheme::NotionHmacSha256;
         }
+        // Linear's signing secret is provider-owned too (shown in Linear's UI and
+        // imported by the operator), so linear triggers always verify with the
+        // Linear scheme — deliveries fail closed until the secret is imported.
+        let is_linear = provider == "linear";
+        if is_linear {
+            requested_scheme = AutomationWebhookSignatureScheme::LinearHmacSha256;
+        }
         let _guard = self.automation_webhook_persistence.lock().await;
         let now = now_ms();
         let trigger_id = format!("whtr_{}", Uuid::new_v4().simple());
@@ -759,6 +653,7 @@ impl AppState {
             last_accepted_at_ms: None,
             last_rejected_at_ms: None,
             notion_verification: is_notion.then(AutomationWebhookNotionVerification::default),
+            linear_verification: is_linear.then(AutomationWebhookLinearVerification::default),
         };
         let material = AutomationWebhookSecretMaterialRecord {
             secret_ref: secret_ref.clone(),
@@ -1003,6 +898,18 @@ impl AppState {
             if let Some(signature_scheme) = input.signature_scheme {
                 updated_trigger.signature_scheme =
                     self.validate_webhook_signature_scheme_allowed(signature_scheme)?;
+                // Switching onto the Linear scheme starts the provider-owned
+                // secret lifecycle: the stored material is still a Tandem
+                // placeholder, so deliveries fail closed until an operator
+                // imports the Linear signing secret.
+                if matches!(
+                    updated_trigger.signature_scheme,
+                    AutomationWebhookSignatureScheme::LinearHmacSha256
+                ) && updated_trigger.linear_verification.is_none()
+                {
+                    updated_trigger.linear_verification =
+                        Some(AutomationWebhookLinearVerification::default());
+                }
             }
             if let Some(default_data_class) = input.default_data_class {
                 updated_trigger.default_data_class = default_data_class;
@@ -1109,6 +1016,10 @@ impl AppState {
                     trigger.last_accepted_at_ms = Some(accepted_at_ms);
                     // First verified signed Notion event marks it active (TAN-562).
                     if let Some(verification) = trigger.notion_verification.as_mut() {
+                        verification.mark_active(accepted_at_ms);
+                    }
+                    // Same for the first verified signed Linear event (TAN-610).
+                    if let Some(verification) = trigger.linear_verification.as_mut() {
                         verification.mark_active(accepted_at_ms);
                     }
                 }
