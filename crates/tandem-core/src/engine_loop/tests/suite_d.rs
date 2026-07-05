@@ -172,8 +172,10 @@ async fn load_chat_history_demotes_stale_tool_invocations_with_provenance() {
             .expect("append message");
     }
 
-    let history = load_chat_history(storage, &session_id, ChatHistoryProfile::Full).await;
+    let history =
+        load_chat_history(storage.clone(), &session_id, ChatHistoryProfile::Standard).await;
     assert_eq!(history.demoted_tool_invocations, 4);
+    assert_eq!(history.dropped_messages, 0);
     assert!(
         history.demoted_tool_invocation_chars > 18_000,
         "expected large savings, got {}",
@@ -272,7 +274,7 @@ async fn stale_tool_invocation_demotion_preserves_errors() {
             .expect("append message");
     }
 
-    let history = load_chat_history(storage, &session_id, ChatHistoryProfile::Full).await;
+    let history = load_chat_history(storage, &session_id, ChatHistoryProfile::Standard).await;
     assert_eq!(history.demoted_tool_invocations, 1);
     let demoted = history
         .messages
@@ -283,4 +285,100 @@ async fn stale_tool_invocation_demotion_preserves_errors() {
     assert!(demoted.contains("error=EXIT_CODE_101: test suite failed"));
     assert!(!demoted.contains("status=ok"));
     assert!(!demoted.contains(&"y".repeat(200)));
+}
+
+#[tokio::test]
+async fn full_context_profile_never_demotes_tool_invocations() {
+    let base = std::env::temp_dir().join(format!(
+        "tandem-core-load-chat-history-full-no-demote-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let storage = std::sync::Arc::new(Storage::new(&base).await.expect("storage"));
+    let session = Session::new(Some("chat history".to_string()), Some(".".to_string()));
+    let session_id = session.id.clone();
+    storage.save_session(session).await.expect("save session");
+
+    for index in 0..12 {
+        let message = Message::new(
+            MessageRole::Assistant,
+            vec![MessagePart::ToolInvocation {
+                tool: "grep".to_string(),
+                args: json!({"pattern": format!("needle_{index}")}),
+                result: Some(json!({"output": format!("PAYLOAD_{index}_match")})),
+                error: None,
+            }],
+        );
+        storage
+            .append_message(&session_id, message)
+            .await
+            .expect("append message");
+    }
+
+    // Full mode's contract is "everything preserved"; demotion must not run.
+    let history = load_chat_history(storage, &session_id, ChatHistoryProfile::Full).await;
+    assert_eq!(history.demoted_tool_invocations, 0);
+    assert!(history
+        .messages
+        .iter()
+        .all(|message| !message.content.contains("result=[stale;")));
+}
+
+#[tokio::test]
+async fn stale_write_demotion_keeps_target_path_visible() {
+    let base = std::env::temp_dir().join(format!(
+        "tandem-core-load-chat-history-demote-path-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let storage = std::sync::Arc::new(Storage::new(&base).await.expect("storage"));
+    let session = Session::new(Some("chat history".to_string()), Some(".".to_string()));
+    let session_id = session.id.clone();
+    storage.save_session(session).await.expect("save session");
+
+    // serde_json orders object keys alphabetically, so `content` serializes
+    // before `path`; the preview must still surface the target path.
+    let stale_write = Message::new(
+        MessageRole::Assistant,
+        vec![MessagePart::ToolInvocation {
+            tool: "write".to_string(),
+            args: json!({
+                "content": "z".repeat(5_000),
+                "path": "src/pages/Dashboard.tsx",
+            }),
+            result: Some(json!({"output": "ok"})),
+            error: None,
+        }],
+    );
+    storage
+        .append_message(&session_id, stale_write)
+        .await
+        .expect("append write");
+    for index in 0..8 {
+        let message = Message::new(
+            MessageRole::Assistant,
+            vec![MessagePart::ToolInvocation {
+                tool: "read".to_string(),
+                args: json!({"path": format!("src/file_{index}.rs")}),
+                result: Some(json!({"output": format!("fn f{index}() {{}}")})),
+                error: None,
+            }],
+        );
+        storage
+            .append_message(&session_id, message)
+            .await
+            .expect("append message");
+    }
+
+    let history = load_chat_history(storage, &session_id, ChatHistoryProfile::Standard).await;
+    assert_eq!(history.demoted_tool_invocations, 1);
+    let demoted = history
+        .messages
+        .iter()
+        .find(|message| message.content.contains("result=[stale;"))
+        .map(|message| message.content.clone())
+        .expect("demoted write invocation");
+    assert!(
+        demoted.contains("path=src/pages/Dashboard.tsx"),
+        "target path must survive the args preview: {demoted}"
+    );
+    assert!(!demoted.contains(&"z".repeat(200)));
 }

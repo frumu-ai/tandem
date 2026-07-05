@@ -222,13 +222,20 @@ pub(super) async fn load_chat_history(
     // uncapped args are re-sent to the provider on every iteration for the
     // life of the session, and that accumulation dominates `historyChars` in
     // the context.budget.final telemetry for long tool-heavy sessions.
-    let total_tool_invocations = session
-        .messages
-        .iter()
-        .flat_map(|m| m.parts.iter())
-        .filter(|part| matches!(part, MessagePart::ToolInvocation { .. }))
-        .count();
-    let stale_cutoff = total_tool_invocations.saturating_sub(tool_result_keep_recent());
+    // Full context mode's contract is "no history compaction, everything
+    // preserved" (coder workers rely on it), so demotion only applies to the
+    // bounded profiles.
+    let stale_cutoff = if matches!(profile, ChatHistoryProfile::Full) {
+        0
+    } else {
+        let total_tool_invocations = session
+            .messages
+            .iter()
+            .flat_map(|m| m.parts.iter())
+            .filter(|part| matches!(part, MessagePart::ToolInvocation { .. }))
+            .count();
+        total_tool_invocations.saturating_sub(tool_result_keep_recent())
+    };
     let mut tool_invocation_ordinal = 0usize;
     let sourced = session
         .messages
@@ -294,6 +301,45 @@ pub(super) async fn load_chat_history(
 
 const STALE_TOOL_ARGS_PREVIEW_CHARS: usize = 200;
 const STALE_TOOL_ERROR_PREVIEW_CHARS: usize = 200;
+const STALE_TOOL_ARGS_FIELD_PREVIEW_CHARS: usize = 160;
+
+/// Args fields that identify a tool call's target. serde_json serializes
+/// object keys alphabetically, so a plain prefix of the serialized args can
+/// be all `content`/`new` and omit `path` entirely — making the "re-run with
+/// the original arguments" handle non-actionable. These fields are surfaced
+/// explicitly before any truncated remainder.
+const STALE_TOOL_ARGS_KEY_FIELDS: [&str; 7] = [
+    "path",
+    "file_path",
+    "command",
+    "query",
+    "pattern",
+    "url",
+    "name",
+];
+
+fn stale_tool_args_preview(args: &Value) -> String {
+    let mut parts = Vec::new();
+    if let Some(object) = args.as_object() {
+        for key in STALE_TOOL_ARGS_KEY_FIELDS {
+            if let Some(value) = object.get(key) {
+                let rendered = value
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| value.to_string());
+                parts.push(format!(
+                    "{key}={}",
+                    truncate_text(&rendered, STALE_TOOL_ARGS_FIELD_PREVIEW_CHARS)
+                ));
+            }
+        }
+    }
+    if parts.is_empty() {
+        truncate_text(&args.to_string(), STALE_TOOL_ARGS_PREVIEW_CHARS)
+    } else {
+        parts.join(" ")
+    }
+}
 
 /// Concise projection for a tool invocation older than the keep-recent
 /// window: what was called, whether it succeeded, and provenance handles
@@ -322,10 +368,7 @@ fn demote_stale_tool_invocation_for_history(
 
     let mut segments = vec![format!("Tool {tool}")];
     if !args_serialized.is_empty() {
-        segments.push(format!(
-            "args≈{}",
-            truncate_text(&args_serialized, STALE_TOOL_ARGS_PREVIEW_CHARS)
-        ));
+        segments.push(format!("args≈{}", stale_tool_args_preview(args)));
     }
     // Failures stay visible even when stale: knowing an earlier attempt
     // failed (and why) is load-bearing context that is cheap to keep.
