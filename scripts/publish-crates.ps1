@@ -29,6 +29,7 @@ $crates = @(
     "crates/tandem-graph-core",
     "crates/tandem-repo-intelligence",
     "crates/tandem-tools",
+    "crates/tandem-data-boundary",
     "crates/tandem-core",
     "crates/tandem-browser",
     "crates/tandem-runtime",
