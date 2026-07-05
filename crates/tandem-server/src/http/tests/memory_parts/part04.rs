@@ -600,6 +600,105 @@ async fn tenant_a_cannot_search_list_delete_demote_or_promote_tenant_b_memory() 
 }
 
 #[tokio::test]
+async fn same_tenant_user_cannot_delete_or_demote_another_users_memory() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let project_id = "shared-project";
+
+    // User A stores a private memory record in tenant acme/north.
+    let put_a = tenant_memory_request(
+        "POST",
+        "/memory/put",
+        "acme",
+        "north",
+        "user-a",
+        Some(json!({
+            "run_id": "user-a-memory-run",
+            "partition": {
+                "org_id": "acme",
+                "workspace_id": "north",
+                "project_id": project_id,
+                "tier": "session"
+            },
+            "kind": "fact",
+            "content": "user a private memory phrase",
+            "classification": "internal",
+            "capability": memory_capability(
+                "user-a-memory-run",
+                "user-a",
+                "acme",
+                "north",
+                project_id
+            )
+        })),
+    );
+    let put_a_resp = app.clone().oneshot(put_a).await.expect("put a response");
+    assert_eq!(put_a_resp.status(), StatusCode::OK);
+    let put_a_body = to_bytes(put_a_resp.into_body(), usize::MAX)
+        .await
+        .expect("put a body");
+    let put_a_payload: Value = serde_json::from_slice(&put_a_body).expect("put a json");
+    let memory_id = put_a_payload
+        .get("id")
+        .and_then(Value::as_str)
+        .expect("user a memory id")
+        .to_string();
+
+    // User B shares the tenant (acme/north) so the record is visible, but is a
+    // different actor. Deleting user A's record must be forbidden, not silently
+    // allowed (TAN-604).
+    let delete_b = tenant_memory_request(
+        "DELETE",
+        &format!("/memory/{memory_id}?project_id={project_id}"),
+        "acme",
+        "north",
+        "user-b",
+        None,
+    );
+    let delete_b_resp = app
+        .clone()
+        .oneshot(delete_b)
+        .await
+        .expect("delete b response");
+    assert_eq!(delete_b_resp.status(), StatusCode::FORBIDDEN);
+
+    // Demote by another user in the same tenant is likewise forbidden.
+    let demote_b = tenant_memory_request(
+        "POST",
+        "/memory/demote",
+        "acme",
+        "north",
+        "user-b",
+        Some(json!({
+            "id": memory_id,
+            "run_id": "user-b-memory-run"
+        })),
+    );
+    let demote_b_resp = app
+        .clone()
+        .oneshot(demote_b)
+        .await
+        .expect("demote b response");
+    assert_eq!(demote_b_resp.status(), StatusCode::FORBIDDEN);
+
+    // Positive control: the owning user can still delete their own record.
+    let delete_a = tenant_memory_request(
+        "DELETE",
+        &format!("/memory/{memory_id}?project_id={project_id}"),
+        "acme",
+        "north",
+        "user-a",
+        None,
+    );
+    let delete_a_resp = app
+        .clone()
+        .oneshot(delete_a)
+        .await
+        .expect("delete a response");
+    assert_eq!(delete_a_resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn explicit_tenant_memory_put_rejects_partition_tenant_switch() {
     let state = test_state().await;
     let app = app_router(state.clone());

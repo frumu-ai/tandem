@@ -533,9 +533,34 @@ pub(super) async fn memory_list(
     })))
 }
 
+/// Enforce per-user ownership before an admin-style mutation (demote/delete)
+/// of a global memory record. Mirrors `memory_list`'s governed-mode behavior:
+/// outside local-unrestricted mode, the caller's resolved memory subject must
+/// own the record, so one user cannot demote/delete another user's memory
+/// within a tenant (TAN-604). A dedicated operator/admin scope that can manage
+/// other users' memory is a separate follow-up; today no such scope exists, so
+/// ownership is required and the fail-safe is to deny.
+fn enforce_memory_record_ownership_for_mutation(
+    tenant_context: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+    record_user_id: &str,
+) -> Result<(), StatusCode> {
+    if crate::memory::subject::local_memory_subjects_are_unrestricted(tenant_context, verified) {
+        return Ok(());
+    }
+    let resolution =
+        crate::memory::subject::request_memory_subject(tenant_context, verified, None)
+            .map_err(|_| StatusCode::FORBIDDEN)?;
+    if record_user_id != resolution.subject {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    Ok(())
+}
+
 pub(super) async fn memory_delete(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(id): Path<String>,
     Query(query): Query<MemoryDeleteQuery>,
 ) -> Result<Json<Value>, StatusCode> {
@@ -555,6 +580,11 @@ pub(super) async fn memory_delete(
         emit_missing_memory_delete_audit(&state, &tenant_context, &id, "memory not found").await?;
         return Err(StatusCode::NOT_FOUND);
     };
+    enforce_memory_record_ownership_for_mutation(
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        &record.user_id,
+    )?;
     if query
         .project_id
         .as_deref()

@@ -1316,6 +1316,7 @@ fn global_memory_record_visible_to_access_filter(
 pub(super) async fn memory_demote(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Json(input): Json<MemoryDemoteInput>,
 ) -> Result<Json<Value>, StatusCode> {
     let db = open_global_memory_db_for_state(&state)
@@ -1341,6 +1342,11 @@ pub(super) async fn memory_demote(
         .await?;
         return Err(StatusCode::NOT_FOUND);
     };
+    enforce_memory_record_ownership_for_mutation(
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        &record.user_id,
+    )?;
     let changed = db
         .set_global_memory_visibility_for_tenant(
             &input.id,
