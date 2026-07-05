@@ -119,15 +119,15 @@ pub(super) struct DataBoundaryDispatchContext<'a> {
     pub deployment_id: Option<&'a str>,
 }
 
-/// Provider ids whose builtin base URLs are loopback-only; payloads never
-/// leave the machine. Everything else stays `Unknown` until explicitly
-/// classified via `TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES` (TAN-393) — strict
-/// policies fail closed on `Unknown`, so the default is the safe direction.
-const BUILTIN_LOCAL_PROVIDER_IDS: [&str; 2] = ["ollama", "llama_cpp"];
-
 /// TAN-393: provider_id → boundary class, with the classification source kept
-/// for the audit trail. Env mapping (`provider=class,...`) wins over builtin
-/// loopback defaults; unmapped providers are `Unknown`.
+/// for the audit trail. Only the explicit `TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES`
+/// mapping can classify a provider: builtin ids like `ollama`/`llama_cpp`
+/// default to loopback URLs but can be reconfigured to remote endpoints, and
+/// this gate cannot resolve the configured base URL — so trusting the id
+/// alone would let sensitive prompts flow raw to a remote host. Everything
+/// unmapped stays `Unknown` (permissive policies treat it as unapproved
+/// external; strict policies fail closed). Endpoint-verified classification
+/// is a routing-contract TODO (provider-declared boundary_class).
 pub(super) fn classify_provider(provider_id: &str) -> (ProviderBoundaryClass, &'static str) {
     if let Ok(raw) = std::env::var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES") {
         for entry in raw.split(',') {
@@ -140,9 +140,6 @@ pub(super) fn classify_provider(provider_id: &str) -> (ProviderBoundaryClass, &'
                 }
             }
         }
-    }
-    if BUILTIN_LOCAL_PROVIDER_IDS.contains(&provider_id) {
-        return (ProviderBoundaryClass::Local, "builtin_local_default");
     }
     (ProviderBoundaryClass::Unknown, "unclassified")
 }
@@ -204,9 +201,15 @@ fn transform_messages_for_dispatch(
     for message in messages {
         for attachment in &message.attachments {
             let tandem_providers::ChatAttachment::ImageUrl { url } = attachment;
-            if data_url_scan_prefix_len(url).is_none()
-                && !tandem_data_boundary::detect_sensitive_data(url).is_empty()
-            {
+            // Scan exactly what the dispatch evaluator scans: the full URL
+            // for remote refs, the metadata prefix (through the comma) for
+            // data: URLs — credentials can hide in data-URL parameters too.
+            // A URL cannot be safely rewritten, so findings fail closed.
+            let scan_target = match data_url_scan_prefix_len(url) {
+                Some(prefix_len) => &url[..prefix_len],
+                None => url.as_str(),
+            };
+            if !tandem_data_boundary::detect_sensitive_data(scan_target).is_empty() {
                 return Err("attachment_untransformable");
             }
         }
@@ -680,9 +683,11 @@ mod tests {
             (ProviderBoundaryClass::CustomerHosted, "env_mapping")
         );
         std::env::remove_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES");
+        // Builtin loopback ids get no id-based trust: their base URLs can be
+        // reconfigured to remote endpoints, so unmapped ids stay Unknown.
         assert_eq!(
             classify_provider("ollama"),
-            (ProviderBoundaryClass::Local, "builtin_local_default")
+            (ProviderBoundaryClass::Unknown, "unclassified")
         );
         assert_eq!(
             classify_provider("openai"),
@@ -831,25 +836,61 @@ mod tests {
 
     #[test]
     #[serial_test::serial(data_boundary_env)]
-    fn enforce_allows_builtin_local_provider_with_sensitive_payload() {
+    fn enforce_allows_env_classified_local_provider_with_sensitive_payload() {
         std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
+        std::env::set_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES", "ollama=local");
         let mut context = ctx();
         context.provider_id = "ollama";
         let messages = vec![chat("user", "api_key=sk-live-abcdef1234567890")];
         let outcome = evaluate_dispatch_boundary(&context, &messages);
         std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES");
 
         match outcome {
             DataBoundaryDispatchOutcome::Proceed { event } => {
                 assert_eq!(event.event_type, "data_boundary.evaluated");
                 assert_eq!(event.properties["action"], "allow_with_audit");
-                assert_eq!(
-                    event.properties["classificationSource"],
-                    "builtin_local_default"
-                );
+                assert_eq!(event.properties["classificationSource"], "env_mapping");
                 assert_eq!(event.properties["enforced"], true);
             }
             _ => panic!("expected Proceed outcome for local provider"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(data_boundary_env)]
+    fn enforce_blocks_untransformable_data_url_prefix_findings() {
+        // Codex P1 (PR #1787): a credential hidden in a data: URL's metadata
+        // parameters (before the comma) is detected by the evaluator, so the
+        // transform path must fail closed on it too — the attachment cannot
+        // be rewritten and must not dispatch raw under a transform policy.
+        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
+        std::env::set_var(
+            "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
+            "openai=approved_external",
+        );
+        std::env::set_var("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY", "redact");
+        let message = ChatMessage {
+            role: "user".to_string(),
+            content: "see attached".to_string(),
+            attachments: vec![tandem_providers::ChatAttachment::ImageUrl {
+                url: format!(
+                    "data:image/png;api_key=sk-live-abcdef1234567890;base64,{}",
+                    "iVBORw0KGgo".repeat(20)
+                ),
+            }],
+        };
+        let outcome = evaluate_dispatch_boundary(&ctx(), &[message]);
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES");
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY");
+
+        match outcome {
+            DataBoundaryDispatchOutcome::Blocked { reason, .. } => {
+                assert!(reason.contains("attachment_untransformable"), "{reason}");
+                assert!(!reason.contains("sk-live-abcdef1234567890"));
+            }
+            _ => panic!("expected Blocked outcome for untransformable data URL"),
         }
     }
 

@@ -9,10 +9,11 @@ ledger. In `enforce` mode the dispatch gate blocks prohibited/unapproved raw
 egress, redacts/tokenizes configured classes per message before send,
 requires human approval via the permission surface for approval classes, and
 fails closed on `RouteToLocal` (no routing capability yet — see
-`DATA_BOUNDARY_ROUTING_CONTRACT.md`). Providers classify via
-`TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES` plus builtin loopback defaults;
-`TANDEM_DATA_BOUNDARY_STRICT` fails closed on unclassified providers or
-missing tenant context. Audit-only guard hooks also scan tool/MCP results and
+`DATA_BOUNDARY_ROUTING_CONTRACT.md`). Providers classify solely via
+`TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES` (unmapped providers — including
+builtin loopback ids, whose base URLs can be reconfigured to remote
+endpoints — stay `unknown`); `TANDEM_DATA_BOUNDARY_STRICT` fails closed on
+unclassified providers or missing tenant context. Audit-only guard hooks also scan tool/MCP results and
 prompt-context-hook injections as they enter context.
 
 > Naming note: this document describes the `tandem-data-boundary` crate — the
