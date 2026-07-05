@@ -16,6 +16,7 @@ Tandem workflows are designed to be authored in three ways with the same runtime
 - [Python SDK: automations_v2 examples](../sdk/python/)
 - [Control-panel path: automation wizard + schedule](./control-panel/)
 - [AI-first workflow composer](./automation-composer-workflows/)
+- [Automation V2 Webhooks](./automation-v2-webhooks/)
 - [Tandem Wow Demo Playbook](./tandem-wow-demo-playbook/)
 
 The same runtime means the automation behavior is identical, no matter how it was authored.
@@ -336,7 +337,82 @@ This demonstrates all three enterprise requirements in one DAG:
 - deterministic staging artifact creation
 - external action through MCP at the end
 
-## 4) Make these examples discoverable to agents
+## 4) Linear repair-loop guard template
+
+Use this pattern when Linear issue webhooks trigger an ACA repair workflow. Linear
+signs the delivery, but the workflow still needs a first-node guard because
+Linear webhooks can cover more than one project, label, or issue state.
+
+The guard node is the authority boundary. It should produce a small JSON decision
+before any ACA, repo, MCP, or write-capable node runs:
+
+```json
+{
+  "allowed": true,
+  "reason_code": "linear_repair_ready",
+  "linear_issue_id": "TAN-123",
+  "linear_project": "Tandem Native Linear Webhooks",
+  "required_label": "tandem:repair-ready",
+  "idempotency_key": "linear:TAN-123:repair-ready"
+}
+```
+
+Recommended first-node prompt:
+
+```text
+Inspect the incoming Linear webhook payload from automation_webhook.
+Act as the repair-loop guard before ACA receives authority.
+
+Allow the run only when all checks pass:
+- provider is "linear"
+- issue.project.id or issue.project.name matches the configured repair project
+- issue labels include "tandem:repair-ready"
+- action/type is one of issue.created, issue.updated, create, or update
+- issue state is not canceled, done, archived, or otherwise terminal
+- this Linear issue has not already started an active repair run for the same idempotency key
+
+Return a JSON guard decision with:
+- allowed: boolean
+- reason_code: stable snake_case reason
+- linear_issue_id
+- linear_project
+- matching_labels
+- action
+- idempotency_key
+- human_summary
+
+If any check fails, set allowed=false, do not call ACA or external tools, and
+include the suppression reason in reason_code.
+```
+
+Use stable reason codes so the delivery/run history is legible:
+
+| Reason code | Meaning |
+| --- | --- |
+| `linear_repair_ready` | Project, label, action, state, and idempotency checks passed. |
+| `linear_project_not_allowed` | The signed event came from a different Linear project. |
+| `linear_missing_repair_label` | The issue does not have the configured repair-ready label. |
+| `linear_action_not_allowed` | The event action is not one of the configured issue actions. |
+| `linear_issue_terminal` | The issue is done, canceled, archived, or otherwise not repairable. |
+| `linear_duplicate_repair_run` | A repair run already exists for the same Linear issue/idempotency key. |
+
+Then make the ACA node depend on the guard node and start with:
+
+```text
+Continue only if the Linear guard decision has allowed=true.
+If allowed=false, summarize the guard reason and stop without using repo or MCP tools.
+```
+
+What this demonstrates:
+
+- a signed webhook is still scoped by Tandem policy before agent authority expands
+- non-demo Linear project events are accepted or suppressed without starting ACA
+- the repair-loop demo can show project and label checks as a boundary, not just a convenience branch
+- duplicate issue events do not create multiple repair attempts unless the operator intentionally reruns
+
+For direct Linear webhook setup, see [Automation V2 Webhooks](./automation-v2-webhooks/#linear-issue-webhooks).
+
+## 5) Make these examples discoverable to agents
 
 To let your agents pull the docs directly instead of carrying snippets in prompts:
 

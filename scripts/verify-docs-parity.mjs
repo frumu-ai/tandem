@@ -54,6 +54,10 @@ const incidentMonitorRoutes = unique(
     ),
   ].map((match) => `/${match[1]}/`),
 ).sort();
+const requiredAgentIndexRoutes = [
+  "/automation-examples-for-teams/",
+  "/automation-v2-webhooks/",
+];
 
 const missing = [];
 
@@ -89,6 +93,15 @@ for (const route of incidentMonitorRoutes) {
   }
   if (!llmsFullDoc.includes(route)) {
     missing.push(`llms-full doc missing Incident Monitor route: ${route}`);
+  }
+}
+
+for (const route of requiredAgentIndexRoutes) {
+  if (!llmsDoc.includes(route)) {
+    missing.push(`llms doc missing agent-index route: ${route}`);
+  }
+  if (!llmsFullDoc.includes(route)) {
+    missing.push(`llms-full doc missing agent-index route: ${route}`);
   }
 }
 
