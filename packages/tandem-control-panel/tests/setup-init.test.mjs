@@ -71,6 +71,7 @@ test("ensureBootstrapEnv ignores a poisoned TANDEM_STATE_DIR in .env.example", a
     [
       "TANDEM_DEFAULT_PROVIDER=openrouter",
       "TANDEM_STATE_DIR=%HOME%\\work\\tandem-engine\\tandem\\scripts\\bench-js\\.bench-state",
+      "TANDEM_HOME=%HOME%\\work\\tandem-engine\\tandem\\scripts\\bench-js",
       "TANDEM_CONTROL_PANEL_STATE_DIR=",
       "",
     ].join("\n"),
@@ -93,6 +94,9 @@ test("ensureBootstrapEnv ignores a poisoned TANDEM_STATE_DIR in .env.example", a
   const content = await readFile(envPath, "utf8");
   assert.doesNotMatch(content, /bench-state/);
   assert.doesNotMatch(content, /%HOME%/);
+  // TANDEM_HOME outranks TANDEM_STATE_DIR in the engine, so an example-only
+  // value must not survive the merge either.
+  assert.doesNotMatch(content, /^TANDEM_HOME=/m);
   // A harmless example key still flows through; only the state dirs are pinned
   // to the computed platform defaults.
   assert.match(content, /^TANDEM_DEFAULT_PROVIDER=openrouter/m);

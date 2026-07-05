@@ -86,7 +86,12 @@ function bootstrapDefaults(paths) {
 // engine away from its real state on every setup, making history/automations
 // look wiped. Real overrides still come from the user's own `.env` (cwdEnv) or
 // the already-generated env file (existing), which both outrank the example.
+// TANDEM_HOME is the highest-precedence state root: the engine resolves it
+// before TANDEM_STATE_DIR (crates/tandem-core/src/storage_paths.rs), so an
+// example-only TANDEM_HOME would redirect all state even though we pin the
+// computed state dir. Block every state-root alias, not just TANDEM_STATE_DIR.
 const EXAMPLE_MERGE_BLOCKLIST = new Set([
+  "TANDEM_HOME",
   "TANDEM_STATE_DIR",
   "TANDEM_CONTROL_PANEL_STATE_DIR",
 ]);
