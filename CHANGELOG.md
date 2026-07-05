@@ -5,6 +5,94 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.7] - 2026-07-05
+
+### Added
+
+- Added the secure data-boundary decision engine in `tandem-data-boundary`,
+  including policy evaluation, provider boundary classes, sensitive-data
+  findings, deterministic payload hashes, decision ids, action precedence, and
+  audit-safe events that avoid serializing raw prompt/tool/model content.
+- Added runtime data-boundary configuration and validation:
+  `TANDEM_DATA_BOUNDARY_MODE`, external raw-policy/action-class controls,
+  strict mode, maximum payload size, and provider classification through
+  `TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES`.
+- Added a provider-dispatch data-boundary gate. Audit mode records findings
+  without changing dispatch; enforce mode can block, redact, tokenize, require
+  operator approval, or fail closed before provider send.
+- Added source-side data-boundary guards for tool/MCP results, prompt-context
+  hook injections, and workflow email-delivery artifacts, emitting
+  content-free `data_boundary.evaluated` evidence when findings are present.
+- Added an admin-gated `GET /audit/data-boundary/monitoring` read model that
+  aggregates protected-audit boundary records by tenant, provider/model,
+  provider class, action, sensitive class, source kind, classification source,
+  policy fingerprint, and repeated payload hashes.
+- Added data-boundary documentation for the module contract, runtime
+  integration map, local-routing contract, policy UI/API plan, engine
+  configuration, and runtime event vocabulary.
+- Added `gpt-5.6` to the OpenAI Codex supported-model catalog.
+- Added release-note extraction guards and tests so release generation rejects
+  notes that are still marked `Unreleased` or are long unstructured text.
+
+### Changed
+
+- Provider-facing chat history now demotes stale historical tool invocations to
+  concise summaries with provenance handles after the recent invocation window,
+  reducing repeated context load while preserving stored session records and
+  recent invocation fidelity.
+- Channel prompt requests now include a platform-and-sender client id, giving
+  each Telegram, Discord, and Slack sender a distinct memory subject instead
+  of sharing the generic `default` subject.
+- Web-served control panels now derive the OpenAI Codex OAuth callback from the
+  public panel URL or forwarded origin when available, while preserving
+  localhost callbacks for desktop/local flows.
+- The Codex OAuth refresh path now supports persisted `codex-cli` managed
+  refresh tokens in process and preserves credential ownership metadata while
+  refreshing.
+
+### Fixed
+
+- Fixed channel runs surfacing expired-token `ENGINE_ERROR:
+  AUTHENTICATION_ERROR` failures to Telegram/Discord/Slack users. The engine
+  now forces Codex OAuth refresh and retries once, while channel replies hide
+  genuine auth failures behind a short operator-notified message.
+- Fixed false-positive channel sanitization where a valid assistant response
+  that merely mentioned `AUTHENTICATION_ERROR` or `ENGINE_ERROR` was replaced
+  with the generic "assistant temporarily unavailable" text.
+- Fixed deployments whose saved OpenAI Codex default was the retired
+  `gpt-5.1-codex-max`: the model was removed from the catalog, and stale saved
+  defaults now fall back to the compiled `gpt-5.5` default instead of failing
+  every channel run.
+- Fixed partial or redacted channel config entries without bot tokens causing
+  the whole effective channel config parse to fail. Incomplete Slack, Discord,
+  or Telegram entries are now tolerated and filtered before listener startup.
+- Fixed channel connection state being inferred from any saved channel entry
+  rather than from runnable listener config.
+- Fixed repo-root `.env.example` values hijacking generated bootstrap env and
+  sending engine/control-panel state into a literal Windows-style benchmark
+  path on Linux. Bootstrap now ignores example state-dir keys while preserving
+  real user overrides.
+- Fixed workflow email-delivery prompt folding drifting from its boundary
+  guard by sharing one artifact-selection rule for the prompt fold and guard.
+
+### Security
+
+- Data-boundary strict/enforce mode now fails closed for missing tenant
+  context, unclassified providers, prohibited providers, blocked findings,
+  denied/timeout approval decisions, route-to-local requests without a local
+  route, and attachment findings that cannot be safely transformed.
+- Consequential data-boundary decisions now append content-free protected
+  audit events, and the monitoring read model is admin-gated and tenant
+  scoped.
+- Governed memory ingestion now stamps tenant context into user, assistant,
+  and tool-output memory provenance so records do not fall back to the
+  `local/local` scope.
+- `memory_delete` and `memory_demote` now enforce per-user ownership before
+  mutating global memory records outside local unrestricted mode.
+- Channel memory tools now prefer engine-injected trusted session/project
+  scope over model-supplied overrides, blocking cross-channel-scope memory
+  reads/writes and global-tier channel writes.
+
 ## [0.6.6] - 2026-07-04
 
 ### Added

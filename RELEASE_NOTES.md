@@ -2,6 +2,103 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.6.7 (2026-07-05)
+
+Tandem 0.6.7 completes the secure data-boundary foundation and ships a focused
+channel reliability pass for Telegram, Discord, and Slack. The data-boundary
+work now spans the standalone policy/evidence crate, runtime provider-gate
+integration, enforcement actions, protected audit records, source-side guards,
+and an admin monitoring read model. The channel work fixes the recent
+production failure modes around Codex OAuth refresh, retired provider defaults,
+partial channel configs, false-positive auth-error sanitization, and
+cross-user/cross-scope memory isolation.
+
+### Secure Data Boundary
+
+The new `tandem-data-boundary` decision engine now evaluates sensitive-data
+findings against provider boundary policy without persisting raw prompt text,
+tool output, secrets, customer data, or model output. Decisions, findings, and
+runtime events carry only audit-safe evidence such as classes, counts, spans,
+reason codes, payload hashes, policy fingerprints, provider/model metadata, and
+tenant/workspace/deployment refs.
+
+Runtime integration is now available behind `TANDEM_DATA_BOUNDARY_MODE`
+(`off`, `audit`, or `enforce`). In audit mode the engine evaluates the fully
+assembled provider request immediately before dispatch and records
+`data_boundary.*` events plus consequential protected-audit entries without
+blocking or mutating requests. In enforce mode the gate can block dispatch,
+redact/tokenize matched spans, require explicit operator approval, or fail
+closed when strict posture requirements are not met. Provider classification is
+configurable through `TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES`, with built-in
+local defaults for loopback providers and strict fail-closed behavior for
+unclassified or prohibited providers when enabled.
+
+Data-boundary coverage also now observes source material before it becomes
+provider context: tool/MCP results, prompt-context-hook injections, and
+workflow email-delivery artifacts emit audit-safe `data_boundary.evaluated`
+events when findings exist. A new admin-gated
+`GET /audit/data-boundary/monitoring` endpoint aggregates protected-audit
+records by tenant, provider, model, boundary class, action, sensitive class,
+source kind, classification source, policy fingerprint, and repeated payload
+hashes. Planning docs define the future policy UI/API and local-routing
+contract without adding a second enforcement path.
+
+### Context And Memory Safety
+
+Long tool-heavy sessions now demote stale historical tool invocations in
+provider-facing chat history to concise summaries with provenance handles,
+while preserving recent invocations and leaving stored session records
+untouched. This reduces repeated provider context load and adds telemetry for
+demoted invocation count and saved characters.
+
+Channel memory isolation was tightened across the write, read, and tool paths.
+Channel prompt requests now include a platform-and-sender memory subject so one
+Telegram/Discord/Slack user no longer shares the generic `default` global
+memory subject with every other bot user. Channel memory tools now trust the
+engine-injected session/project scope instead of model-supplied overrides, and
+channel models can no longer write global-tier memory. Governed run-memory
+ingestion now preserves tenant context on user/assistant/tool records, and
+`memory_delete`/`memory_demote` enforce subject ownership before mutating
+global memory records outside local unrestricted mode.
+
+### Channel And Provider Reliability
+
+OpenAI Codex OAuth credentials managed by `codex-cli` can now refresh in
+process from the persisted refresh token. The session run retry path forces a
+refresh and retries once after an `AUTHENTICATION_ERROR`, and refresh failures
+publish internal reauth signals instead of only surfacing raw channel errors.
+Web-served control panels now derive the Codex OAuth callback from the public
+panel URL or forwarded origin when available, while preserving localhost
+callbacks for local desktop flows.
+
+The Codex model catalog removed the phantom `gpt-5.1-codex-max` entry, added
+`gpt-5.6`, and now heals a persisted default model when it no longer exists in
+the supported catalog, falling back to the compiled `gpt-5.5` default instead
+of failing every channel run. Channel startup now tolerates saved Slack,
+Discord, or Telegram entries that are partially configured or redacted, filters
+incomplete listeners before startup, and reports connection state from runnable
+listener config instead of merely from saved channel entries.
+
+Channel auth-error sanitization is now more precise: real leading
+`ENGINE_ERROR: AUTHENTICATION...` replies are still hidden from Telegram,
+Discord, and Slack users, but ordinary explanatory responses that merely
+mention `AUTHENTICATION_ERROR` or `ENGINE_ERROR` are no longer replaced with the
+generic "assistant temporarily unavailable" message.
+
+### Setup And Release Tooling
+
+Setup no longer lets repo-root `.env.example` hijack machine-specific engine or
+control-panel state directories. Example values for `TANDEM_STATE_DIR` and
+`TANDEM_CONTROL_PANEL_STATE_DIR` are ignored during bootstrap, while real
+overrides from the user's own `.env` or existing generated env file still win.
+This prevents Linux deployments from accidentally writing state into a literal
+Windows-style `%HOME%\...\.bench-state` path.
+
+The release-note extractor now refuses to publish notes that still say
+`Unreleased` or long unstructured walls of text without headings/bullets, so
+GitHub release bodies fail closed instead of shipping unreadable generated
+notes.
+
 ## v0.6.6 (2026-07-04)
 
 Tandem 0.6.6 fixes a production reliability gap in channel messaging: Telegram,
