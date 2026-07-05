@@ -589,13 +589,18 @@ mod tests {
             Some(&serde_json::json!({ "project_id": "proj-channel" })),
         );
 
-        assert_eq!(body.get("query").and_then(|value| value.as_str()), Some("deployment notes"));
         assert_eq!(
-            body.pointer("/partition/project_id").and_then(|value| value.as_str()),
+            body.get("query").and_then(|value| value.as_str()),
+            Some("deployment notes")
+        );
+        assert_eq!(
+            body.pointer("/partition/project_id")
+                .and_then(|value| value.as_str()),
             Some("proj-channel")
         );
         assert_eq!(
-            body.pointer("/capability/subject").and_then(|value| value.as_str()),
+            body.pointer("/capability/subject")
+                .and_then(|value| value.as_str()),
             Some("channel:discord:user1")
         );
         assert_eq!(
@@ -611,13 +616,19 @@ mod tests {
         assert_eq!(
             body.pointer("/retrieval_gateway/grant/project_ids")
                 .and_then(|value| value.as_array())
-                .map(|values| values.iter().filter_map(|value| value.as_str()).collect::<Vec<_>>()),
+                .map(|values| values
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .collect::<Vec<_>>()),
             Some(vec!["proj-channel"])
         );
         assert_eq!(
             body.pointer("/retrieval_gateway/grant/data_classes")
                 .and_then(|value| value.as_array())
-                .map(|values| values.iter().filter_map(|value| value.as_str()).collect::<Vec<_>>()),
+                .map(|values| values
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .collect::<Vec<_>>()),
             Some(vec!["public", "internal"])
         );
         assert_eq!(
@@ -1620,5 +1631,27 @@ mod tests {
             channel_memory_subject_client_id("telegram", "José").as_deref(),
             Some("telegram:Jos%C3%A9")
         );
+    }
+
+    #[test]
+    fn channel_safe_reply_hides_authentication_errors() {
+        let raw = "ENGINE_ERROR: AUTHENTICATION_ERROR: Provided authentication token is expired. Please try signing in again.";
+        let safe = channel_safe_reply_text(raw);
+
+        assert_eq!(
+            safe,
+            "The assistant is temporarily unavailable. An administrator has been notified."
+        );
+        assert!(!safe.contains("ENGINE_ERROR"));
+        assert!(!safe.contains("AUTHENTICATION_ERROR"));
+        assert_eq!(channel_safe_reply_text("ordinary reply"), "ordinary reply");
+    }
+
+    #[test]
+    fn channel_safe_error_reply_preserves_non_auth_errors() {
+        let safe = channel_safe_error_reply("provider stream chunk error");
+
+        assert!(safe.contains("provider stream chunk error"));
+        assert!(safe.starts_with("⚠️ Error:"));
     }
 }

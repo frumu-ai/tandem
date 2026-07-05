@@ -550,10 +550,7 @@ async fn run_in_session(
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
         if let Some(error_message) = last_error {
-            return Ok(format!(
-                "⚠️ Error: {}",
-                truncate_for_channel(&error_message, 320)
-            ));
+            return Ok(channel_safe_error_reply(&error_message));
         }
         return Ok("(no response)".to_string());
     }
@@ -570,15 +567,37 @@ async fn run_in_session(
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
         if let Some(error_message) = last_error {
-            return Ok(format!(
-                "⚠️ Error: {}",
-                truncate_for_channel(&error_message, 320)
-            ));
+            return Ok(channel_safe_error_reply(&error_message));
         }
         return Ok("(no response)".to_string());
     }
 
     Ok(content_buf)
+}
+
+fn channel_safe_reply_text(reply: &str) -> String {
+    if is_channel_auth_failure(reply) {
+        return channel_auth_unavailable_message().to_string();
+    }
+    reply.to_string()
+}
+
+fn channel_safe_error_reply(error_message: &str) -> String {
+    if is_channel_auth_failure(error_message) {
+        return channel_auth_unavailable_message().to_string();
+    }
+    format!("⚠️ Error: {}", truncate_for_channel(error_message, 320))
+}
+
+fn is_channel_auth_failure(value: &str) -> bool {
+    let upper = value.to_ascii_uppercase();
+    upper.contains("AUTHENTICATION_ERROR")
+        || upper.contains("ENGINE_ERROR: AUTHENTICATION")
+        || upper.contains("ENGINE_ERROR: UNAUTHORIZED")
+}
+
+fn channel_auth_unavailable_message() -> &'static str {
+    "The assistant is temporarily unavailable. An administrator has been notified."
 }
 
 async fn open_channel_event_stream(

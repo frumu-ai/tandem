@@ -66,6 +66,40 @@ fn provider_config_api_key(
 mod provider_auth_resolution_tests {
     use super::*;
 
+    fn codex_oauth(managed_by: &str, refresh_token: &str) -> tandem_core::OAuthProviderCredential {
+        tandem_core::OAuthProviderCredential {
+            provider_id: OPENAI_CODEX_PROVIDER_ID.to_string(),
+            access_token: "access-token".to_string(),
+            refresh_token: refresh_token.to_string(),
+            expires_at_ms: 1,
+            account_id: Some("acct".to_string()),
+            email: Some("operator@example.com".to_string()),
+            display_name: Some("Operator".to_string()),
+            managed_by: managed_by.to_string(),
+            api_key: None,
+        }
+    }
+
+    #[test]
+    fn codex_cli_oauth_credentials_can_refresh_in_process() {
+        assert!(openai_codex_oauth_refreshable_in_process(&codex_oauth(
+            "tandem",
+            "refresh-token"
+        )));
+        assert!(openai_codex_oauth_refreshable_in_process(&codex_oauth(
+            "codex-cli",
+            "refresh-token"
+        )));
+        assert!(!openai_codex_oauth_refreshable_in_process(&codex_oauth(
+            "codex-upload",
+            "refresh-token"
+        )));
+        assert!(!openai_codex_oauth_refreshable_in_process(&codex_oauth(
+            "codex-cli",
+            "   "
+        )));
+    }
+
     #[test]
     fn provider_api_key_resolution_preserves_runtime_precedence_over_env_fallback() {
         let provider_id = format!("review-precedence-{}", uuid::Uuid::new_v4());
@@ -75,17 +109,32 @@ mod provider_auth_resolution_tests {
             .expect("provider env key");
         std::env::set_var(&env_key, "env-key");
 
-        let runtime_auth = HashMap::from([(provider_id.to_ascii_lowercase(), "runtime-key".to_string())]);
-        let persisted_auth =
-            HashMap::from([(provider_id.to_ascii_lowercase(), "persisted-key".to_string())]);
+        let runtime_auth =
+            HashMap::from([(provider_id.to_ascii_lowercase(), "runtime-key".to_string())]);
+        let persisted_auth = HashMap::from([(
+            provider_id.to_ascii_lowercase(),
+            "persisted-key".to_string(),
+        )]);
         assert_eq!(
-            provider_config_api_key(&json!({}), &provider_id, &runtime_auth, &persisted_auth, true)
-                .as_deref(),
+            provider_config_api_key(
+                &json!({}),
+                &provider_id,
+                &runtime_auth,
+                &persisted_auth,
+                true
+            )
+            .as_deref(),
             Some("runtime-key")
         );
         assert_eq!(
-            provider_config_api_key(&json!({}), &provider_id, &HashMap::new(), &persisted_auth, true)
-                .as_deref(),
+            provider_config_api_key(
+                &json!({}),
+                &provider_id,
+                &HashMap::new(),
+                &persisted_auth,
+                true
+            )
+            .as_deref(),
             Some("persisted-key")
         );
         assert!(
@@ -264,13 +313,13 @@ async fn fetch_openrouter_models(
         persisted_auth,
         allow_shared_auth_sources,
     )
-        .or_else(|| {
-            allow_shared_auth_sources
-                .then(|| std::env::var("OPENCODE_OPENROUTER_API_KEY").ok())
-                .flatten()
-        })
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+    .or_else(|| {
+        allow_shared_auth_sources
+            .then(|| std::env::var("OPENCODE_OPENROUTER_API_KEY").ok())
+            .flatten()
+    })
+    .map(|value| value.trim().to_string())
+    .filter(|value| !value.is_empty());
     let Some(api_key) = api_key else {
         return Err(
             "OpenRouter requires an API key before live model discovery is available.".to_string(),
@@ -367,8 +416,7 @@ async fn fetch_openai_codex_models(
         runtime_auth,
         persisted_auth,
         allow_shared_auth_sources,
-    )
-    else {
+    ) else {
         return Err(
             "OpenAI Codex requires a connected account before live model discovery is available."
                 .to_string(),
@@ -442,8 +490,7 @@ async fn fetch_anthropic_models(
         runtime_auth,
         persisted_auth,
         allow_shared_auth_sources,
-    )
-    else {
+    ) else {
         return Err(
             "Anthropic requires an API key before live model discovery is available.".to_string(),
         );
@@ -627,24 +674,21 @@ async fn fetch_remote_provider_models(
                 }
             }
         },
-        "cohere" => match fetch_cohere_models(
-            cfg,
-            runtime_auth,
-            persisted_auth,
-            allow_shared_auth_sources,
-        )
-        .await
-        {
-            Ok(models) => ProviderCatalogFetchResult::Remote { models },
-            Err(message) => {
-                if message.contains("requires an API key") {
-                    ProviderCatalogFetchResult::Unavailable { message }
-                } else {
-                    tracing::warn!("cohere catalog discovery failed: {message}");
-                    ProviderCatalogFetchResult::Error { message }
+        "cohere" => {
+            match fetch_cohere_models(cfg, runtime_auth, persisted_auth, allow_shared_auth_sources)
+                .await
+            {
+                Ok(models) => ProviderCatalogFetchResult::Remote { models },
+                Err(message) => {
+                    if message.contains("requires an API key") {
+                        ProviderCatalogFetchResult::Unavailable { message }
+                    } else {
+                        tracing::warn!("cohere catalog discovery failed: {message}");
+                        ProviderCatalogFetchResult::Error { message }
+                    }
                 }
             }
-        },
+        }
         "azure" | "vertex" | "bedrock" | "copilot" | "ollama" => {
             ProviderCatalogFetchResult::Unavailable {
                 message: remote_catalog_support_message(provider_id),

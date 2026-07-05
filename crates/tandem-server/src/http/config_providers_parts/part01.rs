@@ -585,6 +585,7 @@ pub(super) async fn provider_auth(
 
 pub(super) async fn provider_oauth_authorize(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Extension(tenant_context): Extension<TenantContext>,
     Path(id): Path<String>,
 ) -> Json<Value> {
@@ -603,14 +604,17 @@ pub(super) async fn provider_oauth_authorize(
     let state_token = generate_oauth_state();
     let effective_cfg = state.config.get_effective_value().await;
     let hosted_managed = hosted_managed_from_config(&effective_cfg);
-    let hosted_public_url = hosted_public_url_from_config(&effective_cfg)
-        .or_else(|| {
-            let server_base_url = state.server_base_url();
-            let trimmed = server_base_url.trim().trim_end_matches('/').to_string();
-            (!trimmed.is_empty()).then_some(trimmed)
-        })
-        .unwrap_or_else(|| "http://127.0.0.1:39731".to_string());
-    if provider_id == OPENAI_CODEX_PROVIDER_ID && !hosted_managed {
+    let public_panel_base_url = provider_oauth_public_panel_base_url(&effective_cfg, &headers);
+    let engine_base_url = provider_oauth_engine_base_url(&state);
+    let callback_base_url = public_panel_base_url
+        .as_deref()
+        .unwrap_or(engine_base_url.as_str());
+    let use_control_panel_callback = public_panel_base_url.is_some();
+    let use_hosted_codex_callback = hosted_managed
+        || use_control_panel_callback
+        || !provider_oauth_base_url_is_loopback(&engine_base_url);
+
+    if provider_id == OPENAI_CODEX_PROVIDER_ID && !use_hosted_codex_callback {
         if let Err(error) = ensure_openai_codex_local_callback_server(state.clone()).await {
             return Json(json!({
                 "ok": false,
@@ -618,12 +622,12 @@ pub(super) async fn provider_oauth_authorize(
             }));
         }
     }
-    let redirect_uri = if provider_id == OPENAI_CODEX_PROVIDER_ID && hosted_managed {
-        provider_oauth_redirect_uri_for_base(&hosted_public_url, &provider_id)
-    } else if provider_id == OPENAI_CODEX_PROVIDER_ID {
+    let redirect_uri = if provider_id == OPENAI_CODEX_PROVIDER_ID && !use_hosted_codex_callback {
         OPENAI_CODEX_LOCAL_CALLBACK_URI.to_string()
+    } else if use_control_panel_callback {
+        provider_oauth_redirect_uri_for_control_panel_base(callback_base_url, &provider_id)
     } else {
-        provider_oauth_redirect_uri_for_base(&hosted_public_url, &provider_id)
+        provider_oauth_redirect_uri_for_base(callback_base_url, &provider_id)
     };
     let authorization_url =
         build_openai_codex_authorization_url(&redirect_uri, &code_challenge, &state_token);
@@ -1057,14 +1061,14 @@ mod tests {
     }
 
     #[test]
-    fn hosted_codex_redirect_uses_public_callback_route() {
-        let url = provider_oauth_redirect_uri_for_base(
+    fn hosted_codex_redirect_uses_control_panel_callback_route() {
+        let url = provider_oauth_redirect_uri_for_control_panel_base(
             "https://test.hosted.tandem.ac",
             OPENAI_CODEX_PROVIDER_ID,
         );
         assert_eq!(
             url,
-            "https://test.hosted.tandem.ac/provider/openai-codex/oauth/callback"
+            "https://test.hosted.tandem.ac/api/engine/provider/openai-codex/oauth/callback"
         );
     }
 
@@ -1819,6 +1823,95 @@ fn hosted_public_url_from_config(cfg: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+fn provider_oauth_public_base_url_from_env() -> Option<String> {
+    [
+        "TANDEM_CONTROL_PANEL_PUBLIC_URL",
+        "HOSTED_CONTROL_PANEL_PUBLIC_URL",
+        "HOSTED_PUBLIC_URL",
+    ]
+    .into_iter()
+    .find_map(|key| {
+        std::env::var(key)
+            .ok()
+            .and_then(|value| normalize_provider_oauth_base_url(&value))
+    })
+}
+
+fn provider_oauth_public_base_url_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
+    for name in ["origin", "referer"] {
+        if let Some(base) = headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .and_then(normalize_provider_oauth_base_url)
+        {
+            return Some(base);
+        }
+    }
+
+    let host = headers
+        .get("x-forwarded-host")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.split(',').next().unwrap_or(value).trim())
+        .filter(|value| !value.is_empty())?;
+    let proto = headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.split(',').next().unwrap_or(value).trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("https");
+    normalize_provider_oauth_base_url(&format!("{proto}://{host}"))
+}
+
+fn provider_oauth_public_panel_base_url(
+    cfg: &Value,
+    headers: &axum::http::HeaderMap,
+) -> Option<String> {
+    hosted_public_url_from_config(cfg)
+        .and_then(|value| normalize_provider_oauth_base_url(&value))
+        .or_else(provider_oauth_public_base_url_from_env)
+        .or_else(|| provider_oauth_public_base_url_from_headers(headers))
+        .filter(|value| !provider_oauth_base_url_is_loopback(value))
+}
+
+fn provider_oauth_engine_base_url(state: &AppState) -> String {
+    let server_base_url = state.server_base_url();
+    normalize_provider_oauth_base_url(&server_base_url)
+        .unwrap_or_else(|| "http://127.0.0.1:39731".to_string())
+}
+
+fn normalize_provider_oauth_base_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    let parsed = reqwest::Url::parse(trimmed).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = parsed.host_str()?;
+    let mut out = format!("{}://{}", parsed.scheme(), host);
+    if let Some(port) = parsed.port() {
+        out.push(':');
+        out.push_str(&port.to_string());
+    }
+    Some(out)
+}
+
+fn provider_oauth_base_url_is_loopback(base_url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(base_url.trim()) else {
+        return false;
+    };
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
+}
+
 fn provider_requires_api_key(provider_id: &str) -> bool {
     !matches!(
         canonical_provider_id(provider_id).as_str(),
@@ -1832,6 +1925,11 @@ fn provider_oauth_redirect_uri_for_base(base_url: &str, provider_id: &str) -> St
         return format!("{base}/provider/{provider_id}/oauth/callback");
     }
     format!("{base}/provider/{provider_id}/oauth/callback")
+}
+
+fn provider_oauth_redirect_uri_for_control_panel_base(base_url: &str, provider_id: &str) -> String {
+    let base = base_url.trim().trim_end_matches('/').to_string();
+    format!("{base}/api/engine/provider/{provider_id}/oauth/callback")
 }
 
 fn generate_oauth_state() -> String {
