@@ -163,11 +163,15 @@ fn build_read_model(events: &[ProtectedAuditEnvelope], recent_limit: usize) -> V
         .map(|count| count.saturating_sub(1))
         .sum();
 
-    let recent = events
+    // The ledger loader orders same-millisecond ties by random event_id, so
+    // "newest" must be decided by the monotonic ledger seq, not input order.
+    let mut ordered = events.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|event| (event.created_at_ms, event.seq));
+    let recent = ordered
         .iter()
         .rev()
         .take(recent_limit)
-        .map(recent_summary)
+        .map(|event| recent_summary(event))
         .collect::<Vec<_>>();
 
     json!({

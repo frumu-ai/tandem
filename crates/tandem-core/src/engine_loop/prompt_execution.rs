@@ -382,6 +382,7 @@ impl EngineLoop {
                                         None,
                                         &injected,
                                         tandem_data_boundary::DataBoundaryOperationKind::ContextAssembly,
+                                        observability_tenant,
                                     )
                                 {
                                     self.event_bus.publish(boundary_event);

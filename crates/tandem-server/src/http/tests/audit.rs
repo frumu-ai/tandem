@@ -581,6 +581,11 @@ async fn data_boundary_monitoring_aggregates_tenant_scoped_counts() {
         .all(|key| key.starts_with("org-a/")));
     let serialized = serde_json::to_string(&body).expect("json");
     assert!(!serialized.contains("sha256:other-tenant"));
+    // Newest-first is decided by ledger seq, so same-millisecond bursts
+    // still put the last-seeded tenant-A record (the source-guard event)
+    // at the head of the recent list.
+    assert_eq!(body["recent"][0]["event_type"], "data_boundary.evaluated");
+    assert_eq!(body["recent"][0]["source_kind"], "tool_result");
 
     // Dimension filters narrow the same read model.
     let resp = app

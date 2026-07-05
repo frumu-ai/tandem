@@ -18,7 +18,7 @@ use tandem_data_boundary::{
     SensitiveDataClass,
 };
 use tandem_providers::ChatMessage;
-use tandem_types::EngineEvent;
+use tandem_types::{EngineEvent, TenantContext};
 
 /// For `data:` URLs, the byte length of the metadata prefix (through the
 /// comma) that is safe and useful to scan; `None` for every other URL form.
@@ -458,6 +458,7 @@ pub(super) fn evaluate_context_source(
     tool_name: Option<&str>,
     content: &str,
     operation_kind: DataBoundaryOperationKind,
+    tenant_context: Option<&TenantContext>,
 ) -> Option<EngineEvent> {
     if data_boundary_mode() == DataBoundaryMode::Off {
         return None;
@@ -466,9 +467,20 @@ pub(super) fn evaluate_context_source(
     // Sources are scanned before a provider is chosen; enforcement decisions
     // are meaningless here, so the policy is pinned to audit mode.
     let policy = data_boundary_policy_from_env(DataBoundaryMode::Audit);
+    // Carry the session's tenant so the audit bridge attributes the record
+    // to the right tenant; a local-implicit tenant stays unattributed (the
+    // same "never positively established" rule as the dispatch gate).
+    let tenant = tenant_context
+        .filter(|tenant| !tenant.is_local_implicit())
+        .map(|tenant| DataBoundaryTenantRef {
+            organization_id: Some(tenant.org_id.clone()),
+            workspace_id: Some(tenant.workspace_id.clone()),
+            deployment_id: tenant.deployment_id.clone(),
+        })
+        .unwrap_or_default();
     let input = DataBoundaryInput {
         input_id: format!("dbi_src_{session_id}"),
-        tenant: DataBoundaryTenantRef::default(),
+        tenant,
         provider: DataBoundaryProviderRef {
             provider_id: "pending_dispatch".to_string(),
             model_id: None,
@@ -832,6 +844,46 @@ mod tests {
             }
             _ => panic!("expected strict fail-closed Blocked outcome"),
         }
+    }
+
+    #[test]
+    #[serial_test::serial(data_boundary_env)]
+    fn source_guard_attributes_explicit_tenant_and_drops_local_implicit() {
+        // Codex P2 (PR #1788): source-guard events must carry the session's
+        // tenant so the audit bridge files them under the right tenant and
+        // the tenant-scoped monitoring read model can see them.
+        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "audit");
+        let mut tenant = TenantContext::local_implicit();
+        tenant.org_id = "org-src".to_string();
+        tenant.workspace_id = "workspace-src".to_string();
+        let event = evaluate_context_source(
+            "session-1",
+            "tool_result",
+            Some("web_fetch"),
+            "api_key=sk-live-abcdef1234567890",
+            DataBoundaryOperationKind::ToolCall,
+            Some(&tenant),
+        )
+        .expect("findings must produce an event");
+        assert_eq!(event.properties["tenant"]["organization_id"], "org-src");
+        assert_eq!(event.properties["tenant"]["workspace_id"], "workspace-src");
+
+        let implicit = evaluate_context_source(
+            "session-1",
+            "tool_result",
+            Some("web_fetch"),
+            "api_key=sk-live-abcdef1234567890",
+            DataBoundaryOperationKind::ToolCall,
+            Some(&TenantContext::local_implicit()),
+        )
+        .expect("findings must produce an event");
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
+        assert!(
+            implicit.properties["tenant"]
+                .get("organization_id")
+                .is_none(),
+            "local-implicit tenancy must stay unattributed"
+        );
     }
 
     #[test]

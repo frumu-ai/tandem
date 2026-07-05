@@ -1543,6 +1543,7 @@ impl EngineLoop {
             Some(&tool),
             &output,
             tandem_data_boundary::DataBoundaryOperationKind::ToolCall,
+            tool_effect_tenant_context.as_ref(),
         ) {
             self.event_bus.publish(boundary_event);
         }
