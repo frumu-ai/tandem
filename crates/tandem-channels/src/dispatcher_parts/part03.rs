@@ -590,10 +590,11 @@ fn channel_safe_error_reply(error_message: &str) -> String {
 }
 
 fn is_channel_auth_failure(value: &str) -> bool {
-    let upper = value.to_ascii_uppercase();
-    upper.contains("AUTHENTICATION_ERROR")
-        || upper.contains("ENGINE_ERROR: AUTHENTICATION")
-        || upper.contains("ENGINE_ERROR: UNAUTHORIZED")
+    let upper = value.trim_start().to_ascii_uppercase();
+    upper.starts_with("AUTHENTICATION_ERROR")
+        || upper.starts_with("UNAUTHORIZED")
+        || upper.starts_with("ENGINE_ERROR: AUTHENTICATION")
+        || upper.starts_with("ENGINE_ERROR: UNAUTHORIZED")
 }
 
 fn channel_auth_unavailable_message() -> &'static str {

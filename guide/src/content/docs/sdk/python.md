@@ -147,7 +147,7 @@ payload = {
             "type": "file",
             "mime": "image/png",
             "filename": "diagram.png",
-            "url": "/srv/tandem/channel_uploads/telegram/667596788/diagram.png",
+            "url": "/srv/tandem/channel_uploads/telegram/123456789/diagram.png",
         },
         {"type": "text", "text": "Explain this diagram in plain English."},
     ]

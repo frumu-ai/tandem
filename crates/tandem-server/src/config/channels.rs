@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelegramConfigFile {
+    #[serde(default)]
     pub bot_token: String,
     /// Telegram chat ID where approval cards should be posted.
     #[serde(default)]
@@ -34,6 +35,7 @@ pub struct TelegramConfigFile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscordConfigFile {
+    #[serde(default)]
     pub bot_token: String,
     /// Discord channel ID where approval cards should be posted.
     ///
@@ -68,7 +70,9 @@ pub struct DiscordConfigFile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlackConfigFile {
+    #[serde(default)]
     pub bot_token: String,
+    #[serde(default)]
     pub channel_id: String,
     #[serde(default = "default_allow_all")]
     pub allowed_users: Vec<String>,
@@ -132,4 +136,51 @@ fn normalize_non_empty_list(raw: Vec<String>) -> Vec<String> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn partial_channel_entries_without_tokens_still_deserialize() {
+        let cfg: ChannelsConfigFile = serde_json::from_value(json!({
+            "telegram": {
+                "bot_token": "tg-secret",
+                "allowed_users": ["123456789"],
+                "security_profile": "trusted_team"
+            },
+            "discord": {
+                "allowed_users": ["*"],
+                "mention_only": true
+            },
+            "slack": {
+                "channel_id": "C123",
+                "allowed_users": ["U1"]
+            }
+        }))
+        .expect("partial channel config should deserialize");
+
+        assert_eq!(
+            cfg.telegram
+                .as_ref()
+                .map(|telegram| telegram.bot_token.as_str()),
+            Some("tg-secret")
+        );
+        assert_eq!(
+            cfg.discord
+                .as_ref()
+                .map(|discord| discord.bot_token.as_str()),
+            Some("")
+        );
+        assert_eq!(
+            cfg.slack.as_ref().map(|slack| slack.bot_token.as_str()),
+            Some("")
+        );
+        assert_eq!(
+            cfg.slack.as_ref().map(|slack| slack.channel_id.as_str()),
+            Some("C123")
+        );
+    }
 }

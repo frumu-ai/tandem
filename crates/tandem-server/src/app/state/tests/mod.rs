@@ -15,6 +15,38 @@ use tandem_types::{
     VerifiedTenantContext,
 };
 
+#[tokio::test]
+async fn channel_runtime_config_filters_partial_channel_entries() {
+    let state = crate::test_support::test_state().await;
+    let channels: crate::config::channels::ChannelsConfigFile = serde_json::from_value(json!({
+        "telegram": {
+            "bot_token": " tg-secret ",
+            "allowed_users": ["123456789"],
+            "security_profile": "trusted_team"
+        },
+        "discord": {
+            "allowed_users": ["*"],
+            "mention_only": true
+        },
+        "slack": {
+            "channel_id": "C123",
+            "allowed_users": ["U1"]
+        }
+    }))
+    .expect("channels config");
+
+    let runtime = build_channels_config(&state, &channels)
+        .await
+        .expect("at least telegram should be runnable");
+
+    assert_eq!(
+        runtime.telegram.as_ref().map(|cfg| cfg.bot_token.as_str()),
+        Some("tg-secret")
+    );
+    assert!(runtime.discord.is_none());
+    assert!(runtime.slack.is_none());
+}
+
 #[allow(dead_code)]
 pub(crate) struct AutomationNodeBuilder {
     node: AutomationFlowNode,

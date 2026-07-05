@@ -1645,6 +1645,9 @@ mod tests {
         assert!(!safe.contains("ENGINE_ERROR"));
         assert!(!safe.contains("AUTHENTICATION_ERROR"));
         assert_eq!(channel_safe_reply_text("ordinary reply"), "ordinary reply");
+
+        let explanatory = "The previous engine returned AUTHENTICATION_ERROR, but this answer is valid.";
+        assert_eq!(channel_safe_reply_text(explanatory), explanatory);
     }
 
     #[test]

@@ -152,7 +152,7 @@ Typical pattern:
 Example:
 
 ```text
-/srv/tandem/channel_uploads/telegram/667596788/1772310564423_photo_305646779.jpg
+/srv/tandem/channel_uploads/telegram/123456789/1772310564423_photo_305646779.jpg
 ```
 
 ## Model and media compatibility

@@ -760,14 +760,22 @@ impl AppState {
         }
 
         if let Some(channels_cfg) = build_channels_config(self, &parsed.channels).await {
+            let connected_channel_names = [
+                ("telegram", channels_cfg.telegram.is_some()),
+                ("discord", channels_cfg.discord.is_some()),
+                ("slack", channels_cfg.slack.is_some()),
+            ];
             let listeners = tandem_channels::start_channel_listeners_with_diagnostics(
                 channels_cfg,
                 diagnostics.clone(),
             )
             .await;
             runtime.listeners = Some(listeners);
-            for status in status_map.values_mut() {
-                if status.enabled {
+            for (name, connected) in connected_channel_names {
+                if connected {
+                    let Some(status) = status_map.get_mut(name) else {
+                        continue;
+                    };
                     status.connected = true;
                 }
             }

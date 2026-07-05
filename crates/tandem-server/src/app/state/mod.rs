@@ -475,16 +475,26 @@ async fn build_channels_config(
     if channels.telegram.is_none() && channels.discord.is_none() && channels.slack.is_none() {
         return None;
     }
-    Some(ChannelsConfig {
-        telegram: channels.telegram.clone().map(|cfg| TelegramConfig {
-            bot_token: cfg.bot_token,
+    let telegram = channels.telegram.clone().and_then(|cfg| {
+        let bot_token = cfg.bot_token.trim().to_string();
+        if bot_token.is_empty() {
+            return None;
+        }
+        Some(TelegramConfig {
+            bot_token,
             allowed_users: config::channels::normalize_allowed_users_or_wildcard(cfg.allowed_users),
             mention_only: cfg.mention_only,
             style_profile: cfg.style_profile,
             security_profile: cfg.security_profile,
-        }),
-        discord: channels.discord.clone().map(|cfg| DiscordConfig {
-            bot_token: cfg.bot_token,
+        })
+    });
+    let discord = channels.discord.clone().and_then(|cfg| {
+        let bot_token = cfg.bot_token.trim().to_string();
+        if bot_token.is_empty() {
+            return None;
+        }
+        Some(DiscordConfig {
+            bot_token,
             guild_id: cfg.guild_id.and_then(|value| {
                 let trimmed = value.trim().to_string();
                 if trimmed.is_empty() {
@@ -496,14 +506,29 @@ async fn build_channels_config(
             allowed_users: config::channels::normalize_allowed_users_or_wildcard(cfg.allowed_users),
             mention_only: cfg.mention_only,
             security_profile: cfg.security_profile,
-        }),
-        slack: channels.slack.clone().map(|cfg| SlackConfig {
-            bot_token: cfg.bot_token,
-            channel_id: cfg.channel_id,
+        })
+    });
+    let slack = channels.slack.clone().and_then(|cfg| {
+        let bot_token = cfg.bot_token.trim().to_string();
+        let channel_id = cfg.channel_id.trim().to_string();
+        if bot_token.is_empty() || channel_id.is_empty() {
+            return None;
+        }
+        Some(SlackConfig {
+            bot_token,
+            channel_id,
             allowed_users: config::channels::normalize_allowed_users_or_wildcard(cfg.allowed_users),
             mention_only: cfg.mention_only,
             security_profile: cfg.security_profile,
-        }),
+        })
+    });
+    if telegram.is_none() && discord.is_none() && slack.is_none() {
+        return None;
+    }
+    Some(ChannelsConfig {
+        telegram,
+        discord,
+        slack,
         server_base_url: state.server_base_url(),
         api_token: state.api_token().await.unwrap_or_default(),
         context_assertion: std::env::var("TANDEM_CHANNEL_CONTEXT_ASSERTION")
