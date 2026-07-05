@@ -701,6 +701,12 @@ impl Tool for MemoryStoreTool {
             }
         };
 
+        if is_channel_tool_context(&args) && matches!(tier, MemoryTier::Global) {
+            return Ok(ToolResult {
+                output: "channel memory_store cannot write global memory".to_string(),
+                metadata: json!({"ok": false, "reason": "channel_global_scope_blocked"}),
+            });
+        }
         if matches!(tier, MemoryTier::Session) && session_id.is_none() {
             return Ok(ToolResult {
                 output: "tier=session requires session_id".to_string(),
@@ -1097,22 +1103,40 @@ fn memory_visible_scope(args: &Value) -> MemoryVisibleScope {
     MemoryVisibleScope::Global
 }
 
-fn memory_session_id(args: &Value) -> Option<String> {
-    args.get("session_id")
-        .or_else(|| args.get("__session_id"))
+/// True when the engine injected a trusted channel identity into the tool args.
+/// `__channel_scope_id` is only present for sessions whose `source_kind` is
+/// `channel` (see `engine_loop` tool-arg injection), so it is a reliable marker
+/// that the caller is a channel model whose scope must be pinned by the engine.
+fn is_channel_tool_context(args: &Value) -> bool {
+    hidden_arg_string(args, "__channel_scope_id").is_some()
+}
+
+fn trimmed_arg_string(args: &Value, key: &str) -> Option<String> {
+    args.get(key)
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(ToString::to_string)
 }
 
+fn memory_session_id(args: &Value) -> Option<String> {
+    // For channel sessions the effective scope must come from the engine-injected
+    // `__session_id`, never a model-supplied `session_id`; otherwise a
+    // prompt-injected tool call could read/write another chat's memory (TAN-603).
+    if is_channel_tool_context(args) {
+        return trimmed_arg_string(args, "__session_id");
+    }
+    trimmed_arg_string(args, "session_id").or_else(|| trimmed_arg_string(args, "__session_id"))
+}
+
 fn memory_project_id(args: &Value) -> Option<String> {
-    args.get("project_id")
-        .or_else(|| args.get("__project_id"))
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(ToString::to_string)
+    // Channel sessions are pinned to the engine-injected `__project_id` (the
+    // trusted `channel-public::…` scope key derived from the channel scope id),
+    // ignoring any model-supplied `project_id` override (TAN-603).
+    if is_channel_tool_context(args) {
+        return trimmed_arg_string(args, "__project_id");
+    }
+    trimmed_arg_string(args, "project_id").or_else(|| trimmed_arg_string(args, "__project_id"))
 }
 
 fn global_memory_enabled(args: &Value) -> bool {

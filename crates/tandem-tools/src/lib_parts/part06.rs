@@ -871,6 +871,64 @@ mod tests {
     }
 
     #[test]
+    fn channel_memory_scope_ignores_model_supplied_overrides() {
+        // A prompt-injected tool call could supply session_id/project_id; for a
+        // channel session the engine-injected trusted scope must win (TAN-603).
+        let args = json!({
+            "session_id": "attacker-session",
+            "project_id": "attacker-project",
+            "__session_id": "trusted-session",
+            "__project_id": "trusted-project",
+            "__channel_platform": "discord",
+            "__channel_user_id": "user-x",
+            "__channel_scope_id": "room-x"
+        });
+        assert!(is_channel_tool_context(&args));
+        assert_eq!(memory_session_id(&args).as_deref(), Some("trusted-session"));
+        assert_eq!(memory_project_id(&args).as_deref(), Some("trusted-project"));
+    }
+
+    #[test]
+    fn non_channel_memory_scope_still_honors_explicit_args() {
+        // Non-channel callers keep the existing explicit-over-hidden precedence.
+        let args = json!({
+            "session_id": "explicit-session",
+            "project_id": "explicit-project",
+            "__session_id": "hidden-session",
+            "__project_id": "hidden-project"
+        });
+        assert!(!is_channel_tool_context(&args));
+        assert_eq!(memory_session_id(&args).as_deref(), Some("explicit-session"));
+        assert_eq!(memory_project_id(&args).as_deref(), Some("explicit-project"));
+    }
+
+    #[tokio::test]
+    async fn channel_memory_store_blocks_global_tool_scope() {
+        let tool = MemoryStoreTool;
+        let result = tool
+            .execute(json!({
+                "content": "channel note",
+                "tier": "global",
+                "allow_global": true,
+                "__session_id": "session-channel-store-global-block",
+                "__project_id": "project-channel-store-global-block",
+                "__channel_platform": "discord",
+                "__channel_user_id": "user-store-global-block",
+                "__channel_scope_id": "room-store-global-block"
+            }))
+            .await
+            .expect("memory_store should return ToolResult");
+        assert_eq!(result.metadata["ok"], json!(false));
+        assert_eq!(
+            result
+                .metadata
+                .get("reason")
+                .and_then(|value| value.as_str()),
+            Some("channel_global_scope_blocked")
+        );
+    }
+
+    #[test]
     fn memory_scope_policy_can_disable_global_visibility() {
         let args = json!({
             "__session_id": "session-123",
