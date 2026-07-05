@@ -1,12 +1,19 @@
 # Tandem Secure Data Boundary Module
 
-Status: crate foundation implemented in `crates/tandem-data-boundary`
-(Cycle 1), plus the first audit-only runtime integration (Cycle 2): the engine
-loop evaluates every assembled provider request behind
-`TANDEM_DATA_BOUNDARY_MODE` (default `off`), emits `data_boundary.*` runtime
-events, and tandem-server bridges consequential decisions into the protected
-audit ledger. Evaluation never blocks, transforms, or reroutes dispatch yet —
-enforcement is Cycle 3.
+Status: crate foundation (Cycle 1), audit-mode runtime integration (Cycle 2),
+and configured enforcement (Cycle 3) are implemented. Behind
+`TANDEM_DATA_BOUNDARY_MODE` (default `off`) the engine loop evaluates every
+assembled provider request, emits `data_boundary.*` runtime events, and
+tandem-server bridges consequential decisions into the protected audit
+ledger. In `enforce` mode the dispatch gate blocks prohibited/unapproved raw
+egress, redacts/tokenizes configured classes per message before send,
+requires human approval via the permission surface for approval classes, and
+fails closed on `RouteToLocal` (no routing capability yet — see
+`DATA_BOUNDARY_ROUTING_CONTRACT.md`). Providers classify via
+`TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES` plus builtin loopback defaults;
+`TANDEM_DATA_BOUNDARY_STRICT` fails closed on unclassified providers or
+missing tenant context. Audit-only guard hooks also scan tool/MCP results and
+prompt-context-hook injections as they enter context.
 
 > Naming note: this document describes the `tandem-data-boundary` crate — the
 > runtime boundary between assembled payloads and external LLM providers. It is
@@ -75,12 +82,15 @@ sha2, `#![forbid(unsafe_code)]`) providing:
 
 ## What it does not do yet
 
-* The only runtime integration is the audit-only engine-loop gate at the
-  provider-dispatch seam (`data_boundary_gate.rs`, configured via
-  `TANDEM_DATA_BOUNDARY_*` — see `docs/ENGINE_CONFIGURATION.md`). Decisions
-  are never enforced yet, and the direct server sends, post-tool synthesis
-  send, and memory-distillation egress paths listed in
-  `docs/DATA_BOUNDARY_INTEGRATION_MAP.md` remain uncovered.
+* Enforcement covers the main engine-loop dispatch seam only. The direct
+  server sends, post-tool synthesis send, and memory-distillation egress
+  paths listed in `docs/DATA_BOUNDARY_INTEGRATION_MAP.md` remain uncovered,
+  and workflow-artifact guard hooks are a tracked follow-up.
+* `RouteToLocal` has no routing capability: enforce mode fails closed with
+  `route_to_local_unavailable` per the routing contract.
+* Approval asks reuse the generic permission surface; `always`-style standing
+  rules are not consulted by the boundary gate (every sensitive dispatch asks
+  again), and a dedicated ask kind is future work.
 * No LLM-based classification; detection is deterministic only.
 * No raw sensitive value persistence, and no reversible tokenization vault —
   the tokenization map is placeholder-only. Future persistence should go

@@ -323,6 +323,37 @@ fn validate_data_boundary_config(errors: &mut Vec<String>) {
             }
         }
     }
+    if let Ok(value) = std::env::var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES") {
+        for entry in value.split(',') {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                continue;
+            }
+            let valid = entry.split_once('=').is_some_and(|(id, class)| {
+                !id.trim().is_empty()
+                    && tandem_data_boundary::ProviderBoundaryClass::parse(class).is_some()
+            });
+            if !valid {
+                errors.push(format!(
+                    "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES entry `{entry}` is invalid; expected provider_id=local|customer_hosted|approved_external|unapproved_external|prohibited|unknown"
+                ));
+            }
+        }
+    }
+    if let Ok(value) = std::env::var("TANDEM_DATA_BOUNDARY_STRICT") {
+        let normalized = value.trim().to_ascii_lowercase();
+        if !normalized.is_empty()
+            && !matches!(
+                normalized.as_str(),
+                "1" | "true" | "yes" | "on" | "0" | "false" | "no" | "off"
+            )
+        {
+            errors.push(format!(
+                "TANDEM_DATA_BOUNDARY_STRICT has invalid value `{}`; expected a boolean",
+                value.trim()
+            ));
+        }
+    }
     if let Ok(value) = std::env::var("TANDEM_DATA_BOUNDARY_MAX_PAYLOAD_BYTES") {
         if !value.trim().is_empty()
             && value
@@ -678,6 +709,8 @@ const CONFIG_VARS: &[ConfigVar] = &[
     ConfigVar { name: "TANDEM_DATA_BOUNDARY_APPROVAL_CLASSES", default: "unset", notes: "Comma-separated sensitive data classes requiring approval (e.g. credential,customer_data)." },
     ConfigVar { name: "TANDEM_DATA_BOUNDARY_REDACT_CLASSES", default: "unset", notes: "Comma-separated sensitive data classes to redact before external dispatch." },
     ConfigVar { name: "TANDEM_DATA_BOUNDARY_BLOCK_CLASSES", default: "unset", notes: "Comma-separated sensitive data classes that must never leave for a provider." },
+    ConfigVar { name: "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES", default: "unset", notes: "Comma-separated provider_id=boundary_class mappings (e.g. openai=approved_external). Unmapped non-loopback providers classify as unknown." },
+    ConfigVar { name: "TANDEM_DATA_BOUNDARY_STRICT", default: "false", notes: "Strict enterprise posture: enforce mode fails closed on missing tenant context or unknown provider classification." },
     ConfigVar { name: "TANDEM_API_TOKEN", default: "unset", notes: "Explicit HTTP transport bearer token. Secret value is never printed by config check." },
     ConfigVar { name: "TANDEM_API_TOKEN_FILE", default: "unset", notes: "File containing the HTTP transport bearer token. Required in hosted/enterprise mode unless --api-token is supplied." },
     ConfigVar { name: "TANDEM_UNSAFE_NO_API_TOKEN", default: "false", notes: "Local loopback development only; rejected in hosted/enterprise mode." },

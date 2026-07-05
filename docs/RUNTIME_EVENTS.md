@@ -177,16 +177,16 @@ not every key.
 
 ### Data boundary
 
-Emitted by the audit-only provider-dispatch evaluation (`TANDEM_DATA_BOUNDARY_MODE`, see `docs/DATA_BOUNDARY_MODULE.md`). Payloads carry classes, counts, hashes, spans, and policy fingerprints — never raw prompt, tool, memory, or model content.
+Emitted by the provider-dispatch boundary evaluation and the audit-only context-source guards (`TANDEM_DATA_BOUNDARY_MODE`, see `docs/DATA_BOUNDARY_MODULE.md`). Payloads carry classes, counts, hashes, spans, and policy fingerprints — never raw prompt, tool, memory, or model content. `enforced` distinguishes audit evidence from applied enforcement; source-guard events carry `sourceKind` (`tool_result`, `prompt_context_hook`).
 
 | Event type                       | Fires when                                                            | Key payload fields                                                                                        |
 | -------------------------------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `data_boundary.evaluated`        | The assembled provider request (text + attachment URLs) was evaluated. The audit-only gate emits every decision under this name — the decided action rides in `action`/`decidedEventKind` with `enforced: false`. | `sessionID`, `messageID`, `providerID`, `modelID`, `action`, `enforced`, `decidedEventKind`, `finding_summary`, `payload_hash`, `policy_fingerprint`, `reason_codes`, `decision_latency_ms` |
-| `data_boundary.redacted`         | Policy decided the payload should be redacted.                        | same as `data_boundary.evaluated`                                                                          |
-| `data_boundary.tokenized`        | Policy decided the payload should be tokenized.                       | same as `data_boundary.evaluated`                                                                          |
-| `data_boundary.blocked`          | Policy decided the dispatch should be blocked (enforce mode, future). | same as `data_boundary.evaluated`                                                                          |
-| `data_boundary.approval_required`| Policy requires approval before dispatch (enforce mode, future).      | same as `data_boundary.evaluated`                                                                          |
-| `data_boundary.routed_local`     | Policy requires routing to a local/private model (enforce mode, future). | same as `data_boundary.evaluated`                                                                       |
+| `data_boundary.evaluated`        | A request or context source was evaluated without an enforcement outcome: every audit-mode decision, enforce-mode allows, and source-guard findings. | `sessionID`, `messageID`, `providerID`, `modelID`, `action`, `enforced`, `decidedEventKind`, `classificationSource`, `sourceKind`, `finding_summary`, `payload_hash`, `policy_fingerprint`, `reason_codes`, `decision_latency_ms` |
+| `data_boundary.redacted`         | Enforce mode redacted the dispatched payload per message.             | same as `data_boundary.evaluated` plus `transformedSpans`                                                  |
+| `data_boundary.tokenized`        | Enforce mode tokenized the dispatched payload per message.            | same as `data_boundary.evaluated` plus `transformedSpans`                                                  |
+| `data_boundary.blocked`          | Enforce mode blocked the dispatch; the session run fails with an audit-safe error. | same as `data_boundary.evaluated`                                                          |
+| `data_boundary.approval_required`| Enforce mode requires human approval before dispatch (permission ask `data_boundary_egress`; deny/timeout fail closed). | same as `data_boundary.evaluated`                                     |
+| `data_boundary.routed_local`     | Enforce mode required local routing; fails closed with `route_to_local_unavailable` until routing exists. | same as `data_boundary.evaluated`                                                  |
 
 ### Tool execution & governance
 
