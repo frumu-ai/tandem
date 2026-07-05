@@ -682,27 +682,54 @@ fn workflow_artifact_guard_covers_the_folded_delivery_artifact() {
         })),
     };
     let secret = "sk-live-abcdef1234567890";
-    let upstream_inputs = vec![json!({
-        "alias": "report_body",
-        "from_step_id": "generate_report",
-        "output": {
-            "content": {
-                "path": ".tandem/artifacts/generate-report.html",
-                "text": format!(
-                    "<h1>Quarterly Report</h1><p>api_key={} must be rotated.</p>",
-                    secret
-                )
+    // A clean decoy that out-lengths the sensitive artifact ONLY before
+    // normalization: its text is JSON whose bulk is a `context_writes` blob
+    // the prompt path strips. If the guard selected from pre-normalized
+    // inputs it would scan this decoy, find nothing, and emit no event while
+    // the prompt embeds the sensitive artifact (Codex P2 on PR #1789).
+    let decoy_text = serde_json::to_string(&json!({
+        "summary": "clean upstream summary",
+        "context_writes": (0..40)
+            .map(|index| format!("ctx:wfplan-decoy-{index}:node:artifact"))
+            .collect::<Vec<_>>(),
+    }))
+    .expect("decoy json");
+    let upstream_inputs = vec![
+        json!({
+            "alias": "report_body",
+            "from_step_id": "generate_report",
+            "output": {
+                "content": {
+                    "path": ".tandem/artifacts/generate-report.html",
+                    "text": format!(
+                        "<h1>Quarterly Report</h1><p>api_key={} must be rotated.</p>{}",
+                        secret,
+                        "<p>Body paragraph with enough length to win post-normalization.</p>"
+                    )
+                }
             }
-        }
-    })];
+        }),
+        json!({
+            "alias": "decoy_summary",
+            "from_step_id": "collect_context",
+            "output": {
+                "content": {
+                    "path": ".tandem/artifacts/decoy-summary.json",
+                    "text": decoy_text
+                }
+            }
+        }),
+    ];
     let mut tenant = tandem_types::TenantContext::local_implicit();
     tenant.org_id = "org-artifact".to_string();
     tenant.workspace_id = "workspace-artifact".to_string();
 
     let event = crate::app::state::automation::prompting_impl::workflow_artifact_boundary_event(
+        "/tmp",
         "run-artifact-guard",
         &node,
         &upstream_inputs,
+        None,
         &tenant,
     )
     .expect("artifact with findings must produce a boundary event");
@@ -720,12 +747,23 @@ fn workflow_artifact_guard_covers_the_folded_delivery_artifact() {
     // Anti-drift: the guard scanned the same artifact the fold embeds. The
     // selector is the single selection rule, and the rendered prompt labels
     // the same source artifact.
+    let normalized =
+        crate::app::state::automation::prompting_impl::automation_prompt_normalize_upstream_inputs(
+            "/tmp",
+            "run-artifact-guard",
+            &upstream_inputs,
+            None,
+        );
     let (selected_text, selected_path) =
         crate::app::state::automation::prompting_impl::automation_prompt_select_delivery_artifact(
-            &upstream_inputs,
+            &normalized,
         )
         .expect("selector must pick the delivery artifact");
-    assert!(selected_text.contains(secret));
+    assert!(
+        selected_text.contains(secret),
+        "post-normalization selection must pick the sensitive artifact, not the decoy"
+    );
+    assert!(selected_path.contains("generate-report.html"));
     let agent = AutomationAgentProfile {
         agent_id: "committer".to_string(),
         template_id: None,
@@ -768,9 +806,11 @@ fn workflow_artifact_guard_covers_the_folded_delivery_artifact() {
     plain_node.metadata = None;
     assert!(
         crate::app::state::automation::prompting_impl::workflow_artifact_boundary_event(
+            "/tmp",
             "run-artifact-guard",
             &plain_node,
             &upstream_inputs,
+            None,
             &tenant,
         )
         .is_none()
@@ -780,9 +820,11 @@ fn workflow_artifact_guard_covers_the_folded_delivery_artifact() {
     std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
     assert!(
         crate::app::state::automation::prompting_impl::workflow_artifact_boundary_event(
+            "/tmp",
             "run-artifact-guard",
             &node,
             &upstream_inputs,
+            None,
             &tenant,
         )
         .is_none()

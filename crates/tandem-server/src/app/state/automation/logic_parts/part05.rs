@@ -2283,9 +2283,11 @@ pub(crate) async fn execute_automation_v2_node(
     // fold will embed. One guard covers both renders below — they share the
     // same node and upstream inputs, so the selected artifact is identical.
     if let Some(boundary_event) = prompting_impl::workflow_artifact_boundary_event(
+        &workspace_root,
         run_id,
         node,
         &upstream_inputs,
+        Some(&runtime_values),
         &tenant_context,
     ) {
         state.event_bus.publish(boundary_event);

@@ -495,6 +495,45 @@ fn automation_prompt_extract_upstream_text(input: &Value) -> Option<String> {
         .max_by_key(|value| value.len())
 }
 
+/// The normalization every upstream input passes through before any prompt
+/// rendering: path canonicalization, context-write stripping, and runtime
+/// placeholder substitution. Shared by the prompt renderer and the
+/// data-boundary guard (TAN-600) so the guard scans exactly the inputs the
+/// prompt selects from.
+pub(crate) fn automation_prompt_normalize_upstream_inputs(
+    workspace_root: &str,
+    run_id: &str,
+    upstream_inputs: &[Value],
+    runtime_values: Option<&AutomationPromptRuntimeValues>,
+) -> Vec<Value> {
+    upstream_inputs
+        .iter()
+        .map(|input| {
+            let mut normalized_input = input.clone();
+            if let Some(output) = input.get("output") {
+                if let Some(object) = normalized_input.as_object_mut() {
+                    object.insert(
+                        "output".to_string(),
+                        normalize_upstream_research_output_paths(
+                            workspace_root,
+                            Some(run_id),
+                            output,
+                        ),
+                    );
+                }
+            }
+            if let Some(output) = normalized_input.get_mut("output") {
+                // Strip context-write IDs (e.g. `ctx:wfplan-...:node:artifact`) from ALL
+                // upstream inputs for ALL node types. These internal engine references
+                // look like file paths but are never valid write targets; models that see
+                // them try to write to them, causing WRITE_PATH_REJECTED failures.
+                automation_prompt_strip_context_writes(output);
+            }
+            automation_prompt_apply_runtime_placeholders_to_value(&normalized_input, runtime_values)
+        })
+        .collect::<Vec<_>>()
+}
+
 /// The single selection rule for which upstream artifact becomes the
 /// deterministic delivery body: longest extractable text wins, path as the
 /// tiebreak. Shared by the prompt fold below and the data-boundary guard
@@ -530,19 +569,28 @@ pub(crate) fn automation_prompt_select_delivery_artifact(
 /// tool-result and prompt-context-hook guards. Returns an event only when
 /// the artifact carries findings; never alters the prompt — enforcement
 /// stays at the provider-dispatch choke point, which re-scans the assembled
-/// request. Selection runs on the raw upstream inputs (the fold re-selects
-/// after path normalization, which rewrites path labels, not artifact text).
+/// request. Selection runs on the same normalized inputs the prompt renderer
+/// uses — normalization (context-write stripping, placeholder substitution)
+/// can change which candidate is longest, so scanning pre-normalized inputs
+/// could guard a different artifact than the one the prompt embeds.
 pub(crate) fn workflow_artifact_boundary_event(
+    workspace_root: &str,
     run_id: &str,
     node: &AutomationFlowNode,
     upstream_inputs: &[Value],
+    runtime_values: Option<&AutomationPromptRuntimeValues>,
     tenant_context: &tandem_types::TenantContext,
 ) -> Option<tandem_types::EngineEvent> {
     if !automation_node_requires_email_delivery(node) {
         return None;
     }
-    let (artifact_text, _source_path) =
-        automation_prompt_select_delivery_artifact(upstream_inputs)?;
+    let normalized = automation_prompt_normalize_upstream_inputs(
+        workspace_root,
+        run_id,
+        upstream_inputs,
+        runtime_values,
+    );
+    let (artifact_text, _source_path) = automation_prompt_select_delivery_artifact(&normalized)?;
     tandem_core::engine_loop::evaluate_context_source(
         tandem_core::engine_loop::ContextSourceScope::AutomationRun(run_id),
         "workflow_artifact",
@@ -749,32 +797,12 @@ pub(crate) fn render_automation_v2_prompt_with_options(
         .unwrap_or("structured_json");
     let validator_kind = automation_output_validator_kind(node);
     let handoff_only_structured_json = automation_node_is_handoff_only_structured_json(node);
-    let normalized_upstream_inputs = upstream_inputs
-        .iter()
-        .map(|input| {
-            let mut normalized_input = input.clone();
-            if let Some(output) = input.get("output") {
-                if let Some(object) = normalized_input.as_object_mut() {
-                    object.insert(
-                        "output".to_string(),
-                        normalize_upstream_research_output_paths(
-                            workspace_root,
-                            Some(run_id),
-                            output,
-                        ),
-                    );
-                }
-            }
-            if let Some(output) = normalized_input.get_mut("output") {
-                // Strip context-write IDs (e.g. `ctx:wfplan-...:node:artifact`) from ALL
-                // upstream inputs for ALL node types. These internal engine references
-                // look like file paths but are never valid write targets; models that see
-                // them try to write to them, causing WRITE_PATH_REJECTED failures.
-                automation_prompt_strip_context_writes(output);
-            }
-            automation_prompt_apply_runtime_placeholders_to_value(&normalized_input, runtime_values)
-        })
-        .collect::<Vec<_>>();
+    let normalized_upstream_inputs = automation_prompt_normalize_upstream_inputs(
+        workspace_root,
+        run_id,
+        upstream_inputs,
+        runtime_values,
+    );
     let preserve_full_upstream_inputs = automation_node_preserves_full_upstream_inputs(node);
     let summary_only_upstream = options.summary_only_upstream && !preserve_full_upstream_inputs;
     let mut sections = Vec::new();
