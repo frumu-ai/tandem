@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -57,4 +57,48 @@ test("ensureBootstrapEnv writes canonical env file with host and state dirs", as
   assert.match(content, /^TANDEM_STATE_DIR=/m);
   assert.match(content, /^TANDEM_CONTROL_PANEL_STATE_DIR=/m);
   assert.match(content, /^TANDEM_CONTROL_PANEL_ENGINE_TOKEN=tk_/m);
+});
+
+test("ensureBootstrapEnv ignores a poisoned TANDEM_STATE_DIR in .env.example", async () => {
+  // Regression: a committed `.env.example` once carried a developer's personal
+  // benchmark path (`TANDEM_STATE_DIR=%HOME%\...\.bench-state`). Merging it
+  // silently redirected the engine's state dir, so history/automations looked
+  // wiped on every restart. The example must never pin the state dirs.
+  const root = await mkdtemp(join(tmpdir(), "tcp-init-poison-"));
+  const envPath = join(root, "config", "control-panel.env");
+  await writeFile(
+    join(root, ".env.example"),
+    [
+      "TANDEM_DEFAULT_PROVIDER=openrouter",
+      "TANDEM_STATE_DIR=%HOME%\\work\\tandem-engine\\tandem\\scripts\\bench-js\\.bench-state",
+      "TANDEM_HOME=%HOME%\\work\\tandem-engine\\tandem\\scripts\\bench-js",
+      "TANDEM_CONTROL_PANEL_STATE_DIR=",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const paths = resolveSetupPaths({
+    platform: "linux",
+    home: root,
+    env: { HOME: root, XDG_CONFIG_HOME: join(root, "config-base"), XDG_DATA_HOME: join(root, "data-base") },
+  });
+  await ensureBootstrapEnv({
+    cwd: root,
+    envPath,
+    env: {
+      HOME: root,
+      XDG_CONFIG_HOME: join(root, "config-base"),
+      XDG_DATA_HOME: join(root, "data-base"),
+    },
+  });
+  const content = await readFile(envPath, "utf8");
+  assert.doesNotMatch(content, /bench-state/);
+  assert.doesNotMatch(content, /%HOME%/);
+  // TANDEM_HOME outranks TANDEM_STATE_DIR in the engine, so an example-only
+  // value must not survive the merge either.
+  assert.doesNotMatch(content, /^TANDEM_HOME=/m);
+  // A harmless example key still flows through; only the state dirs are pinned
+  // to the computed platform defaults.
+  assert.match(content, /^TANDEM_DEFAULT_PROVIDER=openrouter/m);
+  assert.match(content, new RegExp(`^TANDEM_STATE_DIR=${paths.engineStateDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
 });

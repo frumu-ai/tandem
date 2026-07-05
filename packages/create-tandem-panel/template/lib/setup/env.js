@@ -79,6 +79,33 @@ function bootstrapDefaults(paths) {
   };
 }
 
+// `.env.example` is committed documentation, not a source of machine-specific
+// values. Never let it pin the engine/control-panel state directories: those
+// are computed per-platform, and a stray example value (e.g. a committed
+// benchmark path like `%HOME%\...\.bench-state`) would silently redirect the
+// engine away from its real state on every setup, making history/automations
+// look wiped. Real overrides still come from the user's own `.env` (cwdEnv) or
+// the already-generated env file (existing), which both outrank the example.
+// TANDEM_HOME is the highest-precedence state root: the engine resolves it
+// before TANDEM_STATE_DIR (crates/tandem-core/src/storage_paths.rs), so an
+// example-only TANDEM_HOME would redirect all state even though we pin the
+// computed state dir. Block every state-root alias, not just TANDEM_STATE_DIR.
+const EXAMPLE_MERGE_BLOCKLIST = new Set([
+  "TANDEM_HOME",
+  "TANDEM_STATE_DIR",
+  "TANDEM_CONTROL_PANEL_STATE_DIR",
+]);
+
+function sanitizeExampleEnv(parsed) {
+  const out = {};
+  for (const [key, value] of Object.entries(parsed || {})) {
+    if (EXAMPLE_MERGE_BLOCKLIST.has(key)) continue;
+    if (value === "") continue;
+    out[key] = value;
+  }
+  return out;
+}
+
 async function ensureBootstrapEnv(options = {}) {
   const cwd = resolve(options.cwd || process.cwd());
   const paths = resolveSetupPaths({
@@ -96,7 +123,7 @@ async function ensureBootstrapEnv(options = {}) {
       ? parseDotEnv(readFileSync(cwdEnvPath, "utf8"))
       : {};
   const example = options.allowCwdEnvMerge !== false && existsSync(sourceExamplePath)
-    ? parseDotEnv(readFileSync(sourceExamplePath, "utf8"))
+    ? sanitizeExampleEnv(parseDotEnv(readFileSync(sourceExamplePath, "utf8")))
     : {};
   const defaults = { ...bootstrapDefaults(paths), ...example };
   const merged = { ...defaults, ...cwdEnv, ...existing };
