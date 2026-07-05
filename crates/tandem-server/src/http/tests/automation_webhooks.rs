@@ -1947,7 +1947,9 @@ async fn linear_secret_import_enables_signed_events_and_dedupes() {
         .await
         .expect("response");
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    drain_webhook_inbox(&state).await;
+    let report = state.process_automation_webhook_inbox_once(100).await;
+    assert_eq!(report.checked, 0);
+    assert_eq!(report.failed, 0);
     assert_eq!(state.automation_v2_runs.read().await.len(), 1);
     let deliveries = state
         .list_automation_webhook_deliveries_for_trigger(

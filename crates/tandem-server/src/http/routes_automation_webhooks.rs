@@ -406,6 +406,38 @@ async fn record_raw_event_for_trigger(
         .await
 }
 
+async fn record_raw_event_for_delivery(
+    state: &AppState,
+    trigger: &AutomationWebhookTriggerRecord,
+    delivery: &AutomationWebhookDeliveryRecord,
+    provider_event_id: Option<String>,
+    body_digest: String,
+    verification: Option<&AutomationWebhookVerificationDecision>,
+    feedback_loop_candidate: Option<&AutomationWebhookFeedbackLoopCandidate>,
+    headers: &HeaderMap,
+    body: &[u8],
+    received_at_ms: u64,
+) -> anyhow::Result<AutomationWebhookRawEventRecord> {
+    state
+        .record_automation_webhook_raw_event_with_delivery(
+            AutomationWebhookRawEventCreateInput {
+                trigger: trigger.clone(),
+                provider_event_id,
+                body_digest,
+                verification: verification.cloned(),
+                feedback_loop_candidate: feedback_loop_candidate.cloned(),
+                headers_digest: automation_webhook_headers_digest(headers),
+                headers_redacted: redacted_automation_webhook_headers(headers),
+                content_type: header_str(headers, header::CONTENT_TYPE.as_str())
+                    .map(str::to_string),
+                payload: body.to_vec(),
+                received_at_ms,
+            },
+            delivery,
+        )
+        .await
+}
+
 async fn update_raw_event_from_delivery(
     state: &AppState,
     tenant_context: &tandem_types::TenantContext,
@@ -454,49 +486,42 @@ async fn record_verification_rejection(
         &trigger,
         reason_code,
     ));
-    let raw_event = if verification_error_allows_raw_payload_persistence(error, &trigger) {
-        match record_raw_event_for_trigger(
-            state,
-            &trigger,
-            provider_event_id.clone(),
-            body_digest.clone(),
-            verification.as_ref(),
-            None,
-            headers,
-            body,
-            received_at_ms,
-        )
-        .await
-        {
-            Ok(raw_event) => Some(raw_event),
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    trigger_id = %trigger.trigger_id,
-                    "failed to persist rejected automation webhook raw event"
-                );
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let persist_raw_event = verification_error_allows_raw_payload_persistence(error, &trigger);
     if let Ok(delivery) = state
         .record_automation_webhook_rejection(
             &trigger,
-            provider_event_id,
-            body_digest,
+            provider_event_id.clone(),
+            body_digest.clone(),
             status,
             reason_code,
             received_at_ms,
             sanitized_preview,
-            verification,
+            verification.clone(),
         )
         .await
     {
-        if let Some(raw_event) = raw_event {
-            update_raw_event_from_delivery(state, &trigger.tenant_context, &raw_event, &delivery)
-                .await;
+        if persist_raw_event {
+            if let Err(error) = record_raw_event_for_delivery(
+                state,
+                &trigger,
+                &delivery,
+                provider_event_id,
+                body_digest,
+                verification.as_ref(),
+                None,
+                headers,
+                body,
+                received_at_ms,
+            )
+            .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    trigger_id = %trigger.trigger_id,
+                    delivery_id = %delivery.delivery_id,
+                    "failed to persist rejected automation webhook raw event"
+                );
+            }
         }
     }
 }
