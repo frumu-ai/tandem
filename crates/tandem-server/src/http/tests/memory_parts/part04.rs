@@ -698,6 +698,33 @@ async fn same_tenant_user_cannot_delete_or_demote_another_users_memory() {
     assert_eq!(delete_a_resp.status(), StatusCode::OK);
 }
 
+#[test]
+fn ingested_run_memory_owner_matches_mutation_guard_subject() {
+    use super::super::skills_memory::ingested_memory_owner_subject;
+
+    // Local-unrestricted: the ownership guard is bypassed, so run memory stays
+    // owned by the run client id (matching the prompt-injection reader).
+    let local = tandem_types::TenantContext::local_implicit();
+    assert_eq!(
+        ingested_memory_owner_subject(&local, None, "cli-client-7"),
+        "cli-client-7"
+    );
+
+    // Governed (tenant actor present): own by the resolved actor subject, not the
+    // run client id, so the same actor's delete/demote guard resolves to the same
+    // value and they can manage their own ingested memory (TAN-604 follow-up).
+    let governed = tandem_types::TenantContext::explicit_user_workspace(
+        "acme",
+        "north",
+        Some("dep-a".to_string()),
+        "user-a",
+    );
+    assert_eq!(
+        ingested_memory_owner_subject(&governed, None, "cli-client-7"),
+        "user-a"
+    );
+}
+
 #[tokio::test]
 async fn explicit_tenant_memory_put_rejects_partition_tenant_switch() {
     let state = test_state().await;
