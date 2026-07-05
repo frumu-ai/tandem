@@ -898,18 +898,30 @@ impl AppState {
             if let Some(signature_scheme) = input.signature_scheme {
                 updated_trigger.signature_scheme =
                     self.validate_webhook_signature_scheme_allowed(signature_scheme)?;
-                // Switching onto the Linear scheme starts the provider-owned
-                // secret lifecycle: the stored material is still a Tandem
-                // placeholder, so deliveries fail closed until an operator
-                // imports the Linear signing secret.
-                if matches!(
-                    updated_trigger.signature_scheme,
-                    AutomationWebhookSignatureScheme::LinearHmacSha256
-                ) && updated_trigger.linear_verification.is_none()
-                {
-                    updated_trigger.linear_verification =
-                        Some(AutomationWebhookLinearVerification::default());
+            }
+            // Provider-owned providers pin their signature scheme, exactly as on
+            // create: whether the provider was patched to notion/linear or the
+            // scheme was patched directly, reconcile the two so a PATCH that
+            // changes only `provider` to `linear` cannot leave the trigger on a
+            // stale scheme that rejects real Linear deliveries. Linear also
+            // starts the provider-owned-secret lifecycle (fail closed until an
+            // operator imports the Linear signing secret).
+            match updated_trigger.provider.as_str() {
+                "notion" => {
+                    updated_trigger.signature_scheme =
+                        AutomationWebhookSignatureScheme::NotionHmacSha256;
+                    updated_trigger
+                        .notion_verification
+                        .get_or_insert_with(AutomationWebhookNotionVerification::default);
                 }
+                "linear" => {
+                    updated_trigger.signature_scheme =
+                        AutomationWebhookSignatureScheme::LinearHmacSha256;
+                    updated_trigger
+                        .linear_verification
+                        .get_or_insert_with(AutomationWebhookLinearVerification::default);
+                }
+                _ => {}
             }
             if let Some(default_data_class) = input.default_data_class {
                 updated_trigger.default_data_class = default_data_class;
