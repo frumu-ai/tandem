@@ -170,10 +170,15 @@ verification scheme, with `trust: "untrusted_external_webhook"`.
 | --- | --- | --- |
 | `POST` | `/webhooks/automations/{public_path_token}` | Public intake (verification handshake + signed events). |
 | `POST` | `/automations/v2/{id}/webhook-triggers` | Create a webhook trigger (e.g. a `notion` trigger). |
-| `POST` | `/automations/v2/{id}/webhook-triggers/{trigger_id}/reveal-verification-token` | One-time reveal of a provider verification token (admin-scoped). |
+| `POST` | `/automations/v2/{id}/webhook-triggers/{trigger_id}/reveal-verification-token` | One-time reveal of a Notion verification token (admin-scoped). |
+| `POST` | `/automations/v2/{id}/webhook-triggers/{trigger_id}/import-secret` | Import/replace a Linear signing secret (admin-scoped). |
 | `GET` | `/automations/v2/{id}/webhook-triggers/{trigger_id}` | Trigger status incl. `verification_status`. |
 
-SDK: `client.automationsV2.revealWebhookVerificationToken(automationId, triggerId)`.
+SDK:
+- Notion: `client.automationsV2.revealWebhookVerificationToken(automationId, triggerId)`.
+- Linear: `client.automationsV2.importWebhookProviderSecret(automationId, triggerId, secret)`.
+
+For the full Linear dev reference (troubleshooting, run metadata, secret rotation), see [Using Linear Webhooks with Tandem](https://github.com/frumu-ai/tandem/blob/main/docs/automation-v2-linear-webhooks.md).
 
 ## Limitations / follow-ups
 

@@ -47,6 +47,7 @@ For end-user onboarding journeys (install, first run, desktop/CLI paths), use:
 - [Continuous Reassessment](./incident-monitor-continuous-reassessment.md) - Scheduled and change-triggered governance reassessment with versioned, fingerprint-deduplicated results.
 - [External Log Intake Demo](./incident-monitor-external-log-intake-demo.md) - End-to-end external log source intake walkthrough.
 - [Using Notion Webhooks with Tandem](./automation-v2-notion-webhooks.md) - Notion provider setup, verification-token flow, and signed-event handling for Automation V2 webhooks.
+- [Using Linear Webhooks with Tandem](./automation-v2-linear-webhooks.md) - Linear provider setup, signing-secret import flow, project/label guard, and troubleshooting for Automation V2 webhooks.
 
 ## Meta-Harness
 
