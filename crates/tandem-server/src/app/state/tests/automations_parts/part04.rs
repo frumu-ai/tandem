@@ -607,3 +607,187 @@ async fn execute_collect_inputs_node_uses_deterministic_shortcut() {
 
     let _ = std::fs::remove_dir_all(&workspace_root);
 }
+
+// TAN-600: the workflow-artifact data-boundary guard must fire on exactly the
+// artifact the email-delivery prompt fold embeds, with the audit-safe event
+// shape shared with the other source guards. Env-touching, so it joins the
+// DEFAULT serial group used by the other data-boundary tests.
+#[test]
+#[serial_test::serial]
+fn workflow_artifact_guard_covers_the_folded_delivery_artifact() {
+    let previous_mode = std::env::var("TANDEM_DATA_BOUNDARY_MODE").ok();
+    std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "audit");
+
+    let automation = AutomationV2Spec {
+        automation_id: "automation-artifact-guard".to_string(),
+        name: "Artifact Guard Automation".to_string(),
+        description: None,
+        status: crate::AutomationV2Status::Active,
+        schedule: crate::AutomationV2Schedule {
+            schedule_type: crate::AutomationV2ScheduleType::Manual,
+            cron_expression: None,
+            interval_seconds: None,
+            timezone: "UTC".to_string(),
+            misfire_policy: crate::RoutineMisfirePolicy::RunOnce,
+        },
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        agents: Vec::new(),
+        flow: crate::AutomationFlowSpec { nodes: Vec::new() },
+        execution: crate::AutomationExecutionPolicy {
+            profile: None,
+            max_parallel_agents: Some(1),
+            max_total_runtime_ms: None,
+            max_total_tool_calls: None,
+            max_total_tokens: None,
+            max_total_cost_usd: None,
+        },
+        output_targets: Vec::new(),
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        creator_id: "test".to_string(),
+        workspace_root: Some("/tmp".to_string()),
+        metadata: None,
+        next_fire_at_ms: None,
+        last_fired_at_ms: None,
+        scope_policy: None,
+        watch_conditions: Vec::new(),
+        handoff_config: None,
+    };
+    let node = AutomationFlowNode {
+        knowledge: tandem_orchestrator::KnowledgeBinding::default(),
+        node_id: "notify_user".to_string(),
+        agent_id: "committer".to_string(),
+        objective: "Send the finalized report by email.".to_string(),
+        depends_on: vec!["generate_report".to_string()],
+        input_refs: vec![AutomationFlowInputRef {
+            from_step_id: "generate_report".to_string(),
+            alias: "report_body".to_string(),
+        }],
+        output_contract: None,
+        tool_policy: None,
+        mcp_policy: None,
+        retry_policy: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        stage_kind: None,
+        gate: None,
+        metadata: Some(json!({
+            "delivery": {
+                "method": "email",
+                "to": "recipient@example.com",
+                "content_type": "text/html",
+                "inline_body_only": true,
+                "attachments": false
+            }
+        })),
+    };
+    let secret = "sk-live-abcdef1234567890";
+    let upstream_inputs = vec![json!({
+        "alias": "report_body",
+        "from_step_id": "generate_report",
+        "output": {
+            "content": {
+                "path": ".tandem/artifacts/generate-report.html",
+                "text": format!(
+                    "<h1>Quarterly Report</h1><p>api_key={} must be rotated.</p>",
+                    secret
+                )
+            }
+        }
+    })];
+    let mut tenant = tandem_types::TenantContext::local_implicit();
+    tenant.org_id = "org-artifact".to_string();
+    tenant.workspace_id = "workspace-artifact".to_string();
+
+    let event = crate::app::state::automation::prompting_impl::workflow_artifact_boundary_event(
+        "run-artifact-guard",
+        &node,
+        &upstream_inputs,
+        &tenant,
+    )
+    .expect("artifact with findings must produce a boundary event");
+    assert_eq!(event.properties["sourceKind"], "workflow_artifact");
+    assert_eq!(event.properties["runID"], "run-artifact-guard");
+    assert_eq!(event.properties["auditOnly"], true);
+    assert_eq!(event.properties["enforced"], false);
+    assert_eq!(event.properties["tenant"]["organization_id"], "org-artifact");
+    let serialized = serde_json::to_string(&event.properties).expect("json");
+    assert!(
+        !serialized.contains(secret),
+        "guard event must carry safe evidence only: {serialized}"
+    );
+
+    // Anti-drift: the guard scanned the same artifact the fold embeds. The
+    // selector is the single selection rule, and the rendered prompt labels
+    // the same source artifact.
+    let (selected_text, selected_path) =
+        crate::app::state::automation::prompting_impl::automation_prompt_select_delivery_artifact(
+            &upstream_inputs,
+        )
+        .expect("selector must pick the delivery artifact");
+    assert!(selected_text.contains(secret));
+    let agent = AutomationAgentProfile {
+        agent_id: "committer".to_string(),
+        template_id: None,
+        display_name: "Committer".to_string(),
+        avatar_url: None,
+        model_policy: None,
+        skills: Vec::new(),
+        tool_policy: crate::AutomationAgentToolPolicy {
+            allowlist: vec!["*".to_string()],
+            denylist: Vec::new(),
+        },
+        mcp_policy: crate::AutomationAgentMcpPolicy {
+            allowed_servers: Vec::new(),
+            allowed_tools: None,
+            allowed_connections: Vec::new(),
+        },
+        approval_policy: None,
+    };
+    let prompt = render_automation_v2_prompt(
+        &automation,
+        "/tmp",
+        "run-artifact-guard",
+        &node,
+        1,
+        &agent,
+        &upstream_inputs,
+        &["*".to_string()],
+        None,
+        None,
+        None,
+    );
+    assert!(prompt.contains("Deterministic Delivery Body:"));
+    assert!(
+        prompt.contains(&selected_path),
+        "fold must label the same artifact the guard scanned"
+    );
+
+    // Nodes without email delivery fold no artifact, so no event fires.
+    let mut plain_node = node.clone();
+    plain_node.metadata = None;
+    assert!(
+        crate::app::state::automation::prompting_impl::workflow_artifact_boundary_event(
+            "run-artifact-guard",
+            &plain_node,
+            &upstream_inputs,
+            &tenant,
+        )
+        .is_none()
+    );
+
+    // Boundary off: guard is silent even for email-delivery nodes.
+    std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
+    assert!(
+        crate::app::state::automation::prompting_impl::workflow_artifact_boundary_event(
+            "run-artifact-guard",
+            &node,
+            &upstream_inputs,
+            &tenant,
+        )
+        .is_none()
+    );
+    if let Some(previous) = previous_mode {
+        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", previous);
+    }
+}

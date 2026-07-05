@@ -495,7 +495,14 @@ fn automation_prompt_extract_upstream_text(input: &Value) -> Option<String> {
         .max_by_key(|value| value.len())
 }
 
-fn automation_prompt_render_delivery_source_body(upstream_inputs: &[Value]) -> Option<String> {
+/// The single selection rule for which upstream artifact becomes the
+/// deterministic delivery body: longest extractable text wins, path as the
+/// tiebreak. Shared by the prompt fold below and the data-boundary guard
+/// (TAN-600) so the two can never drift apart on what actually enters the
+/// prompt.
+pub(crate) fn automation_prompt_select_delivery_artifact(
+    upstream_inputs: &[Value],
+) -> Option<(String, String)> {
     let mut best = upstream_inputs
         .iter()
         .filter_map(|input| {
@@ -514,7 +521,40 @@ fn automation_prompt_render_delivery_source_body(upstream_inputs: &[Value]) -> O
         })
         .collect::<Vec<_>>();
     best.sort_by(|left, right| right.0.len().cmp(&left.0.len()).then(left.1.cmp(&right.1)));
-    let (text, source_path) = best.into_iter().next()?;
+    best.into_iter().next()
+}
+
+/// TAN-600: audit-only boundary evaluation of the workflow artifact that the
+/// email-delivery prompt fold will include, using the same core guard (and
+/// therefore the same env policy parsing and audit-safe event shape) as the
+/// tool-result and prompt-context-hook guards. Returns an event only when
+/// the artifact carries findings; never alters the prompt — enforcement
+/// stays at the provider-dispatch choke point, which re-scans the assembled
+/// request. Selection runs on the raw upstream inputs (the fold re-selects
+/// after path normalization, which rewrites path labels, not artifact text).
+pub(crate) fn workflow_artifact_boundary_event(
+    run_id: &str,
+    node: &AutomationFlowNode,
+    upstream_inputs: &[Value],
+    tenant_context: &tandem_types::TenantContext,
+) -> Option<tandem_types::EngineEvent> {
+    if !automation_node_requires_email_delivery(node) {
+        return None;
+    }
+    let (artifact_text, _source_path) =
+        automation_prompt_select_delivery_artifact(upstream_inputs)?;
+    tandem_core::engine_loop::evaluate_context_source(
+        tandem_core::engine_loop::ContextSourceScope::AutomationRun(run_id),
+        "workflow_artifact",
+        None,
+        &artifact_text,
+        tandem_data_boundary::DataBoundaryOperationKind::ContextAssembly,
+        Some(tenant_context),
+    )
+}
+
+fn automation_prompt_render_delivery_source_body(upstream_inputs: &[Value]) -> Option<String> {
+    let (text, source_path) = automation_prompt_select_delivery_artifact(upstream_inputs)?;
     let rendered_html = automation_prompt_render_canonical_html_body(&text);
     Some(format!(
         "Deterministic Delivery Body:\n- Source artifact: `{}`\n- Canonical HTML body:\n{}\n- Use this exact body as the delivery source of truth.\n- Do not rewrite the body into a shorter teaser or substitute a fresh summary.",

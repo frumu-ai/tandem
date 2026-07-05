@@ -377,7 +377,9 @@ impl EngineLoop {
                                     .join("\n");
                                 if let Some(boundary_event) =
                                     data_boundary_gate::evaluate_context_source(
-                                        &session_id,
+                                        data_boundary_gate::ContextSourceScope::Session(
+                                            &session_id,
+                                        ),
                                         "prompt_context_hook",
                                         None,
                                         &injected,
