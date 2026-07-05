@@ -1466,8 +1466,22 @@ pub(super) struct ContextDistillRequest {
     importance_threshold: Option<f64>,
 }
 
+/// Context-tree operations resolve tenancy from the request's TenantContext,
+/// never from the client-supplied URI/node id: a foreign tenant's node behaves
+/// exactly like a nonexistent one.
+fn context_memory_tenant_scope(
+    tenant_context: &TenantContext,
+) -> tandem_memory::types::MemoryTenantScope {
+    tandem_memory::types::MemoryTenantScope {
+        org_id: tenant_context.org_id.clone(),
+        workspace_id: tenant_context.workspace_id.clone(),
+        deployment_id: tenant_context.deployment_id.clone(),
+    }
+}
+
 pub(super) async fn context_resolve_uri(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Json(input): Json<ContextResolveUriRequest>,
 ) -> Result<Json<Value>, StatusCode> {
     let manager = open_memory_manager_for_state(&state)
@@ -1475,7 +1489,7 @@ pub(super) async fn context_resolve_uri(
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let node = manager
-        .resolve_uri(&input.uri)
+        .resolve_uri(&input.uri, &context_memory_tenant_scope(&tenant_context))
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -1484,6 +1498,7 @@ pub(super) async fn context_resolve_uri(
 
 pub(super) async fn context_tree(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Query(query): Query<ContextTreeQuery>,
 ) -> Result<Json<Value>, StatusCode> {
     let manager = open_memory_manager_for_state(&state)
@@ -1492,7 +1507,11 @@ pub(super) async fn context_tree(
 
     let max_depth = query.max_depth.unwrap_or(3);
     let tree = manager
-        .tree(&query.uri, max_depth)
+        .tree(
+            &query.uri,
+            max_depth,
+            &context_memory_tenant_scope(&tenant_context),
+        )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -1501,6 +1520,7 @@ pub(super) async fn context_tree(
 
 pub(super) async fn context_generate_layers(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Json(input): Json<ContextGenerateLayersRequest>,
 ) -> Result<Json<Value>, StatusCode> {
     let runtime_state = state.runtime.wait();
@@ -1511,7 +1531,11 @@ pub(super) async fn context_generate_layers(
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     manager
-        .generate_layers_for_node(&input.node_id, &providers)
+        .generate_layers_for_node(
+            &input.node_id,
+            &providers,
+            &context_memory_tenant_scope(&tenant_context),
+        )
         .await
         .map_err(|e| {
             tracing::warn!("Failed to generate layers: {}", e);

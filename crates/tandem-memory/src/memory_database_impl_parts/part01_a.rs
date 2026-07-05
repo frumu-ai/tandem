@@ -1017,21 +1017,63 @@ impl MemoryDatabase {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS memory_nodes (
                 id TEXT PRIMARY KEY,
-                uri TEXT NOT NULL UNIQUE,
+                uri TEXT NOT NULL,
                 parent_uri TEXT,
                 node_type TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                metadata TEXT
+                metadata TEXT,
+                tenant_org_id TEXT NOT NULL DEFAULT 'local',
+                tenant_workspace_id TEXT NOT NULL DEFAULT 'local',
+                tenant_deployment_id TEXT
             )",
             [],
         )?;
+        // Legacy memory_nodes tables predate tenant scoping and carried a global
+        // UNIQUE(uri) constraint, which both leaks across tenants and prevents two
+        // tenants from owning the same context URI. SQLite cannot drop an inline
+        // UNIQUE constraint, so rebuild the table once (FK enforcement is off, and
+        // renaming the new table re-links memory_layers' textual FK reference).
+        let nodes_existing_cols: HashSet<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(memory_nodes)")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            rows.collect::<Result<HashSet<_>, _>>()?
+        };
+        if !nodes_existing_cols.contains("tenant_org_id") {
+            conn.execute_batch(
+                "CREATE TABLE memory_nodes_tenant_migration (
+                    id TEXT PRIMARY KEY,
+                    uri TEXT NOT NULL,
+                    parent_uri TEXT,
+                    node_type TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    metadata TEXT,
+                    tenant_org_id TEXT NOT NULL DEFAULT 'local',
+                    tenant_workspace_id TEXT NOT NULL DEFAULT 'local',
+                    tenant_deployment_id TEXT
+                );
+                INSERT INTO memory_nodes_tenant_migration
+                    (id, uri, parent_uri, node_type, created_at, updated_at, metadata,
+                     tenant_org_id, tenant_workspace_id, tenant_deployment_id)
+                    SELECT id, uri, parent_uri, node_type, created_at, updated_at, metadata,
+                           'local', 'local', NULL
+                    FROM memory_nodes;
+                DROP TABLE memory_nodes;
+                ALTER TABLE memory_nodes_tenant_migration RENAME TO memory_nodes;",
+            )?;
+        }
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_memory_nodes_uri ON memory_nodes(uri)",
             [],
         )?;
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_memory_nodes_parent ON memory_nodes(parent_uri)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_nodes_uri_tenant
+             ON memory_nodes(uri, tenant_org_id, tenant_workspace_id, IFNULL(tenant_deployment_id, ''))",
             [],
         )?;
 

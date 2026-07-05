@@ -313,29 +313,40 @@ impl MemoryDatabase {
     pub async fn get_node_by_uri(
         &self,
         uri: &str,
+        tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<Option<crate::types::MemoryNode>> {
         let conn = self.conn.lock().await;
-        let mut stmt = conn.prepare(
+        let tenant_clause = tenant_scope_matches_sql_clause("memory_nodes", 2);
+        let sql = format!(
             "SELECT id, uri, parent_uri, node_type, created_at, updated_at, metadata
-             FROM memory_nodes WHERE uri = ?1",
-        )?;
+             FROM memory_nodes WHERE uri = ?1 AND {tenant_clause}"
+        );
+        let mut stmt = conn.prepare(&sql)?;
 
-        let result = stmt.query_row(params![uri], |row| {
-            let node_type_str: String = row.get(3)?;
-            let node_type = node_type_str
-                .parse()
-                .unwrap_or(crate::types::NodeType::File);
-            let metadata_str: Option<String> = row.get(6)?;
-            Ok(crate::types::MemoryNode {
-                id: row.get(0)?,
-                uri: row.get(1)?,
-                parent_uri: row.get(2)?,
-                node_type,
-                created_at: row.get::<_, String>(4)?.parse().unwrap_or_default(),
-                updated_at: row.get::<_, String>(5)?.parse().unwrap_or_default(),
-                metadata: metadata_str.and_then(|s| serde_json::from_str(&s).ok()),
-            })
-        });
+        let result = stmt.query_row(
+            params![
+                uri,
+                tenant_scope.org_id,
+                tenant_scope.workspace_id,
+                tenant_scope.deployment_id
+            ],
+            |row| {
+                let node_type_str: String = row.get(3)?;
+                let node_type = node_type_str
+                    .parse()
+                    .unwrap_or(crate::types::NodeType::File);
+                let metadata_str: Option<String> = row.get(6)?;
+                Ok(crate::types::MemoryNode {
+                    id: row.get(0)?,
+                    uri: row.get(1)?,
+                    parent_uri: row.get(2)?,
+                    node_type,
+                    created_at: row.get::<_, String>(4)?.parse().unwrap_or_default(),
+                    updated_at: row.get::<_, String>(5)?.parse().unwrap_or_default(),
+                    metadata: metadata_str.and_then(|s| serde_json::from_str(&s).ok()),
+                })
+            },
+        );
 
         match result {
             Ok(node) => Ok(Some(node)),
@@ -350,6 +361,7 @@ impl MemoryDatabase {
         parent_uri: Option<&str>,
         node_type: crate::types::NodeType,
         metadata: Option<&serde_json::Value>,
+        tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<String> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
@@ -357,37 +369,64 @@ impl MemoryDatabase {
 
         let conn = self.conn.lock().await;
         conn.execute(
-            "INSERT INTO memory_nodes (id, uri, parent_uri, node_type, created_at, updated_at, metadata)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![id, uri, parent_uri, node_type.to_string(), now, now, metadata_str],
+            "INSERT INTO memory_nodes (id, uri, parent_uri, node_type, created_at, updated_at, metadata,
+                                       tenant_org_id, tenant_workspace_id, tenant_deployment_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                id,
+                uri,
+                parent_uri,
+                node_type.to_string(),
+                now,
+                now,
+                metadata_str,
+                tenant_scope.org_id,
+                tenant_scope.workspace_id,
+                tenant_scope.deployment_id
+            ],
         )?;
 
         Ok(id)
     }
 
-    pub async fn list_directory(&self, uri: &str) -> MemoryResult<Vec<crate::types::MemoryNode>> {
+    pub async fn list_directory(
+        &self,
+        uri: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<Vec<crate::types::MemoryNode>> {
         let conn = self.conn.lock().await;
-        let mut stmt = conn.prepare(
+        let tenant_clause = tenant_scope_matches_sql_clause("memory_nodes", 2);
+        let sql = format!(
             "SELECT id, uri, parent_uri, node_type, created_at, updated_at, metadata
-             FROM memory_nodes WHERE parent_uri = ?1 ORDER BY node_type DESC, uri ASC",
-        )?;
+             FROM memory_nodes WHERE parent_uri = ?1 AND {tenant_clause}
+             ORDER BY node_type DESC, uri ASC"
+        );
+        let mut stmt = conn.prepare(&sql)?;
 
-        let rows = stmt.query_map(params![uri], |row| {
-            let node_type_str: String = row.get(3)?;
-            let node_type = node_type_str
-                .parse()
-                .unwrap_or(crate::types::NodeType::File);
-            let metadata_str: Option<String> = row.get(6)?;
-            Ok(crate::types::MemoryNode {
-                id: row.get(0)?,
-                uri: row.get(1)?,
-                parent_uri: row.get(2)?,
-                node_type,
-                created_at: row.get::<_, String>(4)?.parse().unwrap_or_default(),
-                updated_at: row.get::<_, String>(5)?.parse().unwrap_or_default(),
-                metadata: metadata_str.and_then(|s| serde_json::from_str(&s).ok()),
-            })
-        })?;
+        let rows = stmt.query_map(
+            params![
+                uri,
+                tenant_scope.org_id,
+                tenant_scope.workspace_id,
+                tenant_scope.deployment_id
+            ],
+            |row| {
+                let node_type_str: String = row.get(3)?;
+                let node_type = node_type_str
+                    .parse()
+                    .unwrap_or(crate::types::NodeType::File);
+                let metadata_str: Option<String> = row.get(6)?;
+                Ok(crate::types::MemoryNode {
+                    id: row.get(0)?,
+                    uri: row.get(1)?,
+                    parent_uri: row.get(2)?,
+                    node_type,
+                    created_at: row.get::<_, String>(4)?.parse().unwrap_or_default(),
+                    updated_at: row.get::<_, String>(5)?.parse().unwrap_or_default(),
+                    metadata: metadata_str.and_then(|s| serde_json::from_str(&s).ok()),
+                })
+            },
+        )?;
 
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(MemoryError::Database)
@@ -397,29 +436,47 @@ impl MemoryDatabase {
         &self,
         node_id: &str,
         layer_type: crate::types::LayerType,
+        tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<Option<crate::types::MemoryLayer>> {
         let conn = self.conn.lock().await;
-        let mut stmt = conn.prepare(
-            "SELECT id, node_id, layer_type, content, token_count, embedding_id, created_at, source_chunk_id
-             FROM memory_layers WHERE node_id = ?1 AND layer_type = ?2"
-        )?;
+        // Layers carry no tenant columns of their own; ownership is derived from
+        // the parent node, so a foreign node id behaves exactly like a missing one.
+        let tenant_clause = tenant_scope_matches_sql_clause("memory_nodes", 3);
+        let sql = format!(
+            "SELECT memory_layers.id, memory_layers.node_id, memory_layers.layer_type,
+                    memory_layers.content, memory_layers.token_count, memory_layers.embedding_id,
+                    memory_layers.created_at, memory_layers.source_chunk_id
+             FROM memory_layers
+             JOIN memory_nodes ON memory_nodes.id = memory_layers.node_id
+             WHERE memory_layers.node_id = ?1 AND memory_layers.layer_type = ?2 AND {tenant_clause}"
+        );
+        let mut stmt = conn.prepare(&sql)?;
 
-        let result = stmt.query_row(params![node_id, layer_type.to_string()], |row| {
-            let layer_type_str: String = row.get(2)?;
-            let layer_type = layer_type_str
-                .parse()
-                .unwrap_or(crate::types::LayerType::L2);
-            Ok(crate::types::MemoryLayer {
-                id: row.get(0)?,
-                node_id: row.get(1)?,
-                layer_type,
-                content: row.get(3)?,
-                token_count: row.get(4)?,
-                embedding_id: row.get(5)?,
-                created_at: row.get::<_, String>(6)?.parse().unwrap_or_default(),
-                source_chunk_id: row.get(7)?,
-            })
-        });
+        let result = stmt.query_row(
+            params![
+                node_id,
+                layer_type.to_string(),
+                tenant_scope.org_id,
+                tenant_scope.workspace_id,
+                tenant_scope.deployment_id
+            ],
+            |row| {
+                let layer_type_str: String = row.get(2)?;
+                let layer_type = layer_type_str
+                    .parse()
+                    .unwrap_or(crate::types::LayerType::L2);
+                Ok(crate::types::MemoryLayer {
+                    id: row.get(0)?,
+                    node_id: row.get(1)?,
+                    layer_type,
+                    content: row.get(3)?,
+                    token_count: row.get(4)?,
+                    embedding_id: row.get(5)?,
+                    created_at: row.get::<_, String>(6)?.parse().unwrap_or_default(),
+                    source_chunk_id: row.get(7)?,
+                })
+            },
+        );
 
         match result {
             Ok(mut layer) => {
@@ -438,12 +495,32 @@ impl MemoryDatabase {
         content: &str,
         token_count: i64,
         source_chunk_id: Option<&str>,
+        tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<String> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let content_stored = self.crypto.encrypt_field(content)?;
 
         let conn = self.conn.lock().await;
+        // A layer write against a node outside the tenant scope must fail exactly
+        // like a write against a nonexistent node, so foreign node ids are not
+        // distinguishable from unknown ones.
+        let tenant_clause = tenant_scope_matches_sql_clause("memory_nodes", 2);
+        let owned: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM memory_nodes WHERE id = ?1 AND {tenant_clause}"),
+            params![
+                node_id,
+                tenant_scope.org_id,
+                tenant_scope.workspace_id,
+                tenant_scope.deployment_id
+            ],
+            |row| row.get(0),
+        )?;
+        if owned == 0 {
+            return Err(MemoryError::NotFound(format!(
+                "context node not found: {node_id}"
+            )));
+        }
         conn.execute(
             "INSERT INTO memory_layers (id, node_id, layer_type, content, token_count, created_at, source_chunk_id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -457,19 +534,25 @@ impl MemoryDatabase {
         &self,
         parent_uri: &str,
         max_depth: usize,
+        tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<Vec<crate::types::TreeNode>> {
         if max_depth == 0 {
             return Ok(Vec::new());
         }
 
-        let children = self.list_directory(parent_uri).await?;
+        let children = self.list_directory(parent_uri, tenant_scope).await?;
         let mut tree_nodes = Vec::new();
 
         for child in children {
-            let layer_summary = self.get_layer_summary(&child.id).await?;
+            let layer_summary = self.get_layer_summary(&child.id, tenant_scope).await?;
 
             let grandchildren = if child.node_type == crate::types::NodeType::Directory {
-                Box::pin(self.get_children_tree(&child.uri, max_depth.saturating_sub(1))).await?
+                Box::pin(self.get_children_tree(
+                    &child.uri,
+                    max_depth.saturating_sub(1),
+                    tenant_scope,
+                ))
+                .await?
             } else {
                 Vec::new()
             };
@@ -487,11 +570,16 @@ impl MemoryDatabase {
     async fn get_layer_summary(
         &self,
         node_id: &str,
+        tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<Option<crate::types::LayerSummary>> {
-        let l0 = self.get_layer(node_id, crate::types::LayerType::L0).await?;
-        let l1 = self.get_layer(node_id, crate::types::LayerType::L1).await?;
+        let l0 = self
+            .get_layer(node_id, crate::types::LayerType::L0, tenant_scope)
+            .await?;
+        let l1 = self
+            .get_layer(node_id, crate::types::LayerType::L1, tenant_scope)
+            .await?;
         let has_l2 = self
-            .get_layer(node_id, crate::types::LayerType::L2)
+            .get_layer(node_id, crate::types::LayerType::L2, tenant_scope)
             .await?
             .is_some();
 
@@ -506,11 +594,21 @@ impl MemoryDatabase {
         }))
     }
 
-    pub async fn node_exists(&self, uri: &str) -> MemoryResult<bool> {
+    pub async fn node_exists(
+        &self,
+        uri: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<bool> {
         let conn = self.conn.lock().await;
+        let tenant_clause = tenant_scope_matches_sql_clause("memory_nodes", 2);
         let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM memory_nodes WHERE uri = ?1",
-            params![uri],
+            &format!("SELECT COUNT(*) FROM memory_nodes WHERE uri = ?1 AND {tenant_clause}"),
+            params![
+                uri,
+                tenant_scope.org_id,
+                tenant_scope.workspace_id,
+                tenant_scope.deployment_id
+            ],
             |row| row.get(0),
         )?;
         Ok(count > 0)

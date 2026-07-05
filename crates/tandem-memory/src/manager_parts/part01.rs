@@ -1255,12 +1255,20 @@ impl MemoryManager {
             .await
     }
 
-    pub async fn resolve_uri(&self, uri: &str) -> MemoryResult<Option<MemoryNode>> {
-        self.db.get_node_by_uri(uri).await
+    pub async fn resolve_uri(
+        &self,
+        uri: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<Option<MemoryNode>> {
+        self.db.get_node_by_uri(uri, tenant_scope).await
     }
 
-    pub async fn list_directory(&self, uri: &str) -> MemoryResult<DirectoryListing> {
-        let nodes = self.db.list_directory(uri).await?;
+    pub async fn list_directory(
+        &self,
+        uri: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<DirectoryListing> {
+        let nodes = self.db.list_directory(uri, tenant_scope).await?;
         let directories: Vec<MemoryNode> = nodes
             .iter()
             .filter(|n| n.node_type == NodeType::Directory)
@@ -1281,8 +1289,13 @@ impl MemoryManager {
         })
     }
 
-    pub async fn tree(&self, uri: &str, max_depth: usize) -> MemoryResult<Vec<TreeNode>> {
-        self.db.get_children_tree(uri, max_depth).await
+    pub async fn tree(
+        &self,
+        uri: &str,
+        max_depth: usize,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<Vec<TreeNode>> {
+        self.db.get_children_tree(uri, max_depth, tenant_scope).await
     }
 
     pub async fn create_context_node(
@@ -1290,12 +1303,19 @@ impl MemoryManager {
         uri: &str,
         node_type: NodeType,
         metadata: Option<serde_json::Value>,
+        tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<String> {
         let parsed_uri =
             ContextUri::parse(uri).map_err(|e| MemoryError::InvalidConfig(e.message))?;
         let parent_uri = parsed_uri.parent().map(|p| p.to_string());
         self.db
-            .create_node(uri, parent_uri.as_deref(), node_type, metadata.as_ref())
+            .create_node(
+                uri,
+                parent_uri.as_deref(),
+                node_type,
+                metadata.as_ref(),
+                tenant_scope,
+            )
             .await
     }
 
@@ -1303,8 +1323,9 @@ impl MemoryManager {
         &self,
         node_id: &str,
         layer_type: LayerType,
+        tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<Option<MemoryLayer>> {
-        self.db.get_layer(node_id, layer_type).await
+        self.db.get_layer(node_id, layer_type, tenant_scope).await
     }
 
     pub async fn store_content_with_layers(
@@ -1312,6 +1333,7 @@ impl MemoryManager {
         uri: &str,
         content: &str,
         metadata: Option<serde_json::Value>,
+        tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<String> {
         let parsed_uri =
             ContextUri::parse(uri).map_err(|e| MemoryError::InvalidConfig(e.message))?;
@@ -1328,12 +1350,18 @@ impl MemoryManager {
         let parent_uri = parsed_uri.parent().map(|p| p.to_string());
         let node_id = self
             .db
-            .create_node(uri, parent_uri.as_deref(), node_type, metadata.as_ref())
+            .create_node(
+                uri,
+                parent_uri.as_deref(),
+                node_type,
+                metadata.as_ref(),
+                tenant_scope,
+            )
             .await?;
 
         let token_count = self.tokenizer.count_tokens(content) as i64;
         self.db
-            .create_layer(&node_id, LayerType::L2, content, token_count, None)
+            .create_layer(&node_id, LayerType::L2, content, token_count, None, tenant_scope)
             .await?;
 
         Ok(node_id)
@@ -1343,8 +1371,9 @@ impl MemoryManager {
         &self,
         node_id: &str,
         providers: &ProviderRegistry,
+        tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<()> {
-        let l2_layer = self.db.get_layer(node_id, LayerType::L2).await?;
+        let l2_layer = self.db.get_layer(node_id, LayerType::L2, tenant_scope).await?;
         let l2_content = match l2_layer {
             Some(layer) => layer.content,
             None => return Ok(()),
@@ -1357,15 +1386,25 @@ impl MemoryManager {
         let l0_tokens = self.tokenizer.count_tokens(&l0_content) as i64;
         let l1_tokens = self.tokenizer.count_tokens(&l1_content) as i64;
 
-        if self.db.get_layer(node_id, LayerType::L0).await?.is_none() {
+        if self
+            .db
+            .get_layer(node_id, LayerType::L0, tenant_scope)
+            .await?
+            .is_none()
+        {
             self.db
-                .create_layer(node_id, LayerType::L0, &l0_content, l0_tokens, None)
+                .create_layer(node_id, LayerType::L0, &l0_content, l0_tokens, None, tenant_scope)
                 .await?;
         }
 
-        if self.db.get_layer(node_id, LayerType::L1).await?.is_none() {
+        if self
+            .db
+            .get_layer(node_id, LayerType::L1, tenant_scope)
+            .await?
+            .is_none()
+        {
             self.db
-                .create_layer(node_id, LayerType::L1, &l1_content, l1_tokens, None)
+                .create_layer(node_id, LayerType::L1, &l1_content, l1_tokens, None, tenant_scope)
                 .await?;
         }
 
@@ -1376,8 +1415,9 @@ impl MemoryManager {
         &self,
         node_id: &str,
         layer_type: LayerType,
+        tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<Option<String>> {
-        let layer = self.db.get_layer(node_id, layer_type).await?;
+        let layer = self.db.get_layer(node_id, layer_type, tenant_scope).await?;
         Ok(layer.map(|l| l.content))
     }
 
@@ -1387,13 +1427,17 @@ impl MemoryManager {
         content: &str,
         metadata: Option<serde_json::Value>,
         providers: Option<&ProviderRegistry>,
+        tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<String> {
         let node_id = self
-            .store_content_with_layers(uri, content, metadata)
+            .store_content_with_layers(uri, content, metadata, tenant_scope)
             .await?;
 
         if let Some(p) = providers {
-            if let Err(e) = self.generate_layers_for_node(&node_id, p).await {
+            if let Err(e) = self
+                .generate_layers_for_node(&node_id, p, tenant_scope)
+                .await
+            {
                 tracing::warn!("Failed to generate layers for node {}: {}", node_id, e);
             }
         }

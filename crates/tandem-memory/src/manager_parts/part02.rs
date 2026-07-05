@@ -1399,4 +1399,212 @@ mod tests {
             .is_some_and(|reason| reason.contains("no reusable knowledge spaces")
                 || reason.contains("no active promoted knowledge")));
     }
+
+    #[tokio::test]
+    async fn context_tree_is_tenant_scoped() {
+        let (manager, _temp) = setup_test_manager().await;
+        let scope_a = crate::types::MemoryTenantScope {
+            org_id: "org-a".to_string(),
+            workspace_id: "workspace-a".to_string(),
+            deployment_id: None,
+        };
+        let scope_b = crate::types::MemoryTenantScope {
+            org_id: "org-b".to_string(),
+            workspace_id: "workspace-b".to_string(),
+            deployment_id: None,
+        };
+
+        let node_id = manager
+            .store_content_with_layers(
+                "tandem://resources/proj-a/notes.md",
+                "tenant A secret notes",
+                None,
+                &scope_a,
+            )
+            .await
+            .unwrap();
+
+        // The owner resolves the node and reads its layer.
+        let node = manager
+            .resolve_uri("tandem://resources/proj-a/notes.md", &scope_a)
+            .await
+            .unwrap()
+            .expect("owner resolves node");
+        assert_eq!(node.id, node_id);
+        let layer = manager
+            .get_context_layer(&node_id, crate::types::LayerType::L2, &scope_a)
+            .await
+            .unwrap();
+        assert!(layer.is_some(), "owner reads L2 layer");
+
+        // A different tenant sees nothing — same URI, same node id, no signal
+        // distinguishing a foreign node from a missing one.
+        assert!(manager
+            .resolve_uri("tandem://resources/proj-a/notes.md", &scope_b)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(manager
+            .get_context_layer(&node_id, crate::types::LayerType::L2, &scope_b)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(manager
+            .tree("tandem://resources/proj-a", 3, &scope_b)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(manager
+            .list_directory("tandem://resources/proj-a", &scope_b)
+            .await
+            .unwrap()
+            .nodes
+            .is_empty());
+
+        // Writing a layer onto a foreign node id fails like a missing node.
+        let err = manager
+            .db()
+            .create_layer(
+                &node_id,
+                crate::types::LayerType::L0,
+                "injected",
+                1,
+                None,
+                &scope_b,
+            )
+            .await
+            .expect_err("cross-tenant layer write is rejected");
+        assert!(matches!(err, crate::types::MemoryError::NotFound(_)));
+
+        // The owner still traverses their own tree.
+        let tree = manager
+            .tree("tandem://resources/proj-a", 3, &scope_a)
+            .await
+            .unwrap();
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].node.uri, "tandem://resources/proj-a/notes.md");
+    }
+
+    #[tokio::test]
+    async fn context_tree_same_uri_coexists_across_tenants() {
+        let (manager, _temp) = setup_test_manager().await;
+        let scope_a = crate::types::MemoryTenantScope {
+            org_id: "org-a".to_string(),
+            workspace_id: "workspace-a".to_string(),
+            deployment_id: None,
+        };
+        let scope_b = crate::types::MemoryTenantScope {
+            org_id: "org-b".to_string(),
+            workspace_id: "workspace-b".to_string(),
+            deployment_id: None,
+        };
+
+        // The legacy schema had a global UNIQUE(uri); per-tenant trees must be
+        // able to own the same URI independently.
+        let id_a = manager
+            .store_content_with_layers("tandem://user/profile.md", "tenant A profile", None, &scope_a)
+            .await
+            .unwrap();
+        let id_b = manager
+            .store_content_with_layers("tandem://user/profile.md", "tenant B profile", None, &scope_b)
+            .await
+            .unwrap();
+        assert_ne!(id_a, id_b);
+
+        let content_a = manager
+            .get_layer_content(&id_a, crate::types::LayerType::L2, &scope_a)
+            .await
+            .unwrap()
+            .expect("tenant A content");
+        let content_b = manager
+            .get_layer_content(&id_b, crate::types::LayerType::L2, &scope_b)
+            .await
+            .unwrap()
+            .expect("tenant B content");
+        assert_eq!(content_a, "tenant A profile");
+        assert_eq!(content_b, "tenant B profile");
+
+        // Duplicate URI within the SAME tenant is still rejected.
+        assert!(manager
+            .store_content_with_layers("tandem://user/profile.md", "dup", None, &scope_a)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn legacy_memory_nodes_table_migrates_to_tenant_scoped_schema() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("legacy.db");
+        // Pre-create the pre-tenancy table shape: global UNIQUE(uri), no tenant
+        // columns. Opening the manager must rebuild it in place.
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE memory_nodes (
+                    id TEXT PRIMARY KEY,
+                    uri TEXT NOT NULL UNIQUE,
+                    parent_uri TEXT,
+                    node_type TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    metadata TEXT
+                );
+                INSERT INTO memory_nodes
+                    (id, uri, parent_uri, node_type, created_at, updated_at, metadata)
+                VALUES
+                    ('legacy-node', 'tandem://resources/legacy/doc.md',
+                     'tandem://resources/legacy', 'file',
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', NULL);",
+            )
+            .unwrap();
+        }
+
+        let manager = MemoryManager::new(&db_path).await.unwrap();
+
+        // Legacy rows are backfilled into the local tenant scope.
+        let node = manager
+            .resolve_uri(
+                "tandem://resources/legacy/doc.md",
+                &crate::types::MemoryTenantScope::local(),
+            )
+            .await
+            .unwrap()
+            .expect("legacy node visible under local scope");
+        assert_eq!(node.id, "legacy-node");
+
+        // Other tenants cannot see the migrated row, and the former global
+        // UNIQUE(uri) no longer blocks them from owning the same URI.
+        let scope_b = crate::types::MemoryTenantScope {
+            org_id: "org-b".to_string(),
+            workspace_id: "workspace-b".to_string(),
+            deployment_id: None,
+        };
+        assert!(manager
+            .resolve_uri("tandem://resources/legacy/doc.md", &scope_b)
+            .await
+            .unwrap()
+            .is_none());
+        manager
+            .store_content_with_layers(
+                "tandem://resources/legacy/doc.md",
+                "tenant B copy",
+                None,
+                &scope_b,
+            )
+            .await
+            .expect("same URI storable by another tenant after migration");
+
+        // Re-opening does not re-run the rebuild (migration is idempotent).
+        drop(manager);
+        let reopened = MemoryManager::new(&db_path).await.unwrap();
+        let node = reopened
+            .resolve_uri(
+                "tandem://resources/legacy/doc.md",
+                &crate::types::MemoryTenantScope::local(),
+            )
+            .await
+            .unwrap()
+            .expect("legacy node survives reopen");
+        assert_eq!(node.id, "legacy-node");
+    }
 }
