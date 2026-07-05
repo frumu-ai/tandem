@@ -1563,4 +1563,35 @@ mod tests {
             ChannelSecurityProfile::TrustedTeam
         ));
     }
+
+    // TAN-601: channel senders must resolve to distinct, platform-namespaced
+    // memory subjects. Before the fix every channel run sent no client id, so
+    // all users collapsed to the shared "default" subject and one user's global
+    // memory could be injected into another's prompt.
+    #[test]
+    fn channel_memory_subject_is_per_sender_and_platform_namespaced() {
+        let a = channel_memory_subject_client_id("telegram", "111");
+        let b = channel_memory_subject_client_id("telegram", "222");
+        assert_eq!(a.as_deref(), Some("telegram:111"));
+        assert_eq!(b.as_deref(), Some("telegram:222"));
+        // Two users of the same bot never share a subject.
+        assert_ne!(a, b);
+        // Same numeric id on different platforms stays distinct.
+        assert_ne!(
+            channel_memory_subject_client_id("telegram", "123"),
+            channel_memory_subject_client_id("discord", "123")
+        );
+    }
+
+    #[test]
+    fn channel_memory_subject_trims_and_handles_missing_sender() {
+        assert_eq!(
+            channel_memory_subject_client_id("telegram", "  777  ").as_deref(),
+            Some("telegram:777")
+        );
+        // Unknown sender -> None, so the caller omits the header rather than
+        // pinning real users to a shared empty subject.
+        assert_eq!(channel_memory_subject_client_id("telegram", ""), None);
+        assert_eq!(channel_memory_subject_client_id("telegram", "   "), None);
+    }
 }

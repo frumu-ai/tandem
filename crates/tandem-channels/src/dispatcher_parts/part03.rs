@@ -197,6 +197,21 @@ async fn set_channel_workflow_planner_session_id(
 ///
 /// Falls back to an error string if the initial fire fails or the stream
 /// never completes within `timeout_secs`.
+/// Per-user memory subject for a channel run, namespaced by platform so two
+/// users of the same bot never collide (`telegram:123` != `discord:123`) and
+/// never fall back to the shared `"default"` subject that pooled every channel
+/// user's memory (TAN-601). Sent as the `x-tandem-client-id` header, which both
+/// the run-memory ingestor (write) and the prompt-injection hook (read) use to
+/// scope global memory. Returns `None` when the sender is unknown so the caller
+/// omits the header and the server applies its own default.
+pub(crate) fn channel_memory_subject_client_id(channel: &str, sender: &str) -> Option<String> {
+    let sender = sender.trim();
+    if sender.is_empty() {
+        return None;
+    }
+    Some(format!("{}:{}", channel.trim(), sender))
+}
+
 async fn run_in_session(
     session_id: &str,
     content: &str,
@@ -210,6 +225,12 @@ async fn run_in_session(
     tool_allowlist: Option<&Vec<String>>,
     channel_name: &str,
     strict_kb_grounding_override: Option<bool>,
+    // Per-user memory subject for this run. Channel senders must not share a
+    // memory subject, or one user's recalled/injected memory leaks into
+    // another's prompt (TAN-601). Sent as `x-tandem-client-id` so both the
+    // run-memory ingestor (write) and the prompt-injection hook (read) key
+    // global memory on the sender rather than the shared "default" subject.
+    memory_client_id: Option<&str>,
 ) -> anyhow::Result<String> {
     let timeout_secs: u64 = std::env::var("TANDEM_CHANNEL_MAX_WAIT_SECONDS")
         .ok()
@@ -260,13 +281,16 @@ async fn run_in_session(
 
     // Request run metadata so we can bind SSE to this specific run.
     let submit_prompt = || {
-        add_auth(
+        let mut request = add_auth(
             client.post(format!(
                 "{base_url}/session/{session_id}/prompt_async?return=run"
             )),
             api_token,
-        )
-        .json(&body)
+        );
+        if let Some(client_id) = memory_client_id {
+            request = request.header("x-tandem-client-id", client_id);
+        }
+        request.json(&body)
     };
     let mut resp = submit_prompt().send().await?;
     if resp.status() == reqwest::StatusCode::CONFLICT {
