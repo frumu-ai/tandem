@@ -7,6 +7,7 @@ export const ACA_CORE_NAV_ROUTE_IDS = new Set<RouteId>([
   "chat",
   "workflows",
   "automations",
+  "webhooks",
   "coding",
   "files",
   "incident-monitor",

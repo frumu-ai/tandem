@@ -18,6 +18,7 @@ const WorkflowStudioPage = lazyNamed(
   "WorkflowStudioPage"
 );
 const AutomationsPage = lazyNamed(() => import("../pages/AutomationsPage"), "AutomationsPage");
+const WebhooksPage = lazyNamed(() => import("../pages/WebhooksPage"), "WebhooksPage");
 const ExperimentsPage = lazyNamed(() => import("../pages/ExperimentsPage"), "ExperimentsPage");
 const EnterpriseAdminPage = lazyNamed(
   () => import("../pages/EnterpriseAdminPage"),
@@ -99,6 +100,8 @@ function renderRoute(routeId: ReturnType<typeof ensureRouteId>, pageProps: any) 
     case "packs":
     case "teams":
       return <AutomationsPage {...pageProps} />;
+    case "webhooks":
+      return <WebhooksPage {...pageProps} />;
     case "experiments":
       return <ExperimentsPage {...pageProps} />;
     case "enterprise-admin":
