@@ -102,6 +102,18 @@ mod provider_auth_resolution_tests {
 
         std::env::remove_var(env_key);
     }
+
+    #[test]
+    fn openai_codex_default_model_validation_rejects_retired_models() {
+        // The retired phantom `gpt-5.1-codex-max` must not be honored as a saved
+        // default; a stale config falls back to the compiled default so channel
+        // runs (which read this default fresh) stop hitting a provider 400.
+        assert!(!openai_codex_model_is_supported("gpt-5.1-codex-max"));
+        assert!(openai_codex_model_is_supported("gpt-5.5"));
+        assert!(openai_codex_model_is_supported("gpt-5.6"));
+        // The compiled fallback must itself always be a supported model.
+        assert!(openai_codex_model_is_supported(OPENAI_CODEX_DEFAULT_MODEL));
+    }
 }
 
 /// Validate provider base URL to prevent SSRF attacks.

@@ -415,10 +415,10 @@ struct OpenAIResponsesProvider {
 
 pub fn openai_codex_supported_model_rows() -> &'static [(&'static str, &'static str)] {
     &[
+        ("gpt-5.6", "GPT-5.6"),
         ("gpt-5.5", "GPT-5.5"),
         ("gpt-5.4", "GPT-5.4"),
         ("gpt-5.2-codex", "GPT-5.2-Codex"),
-        ("gpt-5.1-codex-max", "GPT-5.1-Codex-Max"),
         ("gpt-5.4-mini", "GPT-5.4-Mini"),
         ("gpt-5.3-codex", "GPT-5.3-Codex"),
         ("gpt-5.3-codex-spark", "GPT-5.3-Codex-Spark"),

@@ -686,14 +686,16 @@ mod tests {
             .iter()
             .map(|model| model.id.as_str())
             .collect::<Vec<_>>();
+        assert!(ids.contains(&"gpt-5.6"));
         assert!(ids.contains(&"gpt-5.5"));
         assert!(ids.contains(&"gpt-5.4"));
         assert!(ids.contains(&"gpt-5.2-codex"));
-        assert!(ids.contains(&"gpt-5.1-codex-max"));
         assert!(ids.contains(&"gpt-5.4-mini"));
         assert!(ids.contains(&"gpt-5.3-codex"));
         assert!(ids.contains(&"gpt-5.3-codex-spark"));
         assert!(ids.contains(&"gpt-5.1-codex-mini"));
+        // Retired phantom model must not reappear in the catalog.
+        assert!(!ids.contains(&"gpt-5.1-codex-max"));
     }
 
     #[test]

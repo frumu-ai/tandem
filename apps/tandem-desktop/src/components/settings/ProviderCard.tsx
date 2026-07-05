@@ -61,11 +61,11 @@ const SUGGESTED_MODELS: Record<string, string[]> = {
   ],
   openai: ["gpt-5.2", "gpt-5.1", "gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-4.1"],
   "openai-codex": [
+    "gpt-5.6",
     "gpt-5.5",
     "gpt-5.3-codex",
     "gpt-5.3-codex-spark",
     "gpt-5.2-codex",
-    "gpt-5.1-codex-max",
     "gpt-5.1-codex-mini",
   ],
   groq: ["llama-3.1-8b-instant", "llama-3.3-70b-versatile", "openai/gpt-oss-120b"],
