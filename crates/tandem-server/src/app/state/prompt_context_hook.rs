@@ -350,7 +350,11 @@ impl ServerPromptContextHook {
             )
         } else {
             MemoryAccessFilter::strict(strict_projection, now_ms)
-        };
+        }
+        // Same org-unit threading as governed_memory_read_filter: without it,
+        // members would lose their own department-restricted records from
+        // prompt memory injection (unset memberships fail closed).
+        .with_caller_org_units(verified.org_units.iter().cloned());
         PromptMemoryAccess::Governed {
             tenant_context: verified.tenant_context.clone(),
             subject: resolution.subject,

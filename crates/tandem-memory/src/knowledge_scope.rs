@@ -65,6 +65,10 @@ impl KnowledgeScopePolicy {
             source_binding_id: self.source_binding_id.clone(),
             source_object_id: self.source_object_id.clone(),
             evidence: GovernedReadEvidence::SourceBinding,
+            // Knowledge-scoped records are grant-governed: org-unit access flows
+            // through projected org-unit grants, not the membership check that
+            // applies to ordinary tenant-local memory.
+            owner_org_unit_id: None,
         }
     }
 

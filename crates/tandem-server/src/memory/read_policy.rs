@@ -51,17 +51,24 @@ pub fn governed_memory_read_filter_with_workflow_phase(
         GovernedReadMode::GovernedStrict => {
             let strict_context =
                 verified_tenant_context.and_then(|context| context.strict_projection.clone());
-            if let Some(workflow_phase) = workflow_phase
+            let mut filter = if let Some(workflow_phase) = workflow_phase
                 .map(str::trim)
                 .filter(|workflow_phase| !workflow_phase.is_empty())
             {
-                return Some(MemoryAccessFilter::governed_with_workflow_phase(
+                MemoryAccessFilter::governed_with_workflow_phase(
                     strict_context,
                     now_ms,
                     workflow_phase.to_string(),
-                ));
+                )
+            } else {
+                MemoryAccessFilter::governed(strict_context, now_ms)
+            };
+            // Org-unit memberships gate department-restricted records; without a
+            // verified context the filter keeps `None` and denies them fail closed.
+            if let Some(verified) = verified_tenant_context {
+                filter = filter.with_caller_org_units(verified.org_units.iter().cloned());
             }
-            Some(MemoryAccessFilter::governed(strict_context, now_ms))
+            Some(filter)
         }
     }
 }

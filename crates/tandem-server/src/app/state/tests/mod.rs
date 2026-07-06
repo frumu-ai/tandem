@@ -742,6 +742,35 @@ fn prompt_memory_access_uses_verified_actor_not_client_id() {
 }
 
 #[test]
+fn prompt_memory_access_threads_org_units_into_filter() {
+    let mut session = Session::new(Some("enterprise".to_string()), Some(".".to_string()));
+    let mut verified = test_verified_context("org-a", "workspace-a", "user-a", "project-a", true);
+    verified.org_units = vec!["ou-eng".to_string()];
+    session.tenant_context = verified.tenant_context.clone();
+    session.verified_tenant_context = Some(verified);
+
+    let access = ServerPromptContextHook::resolve_prompt_memory_access(
+        RuntimeAuthMode::LocalSingleTenant,
+        Some(&session),
+        Some("client-user-a"),
+        2_000,
+    );
+
+    // Prompt injection must honor the same org-unit memberships as HTTP reads:
+    // an unset membership set would silently drop the member's own
+    // department-restricted records from prompt context.
+    match access {
+        PromptMemoryAccess::Governed { access_filter, .. } => {
+            assert_eq!(
+                access_filter.caller_org_units,
+                Some(std::collections::BTreeSet::from(["ou-eng".to_string()]))
+            );
+        }
+        other => panic!("expected governed prompt memory access, got {other:?}"),
+    }
+}
+
+#[test]
 fn prompt_memory_access_uses_strict_agent_tenant_actor_and_audits_delegate() {
     let mut session = Session::new(Some("enterprise".to_string()), Some(".".to_string()));
     let mut verified = test_verified_context("org-a", "workspace-a", "user-a", "project-a", true);

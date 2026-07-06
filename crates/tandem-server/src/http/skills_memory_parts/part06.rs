@@ -450,6 +450,30 @@ pub(super) async fn memory_put_impl_with_verified(
         .await?;
         return Err(StatusCode::FORBIDDEN);
     }
+    // A writer may department-restrict a record only to an org unit they are a
+    // member of; otherwise ownership could be forged onto units the writer does
+    // not belong to. Enforced only when the runtime carries org-unit identity —
+    // local single-tenant mode has no org model and no verified context.
+    if let Some(owner_org_unit_id) =
+        tandem_memory::types::owner_org_unit_id_from_metadata(request.metadata.as_ref())
+    {
+        let requires_membership = crate::config::env::resolve_runtime_auth_mode()
+            != tandem_types::RuntimeAuthMode::LocalSingleTenant
+            || verified_tenant_context.is_some();
+        let is_member = verified_tenant_context
+            .is_some_and(|verified| verified.org_units.iter().any(|u| u == &owner_org_unit_id));
+        if requires_membership && !is_member {
+            emit_blocked_memory_put_guardrail(
+                state,
+                tenant_context,
+                &request,
+                capability.subject.clone(),
+                "owner_org_unit_membership_required",
+            )
+            .await?;
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
     let id = Uuid::new_v4().to_string();
     let partition_key = request.partition.key();
     let kind = memory_kind_for_request(request.kind.clone());
