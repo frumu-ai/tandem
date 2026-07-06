@@ -1471,6 +1471,7 @@ impl MemoryDatabase {
             session_id,
             &MemoryTenantScope::local(),
             limit,
+            None,
         )
         .await
     }
@@ -1488,6 +1489,7 @@ impl MemoryDatabase {
         session_id: Option<&str>,
         tenant_scope: &MemoryTenantScope,
         limit: i64,
+        visible_subject: Option<&str>,
     ) -> MemoryResult<Vec<(MemoryChunk, f64)>> {
         self.deny_local_scope_in_strict_mode("memory search", tenant_scope)?;
         let conn = self.conn.lock().await;
@@ -1521,6 +1523,7 @@ impl MemoryDatabase {
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
                          WHERE c.session_id = ?1 AND {}
+                           AND (?7 IS NULL OR c.subject IS NULL OR c.subject = ?7)
                          ORDER BY distance
                          LIMIT ?6",
                         vectors_table, chunks_table, tenant_clause
@@ -1534,7 +1537,8 @@ impl MemoryDatabase {
                                 tenant_scope.workspace_id.as_str(),
                                 tenant_scope.deployment_id.as_deref(),
                                 embedding_json,
-                                limit
+                                limit,
+                                visible_subject
                             ],
                             |row| {
                                 Ok((
@@ -1555,6 +1559,7 @@ impl MemoryDatabase {
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
                          WHERE c.project_id = ?1 AND {}
+                           AND (?7 IS NULL OR c.subject IS NULL OR c.subject = ?7)
                          ORDER BY distance
                          LIMIT ?6",
                         vectors_table, chunks_table, tenant_clause
@@ -1568,7 +1573,8 @@ impl MemoryDatabase {
                                 tenant_scope.workspace_id.as_str(),
                                 tenant_scope.deployment_id.as_deref(),
                                 embedding_json,
-                                limit
+                                limit,
+                                visible_subject
                             ],
                             |row| {
                                 Ok((
@@ -1589,6 +1595,7 @@ impl MemoryDatabase {
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
                          WHERE {}
+                           AND (?6 IS NULL OR c.subject IS NULL OR c.subject = ?6)
                          ORDER BY distance
                          LIMIT ?5",
                         vectors_table, chunks_table, tenant_clause
@@ -1601,7 +1608,8 @@ impl MemoryDatabase {
                                 tenant_scope.workspace_id.as_str(),
                                 tenant_scope.deployment_id.as_deref(),
                                 embedding_json,
-                                limit
+                                limit,
+                                visible_subject
                             ],
                             |row| {
                                 Ok((
@@ -1625,6 +1633,7 @@ impl MemoryDatabase {
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
                          WHERE c.project_id = ?1 AND {}
+                           AND (?7 IS NULL OR c.subject IS NULL OR c.subject = ?7)
                          ORDER BY distance
                          LIMIT ?6",
                         vectors_table, chunks_table, tenant_clause
@@ -1638,7 +1647,8 @@ impl MemoryDatabase {
                                 tenant_scope.workspace_id.as_str(),
                                 tenant_scope.deployment_id.as_deref(),
                                 embedding_json,
-                                limit
+                                limit,
+                                visible_subject
                             ],
                             |row| {
                                 Ok((
@@ -1659,6 +1669,7 @@ impl MemoryDatabase {
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
                          WHERE {}
+                           AND (?6 IS NULL OR c.subject IS NULL OR c.subject = ?6)
                          ORDER BY distance
                          LIMIT ?5",
                         vectors_table, chunks_table, tenant_clause
@@ -1671,7 +1682,8 @@ impl MemoryDatabase {
                                 tenant_scope.workspace_id.as_str(),
                                 tenant_scope.deployment_id.as_deref(),
                                 embedding_json,
-                                limit
+                                limit,
+                                visible_subject
                             ],
                             |row| {
                                 Ok((
@@ -1694,6 +1706,7 @@ impl MemoryDatabase {
                      FROM {} AS v
                      JOIN {} AS c ON v.chunk_id = c.id
                      WHERE {}
+                       AND (?6 IS NULL OR c.subject IS NULL OR c.subject = ?6)
                      ORDER BY distance
                      LIMIT ?5",
                     vectors_table, chunks_table, tenant_clause
@@ -1706,7 +1719,8 @@ impl MemoryDatabase {
                             tenant_scope.workspace_id.as_str(),
                             tenant_scope.deployment_id.as_deref(),
                             embedding_json,
-                            limit
+                            limit,
+                            visible_subject
                         ],
                         |row| {
                             Ok((

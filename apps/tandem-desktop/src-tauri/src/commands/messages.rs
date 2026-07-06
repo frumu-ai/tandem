@@ -406,6 +406,7 @@ async fn store_user_message_in_memory(
         source_size: None,
         source_hash: None,
         tenant_scope: MemoryTenantScope::local(),
+        subject: None,
         metadata: Some(base_metadata.clone()),
     };
     let mut session_chunks_stored = 0usize;
@@ -450,6 +451,7 @@ async fn store_user_message_in_memory(
             source_size: None,
             source_hash: None,
             tenant_scope: MemoryTenantScope::local(),
+            subject: None,
             metadata: Some(base_metadata),
         };
         match manager.store_message(project_req).await {

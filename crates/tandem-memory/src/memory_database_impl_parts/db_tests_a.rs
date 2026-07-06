@@ -562,6 +562,7 @@
                 None,
                 &tenant_a,
                 1,
+                            None,
             )
             .await
             .unwrap();
@@ -604,7 +605,7 @@
         .unwrap();
 
         let results = db
-            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &tenant_a, 10)
+            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &tenant_a, 10, None)
             .await
             .unwrap();
 
@@ -642,6 +643,7 @@
                 Some("shared-session"),
                 &tenant_b,
                 10,
+                            None,
             )
             .await
             .unwrap();
@@ -658,6 +660,7 @@
                 Some("shared-session"),
                 &tenant_a,
                 10,
+                            None,
             )
             .await
             .unwrap();
@@ -695,7 +698,7 @@
         .unwrap();
 
         let cross_deployment = db
-            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &deployment_two, 10)
+            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &deployment_two, 10, None)
             .await
             .unwrap();
         assert!(
@@ -704,7 +707,7 @@
         );
 
         let missing_deployment = db
-            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &no_deployment, 10)
+            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &no_deployment, 10, None)
             .await
             .unwrap();
         assert!(
@@ -713,7 +716,7 @@
         );
 
         let own = db
-            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &deployment_one, 10)
+            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &deployment_one, 10, None)
             .await
             .unwrap();
         assert_eq!(own.len(), 1);
@@ -743,7 +746,7 @@
         db.set_strict_tenant_enforcement(true);
 
         let read_err = db
-            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &local_scope, 10)
+            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &local_scope, 10, None)
             .await
             .expect_err("strict mode must deny local-scope reads");
         assert!(matches!(read_err, MemoryError::TenantScopeViolation(_)));
@@ -778,7 +781,7 @@
         .await
         .expect("explicit tenant writes succeed in strict mode");
         let results = db
-            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &tenant_a, 10)
+            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &tenant_a, 10, None)
             .await
             .expect("explicit tenant reads succeed in strict mode");
         assert_eq!(results.len(), 1);
@@ -824,7 +827,7 @@
         assert_eq!(cross_delete, 0);
 
         let tenant_b_results = db
-            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &tenant_b, 10)
+            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &tenant_b, 10, None)
             .await
             .unwrap();
         assert_eq!(tenant_b_results.len(), 1);
@@ -836,7 +839,7 @@
             .unwrap();
         assert_eq!(own_delete, 1);
         assert_eq!(
-            db.search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &tenant_b, 10)
+            db.search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &tenant_b, 10, None)
                 .await
                 .unwrap()
                 .len(),

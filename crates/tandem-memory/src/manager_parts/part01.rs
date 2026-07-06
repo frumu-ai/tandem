@@ -286,6 +286,11 @@ impl MemoryManager {
         };
 
         let now_ms = Utc::now().timestamp_millis();
+        // Push the subject restriction into the SQL top-k so a caller's own
+        // chunks cannot be starved out of the candidate window by other
+        // subjects' closer matches; the access filter below remains as the
+        // authoritative post-check.
+        let visible_subject = access_filter.and_then(|filter| filter.caller_subject.as_deref());
         for search_tier in tiers_to_search {
             let tier_results = match self
                 .db
@@ -296,6 +301,7 @@ impl MemoryManager {
                     session_id,
                     tenant_scope,
                     candidate_limit,
+                    visible_subject,
                 )
                 .await
             {
@@ -326,6 +332,7 @@ impl MemoryManager {
                                 session_id,
                                 tenant_scope,
                                 candidate_limit,
+                                visible_subject,
                             )
                             .await
                         {
