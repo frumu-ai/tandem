@@ -978,21 +978,28 @@ pub(super) async fn ingest_event_memory_records(
     ctx_by_session: &HashMap<String, RunMemoryContext>,
 ) {
     let session_id = event_session_id(event);
-    let session_ctx = session_id
+    // Fail closed on attribution: without the session's run context there is no
+    // resolved owner subject or tenant scope, and fabricating them (previously
+    // user_id="default" + TenantContext::default()) files "private" memory
+    // under a catch-all identity that unrelated readers can retrieve (TAN-633).
+    // An event we cannot attribute is not worth storing as memory.
+    let Some(session_ctx) = session_id
         .as_ref()
         .and_then(|sid| ctx_by_session.get(sid))
-        .cloned();
-    let run_id = event_run_id(event)
-        .or_else(|| session_ctx.as_ref().map(|c| c.run_id.clone()))
-        .unwrap_or_else(|| "unknown".to_string());
-    let user_id = session_ctx
-        .as_ref()
-        .map(|c| c.user_id.clone())
-        .unwrap_or_else(|| "default".to_string());
-    let host_tag = session_ctx.as_ref().and_then(|c| c.host_tag.clone());
-    let tenant_context = event_tenant_context(event)
-        .or_else(|| session_ctx.as_ref().map(|c| c.tenant_context.clone()))
-        .unwrap_or_default();
+        .cloned()
+    else {
+        tracing::debug!(
+            event_type = %event.event_type,
+            session_id = session_id.as_deref().unwrap_or(""),
+            "skipping event memory ingestion without an attributable run context"
+        );
+        return;
+    };
+    let run_id = event_run_id(event).unwrap_or_else(|| session_ctx.run_id.clone());
+    let user_id = session_ctx.user_id.clone();
+    let host_tag = session_ctx.host_tag.clone();
+    let tenant_context =
+        event_tenant_context(event).unwrap_or_else(|| session_ctx.tenant_context.clone());
     let (source_type, content, ttl_ms): (&str, String, Option<u64>) =
         match event.event_type.as_str() {
             "permission.asked" => (

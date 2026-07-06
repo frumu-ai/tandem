@@ -21,3 +21,4 @@ include!("skills_memory_parts/part06.rs");
 include!("skills_memory_parts/part02.rs");
 include!("skills_memory_parts/part04.rs");
 include!("skills_memory_parts/part03.rs");
+include!("skills_memory_parts/part05.rs");
