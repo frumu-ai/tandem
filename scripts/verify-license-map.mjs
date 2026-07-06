@@ -48,19 +48,26 @@ for (const member of members) {
   discovered.push({ path: manifest, name, license });
 }
 
-// JS packages (published only).
+// JS packages (published only) and Python packages. A package directory may
+// have either, both, or neither manifest, so each is checked independently
+// (packages/tandem-client-py, for example, has a pyproject.toml but no
+// package.json).
 const packagesDir = path.join(repoRoot, "packages");
 for (const entry of fs.readdirSync(packagesDir, { withFileTypes: true })) {
   if (!entry.isDirectory()) continue;
+
   const pkgJson = `packages/${entry.name}/package.json`;
-  if (!exists(pkgJson)) continue;
-  const json = JSON.parse(read(pkgJson));
-  if (json.private === true) continue; // not distributed
-  discovered.push({
-    path: pkgJson,
-    name: json.name ?? "<unknown>",
-    license: json.license ?? "<none>",
-  });
+  if (exists(pkgJson)) {
+    const json = JSON.parse(read(pkgJson));
+    if (json.private !== true) {
+      // private packages are not distributed
+      discovered.push({
+        path: pkgJson,
+        name: json.name ?? "<unknown>",
+        license: json.license ?? "<none>",
+      });
+    }
+  }
 
   const pyProject = `packages/${entry.name}/pyproject.toml`;
   if (exists(pyProject)) {
