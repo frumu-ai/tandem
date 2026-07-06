@@ -8,18 +8,18 @@
 # features passed to cargo:
 #
 #   * public          (no features, optionally `browser`)
-#         Lean, single-tenant, open-source build. Must NOT pull the enterprise
+#         Lean, single-tenant dev/CI composition. Must NOT pull the enterprise
 #         server, the premium governance engine, or the heavyweight local
-#         embedding stack (fastembed / ort).
-#   * enterprise-lite (`enterprise-server`)
-#         Hosted build that registers `/enterprise/*` routes (connectors,
-#         source bindings, cross-tenant grants) but stays lean — it must pull
-#         `tandem-enterprise-server` yet still exclude governance and the local
-#         embedding stack.
+#         embedding stack (fastembed / ort). Not shipped as a release artifact
+#         since TAN-632, but kept compiling as the minimal composition.
+#   * enterprise      (`enterprise`) — THE RELEASE DEFAULT (TAN-632)
+#         Every released artifact: enterprise routes (connectors, source
+#         bindings, cross-tenant grants), premium governance, and Google
+#         Drive — everything except the heavyweight local embedding stack
+#         (fastembed / ort).
 #   * enterprise-full (`enterprise-full`)
-#         The complete enterprise artifact: enterprise routes plus governance,
-#         Google Drive, and local embeddings. Must pull all of the heavyweight
-#         crates.
+#         The hosted Linux asset: everything in `enterprise` plus local
+#         embeddings. Must pull all of the heavyweight crates.
 #
 # Cargo only activates a feature when it is passed via `--features`, so each mode
 # is checked with the exact feature set its artifacts are built with. The check
@@ -112,11 +112,14 @@ if ! bash "${SCRIPT_DIR}/check-public-build-exclusions.sh"; then
 fi
 echo
 
-# --- enterprise-lite: enterprise routes, but still lean -------------------------
-echo "== enterprise-lite build mode =="
-assert_mode "enterprise-lite" "enterprise-server" \
-  "${ENTERPRISE_SERVER}" \
-  "${GOVERNANCE_ENGINE} ${FASTEMBED} ${ORT}"
+# --- enterprise: the standard release artifact (TAN-632) ------------------------
+# Every released binary ships enterprise routes + premium governance; only the
+# heavyweight local-embedding stack stays out (hosted Linux asset carries it
+# via enterprise-full).
+echo "== enterprise (release default) build mode =="
+assert_mode "enterprise" "enterprise" \
+  "${ENTERPRISE_SERVER} ${GOVERNANCE_ENGINE}" \
+  "${FASTEMBED} ${ORT}"
 echo
 
 # --- enterprise-full: the complete enterprise stack -----------------------------
@@ -128,8 +131,8 @@ echo
 
 if [ "${violations}" -ne 0 ]; then
   echo "Build-mode validation failed: ${violations} issue(s) found." >&2
-  echo "The public/enterprise-lite/enterprise-full feature composition no longer matches the enterprise server split." >&2
+  echo "The public/enterprise/enterprise-full feature composition no longer matches the enterprise server split." >&2
   exit 1
 fi
 
-echo "OK: public, enterprise-lite, and enterprise-full build modes compose as designed."
+echo "OK: public, enterprise (release default), and enterprise-full build modes compose as designed."

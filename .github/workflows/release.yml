@@ -273,17 +273,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release --target ${{ matrix.target }} -p tandem-ai -p tandem-tui -p tandem-browser --features tandem-ai/browser
+          cargo build --release --target ${{ matrix.target }} -p tandem-ai -p tandem-tui -p tandem-browser --features tandem-ai/browser,tandem-ai/enterprise
           if [ -n "${{ matrix.enterprise_engine_asset || '' }}" ]; then
             cargo build --release --target ${{ matrix.target }} -p tandem-ai --features tandem-ai/browser,tandem-ai/enterprise-full
             cp "target/${{ matrix.target }}/release/tandem-engine" "target/${{ matrix.target }}/release/tandem-engine-enterprise"
-            cargo build --release --target ${{ matrix.target }} -p tandem-ai -p tandem-tui -p tandem-browser --features tandem-ai/browser
+            cargo build --release --target ${{ matrix.target }} -p tandem-ai -p tandem-tui -p tandem-browser --features tandem-ai/browser,tandem-ai/enterprise
           fi
 
       - name: Build runtime binaries (Windows)
         if: ${{ matrix.platform == 'windows-latest' }}
         shell: pwsh
-        run: cargo build --release --target ${{ matrix.target }} -p tandem-ai -p tandem-tui -p tandem-browser --features tandem-ai/browser
+        run: cargo build --release --target ${{ matrix.target }} -p tandem-ai -p tandem-tui -p tandem-browser --features tandem-ai/browser,tandem-ai/enterprise
 
       - name: Package standalone engine/tui/browser assets (Windows)
         if: ${{ matrix.platform == 'windows-latest' }}

@@ -109,16 +109,14 @@ engine source auditable and reusable under open-source terms.
 
 ### Engine binaries are mixed-license
 
-Every distributed Tandem engine binary includes `BUSL-1.1` components — there
-is no BUSL-free engine binary:
-
-- **Standard artifacts** (`tandem-engine`, the desktop sidecar, `tandem-tui`,
-  `tandem-browser`; built with `-p tandem-ai --features tandem-ai/browser`)
-  include `tandem-plan-compiler` and `tandem-incident-monitor` through
-  `tandem-server`.
-- **Enterprise artifacts** (`tandem-engine-enterprise-*`; built with
-  `tandem-ai/enterprise-full`) additionally include
-  `tandem-governance-engine` and `tandem-enterprise-server`.
+Every distributed Tandem engine binary includes **all four** `BUSL-1.1`
+components — there is no BUSL-free or governance-free engine binary. All
+release artifacts (`tandem-engine` on every platform, the desktop sidecar,
+`tandem-tui`, `tandem-browser`) are built with `tandem-ai/enterprise`:
+enterprise routes, premium governance, and Google Drive connectors compiled
+in. The hosted Linux asset (`tandem-engine-enterprise-*`, built with
+`tandem-ai/enterprise-full`) differs only by adding the local-embedding
+stack (fastembed/ort) — a build-weight difference, not a licensing one.
 
 Several permissive crates depend on source-available crates directly:
 
