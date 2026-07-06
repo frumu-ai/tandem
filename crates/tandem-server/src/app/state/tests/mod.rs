@@ -931,6 +931,159 @@ async fn prompt_hook_enterprise_memory_is_tenant_and_verified_actor_scoped() {
     );
 }
 
+/// Matrix TAN-608(b): two channel senders (DM subjects) in one tenant must not
+/// see each other's memory in prompt injection, and a public group scope is a
+/// shared pool by design — visible to the room subject, never to DM subjects.
+#[tokio::test]
+async fn prompt_injection_recall_is_subject_scoped_between_channel_senders() {
+    let project_id = "project-a";
+    let alice_subject = "channel:telegram:dm:alice";
+    let bob_subject = "channel:telegram:dm:bob";
+    let room_subject = "channel-public::telegram::room-9";
+
+    let verified_alice =
+        test_verified_context("org-a", "workspace-a", alice_subject, project_id, true);
+    let tenant = verified_alice.tenant_context.clone();
+    let mut alice_session = Session::new(Some("enterprise".to_string()), Some(".".to_string()));
+    alice_session.project_id = Some(project_id.to_string());
+    alice_session.tenant_context = tenant.clone();
+    alice_session.verified_tenant_context = Some(verified_alice);
+    let alice_access = ServerPromptContextHook::resolve_prompt_memory_access(
+        RuntimeAuthMode::LocalSingleTenant,
+        Some(&alice_session),
+        None,
+        2_000,
+    );
+
+    let verified_room =
+        test_verified_context("org-a", "workspace-a", room_subject, project_id, true);
+    let mut room_session = Session::new(Some("enterprise".to_string()), Some(".".to_string()));
+    room_session.project_id = Some(project_id.to_string());
+    room_session.tenant_context = tenant.clone();
+    room_session.verified_tenant_context = Some(verified_room);
+    let room_access = ServerPromptContextHook::resolve_prompt_memory_access(
+        RuntimeAuthMode::LocalSingleTenant,
+        Some(&room_session),
+        None,
+        2_000,
+    );
+
+    let db_path = std::env::temp_dir().join(format!(
+        "tandem-prompt-sender-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let db = MemoryDatabase::new(&db_path).await.expect("memory db");
+    db.put_global_memory_record(&prompt_memory_record_for_tenant(
+        "alice-dm-memory",
+        &tenant,
+        alice_subject,
+        "meteor-alice private travel plans",
+        Some(project_id),
+    ))
+    .await
+    .expect("store alice memory");
+    db.put_global_memory_record(&prompt_memory_record_for_tenant(
+        "bob-dm-memory",
+        &tenant,
+        bob_subject,
+        "meteor-bob confidential salary discussion",
+        Some(project_id),
+    ))
+    .await
+    .expect("store bob memory");
+    db.put_global_memory_record(&prompt_memory_record_for_tenant(
+        "room-shared-memory",
+        &tenant,
+        room_subject,
+        "meteor-room shared retro notes",
+        Some(project_id),
+    ))
+    .await
+    .expect("store room memory");
+
+    // Sender A's injected context contains only sender A's memory.
+    let (project_hits, global_hits) = ServerPromptContextHook::search_prompt_global_memory(
+        &db,
+        &alice_access,
+        "meteor",
+        Some(project_id),
+    )
+    .await;
+    let (selected, _deferred, _project_scope_used) =
+        ServerPromptContextHook::select_memory_hits_for_context(project_hits, global_hits);
+    let rendered = prompt_memory_context::build_memory_block_with_budget(
+        &selected,
+        DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
+    )
+    .content;
+    assert!(
+        rendered.contains("meteor-alice"),
+        "sender recalls their own memory:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("meteor-bob"),
+        "another sender's DM memory leaked into the prompt:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("meteor-room"),
+        "room-scoped memory must not be injected for a DM subject:\n{rendered}"
+    );
+
+    // The shared room subject sees the room pool (shared by design) and no DMs.
+    let (project_hits, global_hits) = ServerPromptContextHook::search_prompt_global_memory(
+        &db,
+        &room_access,
+        "meteor",
+        Some(project_id),
+    )
+    .await;
+    let (selected, _deferred, _project_scope_used) =
+        ServerPromptContextHook::select_memory_hits_for_context(project_hits, global_hits);
+    let rendered = prompt_memory_context::build_memory_block_with_budget(
+        &selected,
+        DEFAULT_MEMORY_CONTEXT_BUDGET_CHARS,
+    )
+    .content;
+    assert!(
+        rendered.contains("meteor-room"),
+        "group members share the room scope by design:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("meteor-alice") && !rendered.contains("meteor-bob"),
+        "DM memory must not surface through the room scope:\n{rendered}"
+    );
+}
+
+/// Matrix TAN-608(g): the prompt memory block accounts for every hit dropped
+/// by the character budget instead of silently truncating.
+#[test]
+fn prompt_memory_block_budget_drops_are_accounted() {
+    let hits = (0..3)
+        .map(|i| tandem_memory::types::GlobalMemorySearchHit {
+            score: 0.9 - (i as f64) * 0.1,
+            record: prompt_memory_record(
+                &format!("budget-{i}"),
+                &format!("budget filler entry number {i} with enough words to consume space"),
+            ),
+        })
+        .collect::<Vec<_>>();
+
+    let generous = prompt_memory_context::build_memory_block_with_budget(&hits, 4_000);
+    assert_eq!(generous.included_count, 3);
+    assert_eq!(generous.dropped_count, 0);
+    assert!(generous.content.contains("budget filler entry number 2"));
+
+    // A budget that fits roughly one entry drops the rest — and says so.
+    let tight = prompt_memory_context::build_memory_block_with_budget(&hits, 400);
+    assert!(tight.included_count >= 1);
+    assert_eq!(tight.included_count + tight.dropped_count, 3);
+    assert!(tight.dropped_count >= 1);
+    assert!(tight.dropped_chars > 0);
+    assert!(!tight.content.contains("budget filler entry number 2"));
+    assert!(tight.content.starts_with("<memory_context>"));
+    assert!(tight.content.ends_with("</memory_context>"));
+}
+
 #[test]
 fn prompt_memory_block_marks_untrusted_memory_as_evidence_not_authority() {
     let hit = tandem_memory::types::GlobalMemorySearchHit {

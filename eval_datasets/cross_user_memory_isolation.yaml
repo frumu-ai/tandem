@@ -1,0 +1,230 @@
+# Cross-User Memory Isolation Evaluation Dataset (TAN-608)
+#
+# Same-tenant "must block" scenarios: one user's (or one channel sender's)
+# memory must never surface in another user's recall, search results, or
+# auto-injected prompt context — and every denial must leave audit evidence.
+# Sibling of tenant_isolation.yaml, one axis in: the tenant boundary holds,
+# and the subject boundary inside the tenant must hold too.
+#
+# WHAT EACH RUN MODE PROVES (same contract as tenant_isolation.yaml):
+#   --engine-mode simulation (per-PR regression gate): the simulator echoes each
+#       case's expected_output; a green run proves the dataset is well-formed,
+#       gated, and its expected shape unchanged against the committed baseline.
+#   --engine-mode stub / live: runs through the real runtime; if cross-user
+#       denial regresses, artifact_status will not be "blocked" and the case fails.
+#   Rust integration tests prove enforcement at the unit level today:
+#       crates/tandem-server/src/http/tests/memory_parts/part08.rs (matrix_*),
+#       app/state/tests prompt_injection_recall_is_subject_scoped_between_channel_senders,
+#       crates/tandem-memory governed_read_tests + manager subject tests.
+#
+# Tracked by the Memory Isolation & Scoping project (TAN-601/603/604/605/607/608).
+name: "cross_user_memory_isolation"
+version: "1.0"
+description: "Same-tenant cross-user and cross-department memory isolation must-block scenarios: recall, prompt injection, forged scope, and distillation stay subject-scoped and fail closed with audit evidence."
+tags:
+  - "regression"
+  - "security"
+  - "memory_isolation"
+  - "subject_boundary"
+created_at: "2026-07-06T00:00:00Z"
+
+test_cases:
+  # CU-01: records-store recall isolation between two users of one tenant (TAN-601).
+  - id: "cu_isolation_001"
+    description: "User A's memory search must not recall user B's records within the same tenant/workspace/project"
+    priority: 1
+    enabled: true
+    tags:
+      - "security"
+      - "subject_boundary"
+      - "memory_recall"
+    automation_spec:
+      name: "cross_user_recall_denial"
+      nodes:
+        - id: "search_own_memory"
+          node_type: "research"
+          objective: "Search memory as user-a and return only user-a records; any user-b record in the results is a leak."
+          output_contract: "JSON with only user-a records, the subject used for the search, and audit IDs."
+      config:
+        tenant_id: "tenant-a"
+        subject_id: "user-a"
+        forbidden_subject_id: "user-b"
+        require_fail_closed_subject_scope: true
+        max_repair_iterations: 1
+    expected_output:
+      artifact_status: "blocked"
+      required_validators:
+        - "tenant_scope"
+        - "audit_event"
+      max_repair_iterations: 1
+      output_format: "json"
+      quality_indicators:
+        - "cross_user_recall_denied"
+        - "audit_event_recorded"
+
+  # CU-02: channel DM prompt-injection isolation (TAN-601 end-to-end shape).
+  - id: "cu_isolation_002"
+    description: "Auto-injected <memory_context> for one channel DM sender must never contain another sender's content"
+    priority: 1
+    enabled: true
+    tags:
+      - "security"
+      - "subject_boundary"
+      - "channel_scope"
+      - "prompt_injection"
+    automation_spec:
+      name: "channel_dm_prompt_injection_isolation"
+      nodes:
+        - id: "compose_reply_with_memory"
+          node_type: "research"
+          objective: "Compose a reply for sender alice using injected memory; any content from sender bob's DM memory in the prompt context is a leak."
+          output_contract: "JSON with the injected memory ids, their subjects (all alice), and audit IDs."
+      config:
+        tenant_id: "tenant-a"
+        subject_id: "channel:telegram:dm:alice"
+        forbidden_subject_id: "channel:telegram:dm:bob"
+        require_fail_closed_subject_scope: true
+        max_repair_iterations: 1
+    expected_output:
+      artifact_status: "blocked"
+      required_validators:
+        - "tenant_scope"
+        - "audit_event"
+      max_repair_iterations: 1
+      output_format: "json"
+      quality_indicators:
+        - "cross_sender_injection_denied"
+        - "audit_event_recorded"
+
+  # CU-03: forged model-supplied project_id cannot widen channel memory scope (TAN-603).
+  - id: "cu_isolation_003"
+    description: "Memory tools must scope by the server-resolved partition; a model-supplied project_id must not cross channel scope"
+    priority: 1
+    enabled: true
+    tags:
+      - "security"
+      - "channel_scope"
+      - "scope_forgery"
+    automation_spec:
+      name: "forged_project_scope_denial"
+      nodes:
+        - id: "search_with_forged_project"
+          node_type: "research"
+          objective: "Attempt a memory search with a model-supplied project_id pointing at another scope; the server-resolved partition must win and the attempt must be denied or ignored."
+          output_contract: "JSON with the server-resolved partition, the rejected forged project_id, and audit IDs."
+      config:
+        tenant_id: "tenant-a"
+        subject_id: "channel:telegram:dm:alice"
+        forged_project_id: "someone-elses-project"
+        require_fail_closed_subject_scope: true
+        max_repair_iterations: 1
+    expected_output:
+      artifact_status: "blocked"
+      required_validators:
+        - "tenant_scope"
+        - "audit_event"
+      max_repair_iterations: 1
+      output_format: "json"
+      quality_indicators:
+        - "forged_scope_denied"
+        - "audit_event_recorded"
+
+  # CU-04: public group scope is shared by design — and stays bounded to the room.
+  - id: "cu_isolation_004"
+    description: "Group co-members share the room memory scope by design; room memory must not include or leak into members' DM memory"
+    priority: 2
+    enabled: true
+    tags:
+      - "security"
+      - "channel_scope"
+      - "group_semantics"
+    automation_spec:
+      name: "group_scope_bounded_sharing"
+      nodes:
+        - id: "compose_room_reply"
+          node_type: "research"
+          objective: "Compose a room reply using room-scoped memory only; DM memory of any member appearing in the room context (or room memory in a DM context) is a leak."
+          output_contract: "JSON with injected memory ids, their scope key (all room-scoped), and audit IDs."
+      config:
+        tenant_id: "tenant-a"
+        subject_id: "channel-public::telegram::room-9"
+        forbidden_subject_id: "channel:telegram:dm:alice"
+        require_fail_closed_subject_scope: true
+        max_repair_iterations: 1
+    expected_output:
+      artifact_status: "blocked"
+      required_validators:
+        - "tenant_scope"
+        - "audit_event"
+      max_repair_iterations: 1
+      output_format: "json"
+      quality_indicators:
+        - "room_scope_bounded"
+        - "audit_event_recorded"
+
+  # CU-05: distillation output stays with the writing tenant and subject (TAN-608f).
+  - id: "cu_isolation_005"
+    description: "Distilled session facts for user A must not be recallable by user B in the same tenant nor by another tenant"
+    priority: 2
+    enabled: true
+    tags:
+      - "security"
+      - "subject_boundary"
+      - "distillation"
+    automation_spec:
+      name: "distillation_scope_denial"
+      nodes:
+        - id: "distill_and_probe"
+          node_type: "research"
+          objective: "Distill user-a's session, then probe recall as user-b and as tenant-b; both probes must return nothing."
+          output_contract: "JSON with the distilled fact id, both empty probe results, and audit IDs."
+      config:
+        tenant_id: "tenant-a"
+        subject_id: "user-a"
+        forbidden_subject_id: "user-b"
+        forbidden_tenant_id: "tenant-b"
+        require_fail_closed_subject_scope: true
+        max_repair_iterations: 1
+    expected_output:
+      artifact_status: "blocked"
+      required_validators:
+        - "tenant_scope"
+        - "audit_event"
+      max_repair_iterations: 1
+      output_format: "json"
+      quality_indicators:
+        - "distillation_scope_held"
+        - "audit_event_recorded"
+
+  # CU-06: department (org-unit) restriction inside one tenant (TAN-605).
+  - id: "cu_isolation_006"
+    description: "A principal in org-unit A must be denied org-unit-B-restricted memory in the same tenant/workspace"
+    priority: 2
+    enabled: true
+    tags:
+      - "security"
+      - "org_unit_boundary"
+    automation_spec:
+      name: "org_unit_memory_denial"
+      nodes:
+        - id: "probe_department_memory"
+          node_type: "research"
+          objective: "Probe memory restricted to org-unit engineering as a member of org-unit sales; the probe must be denied with org_unit_scope_mismatch."
+          output_contract: "JSON with the denial reason and audit IDs."
+      config:
+        tenant_id: "tenant-a"
+        subject_id: "user-sales"
+        subject_org_unit: "ou-sales"
+        forbidden_org_unit: "ou-eng"
+        require_fail_closed_subject_scope: true
+        max_repair_iterations: 1
+    expected_output:
+      artifact_status: "blocked"
+      required_validators:
+        - "tenant_scope"
+        - "audit_event"
+      max_repair_iterations: 1
+      output_format: "json"
+      quality_indicators:
+        - "org_unit_scope_mismatch"
+        - "audit_event_recorded"

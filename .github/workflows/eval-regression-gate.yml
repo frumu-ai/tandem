@@ -78,6 +78,15 @@ jobs:
             --simulation \
             --verbose
 
+      - name: Run cross-user memory isolation evaluation
+        id: eval-run-cross-user
+        run: |
+          ./target/release/eval-runner \
+            --dataset eval_datasets/cross_user_memory_isolation.yaml \
+            --output /tmp/cross_user_memory_isolation_results.json \
+            --simulation \
+            --verbose
+
       - name: Tenant-isolation regression check
         id: regression-check-tenant
         continue-on-error: true
@@ -109,6 +118,23 @@ jobs:
           DROP=$(echo "$BASELINE - $CURRENT" | bc)
           if (( $(echo "$DROP >= 0.05" | bc -l) )); then
             echo "::error::Action-firewall pass-rate regression: ${DROP} (threshold: 0.05)"
+            exit 1
+          fi
+
+      - name: Cross-user memory isolation regression check
+        id: regression-check-cross-user
+        continue-on-error: true
+        run: |
+          if [ ! -f eval_baselines/cross_user_memory_isolation.json ]; then
+            echo "No cross-user memory isolation baseline yet; skipping comparison."
+            exit 0
+          fi
+          CURRENT=$(jq '.pass_rate' /tmp/cross_user_memory_isolation_results.json)
+          BASELINE=$(jq '.pass_rate' eval_baselines/cross_user_memory_isolation.json)
+          echo "cross-user memory isolation current pass rate: $CURRENT (baseline: $BASELINE)"
+          DROP=$(echo "$BASELINE - $CURRENT" | bc)
+          if (( $(echo "$DROP >= 0.05" | bc -l) )); then
+            echo "::error::Cross-user memory isolation pass-rate regression: ${DROP} (threshold: 0.05)"
             exit 1
           fi
 
@@ -157,6 +183,7 @@ jobs:
             /tmp/eval_results.json
             /tmp/tenant_isolation_results.json
             /tmp/action_firewall_results.json
+            /tmp/cross_user_memory_isolation_results.json
           retention-days: 30
 
       - name: Comment PR with results
@@ -173,17 +200,18 @@ jobs:
             const results = read('/tmp/eval_results.json');
             const tenant = read('/tmp/tenant_isolation_results.json');
             const actionFirewall = read('/tmp/action_firewall_results.json');
+            const crossUser = read('/tmp/cross_user_memory_isolation_results.json');
 
             const line = (label, r) => r
               ? `\n**${label}:** ${(r.pass_rate * 100).toFixed(1)}% (${r.passed_tests}/${r.total_tests})`
               : `\n**${label}:** ❌ no results produced (build or eval run failed — see job logs)`;
 
-            const header = (results && tenant && actionFirewall)
+            const header = (results && tenant && actionFirewall && crossUser)
               ? '## 📊 AI Evaluation Results'
               : '## ❌ AI Evaluation Gate Failed';
 
             const comment = `${header}
-            ${line('Critical path', results)}${line('Tenant isolation', tenant)}${line('Action Firewall', actionFirewall)}
+            ${line('Critical path', results)}${line('Tenant isolation', tenant)}${line('Action Firewall', actionFirewall)}${line('Cross-user memory isolation', crossUser)}
 
             See artifacts for detailed results.`;
 
@@ -219,4 +247,8 @@ jobs:
 
       - name: Fail if action-firewall regression detected
         if: steps.regression-check-action-firewall.outcome == 'failure'
+        run: exit 1
+
+      - name: Fail if cross-user memory isolation regression detected
+        if: steps.regression-check-cross-user.outcome == 'failure'
         run: exit 1

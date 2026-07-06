@@ -63,4 +63,8 @@ lands, remove the write gate and extend this table.
   instead.
 - Org-unit membership is flat (no parent-unit inheritance), matching the
   org-unit grant projection; hierarchy can layer on at filter-build time.
-- The cross-axis isolation regression matrix is tracked in TAN-608.
+- The cross-axis isolation regression matrix lives in
+  `crates/tandem-server/src/http/tests/memory_parts/part08.rs` (`matrix_*`
+  tests), the prompt-injection sender tests in
+  `crates/tandem-server/src/app/state/tests/`, and the
+  `eval_datasets/cross_user_memory_isolation.yaml` gate dataset (TAN-608).
