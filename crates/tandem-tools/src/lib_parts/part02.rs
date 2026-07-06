@@ -299,7 +299,7 @@ impl Tool for WebFetchTool {
         let links = extract_links(&cleaned);
 
         let markdown = if fetched.content_type.contains("html") || fetched.content_type.is_empty() {
-            htmd::convert(&cleaned).unwrap_or_else(|_| cleaned.clone())
+            html_to_markdown(&cleaned).unwrap_or_else(|_| cleaned.clone())
         } else {
             cleaned.clone()
         };
@@ -546,6 +546,32 @@ fn strip_html_noise(input: &str) -> String {
     let cleaned = style_re.replace_all(&cleaned, "");
     let cleaned = noscript_re.replace_all(&cleaned, "");
     cleaned.to_string()
+}
+
+/// Convert HTML to Markdown, preserving `<iframe src>` embed URLs.
+///
+/// htmd treats `<iframe>` as a generic block element and would walk only its
+/// (usually empty) child content, dropping the `src` entirely — so embed-only
+/// pages (YouTube, Instagram, etc.) would yield no content. The previous
+/// html2md converter emitted a link for known embed providers; this custom
+/// handler restores that behavior for any iframe carrying a `src`.
+fn html_to_markdown(html: &str) -> Result<String, std::io::Error> {
+    use htmd::{element_handler::Handlers, Element, HtmlToMarkdown};
+    HtmlToMarkdown::builder()
+        .add_handler(
+            vec!["iframe"],
+            |_handlers: &dyn Handlers, element: Element| {
+                let src = element
+                    .attrs
+                    .iter()
+                    .find(|attr| &attr.name.local == "src")
+                    .map(|attr| attr.value.trim().to_string())
+                    .filter(|src| !src.is_empty())?;
+                Some(format!("[Embedded content]({src})").into())
+            },
+        )
+        .build()
+        .convert(html)
 }
 
 fn extract_title(input: &str) -> Option<String> {
