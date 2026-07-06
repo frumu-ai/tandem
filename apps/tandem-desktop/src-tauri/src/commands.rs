@@ -807,6 +807,52 @@ mod tests {
     }
 
     #[test]
+    fn resolves_stale_desktop_codex_selection_to_supported_default() {
+        let mut config = ProvidersConfig::default();
+        config.selected_model = Some(crate::state::SelectedModel {
+            provider_id: "openai-codex".to_string(),
+            model_id: "gpt-5.6".to_string(),
+        });
+
+        let spec = resolve_default_model_spec(&config).expect("model spec");
+
+        assert_eq!(spec.provider_id, "openai-codex");
+        assert_eq!(spec.model_id, "gpt-5.5");
+    }
+
+    #[test]
+    fn resolves_stale_explicit_codex_dispatch_to_supported_default() {
+        let config = ProvidersConfig::default();
+
+        let spec = resolve_required_model_spec(
+            &config,
+            Some("gpt-5.6".to_string()),
+            Some("openai-codex".to_string()),
+            "test dispatch",
+        )
+        .expect("model spec");
+
+        assert_eq!(spec.provider_id, "openai-codex");
+        assert_eq!(spec.model_id, "gpt-5.5");
+    }
+
+    #[test]
+    fn preserves_explicit_supported_codex_preview_variant() {
+        let config = ProvidersConfig::default();
+
+        let spec = resolve_required_model_spec(
+            &config,
+            Some("gpt-5.6-sol".to_string()),
+            Some("openai_codex".to_string()),
+            "test dispatch",
+        )
+        .expect("model spec");
+
+        assert_eq!(spec.provider_id, "openai-codex");
+        assert_eq!(spec.model_id, "gpt-5.6-sol");
+    }
+
+    #[test]
     fn test_build_message_content_with_memory_context() {
         let merged = build_message_content_with_memory_context(
             "User question",

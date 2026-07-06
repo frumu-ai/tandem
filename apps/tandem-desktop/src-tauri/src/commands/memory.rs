@@ -257,18 +257,11 @@ fn resolve_default_model_spec(config: &ProvidersConfig) -> Option<ModelSpec> {
     // default provider slot. Settings keeps selected_model in sync, but this
     // fallback covers older configs and OAuth/provider flows that predate it.
     if let Some(sel) = &config.selected_model {
-        let provider_id = if sel.provider_id == "opencode_zen" {
-            // Back-compat: frontend uses "opencode_zen", sidecar expects "opencode".
-            "opencode".to_string()
-        } else {
-            sel.provider_id.clone()
-        };
+        let provider_id = normalize_provider_id_for_sidecar(Some(sel.provider_id.clone()))
+            .unwrap_or_else(|| sel.provider_id.clone());
 
         if !provider_id.trim().is_empty() && !sel.model_id.trim().is_empty() {
-            return Some(ModelSpec {
-                provider_id,
-                model_id: sel.model_id.clone(),
-            });
+            return Some(normalize_resolved_model_spec(provider_id, sel.model_id.clone()));
         }
     }
 
@@ -281,11 +274,39 @@ fn resolve_default_model_spec(config: &ProvidersConfig) -> Option<ModelSpec> {
             .map(|m| m.trim().to_string())
             .filter(|m| !m.is_empty()),
     ) {
-        (Some(provider_id), Some(model_id)) => Some(ModelSpec {
-            provider_id,
-            model_id,
-        }),
+        (Some(provider_id), Some(model_id)) => {
+            Some(normalize_resolved_model_spec(provider_id, model_id))
+        }
         _ => None,
+    }
+}
+
+fn normalize_resolved_model_spec(provider_id: String, model_id: String) -> ModelSpec {
+    let model_id = if is_openai_codex_provider_id(&provider_id) {
+        heal_openai_codex_model_id(&model_id)
+    } else {
+        model_id
+    };
+    ModelSpec {
+        provider_id,
+        model_id,
+    }
+}
+
+fn is_openai_codex_provider_id(provider_id: &str) -> bool {
+    matches!(
+        provider_id.trim().to_ascii_lowercase().as_str(),
+        "openai-codex" | "openai_codex"
+    )
+}
+
+fn heal_openai_codex_model_id(model_id: &str) -> String {
+    match model_id.trim() {
+        // `gpt-5.6` was a temporary generic catalog entry. The preview family
+        // is exposed as explicit Sol/Terra/Luna ids, so heal stale desktop
+        // selections the same way the runtime heals retired Codex defaults.
+        "" | "gpt-5.6" | "gpt-5.1-codex-max" => "gpt-5.5".to_string(),
+        model => model.to_string(),
     }
 }
 
@@ -303,10 +324,9 @@ fn resolve_required_model_spec(
         .filter(|m| !m.is_empty());
 
     match (explicit_provider, explicit_model) {
-        (Some(provider_id), Some(model_id)) => Ok(ModelSpec {
-            provider_id,
-            model_id,
-        }),
+        (Some(provider_id), Some(model_id)) => {
+            Ok(normalize_resolved_model_spec(provider_id, model_id))
+        }
         (Some(_), None) | (None, Some(_)) => Err(TandemError::InvalidConfig(format!(
             "{} requires both provider and model to be set together.",
             context
@@ -324,14 +344,12 @@ fn resolve_default_provider_and_model(
     config: &ProvidersConfig,
 ) -> (Option<String>, Option<String>) {
     if let Some(sel) = &config.selected_model {
-        let provider_id = if sel.provider_id == "opencode_zen" {
-            "opencode".to_string()
-        } else {
-            sel.provider_id.clone()
-        };
+        let provider_id = normalize_provider_id_for_sidecar(Some(sel.provider_id.clone()))
+            .unwrap_or_else(|| sel.provider_id.clone());
 
         if !provider_id.trim().is_empty() && !sel.model_id.trim().is_empty() {
-            return (Some(provider_id), Some(sel.model_id.clone()));
+            let spec = normalize_resolved_model_spec(provider_id, sel.model_id.clone());
+            return (Some(spec.provider_id), Some(spec.model_id));
         }
     }
 
@@ -361,7 +379,12 @@ fn resolve_default_provider_and_model(
         .find(|(_, p)| p.enabled && p.default)
         .map(|(id, p)| (*id, *p))
     {
-        return (Some(provider_id.to_string()), provider.model.clone());
+        let provider_id = provider_id.to_string();
+        let model_id = provider
+            .model
+            .as_ref()
+            .map(|model| heal_provider_default_model_id(&provider_id, model));
+        return (Some(provider_id), model_id);
     }
 
     if let Some(provider) = custom_default {
@@ -370,7 +393,12 @@ fn resolve_default_provider_and_model(
 
     for (provider_id, provider) in candidates {
         if provider.enabled {
-            return (Some(provider_id.to_string()), provider.model.clone());
+            let provider_id = provider_id.to_string();
+            let model_id = provider
+                .model
+                .as_ref()
+                .map(|model| heal_provider_default_model_id(&provider_id, model));
+            return (Some(provider_id), model_id);
         }
     }
 
@@ -379,6 +407,14 @@ fn resolve_default_provider_and_model(
     }
 
     (None, None)
+}
+
+fn heal_provider_default_model_id(provider_id: &str, model_id: &str) -> String {
+    if is_openai_codex_provider_id(provider_id) {
+        heal_openai_codex_model_id(model_id)
+    } else {
+        model_id.to_string()
+    }
 }
 
 async fn validate_model_provider_auth_if_required(

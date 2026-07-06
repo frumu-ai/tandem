@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.8] - Unreleased
+
+### Changed
+
+- Replaced the generic OpenAI Codex `gpt-5.6` catalog entry with the documented
+  `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` preview model ids.
+  Persisted bare `gpt-5.6` defaults and desktop selected-model dispatches now
+  heal to the compiled `gpt-5.5` default because the preview family is exposed
+  as explicit Sol/Terra/Luna variants.
+
 ## [0.6.7] - 2026-07-05
 
 ### Added
@@ -30,7 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added data-boundary documentation for the module contract, runtime
   integration map, local-routing contract, policy UI/API plan, engine
   configuration, and runtime event vocabulary.
-- Added `gpt-5.6` to the OpenAI Codex supported-model catalog.
 - Added release-note extraction guards and tests so release generation rejects
   notes that are still marked `Unreleased` or are long unstructured text.
 

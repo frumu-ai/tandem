@@ -160,8 +160,11 @@ mod provider_auth_resolution_tests {
         // default; a stale config falls back to the compiled default so channel
         // runs (which read this default fresh) stop hitting a provider 400.
         assert!(!openai_codex_model_is_supported("gpt-5.1-codex-max"));
+        assert!(!openai_codex_model_is_supported("gpt-5.6"));
+        assert!(openai_codex_model_is_supported("gpt-5.6-sol"));
+        assert!(openai_codex_model_is_supported("gpt-5.6-terra"));
+        assert!(openai_codex_model_is_supported("gpt-5.6-luna"));
         assert!(openai_codex_model_is_supported("gpt-5.5"));
-        assert!(openai_codex_model_is_supported("gpt-5.6"));
         // The compiled fallback must itself always be a supported model.
         assert!(openai_codex_model_is_supported(OPENAI_CODEX_DEFAULT_MODEL));
         // A retired saved default heals to the compiled default; a valid one is kept.
@@ -170,8 +173,8 @@ mod provider_auth_resolution_tests {
             OPENAI_CODEX_DEFAULT_MODEL
         );
         assert_eq!(
-            openai_codex_effective_default_model(Some("gpt-5.6")),
-            "gpt-5.6"
+            openai_codex_effective_default_model(Some("gpt-5.6-sol")),
+            "gpt-5.6-sol"
         );
         assert_eq!(
             openai_codex_effective_default_model(None),

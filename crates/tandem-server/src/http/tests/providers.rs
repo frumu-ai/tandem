@@ -96,7 +96,10 @@ async fn provider_route_returns_known_providers_without_synthetic_default_models
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    assert!(codex_models.contains_key("gpt-5.6"));
+    assert!(codex_models.contains_key("gpt-5.6-sol"));
+    assert!(codex_models.contains_key("gpt-5.6-terra"));
+    assert!(codex_models.contains_key("gpt-5.6-luna"));
+    assert!(!codex_models.contains_key("gpt-5.6"));
     assert!(codex_models.contains_key("gpt-5.5"));
     assert!(codex_models.contains_key("gpt-5.4"));
     assert!(codex_models.contains_key("gpt-5.2-codex"));
