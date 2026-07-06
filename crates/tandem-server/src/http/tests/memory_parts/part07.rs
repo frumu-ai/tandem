@@ -145,3 +145,183 @@ async fn context_tree_endpoints_are_tenant_scoped() {
         .expect("layer lookup")
         .is_some());
 }
+
+fn verified_org_unit_context(
+    tenant_context: tandem_types::TenantContext,
+    actor: &str,
+    org_units: Vec<String>,
+) -> tandem_types::VerifiedTenantContext {
+    let principal = tandem_types::RequestPrincipal::authenticated_user(actor, "tandem-web");
+    let authority_chain = tandem_types::AuthorityChain::from_request(principal);
+    let strict_projection = tandem_types::StrictTenantContext::new(
+        tenant_context.clone(),
+        tandem_types::PrincipalRef::human_user(actor),
+        authority_chain.clone(),
+        tandem_types::ResourceScope::root(tandem_types::ResourceRef::new(
+            tenant_context.org_id.clone(),
+            tenant_context.workspace_id.clone(),
+            tandem_types::ResourceKind::Workspace,
+            tenant_context.workspace_id.clone(),
+        )),
+        tandem_types::AssertionMetadata::new(
+            "tandem-web",
+            "tandem-runtime",
+            1_000,
+            9_999_999_999_999,
+            format!("org-unit-assertion-{actor}"),
+        ),
+    );
+    tandem_types::VerifiedTenantContext {
+        tenant_context,
+        human_actor: tandem_types::HumanActor::tandem_user(actor),
+        authority_chain,
+        roles: Vec::new(),
+        org_units,
+        capabilities: Vec::new(),
+        policy_version: None,
+        strict_projection: Some(strict_projection),
+        issuer: "tandem-web".to_string(),
+        audience: "tandem-runtime".to_string(),
+        issued_at_ms: 1_000,
+        expires_at_ms: 9_999_999_999_999,
+        assertion_id: format!("org-unit-assertion-{actor}"),
+        assertion_key_id: None,
+    }
+}
+
+fn org_unit_put_request(run_id: &str, owner_org_unit_id: &str) -> tandem_memory::MemoryPutRequest {
+    tandem_memory::MemoryPutRequest {
+        run_id: run_id.to_string(),
+        partition: tandem_memory::MemoryPartition {
+            org_id: "acme".to_string(),
+            workspace_id: "north".to_string(),
+            project_id: "proj-a".to_string(),
+            tier: tandem_memory::GovernedMemoryTier::Session,
+        },
+        kind: tandem_memory::MemoryContentKind::Fact,
+        content: "engineering department runbook detail".to_string(),
+        artifact_refs: Vec::new(),
+        classification: tandem_memory::MemoryClassification::Internal,
+        authority_job_context: None,
+        metadata: Some(json!({ "owner_org_unit_id": owner_org_unit_id })),
+    }
+}
+
+fn org_unit_capability(run_id: &str, subject: &str) -> tandem_memory::MemoryCapabilityToken {
+    tandem_memory::MemoryCapabilityToken {
+        run_id: run_id.to_string(),
+        subject: subject.to_string(),
+        org_id: "acme".to_string(),
+        workspace_id: "north".to_string(),
+        project_id: "proj-a".to_string(),
+        memory: tandem_memory::MemoryCapabilities::default(),
+        expires_at: 9_999_999_999_999,
+    }
+}
+
+#[tokio::test]
+async fn memory_put_org_unit_stamp_requires_membership() {
+    let state = test_state().await;
+    let tenant_context =
+        tandem_types::TenantContext::explicit_user_workspace("acme", "north", None, "user-a");
+
+    // A verified writer who is not a member of the stamped unit is rejected.
+    let outsider = verified_org_unit_context(
+        tenant_context.clone(),
+        "user-a",
+        vec!["ou-sales".to_string()],
+    );
+    let denied = super::super::skills_memory::memory_put_impl_with_verified(
+        &state,
+        &tenant_context,
+        Some(&outsider),
+        org_unit_put_request("org-unit-put-denied", "ou-eng"),
+        Some(org_unit_capability("org-unit-put-denied", "user-a")),
+    )
+    .await;
+    assert_eq!(denied.expect_err("non-member stamp"), StatusCode::FORBIDDEN);
+
+    // A member of the unit stores the record.
+    let member = verified_org_unit_context(
+        tenant_context.clone(),
+        "user-a",
+        vec!["ou-eng".to_string(), "ou-sales".to_string()],
+    );
+    let stored = super::super::skills_memory::memory_put_impl_with_verified(
+        &state,
+        &tenant_context,
+        Some(&member),
+        org_unit_put_request("org-unit-put-allowed", "ou-eng"),
+        Some(org_unit_capability("org-unit-put-allowed", "user-a")),
+    )
+    .await
+    .expect("member stamp stores");
+    assert!(stored.stored);
+}
+
+#[tokio::test]
+async fn governed_read_filter_threads_org_units_from_verified_context() {
+    let tenant_context =
+        tandem_types::TenantContext::explicit_user_workspace("acme", "north", None, "user-a");
+    let member = verified_org_unit_context(
+        tenant_context.clone(),
+        "user-a",
+        vec!["ou-eng".to_string()],
+    );
+    let filter = crate::memory::read_policy::governed_memory_read_filter(
+        tandem_types::RuntimeAuthMode::EnterpriseRequired,
+        Some(&member),
+        false,
+        2_000,
+    )
+    .expect("governed filter");
+    assert_eq!(
+        filter.caller_org_units,
+        Some(std::collections::BTreeSet::from(["ou-eng".to_string()]))
+    );
+
+    // An org-unit-restricted record is readable by the member and hidden from a
+    // same-tenant principal in a different unit.
+    let restricted_metadata = json!({ "owner_org_unit_id": "ou-eng" });
+    let record = tandem_memory::types::GlobalMemoryRecord {
+        id: "record-ou".to_string(),
+        user_id: "user-a".to_string(),
+        source_type: "fact".to_string(),
+        content: "department fact".to_string(),
+        content_hash: "hash".to_string(),
+        run_id: "run-ou".to_string(),
+        session_id: None,
+        message_id: None,
+        tool_name: None,
+        project_tag: Some("proj-a".to_string()),
+        channel_tag: None,
+        host_tag: None,
+        metadata: Some(restricted_metadata),
+        provenance: None,
+        redaction_status: "passed".to_string(),
+        redaction_count: 0,
+        visibility: "private".to_string(),
+        demoted: false,
+        score_boost: 0.0,
+        created_at_ms: 1_000,
+        updated_at_ms: 1_000,
+        expires_at_ms: None,
+    };
+    assert!(filter.allows_global_record(&record));
+
+    let other_unit = verified_org_unit_context(
+        tenant_context.clone(),
+        "user-b",
+        vec!["ou-sales".to_string()],
+    );
+    let other_filter = crate::memory::read_policy::governed_memory_read_filter(
+        tandem_types::RuntimeAuthMode::EnterpriseRequired,
+        Some(&other_unit),
+        false,
+        2_000,
+    )
+    .expect("governed filter");
+    let decision = other_filter.decision_for_global_record(&record);
+    assert!(!decision.allowed);
+    assert_eq!(decision.reason.as_deref(), Some("org_unit_scope_mismatch"));
+}

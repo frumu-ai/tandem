@@ -283,6 +283,63 @@ fn workflow_phase_read_filter_requires_registered_source_bound_scope() {
     );
 }
 
+#[test]
+fn org_unit_restricted_record_visible_only_to_members() {
+    let restricted = global_record(Some(serde_json::json!({
+        "owner_org_unit_id": "ou-eng"
+    })));
+
+    // A member of the owning unit reads the record.
+    let member_filter =
+        MemoryAccessFilter::strict(tenant_strict(DataBoundary::unrestricted()), 2_000)
+            .with_caller_org_units(["ou-eng".to_string(), "ou-platform".to_string()]);
+    let decision = member_filter.decision_for_global_record(&restricted);
+    assert!(decision.allowed);
+    assert_eq!(
+        decision.reason.as_deref(),
+        Some("tenant_local_memory_allowed")
+    );
+
+    // A principal in a different unit of the same tenant is denied.
+    let non_member_filter =
+        MemoryAccessFilter::strict(tenant_strict(DataBoundary::unrestricted()), 2_000)
+            .with_caller_org_units(["ou-sales".to_string()]);
+    let decision = non_member_filter.decision_for_global_record(&restricted);
+    assert!(!decision.allowed);
+    assert_eq!(decision.reason.as_deref(), Some("org_unit_scope_mismatch"));
+
+    // No membership information at all denies, fail closed.
+    let no_units_filter =
+        MemoryAccessFilter::strict(tenant_strict(DataBoundary::unrestricted()), 2_000);
+    let decision = no_units_filter.decision_for_global_record(&restricted);
+    assert!(!decision.allowed);
+    assert_eq!(decision.reason.as_deref(), Some("org_unit_scope_mismatch"));
+}
+
+#[test]
+fn unrestricted_record_ignores_caller_org_units() {
+    // Records without an owning unit keep tenant-wide visibility regardless of
+    // which units the caller belongs to.
+    let filter = MemoryAccessFilter::strict(tenant_strict(DataBoundary::unrestricted()), 2_000)
+        .with_caller_org_units(["ou-sales".to_string()]);
+    let decision = filter.decision_for_global_record(&global_record(None));
+    assert!(decision.allowed);
+    assert_eq!(
+        decision.reason.as_deref(),
+        Some("tenant_local_memory_allowed")
+    );
+}
+
+#[test]
+fn local_noop_ignores_org_unit_restriction() {
+    let filter = MemoryAccessFilter::local_noop(2_000);
+    let decision = filter.decision_for_global_record(&global_record(Some(serde_json::json!({
+        "owner_org_unit_id": "ou-eng"
+    }))));
+    assert!(decision.allowed);
+    assert_eq!(decision.reason.as_deref(), Some("local_noop"));
+}
+
 fn tenant_strict(data_boundary: DataBoundary) -> StrictTenantContext {
     let tenant = TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "user-a");
     let principal = RequestPrincipal::authenticated_user("user-a", "test");

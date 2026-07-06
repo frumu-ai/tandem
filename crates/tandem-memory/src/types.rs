@@ -167,6 +167,10 @@ pub struct GovernedReadTarget {
     pub source_binding_id: Option<String>,
     pub source_object_id: Option<String>,
     pub evidence: GovernedReadEvidence,
+    /// Org-unit that owns this record, if department-restricted. Tenant-local
+    /// reads require the caller to be a member of this unit; unset means
+    /// tenant-wide visibility (the pre-org-unit behavior).
+    pub owner_org_unit_id: Option<String>,
 }
 
 /// Optional enterprise access projection applied before memory ranking.
@@ -176,6 +180,10 @@ pub struct MemoryAccessFilter {
     pub now_ms: u64,
     pub mode: GovernedReadMode,
     pub workflow_phase: Option<String>,
+    /// Org-unit memberships of the calling principal (from the verified tenant
+    /// context). `None` means no membership information is available: any
+    /// org-unit-restricted record is denied, fail closed.
+    pub caller_org_units: Option<std::collections::BTreeSet<String>>,
 }
 
 impl MemoryAccessFilter {
@@ -197,6 +205,7 @@ impl MemoryAccessFilter {
             now_ms,
             mode: GovernedReadMode::GovernedStrict,
             workflow_phase: None,
+            caller_org_units: None,
         }
     }
 
@@ -214,11 +223,23 @@ impl MemoryAccessFilter {
             now_ms,
             mode: GovernedReadMode::LocalNoop,
             workflow_phase: None,
+            caller_org_units: None,
         }
     }
 
     pub fn with_workflow_phase(mut self, workflow_phase: impl Into<String>) -> Self {
         self.workflow_phase = Some(workflow_phase.into());
+        self
+    }
+
+    pub fn with_caller_org_units(mut self, org_units: impl IntoIterator<Item = String>) -> Self {
+        self.caller_org_units = Some(
+            org_units
+                .into_iter()
+                .map(|unit| unit.trim().to_string())
+                .filter(|unit| !unit.is_empty())
+                .collect(),
+        );
         self
     }
 
@@ -312,6 +333,7 @@ impl MemoryAccessFilter {
             source_binding_id: target.source_binding_id.clone(),
             source_object_id: target.source_object_id.clone(),
             evidence: GovernedReadEvidence::SourceBinding,
+            owner_org_unit_id: None,
         })
     }
 
@@ -351,6 +373,20 @@ impl MemoryAccessFilter {
                 || target.resource_ref.workspace_id != strict_context.tenant_context.workspace_id
             {
                 return GovernedReadDecision::deny("tenant_scope_mismatch");
+            }
+            // Department restriction: a record owned by an org unit is readable
+            // only by members of that unit. Membership comes from the verified
+            // assertion; absent membership information denies, fail closed.
+            // Source-bound records are governed by the grant path below instead,
+            // where org-unit access grants already apply.
+            if let Some(owner_org_unit_id) = target.owner_org_unit_id.as_deref() {
+                let is_member = self
+                    .caller_org_units
+                    .as_ref()
+                    .is_some_and(|units| units.contains(owner_org_unit_id));
+                if !is_member {
+                    return GovernedReadDecision::deny("org_unit_scope_mismatch");
+                }
             }
             if strict_context
                 .resource_scope
@@ -464,6 +500,7 @@ fn governed_read_target_from_chunk(
         source_binding_id: None,
         source_object_id: None,
         evidence: GovernedReadEvidence::TenantLocalMemory,
+        owner_org_unit_id: owner_org_unit_id_from_metadata(chunk.metadata.as_ref()),
     })
 }
 
@@ -496,6 +533,7 @@ fn governed_read_target_from_global_record(
         source_binding_id: None,
         source_object_id: None,
         evidence: GovernedReadEvidence::TenantLocalMemory,
+        owner_org_unit_id: owner_org_unit_id_from_metadata(record.metadata.as_ref()),
     })
 }
 
@@ -532,6 +570,7 @@ fn source_binding_target_from_metadata(
             .and_then(serde_json::Value::as_str)
             .map(ToOwned::to_owned),
         evidence: GovernedReadEvidence::SourceBinding,
+        owner_org_unit_id: None,
     }))
 }
 
@@ -548,6 +587,18 @@ fn data_class_from_metadata(metadata: Option<&serde_json::Value>) -> Option<Data
         .and_then(|value| value.get("classification"))
         .and_then(serde_json::Value::as_str)
         .and_then(data_class_from_label)
+}
+
+/// Metadata key that department-restricts a record to members of one org unit.
+pub const OWNER_ORG_UNIT_METADATA_KEY: &str = "owner_org_unit_id";
+
+pub fn owner_org_unit_id_from_metadata(metadata: Option<&serde_json::Value>) -> Option<String> {
+    metadata
+        .and_then(|value| value.get(OWNER_ORG_UNIT_METADATA_KEY))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
 }
 
 fn data_class_from_label(label: &str) -> Option<DataClass> {
