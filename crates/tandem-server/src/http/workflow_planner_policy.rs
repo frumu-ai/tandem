@@ -104,6 +104,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn planner_revision_timeout_defaults_to_build_timeout() {
         let guard = PlannerEnvGuard::new(&[
             "TANDEM_WORKFLOW_PLANNER_BUILD_TIMEOUT_MS",
@@ -115,6 +116,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn planner_revision_timeout_honors_explicit_override() {
         let guard = PlannerEnvGuard::new(&[
             "TANDEM_WORKFLOW_PLANNER_BUILD_TIMEOUT_MS",
@@ -126,6 +128,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn planner_build_timeout_defaults_to_longer_budget() {
         let guard = PlannerEnvGuard::new(&["TANDEM_WORKFLOW_PLANNER_BUILD_TIMEOUT_MS"]);
         guard.remove("TANDEM_WORKFLOW_PLANNER_BUILD_TIMEOUT_MS");

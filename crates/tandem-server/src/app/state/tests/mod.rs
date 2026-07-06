@@ -347,6 +347,9 @@ pub(crate) fn test_state_with_path(path: PathBuf) -> AppState {
 }
 
 pub(crate) async fn ready_test_state() -> AppState {
+    // Same construction lock as `test_support::test_state`: the env mutation
+    // below is process-wide, so concurrent constructions must not interleave.
+    let _env_guard = crate::test_support::TEST_STATE_ENV_LOCK.lock().await;
     let root = std::env::temp_dir().join(format!("tandem-state-test-{}", uuid::Uuid::new_v4()));
     let global = root.join("global-config.json");
     let tandem_home = root.join("tandem-home");
@@ -1206,6 +1209,7 @@ fn prompt_context_memory_selection_dedupes_duplicate_record_ids() {
 }
 
 #[test]
+#[serial_test::serial]
 fn docs_and_memory_source_budgets_are_explicit_and_env_tunable() {
     std::env::remove_var("TANDEM_DOCS_CONTEXT_BUDGET_CHARS");
     std::env::remove_var("TANDEM_MEMORY_CONTEXT_BUDGET_CHARS");

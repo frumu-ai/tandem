@@ -1215,6 +1215,7 @@ async fn browser_status_route_returns_browser_readiness_shape() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn browser_install_route_is_registered() {
     std::env::set_var(
         "TANDEM_BROWSER_RELEASES_URL",

@@ -1,6 +1,7 @@
 use super::*;
 
 #[tokio::test]
+#[serial_test::serial]
 async fn marketplace_catalog_and_files_roundtrip() {
     let _guard = marketplace_test_lock();
     let state = test_state().await;

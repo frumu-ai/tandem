@@ -174,6 +174,7 @@ mod tests {
     };
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn enrich_projects_active_inbound_grant_into_strict_context() {
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);
         std::env::set_var(
