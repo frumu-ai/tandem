@@ -109,10 +109,18 @@ engine source auditable and reusable under open-source terms.
 
 ### Engine binaries are mixed-license
 
-Every distributed Tandem engine binary (`tandem-engine`, server artifacts, and
-the desktop app) compiles the **entire workspace, including the `BUSL-1.1`
-crates**. There is no BUSL-free binary distribution, and several permissive
-crates depend on source-available crates directly:
+Every distributed Tandem engine binary includes `BUSL-1.1` components — there
+is no BUSL-free engine binary:
+
+- **Standard artifacts** (`tandem-engine`, the desktop sidecar, `tandem-tui`,
+  `tandem-browser`; built with `-p tandem-ai --features tandem-ai/browser`)
+  include `tandem-plan-compiler` and `tandem-incident-monitor` through
+  `tandem-server`.
+- **Enterprise artifacts** (`tandem-engine-enterprise-*`; built with
+  `tandem-ai/enterprise-full`) additionally include
+  `tandem-governance-engine` and `tandem-enterprise-server`.
+
+Several permissive crates depend on source-available crates directly:
 
 - `tandem-server` (MIT) depends on `tandem-plan-compiler` and
   `tandem-incident-monitor` (both `BUSL-1.1`)
@@ -132,10 +140,10 @@ What this means in practice:
   part of your build. Each crate's manifest declares its license accurately;
   nothing is relicensed by inclusion.
 
-This is a deliberate choice: keeping one build of the engine (rather than
-feature-stripped permissive binaries) keeps behavior identical everywhere, and
-this section plus the per-crate license map is the disclosure that makes the
-boundary clear.
+This is a deliberate choice: rather than maintaining feature-stripped
+BUSL-free binaries, the source-available components ship in every engine
+artifact, and this section plus the per-crate license map is the disclosure
+that makes the boundary clear.
 
 These components are source-available, not open source. Their package-local `LICENSE` files define the additional use grant, hosted-service restriction, change date, and change license.
 
