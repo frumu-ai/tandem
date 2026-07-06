@@ -63,8 +63,11 @@ runs, and it executes each test in its own process:
 cargo nextest run -p tandem-server
 ```
 
-The `just test-rust` (tandem-server) and `just test-rust-workspace` recipes wrap
-this with a throwaway `TANDEM_HOME` so no test can touch your real data dir.
+Prefer the `just test-rust` (tandem-server) / `just test-rust-workspace`
+recipes, which wrap this with a throwaway `TANDEM_HOME` (no test can touch your
+real data dir) and `RUST_MIN_STACK=16777216` — without the larger stack, debug
+builds of the deepest coder/task-runtime tests abort with a stack overflow
+(same setting engine-ci.yml uses).
 
 Why it matters: many tandem-server tests mutate process-wide environment
 variables (`TANDEM_HOME`, `TANDEM_RUNTIME_AUTH_MODE`, `CODEX_HOME`, ...), and
