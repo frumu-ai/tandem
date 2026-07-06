@@ -18,7 +18,7 @@ pub(super) fn session_visible_to_actor(
     if !tenant_matches(request_tenant, session_tenant) {
         return false;
     }
-    if request_tenant.is_local_implicit() && session_tenant.is_local_implicit() {
+    if session_tenant.is_local_implicit() {
         return true;
     }
     matches!(
