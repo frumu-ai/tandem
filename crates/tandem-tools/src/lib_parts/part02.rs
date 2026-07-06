@@ -299,7 +299,7 @@ impl Tool for WebFetchTool {
         let links = extract_links(&cleaned);
 
         let markdown = if fetched.content_type.contains("html") || fetched.content_type.is_empty() {
-            html2md::parse_html(&cleaned)
+            htmd::convert(&cleaned).unwrap_or_else(|_| cleaned.clone())
         } else {
             cleaned.clone()
         };

@@ -14,7 +14,7 @@ use anyhow::{anyhow, Context};
 use base64::Engine;
 use headless_chrome::browser::tab::Tab;
 use headless_chrome::{Browser, LaunchOptionsBuilder};
-use html2md::parse_html;
+use htmd::convert as html_to_markdown;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1507,7 +1507,10 @@ fn extract_session(
                     &session.tab,
                     "document.documentElement ? document.documentElement.outerHTML || '' : ''",
                 )?;
-                ("markdown".to_string(), parse_html(&html))
+                (
+                    "markdown".to_string(),
+                    html_to_markdown(&html).unwrap_or(html),
+                )
             }
             "visible_text" | "text" => (
                 "visible_text".to_string(),

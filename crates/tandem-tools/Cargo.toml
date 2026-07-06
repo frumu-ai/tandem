@@ -24,7 +24,7 @@ tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 tracing = "0.1"
 tandem-types = { path = "../tandem-types", version = "0.6.7" }
-html2md = "0.2"
+htmd = "0.5"
 tandem-skills = { path = "../tandem-skills", version = "0.6.7" }
 tandem-memory = { path = "../tandem-memory", version = "0.6.7" }
 tandem-document = { path = "../tandem-document", version = "0.6.7" }

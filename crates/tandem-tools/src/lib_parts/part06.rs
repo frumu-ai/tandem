@@ -842,7 +842,7 @@ mod tests {
         assert!(!cleaned.contains("Enable JS"));
         assert!(cleaned.contains("Hello World"));
 
-        let markdown = html2md::parse_html(&cleaned);
+        let markdown = htmd::convert(&cleaned).expect("html to markdown conversion");
         let text = markdown_to_text(&markdown);
 
         // Raw length includes all the noise
