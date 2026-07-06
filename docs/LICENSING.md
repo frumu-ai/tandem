@@ -20,7 +20,7 @@ exact terms, use the package-by-package table below.
 ## Plain-language summary
 
 - Permissive open-source components use `MIT`, `Apache-2.0`, or `MIT OR Apache-2.0`.
-- Source-available components use `BUSL-1.1` and may require a commercial license for some production, hosted-service, or competitive SaaS uses.
+- Source-available components use `BUSL-1.1`. You may use, modify, and self-host them in production for your organization's own internal use for free, regardless of revenue. A commercial license is required only to offer them (or a substantially similar product) to third parties as a managed, hosted, SaaS, white-label, embedded, or other commercial offering.
 - If this document, the root `LICENSE`, and a package-local manifest or license file disagree, the package-local manifest and package-local license file control for that package.
 
 ## Rust SDK and Runtime Packages
@@ -97,6 +97,28 @@ Current source-available license files:
 - `crates/tandem-governance-engine/LICENSE`
 
 The source-available governance layer authorizes recursive and Self-Operator behavior such as agent-authored automation creation, approval-bound capability requests, lineage enforcement, and spend/review guardrails.
+
+### Additional Use Grant (what is free vs. licensed)
+
+The `BUSL-1.1` components may be used, modified, and self-hosted in production
+for an organization's own **internal use** at no cost, regardless of revenue.
+"Internal use" covers the organization, its affiliates, employees, contractors,
+and customers, but only where the Licensed Work is operated as part of that
+organization's own internal software development, agent governance, incident
+response, or automation workflows — not as the product being sold.
+
+A **commercial license** is required to provide the Licensed Work, or any
+product or service whose primary value is substantially similar to it, to third
+parties as a managed, hosted, software-as-a-service, white-label, embedded, or
+other commercial offering.
+
+### Change Date policy
+
+Each released version's `Change Date` is set to **four years after that
+version's release date** (a rolling window; on the Change Date the version
+converts to the Change License, `GPL-2.0-or-later OR MIT OR Apache-2.0`). When
+cutting a release, stamp the `Change Date` in every `BUSL-1.1` `LICENSE` file to
+release-date + 4 years. The in-repo value tracks the current unreleased line.
 
 ## License Texts
 

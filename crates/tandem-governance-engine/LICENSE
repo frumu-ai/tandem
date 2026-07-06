@@ -12,22 +12,27 @@ Licensor: Frumu LTD
 Licensed Work: tandem-governance-engine
 
 Additional Use Grant:
-You may make production use of the Licensed Work if:
-1. your organization, together with its affiliates, had annual gross
-   revenue of less than USD 5,000,000 (five million US dollars) in the
-   most recent twelve-month period; and
-2. you do not provide the Licensed Work, or a product or service whose
-   primary value is the Licensed Work, as a commercial hosted service
-   to third parties.
+You may use, modify, and self-host the Licensed Work in production for
+your own internal use, regardless of your organization's revenue.
+
+"Internal use" means use by your organization, together with its
+affiliates, employees, contractors, and customers, only where the
+Licensed Work is operated as part of your organization's own internal
+software development, agent governance, incident response, or
+automation workflows, and not as (or as part of) a product or service
+that you provide to third parties.
+
+This grant does not permit you to provide the Licensed Work, or any
+product or service whose primary value is substantially similar to the
+Licensed Work, to third parties as a managed, hosted,
+software-as-a-service, white-label, embedded, or other commercial
+offering. Any such use requires a commercial license from the Licensor.
 
 For the purposes of this Additional Use Grant:
 - "affiliate" means any entity that directly or indirectly controls,
-  is controlled by, or is under common control with your organization;
-- "commercial hosted service" means making the Licensed Work available
-  to third parties as a managed, hosted, or software-as-a-service
-  offering for a fee or other commercial consideration.
+  is controlled by, or is under common control with your organization.
 
-Change Date: 2030-01-01
+Change Date: 2030-07-06
 
 Change License: GPL-2.0-or-later OR MIT OR Apache-2.0
 
