@@ -4,6 +4,7 @@ use super::session_kb_grounding::{
     apply_strict_kb_grounding_after_run, policy_answer_question_tool,
     render_strict_kb_direct_answer, tool_allowlist_for_kb_grounding,
 };
+use super::sessions_actor_scope::{ensure_same_session_actor, session_visible_to_actor};
 use super::*;
 use crate::app::rate_limit::{
     channel_rate_limit_key_from_session_metadata, retry_after_duration, ChannelRateLimitKind,
@@ -42,44 +43,6 @@ pub(super) fn publish_tenant_event(
         event_type,
         with_tenant_context(properties, tenant_context),
     ));
-}
-
-fn tenant_actor_id(tenant_context: &TenantContext) -> Option<&str> {
-    tenant_context
-        .actor_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|actor_id| !actor_id.is_empty())
-}
-
-fn session_visible_to_actor(
-    request_tenant: &TenantContext,
-    session_tenant: &TenantContext,
-) -> bool {
-    if !tenant_matches(request_tenant, session_tenant) {
-        return false;
-    }
-    if request_tenant.is_local_implicit() && session_tenant.is_local_implicit() {
-        return true;
-    }
-    matches!(
-        (
-            tenant_actor_id(request_tenant),
-            tenant_actor_id(session_tenant)
-        ),
-        (Some(request_actor), Some(session_actor)) if request_actor == session_actor
-    )
-}
-
-fn ensure_same_session_actor(
-    request_tenant: &TenantContext,
-    session_tenant: &TenantContext,
-) -> Result<(), StatusCode> {
-    if session_visible_to_actor(request_tenant, session_tenant) {
-        Ok(())
-    } else {
-        Err(StatusCode::NOT_FOUND)
-    }
 }
 
 fn mcp_namespace_segment_for_grounding(raw: &str) -> String {
