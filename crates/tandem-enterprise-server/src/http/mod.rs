@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 mod routes_enterprise;
 mod routes_enterprise_cross_tenant;
 mod routes_enterprise_google_drive;

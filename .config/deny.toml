@@ -53,6 +53,7 @@ allow = [
 exceptions = [
     { name = "tandem-plan-compiler", allow = ["BUSL-1.1"] },
     { name = "tandem-governance-engine", allow = ["BUSL-1.1"] },
+    { name = "tandem-enterprise-server", allow = ["BUSL-1.1"] },
     # auto_generate_cdp is a build-dependency of headless_chrome only (CDP
     # protocol codegen that runs at compile time); it is never linked into a
     # shipped binary, so its own code is not distributed (TAN-628). html2md

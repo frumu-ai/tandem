@@ -27,6 +27,7 @@ License texts:
   LICENSE-APACHE
   crates/tandem-plan-compiler/LICENSE
   crates/tandem-governance-engine/LICENSE
+  crates/tandem-enterprise-server/LICENSE
 
 If this notice, docs/LICENSING.md, and a package-local manifest or license file
 ever disagree, the package-local manifest and package-local license file control
