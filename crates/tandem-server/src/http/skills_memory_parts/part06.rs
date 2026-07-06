@@ -424,6 +424,23 @@ pub(super) async fn memory_put_impl_with_verified(
         .await?;
         return Err(StatusCode::FORBIDDEN);
     }
+    // Team/Curated exist in the governance contract ahead of storage backing:
+    // nothing distinguishes such records beyond a self-declared partition-key
+    // label, so writes fail closed until real tier semantics land (TAN-607).
+    if matches!(
+        request.partition.tier,
+        tandem_memory::GovernedMemoryTier::Team | tandem_memory::GovernedMemoryTier::Curated
+    ) {
+        emit_blocked_memory_put_guardrail(
+            state,
+            tenant_context,
+            &request,
+            capability.subject.clone(),
+            "tier_not_storage_backed",
+        )
+        .await?;
+        return Err(StatusCode::FORBIDDEN);
+    }
     let now = crate::now_ms();
     let require_scope_metadata =
         crate::memory::policy_status::current_memory_context_policy_status().strict_required;

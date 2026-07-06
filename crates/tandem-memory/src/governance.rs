@@ -4,7 +4,10 @@ use tandem_enterprise_contract::DataClass;
 /// Governance-facing tier model for scoped memory access.
 ///
 /// Note: `team` and `curated` are included for policy/capability contracts
-/// before storage-layer migrations complete.
+/// before storage-layer migrations complete. Until a backing store lands,
+/// writes targeting these tiers are rejected fail-closed
+/// (`tier_not_storage_backed`); they remain referenceable in read/auto-use
+/// policies, where an empty tier is simply never matched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GovernedMemoryTier {

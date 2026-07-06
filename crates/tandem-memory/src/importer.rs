@@ -259,6 +259,9 @@ where
             source_size: Some(size),
             source_hash: Some(hash.clone()),
             tenant_scope: request.tenant_scope.clone(),
+            // Imported documents are shared project/session knowledge, not
+            // user-restricted memory.
+            subject: None,
             metadata: Some(request_metadata),
         };
 

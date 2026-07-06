@@ -300,6 +300,7 @@ async fn index_workspace_impl(
             source_size: Some(size),
             source_hash: Some(hash.clone()),
             tenant_scope: MemoryTenantScope::local(),
+            subject: None,
             metadata: Some(serde_json::json!({
                 "path": relative_path,
                 "filename": path.file_name().and_then(|n| n.to_str()).unwrap_or(""),
@@ -534,6 +535,7 @@ mod tests {
             source_size: None,
             source_hash: None,
             tenant_scope: MemoryTenantScope::local(),
+            subject: None,
             metadata: None,
         };
         manager.store_message(req).await.unwrap();

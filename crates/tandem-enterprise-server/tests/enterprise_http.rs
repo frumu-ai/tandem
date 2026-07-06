@@ -1646,6 +1646,7 @@ async fn enterprise_source_object_lifecycle_actions_are_admin_gated_and_tenant_s
             source_size: Some(57),
             source_hash: Some("source-1".to_string()),
             tenant_scope: tenant_scope.clone(),
+            subject: None,
             created_at: chrono::Utc::now(),
             token_count: 8,
             metadata: Some(json!({
@@ -1857,6 +1858,7 @@ async fn enterprise_source_binding_disable_purges_indexed_source_objects() {
             source_size: Some(45),
             source_hash: Some("source-binding-disable".to_string()),
             tenant_scope: tenant_scope.clone(),
+            subject: None,
             created_at: chrono::Utc::now(),
             token_count: 7,
             metadata: Some(json!({

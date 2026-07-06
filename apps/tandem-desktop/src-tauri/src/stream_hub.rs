@@ -1506,6 +1506,7 @@ async fn persist_assistant_message_memory(
         source_size: None,
         source_hash: None,
         tenant_scope: MemoryTenantScope::local(),
+        subject: None,
         metadata: Some(metadata.clone()),
     };
     let mut session_chunks_stored = 0usize;
@@ -1551,6 +1552,7 @@ async fn persist_assistant_message_memory(
             source_size: None,
             source_hash: None,
             tenant_scope: MemoryTenantScope::local(),
+            subject: None,
             metadata: Some(metadata),
         };
         match manager.store_message(project_req).await {

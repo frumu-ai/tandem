@@ -325,3 +325,110 @@ async fn governed_read_filter_threads_org_units_from_verified_context() {
     assert!(!decision.allowed);
     assert_eq!(decision.reason.as_deref(), Some("org_unit_scope_mismatch"));
 }
+
+#[tokio::test]
+async fn memory_put_rejects_non_storage_backed_tiers() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    // Team/Curated exist only in the governance contract; writes fail closed
+    // until a backing store lands (TAN-607).
+    for tier in ["team", "curated"] {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/memory/put")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "run_id": format!("run-{tier}"),
+                    "partition": {
+                        "org_id": "org-1",
+                        "workspace_id": "ws-1",
+                        "project_id": "proj-1",
+                        "tier": tier
+                    },
+                    "kind": "note",
+                    "content": "should fail: tier has no backing store",
+                    "classification": "internal",
+                    "capability": {
+                        "run_id": format!("run-{tier}"),
+                        "subject": "user-1",
+                        "org_id": "org-1",
+                        "workspace_id": "ws-1",
+                        "project_id": "proj-1",
+                        "memory": {
+                            "read_tiers": ["session", "project"],
+                            "write_tiers": ["session", "project", tier],
+                            "promote_targets": [],
+                            "require_review_for_promote": false,
+                            "allow_auto_use_tiers": []
+                        },
+                        "expires_at": 9999999999999u64
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("request");
+        let resp = app.clone().oneshot(req).await.expect("response");
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "tier {tier} must be rejected"
+        );
+    }
+}
+
+#[tokio::test]
+async fn memory_promote_rejects_non_storage_backed_tiers() {
+    let state = test_state().await;
+    let tenant_context =
+        tandem_types::TenantContext::explicit_user_workspace("org-1", "ws-1", None, "user-1");
+
+    for tier in [
+        tandem_memory::GovernedMemoryTier::Team,
+        tandem_memory::GovernedMemoryTier::Curated,
+    ] {
+        let capability = tandem_memory::MemoryCapabilityToken {
+            run_id: "run-promote-tier".to_string(),
+            subject: "user-1".to_string(),
+            org_id: "org-1".to_string(),
+            workspace_id: "ws-1".to_string(),
+            project_id: "proj-1".to_string(),
+            memory: tandem_memory::MemoryCapabilities {
+                promote_targets: vec![tier],
+                ..Default::default()
+            },
+            expires_at: 9_999_999_999_999,
+        };
+        let denied = super::super::skills_memory::memory_promote_impl(
+            &state,
+            &tenant_context,
+            tandem_memory::MemoryPromoteRequest {
+                run_id: "run-promote-tier".to_string(),
+                source_memory_id: "missing-source".to_string(),
+                from_tier: tandem_memory::GovernedMemoryTier::Session,
+                to_tier: tier,
+                partition: tandem_memory::MemoryPartition {
+                    org_id: "org-1".to_string(),
+                    workspace_id: "ws-1".to_string(),
+                    project_id: "proj-1".to_string(),
+                    tier,
+                },
+                reason: "promote into unbacked tier".to_string(),
+                review: tandem_memory::PromotionReview {
+                    required: false,
+                    reviewer_id: None,
+                    approval_id: None,
+                },
+                authority_job_context: None,
+                source_outcome: None,
+            },
+            Some(capability),
+        )
+        .await;
+        assert_eq!(
+            denied.expect_err("unbacked tier promotion is rejected"),
+            StatusCode::FORBIDDEN
+        );
+    }
+}

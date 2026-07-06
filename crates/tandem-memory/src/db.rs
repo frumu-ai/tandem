@@ -142,6 +142,11 @@ fn row_to_chunk(
     let source_mtime = row.get::<_, Option<i64>>("source_mtime").ok().flatten();
     let source_size = row.get::<_, Option<i64>>("source_size").ok().flatten();
     let source_hash = row.get::<_, Option<String>>("source_hash").ok().flatten();
+    let subject = row
+        .get::<_, Option<String>>("subject")
+        .ok()
+        .flatten()
+        .filter(|value| !value.trim().is_empty());
     let tenant_scope = MemoryTenantScope {
         org_id: row
             .get::<_, Option<String>>("tenant_org_id")
@@ -174,6 +179,7 @@ fn row_to_chunk(
         source_size,
         source_hash,
         tenant_scope,
+        subject,
         created_at,
         token_count,
         metadata,

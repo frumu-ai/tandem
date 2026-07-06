@@ -49,6 +49,7 @@ mod tests {
             source_size: None,
             source_hash: None,
             tenant_scope: MemoryTenantScope::local(),
+            subject: None,
             metadata: None,
         };
 
@@ -124,6 +125,7 @@ mod tests {
             source_size: None,
             source_hash: Some("hash-general".to_string()),
             tenant_scope: tenant_scope.clone(),
+            subject: None,
             metadata: None,
         };
         let bound_request = StoreMessageRequest {
@@ -138,6 +140,7 @@ mod tests {
             source_size: None,
             source_hash: Some("hash-hr".to_string()),
             tenant_scope: tenant_scope.clone(),
+            subject: None,
             metadata: Some(source_bound_metadata),
         };
 
@@ -265,6 +268,7 @@ mod tests {
             source_size: None,
             source_hash: Some("tenant-a-source-hash".to_string()),
             tenant_scope: tenant_a.clone(),
+            subject: None,
             metadata: Some(serde_json::json!({
                 "enterprise_source_binding": {
                     "binding_id": "binding-finance",
@@ -288,6 +292,7 @@ mod tests {
             source_size: None,
             source_hash: Some("tenant-b-source-hash".to_string()),
             tenant_scope: tenant_b.clone(),
+            subject: None,
             metadata: Some(serde_json::json!({
                 "enterprise_source_binding": {
                     "binding_id": "binding-finance",
@@ -433,6 +438,7 @@ mod tests {
             source_size: None,
             source_hash: None,
             tenant_scope: MemoryTenantScope::local(),
+            subject: None,
             metadata: None,
         };
         let new_request = StoreMessageRequest {
@@ -446,6 +452,7 @@ mod tests {
             source_size: None,
             source_hash: None,
             tenant_scope: MemoryTenantScope::local(),
+            subject: None,
             metadata: None,
         };
 
@@ -496,6 +503,7 @@ mod tests {
             source_size: None,
             source_hash: None,
             tenant_scope: MemoryTenantScope::local(),
+            subject: None,
             metadata: None,
         };
         match manager.store_message(request).await {
@@ -531,6 +539,7 @@ mod tests {
             source_size: None,
             source_hash: None,
             tenant_scope: MemoryTenantScope::local(),
+            subject: None,
             metadata: None,
         };
         match manager.store_message(request).await {
@@ -588,6 +597,7 @@ mod tests {
             source_size: None,
             source_hash: None,
             tenant_scope: tenant_a.clone(),
+            subject: None,
             created_at: chrono::Utc::now(),
             token_count: 5,
             metadata: None,
@@ -676,6 +686,7 @@ mod tests {
             source_size: None,
             source_hash: Some("hash-executive-current".to_string()),
             tenant_scope: tenant_scope.clone(),
+            subject: None,
             created_at: chrono::Utc::now(),
             token_count: 9,
             metadata: Some(source_bound_metadata.clone()),
@@ -693,6 +704,7 @@ mod tests {
             source_size: None,
             source_hash: Some("hash-executive-history".to_string()),
             tenant_scope: tenant_scope.clone(),
+            subject: None,
             created_at: chrono::Utc::now(),
             token_count: 9,
             metadata: Some(source_bound_metadata),
@@ -1606,5 +1618,146 @@ mod tests {
             .unwrap()
             .expect("legacy node survives reopen");
         assert_eq!(node.id, "legacy-node");
+    }
+
+    #[tokio::test]
+    async fn chunk_subject_round_trips_through_store_and_search() {
+        let (manager, _temp) = setup_deterministic_test_manager().await;
+        let scope = crate::types::MemoryTenantScope {
+            org_id: "org-a".to_string(),
+            workspace_id: "workspace-a".to_string(),
+            deployment_id: None,
+        };
+        let request = StoreMessageRequest {
+            content: "subject scoped archived exchange about deployment windows".to_string(),
+            tier: MemoryTier::Global,
+            session_id: None,
+            project_id: None,
+            source: "chat_exchange".to_string(),
+            source_path: None,
+            source_mtime: None,
+            source_size: None,
+            source_hash: None,
+            tenant_scope: scope.clone(),
+            subject: Some("user-a".to_string()),
+            metadata: None,
+        };
+        let ids = manager.store_message(request).await.unwrap();
+        assert!(!ids.is_empty());
+
+        let results = manager
+            .search_for_tenant(
+                "deployment windows",
+                Some(MemoryTier::Global),
+                None,
+                None,
+                &scope,
+                Some(5),
+            )
+            .await
+            .unwrap();
+        assert!(!results.is_empty());
+        assert_eq!(results[0].chunk.subject.as_deref(), Some("user-a"));
+    }
+
+    #[tokio::test]
+    async fn subject_chunks_survive_topk_ranking_against_other_subjects() {
+        let (manager, _temp) = setup_deterministic_test_manager().await;
+        let scope = crate::types::MemoryTenantScope {
+            org_id: "org-a".to_string(),
+            workspace_id: "workspace-a".to_string(),
+            deployment_id: None,
+        };
+        let store = |content: String, subject: &str| StoreMessageRequest {
+            content,
+            tier: MemoryTier::Global,
+            session_id: None,
+            project_id: None,
+            source: "chat_exchange".to_string(),
+            source_path: None,
+            source_mtime: None,
+            source_size: None,
+            source_hash: None,
+            tenant_scope: scope.clone(),
+            subject: Some(subject.to_string()),
+            metadata: None,
+        };
+
+        // Fill the candidate window (limit * ACCESS_FILTER_CANDIDATE_MULTIPLIER)
+        // with another subject's chunks that match the query at least as well.
+        let query = "quarterly infrastructure budget planning";
+        for i in 0..12 {
+            manager
+                .store_message(store(
+                    format!("{query} details volume {i}"),
+                    "user-b",
+                ))
+                .await
+                .unwrap();
+        }
+        manager
+            .store_message(store(
+                format!("{query} owner note"),
+                "user-a",
+            ))
+            .await
+            .unwrap();
+
+        // Governed search as user-a: their chunk must reach the results even
+        // though user-b's closer chunks would otherwise fill the top-k window.
+        let tenant = tandem_enterprise_contract::TenantContext::explicit_user_workspace(
+            "org-a",
+            "workspace-a",
+            None,
+            "user-a",
+        );
+        let principal =
+            tandem_enterprise_contract::RequestPrincipal::authenticated_user("user-a", "test");
+        let strict = tandem_enterprise_contract::StrictTenantContext::new(
+            tenant,
+            tandem_enterprise_contract::PrincipalRef::human_user("user-a"),
+            tandem_enterprise_contract::AuthorityChain::from_request(principal),
+            tandem_enterprise_contract::ResourceScope::root(
+                tandem_enterprise_contract::ResourceRef::new(
+                    "org-a",
+                    "workspace-a",
+                    tandem_enterprise_contract::ResourceKind::Workspace,
+                    "workspace-a",
+                ),
+            ),
+            tandem_enterprise_contract::AssertionMetadata::new(
+                "issuer",
+                "runtime",
+                1_000,
+                9_999_999_999_999,
+                "assertion-a",
+            ),
+        );
+        let filter = crate::types::MemoryAccessFilter::strict(strict, 2_000)
+            .with_caller_subject("user-a");
+        let results = manager
+            .search_for_tenant_with_access_filter(
+                query,
+                Some(MemoryTier::Global),
+                None,
+                None,
+                &scope,
+                Some(2),
+                Some(&filter),
+            )
+            .await
+            .unwrap();
+        assert!(
+            results
+                .iter()
+                .all(|result| result.chunk.subject.as_deref() != Some("user-b")),
+            "no foreign-subject chunks in governed results"
+        );
+        assert!(
+            results
+                .iter()
+                .any(|result| result.chunk.subject.as_deref() == Some("user-a")),
+            "owner's chunk must not be starved out of the candidate window"
+        );
     }
 }

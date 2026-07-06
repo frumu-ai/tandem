@@ -51,6 +51,22 @@ async fn memory_promote_impl_with_verified(
         .await?;
         return Err(StatusCode::FORBIDDEN);
     }
+    // Same fail-closed gate as memory_put: Team/Curated have no backing store,
+    // so promotions cannot mint records labeled with an unbacked tier either.
+    if matches!(
+        request.to_tier,
+        tandem_memory::GovernedMemoryTier::Team | tandem_memory::GovernedMemoryTier::Curated
+    ) {
+        emit_blocked_memory_promote_guardrail(
+            state,
+            tenant_context,
+            &request,
+            capability.subject.clone(),
+            "tier_not_storage_backed",
+        )
+        .await?;
+        return Err(StatusCode::FORBIDDEN);
+    }
     if capability.memory.require_review_for_promote
         && (request.review.approval_id.is_none() || request.review.reviewer_id.is_none())
     {
@@ -806,7 +822,8 @@ pub(super) async fn memory_search(
             request.retrieval_gateway.is_some(),
             crate::now_ms(),
             request.workflow_phase.as_deref(),
-        );
+        )
+        .map(|filter| filter.with_caller_subject(capability.subject.clone()));
     let strict_source_projection_active = source_access_filter.is_some();
     let (hits, gateway_budget_exhausted) = if scopes_used.is_empty() {
         (Vec::new(), false)

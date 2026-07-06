@@ -478,7 +478,8 @@ pub(super) async fn memory_list(
             verified_tenant_context,
             false,
             crate::now_ms(),
-        );
+        )
+        .map(|filter| filter.with_caller_subject(user_id.clone()));
         db.list_global_memory_for_tenant(
             &tenant_context.org_id,
             &tenant_context.workspace_id,

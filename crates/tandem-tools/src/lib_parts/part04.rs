@@ -762,6 +762,9 @@ impl Tool for MemoryStoreTool {
             source_size: None,
             source_hash: None,
             tenant_scope: tandem_memory::types::MemoryTenantScope::local(),
+            // Model-tool writes run in local single-tenant mode with no caller
+            // identity; chunks stay shared within their tier scope.
+            subject: None,
             metadata,
         };
         let chunk_ids = manager.store_message(request).await?;

@@ -218,6 +218,7 @@ mod tenant_scope_tests {
             source_size: None,
             source_hash: None,
             tenant_scope: tenant_scope.clone(),
+            subject: None,
             created_at: chrono::Utc::now(),
             token_count: 7,
             metadata: Some(policy.metadata_value()),
