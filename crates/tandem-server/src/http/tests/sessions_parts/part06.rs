@@ -116,6 +116,11 @@ async fn same_tenant_actor_cannot_access_another_actor_session_routes() {
             format!("/session/{session_b_id}"),
             Some(json!({"title":"stolen"})),
         ),
+        (
+            "POST",
+            format!("/session/{session_b_id}/command"),
+            Some(json!({"command":"git","args":["status","--short"]})),
+        ),
         ("POST", format!("/session/{session_b_id}/abort"), None),
         (
             "POST",

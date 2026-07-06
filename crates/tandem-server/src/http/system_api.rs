@@ -1,7 +1,7 @@
 use axum::{
     extract::{
         ws::{Message as WsMessage, WebSocket},
-        Path, Query, State, WebSocketUpgrade,
+        Extension, Path, Query, State, WebSocketUpgrade,
     },
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
@@ -15,10 +15,13 @@ use std::{
     path::PathBuf,
     time::{Duration, Instant},
 };
+use tandem_types::TenantContext;
 use tokio::process::Command;
 use uuid::Uuid;
 
 use crate::AppState;
+
+use super::sessions_actor_scope::ensure_same_session_actor;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct FindTextQuery {
@@ -383,6 +386,7 @@ pub(super) async fn command_list() -> Json<Value> {
 
 pub(super) async fn run_command(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(input): Json<CommandRunInput>,
@@ -395,6 +399,7 @@ pub(super) async fn run_command(
         .get_session(&id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
+    ensure_same_session_actor(&tenant_context, &session.tenant_context)?;
     let lookup_ms = lookup_started.elapsed().as_millis();
     let workspace_root = session
         .workspace_root
