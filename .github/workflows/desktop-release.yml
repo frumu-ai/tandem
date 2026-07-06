@@ -136,7 +136,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release --target ${{ matrix.target }} -p tandem-ai -p tandem-browser --features tandem-ai/browser
+          cargo build --release --target ${{ matrix.target }} -p tandem-ai -p tandem-browser --features tandem-ai/browser,tandem-ai/enterprise
           mkdir -p apps/tandem-desktop/src-tauri/resources/binaries
           cp "target/${{ matrix.target }}/release/tandem-engine" "apps/tandem-desktop/src-tauri/resources/binaries/tandem-engine"
           cp "target/${{ matrix.target }}/release/tandem-browser" "apps/tandem-desktop/src-tauri/resources/binaries/tandem-browser"
@@ -147,7 +147,7 @@ jobs:
         if: ${{ matrix.platform == 'windows-latest' }}
         shell: pwsh
         run: |
-          cargo build --release --target ${{ matrix.target }} -p tandem-ai -p tandem-browser --features tandem-ai/browser
+          cargo build --release --target ${{ matrix.target }} -p tandem-ai -p tandem-browser --features tandem-ai/browser,tandem-ai/enterprise
           New-Item -ItemType Directory -Path "apps/tandem-desktop/src-tauri/resources/binaries" -Force | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/tandem-engine.exe" "apps/tandem-desktop/src-tauri/resources/binaries/tandem-engine.exe" -Force
           Copy-Item "target/${{ matrix.target }}/release/tandem-browser.exe" "apps/tandem-desktop/src-tauri/resources/binaries/tandem-browser.exe" -Force
