@@ -43,6 +43,7 @@ jobs:
           echo "Using version: $VERSION"
 
           python - <<'PY'
+          import datetime
           import json
           import os
           import re
@@ -50,6 +51,30 @@ jobs:
 
           version = os.environ["VERSION"]
           root = Path(".")
+
+          def plus_years(day, years):
+            try:
+              return day.replace(year=day.year + years)
+            except ValueError:  # Feb 29 -> non-leap target year
+              return day.replace(year=day.year + years, month=3, day=1)
+
+          # Rolling BUSL Change Date (docs/LICENSING.md, "Change Date policy"):
+          # each released version converts to the Change License four years
+          # after release. Mirrors scripts/bump-version.sh for the tag-sync
+          # path (TAN-631).
+          busl_change_date = plus_years(datetime.date.today(), 4).isoformat()
+
+          def stamp_busl_change_date(path: Path) -> None:
+            text = path.read_text()
+            if "Business Source License 1.1" not in text:
+              return
+            updated = re.sub(
+              r"(?m)^Change Date: \d{4}-\d{2}-\d{2}[ \t]*$",
+              f"Change Date: {busl_change_date}",
+              text,
+            )
+            if updated != text:
+              path.write_text(updated)
 
           def update_json(path: Path, key: str = "version") -> None:
             data = json.loads(path.read_text())
@@ -100,6 +125,9 @@ jobs:
           update_json(root / "packages" / "create-tandem-panel" / "package.json")
           update_pyproject_version(root / "packages" / "tandem-client-py" / "pyproject.toml")
           update_json(root / "apps" / "tandem-desktop" / "src-tauri" / "tauri.conf.json")
+
+          for license_path in root.glob("crates/*/LICENSE"):
+            stamp_busl_change_date(license_path)
           PY
 
           if git diff --quiet; then
@@ -111,6 +139,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add \
             crates/*/Cargo.toml \
+            crates/*/LICENSE \
             engine/Cargo.toml \
             apps/tandem-desktop/src-tauri/Cargo.toml \
             apps/tandem-desktop/src-tauri/tauri.conf.json \
