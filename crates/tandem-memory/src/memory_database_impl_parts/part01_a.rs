@@ -601,6 +601,20 @@ impl MemoryDatabase {
             conn.execute("DROP TABLE memory_config", [])?;
             conn.execute("ALTER TABLE memory_config_new RENAME TO memory_config", [])?;
         }
+        // Retention columns (added after the tenant rebuild so both fresh and
+        // legacy tables converge on the same shape).
+        if !memory_config_cols.contains("exchange_retention_days") {
+            conn.execute(
+                "ALTER TABLE memory_config ADD COLUMN exchange_retention_days INTEGER NOT NULL DEFAULT 365",
+                [],
+            )?;
+        }
+        if !memory_config_cols.contains("global_retention_days") {
+            conn.execute(
+                "ALTER TABLE memory_config ADD COLUMN global_retention_days INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_memory_config_tenant_project
                 ON memory_config(tenant_org_id, tenant_workspace_id, tenant_deployment_id, project_id)",

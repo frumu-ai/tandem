@@ -482,6 +482,10 @@ pub async fn serve_with_route_extensions(
     // --- Memory hygiene background task (runs every 12 hours) ---
     // Opens a fresh connection to memory.sqlite each cycle â€” safe because WAL
     // mode allows concurrent readers alongside the main engine connection.
+    // run_hygiene runs the full reaper under the local tenant scope: session
+    // retention, expired memory_records, exchange retention, per-project chunk
+    // caps, and (opt-in) global-tier retention. TANDEM_MEMORY_RETENTION_DAYS=0
+    // keeps its historical meaning and disables the scheduled job entirely.
     let hygiene_task = tokio::spawn(async move {
         // Initial delay so startup is not impacted.
         tokio::time::sleep(Duration::from_secs(60)).await;

@@ -574,8 +574,9 @@ impl MemoryDatabase {
 
         let result: Option<MemoryConfig> = conn
             .query_row(
-                "SELECT max_chunks, chunk_size, retrieval_k, auto_cleanup, 
-                        session_retention_days, token_budget, chunk_overlap
+                "SELECT max_chunks, chunk_size, retrieval_k, auto_cleanup,
+                        session_retention_days, token_budget, chunk_overlap,
+                        exchange_retention_days, global_retention_days
                  FROM memory_config
                  WHERE project_id = ?1
                    AND tenant_org_id = ?2
@@ -596,6 +597,8 @@ impl MemoryDatabase {
                         session_retention_days: row.get(4)?,
                         token_budget: row.get(5)?,
                         chunk_overlap: row.get(6)?,
+                        exchange_retention_days: row.get(7)?,
+                        global_retention_days: row.get(8)?,
                     })
                 },
             )
@@ -612,8 +615,9 @@ impl MemoryDatabase {
                     "INSERT INTO memory_config
                      (tenant_org_id, tenant_workspace_id, tenant_deployment_id,
                       project_id, max_chunks, chunk_size, retrieval_k, auto_cleanup,
-                      session_retention_days, token_budget, chunk_overlap, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                      session_retention_days, token_budget, chunk_overlap,
+                      exchange_retention_days, global_retention_days, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                     params![
                         tenant_scope.org_id.as_str(),
                         tenant_scope.workspace_id.as_str(),
@@ -626,6 +630,8 @@ impl MemoryDatabase {
                         config.session_retention_days,
                         config.token_budget,
                         config.chunk_overlap,
+                        config.exchange_retention_days,
+                        config.global_retention_days,
                         updated_at
                     ],
                 )?;
@@ -656,8 +662,9 @@ impl MemoryDatabase {
             "INSERT INTO memory_config
              (tenant_org_id, tenant_workspace_id, tenant_deployment_id,
               project_id, max_chunks, chunk_size, retrieval_k, auto_cleanup,
-              session_retention_days, token_budget, chunk_overlap, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+              session_retention_days, token_budget, chunk_overlap,
+              exchange_retention_days, global_retention_days, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(tenant_org_id, tenant_workspace_id, tenant_deployment_id, project_id)
              DO UPDATE SET
                 max_chunks = excluded.max_chunks,
@@ -667,6 +674,8 @@ impl MemoryDatabase {
                 session_retention_days = excluded.session_retention_days,
                 token_budget = excluded.token_budget,
                 chunk_overlap = excluded.chunk_overlap,
+                exchange_retention_days = excluded.exchange_retention_days,
+                global_retention_days = excluded.global_retention_days,
                 updated_at = excluded.updated_at",
             params![
                 tenant_scope.org_id.as_str(),
@@ -680,6 +689,8 @@ impl MemoryDatabase {
                 config.session_retention_days,
                 config.token_budget,
                 config.chunk_overlap,
+                config.exchange_retention_days,
+                config.global_retention_days,
                 updated_at
             ],
         )?;

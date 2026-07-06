@@ -4,11 +4,12 @@
 // SQLite + sqlite-vec for vector storage
 
 use crate::types::{
-    ClearFileIndexResult, GlobalMemoryRecord, GlobalMemorySearchHit, GlobalMemoryWriteResult,
-    KnowledgeCoverageRecord, KnowledgeItemRecord, KnowledgeItemStatus, KnowledgePromotionRequest,
-    KnowledgePromotionResult, KnowledgeSpaceRecord, MemoryChunk, MemoryConfig, MemoryError,
-    MemoryResult, MemoryStats, MemoryTenantScope, MemoryTier, ProjectMemoryStats,
-    SourceObjectLifecycleRecord, SourceObjectLifecycleState, DEFAULT_EMBEDDING_DIMENSION,
+    CleanupLogEntry, ClearFileIndexResult, GlobalMemoryRecord, GlobalMemorySearchHit,
+    GlobalMemoryWriteResult, KnowledgeCoverageRecord, KnowledgeItemRecord, KnowledgeItemStatus,
+    KnowledgePromotionRequest, KnowledgePromotionResult, KnowledgeSpaceRecord, MemoryChunk,
+    MemoryConfig, MemoryError, MemoryResult, MemoryStats, MemoryTenantScope, MemoryTier,
+    ProjectMemoryStats, SourceObjectLifecycleRecord, SourceObjectLifecycleState,
+    DEFAULT_EMBEDDING_DIMENSION,
 };
 use chrono::{DateTime, Utc};
 use rusqlite::{ffi::sqlite3_auto_extension, params, Connection, OptionalExtension, Row};
@@ -37,7 +38,10 @@ pub struct MemoryDatabase {
 }
 
 static SCHEMA_INIT_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-const MEMORY_SCHEMA_MIGRATIONS: &[(i64, &str)] = &[(1, "bootstrap_memory_schema")];
+const MEMORY_SCHEMA_MIGRATIONS: &[(i64, &str)] = &[
+    (1, "bootstrap_memory_schema"),
+    (2, "memory_config_retention_columns"),
+];
 
 fn ensure_schema_migrations_table(conn: &Connection) -> MemoryResult<()> {
     conn.execute(
@@ -82,6 +86,7 @@ pub fn strict_tenant_enforcement_default() -> bool {
 
 include!("memory_database_impl_parts/part01.rs");
 include!("memory_database_impl_parts/part02.rs");
+include!("memory_database_impl_parts/part02_retention.rs");
 include!("memory_database_impl_parts/part03.rs");
 
 /// Convert a database row to a MemoryChunk

@@ -716,6 +716,18 @@ pub struct MemoryConfig {
     pub token_budget: i64,
     /// Overlap between chunks in tokens
     pub chunk_overlap: i64,
+    /// Retention in days for raw chat exchange records
+    /// (`user_message`/`assistant_final` memory records). 0 = keep forever.
+    #[serde(default = "default_exchange_retention_days")]
+    pub exchange_retention_days: i64,
+    /// Retention in days for global-tier memory chunks. 0 = disabled
+    /// (global chunks are user-facing archived memory, so age-pruning is opt-in).
+    #[serde(default)]
+    pub global_retention_days: i64,
+}
+
+fn default_exchange_retention_days() -> i64 {
+    365
 }
 
 impl Default for MemoryConfig {
@@ -728,6 +740,8 @@ impl Default for MemoryConfig {
             session_retention_days: 30,
             token_budget: 5000,
             chunk_overlap: 64,
+            exchange_retention_days: default_exchange_retention_days(),
+            global_retention_days: 0,
         }
     }
 }

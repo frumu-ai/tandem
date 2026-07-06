@@ -1526,30 +1526,37 @@ impl MemoryManager {
         tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<()> {
         if let Some(pid) = project_id {
-            let stats = self.db.get_stats_for_tenant(tenant_scope).await?;
             let config = self
                 .db
                 .get_or_create_config_for_tenant(pid, tenant_scope)
                 .await?;
 
-            // Check if we're over the chunk limit
-            if stats.project_chunks > config.max_chunks {
-                // Remove oldest chunks
-                let excess = stats.project_chunks - config.max_chunks;
-                // This would require a new DB method to delete oldest chunks
-                // For now, just log
-                tracing::info!("Project {} has {} excess chunks", pid, excess);
+            // Evict oldest project chunks (and their vector rows) over the cap
+            let evicted = self
+                .db
+                .enforce_project_chunk_cap_for_tenant(pid, config.max_chunks, tenant_scope)
+                .await?;
+            if evicted > 0 {
+                self.db
+                    .log_cleanup_for_tenant(
+                        "auto",
+                        MemoryTier::Project,
+                        Some(pid),
+                        None,
+                        evicted as i64,
+                        0,
+                        tenant_scope,
+                    )
+                    .await?;
             }
         }
 
         Ok(())
     }
 
-    /// Get cleanup log entries
-    pub async fn get_cleanup_log(&self, _limit: i64) -> MemoryResult<Vec<CleanupLogEntry>> {
-        // This would be implemented in the DB layer
-        // For now, return empty
-        Ok(Vec::new())
+    /// Get cleanup log entries (newest first)
+    pub async fn get_cleanup_log(&self, limit: i64) -> MemoryResult<Vec<CleanupLogEntry>> {
+        self.db.get_cleanup_log(limit).await
     }
 
     /// Count tokens in text
