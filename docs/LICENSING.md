@@ -118,7 +118,14 @@ Each released version's `Change Date` is set to **four years after that
 version's release date** (a rolling window; on the Change Date the version
 converts to the Change License, `GPL-2.0-or-later OR MIT OR Apache-2.0`). When
 cutting a release, stamp the `Change Date` in every `BUSL-1.1` `LICENSE` file to
-release-date + 4 years. The in-repo value tracks the current unreleased line.
+release-date + 4 years.
+
+BUSL applies separately to each version, so a license change is prospective: the
+grant and Change Date above first take effect in **0.6.8** (the next release).
+`0.6.7` and earlier remain under the terms they were released with. The
+`Change Date` currently in the `LICENSE` files (`2030-07-06`) is a placeholder
+for the 0.6.8 line and is finalized to the actual release date + 4 years when
+0.6.8 is cut.
 
 ## License Texts
 
