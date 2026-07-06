@@ -32,7 +32,18 @@ use crate::{AppState, RuntimeState};
 /// Build a ready [`AppState`] backed by per-call temp directories, with the
 /// enterprise storage paths and a seeded in-memory MCP server wired up. Suitable
 /// for axum `oneshot` HTTP integration tests.
+/// Serializes test-state construction across the process. `test_state` mutates
+/// process-wide env (`TANDEM_HOME`, `TANDEM_GLOBAL_CONFIG`) so that
+/// construction-time resolutions land in this call's temp root; without the
+/// lock, two states constructing concurrently can capture each other's homes.
+/// Runtime path reads after construction go through the explicit `AppState`
+/// path fields set below. Anything that still resolves canonical paths from
+/// ambient env after construction is only fully isolated under one-process-
+/// per-test runners (`cargo nextest run`) — see docs/ENGINE_TESTING.md.
+pub static TEST_STATE_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 pub async fn test_state() -> AppState {
+    let _env_guard = TEST_STATE_ENV_LOCK.lock().await;
     let root = std::env::temp_dir().join(format!("tandem-http-test-{}", Uuid::new_v4()));
     let global = root.join("global-config.json");
     let tandem_home = root.join("tandem-home");

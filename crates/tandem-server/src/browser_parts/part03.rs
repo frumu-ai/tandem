@@ -42,6 +42,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn managed_sidecar_path_uses_shared_binaries_dir() {
         let temp_root =
             std::env::temp_dir().join(format!("tandem-browser-test-{}", Uuid::new_v4()));

@@ -440,6 +440,7 @@ async fn workflow_plan_preview_uses_fallback_when_planner_provider_unconfigured(
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn workflow_plan_preview_accepts_valid_llm_created_plan() {
     let state = test_state().await;
     configure_openai_provider(&state).await;
@@ -543,6 +544,7 @@ async fn workflow_plan_preview_accepts_valid_llm_created_plan() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn workflow_plan_preview_compacts_oversized_generated_llm_plan() {
     let state = test_state().await;
     configure_openai_provider(&state).await;
@@ -672,6 +674,7 @@ async fn workflow_plan_apply_rejects_oversized_generated_plan_without_compaction
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn workflow_plan_preview_accepts_partial_llm_plan_payload() {
     let state = test_state().await;
     configure_openai_provider(&state).await;
@@ -748,6 +751,7 @@ async fn workflow_plan_preview_accepts_partial_llm_plan_payload() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn workflow_plan_preview_accepts_research_and_review_validators_from_llm() {
     let state = test_state().await;
     configure_openai_provider(&state).await;
@@ -811,6 +815,7 @@ async fn workflow_plan_preview_accepts_research_and_review_validators_from_llm()
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn workflow_plan_preview_accepts_allowed_step_id_suffix_variant() {
     let state = test_state().await;
     configure_openai_provider(&state).await;
@@ -877,6 +882,7 @@ async fn workflow_plan_preview_accepts_allowed_step_id_suffix_variant() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn workflow_plan_preview_rejects_invalid_llm_step_id_and_uses_fallback() {
     let state = test_state().await;
     configure_openai_provider(&state).await;
@@ -934,6 +940,7 @@ async fn workflow_plan_preview_rejects_invalid_llm_step_id_and_uses_fallback() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn workflow_plan_preview_uses_phased_fallback_for_complex_prompt_on_invalid_json() {
     let state = test_state().await;
     configure_openai_provider(&state).await;
@@ -988,6 +995,7 @@ async fn workflow_plan_preview_uses_phased_fallback_for_complex_prompt_on_invali
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn workflow_plan_preview_rejects_invalid_llm_dependency_and_uses_fallback() {
     let state = test_state().await;
     configure_openai_provider(&state).await;
@@ -1042,6 +1050,7 @@ async fn workflow_plan_preview_rejects_invalid_llm_dependency_and_uses_fallback(
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn workflow_plan_apply_persists_automation_v2_with_planner_metadata() {
     let state = test_state().await;
     configure_openai_provider(&state).await;
@@ -1338,6 +1347,7 @@ async fn workflow_plan_apply_persists_automation_v2_with_planner_metadata() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn workflow_plan_preview_returns_overlap_analysis_from_prior_automation() {
     let state = test_state().await;
     configure_openai_provider(&state).await;
@@ -1469,6 +1479,7 @@ async fn workflow_plan_preview_returns_overlap_analysis_from_prior_automation() 
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn workflow_plan_apply_requires_overlap_confirmation_and_persists_decision_log() {
     let state = test_state().await;
     configure_openai_provider(&state).await;
@@ -1742,6 +1753,7 @@ async fn workflow_plan_apply_rejects_plan_package_blockers() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn workflow_plan_apply_preserves_research_web_expectation_metadata() {
     let state = test_state().await;
     configure_openai_provider(&state).await;
@@ -1851,6 +1863,7 @@ async fn workflow_plan_apply_preserves_research_web_expectation_metadata() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn workflow_plan_import_accepts_exported_bundle() {
     let state = test_state().await;
     configure_openai_provider(&state).await;
@@ -1988,6 +2001,7 @@ async fn workflow_plan_import_accepts_exported_bundle() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn workflow_plan_pack_import_preview_and_commit_installs_pack_session() {
     let state = test_state().await;
     configure_openai_provider(&state).await;
@@ -2174,6 +2188,7 @@ contents:
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn workflow_plan_import_preview_returns_scope_snapshot_and_summary() {
     let state = test_state().await;
     configure_openai_provider(&state).await;
@@ -2352,6 +2367,7 @@ async fn workflow_plan_import_rejects_missing_scope_snapshot() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn workflow_planner_session_create_normalizes_control_panel_provenance() {
     let state = test_state().await;
     configure_openai_provider(&state).await;

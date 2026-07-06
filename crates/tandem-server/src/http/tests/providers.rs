@@ -362,10 +362,23 @@ async fn tenant_a_cannot_list_update_or_delete_tenant_b_provider_api_key() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn provider_oauth_session_import_persists_codex_auth_and_reports_connected_status() {
     let codex_home_path = std::env::temp_dir()
         .join(format!("tandem-codex-home-{}", Uuid::new_v4()))
         .join(".codex");
+    // Serialized test: restore CODEX_HOME on exit so parallel non-serial tests
+    // reading codex-cli credentials never observe this test's temp home.
+    struct CodexHomeGuard(Option<std::ffi::OsString>);
+    impl Drop for CodexHomeGuard {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(previous) => std::env::set_var("CODEX_HOME", previous),
+                None => std::env::remove_var("CODEX_HOME"),
+            }
+        }
+    }
+    let _codex_home_guard = CodexHomeGuard(std::env::var_os("CODEX_HOME"));
     std::env::set_var("CODEX_HOME", &codex_home_path);
 
     let state = test_state().await;

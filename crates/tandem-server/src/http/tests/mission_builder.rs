@@ -55,6 +55,7 @@ fn sample_blueprint() -> Value {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn mission_builder_generate_draft_returns_generated_blueprint_and_schedule() {
     let state = test_state().await;
     let app = app_router(state);

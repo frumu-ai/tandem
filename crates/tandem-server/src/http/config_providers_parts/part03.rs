@@ -101,6 +101,7 @@ mod provider_auth_resolution_tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn provider_api_key_resolution_preserves_runtime_precedence_over_env_fallback() {
         let provider_id = format!("review-precedence-{}", uuid::Uuid::new_v4());
         let env_key = provider_env_candidates(&provider_id)

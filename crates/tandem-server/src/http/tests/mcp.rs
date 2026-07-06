@@ -63,6 +63,7 @@ fn mcp_public_base_url_from_config_trims_trailing_slash() {
 }
 
 #[test]
+#[serial_test::serial]
 fn mcp_public_base_url_from_env_uses_control_panel_public_url() {
     let guard = McpEnvGuard::new(&[
         "TANDEM_CONTROL_PANEL_PUBLIC_URL",
@@ -336,6 +337,7 @@ async fn spawn_fake_notion_oauth_mcp_server() -> (String, tokio::task::JoinHandl
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn bootstrap_mcp_servers_installs_builtin_tandem_docs_server() {
     let _env = McpEnvGuard::new(&["TANDEM_DOCS_MCP_TRANSPORT_URL"]);
     let (endpoint, server) = spawn_fake_notion_oauth_mcp_server().await;

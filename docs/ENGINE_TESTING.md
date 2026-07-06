@@ -54,6 +54,34 @@ cargo run -p tandem-ai -- serve --host 127.0.0.1 --port 39731
 cargo test -p tandem-server -p tandem-core -p tandem-ai
 ```
 
+## Full-suite runs: use nextest (TAN-619)
+
+For anything beyond a filtered handful of tests, prefer nextest — it is what CI
+runs, and it executes each test in its own process:
+
+```bash
+cargo nextest run -p tandem-server
+```
+
+Why it matters: many tandem-server tests mutate process-wide environment
+variables (`TANDEM_HOME`, `TANDEM_RUNTIME_AUTH_MODE`, `CODEX_HOME`, ...), and
+canonical data paths resolve from that environment lazily at call time. Under
+plain `cargo test`, parallel threads share one environment, so an unlucky
+interleaving lets one test observe another's overrides mid-run — the classic
+"fails in the full suite, passes in isolation" flake. Process-per-test
+execution makes the environment genuinely per-test.
+
+Rules for new tests (these keep plain `cargo test` usable for filtered runs):
+
+- Never call `std::env::set_var`/`remove_var` in a test without BOTH
+  `#[serial_test::serial]` and restore-on-drop of the previous value.
+- Prefer threading configuration through explicit state/config structs over
+  reading ambient env in code under test.
+- `test_support::test_state()` / `ready_test_state()` serialize their env
+  mutation + construction behind `TEST_STATE_ENV_LOCK`; every canonical path a
+  test relies on should come from the `AppState` fields those helpers set, not
+  from re-resolving env at runtime.
+
 # Testing with packages/tandem-control-panel
 
 Stop the running service before rebuilding so the old engine is not competing for CPU during the
