@@ -282,6 +282,11 @@ jobs:
       # system deps and has its own job in ci.yml. premium-governance is
       # enabled so the policy-engine test suite runs in CI for the first time.
       - name: Run workspace test suite
+        env:
+          # Isolate canonical data paths for the whole run: tests that don't
+          # set their own TANDEM_HOME would otherwise write to the runner's
+          # real data dir and collide across test processes (TAN-619).
+          TANDEM_HOME: ${{ runner.temp }}/tandem-test-home
         run: |
           cargo nextest run --workspace --exclude tandem \
             --features tandem-ai/browser,tandem-server/premium-governance \
