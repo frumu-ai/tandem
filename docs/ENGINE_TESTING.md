@@ -64,10 +64,11 @@ cargo nextest run -p tandem-server
 ```
 
 Prefer the `just test-rust` (tandem-server) / `just test-rust-workspace`
-recipes, which wrap this with a throwaway `TANDEM_HOME` (no test can touch your
-real data dir) and `RUST_MIN_STACK=16777216` — without the larger stack, debug
-builds of the deepest coder/task-runtime tests abort with a stack overflow
-(same setting engine-ci.yml uses).
+recipes, which reproduce the CI job: the `ci` nextest profile (skips the
+TAN-220 quarantine of environment-sensitive tests, no fail-fast), the same
+feature flags, a throwaway `TANDEM_HOME` (no test can touch your real data
+dir), and `RUST_MIN_STACK=16777216` — without the larger stack, debug builds
+of the deepest coder/task-runtime tests abort with a stack overflow.
 
 Why it matters: many tandem-server tests mutate process-wide environment
 variables (`TANDEM_HOME`, `TANDEM_RUNTIME_AUTH_MODE`, `CODEX_HOME`, ...), and
