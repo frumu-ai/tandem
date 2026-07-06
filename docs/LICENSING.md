@@ -10,8 +10,8 @@
 
 Tandem is an open-core project. Most SDK, runtime, client, local execution,
 and support components are available under permissive open-source licenses.
-Selected governance, plan-compilation, and enterprise components are
-source-available under `BUSL-1.1`.
+Selected governance, plan-compilation, incident-monitoring, and enterprise
+components are source-available under `BUSL-1.1`.
 
 This repository is therefore **not governed by one blanket root license**.
 The root [`LICENSE`](../LICENSE) file is a repository-level notice only. For
@@ -46,7 +46,6 @@ Consumers may choose either license (`MIT OR Apache-2.0`) for the packages below
 | `tandem-enterprise-contract`  | `crates/tandem-enterprise-contract/Cargo.toml` | `MIT OR Apache-2.0` |
 | `tandem-eval`                 | `crates/tandem-eval/Cargo.toml`                | `MIT OR Apache-2.0` |
 | `tandem-graph-core`           | `crates/tandem-graph-core/Cargo.toml`          | `MIT OR Apache-2.0` |
-| `tandem-incident-monitor`     | `crates/tandem-incident-monitor/Cargo.toml`    | `MIT OR Apache-2.0` |
 | `tandem-memory`               | `crates/tandem-memory/Cargo.toml`              | `MIT OR Apache-2.0` |
 | `tandem-meta-harness-eval`    | `crates/tandem-meta-harness-eval/Cargo.toml`   | `MIT OR Apache-2.0` |
 | `tandem-orchestrator`         | `crates/tandem-orchestrator/Cargo.toml`        | `MIT OR Apache-2.0` |
@@ -89,6 +88,7 @@ The `@frumu/tandem-desktop` app package (`apps/tandem-desktop/package.json`) is
 | `tandem-plan-compiler`     | `crates/tandem-plan-compiler/Cargo.toml`     | `BUSL-1.1` |
 | `tandem-governance-engine` | `crates/tandem-governance-engine/Cargo.toml` | `BUSL-1.1` |
 | `tandem-enterprise-server` | `crates/tandem-enterprise-server/Cargo.toml` | `BUSL-1.1` |
+| `tandem-incident-monitor`  | `crates/tandem-incident-monitor/Cargo.toml`  | `BUSL-1.1` |
 
 ## Open-core boundary
 
@@ -97,14 +97,45 @@ The following components are source-available and are not OSI-approved open sour
 - `crates/tandem-plan-compiler`
 - `crates/tandem-governance-engine`
 - `crates/tandem-enterprise-server`
+- `crates/tandem-incident-monitor`
 
 All other packages listed above are intended to be used under their stated
 permissive open-source licenses unless a package-local manifest or license file
 states otherwise.
 
-The BUSL-1.1 components protect Tandem's commercial governance layer while
-leaving the core runtime, SDKs, clients, and local development surface auditable
-and usable under permissive terms.
+The BUSL-1.1 components protect Tandem's commercial governance layer. The
+permissive licenses keep the SDKs, clients, schemas, and the rest of the
+engine source auditable and reusable under open-source terms.
+
+### Engine binaries are mixed-license
+
+Every distributed Tandem engine binary (`tandem-engine`, server artifacts, and
+the desktop app) compiles the **entire workspace, including the `BUSL-1.1`
+crates**. There is no BUSL-free binary distribution, and several permissive
+crates depend on source-available crates directly:
+
+- `tandem-server` (MIT) depends on `tandem-plan-compiler` and
+  `tandem-incident-monitor` (both `BUSL-1.1`)
+- `tandem-automation` (MIT) depends on `tandem-plan-compiler`
+- `tandem-eval` (MIT) depends on `tandem-incident-monitor`
+
+What this means in practice:
+
+- **Running a distributed binary** is governed by the BUSL Additional Use
+  Grant for the source-available components it contains: internal production
+  use is free for any organization; offering the binary (or a substantially
+  similar product) to third parties as a managed, hosted, SaaS, white-label,
+  or embedded commercial service requires a commercial license from Frumu LTD.
+- **Using an individual permissive crate as a library** stays under that
+  crate's MIT/Apache terms. If the crate depends on a `BUSL-1.1` crate, Cargo
+  pulls that dependency with its own license, and the BUSL terms apply to that
+  part of your build. Each crate's manifest declares its license accurately;
+  nothing is relicensed by inclusion.
+
+This is a deliberate choice: keeping one build of the engine (rather than
+feature-stripped permissive binaries) keeps behavior identical everywhere, and
+this section plus the per-crate license map is the disclosure that makes the
+boundary clear.
 
 These components are source-available, not open source. Their package-local `LICENSE` files define the additional use grant, hosted-service restriction, change date, and change license.
 
@@ -113,6 +144,7 @@ Current source-available license files:
 - `crates/tandem-plan-compiler/LICENSE`
 - `crates/tandem-governance-engine/LICENSE`
 - `crates/tandem-enterprise-server/LICENSE`
+- `crates/tandem-incident-monitor/LICENSE`
 
 The source-available governance layer authorizes recursive and Self-Operator behavior such as agent-authored automation creation, approval-bound capability requests, lineage enforcement, and spend/review guardrails.
 

@@ -2,7 +2,7 @@
 name = "tandem-incident-monitor"
 version = "0.6.7"
 description = "Incident Monitor domain logic for Tandem"
-license = "MIT OR Apache-2.0"
+license = "BUSL-1.1"
 repository = "https://github.com/frumu-ai/tandem"
 edition = "2021"
 

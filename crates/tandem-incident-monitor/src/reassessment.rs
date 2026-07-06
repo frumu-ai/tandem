@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Continuous reassessment scheduler data model (TAN-490).
 //!
 //! Governance reassessment is continuous: the Incident Monitor re-runs its

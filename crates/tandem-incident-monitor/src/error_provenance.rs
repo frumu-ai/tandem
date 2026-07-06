@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Deterministic error-string → workspace-source-location lookup.
 //!
 //! When a Incident Monitor incident has an error message that contains a

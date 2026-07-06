@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Short, structured summary used as the *fallback* body for Bug
 //! Monitor recurrence comments — when no LLM-produced
 //! `what_happened` is available (triage timed out, hasn't run yet,

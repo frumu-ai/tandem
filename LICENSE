@@ -14,6 +14,12 @@ Source-available components are licensed under the Business Source License
 1.1 (SPDX: BUSL-1.1) as declared in their package manifests and package-local
 LICENSE files.
 
+Distributed Tandem engine binaries compile the entire workspace, including
+the BUSL-1.1 components; use of a binary is governed by the BUSL Additional
+Use Grant for those components (internal production use is free; third-party
+commercial hosted offerings require a commercial license). See the "Engine
+binaries are mixed-license" section of docs/LICENSING.md.
+
 This root LICENSE file is a repository-level notice. It is not a blanket
 license for every file in the repository.
 
@@ -28,6 +34,7 @@ License texts:
   crates/tandem-plan-compiler/LICENSE
   crates/tandem-governance-engine/LICENSE
   crates/tandem-enterprise-server/LICENSE
+  crates/tandem-incident-monitor/LICENSE
 
 If this notice, docs/LICENSING.md, and a package-local manifest or license file
 ever disagree, the package-local manifest and package-local license file control

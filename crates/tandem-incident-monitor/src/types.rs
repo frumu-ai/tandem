@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tandem_types::ModelSpec;

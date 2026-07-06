@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Production-mirroring adversarial scenario packs (TAN-487).
 //!
 //! Scenario packs are versioned, data-driven descriptions of adversarial

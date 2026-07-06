@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 #![allow(clippy::too_many_arguments)]
 
 pub mod comment_summary;

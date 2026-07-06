@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Frumu LTD
+// Licensed under the Business Source License 1.1
+
 //! Governance maturity metric thresholds and drift configuration (TAN-488).
 //!
 //! The metric *values* are computed server-side from audit events, incidents,
