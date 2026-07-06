@@ -49,7 +49,7 @@ pub(super) async fn fork_session(
         .get_session(&id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
+    ensure_same_session_actor(&tenant_context, &session.tenant_context)?;
     let child = state
         .storage
         .fork_session(&id)
@@ -69,7 +69,7 @@ pub(super) async fn revert_session(
         .get_session(&id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
+    ensure_same_session_actor(&tenant_context, &session.tenant_context)?;
     let ok = state
         .storage
         .revert_session(&id)
@@ -88,7 +88,7 @@ pub(super) async fn unrevert_session(
         .get_session(&id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
+    ensure_same_session_actor(&tenant_context, &session.tenant_context)?;
     let ok = state
         .storage
         .unrevert_session(&id)
@@ -107,7 +107,7 @@ pub(super) async fn share_session(
         .get_session(&id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
+    ensure_same_session_actor(&tenant_context, &session.tenant_context)?;
     let share_id = state
         .storage
         .set_shared(&id, true)
@@ -126,7 +126,7 @@ pub(super) async fn unshare_session(
         .get_session(&id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
+    ensure_same_session_actor(&tenant_context, &session.tenant_context)?;
     let _ = state
         .storage
         .set_shared(&id, false)
@@ -145,7 +145,7 @@ pub(super) async fn summarize_session(
         .get_session(&id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
+    ensure_same_session_actor(&tenant_context, &session.tenant_context)?;
     let total_messages = session.messages.len();
     let mut text_parts = Vec::new();
     for message in session.messages.iter().rev().take(4) {
@@ -181,7 +181,7 @@ pub(super) async fn session_diff(
         .get_session(&id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
+    ensure_same_session_actor(&tenant_context, &session.tenant_context)?;
     let diff = state.storage.session_diff(&id).await;
     Ok(Json(json!(diff.unwrap_or_else(|| json!({})))))
 }
@@ -196,7 +196,7 @@ pub(super) async fn session_children(
         .get_session(&id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
+    ensure_same_session_actor(&tenant_context, &session.tenant_context)?;
     Ok(Json(json!(state.storage.children(&id).await)))
 }
 

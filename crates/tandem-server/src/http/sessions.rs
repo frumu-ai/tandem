@@ -4,6 +4,7 @@ use super::session_kb_grounding::{
     apply_strict_kb_grounding_after_run, policy_answer_question_tool,
     render_strict_kb_direct_answer, tool_allowlist_for_kb_grounding,
 };
+use super::sessions_actor_scope::{ensure_same_session_actor, session_visible_to_actor};
 use super::*;
 use crate::app::rate_limit::{
     channel_rate_limit_key_from_session_metadata, retry_after_duration, ChannelRateLimitKind,
@@ -543,7 +544,7 @@ pub(super) async fn list_sessions(
             }
         }
     };
-    sessions.retain(|session| tenant_matches(&tenant_context, &session.tenant_context));
+    sessions.retain(|session| session_visible_to_actor(&tenant_context, &session.tenant_context));
     let total_after_scope = sessions.len();
     sessions.sort_by(|a, b| b.time.updated.cmp(&a.time.updated));
 
@@ -615,7 +616,7 @@ pub(super) async fn attach_session(
         .get_session(&id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
+    ensure_same_session_actor(&tenant_context, &session.tenant_context)?;
     let reason = input
         .reason_tag
         .unwrap_or_else(|| "manual_attach".to_string());
@@ -651,7 +652,7 @@ pub(super) async fn grant_workspace_override(
         .get_session(&id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
+    ensure_same_session_actor(&tenant_context, &session.tenant_context)?;
     let ttl = input.ttl_seconds.unwrap_or(900).clamp(30, 86_400);
     let expires_at = state
         .engine_loop
@@ -683,7 +684,7 @@ pub(super) async fn get_session(
     let request_id = request_id_from_headers(&headers);
     let started = Instant::now();
     let result = match state.storage.get_session(&id).await {
-        Some(session) => ensure_same_tenant(&tenant_context, &session.tenant_context)
+        Some(session) => ensure_same_session_actor(&tenant_context, &session.tenant_context)
             .map(|_| Json(session_with_effective_source_kind(session).into())),
         None => Err(StatusCode::NOT_FOUND),
     };
@@ -717,7 +718,7 @@ pub(super) async fn delete_session(
         .get_session(&id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
+    ensure_same_session_actor(&tenant_context, &session.tenant_context)?;
 
     if let Some(active_run) = state.run_registry.get(&id).await {
         let cancel_requested = state.cancellations.cancel_or_defer(&id).await;
@@ -759,7 +760,7 @@ pub(super) async fn session_messages(
         .get_session(&id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
+    ensure_same_session_actor(&tenant_context, &session.tenant_context)?;
     let messages = session
         .messages
         .iter()
@@ -781,7 +782,7 @@ pub(super) async fn prompt_async(
         .get_session(&id)
         .await
         .ok_or_else(session_not_found_error)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)
+    ensure_same_session_actor(&tenant_context, &session.tenant_context)
         .map_err(|_| session_not_found_error())?;
     let session_id = id.clone();
     let correlation_id = headers
@@ -895,7 +896,7 @@ pub(super) async fn prompt_sync(
         .get_session(&id)
         .await
         .ok_or_else(session_not_found_error)?;
-    ensure_same_tenant(&request_tenant_context, &session.tenant_context)
+    ensure_same_session_actor(&request_tenant_context, &session.tenant_context)
         .map_err(|_| session_not_found_error())?;
     if session.source_kind.as_deref() == Some("channel") {
         if let Some(key) =
@@ -1760,7 +1761,7 @@ pub(super) async fn session_todos(
         .get_session(&id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
+    ensure_same_session_actor(&tenant_context, &session.tenant_context)?;
     let todos = state
         .storage
         .get_todos(&id)
@@ -1781,7 +1782,7 @@ pub(super) async fn session_status_handler(
         .await;
     let mut map = serde_json::Map::new();
     for s in sessions {
-        if !tenant_matches(&tenant_context, &s.tenant_context) {
+        if !session_visible_to_actor(&tenant_context, &s.tenant_context) {
             continue;
         }
         let mut status = json!({"type":"idle"});
@@ -1804,7 +1805,7 @@ pub(super) async fn update_session(
         .get_session(&id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
+    ensure_same_session_actor(&tenant_context, &session.tenant_context)?;
     if let Some(title) = input.title {
         session.title = title;
     }
@@ -1836,7 +1837,7 @@ pub(super) async fn post_session_message_append(
         .get_session(&id)
         .await
         .ok_or((StatusCode::NOT_FOUND, "session not found".to_string()))?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)
+    ensure_same_session_actor(&tenant_context, &session.tenant_context)
         .map_err(|status| (status, "session not found".to_string()))?;
     let wire = append_message_only(&state, &id, req)
         .await
@@ -1854,7 +1855,7 @@ pub(super) async fn get_active_run(
         .get_session(&id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
+    ensure_same_session_actor(&tenant_context, &session.tenant_context)?;
     let linked_context_run_id =
         super::context_runs::ensure_session_context_run(&state, &session).await?;
     let active = state.run_registry.get(&id).await;
@@ -1880,7 +1881,7 @@ pub(super) async fn abort_session(
         .get_session(&id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
+    ensure_same_session_actor(&tenant_context, &session.tenant_context)?;
     // GOV-B2d: aborting a session cancels in-flight work, so attribute and audit it.
     let actor =
         super::governance::resolve_governance_actor(&headers, &tenant_context, &request_principal);
@@ -1935,7 +1936,7 @@ pub(super) async fn cancel_run_by_id(
         .get_session(&id)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
-    ensure_same_tenant(&tenant_context, &session.tenant_context)?;
+    ensure_same_session_actor(&tenant_context, &session.tenant_context)?;
     let active = state.run_registry.get(&id).await;
     if let Some(active_run) = active {
         if active_run.run_id == run_id {

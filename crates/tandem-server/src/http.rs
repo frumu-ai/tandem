@@ -131,6 +131,7 @@ mod session_kb_grounding;
 mod session_run_retry;
 mod session_source;
 mod sessions;
+mod sessions_actor_scope;
 mod setup_understanding;
 mod skills_memory;
 mod slack_interactions;
