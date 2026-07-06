@@ -10,8 +10,9 @@ use tandem_enterprise_contract::governance::{
     GovernanceApprovalRequestType, GovernanceApprovalStatus, GovernanceAutomationReviewEvaluation,
     GovernanceContextSnapshot, GovernanceCreationReviewEvaluation,
     GovernanceDependencyRevocationInput, GovernanceError, GovernanceHealthCheckEvaluation,
-    GovernanceHealthCheckInput, GovernancePolicyEngine, GovernanceResourceRef,
-    GovernanceRetirementExtensionInput, GovernanceRetirementInput, GovernanceSpendEvaluation,
+    GovernanceHealthCheckInput, GovernanceLimits, GovernancePolicyEngine, GovernanceResourceRef,
+    GovernanceRetirementExtensionInput, GovernanceRetirementInput, GovernanceRunHealthObservation,
+    GovernanceRunHealthStatus, GovernanceRunHealthSummary, GovernanceSpendEvaluation,
     GovernanceSpendHardStopRecord, GovernanceSpendInput, GovernanceSpendWarningRecord,
 };
 use uuid::Uuid;
@@ -468,6 +469,101 @@ impl GovernancePolicyEngine for DefaultGovernanceEngine {
             record,
             approval_request,
         }))
+    }
+
+    fn health_check_run_window(&self, limits: &GovernanceLimits) -> usize {
+        // Always inspect at least five runs so a tiny configured window cannot
+        // hide a failing automation from drift detection.
+        limits.health_window_run_limit.max(5) as usize
+    }
+
+    fn summarize_run_health(
+        &self,
+        runs: &[GovernanceRunHealthObservation],
+    ) -> GovernanceRunHealthSummary {
+        let mut summary = GovernanceRunHealthSummary::default();
+        for run in runs {
+            let terminal = matches!(
+                run.status,
+                GovernanceRunHealthStatus::Completed
+                    | GovernanceRunHealthStatus::Blocked
+                    | GovernanceRunHealthStatus::Failed
+                    | GovernanceRunHealthStatus::Cancelled
+            );
+            if !terminal {
+                continue;
+            }
+            summary.terminal_run_count = summary.terminal_run_count.saturating_add(1);
+            if matches!(
+                run.status,
+                GovernanceRunHealthStatus::Failed | GovernanceRunHealthStatus::Blocked
+            ) {
+                summary.failure_count = summary.failure_count.saturating_add(1);
+            }
+            if run.status == GovernanceRunHealthStatus::Completed && !run.produced_node_outputs {
+                summary.empty_output_count = summary.empty_output_count.saturating_add(1);
+            }
+            if run.guardrail_stopped {
+                summary.guardrail_stop_count = summary.guardrail_stop_count.saturating_add(1);
+            }
+            summary.last_terminal_run_id = Some(run.run_id.clone());
+        }
+        summary
+    }
+
+    fn default_automation_expiry(
+        &self,
+        limits: &GovernanceLimits,
+        provenance: &AutomationProvenanceRecord,
+        now_ms: u64,
+    ) -> Option<u64> {
+        // Agent-created automations must not live forever without human
+        // review: they receive the configured default expiration window.
+        if provenance.creator.kind != GovernanceActorKind::Agent {
+            return None;
+        }
+        if limits.default_expires_after_ms == 0 {
+            return None;
+        }
+        Some(now_ms.saturating_add(limits.default_expires_after_ms))
+    }
+
+    fn acknowledge_creation_review(
+        &self,
+        existing: Option<AgentCreationReviewSummary>,
+        agent_id: &str,
+        notes: Option<String>,
+        now_ms: u64,
+    ) -> AgentCreationReviewSummary {
+        let mut summary = existing
+            .unwrap_or_else(|| AgentCreationReviewSummary::new(agent_id.to_string(), now_ms));
+        summary.created_since_review = 0;
+        summary.review_required = false;
+        summary.review_kind = None;
+        summary.review_requested_at_ms = None;
+        summary.review_request_id = None;
+        summary.last_reviewed_at_ms = Some(now_ms);
+        summary.last_review_notes = notes;
+        summary.updated_at_ms = now_ms;
+        summary
+    }
+
+    fn acknowledge_automation_review(
+        &self,
+        record: &AutomationGovernanceRecord,
+        now_ms: u64,
+    ) -> AutomationGovernanceRecord {
+        let mut record = record.clone();
+        record.review_required = false;
+        record.review_kind = None;
+        record.review_requested_at_ms = None;
+        record.review_request_id = None;
+        record.last_reviewed_at_ms = Some(now_ms);
+        record.runs_since_review = 0;
+        record.health_findings.clear();
+        record.health_last_checked_at_ms = Some(now_ms);
+        record.updated_at_ms = now_ms;
+        record
     }
 
     fn evaluate_health_check(

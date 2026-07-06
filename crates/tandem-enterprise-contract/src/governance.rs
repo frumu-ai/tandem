@@ -935,6 +935,45 @@ pub struct GovernanceAutomationReviewEvaluation {
     pub approval_request: Option<GovernanceApprovalRequest>,
 }
 
+/// Status of a recent automation run, as observed by the host when it gathers
+/// input for a governance health check. Mirrors the host's run status wire
+/// values; the policy engine decides which statuses count as terminal,
+/// failed, or drifting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GovernanceRunHealthStatus {
+    Queued,
+    Running,
+    Pausing,
+    Paused,
+    AwaitingApproval,
+    Completed,
+    Blocked,
+    Failed,
+    Cancelled,
+}
+
+/// One recent run observation supplied to `summarize_run_health`. The host
+/// only reports raw facts; classification happens in the policy engine.
+#[derive(Debug, Clone)]
+pub struct GovernanceRunHealthObservation {
+    pub run_id: String,
+    pub status: GovernanceRunHealthStatus,
+    pub produced_node_outputs: bool,
+    pub guardrail_stopped: bool,
+}
+
+/// Health counters computed by the policy engine from a run window; consumed
+/// by `evaluate_health_check` via `GovernanceHealthCheckInput`.
+#[derive(Debug, Clone, Default)]
+pub struct GovernanceRunHealthSummary {
+    pub terminal_run_count: u64,
+    pub failure_count: u64,
+    pub empty_output_count: u64,
+    pub guardrail_stop_count: u64,
+    pub last_terminal_run_id: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct GovernanceHealthCheckInput {
     pub automation_id: String,
@@ -1078,6 +1117,45 @@ pub trait GovernancePolicyEngine: Send + Sync {
         detail: Option<String>,
         now_ms: u64,
     ) -> Result<Option<GovernanceAutomationReviewEvaluation>, GovernanceError>;
+
+    /// How many recent runs the host should gather when preparing a health
+    /// check for one automation.
+    fn health_check_run_window(&self, limits: &GovernanceLimits) -> usize;
+
+    /// Classify a window of recent run observations into the health counters
+    /// consumed by `evaluate_health_check`.
+    fn summarize_run_health(
+        &self,
+        runs: &[GovernanceRunHealthObservation],
+    ) -> GovernanceRunHealthSummary;
+
+    /// Default expiration applied when a governance record without an explicit
+    /// expiry is first recorded for the given provenance. `None` leaves the
+    /// record without an expiration.
+    fn default_automation_expiry(
+        &self,
+        limits: &GovernanceLimits,
+        provenance: &AutomationProvenanceRecord,
+        now_ms: u64,
+    ) -> Option<u64>;
+
+    /// Apply a human acknowledgment to an agent's creation-review summary,
+    /// returning the summary that should be persisted.
+    fn acknowledge_creation_review(
+        &self,
+        existing: Option<AgentCreationReviewSummary>,
+        agent_id: &str,
+        notes: Option<String>,
+        now_ms: u64,
+    ) -> AgentCreationReviewSummary;
+
+    /// Apply a human acknowledgment to an automation's lifecycle review,
+    /// returning the record that should be persisted.
+    fn acknowledge_automation_review(
+        &self,
+        record: &AutomationGovernanceRecord,
+        now_ms: u64,
+    ) -> AutomationGovernanceRecord;
 
     fn evaluate_health_check(
         &self,

@@ -223,6 +223,79 @@ impl GovernancePolicyEngine for UnavailableGovernanceEngine {
         ))
     }
 
+    fn health_check_run_window(&self, _limits: &GovernanceLimits) -> usize {
+        // The lifecycle health sweep is a premium feature; the host
+        // short-circuits before gathering runs, so no window is needed.
+        0
+    }
+
+    fn summarize_run_health(
+        &self,
+        _runs: &[GovernanceRunHealthObservation],
+    ) -> GovernanceRunHealthSummary {
+        GovernanceRunHealthSummary::default()
+    }
+
+    fn default_automation_expiry(
+        &self,
+        limits: &GovernanceLimits,
+        provenance: &AutomationProvenanceRecord,
+        now_ms: u64,
+    ) -> Option<u64> {
+        // Preserve the historical open behavior: agent-created records pick up
+        // the configured default expiration (agent creation is rejected in
+        // this build, so this only matters for pre-existing premium data).
+        if provenance.creator.kind != GovernanceActorKind::Agent {
+            return None;
+        }
+        if limits.default_expires_after_ms == 0 {
+            return None;
+        }
+        Some(now_ms.saturating_add(limits.default_expires_after_ms))
+    }
+
+    fn acknowledge_creation_review(
+        &self,
+        existing: Option<AgentCreationReviewSummary>,
+        agent_id: &str,
+        notes: Option<String>,
+        now_ms: u64,
+    ) -> AgentCreationReviewSummary {
+        // Preserve the historical open behavior: acknowledgment clears the
+        // review state (the HTTP surface gates this behind premium anyway).
+        let mut summary = existing
+            .unwrap_or_else(|| AgentCreationReviewSummary::new(agent_id.to_string(), now_ms));
+        summary.created_since_review = 0;
+        summary.review_required = false;
+        summary.review_kind = None;
+        summary.review_requested_at_ms = None;
+        summary.review_request_id = None;
+        summary.last_reviewed_at_ms = Some(now_ms);
+        summary.last_review_notes = notes;
+        summary.updated_at_ms = now_ms;
+        summary
+    }
+
+    fn acknowledge_automation_review(
+        &self,
+        record: &AutomationGovernanceRecord,
+        now_ms: u64,
+    ) -> AutomationGovernanceRecord {
+        // Preserve the historical open behavior: acknowledgment clears the
+        // review state (the HTTP surface gates this behind premium anyway).
+        let mut record = record.clone();
+        record.review_required = false;
+        record.review_kind = None;
+        record.review_requested_at_ms = None;
+        record.review_request_id = None;
+        record.last_reviewed_at_ms = Some(now_ms);
+        record.runs_since_review = 0;
+        record.health_findings.clear();
+        record.health_last_checked_at_ms = Some(now_ms);
+        record.updated_at_ms = now_ms;
+        record
+    }
+
     fn evaluate_health_check(
         &self,
         _snapshot: &GovernanceContextSnapshot,
@@ -277,6 +350,59 @@ fn declared_capabilities_for_automation(
     AutomationDeclaredCapabilities::from_metadata(automation.metadata.as_ref())
 }
 
+/// One-to-one translation from the host run status to the governance wire
+/// status. Classification (terminal/failed/drift) happens in the policy
+/// engine, not here.
+fn governance_run_health_status(status: &crate::AutomationRunStatus) -> GovernanceRunHealthStatus {
+    match status {
+        crate::AutomationRunStatus::Queued => GovernanceRunHealthStatus::Queued,
+        crate::AutomationRunStatus::Running => GovernanceRunHealthStatus::Running,
+        crate::AutomationRunStatus::Pausing => GovernanceRunHealthStatus::Pausing,
+        crate::AutomationRunStatus::Paused => GovernanceRunHealthStatus::Paused,
+        crate::AutomationRunStatus::AwaitingApproval => GovernanceRunHealthStatus::AwaitingApproval,
+        crate::AutomationRunStatus::Completed => GovernanceRunHealthStatus::Completed,
+        crate::AutomationRunStatus::Blocked => GovernanceRunHealthStatus::Blocked,
+        crate::AutomationRunStatus::Failed => GovernanceRunHealthStatus::Failed,
+        crate::AutomationRunStatus::Cancelled => GovernanceRunHealthStatus::Cancelled,
+    }
+}
+
+/// Fresh governance record with every lifecycle field at its default.
+fn new_governance_record(
+    automation_id: String,
+    provenance: AutomationProvenanceRecord,
+    declared_capabilities: AutomationDeclaredCapabilities,
+    created_at_ms: u64,
+    updated_at_ms: u64,
+) -> AutomationGovernanceRecord {
+    AutomationGovernanceRecord {
+        automation_id,
+        provenance,
+        declared_capabilities,
+        modify_grants: Vec::new(),
+        capability_grants: Vec::new(),
+        created_at_ms,
+        updated_at_ms,
+        deleted_at_ms: None,
+        delete_retention_until_ms: None,
+        published_externally: false,
+        creation_paused: false,
+        review_required: false,
+        review_kind: None,
+        review_requested_at_ms: None,
+        review_request_id: None,
+        last_reviewed_at_ms: None,
+        runs_since_review: 0,
+        expires_at_ms: None,
+        expired_at_ms: None,
+        retired_at_ms: None,
+        retire_reason: None,
+        paused_for_lifecycle: false,
+        health_last_checked_at_ms: None,
+        health_findings: Vec::new(),
+    }
+}
+
 impl AppState {
     pub fn premium_governance_enabled(&self) -> bool {
         self.governance_engine.premium_enabled()
@@ -324,35 +450,16 @@ impl AppState {
                 }
                 guard.records.insert(
                     automation.automation_id.clone(),
-                    AutomationGovernanceRecord {
-                        automation_id: automation.automation_id.clone(),
-                        provenance: default_human_provenance(
+                    new_governance_record(
+                        automation.automation_id.clone(),
+                        default_human_provenance(
                             Some(automation.creator_id.clone()),
                             "migration_or_legacy_default",
                         ),
-                        declared_capabilities: declared_capabilities_for_automation(&automation),
-                        modify_grants: Vec::new(),
-                        capability_grants: Vec::new(),
-                        created_at_ms: automation.created_at_ms.max(now),
-                        updated_at_ms: now,
-                        deleted_at_ms: None,
-                        delete_retention_until_ms: None,
-                        published_externally: false,
-                        creation_paused: false,
-                        review_required: false,
-                        review_kind: None,
-                        review_requested_at_ms: None,
-                        review_request_id: None,
-                        last_reviewed_at_ms: None,
-                        runs_since_review: 0,
-                        expires_at_ms: None,
-                        expired_at_ms: None,
-                        retired_at_ms: None,
-                        retire_reason: None,
-                        paused_for_lifecycle: false,
-                        health_last_checked_at_ms: None,
-                        health_findings: Vec::new(),
-                    },
+                        declared_capabilities_for_automation(&automation),
+                        automation.created_at_ms.max(now),
+                        now,
+                    ),
                 );
                 inserted += 1;
             }
@@ -386,35 +493,13 @@ impl AppState {
         {
             return record;
         }
-        let record = AutomationGovernanceRecord {
-            automation_id: automation.automation_id.clone(),
-            provenance: default_human_provenance(
-                Some(automation.creator_id.clone()),
-                "legacy_default",
-            ),
-            declared_capabilities: declared_capabilities_for_automation(automation),
-            modify_grants: Vec::new(),
-            capability_grants: Vec::new(),
-            created_at_ms: automation.created_at_ms,
-            updated_at_ms: now_ms(),
-            deleted_at_ms: None,
-            delete_retention_until_ms: None,
-            published_externally: false,
-            creation_paused: false,
-            review_required: false,
-            review_kind: None,
-            review_requested_at_ms: None,
-            review_request_id: None,
-            last_reviewed_at_ms: None,
-            runs_since_review: 0,
-            expires_at_ms: None,
-            expired_at_ms: None,
-            retired_at_ms: None,
-            retire_reason: None,
-            paused_for_lifecycle: false,
-            health_last_checked_at_ms: None,
-            health_findings: Vec::new(),
-        };
+        let record = new_governance_record(
+            automation.automation_id.clone(),
+            default_human_provenance(Some(automation.creator_id.clone()), "legacy_default"),
+            declared_capabilities_for_automation(automation),
+            automation.created_at_ms,
+            now_ms(),
+        );
         let _ = self.upsert_automation_governance(record.clone()).await;
         record
     }
@@ -469,45 +554,23 @@ impl AppState {
         let mut record = self
             .get_automation_governance(automation_id)
             .await
-            .unwrap_or_else(|| AutomationGovernanceRecord {
-                automation_id: automation_id.to_string(),
-                provenance: provenance.clone(),
-                declared_capabilities: AutomationDeclaredCapabilities::default(),
-                modify_grants: Vec::new(),
-                capability_grants: Vec::new(),
-                created_at_ms: now_ms(),
-                updated_at_ms: now_ms(),
-                deleted_at_ms: None,
-                delete_retention_until_ms: None,
-                published_externally: false,
-                creation_paused: false,
-                review_required: false,
-                review_kind: None,
-                review_requested_at_ms: None,
-                review_request_id: None,
-                last_reviewed_at_ms: None,
-                runs_since_review: 0,
-                expires_at_ms: None,
-                expired_at_ms: None,
-                retired_at_ms: None,
-                retire_reason: None,
-                paused_for_lifecycle: false,
-                health_last_checked_at_ms: None,
-                health_findings: Vec::new(),
+            .unwrap_or_else(|| {
+                new_governance_record(
+                    automation_id.to_string(),
+                    provenance.clone(),
+                    AutomationDeclaredCapabilities::default(),
+                    now_ms(),
+                    now_ms(),
+                )
             });
         record.provenance = provenance;
-        if record.expires_at_ms.is_none()
-            && record.provenance.creator.kind == GovernanceActorKind::Agent
-        {
-            let default_expires_after_ms = self
-                .automation_governance
-                .read()
-                .await
-                .limits
-                .default_expires_after_ms;
-            if default_expires_after_ms > 0 {
-                record.expires_at_ms = Some(now_ms().saturating_add(default_expires_after_ms));
-            }
+        if record.expires_at_ms.is_none() {
+            let limits = self.automation_governance.read().await.limits.clone();
+            record.expires_at_ms = self.governance_engine.default_automation_expiry(
+                &limits,
+                &record.provenance,
+                now_ms(),
+            );
         }
         let stored = self.upsert_automation_governance(record).await?;
         if let Some(agent_id) = stored
@@ -533,33 +596,19 @@ impl AppState {
         let mut record = self
             .get_automation_governance(&automation.automation_id)
             .await
-            .unwrap_or_else(|| AutomationGovernanceRecord {
-                automation_id: automation.automation_id.clone(),
-                provenance: provenance.clone().unwrap_or_else(|| {
-                    default_human_provenance(Some(automation.creator_id.clone()), "sync_default")
-                }),
-                declared_capabilities: declared_capabilities_for_automation(automation),
-                modify_grants: Vec::new(),
-                capability_grants: Vec::new(),
-                created_at_ms: automation.created_at_ms,
-                updated_at_ms: now,
-                deleted_at_ms: None,
-                delete_retention_until_ms: None,
-                published_externally: false,
-                creation_paused: false,
-                review_required: false,
-                review_kind: None,
-                review_requested_at_ms: None,
-                review_request_id: None,
-                last_reviewed_at_ms: None,
-                runs_since_review: 0,
-                expires_at_ms: None,
-                expired_at_ms: None,
-                retired_at_ms: None,
-                retire_reason: None,
-                paused_for_lifecycle: false,
-                health_last_checked_at_ms: None,
-                health_findings: Vec::new(),
+            .unwrap_or_else(|| {
+                new_governance_record(
+                    automation.automation_id.clone(),
+                    provenance.clone().unwrap_or_else(|| {
+                        default_human_provenance(
+                            Some(automation.creator_id.clone()),
+                            "sync_default",
+                        )
+                    }),
+                    declared_capabilities_for_automation(automation),
+                    automation.created_at_ms,
+                    now,
+                )
             });
         if let Some(provenance) = provenance {
             record.provenance = provenance;
@@ -693,44 +742,20 @@ impl AppState {
         automation: &crate::AutomationV2Spec,
         provenance: AutomationProvenanceRecord,
     ) -> anyhow::Result<AutomationGovernanceRecord> {
-        let mut record = AutomationGovernanceRecord {
-            automation_id: automation.automation_id.clone(),
+        let mut record = new_governance_record(
+            automation.automation_id.clone(),
             provenance,
-            declared_capabilities: declared_capabilities_for_automation(automation),
-            modify_grants: Vec::new(),
-            capability_grants: Vec::new(),
-            created_at_ms: automation.created_at_ms,
-            updated_at_ms: now_ms(),
-            deleted_at_ms: None,
-            delete_retention_until_ms: None,
-            published_externally: false,
-            creation_paused: false,
-            review_required: false,
-            review_kind: None,
-            review_requested_at_ms: None,
-            review_request_id: None,
-            last_reviewed_at_ms: None,
-            runs_since_review: 0,
-            expires_at_ms: None,
-            expired_at_ms: None,
-            retired_at_ms: None,
-            retire_reason: None,
-            paused_for_lifecycle: false,
-            health_last_checked_at_ms: None,
-            health_findings: Vec::new(),
-        };
-        if record.expires_at_ms.is_none()
-            && record.provenance.creator.kind == GovernanceActorKind::Agent
-        {
-            let default_expires_after_ms = self
-                .automation_governance
-                .read()
-                .await
-                .limits
-                .default_expires_after_ms;
-            if default_expires_after_ms > 0 {
-                record.expires_at_ms = Some(now_ms().saturating_add(default_expires_after_ms));
-            }
+            declared_capabilities_for_automation(automation),
+            automation.created_at_ms,
+            now_ms(),
+        );
+        if record.expires_at_ms.is_none() {
+            let limits = self.automation_governance.read().await.limits.clone();
+            record.expires_at_ms = self.governance_engine.default_automation_expiry(
+                &limits,
+                &record.provenance,
+                now_ms(),
+            );
         }
         let stored = self.upsert_automation_governance(record).await?;
         if let Some(agent_id) = stored
@@ -1059,34 +1084,17 @@ impl AppState {
                 let record = governance
                     .records
                     .entry(automation_id.to_string())
-                    .or_insert_with(|| AutomationGovernanceRecord {
-                        automation_id: automation_id.to_string(),
-                        provenance: default_human_provenance(
-                            Some(automation.creator_id.clone()),
-                            "delete_default",
-                        ),
-                        declared_capabilities: declared_capabilities_for_automation(&automation),
-                        modify_grants: Vec::new(),
-                        capability_grants: Vec::new(),
-                        created_at_ms: automation.created_at_ms,
-                        updated_at_ms: now,
-                        deleted_at_ms: None,
-                        delete_retention_until_ms: None,
-                        published_externally: false,
-                        creation_paused: false,
-                        review_required: false,
-                        review_kind: None,
-                        review_requested_at_ms: None,
-                        review_request_id: None,
-                        last_reviewed_at_ms: None,
-                        runs_since_review: 0,
-                        expires_at_ms: None,
-                        expired_at_ms: None,
-                        retired_at_ms: None,
-                        retire_reason: None,
-                        paused_for_lifecycle: false,
-                        health_last_checked_at_ms: None,
-                        health_findings: Vec::new(),
+                    .or_insert_with(|| {
+                        new_governance_record(
+                            automation_id.to_string(),
+                            default_human_provenance(
+                                Some(automation.creator_id.clone()),
+                                "delete_default",
+                            ),
+                            declared_capabilities_for_automation(&automation),
+                            automation.created_at_ms,
+                            now,
+                        )
                     });
                 record.deleted_at_ms = Some(now);
                 record.delete_retention_until_ms =
@@ -1274,18 +1282,16 @@ impl AppState {
         let now = now_ms();
         {
             let mut guard = self.automation_governance.write().await;
-            let summary = guard
+            let existing = guard.agent_creation_reviews.get(agent_id).cloned();
+            let summary = self.governance_engine.acknowledge_creation_review(
+                existing,
+                agent_id,
+                notes.clone(),
+                now,
+            );
+            guard
                 .agent_creation_reviews
-                .entry(agent_id.to_string())
-                .or_insert_with(|| AgentCreationReviewSummary::new(agent_id.to_string(), now));
-            summary.created_since_review = 0;
-            summary.review_required = false;
-            summary.review_kind = None;
-            summary.review_requested_at_ms = None;
-            summary.review_request_id = None;
-            summary.last_reviewed_at_ms = Some(now);
-            summary.last_review_notes = notes.clone();
-            summary.updated_at_ms = now;
+                .insert(agent_id.to_string(), summary);
             guard.updated_at_ms = now;
         }
         self.persist_automation_governance().await?;
@@ -1316,20 +1322,16 @@ impl AppState {
         let stored = {
             let mut guard = self.automation_governance.write().await;
             let stored = {
-                let Some(record) = guard.records.get_mut(automation_id) else {
+                let Some(record) = guard.records.get(automation_id) else {
                     return Ok(None);
                 };
-                let now = now_ms();
-                record.review_required = false;
-                record.review_kind = None;
-                record.review_requested_at_ms = None;
-                record.review_request_id = None;
-                record.last_reviewed_at_ms = Some(now);
-                record.runs_since_review = 0;
-                record.health_findings.clear();
-                record.health_last_checked_at_ms = Some(now);
-                record.updated_at_ms = now;
-                record.clone()
+                let updated = self
+                    .governance_engine
+                    .acknowledge_automation_review(record, now_ms());
+                guard
+                    .records
+                    .insert(automation_id.to_string(), updated.clone());
+                updated
             };
             guard.updated_at_ms = now_ms();
             stored
@@ -1573,45 +1575,22 @@ impl AppState {
         let automations = self.list_automations_v2().await;
         let mut finding_count = 0usize;
 
+        let run_window = self.governance_engine.health_check_run_window(&limits);
         for automation in automations {
             let runs = self
-                .list_automation_v2_runs(
-                    Some(&automation.automation_id),
-                    limits.health_window_run_limit.max(5) as usize,
-                )
+                .list_automation_v2_runs(Some(&automation.automation_id), run_window)
                 .await;
-            let terminal_runs = runs
+            let observations = runs
                 .iter()
-                .filter(|run| {
-                    matches!(
-                        run.status,
-                        crate::AutomationRunStatus::Completed
-                            | crate::AutomationRunStatus::Blocked
-                            | crate::AutomationRunStatus::Failed
-                            | crate::AutomationRunStatus::Cancelled
-                    )
+                .map(|run| GovernanceRunHealthObservation {
+                    run_id: run.run_id.clone(),
+                    status: governance_run_health_status(&run.status),
+                    produced_node_outputs: !run.checkpoint.node_outputs.is_empty(),
+                    guardrail_stopped: run.stop_kind
+                        == Some(crate::AutomationStopKind::GuardrailStopped),
                 })
                 .collect::<Vec<_>>();
-            let failure_count = terminal_runs
-                .iter()
-                .filter(|run| {
-                    matches!(
-                        run.status,
-                        crate::AutomationRunStatus::Failed | crate::AutomationRunStatus::Blocked
-                    )
-                })
-                .count();
-            let empty_output_count = terminal_runs
-                .iter()
-                .filter(|run| {
-                    run.status == crate::AutomationRunStatus::Completed
-                        && run.checkpoint.node_outputs.is_empty()
-                })
-                .count();
-            let guardrail_stop_count = terminal_runs
-                .iter()
-                .filter(|run| run.stop_kind == Some(crate::AutomationStopKind::GuardrailStopped))
-                .count();
+            let run_health = self.governance_engine.summarize_run_health(&observations);
             let evaluation = {
                 let guard = self.automation_governance.read().await;
                 let snapshot = self.governance_snapshot(&guard);
@@ -1628,13 +1607,11 @@ impl AppState {
                             declared_capabilities: declared_capabilities_for_automation(
                                 &automation,
                             ),
-                            terminal_run_count: terminal_runs.len() as u64,
-                            failure_count: failure_count as u64,
-                            empty_output_count: empty_output_count as u64,
-                            guardrail_stop_count: guardrail_stop_count as u64,
-                            last_terminal_run_id: terminal_runs
-                                .last()
-                                .map(|run| run.run_id.clone()),
+                            terminal_run_count: run_health.terminal_run_count,
+                            failure_count: run_health.failure_count,
+                            empty_output_count: run_health.empty_output_count,
+                            guardrail_stop_count: run_health.guardrail_stop_count,
+                            last_terminal_run_id: run_health.last_terminal_run_id.clone(),
                         },
                         now,
                     )
