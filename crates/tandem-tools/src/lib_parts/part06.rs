@@ -842,7 +842,7 @@ mod tests {
         assert!(!cleaned.contains("Enable JS"));
         assert!(cleaned.contains("Hello World"));
 
-        let markdown = html2md::parse_html(&cleaned);
+        let markdown = html_to_markdown(&cleaned).expect("html to markdown conversion");
         let text = markdown_to_text(&markdown);
 
         // Raw length includes all the noise
@@ -857,6 +857,21 @@ mod tests {
         );
         assert!(text.contains("Hello World"));
         assert!(text.contains("link"));
+    }
+
+    #[test]
+    fn markdown_conversion_preserves_iframe_embed_urls() {
+        // Regression guard (TAN-628): htmd drops <iframe> src by default; the
+        // custom handler must keep the embed URL so webfetch/browser extraction
+        // of embed-only pages still returns the media link, not empty content.
+        let html = r#"<html><body>
+            <iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ" width="560"></iframe>
+        </body></html>"#;
+        let markdown = html_to_markdown(html).expect("html to markdown conversion");
+        assert!(
+            markdown.contains("https://www.youtube.com/embed/dQw4w9WgXcQ"),
+            "iframe src should survive conversion, got: {markdown:?}"
+        );
     }
 
     #[test]

@@ -14,7 +14,6 @@ use anyhow::{anyhow, Context};
 use base64::Engine;
 use headless_chrome::browser::tab::Tab;
 use headless_chrome::{Browser, LaunchOptionsBuilder};
-use html2md::parse_html;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -943,6 +942,31 @@ fn evaluate_string(tab: &Arc<Tab>, script: &str) -> anyhow::Result<String> {
         .ok_or_else(|| anyhow!("script did not return a string"))
 }
 
+/// Convert HTML to Markdown, preserving `<iframe src>` embed URLs.
+///
+/// htmd treats `<iframe>` as a generic block element and would drop the `src`
+/// entirely, losing the media URL for embed-only pages. The previous html2md
+/// converter emitted a link for known embed providers; this custom handler
+/// restores that behavior for any iframe carrying a `src`.
+fn html_to_markdown(html: &str) -> Result<String, std::io::Error> {
+    use htmd::{element_handler::Handlers, Element, HtmlToMarkdown};
+    HtmlToMarkdown::builder()
+        .add_handler(
+            vec!["iframe"],
+            |_handlers: &dyn Handlers, element: Element| {
+                let src = element
+                    .attrs
+                    .iter()
+                    .find(|attr| &attr.name.local == "src")
+                    .map(|attr| attr.value.trim().to_string())
+                    .filter(|src| !src.is_empty())?;
+                Some(format!("[Embedded content]({src})").into())
+            },
+        )
+        .build()
+        .convert(html)
+}
+
 fn evaluate_json(tab: &Arc<Tab>, script: &str) -> anyhow::Result<Value> {
     tab.evaluate(script, false)?
         .value
@@ -1507,7 +1531,10 @@ fn extract_session(
                     &session.tab,
                     "document.documentElement ? document.documentElement.outerHTML || '' : ''",
                 )?;
-                ("markdown".to_string(), parse_html(&html))
+                (
+                    "markdown".to_string(),
+                    html_to_markdown(&html).unwrap_or(html),
+                )
             }
             "visible_text" | "text" => (
                 "visible_text".to_string(),
