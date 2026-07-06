@@ -7,13 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.6.8] - Unreleased
 
+### Added
+
+- Added native Linear webhook verification with the `linear-signature`
+  HMAC-SHA256 scheme, signed timestamp replay checks, provider-owned signing
+  secret import/re-import, and a TypeScript SDK helper for importing webhook
+  provider secrets.
+- Added a dedicated Control Panel Webhooks hub and Linear webhook setup UX,
+  plus Linear webhook API/SDK documentation and rejection-evidence coverage.
+- Added hosted runtime actor-scope checks for session command routes, including
+  `/session/{id}/command`, while preserving local implicit-session behavior for
+  desktop/local flows.
+- Added a cross-user memory isolation eval dataset, baseline, CI regression
+  gate, and HTTP/app-state matrix coverage for tenant, subject, DM/group, and
+  org-unit memory boundaries.
+- Added a license-map CI guard so `docs/LICENSING.md` must stay aligned with
+  Rust workspace members, published `packages/*` npm packages, and Python
+  package metadata.
+- Added `BUSL-1.1` licensing for `tandem-enterprise-server` and documented
+  that the permissive `@frumu/tandem-enterprise` installer downloads enterprise
+  binaries containing BUSL-licensed components.
+
 ### Changed
 
+- Rewrote the BUSL Additional Use Grant for Tandem BUSL components so internal
+  production use is allowed regardless of organization revenue, while offering
+  the licensed work, or a substantially similar product, to third parties as a
+  managed, hosted, SaaS, white-label, embedded, or other commercial offering
+  requires a commercial license.
+- Adopted a rolling BUSL Change Date policy: each released BUSL version should
+  stamp its Change Date to release date + four years, converting to the existing
+  Change License after that window.
 - Replaced the generic OpenAI Codex `gpt-5.6` catalog entry with the documented
   `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` preview model ids.
   Persisted bare `gpt-5.6` defaults and desktop selected-model dispatches now
   heal to the compiled `gpt-5.5` default because the preview family is exposed
   as explicit Sol/Terra/Luna variants.
+- Replaced the production-linked `html2md` dependency with Apache-2.0 `htmd` in
+  browser and tool HTML-to-markdown conversion paths.
+- Tenant context-tree memory endpoints and storage now scope nodes and layers
+  by tenant, allowing the same context URI to exist independently in different
+  tenants without exposing a cross-tenant existence oracle.
+- Ordinary tenant-local memory reads now enforce org-unit ownership, and vector
+  memory chunks now carry a per-user subject dimension for archived chat
+  exchanges and governed prompt/search/list paths.
+- `memory_put` and memory promotion now fail closed for unbacked `team` and
+  `curated` tiers instead of accepting self-declared tier labels with no
+  storage semantics.
+- Updated tandem-server local full-suite test recipes and documentation to
+  match CI's nextest profile, feature flags, stack size, and isolated
+  `TANDEM_HOME` behavior.
+
+### Fixed
+
+- Fixed tandem-server full-suite flakes under parallel execution by serializing
+  environment-mutating state construction and cleaning up process-wide test
+  overrides.
+- Fixed iframe-only pages regressing to empty markdown after the `htmd` switch
+  by preserving iframe `src` URLs as markdown links in browser extraction and
+  webfetch conversion.
+- Fixed Linear trigger provider patches so provider-owned webhook providers
+  reconcile to their pinned signature scheme and provider-secret lifecycle.
+- Fixed rejected Linear webhook evidence so rejected events are retained as
+  rejection evidence without being admitted into the runnable inbox.
+
+### Security
+
+- Linear webhook triggers now fail closed until the provider-owned signing
+  secret is imported, reject stale signed payloads, dedupe by Linear delivery
+  id, and refuse Tandem-generated secret rotation for provider-owned triggers.
+- Hardened hosted session isolation and assertion verification so hosted mode
+  fails closed when actor context is missing and session commands must match
+  the actor scope that owns the session.
+- Memory context-tree, org-unit, subject, and cross-user isolation paths now
+  fail closed when tenant, membership, or subject scope cannot be proven.
+- Removed the shipped GPL-3.0 `html2md` dependency from Tandem browser/tooling
+  binaries and documented the remaining `auto_generate_cdp` GPL exception as
+  build-only code that is not linked into distributed artifacts.
 
 ## [0.6.7] - 2026-07-05
 

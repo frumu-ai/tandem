@@ -2,6 +2,115 @@
 
 This is the canonical release-notes file used by release tooling.
 
+## v0.6.8 (Unreleased)
+
+Tandem 0.6.8 is a hosted-v1 readiness follow-up. It hardens hosted session
+isolation, completes the native Linear webhook path and Webhooks hub, expands
+memory isolation across tenant/org/user boundaries, stabilizes the
+tandem-server test path used by CI and local full-suite runs, settles the
+0.6.8 BUSL/open-core licensing posture, removes a production-linked GPL
+dependency, and updates the OpenAI Codex catalog to the documented GPT-5.6
+preview model ids.
+
+### Linear Webhooks And Webhooks Hub
+
+Automation V2 now supports direct Linear-to-Tandem webhook delivery without a
+bridge or unsigned dev mode. Linear triggers use the native
+`linear-signature` HMAC-SHA256 scheme over the exact raw request body, validate
+the signed `webhookTimestamp` against the replay window, and fail closed with
+`provider_secret_not_imported` until an operator imports the Linear-owned
+signing secret.
+
+Provider-owned secret lifecycle is now explicit: admins can import or re-import
+the Linear signing secret through the management API, re-import rotates the
+tenant-scoped material and retires the old version, and Tandem-generated
+secret rotation is refused for provider-owned triggers. Trigger responses
+surface the verification lifecycle from `awaiting_secret` through active
+verified delivery, and the TypeScript client exposes
+`importWebhookProviderSecret`.
+
+The Control Panel now has a dedicated Webhooks hub with Linear setup UX. The
+guide and internal docs cover Linear verification, secret import, rejection
+reasons, SDK/API usage, and troubleshooting. Rejected Linear events now produce
+rejection evidence without entering the runnable inbox, while verified Linear
+deliveries dedupe by `linear-delivery` id.
+
+### Memory Isolation And Eval Gate
+
+Memory context-tree endpoints and storage are now tenant-scoped. Context URI
+resolution, tree traversal, layer generation, and layer writes all use the
+request tenant; foreign-tenant nodes behave like missing nodes, so callers do
+not get a cross-tenant existence oracle. The store schema now allows different
+tenants to own the same context URI independently.
+
+Ordinary tenant-local memory reads now enforce org-unit ownership. Records can
+carry an `owner_org_unit_id`, read filters receive the caller's verified
+org-unit memberships, and `memory_put` refuses to stamp ownership for an org
+unit the writer does not belong to. Source-bound and knowledge-scoped records
+continue to flow through the enterprise grant model.
+
+Vector memory chunks now include a per-user subject dimension, and archived
+chat exchanges are stamped with the session actor so one user's historical
+conversation chunks do not become a tenant-wide recall pool. Prompt injection,
+memory list, and memory search paths thread the resolved caller subject through
+the governed filter, while imports, consolidation, and model-tool writes remain
+shared by design. Unbacked `team` and `curated` write/promote paths now fail
+closed instead of accepting tier labels with no storage backing.
+
+A new cross-user memory isolation eval dataset, baseline, CI regression gate,
+and HTTP/app-state test matrix cover tenant, subject, DM/group, distillation,
+forged project, and org-unit boundaries. This gives the memory scoping work a
+standing regression signal instead of relying only on per-feature unit tests.
+
+### Hosted Runtime Isolation
+
+Hosted sessions now enforce actor scope on command routes, including
+`/session/{id}/command`, and hosted mode fails closed when actor context is
+missing. Local desktop and development flows keep compatibility for implicit
+sessions, but hosted deployments now have explicit coverage for cross-actor
+session access attempts and assertion-verification edge cases.
+
+### Licensing And Compliance
+
+The BUSL Additional Use Grant for Tandem BUSL components now allows internal
+production use for any organization regardless of revenue. A commercial license
+is required to provide the licensed work, or a substantially similar product,
+to third parties as a managed, hosted, SaaS, white-label, embedded, or other
+commercial offering. The BUSL Change Date policy is now rolling: each release
+stamps BUSL components to release date + four years, after which that version
+converts to the existing Change License.
+
+`tandem-enterprise-server` is now licensed under `BUSL-1.1`, matching the
+commercial enterprise layer already used by the governance and plan-compiler
+crates. The permissive `@frumu/tandem-enterprise` installer stays permissive,
+but its README now discloses that downloaded enterprise binaries contain
+BUSL-licensed components. The repository license map now covers all Rust
+workspace members, published npm packages, and Python package metadata, with a
+CI guard that fails when the map and manifests drift.
+
+The browser/tooling markdown conversion path no longer ships the GPL-3.0
+`html2md` dependency. It now uses Apache-2.0 `htmd`, preserves iframe embed
+URLs as markdown links, and keeps the remaining `auto_generate_cdp` GPL
+exception documented as build-only code that is not linked into distributed
+artifacts.
+
+### Provider Catalog And Desktop Healing
+
+The OpenAI Codex provider catalog now exposes the documented GPT-5.6 preview
+models as explicit `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` entries
+instead of the generic `gpt-5.6` placeholder. Persisted bare `gpt-5.6`
+defaults and stale desktop selected-model dispatches now heal to the compiled
+`gpt-5.5` default, avoiding startup or dispatch failures from a model id that
+is no longer valid.
+
+### Test And CI Stability
+
+The tandem-server suite now serializes environment-mutating state construction,
+cleans up process-wide test overrides, and documents local nextest recipes that
+match CI's profile, feature flags, stack size, and isolated `TANDEM_HOME`.
+This addresses the class of tests that passed in isolation but failed under
+full parallel execution.
+
 ## v0.6.7 (2026-07-05)
 
 Tandem 0.6.7 completes the secure data-boundary foundation and ships a focused
