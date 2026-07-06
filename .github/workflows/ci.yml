@@ -353,6 +353,9 @@ jobs:
       - name: Validate docs parity
         run: node scripts/verify-docs-parity.mjs
 
+      - name: Verify license map
+        run: node scripts/verify-license-map.mjs
+
       - name: Build docs
         working-directory: guide
         env:

@@ -35,15 +35,24 @@ Consumers may choose either license (`MIT OR Apache-2.0`) for the packages below
 | Package                       | Path                                           | License             |
 | ----------------------------- | ---------------------------------------------- | ------------------- |
 | `tandem-ai` / `tandem-engine` | `engine/Cargo.toml`                            | `MIT OR Apache-2.0` |
+| `tandem` (desktop)            | `apps/tandem-desktop/src-tauri/Cargo.toml`     | `MIT OR Apache-2.0` |
 | `tandem-agent-teams`          | `crates/tandem-agent-teams/Cargo.toml`         | `MIT OR Apache-2.0` |
+| `tandem-automation`           | `crates/tandem-automation/Cargo.toml`          | `MIT OR Apache-2.0` |
 | `tandem-browser`              | `crates/tandem-browser/Cargo.toml`             | `MIT OR Apache-2.0` |
 | `tandem-channels`             | `crates/tandem-channels/Cargo.toml`            | `MIT OR Apache-2.0` |
 | `tandem-core`                 | `crates/tandem-core/Cargo.toml`                | `MIT OR Apache-2.0` |
+| `tandem-data-boundary`        | `crates/tandem-data-boundary/Cargo.toml`       | `MIT OR Apache-2.0` |
 | `tandem-document`             | `crates/tandem-document/Cargo.toml`            | `MIT OR Apache-2.0` |
 | `tandem-enterprise-contract`  | `crates/tandem-enterprise-contract/Cargo.toml` | `MIT OR Apache-2.0` |
+| `tandem-enterprise-server`    | `crates/tandem-enterprise-server/Cargo.toml`   | `MIT OR Apache-2.0` |
+| `tandem-eval`                 | `crates/tandem-eval/Cargo.toml`                | `MIT OR Apache-2.0` |
+| `tandem-graph-core`           | `crates/tandem-graph-core/Cargo.toml`          | `MIT OR Apache-2.0` |
+| `tandem-incident-monitor`     | `crates/tandem-incident-monitor/Cargo.toml`    | `MIT OR Apache-2.0` |
 | `tandem-memory`               | `crates/tandem-memory/Cargo.toml`              | `MIT OR Apache-2.0` |
+| `tandem-meta-harness-eval`    | `crates/tandem-meta-harness-eval/Cargo.toml`   | `MIT OR Apache-2.0` |
 | `tandem-orchestrator`         | `crates/tandem-orchestrator/Cargo.toml`        | `MIT OR Apache-2.0` |
 | `tandem-wire`                 | `crates/tandem-wire/Cargo.toml`                | `MIT OR Apache-2.0` |
+| `tandem-repo-intelligence`    | `crates/tandem-repo-intelligence/Cargo.toml`   | `MIT OR Apache-2.0` |
 | `tandem-server`               | `crates/tandem-server/Cargo.toml`              | `MIT OR Apache-2.0` |
 | `tandem-providers`            | `crates/tandem-providers/Cargo.toml`           | `MIT OR Apache-2.0` |
 | `tandem-skills`               | `crates/tandem-skills/Cargo.toml`              | `MIT OR Apache-2.0` |
@@ -53,6 +62,9 @@ Consumers may choose either license (`MIT OR Apache-2.0`) for the packages below
 | `tandem-tools`                | `crates/tandem-tools/Cargo.toml`               | `MIT OR Apache-2.0` |
 | `tandem-tui`                  | `crates/tandem-tui/Cargo.toml`                 | `MIT OR Apache-2.0` |
 | `tandem-workflows`            | `crates/tandem-workflows/Cargo.toml`           | `MIT OR Apache-2.0` |
+
+`tandem-meta-harness-eval` is an internal crate (`publish = false`) and is not
+distributed on crates.io; it is listed for completeness.
 
 ## JavaScript and Python Packages
 
@@ -65,7 +77,11 @@ Consumers may choose either license (`MIT OR Apache-2.0`) for the packages below
 | Tandem panel scaffold  | `packages/create-tandem-panel/template/package.json` | `MIT OR Apache-2.0` |
 | `@frumu/tandem-panel`  | `packages/tandem-control-panel/package.json`         | `MIT OR Apache-2.0` |
 | `@frumu/tandem`        | `packages/tandem-engine/package.json`                | `MIT OR Apache-2.0` |
+| `@frumu/tandem-enterprise` | `packages/tandem-enterprise/package.json`        | `MIT OR Apache-2.0` |
 | `@frumu/tandem-tui`    | `packages/tandem-tui/package.json`                   | `MIT OR Apache-2.0` |
+
+The `@frumu/tandem-desktop` app package (`apps/tandem-desktop/package.json`) is
+`private` and not published to npm, so it is not listed here.
 
 ## Source-Available / BUSL-1.1 Components
 
@@ -110,6 +126,14 @@ The source-available governance layer authorizes recursive and Self-Operator beh
 Rust dependency license policy is enforced by `cargo deny` using
 `.config/deny.toml`. License and advisory exceptions follow the process in
 [`CI_SECURITY_AND_COVERAGE.md`](CI_SECURITY_AND_COVERAGE.md).
+
+The package-by-package tables above are enforced by
+`scripts/verify-license-map.mjs`, which runs in the "Validate Docs" CI job. It
+fails the build if any workspace package (Rust workspace member, published
+`packages/*` npm package, or `pyproject.toml`) is missing from this file,
+carries a license that disagrees with its manifest, or is mapped to a path that
+no longer exists. When you add a package or change a `license` field, update the
+matching table here in the same change.
 
 ## NOTICE Guidance (Apache-2.0 users)
 
