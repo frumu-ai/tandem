@@ -197,9 +197,36 @@ const updatePyproject = (relativePath) => {
   updatedFiles.push(relativePath);
 };
 
+const stampBuslChangeDates = () => {
+  // Rolling BUSL Change Date: each released version converts to the Change
+  // License four years after its release date (docs/LICENSING.md, "Change
+  // Date policy"). Discover the LICENSE files dynamically so newly
+  // relicensed crates are covered without touching this script (TAN-631).
+  const changeDate = new Date();
+  changeDate.setUTCFullYear(changeDate.getUTCFullYear() + 4);
+  const stamp = changeDate.toISOString().slice(0, 10);
+  const cratesDir = path.join(rootDir, "crates");
+  for (const entry of fs.readdirSync(cratesDir)) {
+    const relativePath = `crates/${entry}/LICENSE`;
+    const filePath = path.join(rootDir, relativePath);
+    if (!fs.existsSync(filePath)) continue;
+    const content = fs.readFileSync(filePath, "utf8");
+    if (!content.includes("Business Source License 1.1")) continue;
+    const next = content.replace(
+      /^Change Date: \d{4}-\d{2}-\d{2}[ \t]*$/m,
+      `Change Date: ${stamp}`
+    );
+    if (next !== content) {
+      fs.writeFileSync(filePath, next);
+      updatedFiles.push(relativePath);
+    }
+  }
+};
+
 jsonFiles.forEach(updateJson);
 cargoFiles.forEach(updateCargo);
 pyprojectFiles.forEach(updatePyproject);
+stampBuslChangeDates();
 
 process.stdout.write(`Updated ${updatedFiles.length} files to ${version}\n`);
 NODE
