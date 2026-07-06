@@ -660,6 +660,32 @@ fn verifier_rejects_unknown_context_assertion_kid_when_keyring_is_configured() {
 }
 
 #[test]
+fn verifier_rejects_unknown_kid_without_falling_back_to_legacy_when_keyring_is_configured() {
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&[8u8; 32]);
+    let other_key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+    let verifier = TenantContextAssertionVerifier {
+        public_keys_by_id: BTreeMap::from([(
+            "old-key".to_string(),
+            ContextAssertionPublicKey::legacy(other_key.verifying_key().to_bytes()),
+        )]),
+        legacy_public_key: Some(ContextAssertionPublicKey::legacy(
+            signing_key.verifying_key().to_bytes(),
+        )),
+        issuer: "tandem-web".to_string(),
+        audience: "tandem-runtime".to_string(),
+        max_future_skew_ms: DEFAULT_CONTEXT_ASSERTION_MAX_FUTURE_SKEW_MS,
+    };
+    let assertion =
+        sign_test_context_assertion(&signing_key, "active-key", test_claims(1_000, 2_000));
+
+    let err = verifier
+        .verify_at(&assertion, 1_500)
+        .expect_err("unknown kid must not fall back to legacy once keyring is configured");
+
+    assert_eq!(err, TenantContextIngressError::ContextAssertionUntrusted);
+}
+
+#[test]
 fn parse_context_public_keyring_accepts_json_and_delimited_forms() {
     let signing_key = ed25519_dalek::SigningKey::from_bytes(&[8u8; 32]);
     let encoded =

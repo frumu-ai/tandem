@@ -919,14 +919,15 @@ impl TenantContextAssertionVerifier {
     }
 
     fn key_for_header_kid(&self, kid: &str) -> Option<(&ContextAssertionPublicKey, String)> {
-        self.public_keys_by_id
-            .get(kid)
-            .map(|key| (key, kid.to_string()))
-            .or_else(|| {
-                self.legacy_public_key
-                    .as_ref()
-                    .map(|key| (key, "legacy".to_string()))
-            })
+        if !self.public_keys_by_id.is_empty() {
+            return self
+                .public_keys_by_id
+                .get(kid)
+                .map(|key| (key, kid.to_string()));
+        }
+        self.legacy_public_key
+            .as_ref()
+            .map(|key| (key, "legacy".to_string()))
     }
 
     fn validate_claim_identity(
