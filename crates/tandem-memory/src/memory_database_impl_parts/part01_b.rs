@@ -6,7 +6,7 @@ impl MemoryDatabase {
         let mut stmt = conn.prepare(
             "SELECT id, content, session_id, project_id, source, created_at, token_count, metadata,
                     source_path, source_mtime, source_size, source_hash,
-                    tenant_org_id, tenant_workspace_id, tenant_deployment_id
+                    tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject
              FROM session_memory_chunks
              WHERE session_id = ?1
              ORDER BY created_at DESC",
@@ -32,7 +32,7 @@ impl MemoryDatabase {
         let sql = format!(
             "SELECT id, content, session_id, project_id, source, created_at, token_count, metadata,
                     source_path, source_mtime, source_size, source_hash,
-                    tenant_org_id, tenant_workspace_id, tenant_deployment_id
+                    tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject
              FROM session_memory_chunks
              WHERE session_id = ?1 AND {}
              ORDER BY created_at DESC",
@@ -62,7 +62,7 @@ impl MemoryDatabase {
         let mut stmt = conn.prepare(
             "SELECT id, content, session_id, project_id, source, created_at, token_count, metadata,
                     source_path, source_mtime, source_size, source_hash,
-                    tenant_org_id, tenant_workspace_id, tenant_deployment_id
+                    tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject
              FROM project_memory_chunks
              WHERE project_id = ?1
              ORDER BY created_at DESC",
@@ -88,7 +88,7 @@ impl MemoryDatabase {
         let sql = format!(
             "SELECT id, content, session_id, project_id, source, created_at, token_count, metadata,
                     source_path, source_mtime, source_size, source_hash,
-                    tenant_org_id, tenant_workspace_id, tenant_deployment_id
+                    tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject
              FROM project_memory_chunks
              WHERE project_id = ?1 AND {}
              ORDER BY created_at DESC",
@@ -118,7 +118,7 @@ impl MemoryDatabase {
         let mut stmt = conn.prepare(
             "SELECT id, content, source, created_at, token_count, metadata,
                     source_path, source_mtime, source_size, source_hash,
-                    tenant_org_id, tenant_workspace_id, tenant_deployment_id
+                    tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject
              FROM global_memory_chunks
              ORDER BY created_at DESC
              LIMIT ?1",
@@ -142,7 +142,7 @@ impl MemoryDatabase {
         let sql = format!(
             "SELECT id, content, source, created_at, token_count, metadata,
                     source_path, source_mtime, source_size, source_hash,
-                    tenant_org_id, tenant_workspace_id, tenant_deployment_id
+                    tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject
              FROM global_memory_chunks
              WHERE {}
              ORDER BY created_at DESC

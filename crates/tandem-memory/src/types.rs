@@ -91,6 +91,11 @@ pub struct MemoryChunk {
     pub source_hash: Option<String>,
     #[serde(default)]
     pub tenant_scope: MemoryTenantScope,
+    /// Principal that owns this chunk, if user-restricted. Governed reads
+    /// require the caller's memory subject to match; unset means shared within
+    /// the chunk's tenant/tier scope (the pre-subject behavior).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
     pub created_at: DateTime<Utc>,
     pub token_count: i64,
     pub metadata: Option<serde_json::Value>,
@@ -171,6 +176,9 @@ pub struct GovernedReadTarget {
     /// reads require the caller to be a member of this unit; unset means
     /// tenant-wide visibility (the pre-org-unit behavior).
     pub owner_org_unit_id: Option<String>,
+    /// Principal that owns this record, if user-restricted. Tenant-local reads
+    /// require the caller's memory subject to match; unset means shared.
+    pub owner_subject: Option<String>,
 }
 
 /// Optional enterprise access projection applied before memory ranking.
@@ -184,6 +192,10 @@ pub struct MemoryAccessFilter {
     /// context). `None` means no membership information is available: any
     /// org-unit-restricted record is denied, fail closed.
     pub caller_org_units: Option<std::collections::BTreeSet<String>>,
+    /// Resolved memory subject of the calling principal. `None` means no
+    /// subject information is available: any subject-restricted record is
+    /// denied, fail closed.
+    pub caller_subject: Option<String>,
 }
 
 impl MemoryAccessFilter {
@@ -206,6 +218,7 @@ impl MemoryAccessFilter {
             mode: GovernedReadMode::GovernedStrict,
             workflow_phase: None,
             caller_org_units: None,
+            caller_subject: None,
         }
     }
 
@@ -224,11 +237,20 @@ impl MemoryAccessFilter {
             mode: GovernedReadMode::LocalNoop,
             workflow_phase: None,
             caller_org_units: None,
+            caller_subject: None,
         }
     }
 
     pub fn with_workflow_phase(mut self, workflow_phase: impl Into<String>) -> Self {
         self.workflow_phase = Some(workflow_phase.into());
+        self
+    }
+
+    pub fn with_caller_subject(mut self, subject: impl Into<String>) -> Self {
+        let subject = subject.into().trim().to_string();
+        if !subject.is_empty() {
+            self.caller_subject = Some(subject);
+        }
         self
     }
 
@@ -334,6 +356,7 @@ impl MemoryAccessFilter {
             source_object_id: target.source_object_id.clone(),
             evidence: GovernedReadEvidence::SourceBinding,
             owner_org_unit_id: None,
+            owner_subject: None,
         })
     }
 
@@ -386,6 +409,18 @@ impl MemoryAccessFilter {
                     .is_some_and(|units| units.contains(owner_org_unit_id));
                 if !is_member {
                     return GovernedReadDecision::deny("org_unit_scope_mismatch");
+                }
+            }
+            // Per-user restriction: a record owned by a subject is readable only
+            // by that subject. As with org units, absent caller-subject
+            // information denies, fail closed.
+            if let Some(owner_subject) = target.owner_subject.as_deref() {
+                let is_owner = self
+                    .caller_subject
+                    .as_deref()
+                    .is_some_and(|subject| subject == owner_subject);
+                if !is_owner {
+                    return GovernedReadDecision::deny("subject_scope_mismatch");
                 }
             }
             if strict_context
@@ -501,6 +536,12 @@ fn governed_read_target_from_chunk(
         source_object_id: None,
         evidence: GovernedReadEvidence::TenantLocalMemory,
         owner_org_unit_id: owner_org_unit_id_from_metadata(chunk.metadata.as_ref()),
+        owner_subject: chunk
+            .subject
+            .as_deref()
+            .map(str::trim)
+            .filter(|subject| !subject.is_empty())
+            .map(ToString::to_string),
     })
 }
 
@@ -534,6 +575,10 @@ fn governed_read_target_from_global_record(
         source_object_id: None,
         evidence: GovernedReadEvidence::TenantLocalMemory,
         owner_org_unit_id: owner_org_unit_id_from_metadata(record.metadata.as_ref()),
+        // GlobalMemoryRecord subject scoping is enforced at the SQL layer
+        // (user_id predicates per TAN-601); visibility="shared" records are
+        // deliberately cross-subject, so no owner_subject is projected here.
+        owner_subject: None,
     })
 }
 
@@ -571,6 +616,7 @@ fn source_binding_target_from_metadata(
             .map(ToOwned::to_owned),
         evidence: GovernedReadEvidence::SourceBinding,
         owner_org_unit_id: None,
+        owner_subject: None,
     }))
 }
 
@@ -788,6 +834,8 @@ pub struct StoreMessageRequest {
     pub source_hash: Option<String>,
     #[serde(default)]
     pub tenant_scope: MemoryTenantScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
     pub metadata: Option<serde_json::Value>,
 }
 

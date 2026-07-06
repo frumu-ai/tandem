@@ -69,6 +69,7 @@ impl KnowledgeScopePolicy {
             // through projected org-unit grants, not the membership check that
             // applies to ordinary tenant-local memory.
             owner_org_unit_id: None,
+            owner_subject: None,
         }
     }
 

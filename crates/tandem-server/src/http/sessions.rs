@@ -457,6 +457,10 @@ pub(super) async fn archive_session_exchange_to_global_memory(state: AppState, s
             workspace_id: session.tenant_context.workspace_id.clone(),
             deployment_id: session.tenant_context.deployment_id.clone(),
         },
+        // Archived chat exchanges are per-user memory: stamp the session actor
+        // so governed reads restrict them to their owner (TAN-607). Local
+        // sessions without an actor stay shared, matching prior behavior.
+        subject: session.tenant_context.actor_id.clone(),
         metadata: Some(metadata),
     };
 

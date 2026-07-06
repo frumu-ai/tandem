@@ -102,6 +102,7 @@ async fn cleanup_default_knowledge_storage_removes_seed_rows_and_state_files() {
         token_count: 4,
         metadata: None,
         tenant_scope: tandem_memory::types::MemoryTenantScope::local(),
+        subject: None,
     };
     let embedding = vec![0.0f32; tandem_memory::types::DEFAULT_EMBEDDING_DIMENSION];
     db.store_chunk(&chunk, &embedding)

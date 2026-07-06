@@ -202,6 +202,12 @@ impl MemoryDatabase {
                 [],
             )?;
         }
+        if !session_existing_cols.contains("subject") {
+            conn.execute(
+                "ALTER TABLE session_memory_chunks ADD COLUMN subject TEXT",
+                [],
+            )?;
+        }
         conn.execute(
             "UPDATE session_memory_chunks SET tenant_org_id = 'local' WHERE tenant_org_id IS NULL OR tenant_org_id = ''",
             [],
@@ -285,6 +291,12 @@ impl MemoryDatabase {
         if !existing_cols.contains("tenant_deployment_id") {
             conn.execute(
                 "ALTER TABLE project_memory_chunks ADD COLUMN tenant_deployment_id TEXT",
+                [],
+            )?;
+        }
+        if !existing_cols.contains("subject") {
+            conn.execute(
+                "ALTER TABLE project_memory_chunks ADD COLUMN subject TEXT",
                 [],
             )?;
         }
@@ -507,6 +519,12 @@ impl MemoryDatabase {
         if !global_existing_cols.contains("tenant_deployment_id") {
             conn.execute(
                 "ALTER TABLE global_memory_chunks ADD COLUMN tenant_deployment_id TEXT",
+                [],
+            )?;
+        }
+        if !global_existing_cols.contains("subject") {
+            conn.execute(
+                "ALTER TABLE global_memory_chunks ADD COLUMN subject TEXT",
                 [],
             )?;
         }
@@ -1333,8 +1351,8 @@ impl MemoryDatabase {
                         "INSERT INTO {} (
                             id, content, session_id, project_id, source, created_at, token_count, metadata,
                             source_path, source_mtime, source_size, source_hash,
-                            tenant_org_id, tenant_workspace_id, tenant_deployment_id
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                         chunks_table
                     ),
                     params![
@@ -1352,7 +1370,8 @@ impl MemoryDatabase {
                         chunk.source_hash.clone(),
                         chunk.tenant_scope.org_id.as_str(),
                         chunk.tenant_scope.workspace_id.as_str(),
-                        chunk.tenant_scope.deployment_id.as_deref()
+                        chunk.tenant_scope.deployment_id.as_deref(),
+                        chunk.subject.as_deref()
                     ],
                 )?;
             }
@@ -1362,8 +1381,8 @@ impl MemoryDatabase {
                         "INSERT INTO {} (
                             id, content, project_id, session_id, source, created_at, token_count, metadata,
                             source_path, source_mtime, source_size, source_hash,
-                            tenant_org_id, tenant_workspace_id, tenant_deployment_id
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                         chunks_table
                     ),
                     params![
@@ -1381,7 +1400,8 @@ impl MemoryDatabase {
                         chunk.source_hash.clone(),
                         chunk.tenant_scope.org_id.as_str(),
                         chunk.tenant_scope.workspace_id.as_str(),
-                        chunk.tenant_scope.deployment_id.as_deref()
+                        chunk.tenant_scope.deployment_id.as_deref(),
+                        chunk.subject.as_deref()
                     ],
                 )?;
             }
@@ -1391,8 +1411,8 @@ impl MemoryDatabase {
                         "INSERT INTO {} (
                             id, content, source, created_at, token_count, metadata,
                             source_path, source_mtime, source_size, source_hash,
-                            tenant_org_id, tenant_workspace_id, tenant_deployment_id
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                         chunks_table
                     ),
                     params![
@@ -1408,7 +1428,8 @@ impl MemoryDatabase {
                         chunk.source_hash.clone(),
                         chunk.tenant_scope.org_id.as_str(),
                         chunk.tenant_scope.workspace_id.as_str(),
-                        chunk.tenant_scope.deployment_id.as_deref()
+                        chunk.tenant_scope.deployment_id.as_deref(),
+                        chunk.subject.as_deref()
                     ],
                 )?;
             }
@@ -1495,7 +1516,7 @@ impl MemoryDatabase {
                     let sql = format!(
                         "SELECT c.id, c.content, c.session_id, c.project_id, c.source, c.created_at, c.token_count, c.metadata,
                                 c.source_path, c.source_mtime, c.source_size, c.source_hash,
-                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id,
+                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject,
                                 vec_distance_cosine(v.embedding, ?5) AS distance
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
@@ -1529,7 +1550,7 @@ impl MemoryDatabase {
                     let sql = format!(
                         "SELECT c.id, c.content, c.session_id, c.project_id, c.source, c.created_at, c.token_count, c.metadata,
                                 c.source_path, c.source_mtime, c.source_size, c.source_hash,
-                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id,
+                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject,
                                 vec_distance_cosine(v.embedding, ?5) AS distance
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
@@ -1563,7 +1584,7 @@ impl MemoryDatabase {
                     let sql = format!(
                         "SELECT c.id, c.content, c.session_id, c.project_id, c.source, c.created_at, c.token_count, c.metadata,
                                 c.source_path, c.source_mtime, c.source_size, c.source_hash,
-                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id,
+                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject,
                                 vec_distance_cosine(v.embedding, ?4) AS distance
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
@@ -1599,7 +1620,7 @@ impl MemoryDatabase {
                     let sql = format!(
                         "SELECT c.id, c.content, c.session_id, c.project_id, c.source, c.created_at, c.token_count, c.metadata,
                                 c.source_path, c.source_mtime, c.source_size, c.source_hash,
-                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id,
+                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject,
                                 vec_distance_cosine(v.embedding, ?5) AS distance
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
@@ -1633,7 +1654,7 @@ impl MemoryDatabase {
                     let sql = format!(
                         "SELECT c.id, c.content, c.session_id, c.project_id, c.source, c.created_at, c.token_count, c.metadata,
                                 c.source_path, c.source_mtime, c.source_size, c.source_hash,
-                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id,
+                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject,
                                 vec_distance_cosine(v.embedding, ?4) AS distance
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
@@ -1668,7 +1689,7 @@ impl MemoryDatabase {
                 let sql = format!(
                     "SELECT c.id, c.content, c.source, c.created_at, c.token_count, c.metadata,
                             c.source_path, c.source_mtime, c.source_size, c.source_hash,
-                            c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id,
+                            c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject,
                             vec_distance_cosine(v.embedding, ?4) AS distance
                      FROM {} AS v
                      JOIN {} AS c ON v.chunk_id = c.id

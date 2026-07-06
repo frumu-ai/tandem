@@ -765,6 +765,7 @@ fn prompt_memory_access_threads_org_units_into_filter() {
                 access_filter.caller_org_units,
                 Some(std::collections::BTreeSet::from(["ou-eng".to_string()]))
             );
+            assert_eq!(access_filter.caller_subject.as_deref(), Some("user-a"));
         }
         other => panic!("expected governed prompt memory access, got {other:?}"),
     }

@@ -325,3 +325,55 @@ async fn governed_read_filter_threads_org_units_from_verified_context() {
     assert!(!decision.allowed);
     assert_eq!(decision.reason.as_deref(), Some("org_unit_scope_mismatch"));
 }
+
+#[tokio::test]
+async fn memory_put_rejects_non_storage_backed_tiers() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    // Team/Curated exist only in the governance contract; writes fail closed
+    // until a backing store lands (TAN-607).
+    for tier in ["team", "curated"] {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/memory/put")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "run_id": format!("run-{tier}"),
+                    "partition": {
+                        "org_id": "org-1",
+                        "workspace_id": "ws-1",
+                        "project_id": "proj-1",
+                        "tier": tier
+                    },
+                    "kind": "note",
+                    "content": "should fail: tier has no backing store",
+                    "classification": "internal",
+                    "capability": {
+                        "run_id": format!("run-{tier}"),
+                        "subject": "user-1",
+                        "org_id": "org-1",
+                        "workspace_id": "ws-1",
+                        "project_id": "proj-1",
+                        "memory": {
+                            "read_tiers": ["session", "project"],
+                            "write_tiers": ["session", "project", tier],
+                            "promote_targets": [],
+                            "require_review_for_promote": false,
+                            "allow_auto_use_tiers": []
+                        },
+                        "expires_at": 9999999999999u64
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("request");
+        let resp = app.clone().oneshot(req).await.expect("response");
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "tier {tier} must be rejected"
+        );
+    }
+}

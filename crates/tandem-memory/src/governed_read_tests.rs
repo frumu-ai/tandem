@@ -340,6 +340,66 @@ fn local_noop_ignores_org_unit_restriction() {
     assert_eq!(decision.reason.as_deref(), Some("local_noop"));
 }
 
+#[test]
+fn subject_restricted_chunk_visible_only_to_owner() {
+    let restricted = tenant_chunk(Some("user-a"));
+
+    // The owning subject reads the chunk.
+    let owner_filter =
+        MemoryAccessFilter::strict(tenant_strict(DataBoundary::unrestricted()), 2_000)
+            .with_caller_subject("user-a");
+    let decision = owner_filter.decision_for_chunk(&restricted);
+    assert!(decision.allowed);
+
+    // A different subject in the same tenant is denied.
+    let other_filter =
+        MemoryAccessFilter::strict(tenant_strict(DataBoundary::unrestricted()), 2_000)
+            .with_caller_subject("user-b");
+    let decision = other_filter.decision_for_chunk(&restricted);
+    assert!(!decision.allowed);
+    assert_eq!(decision.reason.as_deref(), Some("subject_scope_mismatch"));
+
+    // No caller-subject information denies, fail closed.
+    let no_subject_filter =
+        MemoryAccessFilter::strict(tenant_strict(DataBoundary::unrestricted()), 2_000);
+    let decision = no_subject_filter.decision_for_chunk(&restricted);
+    assert!(!decision.allowed);
+    assert_eq!(decision.reason.as_deref(), Some("subject_scope_mismatch"));
+
+    // Unrestricted chunks keep shared visibility for any subject.
+    let shared = tenant_chunk(None);
+    let decision = other_filter.decision_for_chunk(&shared);
+    assert!(decision.allowed);
+
+    // Local mode is unaffected.
+    let decision = MemoryAccessFilter::local_noop(2_000).decision_for_chunk(&restricted);
+    assert!(decision.allowed);
+}
+
+fn tenant_chunk(subject: Option<&str>) -> crate::types::MemoryChunk {
+    crate::types::MemoryChunk {
+        id: "chunk-a".to_string(),
+        content: "archived exchange".to_string(),
+        tier: crate::types::MemoryTier::Global,
+        session_id: None,
+        project_id: None,
+        source: "chat_exchange".to_string(),
+        source_path: None,
+        source_mtime: None,
+        source_size: None,
+        source_hash: None,
+        tenant_scope: crate::types::MemoryTenantScope {
+            org_id: "org-a".to_string(),
+            workspace_id: "workspace-a".to_string(),
+            deployment_id: None,
+        },
+        subject: subject.map(ToString::to_string),
+        created_at: chrono::Utc::now(),
+        token_count: 3,
+        metadata: None,
+    }
+}
+
 fn tenant_strict(data_boundary: DataBoundary) -> StrictTenantContext {
     let tenant = TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "user-a");
     let principal = RequestPrincipal::authenticated_user("user-a", "test");

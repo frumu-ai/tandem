@@ -148,6 +148,12 @@ impl MemoryManager {
                 source_path: request.source_path.clone(),
                 source_mtime: request.source_mtime,
                 source_size: request.source_size,
+                subject: request
+                    .subject
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|subject| !subject.is_empty())
+                    .map(ToString::to_string),
                 source_hash: request.source_hash.clone(),
                 tenant_scope: request.tenant_scope.clone(),
                 created_at: Utc::now(),
@@ -1637,6 +1643,9 @@ impl MemoryManager {
             source_size: None,
             source_hash: None,
             tenant_scope: MemoryTenantScope::local(),
+            // Consolidated summaries merge multiple sources and stay shared
+            // within their project scope rather than being user-restricted.
+            subject: None,
             metadata: None,
         };
 

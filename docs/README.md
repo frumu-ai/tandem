@@ -32,6 +32,7 @@ For end-user onboarding journeys (install, first run, desktop/CLI paths), use:
 - [Context Evals](./CONTEXT_EVALS.md) - Long-session context regression evals with provenance assertions.
 - [AI Runtime Infrastructure](./AI_RUNTIME_INFRASTRUCTURE.md) - Engine source-of-truth runtime for long-running context, replay, and guardrails.
 - [Memory Ciphertext At Rest](./MEMORY_CIPHERTEXT_AT_REST.md) - Memory crypto modes, encrypted columns, search-required plaintext residuals, and backup implications.
+- [Memory Scope Model](./MEMORY_SCOPE_MODEL.md) - The scope dimensions each memory store enforces (tenant, org-unit, subject, tier), their semantics, and the fail-closed rules.
 - [MCP Improvements](./MCP_IMPROVEMENTS.md) - Connector tools, MCP discovery, and allowlist design.
 - [Enterprise MCP Identity And Delegation](./ENTERPRISE_MCP_IDENTITY_AND_DELEGATION.md) - Principal-scoped MCP connections, OAuth ownership, delegation, and audit model for multi-employee enterprise runtimes.
 - [GitHub Projects via MCP](./MCP_IMPROVEMENTS.md#implementation-note-github-projects-via-mcp) - Tandem auto-registers the official GitHub MCP server when a PAT is available, so GitHub Projects work without manual `mcp add`.

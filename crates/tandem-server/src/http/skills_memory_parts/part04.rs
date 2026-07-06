@@ -806,7 +806,8 @@ pub(super) async fn memory_search(
             request.retrieval_gateway.is_some(),
             crate::now_ms(),
             request.workflow_phase.as_deref(),
-        );
+        )
+        .map(|filter| filter.with_caller_subject(capability.subject.clone()));
     let strict_source_projection_active = source_access_filter.is_some();
     let (hits, gateway_budget_exhausted) = if scopes_used.is_empty() {
         (Vec::new(), false)
