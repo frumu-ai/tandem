@@ -10,6 +10,15 @@ edition = "2021"
 default = []
 browser = ["dep:tandem-browser", "tandem-server/browser"]
 enterprise-server = ["dep:tandem-enterprise-server"]
+# The standard release composition: enterprise routes, premium governance, and
+# Google Drive connectors — everything except the heavyweight local-embedding
+# stack (fastembed/ort), which only the hosted Linux asset carries via
+# enterprise-full. All release artifacts build with this feature (TAN-632).
+enterprise = [
+    "enterprise-server",
+    "tandem-enterprise-server/governance",
+    "tandem-enterprise-server/google-drive",
+]
 enterprise-full = ["enterprise-server", "tandem-enterprise-server/full"]
 
 [[bin]]
