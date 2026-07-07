@@ -493,6 +493,7 @@ impl PermissionManager {
         self.event_bus.publish(EngineEvent::new(
             "permission.replied",
             json!({
+                "sessionID": request.session_id,
                 "requestID": id,
                 "reply": reply,
                 "decidedAtMs": now,
@@ -757,6 +758,37 @@ mod tests {
         assert_eq!(
             event.properties.get("query").and_then(|v| v.as_str()),
             Some("meaning of life")
+        );
+    }
+
+    #[tokio::test]
+    async fn permission_replied_event_preserves_request_session_id() {
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let manager = PermissionManager::new(bus);
+
+        let request = manager
+            .ask_for_session(Some("ses_1"), "read", json!({"path":"README.md"}))
+            .await;
+        let asked = rx.recv().await.expect("asked event");
+        assert_eq!(asked.event_type, "permission.asked");
+
+        assert!(manager.reply(&request.id, "allow").await);
+        let replied = rx.recv().await.expect("replied event");
+        assert_eq!(replied.event_type, "permission.replied");
+        assert_eq!(
+            replied
+                .properties
+                .get("sessionID")
+                .and_then(|value| value.as_str()),
+            Some("ses_1")
+        );
+        assert_eq!(
+            replied
+                .properties
+                .get("requestID")
+                .and_then(|value| value.as_str()),
+            Some(request.id.as_str())
         );
     }
 
