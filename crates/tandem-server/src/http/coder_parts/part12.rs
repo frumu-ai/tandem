@@ -73,6 +73,29 @@ pub(crate) async fn reap_coder_memory_candidates(state: &AppState, retention_day
     deleted
 }
 
+/// Mark a promoted candidate's JSON in place (TAN-638): stamp `promoted_at_ms`
+/// and `promoted_memory_id` so retrieval skips it (via
+/// `coder_candidate_is_promoted`) while its file is retained as provenance for
+/// the promoted memory record's artifact_refs. Best-effort: a failed rewrite
+/// leaves the candidate visible until time-based GC reaps it.
+pub(crate) async fn mark_coder_candidate_promoted(
+    state: &AppState,
+    linked_context_run_id: &str,
+    candidate_id: &str,
+    candidate_payload: &Value,
+    promoted_memory_id: &str,
+) {
+    let Some(mut marked) = candidate_payload.as_object().cloned() else {
+        return;
+    };
+    marked.insert("promoted_at_ms".to_string(), json!(crate::now_ms()));
+    marked.insert("promoted_memory_id".to_string(), json!(promoted_memory_id));
+    if let Ok(serialized) = serde_json::to_string(&Value::Object(marked)) {
+        let path = coder_memory_candidate_path(state, linked_context_run_id, candidate_id);
+        let _ = tokio::fs::write(&path, serialized).await;
+    }
+}
+
 #[cfg(test)]
 mod coder_memory_candidate_scoping_tests {
     use super::*;

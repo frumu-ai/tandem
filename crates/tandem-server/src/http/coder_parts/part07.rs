@@ -931,21 +931,17 @@ pub(super) async fn coder_memory_candidate_promote(
             extra
         },
     );
-    // The candidate has been copied into governed memory; mark the source JSON
-    // as promoted rather than deleting it (TAN-638). Marking keeps it out of
-    // candidate retrieval (so it doesn't linger as a duplicate unpromoted file)
-    // while preserving the file that the promoted memory record and promotion
-    // artifact reference as provenance/evidence. Time-based GC reaps it later.
-    // Best-effort: a failed rewrite leaves the candidate visible until GC.
-    let candidate_path =
-        coder_memory_candidate_path(&state, &record.linked_context_run_id, &candidate_id);
-    if let Some(mut marked) = candidate_payload.as_object().cloned() {
-        marked.insert("promoted_at_ms".to_string(), json!(crate::now_ms()));
-        marked.insert("promoted_memory_id".to_string(), json!(put_response.id));
-        if let Ok(serialized) = serde_json::to_string(&Value::Object(marked)) {
-            let _ = tokio::fs::write(&candidate_path, serialized).await;
-        }
-    }
+    // Mark the promoted candidate rather than deleting it, keeping the file the
+    // promoted memory record references as provenance while filtering it out of
+    // retrieval; time-based GC reaps it later (TAN-638).
+    mark_coder_candidate_promoted(
+        &state,
+        &record.linked_context_run_id,
+        &candidate_id,
+        &candidate_payload,
+        &put_response.id,
+    )
+    .await;
     Ok(Json(json!({
         "ok": true,
         "memory_id": put_response.id,
