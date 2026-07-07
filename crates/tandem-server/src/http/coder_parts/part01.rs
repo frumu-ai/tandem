@@ -1763,6 +1763,47 @@ fn governed_memory_subjects(
     subjects
 }
 
+/// Derive the tenant scope for governed-memory retrieval, defaulting to the
+/// local sentinel (`"local"/"local"`) when no verified tenant context is present
+/// — matching how untenanted memory rows are written. Used so coder-memory
+/// retrieval is tenant-scoped and cannot surface another tenant's records on a
+/// shared database (TAN-649).
+fn coder_memory_tenant_scope(
+    tenant_context: Option<&tandem_types::TenantContext>,
+) -> (String, String, Option<String>) {
+    tenant_context
+        .map(|context| {
+            (
+                context.org_id.clone(),
+                context.workspace_id.clone(),
+                context.deployment_id.clone(),
+            )
+        })
+        .unwrap_or_else(|| ("local".to_string(), "local".to_string(), None))
+}
+
+#[cfg(test)]
+mod tan649_tenant_scope_tests {
+    use super::*;
+
+    #[test]
+    fn defaults_to_local_sentinel_without_context() {
+        let (org, workspace, deployment) = coder_memory_tenant_scope(None);
+        assert_eq!(org, "local");
+        assert_eq!(workspace, "local");
+        assert_eq!(deployment, None);
+    }
+
+    #[test]
+    fn passes_through_present_tenant_context() {
+        let context = tandem_types::TenantContext::local_implicit();
+        let (org, workspace, deployment) = coder_memory_tenant_scope(Some(&context));
+        assert_eq!(org, context.org_id);
+        assert_eq!(workspace, context.workspace_id);
+        assert_eq!(deployment, context.deployment_id);
+    }
+}
+
 fn candidate_linked_numbers(candidate_payload: &Value, key: &str) -> Vec<u64> {
     candidate_payload
         .get("payload")
@@ -1789,9 +1830,17 @@ async fn list_governed_memory_hits(
     };
     let mut hits = Vec::<Value>::new();
     let mut seen_ids = HashSet::<String>::new();
+    // TAN-649: scope governed-memory retrieval to the caller's tenant. The
+    // non-tenant `search_global_memory` filters only by `user_id`, so on a shared
+    // DB it can surface another tenant's records. Default to the local sentinel
+    // when no tenant context is present (matches how untenanted rows are written).
+    let (tenant_org, tenant_workspace, tenant_deployment) = coder_memory_tenant_scope(tenant_context);
     for subject in governed_memory_subjects(record, tenant_context) {
         let Ok(results) = db
-            .search_global_memory(
+            .search_global_memory_for_tenant(
+                &tenant_org,
+                &tenant_workspace,
+                tenant_deployment.as_deref(),
                 &subject,
                 query,
                 limit.clamp(1, 20) as i64,

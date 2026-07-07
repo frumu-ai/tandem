@@ -535,9 +535,16 @@ pub(crate) async fn find_failure_pattern_duplicates(
             .await?;
     if let Some(db) = super::skills_memory::open_global_memory_db_for_state(state).await {
         let mut seen_memory_ids = HashSet::<String>::new();
+        // TAN-649: tenant-scope governed-memory retrieval so a shared DB cannot
+        // surface another tenant's records via the non-tenant query.
+        let (tenant_org, tenant_workspace, tenant_deployment) =
+            coder_memory_tenant_scope(tenant_context);
         for subject in subjects {
             let Ok(results) = db
-                .search_global_memory(
+                .search_global_memory_for_tenant(
+                    &tenant_org,
+                    &tenant_workspace,
+                    tenant_deployment.as_deref(),
                     subject,
                     query,
                     limit.clamp(1, 20) as i64,
@@ -578,7 +585,17 @@ pub(crate) async fn find_failure_pattern_duplicates(
         {
             for subject in subjects {
                 let Ok(records) = db
-                    .list_global_memory(subject, None, None, None, 200, 0)
+                    .list_global_memory_for_tenant(
+                        &tenant_org,
+                        &tenant_workspace,
+                        tenant_deployment.as_deref(),
+                        subject,
+                        None,
+                        None,
+                        None,
+                        200,
+                        0,
+                    )
                     .await
                 else {
                     continue;
