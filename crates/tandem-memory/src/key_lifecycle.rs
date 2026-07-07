@@ -196,6 +196,10 @@ pub fn key_scope_matches(expected: &MemoryKeyScope, actual: &MemoryKeyScope) -> 
         && expected.workspace_id == actual.workspace_id
         && expected.deployment_id.as_deref().unwrap_or("")
             == actual.deployment_id.as_deref().unwrap_or("")
+        // Department is a key dimension (TAN-662): a revocation / break-glass
+        // grant scoped to one department must not match another department's
+        // key scope in the same tenant + data class.
+        && expected.org_unit.as_deref().unwrap_or("") == actual.org_unit.as_deref().unwrap_or("")
         && expected.data_class == actual.data_class
         && expected.source_binding_id.as_deref().unwrap_or("")
             == actual.source_binding_id.as_deref().unwrap_or("")
@@ -280,6 +284,43 @@ mod tests {
         let decision = evaluate_memory_key_lifecycle(&envelope(), "actor-1", false, &policy);
         assert_eq!(decision.outcome, MemoryKeyLifecycleOutcome::Denied);
         assert_eq!(decision.evidence_id.as_deref(), Some("revocation-1"));
+    }
+
+    #[test]
+    fn revocation_is_scoped_per_department() {
+        // TAN-662: a revocation scoped to one department must not deny another
+        // department's key scope in the same tenant + data class + source.
+        let mut sales_envelope = envelope();
+        sales_envelope.key_scope = sales_envelope
+            .key_scope
+            .with_org_unit(Some("department/sales".to_string()));
+
+        let mut policy = active_policy();
+        policy.revoked_scopes.push(MemoryKeyScopeRevocation {
+            key_scope: envelope()
+                .key_scope
+                .with_org_unit(Some("department/engineering".to_string())),
+            reason: "engineering key compromised".to_string(),
+            revoked_by: "security-admin".to_string(),
+            revoked_at_ms: 900,
+            evidence_id: "revocation-eng".to_string(),
+        });
+
+        // The sales scope is unaffected by the engineering revocation.
+        let decision = evaluate_memory_key_lifecycle(&sales_envelope, "actor-1", false, &policy);
+        assert_eq!(decision.outcome, MemoryKeyLifecycleOutcome::Allowed);
+
+        // Revoking the sales scope specifically now denies it.
+        policy.revoked_scopes.push(MemoryKeyScopeRevocation {
+            key_scope: sales_envelope.key_scope.clone(),
+            reason: "sales key compromised".to_string(),
+            revoked_by: "security-admin".to_string(),
+            revoked_at_ms: 900,
+            evidence_id: "revocation-sales".to_string(),
+        });
+        let decision = evaluate_memory_key_lifecycle(&sales_envelope, "actor-1", false, &policy);
+        assert_eq!(decision.outcome, MemoryKeyLifecycleOutcome::Denied);
+        assert_eq!(decision.evidence_id.as_deref(), Some("revocation-sales"));
     }
 
     #[test]
