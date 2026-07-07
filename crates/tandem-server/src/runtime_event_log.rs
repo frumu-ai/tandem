@@ -1,3 +1,32 @@
+//! Durable runtime event log — an **observability-only, tenant-scoped** ledger of
+//! verbatim engine/tool events (TAN-650, decision recorded).
+//!
+//! ## Scope decision
+//!
+//! This log persists verbatim tool output. It is deliberately **not** an
+//! agent-reachable retrieval source: nothing feeds these rows into the LLM
+//! memory/context/prompt path (`RuntimeEventLogRow` / `query_runtime_event_log`
+//! have no non-test, non-operator callers; `state.runtime_events_path` is only
+//! consumed to derive a separate reliability ledger, not the payloads). It is an
+//! operator/debug artifact surfaced through the tenant-scoped run-debugger/SSE
+//! view.
+//!
+//! Because it is not a hot cross-tenant/department leak into the agent, the
+//! envelope is scoped by **tenant only** — it carries no `subject` / department
+//! (`owner_org_unit_id`) dimension, and [`RuntimeEventLogRow::visible_to_tenant`]
+//! is the single read gate. At-rest exposure of the raw payloads (a disk dump is
+//! unscoped by subject/department) is covered by the at-rest strategy (TAN-663
+//! FDE / TAN-666 envelope encryption), not by an event-schema change.
+//!
+//! ## Invariant for future readers
+//!
+//! If a reader is ever added that exposes these rows beyond the tenant-scoped
+//! operator view — especially anything agent-reachable — it MUST first extend the
+//! [`RuntimeEvent`] envelope with `subject` (+ `owner_org_unit_id`) and narrow
+//! [`RuntimeEventLogRow::visible_to_tenant`] accordingly, so a payload written
+//! under one subject/department is not returned to another. Until then, every
+//! read goes through the tenant gate below.
+
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -53,6 +82,11 @@ impl RuntimeEventLogRow {
         self.event.envelope.tenant_context.as_ref()
     }
 
+    /// The single read gate for event-log rows (TAN-650). Tenant-scoped by
+    /// design: in local single-user mode (`is_local_implicit`) everything is
+    /// visible; otherwise the row's tenant must match exactly. There is
+    /// deliberately **no** subject/department dimension here — see the module
+    /// docs before adding a reader that would need one.
     pub fn visible_to_tenant(&self, tenant: &TenantContext) -> bool {
         if tenant.is_local_implicit() {
             return true;
@@ -280,6 +314,29 @@ mod tests {
 
     fn tenant(org: &str, workspace: &str) -> TenantContext {
         TenantContext::explicit_user_workspace(org, workspace, None, "user-a")
+    }
+
+    #[test]
+    fn visible_to_tenant_is_tenant_scoped_contract() {
+        // TAN-650: lock the event-log read gate's contract. Local single-user
+        // mode sees everything; cross-tenant and missing-tenant rows are denied.
+        let tenant_a = tenant("org-a", "workspace-a");
+        let tenant_b = tenant("org-b", "workspace-b");
+        let row_a =
+            RuntimeEventLogRow::from_engine_event(&event(1, "run-a", Some(tenant_a.clone()), 100))
+                .expect("canonical row");
+        let row_untenanted =
+            RuntimeEventLogRow::from_engine_event(&event(2, "run-a", None, 200)).expect("row");
+
+        // Same tenant: visible.
+        assert!(row_a.visible_to_tenant(&tenant_a));
+        // Different tenant: denied (no cross-tenant leak).
+        assert!(!row_a.visible_to_tenant(&tenant_b));
+        // Row without a tenant context is denied to any explicit tenant.
+        assert!(!row_untenanted.visible_to_tenant(&tenant_a));
+        // Local single-user mode sees everything (by design, documented).
+        assert!(row_a.visible_to_tenant(&TenantContext::local_implicit()));
+        assert!(row_untenanted.visible_to_tenant(&TenantContext::local_implicit()));
     }
 
     #[tokio::test]
