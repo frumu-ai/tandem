@@ -437,6 +437,9 @@ impl ServerPromptContextHook {
         query: &str,
         limit: usize,
     ) -> Vec<tandem_memory::types::MemorySearchResult> {
+        // Guide docs are a local product-doc index, not tenant/customer memory.
+        // Keep this local-scope search constrained to the guide_docs source
+        // prefix; hosted user memory must use tenant-scoped search paths below.
         let Some(manager) = self.open_memory_manager().await else {
             return Vec::new();
         };
@@ -457,6 +460,38 @@ impl ServerPromptContextHook {
             .collect()
     }
 
+    async fn search_local_prompt_global_memory(
+        db: &MemoryDatabase,
+        user_id: &str,
+        query: &str,
+        project_id: Option<&str>,
+    ) -> (
+        Vec<tandem_memory::types::GlobalMemorySearchHit>,
+        Vec<tandem_memory::types::GlobalMemorySearchHit>,
+    ) {
+        // LocalSingleTenant prompt memory uses the legacy local partition.
+        // Hosted/governed prompt memory must not call this helper; it belongs
+        // in the PromptMemoryAccess::Local arm only.
+        let project_hits = if let Some(project_id) = project_id {
+            db.search_global_memory(user_id, query, 8, Some(project_id), None, None)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|hit| Self::governed_memory_visible_without_source_grant(&hit.record))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let global_hits = db
+            .search_global_memory(user_id, query, 8, None, None, None)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|hit| Self::governed_memory_visible_without_source_grant(&hit.record))
+            .collect::<Vec<_>>();
+        (project_hits, global_hits)
+    }
+
     pub(super) async fn search_prompt_global_memory(
         db: &MemoryDatabase,
         memory_access: &PromptMemoryAccess,
@@ -468,26 +503,7 @@ impl ServerPromptContextHook {
     ) {
         match memory_access {
             PromptMemoryAccess::Local { user_id, .. } => {
-                let project_hits = if let Some(project_id) = project_id {
-                    db.search_global_memory(user_id, query, 8, Some(project_id), None, None)
-                        .await
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter(|hit| {
-                            Self::governed_memory_visible_without_source_grant(&hit.record)
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                };
-                let global_hits = db
-                    .search_global_memory(user_id, query, 8, None, None, None)
-                    .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|hit| Self::governed_memory_visible_without_source_grant(&hit.record))
-                    .collect::<Vec<_>>();
-                (project_hits, global_hits)
+                Self::search_local_prompt_global_memory(db, user_id, query, project_id).await
             }
             PromptMemoryAccess::Governed {
                 tenant_context,
