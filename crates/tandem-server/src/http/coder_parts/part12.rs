@@ -102,6 +102,14 @@ mod coder_memory_candidate_scoping_tests {
     use crate::test_support::test_state;
     use tandem_types::TenantContext;
 
+    fn memory_tenant_scope(tenant: &TenantContext) -> tandem_memory::types::MemoryTenantScope {
+        tandem_memory::types::MemoryTenantScope {
+            org_id: tenant.org_id.clone(),
+            workspace_id: tenant.workspace_id.clone(),
+            deployment_id: tenant.deployment_id.clone(),
+        }
+    }
+
     fn repo_binding() -> CoderRepoBinding {
         CoderRepoBinding {
             project_id: "proj-shared".to_string(),
@@ -211,10 +219,94 @@ mod coder_memory_candidate_scoping_tests {
         path
     }
 
+    async fn seed_global_memory(
+        state: &AppState,
+        suffix: &str,
+        tenant: &TenantContext,
+        subject: &str,
+        content: &str,
+        metadata: Option<Value>,
+    ) {
+        let db = tandem_memory::db::MemoryDatabase::new(&state.memory_db_path)
+            .await
+            .expect("memory db");
+        let now = crate::now_ms();
+        let record = tandem_memory::types::GlobalMemoryRecord {
+            id: format!("gm-{suffix}"),
+            user_id: subject.to_string(),
+            source_type: "coder_memory".to_string(),
+            content: content.to_string(),
+            content_hash: format!("hash-{suffix}"),
+            run_id: format!("run-{suffix}"),
+            session_id: None,
+            message_id: None,
+            tool_name: None,
+            project_tag: Some(repo_binding().project_id),
+            channel_tag: None,
+            host_tag: None,
+            metadata,
+            provenance: Some(json!({
+                "tenant_context": tenant,
+            })),
+            redaction_status: "passed".to_string(),
+            redaction_count: 0,
+            visibility: "private".to_string(),
+            demoted: false,
+            score_boost: 0.0,
+            created_at_ms: now,
+            updated_at_ms: now,
+            expires_at_ms: None,
+        };
+        assert!(db
+            .put_global_memory_record(&record)
+            .await
+            .expect("put global memory")
+            .stored);
+    }
+
+    async fn seed_project_memory(state: &AppState, tenant: &TenantContext, content: &str) {
+        let manager = tandem_memory::MemoryManager::new_with_embedding_service(
+            &state.memory_db_path,
+            tandem_memory::embeddings::EmbeddingService::deterministic_for_tests(
+                tandem_memory::types::DEFAULT_EMBEDDING_DIMENSION,
+            ),
+        )
+        .await
+        .expect("memory manager");
+        let ids = manager
+            .store_message(tandem_memory::types::StoreMessageRequest {
+                content: content.to_string(),
+                tier: tandem_memory::types::MemoryTier::Project,
+                session_id: None,
+                project_id: Some(repo_binding().project_id),
+                source: "coder_memory_test".to_string(),
+                source_path: None,
+                source_mtime: None,
+                source_size: None,
+                source_hash: None,
+                tenant_scope: memory_tenant_scope(tenant),
+                subject: None,
+                metadata: None,
+            })
+            .await
+            .expect("store project memory");
+        assert!(!ids.is_empty());
+    }
+
     fn summaries(hits: &[Value]) -> Vec<String> {
         let mut out: Vec<String> = hits
             .iter()
             .filter_map(|hit| hit.get("summary").and_then(Value::as_str))
+            .map(ToString::to_string)
+            .collect();
+        out.sort();
+        out
+    }
+
+    fn contents(hits: &[Value]) -> Vec<String> {
+        let mut out: Vec<String> = hits
+            .iter()
+            .filter_map(|hit| hit.get("content").and_then(Value::as_str))
             .map(ToString::to_string)
             .collect();
         out.sort();
@@ -303,5 +395,158 @@ mod coder_memory_candidate_scoping_tests {
         assert_eq!(deleted, 1);
         assert!(!stale.exists());
         assert!(fresh.exists());
+    }
+
+    #[tokio::test]
+    async fn project_memory_retrieval_cannot_cross_tenant_boundaries() {
+        let state = test_state().await;
+        let tenant_a = TenantContext::explicit("org-a", "ws-a", None);
+        let tenant_b = TenantContext::explicit("org-b", "ws-b", None);
+        let record = coder_run_record("project-a");
+        let tenant_a_content =
+            "tenant-a project memory scoped vector note about rust release validation window";
+        let tenant_b_content =
+            "tenant-b project memory scoped vector note about rust release validation window";
+
+        seed_project_memory(&state, &tenant_a, tenant_a_content).await;
+        seed_project_memory(&state, &tenant_b, tenant_b_content).await;
+
+        let a_hits = list_project_memory_hits(
+            &state,
+            &record.repo_binding,
+            Some(&tenant_a),
+            "rust release validation window",
+            10,
+        )
+        .await;
+        let a_contents = contents(&a_hits);
+        assert!(a_contents.iter().any(|content| content == tenant_a_content));
+        assert!(!a_contents.iter().any(|content| content == tenant_b_content));
+
+        let b_hits = list_project_memory_hits(
+            &state,
+            &record.repo_binding,
+            Some(&tenant_b),
+            "rust release validation window",
+            10,
+        )
+        .await;
+        let b_contents = contents(&b_hits);
+        assert!(b_contents.iter().any(|content| content == tenant_b_content));
+        assert!(!b_contents.iter().any(|content| content == tenant_a_content));
+    }
+
+    #[tokio::test]
+    async fn governed_memory_retrieval_cannot_cross_tenant_boundaries() {
+        let state = test_state().await;
+        let tenant_a = TenantContext::explicit("org-a", "ws-a", None);
+        let tenant_b = TenantContext::explicit("org-b", "ws-b", None);
+        let record = coder_run_record("governed-a");
+        let tenant_a_content = "tenant-a governed memory shared needle about scoped retrieval";
+        let tenant_b_content = "tenant-b governed memory shared needle about scoped retrieval";
+
+        seed_global_memory(
+            &state,
+            "governed-a",
+            &tenant_a,
+            "default",
+            tenant_a_content,
+            Some(json!({ "kind": "run_outcome" })),
+        )
+        .await;
+        seed_global_memory(
+            &state,
+            "governed-b",
+            &tenant_b,
+            "default",
+            tenant_b_content,
+            Some(json!({ "kind": "run_outcome" })),
+        )
+        .await;
+
+        let a_hits = list_governed_memory_hits(
+            &state,
+            &record,
+            Some(&tenant_a),
+            "governed memory shared needle",
+            10,
+        )
+        .await;
+        assert_eq!(contents(&a_hits), vec![tenant_a_content.to_string()]);
+
+        let b_hits = list_governed_memory_hits(
+            &state,
+            &record,
+            Some(&tenant_b),
+            "governed memory shared needle",
+            10,
+        )
+        .await;
+        assert_eq!(contents(&b_hits), vec![tenant_b_content.to_string()]);
+    }
+
+    #[tokio::test]
+    async fn failure_pattern_duplicate_lookup_cannot_cross_tenant_boundaries() {
+        let state = test_state().await;
+        let tenant_a = TenantContext::explicit("org-a", "ws-a", None);
+        let tenant_b = TenantContext::explicit("org-b", "ws-b", None);
+        let fingerprint = "fp-scoped-duplicate";
+        let tenant_a_content = "tenant-a failure pattern shared duplicate needle";
+        let tenant_b_content = "tenant-b failure pattern shared duplicate needle";
+        let metadata = |tenant: &str| {
+            json!({
+                "kind": "failure_pattern",
+                "failure_pattern_fingerprint": fingerprint,
+                "tenant_label": tenant,
+            })
+        };
+
+        seed_global_memory(
+            &state,
+            "failure-a",
+            &tenant_a,
+            "default",
+            tenant_a_content,
+            Some(metadata("a")),
+        )
+        .await;
+        seed_global_memory(
+            &state,
+            "failure-b",
+            &tenant_b,
+            "default",
+            tenant_b_content,
+            Some(metadata("b")),
+        )
+        .await;
+
+        let subjects = vec!["default".to_string()];
+        let a_matches = find_failure_pattern_duplicates(
+            &state,
+            "org/shared",
+            Some("proj-shared"),
+            &subjects,
+            "failure pattern shared duplicate needle",
+            Some(fingerprint),
+            10,
+            Some(&tenant_a),
+        )
+        .await
+        .expect("tenant a duplicates");
+        assert_eq!(summaries(&a_matches), vec![tenant_a_content.to_string()]);
+
+        let b_matches = find_failure_pattern_duplicates(
+            &state,
+            "org/shared",
+            Some("proj-shared"),
+            &subjects,
+            "failure pattern shared duplicate needle",
+            Some(fingerprint),
+            10,
+            Some(&tenant_b),
+        )
+        .await
+        .expect("tenant b duplicates");
+        assert_eq!(summaries(&b_matches), vec![tenant_b_content.to_string()]);
     }
 }

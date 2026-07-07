@@ -520,6 +520,72 @@ pub(crate) fn failure_pattern_fingerprint(
     crate::sha256_hex(&[joined.as_str()])
 }
 
+async fn search_governed_memory_for_coder_subject(
+    db: &tandem_memory::db::MemoryDatabase,
+    tenant_context: Option<&tandem_types::TenantContext>,
+    subject: &str,
+    query: &str,
+    limit: usize,
+    project_tag: Option<&str>,
+) -> tandem_memory::types::MemoryResult<Vec<tandem_memory::types::GlobalMemorySearchHit>> {
+    if let Some(tenant_context) = tenant_context {
+        let scope = coder_memory_tenant_scope(tenant_context);
+        db.search_global_memory_for_tenant(
+            &scope.org_id,
+            &scope.workspace_id,
+            scope.deployment_id.as_deref(),
+            subject,
+            query,
+            limit.clamp(1, 20) as i64,
+            project_tag,
+            None,
+            None,
+        )
+        .await
+    } else {
+        // Local/system callers intentionally use the legacy local partition.
+        db.search_global_memory(
+            subject,
+            query,
+            limit.clamp(1, 20) as i64,
+            project_tag,
+            None,
+            None,
+        )
+        .await
+    }
+}
+
+async fn list_governed_memory_for_coder_subject(
+    db: &tandem_memory::db::MemoryDatabase,
+    tenant_context: Option<&tandem_types::TenantContext>,
+    subject: &str,
+    q: Option<&str>,
+    project_tag: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> tandem_memory::types::MemoryResult<Vec<tandem_memory::types::GlobalMemoryRecord>> {
+    if let Some(tenant_context) = tenant_context {
+        let scope = coder_memory_tenant_scope(tenant_context);
+        db.list_global_memory_for_tenant(
+            &scope.org_id,
+            &scope.workspace_id,
+            scope.deployment_id.as_deref(),
+            subject,
+            q,
+            project_tag,
+            None,
+            limit,
+            offset,
+        )
+        .await
+    } else {
+        // Local/system callers intentionally use the legacy local partition.
+        db.list_global_memory(subject, q, project_tag, None, limit, offset)
+            .await
+    }
+}
+
 pub(crate) async fn find_failure_pattern_duplicates(
     state: &AppState,
     repo_slug: &str,
@@ -536,16 +602,15 @@ pub(crate) async fn find_failure_pattern_duplicates(
     if let Some(db) = super::skills_memory::open_global_memory_db_for_state(state).await {
         let mut seen_memory_ids = HashSet::<String>::new();
         for subject in subjects {
-            let Ok(results) = db
-                .search_global_memory(
-                    subject,
-                    query,
-                    limit.clamp(1, 20) as i64,
-                    project_id,
-                    None,
-                    None,
-                )
-                .await
+            let Ok(results) = search_governed_memory_for_coder_subject(
+                &db,
+                tenant_context,
+                subject,
+                query,
+                limit,
+                project_id,
+            )
+            .await
             else {
                 continue;
             };
@@ -577,9 +642,16 @@ pub(crate) async fn find_failure_pattern_duplicates(
             fingerprint.map(str::trim).filter(|value| !value.is_empty())
         {
             for subject in subjects {
-                let Ok(records) = db
-                    .list_global_memory(subject, None, None, None, 200, 0)
-                    .await
+                let Ok(records) = list_governed_memory_for_coder_subject(
+                    &db,
+                    tenant_context,
+                    subject,
+                    None,
+                    project_id.or(Some(repo_slug)),
+                    200,
+                    0,
+                )
+                .await
                 else {
                     continue;
                 };
