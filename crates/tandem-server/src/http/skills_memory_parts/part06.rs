@@ -540,13 +540,21 @@ pub(super) async fn memory_put_impl_with_verified(
     .to_string();
     let user_id = capability.subject.clone();
     let trust_label = memory_trust_label_for_put(&request);
-    let metadata = memory_metadata_with_trust_fields(
-        memory_metadata_with_storage_fields(
-            request.metadata.clone(),
-            &artifact_refs,
-            request.classification,
+    // Authoritatively stamp the collector's active department (TAN-646). A
+    // client-supplied department already survived the membership check above and
+    // is preserved; otherwise the verified context's active department is written
+    // so attributable data is never persisted without a department.
+    let active_org_unit = crate::memory::subject::active_org_unit(verified_tenant_context);
+    let metadata = memory_metadata_with_owner_org_unit(
+        memory_metadata_with_trust_fields(
+            memory_metadata_with_storage_fields(
+                request.metadata.clone(),
+                &artifact_refs,
+                request.classification,
+            ),
+            trust_label,
         ),
-        trust_label,
+        active_org_unit.as_deref(),
     );
     let provenance = memory_provenance_with_trust(
         memory_put_provenance(&request, &partition_key, &artifact_refs, tenant_context),
@@ -723,6 +731,49 @@ mod retrieval_gateway_subject_tests {
             assertion_id: "channel-service-assertion".to_string(),
             assertion_key_id: None,
         }
+    }
+
+    #[test]
+    fn owner_org_unit_metadata_stamp_is_absent_preserving() {
+        use tandem_memory::types::owner_org_unit_id_from_metadata;
+
+        // No active department → metadata untouched.
+        assert!(memory_metadata_with_owner_org_unit(None, None).is_none());
+        let unchanged =
+            memory_metadata_with_owner_org_unit(Some(serde_json::json!({"role": "user"})), None);
+        assert_eq!(
+            owner_org_unit_id_from_metadata(unchanged.as_ref()),
+            None,
+            "no department stamped when none is active"
+        );
+
+        // Absent department → stamped from the active department.
+        let stamped = memory_metadata_with_owner_org_unit(
+            Some(serde_json::json!({"role": "user"})),
+            Some("department/finance"),
+        );
+        assert_eq!(
+            owner_org_unit_id_from_metadata(stamped.as_ref()).as_deref(),
+            Some("department/finance")
+        );
+
+        // Client-supplied department (already membership-validated) is preserved,
+        // never overwritten by the active department.
+        let preserved = memory_metadata_with_owner_org_unit(
+            Some(serde_json::json!({"owner_org_unit_id": "department/sales"})),
+            Some("department/finance"),
+        );
+        assert_eq!(
+            owner_org_unit_id_from_metadata(preserved.as_ref()).as_deref(),
+            Some("department/sales")
+        );
+
+        // Missing metadata is created as an object carrying the department.
+        let created = memory_metadata_with_owner_org_unit(None, Some("department/eng"));
+        assert_eq!(
+            owner_org_unit_id_from_metadata(created.as_ref()).as_deref(),
+            Some("department/eng")
+        );
     }
 
     #[test]

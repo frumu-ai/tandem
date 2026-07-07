@@ -655,6 +655,10 @@ pub(super) struct RunMemoryContext {
     started_at_ms: u64,
     host_tag: Option<String>,
     tenant_context: TenantContext,
+    /// Active department to stamp on ingested run memory (`owner_org_unit_id`),
+    /// resolved from the run's verified context (TAN-646). `None` = unattributable
+    /// / local mode (tenant-wide).
+    owner_org_unit_id: Option<String>,
 }
 
 pub(super) async fn open_global_memory_db() -> Option<MemoryDatabase> {
@@ -872,7 +876,10 @@ pub(super) async fn ingest_run_messages(
                             project_tag: session.project_id.clone(),
                             channel_tag: None,
                             host_tag: ctx.host_tag.clone(),
-                            metadata: Some(json!({"role": "user"})),
+                            metadata: memory_metadata_with_owner_org_unit(
+                                Some(json!({"role": "user"})),
+                                ctx.owner_org_unit_id.as_deref(),
+                            ),
                             provenance: Some(json!({"origin_event_type": "session.run.finished", "origin_message_id": message.id, "origin_session_id": session_id, "tenant_context": ctx.tenant_context})),
                             redaction_status: "passed".to_string(),
                             redaction_count: 0,
@@ -904,7 +911,10 @@ pub(super) async fn ingest_run_messages(
                             project_tag: session.project_id.clone(),
                             channel_tag: None,
                             host_tag: ctx.host_tag.clone(),
-                            metadata: Some(json!({"role": "assistant"})),
+                            metadata: memory_metadata_with_owner_org_unit(
+                                Some(json!({"role": "assistant"})),
+                                ctx.owner_org_unit_id.as_deref(),
+                            ),
                             provenance: Some(json!({"origin_event_type": "session.run.finished", "origin_message_id": message.id, "origin_session_id": session_id, "tenant_context": ctx.tenant_context})),
                             redaction_status: "passed".to_string(),
                             redaction_count: 0,
@@ -953,7 +963,10 @@ pub(super) async fn ingest_run_messages(
                                     project_tag: session.project_id.clone(),
                                     channel_tag: None,
                                     host_tag: ctx.host_tag.clone(),
-                                    metadata: None,
+                                    metadata: memory_metadata_with_owner_org_unit(
+                                        None,
+                                        ctx.owner_org_unit_id.as_deref(),
+                                    ),
                                     provenance: Some(json!({
                                         "origin_event_type": "session.run.finished",
                                         "tenant_context": ctx.tenant_context,
@@ -991,7 +1004,10 @@ pub(super) async fn ingest_run_messages(
                             project_tag: session.project_id.clone(),
                             channel_tag: None,
                             host_tag: ctx.host_tag.clone(),
-                            metadata: None,
+                            metadata: memory_metadata_with_owner_org_unit(
+                                None,
+                                ctx.owner_org_unit_id.as_deref(),
+                            ),
                             provenance: Some(json!({
                                 "origin_event_type": "session.run.finished",
                                 "tenant_context": ctx.tenant_context,
@@ -1030,7 +1046,10 @@ pub(super) async fn ingest_run_messages(
                                 project_tag: session.project_id.clone(),
                                 channel_tag: None,
                                 host_tag: ctx.host_tag.clone(),
-                                metadata: None,
+                                metadata: memory_metadata_with_owner_org_unit(
+                                    None,
+                                    ctx.owner_org_unit_id.as_deref(),
+                                ),
                                 provenance: Some(json!({
                                     "origin_event_type": "session.run.finished",
                                     "tenant_context": ctx.tenant_context,
@@ -1192,7 +1211,10 @@ pub(super) async fn ingest_event_memory_records(
                 .and_then(|v| v.as_str())
                 .map(ToString::to_string),
             host_tag,
-            metadata: None,
+            metadata: memory_metadata_with_owner_org_unit(
+                None,
+                session_ctx.owner_org_unit_id.as_deref(),
+            ),
             provenance: Some(json!({
                 "origin_event_type": event.event_type,
                 "tenant_context": tenant_context,
@@ -1281,6 +1303,11 @@ pub(super) async fn run_global_memory_ingestor(state: AppState) {
                             verified.as_ref(),
                             &run_client_id,
                         );
+                        // Active department stamped on every record ingested for
+                        // this run (TAN-646), from the same verified context that
+                        // resolves the subject.
+                        let owner_org_unit_id =
+                            crate::memory::subject::active_org_unit(verified.as_ref());
                         by_session.insert(
                             session_id,
                             RunMemoryContext {
@@ -1289,6 +1316,7 @@ pub(super) async fn run_global_memory_ingestor(state: AppState) {
                                 started_at_ms,
                                 host_tag,
                                 tenant_context,
+                                owner_org_unit_id,
                             },
                         );
                     }

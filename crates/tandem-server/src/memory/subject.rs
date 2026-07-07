@@ -171,6 +171,37 @@ pub fn local_memory_subjects_are_unrestricted(
     verified.is_none() && normalized(tenant_context.actor_id.as_deref()).is_none()
 }
 
+/// Select the active department (`owner_org_unit_id`) to stamp on data collected
+/// under a verified request context (TAN-646).
+///
+/// Department is the primary isolation axis, so each collected item is stamped
+/// with exactly **one** org-unit, chosen from the caller's verified memberships:
+///
+/// - No org-units (unattributable / local single-tenant mode) → `None`, leaving
+///   the write tenant-wide (the pre-department behavior).
+/// - Exactly one org-unit → that unit is the active department.
+/// - Multiple (e.g. a user in Sales + Leadership) → the first after a stable
+///   sort. This is deterministic and conservative: it scopes the write to a
+///   single department rather than widening it across all memberships. Reads
+///   still admit the collector (owner ∈ caller's org-unit set), while other
+///   departments are excluded. Per-request active-department selection (e.g.
+///   from the originating channel) is a documented follow-up.
+///
+/// The returned string is an unmodified element of `verified.org_units`
+/// (`"{taxonomy_id}/{unit_id}"`), so it compares equal under the read-side
+/// membership check (`caller_org_units.contains(owner_org_unit_id)`).
+pub fn active_org_unit(verified: Option<&VerifiedTenantContext>) -> Option<String> {
+    let verified = verified?;
+    let mut units: Vec<&str> = verified
+        .org_units
+        .iter()
+        .map(|unit| unit.trim())
+        .filter(|unit| !unit.is_empty())
+        .collect();
+    units.sort_unstable();
+    units.first().map(|unit| unit.to_string())
+}
+
 fn verified_actor(verified: &VerifiedTenantContext) -> Option<String> {
     normalized(verified.tenant_context.actor_id.as_deref())
         .or_else(|| normalized(Some(&verified.human_actor.actor_id)))
@@ -250,6 +281,41 @@ mod tests {
             assertion_id: "assertion-a".to_string(),
             assertion_key_id: None,
         }
+    }
+
+    #[test]
+    fn active_org_unit_applies_the_multi_membership_rule() {
+        // No verified context / no org-units → tenant-wide (None).
+        assert_eq!(active_org_unit(None), None);
+        let none_units = verified_context("user-a", None);
+        assert_eq!(active_org_unit(Some(&none_units)), None);
+
+        // Exactly one membership → that unit.
+        let mut one = verified_context("user-a", None);
+        one.org_units = vec!["department/finance".to_string()];
+        assert_eq!(
+            active_org_unit(Some(&one)).as_deref(),
+            Some("department/finance")
+        );
+
+        // Multiple memberships → deterministic first after a stable sort, and the
+        // returned value is an unmodified element of org_units.
+        let mut many = verified_context("user-a", None);
+        many.org_units = vec![
+            "department/sales".to_string(),
+            "executive_group/leadership".to_string(),
+        ];
+        let picked = active_org_unit(Some(&many)).expect("a department");
+        assert_eq!(picked, "department/sales");
+        assert!(many.org_units.contains(&picked));
+
+        // Whitespace-only / empty entries are ignored.
+        let mut noisy = verified_context("user-a", None);
+        noisy.org_units = vec!["   ".to_string(), "department/eng".to_string()];
+        assert_eq!(
+            active_org_unit(Some(&noisy)).as_deref(),
+            Some("department/eng")
+        );
     }
 
     #[test]

@@ -44,6 +44,7 @@ mod tool_event_capture_tests {
             started_at_ms: 0,
             host_tag: None,
             tenant_context: TenantContext::default(),
+            owner_org_unit_id: None,
         }
     }
 
