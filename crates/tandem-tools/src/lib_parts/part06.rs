@@ -981,6 +981,20 @@ mod tests {
     }
 
     #[test]
+    fn channel_subject_allows_own_and_shared_chunks_only() {
+        // TAN-639: list/delete visibility mirrors the search predicate.
+        let me = Some("channel:discord:user-42");
+        // Own subject and shared (NULL) chunks are visible.
+        assert!(channel_subject_allows(Some("channel:discord:user-42"), me));
+        assert!(channel_subject_allows(None, me));
+        // Another user's subject is hidden.
+        assert!(!channel_subject_allows(Some("channel:discord:user-99"), me));
+        // No caller subject (non-channel/local) sees everything.
+        assert!(channel_subject_allows(Some("channel:discord:user-99"), None));
+        assert!(channel_subject_allows(None, None));
+    }
+
+    #[test]
     fn memory_scope_policy_can_disable_global_visibility() {
         let args = json!({
             "__session_id": "session-123",

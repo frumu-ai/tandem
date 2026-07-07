@@ -365,6 +365,17 @@ fn channel_memory_subject(args: &Value) -> Option<String> {
     Some(format!("channel:{platform}:{user_id}"))
 }
 
+/// Whether a chunk with `chunk_subject` is visible to a caller scoped to
+/// `channel_subject`: its own subject or shared (NULL). A `None` caller subject
+/// (non-channel / local single-user) sees everything. Mirrors the vector search
+/// predicate for the list/delete paths, which don't go through it (TAN-639).
+fn channel_subject_allows(chunk_subject: Option<&str>, channel_subject: Option<&str>) -> bool {
+    match channel_subject {
+        None => true,
+        Some(caller) => chunk_subject.is_none() || chunk_subject == Some(caller),
+    }
+}
+
 /// A `LocalNoop` access filter carrying only `caller_subject`, used to restrict
 /// tool reads to the caller's own + shared (NULL-subject) chunks without
 /// engaging governed-read (org-unit / knowledge-scope) semantics (TAN-639).
@@ -906,6 +917,15 @@ impl Tool for MemoryListTool {
             }
         }
 
+        // In a shared channel scope, hide other users' subject-scoped chunks so
+        // memory_list can't be used to read notes stored under another channel
+        // user's subject (TAN-639). Non-channel contexts keep everything.
+        if let Some(subject) = channel_memory_subject(&args) {
+            chunks.retain(|chunk| {
+                channel_subject_allows(chunk.subject.as_deref(), Some(subject.as_str()))
+            });
+        }
+
         chunks.sort_by_key(|chunk| std::cmp::Reverse(chunk.created_at));
         chunks.truncate(limit);
         let rows = chunks
@@ -1033,6 +1053,37 @@ impl Tool for MemoryDeleteTool {
 
         let db_path = resolve_memory_db_path(&args);
         let manager = MemoryManager::new(&db_path).await?;
+
+        // In a shared channel scope, a user may only delete their own or shared
+        // (NULL-subject) chunks — never another channel user's note (TAN-639).
+        // Report the mismatch as not_found so existence isn't revealed.
+        if let Some(subject) = channel_memory_subject(&args) {
+            let scope_chunks = match tier {
+                MemoryTier::Session => match session_id.as_deref() {
+                    Some(sid) => manager.db().get_session_chunks(sid).await?,
+                    None => Vec::new(),
+                },
+                MemoryTier::Project => match project_id.as_deref() {
+                    Some(pid) => manager.db().get_project_chunks(pid).await?,
+                    None => Vec::new(),
+                },
+                MemoryTier::Global => Vec::new(),
+            };
+            if let Some(target) = scope_chunks.iter().find(|chunk| chunk.id == chunk_id) {
+                if !channel_subject_allows(target.subject.as_deref(), Some(subject.as_str())) {
+                    return Ok(ToolResult {
+                        output: format!("memory chunk `{chunk_id}` not found in {tier} memory"),
+                        metadata: json!({
+                            "ok": false,
+                            "reason": "not_found",
+                            "chunk_id": chunk_id,
+                            "tier": tier.to_string(),
+                        }),
+                    });
+                }
+            }
+        }
+
         let deleted = manager
             .db()
             .delete_chunk(tier, chunk_id, project_id.as_deref(), session_id.as_deref())
