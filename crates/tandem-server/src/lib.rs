@@ -67,6 +67,7 @@ pub mod browser;
 pub mod capability_resolver;
 pub mod config;
 pub mod data_boundary_bridge;
+pub(crate) mod encrypted_file_store;
 pub mod eval_support;
 pub mod failures;
 pub mod goal_capability_learning;

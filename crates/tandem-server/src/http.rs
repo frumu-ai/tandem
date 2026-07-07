@@ -81,6 +81,7 @@ mod mcp_connection_inventory;
 pub(crate) mod mcp_discovery;
 pub(crate) mod mcp_inventory;
 pub(crate) mod mcp_run_as;
+mod memory_audit_store;
 mod middleware;
 mod mission_builder;
 mod mission_builder_host;

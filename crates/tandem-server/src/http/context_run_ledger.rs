@@ -838,16 +838,25 @@ async fn load_jsonl_rows<T: serde::de::DeserializeOwned>(path: &std::path::Path)
     let Ok(content) = tokio::fs::read_to_string(path).await else {
         return Vec::new();
     };
-    content
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                return None;
+    let mut rows = Vec::new();
+    for line in content.lines() {
+        let plaintext = match crate::encrypted_file_store::decrypt_jsonl_line(line) {
+            Ok(Some(plaintext)) => plaintext,
+            Ok(None) => continue,
+            Err(error) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = ?error,
+                    "failed to decrypt JSONL evidence file"
+                );
+                return Vec::new();
             }
-            serde_json::from_str::<T>(trimmed).ok()
-        })
-        .collect()
+        };
+        if let Ok(row) = serde_json::from_str::<T>(plaintext.trim()) {
+            rows.push(row);
+        }
+    }
+    rows
 }
 
 fn automation_run_id_from_context_run_id(context_run_id: &str) -> Option<String> {

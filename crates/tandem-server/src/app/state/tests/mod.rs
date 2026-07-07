@@ -1348,6 +1348,7 @@ fn prompt_memory_record(label: &str, content: &str) -> tandem_memory::types::Glo
 mod automation_webhook_stateful;
 mod automation_webhooks;
 mod automations;
+mod encrypted_file_stores;
 mod handoff;
 mod incident_monitor_persistence;
 mod incident_monitor_recovery;
