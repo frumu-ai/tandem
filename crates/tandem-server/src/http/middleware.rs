@@ -49,6 +49,9 @@ pub(super) async fn auth_gate(
     if request.method() == Method::POST && is_public_automation_webhook_path(path) {
         return next.run(request).await;
     }
+    if request.method() == Method::POST && is_public_slack_events_path(path) {
+        return next.run(request).await;
+    }
     let runtime_auth_mode = resolve_memory_context_runtime_auth_mode();
     if path == "/incident-monitor/intake/report" {
         if !runtime_auth_mode_requires_transport_token(runtime_auth_mode)
@@ -326,6 +329,20 @@ fn is_public_automation_webhook_path(path: &str) -> bool {
         .filter(|suffix| suffix.starts_with('/'))
         .unwrap_or(path);
     trimmed.starts_with("/webhooks/automations/")
+}
+
+/// The signed Slack Events webhook (`/channels/slack/events`) authenticates via the
+/// Slack request signature (verified first thing in `slack_events`), **not** the
+/// Tandem API token — Slack's `url_verification` handshake and event deliveries
+/// never carry it. Exempt it from the transport-token gate, like the other signed
+/// webhook ingresses, so the endpoint is reachable on token-protected deployments
+/// instead of 401-ing before signature verification (TAN-654).
+fn is_public_slack_events_path(path: &str) -> bool {
+    let trimmed = path
+        .strip_prefix("/api/engine")
+        .filter(|suffix| suffix.starts_with('/'))
+        .unwrap_or(path);
+    trimmed.trim_end_matches('/') == "/channels/slack/events"
 }
 
 fn request_transport_token_authorized(
@@ -1604,6 +1621,24 @@ fn extract_request_token(headers: &HeaderMap) -> Option<String> {
 #[cfg(test)]
 #[path = "middleware_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod slack_events_bypass_tests {
+    use super::is_public_slack_events_path;
+
+    #[test]
+    fn slack_events_path_bypasses_token_gate() {
+        assert!(is_public_slack_events_path("/channels/slack/events"));
+        assert!(is_public_slack_events_path(
+            "/api/engine/channels/slack/events"
+        ));
+        assert!(is_public_slack_events_path("/channels/slack/events/"));
+        // Sibling routes and other channels are not exempted by this predicate.
+        assert!(!is_public_slack_events_path("/channels/slack/interactions"));
+        assert!(!is_public_slack_events_path("/channels/discord/events"));
+        assert!(!is_public_slack_events_path("/global/health"));
+    }
+}
 
 pub(super) async fn startup_gate(
     State(state): State<AppState>,

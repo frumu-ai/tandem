@@ -140,6 +140,10 @@ pub(super) fn build_router(state: AppState, route_extensions: &[super::RouteRegi
         axum::routing::post(super::slack_interactions::slack_interactions),
     );
     router = router.route(
+        "/channels/slack/events",
+        axum::routing::post(super::slack_interactions::slack_events),
+    );
+    router = router.route(
         "/channels/discord/interactions",
         axum::routing::post(super::discord_interactions::discord_interactions),
     );
