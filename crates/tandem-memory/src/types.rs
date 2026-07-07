@@ -407,13 +407,9 @@ impl MemoryAccessFilter {
                 return GovernedReadDecision::deny("tenant_scope_mismatch");
             }
             // Department enforcement (TAN-647). Department is the primary
-            // isolation axis, so it fails **closed**:
-            //   - a record owned by an org unit is readable only by members of
-            //     that unit (absent membership denies);
-            //   - a record with NO department is invisible to a department-scoped
-            //     caller unless it is explicitly `tenant_shared`.
-            // Source-bound records are governed by the grant path below instead,
-            // where org-unit access grants already apply.
+            // isolation axis, so it fails **closed**: a record owned by an org
+            // unit is readable only by members of that unit (absent membership
+            // denies). Source-bound records are governed by the grant path below.
             if let Some(owner_org_unit_id) = target.owner_org_unit_id.as_deref() {
                 let is_member = self
                     .caller_org_units
@@ -422,17 +418,6 @@ impl MemoryAccessFilter {
                 if !is_member {
                     return GovernedReadDecision::deny("org_unit_scope_mismatch");
                 }
-            } else if self
-                .caller_org_units
-                .as_ref()
-                .is_some_and(|units| !units.is_empty())
-                && !target.tenant_shared
-            {
-                // Department-scoped caller, department-unscoped record that is not
-                // explicitly tenant-shared → fail closed so legacy/untagged rows
-                // never leak across departments. Callers with no department
-                // identity (local / non-enterprise) keep the pre-org-unit behavior.
-                return GovernedReadDecision::deny("org_unit_absent_fail_closed");
             }
             // Per-user restriction: a record owned by a subject is readable only
             // by that subject. As with org units, absent caller-subject
@@ -445,6 +430,23 @@ impl MemoryAccessFilter {
                 if !is_owner {
                     return GovernedReadDecision::deny("subject_scope_mismatch");
                 }
+            }
+            // Fail-closed default for a record governed by **neither** department
+            // nor subject (TAN-647): such a fully-unscoped record is invisible to a
+            // department-scoped caller unless explicitly `tenant_shared`, so
+            // legacy/untagged rows never leak across departments. Records owned by
+            // a subject are intentionally excluded here — they are already governed
+            // by the subject check above, so the owner keeps access to their own
+            // private/session memory even before it carries a department stamp.
+            if target.owner_org_unit_id.is_none()
+                && target.owner_subject.is_none()
+                && !target.tenant_shared
+                && self
+                    .caller_org_units
+                    .as_ref()
+                    .is_some_and(|units| !units.is_empty())
+            {
+                return GovernedReadDecision::deny("org_unit_absent_fail_closed");
             }
             if strict_context
                 .resource_scope

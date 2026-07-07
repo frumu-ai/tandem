@@ -388,6 +388,31 @@ fn unscoped_chunk_is_fail_closed_for_department_scoped_caller() {
 }
 
 #[test]
+fn subject_owned_chunk_without_department_stays_readable_by_owner() {
+    // TAN-647 (review, P1): the absent-department fail-closed must not hide a
+    // caller's own subject-owned memory that has no department yet. Such records
+    // are governed by the subject check, not the department default.
+    let private = tenant_chunk(Some("user-a")); // subject-owned, no department
+
+    // The owner, reading under a department-scoped context, still sees it.
+    let owner_department_filter =
+        MemoryAccessFilter::strict(tenant_strict(DataBoundary::unrestricted()), 2_000)
+            .with_caller_org_units(["ou-sales".to_string()])
+            .with_caller_subject("user-a");
+    assert!(owner_department_filter.decision_for_chunk(&private).allowed);
+
+    // A different subject in another department is denied by the subject check
+    // (no cross-department/cross-user leak).
+    let other_department_filter =
+        MemoryAccessFilter::strict(tenant_strict(DataBoundary::unrestricted()), 2_000)
+            .with_caller_org_units(["ou-eng".to_string()])
+            .with_caller_subject("user-b");
+    let decision = other_department_filter.decision_for_chunk(&private);
+    assert!(!decision.allowed);
+    assert_eq!(decision.reason.as_deref(), Some("subject_scope_mismatch"));
+}
+
+#[test]
 fn subject_restricted_chunk_visible_only_to_owner() {
     let restricted = tenant_chunk(Some("user-a"));
 
