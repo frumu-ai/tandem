@@ -359,6 +359,14 @@ pub struct MemoryPutRequest {
     pub authority_job_context: Option<MemoryAuthorityJobContext>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    /// Opt-in per-user (subject) scoping (TAN-648). Default `false` =
+    /// department-shared (governed by tenant + department). When `true`, the
+    /// record is additionally restricted to the collecting subject: its
+    /// `owner_subject` is stamped from the verified capability so the governed
+    /// read filter denies any other caller — the forward hook for per-user
+    /// scoping on top of the department-primary model.
+    #[serde(default)]
+    pub private: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

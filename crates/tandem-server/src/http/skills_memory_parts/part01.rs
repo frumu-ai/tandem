@@ -1470,6 +1470,7 @@ impl GovernedDistillationWriter {
         }
 
         let request = MemoryPutRequest {
+            private: false,
             run_id: self.run_id.clone(),
             partition: self.partition.clone(),
             kind: tandem_memory::MemoryContentKind::Fact,
@@ -1575,6 +1576,33 @@ fn memory_metadata_with_owner_org_unit(
         obj.insert(
             tandem_memory::types::OWNER_ORG_UNIT_METADATA_KEY.to_string(),
             json!(owner_org_unit_id),
+        );
+    }
+    Some(metadata)
+}
+
+/// Stamp `owner_subject` into a record's metadata when the write opted into
+/// `private` (TAN-648), so the governed read filter restricts it to the
+/// collecting subject. No-op when `owner_subject` is `None` (not private) or the
+/// key is already present.
+fn memory_metadata_with_owner_subject(
+    metadata: Option<Value>,
+    owner_subject: Option<&str>,
+) -> Option<Value> {
+    let Some(owner_subject) = owner_subject.map(str::trim).filter(|s| !s.is_empty()) else {
+        return metadata;
+    };
+    if tandem_memory::types::owner_subject_from_metadata(metadata.as_ref()).is_some() {
+        return metadata;
+    }
+    let mut metadata = metadata.unwrap_or_else(|| json!({}));
+    if !metadata.is_object() {
+        metadata = json!({ "value": metadata });
+    }
+    if let Some(obj) = metadata.as_object_mut() {
+        obj.insert(
+            tandem_memory::types::OWNER_SUBJECT_METADATA_KEY.to_string(),
+            json!(owner_subject),
         );
     }
     Some(metadata)

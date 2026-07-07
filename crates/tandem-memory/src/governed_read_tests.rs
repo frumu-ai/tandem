@@ -361,6 +361,33 @@ fn local_noop_ignores_org_unit_restriction() {
 }
 
 #[test]
+fn private_record_is_restricted_to_its_owner_subject() {
+    // TAN-648: a record written with `private=true` carries `owner_subject` in
+    // metadata, projected into the governed filter so only that subject reads it.
+    let private = global_record(Some(serde_json::json!({ "owner_subject": "user-a" })));
+
+    // The owner reads it.
+    let owner = MemoryAccessFilter::strict(tenant_strict(DataBoundary::unrestricted()), 2_000)
+        .with_caller_subject("user-a");
+    assert!(owner.decision_for_global_record(&private).allowed);
+
+    // A different subject in the same tenant is denied.
+    let other = MemoryAccessFilter::strict(tenant_strict(DataBoundary::unrestricted()), 2_000)
+        .with_caller_subject("user-b");
+    let decision = other.decision_for_global_record(&private);
+    assert!(!decision.allowed);
+    assert_eq!(decision.reason.as_deref(), Some("subject_scope_mismatch"));
+
+    // A non-private record (no owner_subject) is not subject-restricted.
+    let shared = global_record(None);
+    let shared_decision =
+        MemoryAccessFilter::strict(tenant_strict(DataBoundary::unrestricted()), 2_000)
+            .with_caller_subject("user-b")
+            .decision_for_global_record(&shared);
+    assert!(shared_decision.allowed);
+}
+
+#[test]
 fn unscoped_chunk_is_fail_closed_for_department_scoped_caller() {
     // TAN-647: the fail-closed department default applies to the chunk read path
     // too (shared decision_for_target).

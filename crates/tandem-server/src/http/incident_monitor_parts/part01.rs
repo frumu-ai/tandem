@@ -1665,6 +1665,7 @@ async fn persist_incident_monitor_failure_pattern_memory(
         state,
         &tenant_context,
         MemoryPutRequest {
+            private: false,
             run_id: triage_run_id.to_string(),
             partition: partition.clone(),
             kind: MemoryContentKind::Fact,
@@ -1790,6 +1791,7 @@ async fn persist_incident_monitor_regression_signal_memory(
         state,
         &tenant_context,
         MemoryPutRequest {
+            private: false,
             run_id: triage_run_id.to_string(),
             partition: partition.clone(),
             kind: MemoryContentKind::Fact,

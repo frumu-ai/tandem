@@ -601,10 +601,13 @@ fn governed_read_target_from_global_record(
         source_object_id: None,
         evidence: GovernedReadEvidence::TenantLocalMemory,
         owner_org_unit_id: owner_org_unit_id_from_metadata(record.metadata.as_ref()),
-        // GlobalMemoryRecord subject scoping is enforced at the SQL layer
-        // (user_id predicates per TAN-601); visibility="shared" records are
-        // deliberately cross-subject, so no owner_subject is projected here.
-        owner_subject: None,
+        // GlobalMemoryRecord subject scoping is primarily the SQL `user_id`
+        // predicate (TAN-601). A record explicitly marked `private` (TAN-648)
+        // additionally carries an `owner_subject` in metadata, projected here so
+        // the governed read filter denies any caller whose subject differs — the
+        // per-user opt-in on top of the department-primary model. Absent the key
+        // (the default) the record stays department/tenant-governed as before.
+        owner_subject: owner_subject_from_metadata(record.metadata.as_ref()),
         tenant_shared: tenant_shared_from_metadata(record.metadata.as_ref()),
     })
 }
@@ -669,6 +672,20 @@ pub const OWNER_ORG_UNIT_METADATA_KEY: &str = "owner_org_unit_id";
 pub fn owner_org_unit_id_from_metadata(metadata: Option<&serde_json::Value>) -> Option<String> {
     metadata
         .and_then(|value| value.get(OWNER_ORG_UNIT_METADATA_KEY))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+/// Metadata key restricting a record to the collecting subject when the write
+/// opted into `private` (TAN-648). Present only on private records.
+pub const OWNER_SUBJECT_METADATA_KEY: &str = "owner_subject";
+
+/// The subject a private record is restricted to, if any (trimmed, non-empty).
+pub fn owner_subject_from_metadata(metadata: Option<&serde_json::Value>) -> Option<String> {
+    metadata
+        .and_then(|value| value.get(OWNER_SUBJECT_METADATA_KEY))
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())

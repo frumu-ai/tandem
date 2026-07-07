@@ -110,6 +110,7 @@ async fn persist_incident_monitor_failure_pattern_from_approved_draft(
         state,
         &tenant_context,
         MemoryPutRequest {
+            private: false,
             run_id,
             partition: partition.clone(),
             kind: MemoryContentKind::Fact,

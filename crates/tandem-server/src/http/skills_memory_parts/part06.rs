@@ -545,16 +545,24 @@ pub(super) async fn memory_put_impl_with_verified(
     // is preserved; otherwise the verified context's active department is written
     // so attributable data is never persisted without a department.
     let active_org_unit = crate::memory::subject::active_org_unit(verified_tenant_context);
-    let metadata = memory_metadata_with_owner_org_unit(
-        memory_metadata_with_trust_fields(
-            memory_metadata_with_storage_fields(
-                request.metadata.clone(),
-                &artifact_refs,
-                request.classification,
+    // Per-user opt-in (TAN-648): a `private` write additionally restricts the
+    // record to the collecting subject (`user_id`), stamped as `owner_subject`
+    // so the governed read filter denies any other caller. Default (not private)
+    // leaves the record department/tenant-governed.
+    let owner_subject = request.private.then(|| user_id.clone());
+    let metadata = memory_metadata_with_owner_subject(
+        memory_metadata_with_owner_org_unit(
+            memory_metadata_with_trust_fields(
+                memory_metadata_with_storage_fields(
+                    request.metadata.clone(),
+                    &artifact_refs,
+                    request.classification,
+                ),
+                trust_label,
             ),
-            trust_label,
+            active_org_unit.as_deref(),
         ),
-        active_org_unit.as_deref(),
+        owner_subject.as_deref(),
     );
     let provenance = memory_provenance_with_trust(
         memory_put_provenance(&request, &partition_key, &artifact_refs, tenant_context),

@@ -112,6 +112,7 @@ pub(super) async fn workflow_learning_candidate_promote(
             &state,
             &tenant_context,
             MemoryPutRequest {
+                private: false,
                 run_id: run_id.clone(),
                 partition: session_partition.clone(),
                 kind: tandem_memory::MemoryContentKind::Fact,

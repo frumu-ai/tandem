@@ -191,6 +191,7 @@ fn verified_org_unit_context(
 
 fn org_unit_put_request(run_id: &str, owner_org_unit_id: &str) -> tandem_memory::MemoryPutRequest {
     tandem_memory::MemoryPutRequest {
+        private: false,
         run_id: run_id.to_string(),
         partition: tandem_memory::MemoryPartition {
             org_id: "acme".to_string(),

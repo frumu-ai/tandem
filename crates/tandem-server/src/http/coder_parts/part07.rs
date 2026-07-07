@@ -795,6 +795,7 @@ pub(super) async fn coder_memory_candidate_promote(
         &state,
         &tenant_context,
         MemoryPutRequest {
+            private: false,
             run_id: record.linked_context_run_id.clone(),
             partition: session_partition.clone(),
             kind: match kind {

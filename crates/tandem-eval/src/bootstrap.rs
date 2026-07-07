@@ -536,6 +536,7 @@ impl EvalActionFirewallProbeTool {
             &self.state,
             tenant_context,
             MemoryPutRequest {
+                private: false,
                 run_id: run_id.clone(),
                 partition: partition.clone(),
                 kind: MemoryContentKind::Note,

@@ -1058,6 +1058,7 @@ async fn verified_delegate_memory_put_accepts_delegate_subject() {
         &tenant_context,
         Some(&verified),
         tandem_memory::MemoryPutRequest {
+            private: false,
             run_id: "delegate-memory-put-run".to_string(),
             partition: partition.clone(),
             kind: tandem_memory::MemoryContentKind::Fact,
