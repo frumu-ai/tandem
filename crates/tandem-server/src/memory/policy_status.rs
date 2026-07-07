@@ -205,6 +205,22 @@ mod tests {
             "prompt memory access must resolve the enterprise-aware memory policy mode"
         );
 
+        let local_helper_source = source
+            .split("async fn search_local_prompt_global_memory")
+            .nth(1)
+            .and_then(|tail| {
+                tail.split("pub(super) async fn search_prompt_global_memory")
+                    .next()
+            })
+            .expect("local prompt global memory search helper");
+        assert_eq!(
+            local_helper_source
+                .matches(".search_global_memory(")
+                .count(),
+            2,
+            "unscoped prompt global-memory search is allowed only in the local-only helper"
+        );
+
         let function_source = source
             .split("pub(super) async fn search_prompt_global_memory")
             .nth(1)
@@ -220,7 +236,11 @@ mod tests {
             .nth(1)
             .expect("governed prompt memory arm");
 
-        assert_eq!(local_arm.matches(".search_global_memory(").count(), 2);
+        assert_eq!(local_arm.matches(".search_global_memory(").count(), 0);
+        assert!(
+            local_arm.contains("search_local_prompt_global_memory"),
+            "local prompt memory must route unscoped search through the audited helper"
+        );
         assert_eq!(
             governed_and_blocked_arms
                 .matches(".search_global_memory(")
