@@ -17,6 +17,7 @@ pub mod knowledge_scope;
 pub mod manager;
 pub mod recursive_retrieval;
 pub mod response_cache;
+pub mod store;
 pub mod types;
 
 pub use context_layers::*;
@@ -32,3 +33,4 @@ pub use knowledge_scope::*;
 pub use manager::MemoryManager;
 pub use recursive_retrieval::*;
 pub use response_cache::ResponseCache;
+pub use store::{MemoryReadScope, MemoryStore, MemoryWriteScope};
