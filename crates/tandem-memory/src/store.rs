@@ -232,7 +232,9 @@ mod tests {
         assert!(reject_unsupported_narrowing(&by_subject).is_err());
 
         // Tenant-only reads are accepted (behavior-preserving path).
-        assert!(reject_unsupported_narrowing(&MemoryReadScope::tenant(MemoryTenantScope::local()))
-            .is_ok());
+        assert!(
+            reject_unsupported_narrowing(&MemoryReadScope::tenant(MemoryTenantScope::local()))
+                .is_ok()
+        );
     }
 }
