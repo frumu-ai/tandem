@@ -163,76 +163,58 @@ impl Tool for MemorySearchTool {
             });
         }
 
-        let mut results: Vec<MemorySearchResult> = Vec::new();
+        // In a shared channel scope, restrict reads to the calling user's own
+        // notes plus shared (NULL-subject) chunks so users can't read each
+        // other's memory_store notes (TAN-639). Outside channel contexts the
+        // filter is None and this is identical to the plain per-tenant search.
+        let channel_subject = channel_gateway
+            .as_ref()
+            .and_then(|_| channel_memory_subject(&args));
+        let access_filter = channel_memory_read_filter(channel_subject.as_deref());
+        let filter_ref = access_filter.as_ref();
+        let tenant_scope = tandem_memory::types::MemoryTenantScope::local();
+
+        // Tiers to read, as (tier, project, session). Reads route through the
+        // access-filtered search so a channel subject (when present) restricts
+        // results to the caller's own + shared chunks; a None filter is
+        // identical to the plain per-tenant search (TAN-639).
+        let mut plan: Vec<(MemoryTier, Option<&str>, Option<&str>)> = Vec::new();
         match tier {
             Some(MemoryTier::Session) => {
-                results.extend(
-                    manager
-                        .search(
-                            query,
-                            Some(MemoryTier::Session),
-                            project_id.as_deref(),
-                            session_id.as_deref(),
-                            Some(limit),
-                        )
-                        .await?,
-                );
+                plan.push((MemoryTier::Session, project_id.as_deref(), session_id.as_deref()));
             }
             Some(MemoryTier::Project) => {
-                results.extend(
-                    manager
-                        .search(
-                            query,
-                            Some(MemoryTier::Project),
-                            project_id.as_deref(),
-                            session_id.as_deref(),
-                            Some(limit),
-                        )
-                        .await?,
-                );
+                plan.push((MemoryTier::Project, project_id.as_deref(), session_id.as_deref()));
             }
-            Some(MemoryTier::Global) => {
-                results.extend(
-                    manager
-                        .search(query, Some(MemoryTier::Global), None, None, Some(limit))
-                        .await?,
-                );
-            }
+            Some(MemoryTier::Global) => plan.push((MemoryTier::Global, None, None)),
             _ => {
                 if session_id.is_some() {
-                    results.extend(
-                        manager
-                            .search(
-                                query,
-                                Some(MemoryTier::Session),
-                                project_id.as_deref(),
-                                session_id.as_deref(),
-                                Some(limit),
-                            )
-                            .await?,
-                    );
+                    plan.push((MemoryTier::Session, project_id.as_deref(), session_id.as_deref()));
                 }
                 if project_id.is_some() {
-                    results.extend(
-                        manager
-                            .search(
-                                query,
-                                Some(MemoryTier::Project),
-                                project_id.as_deref(),
-                                session_id.as_deref(),
-                                Some(limit),
-                            )
-                            .await?,
-                    );
+                    plan.push((MemoryTier::Project, project_id.as_deref(), session_id.as_deref()));
                 }
                 if allow_global {
-                    results.extend(
-                        manager
-                            .search(query, Some(MemoryTier::Global), None, None, Some(limit))
-                            .await?,
-                    );
+                    plan.push((MemoryTier::Global, None, None));
                 }
             }
+        }
+
+        let mut results: Vec<MemorySearchResult> = Vec::new();
+        for (search_tier, project, session) in plan {
+            results.extend(
+                manager
+                    .search_for_tenant_with_access_filter(
+                        query,
+                        Some(search_tier),
+                        project,
+                        session,
+                        &tenant_scope,
+                        Some(limit),
+                        filter_ref,
+                    )
+                    .await?,
+            );
         }
 
         let mut dedup: HashMap<String, MemorySearchResult> = HashMap::new();
@@ -368,6 +350,48 @@ fn channel_memory_gateway_context(
         scope_id,
         session_id,
         project_id,
+    })
+}
+
+/// The memory subject that scopes a channel user's own notes within a shared
+/// channel scope (TAN-639). Derived from the engine-injected, trusted channel
+/// identity (never model-supplied), mirroring the channel gateway subject so a
+/// write stamped here matches a read filtered on it. `None` outside channel
+/// contexts, where the memory_store tool runs in local single-user mode with no
+/// caller identity and chunks stay shared within their tier scope.
+fn channel_memory_subject(args: &Value) -> Option<String> {
+    let platform = hidden_arg_string(args, "__channel_platform")?;
+    let user_id = hidden_arg_string(args, "__channel_user_id")?;
+    Some(format!("channel:{platform}:{user_id}"))
+}
+
+/// Whether a chunk with `chunk_subject` is visible to a caller scoped to
+/// `channel_subject`: its own subject or shared (NULL). A `None` caller subject
+/// (non-channel / local single-user) sees everything. Mirrors the vector search
+/// predicate for the list/delete paths, which don't go through it (TAN-639).
+fn channel_subject_allows(chunk_subject: Option<&str>, channel_subject: Option<&str>) -> bool {
+    match channel_subject {
+        None => true,
+        Some(caller) => chunk_subject.is_none() || chunk_subject == Some(caller),
+    }
+}
+
+/// A `LocalNoop` access filter carrying only `caller_subject`, used to restrict
+/// tool reads to the caller's own + shared (NULL-subject) chunks without
+/// engaging governed-read (org-unit / knowledge-scope) semantics (TAN-639).
+fn channel_memory_read_filter(subject: Option<&str>) -> Option<tandem_memory::types::MemoryAccessFilter> {
+    let subject = subject?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    Some(tandem_memory::types::MemoryAccessFilter {
+        strict_context: None,
+        now_ms,
+        mode: tandem_memory::types::GovernedReadMode::LocalNoop,
+        workflow_phase: None,
+        caller_org_units: None,
+        caller_subject: Some(subject.to_string()),
     })
 }
 
@@ -644,7 +668,8 @@ impl Tool for MemoryStoreTool {
                     "project_id":{"type":"string"},
                     "source":{"type":"string"},
                     "metadata":{"type":"object"},
-                    "allow_global":{"type":"boolean"}
+                    "allow_global":{"type":"boolean"},
+                    "shared":{"type":"boolean","description":"Store as tenant/tier-shared (subject-less) instead of scoped to the calling user. Only meaningful in channel/multi-user contexts."}
                 },
                 "required":["content"]
             }),
@@ -750,6 +775,10 @@ impl Tool for MemoryStoreTool {
             .unwrap_or("agent_note")
             .to_string();
         let metadata = args.get("metadata").cloned();
+        let shared = args
+            .get("shared")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
         let request = tandem_memory::types::StoreMessageRequest {
             content: content.to_string(),
@@ -762,9 +791,15 @@ impl Tool for MemoryStoreTool {
             source_size: None,
             source_hash: None,
             tenant_scope: tandem_memory::types::MemoryTenantScope::local(),
-            // Model-tool writes run in local single-tenant mode with no caller
-            // identity; chunks stay shared within their tier scope.
-            subject: None,
+            // Scope the note to the calling channel user so other users in the
+            // same shared channel scope can't read it (TAN-639). `shared: true`
+            // opts back into tenant/tier-wide sharing. Outside channel contexts
+            // there is no caller identity, so chunks stay shared as before.
+            subject: if shared {
+                None
+            } else {
+                channel_memory_subject(&args)
+            },
             metadata,
         };
         let chunk_ids = manager.store_message(request).await?;
@@ -880,6 +915,15 @@ impl Tool for MemoryListTool {
                     metadata: json!({"ok": false, "reason": "invalid_tier"}),
                 });
             }
+        }
+
+        // In a shared channel scope, hide other users' subject-scoped chunks so
+        // memory_list can't be used to read notes stored under another channel
+        // user's subject (TAN-639). Non-channel contexts keep everything.
+        if let Some(subject) = channel_memory_subject(&args) {
+            chunks.retain(|chunk| {
+                channel_subject_allows(chunk.subject.as_deref(), Some(subject.as_str()))
+            });
         }
 
         chunks.sort_by_key(|chunk| std::cmp::Reverse(chunk.created_at));
@@ -1009,6 +1053,37 @@ impl Tool for MemoryDeleteTool {
 
         let db_path = resolve_memory_db_path(&args);
         let manager = MemoryManager::new(&db_path).await?;
+
+        // In a shared channel scope, a user may only delete their own or shared
+        // (NULL-subject) chunks — never another channel user's note (TAN-639).
+        // Report the mismatch as not_found so existence isn't revealed.
+        if let Some(subject) = channel_memory_subject(&args) {
+            let scope_chunks = match tier {
+                MemoryTier::Session => match session_id.as_deref() {
+                    Some(sid) => manager.db().get_session_chunks(sid).await?,
+                    None => Vec::new(),
+                },
+                MemoryTier::Project => match project_id.as_deref() {
+                    Some(pid) => manager.db().get_project_chunks(pid).await?,
+                    None => Vec::new(),
+                },
+                MemoryTier::Global => Vec::new(),
+            };
+            if let Some(target) = scope_chunks.iter().find(|chunk| chunk.id == chunk_id) {
+                if !channel_subject_allows(target.subject.as_deref(), Some(subject.as_str())) {
+                    return Ok(ToolResult {
+                        output: format!("memory chunk `{chunk_id}` not found in {tier} memory"),
+                        metadata: json!({
+                            "ok": false,
+                            "reason": "not_found",
+                            "chunk_id": chunk_id,
+                            "tier": tier.to_string(),
+                        }),
+                    });
+                }
+            }
+        }
+
         let deleted = manager
             .db()
             .delete_chunk(tier, chunk_id, project_id.as_deref(), session_id.as_deref())
