@@ -17,8 +17,8 @@ use async_trait::async_trait;
 
 use crate::db::MemoryDatabase;
 use crate::types::{
-    GlobalMemoryRecord, GlobalMemorySearchHit, GlobalMemoryWriteResult, MemoryError, MemoryResult,
-    MemoryTenantScope,
+    GlobalMemoryRecord, GlobalMemorySearchHit, GlobalMemoryWriteResult, MemoryChunk, MemoryError,
+    MemoryResult, MemoryTenantScope, MemoryTier,
 };
 
 /// Fail closed when a read scope requests department (`org_unit`) or per-user
@@ -34,6 +34,36 @@ fn reject_unsupported_narrowing(scope: &MemoryReadScope) -> MemoryResult<()> {
         return Err(MemoryError::InvalidConfig(
             "MemoryStore SQLite backend does not yet enforce org_unit/subject scope narrowing \
              (TAN-645/648); refusing to widen the read to tenant scope"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Guard for chunk vector search. The underlying query enforces `subject` via
+/// `visible_subject`, but two scope dimensions cannot yet be honored safely and
+/// are rejected fail-closed rather than silently widening the read:
+///
+/// - **`org_unit`** is not yet a query predicate (TAN-645/662).
+/// - **`subject == None`** would disable the subject filter entirely: the query
+///   predicate `(?N IS NULL OR c.subject IS NULL OR c.subject = ?N)` returns
+///   **all** subjects' chunks when `?N` is NULL, not just shared (`c.subject IS
+///   NULL`) rows. Since the query can't express "shared-only" until `owner_subject`
+///   / `private` land as real predicates (TAN-648), require an explicit subject
+///   rather than return every subject's memory under a "subject-enforced" contract.
+fn reject_unenforceable_chunk_read(scope: &MemoryReadScope) -> MemoryResult<()> {
+    if scope.org_unit.is_some() {
+        return Err(MemoryError::InvalidConfig(
+            "MemoryStore chunk search does not yet enforce org_unit scope narrowing \
+             (TAN-645/662); refusing to widen the read past the requested department"
+                .to_string(),
+        ));
+    }
+    if scope.subject.is_none() {
+        return Err(MemoryError::InvalidConfig(
+            "MemoryStore chunk search requires an explicit scope.subject: a None subject \
+             disables the query's subject filter and would return all subjects' chunks \
+             (TAN-648); pass the caller's subject rather than widen the read"
                 .to_string(),
         ));
     }
@@ -131,6 +161,25 @@ pub trait MemoryStore: Send + Sync {
         &self,
         record: &GlobalMemoryRecord,
     ) -> MemoryResult<GlobalMemoryWriteResult>;
+
+    /// Store (insert/replace) a memory chunk and its embedding. The chunk carries
+    /// its own tenant scope + subject today; department / subject stamping moves
+    /// onto a [`MemoryWriteScope`] with TAN-646 / TAN-648.
+    async fn put_chunk(&self, chunk: &MemoryChunk, embedding: &[f32]) -> MemoryResult<()>;
+
+    /// Vector-similarity search over a memory tier within `scope`. `scope.subject`
+    /// (required) is enforced in the query as owner-plus-shared visibility;
+    /// `scope.org_unit`, and a `None` `scope.subject` (which would widen to all
+    /// subjects), are rejected fail-closed (TAN-645/662, TAN-648).
+    async fn search_chunks(
+        &self,
+        scope: &MemoryReadScope,
+        query_embedding: &[f32],
+        tier: MemoryTier,
+        project_id: Option<&str>,
+        session_id: Option<&str>,
+        limit: i64,
+    ) -> MemoryResult<Vec<(MemoryChunk, f64)>>;
 }
 
 #[async_trait]
@@ -191,6 +240,35 @@ impl MemoryStore for MemoryDatabase {
     ) -> MemoryResult<GlobalMemoryWriteResult> {
         self.put_global_memory_record(record).await
     }
+
+    async fn put_chunk(&self, chunk: &MemoryChunk, embedding: &[f32]) -> MemoryResult<()> {
+        self.store_chunk(chunk, embedding).await
+    }
+
+    async fn search_chunks(
+        &self,
+        scope: &MemoryReadScope,
+        query_embedding: &[f32],
+        tier: MemoryTier,
+        project_id: Option<&str>,
+        session_id: Option<&str>,
+        limit: i64,
+    ) -> MemoryResult<Vec<(MemoryChunk, f64)>> {
+        // Reject org_unit narrowing (not a query predicate yet) and a None subject
+        // (which would disable the subject filter and return all subjects) rather
+        // than silently widen the read (TAN-645/662, TAN-648).
+        reject_unenforceable_chunk_read(scope)?;
+        self.search_similar_for_tenant(
+            query_embedding,
+            tier,
+            project_id,
+            session_id,
+            &scope.tenant,
+            limit,
+            scope.subject.as_deref(),
+        )
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -217,6 +295,24 @@ mod tests {
         let scope = MemoryWriteScope::tenant(MemoryTenantScope::local());
         assert!(scope.org_unit.is_none());
         assert!(scope.subject.is_none());
+    }
+
+    #[test]
+    fn chunk_read_guard_requires_subject_and_rejects_org_unit() {
+        // An explicit subject with no department narrowing is allowed…
+        let mut ok = MemoryReadScope::tenant(MemoryTenantScope::local());
+        ok.subject = Some("user-a".to_string());
+        assert!(reject_unenforceable_chunk_read(&ok).is_ok());
+
+        // …department narrowing is not yet a query predicate → fail closed…
+        let mut by_dept = MemoryReadScope::tenant(MemoryTenantScope::local());
+        by_dept.subject = Some("user-a".to_string());
+        by_dept.org_unit = Some("finance".to_string());
+        assert!(reject_unenforceable_chunk_read(&by_dept).is_err());
+
+        // …and a None subject would widen to all subjects → fail closed.
+        let no_subject = MemoryReadScope::tenant(MemoryTenantScope::local());
+        assert!(reject_unenforceable_chunk_read(&no_subject).is_err());
     }
 
     #[test]
