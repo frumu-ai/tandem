@@ -12,6 +12,14 @@ pub struct MemoryKeyScope {
     pub workspace_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployment_id: Option<String>,
+    /// Department (`owner_org_unit_id`) that owns the wrapped DEK (TAN-662).
+    /// Makes department a **cryptographic** key dimension, not just an
+    /// access-control one: each `(tenant × department × data_class × source)`
+    /// gets a distinct DEK, so a leaked department key cannot decrypt another
+    /// department's ciphertext in the same tenant + data class. `None` =
+    /// tenant-wide (no department), mirroring the `owner_org_unit_id` row column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org_unit: Option<String>,
     pub data_class: DataClass,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_binding_id: Option<String>,
@@ -27,9 +35,19 @@ impl MemoryKeyScope {
             org_id: tenant_scope.org_id.clone(),
             workspace_id: tenant_scope.workspace_id.clone(),
             deployment_id: tenant_scope.deployment_id.clone(),
+            org_unit: None,
             data_class,
             source_binding_id,
         }
+    }
+
+    /// Bind this key scope to a department (TAN-662). A trimmed-empty value is
+    /// treated as no department.
+    pub fn with_org_unit(mut self, org_unit: Option<String>) -> Self {
+        self.org_unit = org_unit
+            .map(|unit| unit.trim().to_string())
+            .filter(|unit| !unit.is_empty());
+        self
     }
 
     pub fn canonical_id(&self) -> String {
@@ -38,14 +56,27 @@ impl MemoryKeyScope {
             .ok()
             .and_then(|value| value.as_str().map(ToOwned::to_owned))
             .unwrap_or_else(|| "unknown".to_string());
+        // The department segment must be structurally distinct from the
+        // tenant-wide form so `dept/x` can never collide with a data-class or
+        // source segment, keeping per-department DEKs unambiguous. The org-unit
+        // value is caller-derived (`{taxonomy_id}/{unit_id}`) and legitimately
+        // contains `/`, so it is percent-encoded to prevent delimiter injection:
+        // without it, `org_unit="a/source/b"` (no source) would collide with
+        // `org_unit="a", source="b"` and share a DEK across departments.
+        let dept = match self.org_unit.as_deref() {
+            Some(org_unit) if !org_unit.trim().is_empty() => {
+                format!("/dept/{}", encode_scope_segment(org_unit))
+            }
+            _ => String::new(),
+        };
         match self.source_binding_id.as_deref() {
             Some(source_binding_id) if !source_binding_id.trim().is_empty() => format!(
-                "tandem/memory/{}/{}/{}/{}/source/{}",
-                self.org_id, self.workspace_id, deployment, class, source_binding_id
+                "tandem/memory/{}/{}/{}/{}{}/source/{}",
+                self.org_id, self.workspace_id, deployment, class, dept, source_binding_id
             ),
             _ => format!(
-                "tandem/memory/{}/{}/{}/{}",
-                self.org_id, self.workspace_id, deployment, class
+                "tandem/memory/{}/{}/{}/{}{}",
+                self.org_id, self.workspace_id, deployment, class, dept
             ),
         }
     }
@@ -76,6 +107,18 @@ impl MemoryKeyScope {
         {
             return Err(MemoryError::InvalidConfig(
                 "memory envelope key scope must not use wildcard `deployment_id`".to_string(),
+            ));
+        }
+        // A wildcard department would collapse per-department DEKs back into one
+        // shared key, defeating at-rest department separation (TAN-662).
+        if self
+            .org_unit
+            .as_deref()
+            .map(is_wildcard_scope)
+            .unwrap_or(false)
+        {
+            return Err(MemoryError::InvalidConfig(
+                "memory envelope key scope must not use wildcard `org_unit`".to_string(),
             ));
         }
         Ok(())
@@ -185,7 +228,24 @@ pub fn validate_memory_envelope_for_required_write(
             "memory envelope key scope does not match tenant scope".to_string(),
         ));
     }
+    // The key scope's department must match the row's owner_org_unit_id (TAN-662),
+    // so a row can never be sealed under another department's DEK. Both `None`
+    // (tenant-wide) is the matching case for undepartmented rows.
+    let row_org_unit = crate::types::owner_org_unit_id_from_metadata(metadata);
+    if envelope.key_scope.org_unit != row_org_unit {
+        return Err(MemoryError::InvalidConfig(
+            "memory envelope key scope org_unit does not match row owner_org_unit_id".to_string(),
+        ));
+    }
     validate_enterprise_source_binding(metadata, &envelope)
+}
+
+/// Percent-encode `%` and `/` so a caller-derived scope segment cannot inject a
+/// structural delimiter (`/dept/`, `/source/`) into a `canonical_id` and collide
+/// with a different scope (TAN-662). `%` is encoded first to keep the mapping
+/// unambiguous (so a literal `%2F` cannot be confused with an encoded `/`).
+fn encode_scope_segment(value: &str) -> String {
+    value.replace('%', "%25").replace('/', "%2F")
 }
 
 fn is_wildcard_scope(value: &str) -> bool {
@@ -265,6 +325,106 @@ mod tests {
             scope.canonical_id(),
             "tandem/memory/acme/finance/prod/financial_record/source/drive-1"
         );
+    }
+
+    #[test]
+    fn key_scope_canonical_id_is_distinct_per_department() {
+        // TAN-662: each department gets its own DEK scope, so canonical ids must
+        // differ across departments in the same tenant + data class + source.
+        let base = MemoryKeyScope::new(&tenant_scope(), DataClass::Internal, None);
+        let sales = base
+            .clone()
+            .with_org_unit(Some("department/sales".to_string()));
+        let engineering = base
+            .clone()
+            .with_org_unit(Some("department/engineering".to_string()));
+
+        // The org-unit segment is percent-encoded so its internal `/` cannot be
+        // confused with a structural delimiter.
+        assert_eq!(
+            sales.canonical_id(),
+            "tandem/memory/acme/finance/prod/internal/dept/department%2Fsales"
+        );
+        assert_ne!(sales.canonical_id(), engineering.canonical_id());
+        // The tenant-wide (no-department) scope is distinct from any department.
+        assert_ne!(base.canonical_id(), sales.canonical_id());
+
+        // With a source binding the department segment precedes the source.
+        let sales_sourced = MemoryKeyScope::new(
+            &tenant_scope(),
+            DataClass::Internal,
+            Some("drive-1".to_string()),
+        )
+        .with_org_unit(Some("department/sales".to_string()));
+        assert_eq!(
+            sales_sourced.canonical_id(),
+            "tandem/memory/acme/finance/prod/internal/dept/department%2Fsales/source/drive-1"
+        );
+    }
+
+    #[test]
+    fn key_scope_canonical_id_resists_delimiter_injection() {
+        // TAN-662 (review, P1): a department id that embeds the reserved
+        // `/source/` delimiter must not collide with a distinct department+source
+        // scope, and a literal `%2F` must not collide with an encoded `/`.
+        let injected = MemoryKeyScope::new(&tenant_scope(), DataClass::Internal, None)
+            .with_org_unit(Some("department/sales/source/drive-1".to_string()));
+        let genuine = MemoryKeyScope::new(
+            &tenant_scope(),
+            DataClass::Internal,
+            Some("drive-1".to_string()),
+        )
+        .with_org_unit(Some("department/sales".to_string()));
+        assert_ne!(injected.canonical_id(), genuine.canonical_id());
+
+        let literal_percent = MemoryKeyScope::new(&tenant_scope(), DataClass::Internal, None)
+            .with_org_unit(Some("department%2Fsales".to_string()));
+        let real_slash = MemoryKeyScope::new(&tenant_scope(), DataClass::Internal, None)
+            .with_org_unit(Some("department/sales".to_string()));
+        assert_ne!(literal_percent.canonical_id(), real_slash.canonical_id());
+    }
+
+    #[test]
+    fn validation_accepts_matching_department_and_rejects_mismatch() {
+        // Envelope key scope bound to `department/sales` and a row stamped the
+        // same department validates…
+        let mut envelope = envelope(DataClass::Internal);
+        envelope.key_scope.source_binding_id = None;
+        envelope.key_scope = envelope
+            .key_scope
+            .with_org_unit(Some("department/sales".to_string()));
+        let metadata = envelope
+            .attach_to_metadata(Some(serde_json::json!({
+                "owner_org_unit_id": "department/sales"
+            })))
+            .expect("metadata");
+        validate_memory_envelope_for_write(&tenant_scope(), Some(&metadata))
+            .expect("matching department should validate");
+
+        // …but a row owned by a different department is rejected: it must never be
+        // sealed under another department's DEK.
+        let mismatched = envelope
+            .attach_to_metadata(Some(serde_json::json!({
+                "owner_org_unit_id": "department/engineering"
+            })))
+            .expect("metadata");
+        let err = validate_memory_envelope_for_write(&tenant_scope(), Some(&mismatched))
+            .expect_err("department mismatch should fail");
+        assert!(err
+            .to_string()
+            .contains("org_unit does not match row owner_org_unit_id"));
+    }
+
+    #[test]
+    fn validation_rejects_wildcard_org_unit() {
+        let mut envelope = envelope(DataClass::Internal);
+        envelope.key_scope.source_binding_id = None;
+        envelope.key_scope.org_unit = Some("*".to_string());
+        let metadata = envelope.attach_to_metadata(None).expect("metadata");
+
+        let err = validate_memory_envelope_for_write(&tenant_scope(), Some(&metadata))
+            .expect_err("wildcard org_unit should fail");
+        assert!(err.to_string().contains("wildcard `org_unit`"));
     }
 
     #[test]
