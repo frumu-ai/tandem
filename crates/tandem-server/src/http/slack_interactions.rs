@@ -641,7 +641,8 @@ mod tests {
     fn slack_event_message_user_ignores_bot_subtype_and_non_message() {
         let bot = json!({"event": {"type": "message", "user": "U1", "bot_id": "B1"}});
         assert!(slack_event_message_user(&bot).is_none());
-        let edited = json!({"event": {"type": "message", "user": "U1", "subtype": "message_changed"}});
+        let edited =
+            json!({"event": {"type": "message", "user": "U1", "subtype": "message_changed"}});
         assert!(slack_event_message_user(&edited).is_none());
         let non_message = json!({"event": {"type": "reaction_added", "user": "U1"}});
         assert!(slack_event_message_user(&non_message).is_none());
