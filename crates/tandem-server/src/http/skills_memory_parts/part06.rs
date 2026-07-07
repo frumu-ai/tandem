@@ -742,6 +742,47 @@ mod retrieval_gateway_subject_tests {
     }
 
     #[test]
+    fn owner_subject_metadata_is_server_controlled() {
+        use tandem_memory::types::owner_subject_from_metadata;
+
+        // Private write → collector subject stamped.
+        let private = memory_metadata_with_owner_subject(None, Some("user-a"));
+        assert_eq!(
+            owner_subject_from_metadata(private.as_ref()).as_deref(),
+            Some("user-a")
+        );
+
+        // Non-private write must STRIP any client-supplied owner_subject, so a
+        // forged metadata key can't lock the record to someone else (P2 fix).
+        let stripped = memory_metadata_with_owner_subject(
+            Some(serde_json::json!({ "owner_subject": "forged", "role": "user" })),
+            None,
+        );
+        assert_eq!(owner_subject_from_metadata(stripped.as_ref()), None);
+        // Other metadata keys survive the strip.
+        assert_eq!(
+            stripped
+                .as_ref()
+                .and_then(|m| m.get("role"))
+                .and_then(|v| v.as_str()),
+            Some("user")
+        );
+
+        // Private write overrides a client-supplied value with the collector.
+        let overridden = memory_metadata_with_owner_subject(
+            Some(serde_json::json!({ "owner_subject": "forged" })),
+            Some("user-a"),
+        );
+        assert_eq!(
+            owner_subject_from_metadata(overridden.as_ref()).as_deref(),
+            Some("user-a")
+        );
+
+        // Nothing to do → untouched.
+        assert!(memory_metadata_with_owner_subject(None, None).is_none());
+    }
+
+    #[test]
     fn owner_org_unit_metadata_stamp_is_absent_preserving() {
         use tandem_memory::types::owner_org_unit_id_from_metadata;
 

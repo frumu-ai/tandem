@@ -1581,18 +1581,27 @@ fn memory_metadata_with_owner_org_unit(
     Some(metadata)
 }
 
-/// Stamp `owner_subject` into a record's metadata when the write opted into
-/// `private` (TAN-648), so the governed read filter restricts it to the
-/// collecting subject. No-op when `owner_subject` is `None` (not private) or the
-/// key is already present.
+/// Make the `owner_subject` metadata key **server-controlled** (TAN-648).
+///
+/// `owner_subject` drives the governed subject check, so it must never be
+/// trusted from client input (`/memory/put` accepts arbitrary metadata). This
+/// always strips any client-supplied `owner_subject`, then stamps the collecting
+/// subject **only** for a private write (`owner_subject = Some`). A non-private
+/// write therefore never carries an enforced `owner_subject`, preserving the
+/// default department/tenant-shared behavior regardless of client metadata.
 fn memory_metadata_with_owner_subject(
     metadata: Option<Value>,
     owner_subject: Option<&str>,
 ) -> Option<Value> {
-    let Some(owner_subject) = owner_subject.map(str::trim).filter(|s| !s.is_empty()) else {
-        return metadata;
-    };
-    if tandem_memory::types::owner_subject_from_metadata(metadata.as_ref()).is_some() {
+    let owner_subject = owner_subject.map(str::trim).filter(|s| !s.is_empty());
+    let key = tandem_memory::types::OWNER_SUBJECT_METADATA_KEY;
+    let client_has_key = metadata
+        .as_ref()
+        .and_then(Value::as_object)
+        .map(|obj| obj.contains_key(key))
+        .unwrap_or(false);
+    // Nothing to strip and nothing to stamp — leave metadata untouched.
+    if owner_subject.is_none() && !client_has_key {
         return metadata;
     }
     let mut metadata = metadata.unwrap_or_else(|| json!({}));
@@ -1600,10 +1609,11 @@ fn memory_metadata_with_owner_subject(
         metadata = json!({ "value": metadata });
     }
     if let Some(obj) = metadata.as_object_mut() {
-        obj.insert(
-            tandem_memory::types::OWNER_SUBJECT_METADATA_KEY.to_string(),
-            json!(owner_subject),
-        );
+        // Drop any client-supplied value, then re-stamp only for private writes.
+        obj.remove(key);
+        if let Some(owner_subject) = owner_subject {
+            obj.insert(key.to_string(), json!(owner_subject));
+        }
     }
     Some(metadata)
 }
