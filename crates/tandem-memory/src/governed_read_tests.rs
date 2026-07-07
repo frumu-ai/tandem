@@ -387,6 +387,89 @@ fn private_record_is_restricted_to_its_owner_subject() {
     assert!(shared_decision.allowed);
 }
 
+/// TAN-651: consolidated cross-department isolation matrix at the governance
+/// filter — the enforcement point shared by record, chunk, and coder reads. Each
+/// row is one acceptance case for the department-primary + private model
+/// (TAN-645/646/647/648). SQL-layer department/tenant isolation is proven
+/// separately in the `db_tests` matrix; the tenant boundary itself is covered by
+/// the `*_is_tenant_scoped` db tests.
+#[test]
+fn cross_department_isolation_matrix() {
+    // Build a governed filter for a caller with the given department memberships
+    // and (optionally) subject.
+    fn caller(org_units: &[&str], subject: Option<&str>) -> MemoryAccessFilter {
+        let mut filter =
+            MemoryAccessFilter::strict(tenant_strict(DataBoundary::unrestricted()), 2_000)
+                .with_caller_org_units(org_units.iter().map(|u| u.to_string()));
+        if let Some(subject) = subject {
+            filter = filter.with_caller_subject(subject);
+        }
+        filter
+    }
+    let finance_record =
+        || global_record(Some(serde_json::json!({ "owner_org_unit_id": "finance" })));
+
+    // Positive per department: a finance item is retrievable by a finance caller.
+    assert!(
+        caller(&["finance"], None)
+            .decision_for_global_record(&finance_record())
+            .allowed
+    );
+
+    // Cross-department denial: a finance item is denied to an engineering caller.
+    let denied = caller(&["engineering"], None).decision_for_global_record(&finance_record());
+    assert!(!denied.allowed);
+    assert_eq!(denied.reason.as_deref(), Some("org_unit_scope_mismatch"));
+
+    // Multi-membership superset: a Leadership caller (member of several units)
+    // sees the finance item; a Sales caller (one unit) does not.
+    assert!(
+        caller(&["leadership", "finance", "engineering", "sales"], None)
+            .decision_for_global_record(&finance_record())
+            .allowed,
+        "leadership superset includes finance"
+    );
+    assert!(
+        !caller(&["sales"], None)
+            .decision_for_global_record(&finance_record())
+            .allowed,
+        "sales is not a member of finance"
+    );
+
+    // Fail-closed: a department-unstamped item is denied to any specific
+    // department caller unless explicitly tenant_shared.
+    let unstamped = caller(&["finance"], None).decision_for_global_record(&global_record(None));
+    assert!(!unstamped.allowed);
+    assert_eq!(
+        unstamped.reason.as_deref(),
+        Some("org_unit_absent_fail_closed")
+    );
+    let shared = caller(&["finance"], None).decision_for_global_record(&global_record(Some(
+        serde_json::json!({
+            "tenant_shared": true
+        }),
+    )));
+    assert!(
+        shared.allowed,
+        "tenant_shared is visible to every department"
+    );
+
+    // Private (per-user) on top of department: a private finance item is visible
+    // to its owner in finance, denied to a same-department peer.
+    let private_finance = global_record(Some(serde_json::json!({
+        "owner_org_unit_id": "finance",
+        "owner_subject": "user-a",
+    })));
+    assert!(
+        caller(&["finance"], Some("user-a"))
+            .decision_for_global_record(&private_finance)
+            .allowed
+    );
+    let peer = caller(&["finance"], Some("user-b")).decision_for_global_record(&private_finance);
+    assert!(!peer.allowed);
+    assert_eq!(peer.reason.as_deref(), Some("subject_scope_mismatch"));
+}
+
 #[test]
 fn unscoped_chunk_is_fail_closed_for_department_scoped_caller() {
     // TAN-647: the fail-closed department default applies to the chunk read path
