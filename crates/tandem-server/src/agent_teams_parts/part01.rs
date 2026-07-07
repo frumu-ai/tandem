@@ -374,6 +374,7 @@ async fn evaluate_fintech_strict_tool_policy(
                 "tenant_context_mismatch",
                 &reason,
                 None,
+                verified_tenant_context,
                 json!({"runtime_profile": FINTECH_STRICT_PROFILE}),
             )
             .await;
@@ -408,6 +409,7 @@ async fn evaluate_fintech_strict_tool_policy(
                 "strict_tenant_context_required",
                 &reason,
                 None,
+                verified_tenant_context,
                 json!({"runtime_profile": FINTECH_STRICT_PROFILE}),
             )
             .await;
@@ -436,6 +438,8 @@ async fn evaluate_fintech_strict_tool_policy(
                 "message_id": message_id,
                 "tool": tool,
                 "policy": payload,
+                "requester_context": verified_tenant_context
+                    .and_then(tandem_types::GovernanceRequesterContext::from_verified_context),
                 "approval_verification": {
                     "status": "verified",
                     "effect": "allow",
@@ -476,6 +480,7 @@ async fn evaluate_fintech_strict_tool_policy(
                 "matching_approval_receipt",
                 "protected action approved by matching receipt",
                 Some(&approval),
+                verified_tenant_context,
                 json!({
                     "policy": payload,
                     "approval_verification": {
@@ -538,6 +543,8 @@ async fn evaluate_fintech_strict_tool_policy(
         "message_id": message_id,
         "tool": tool,
         "policy": payload,
+        "requester_context": verified_tenant_context
+            .and_then(tandem_types::GovernanceRequesterContext::from_verified_context),
         "approval_verification": {
             "status": "unavailable",
             "effect": "fail_closed",
@@ -585,6 +592,7 @@ async fn evaluate_fintech_strict_tool_policy(
         reason_code,
         &policy_reason,
         None,
+        verified_tenant_context,
         json!({
             "policy": payload,
             "approval_verification": {
@@ -617,6 +625,7 @@ async fn record_runtime_policy_decision(
     reason_code: &str,
     reason: &str,
     approval: Option<&Value>,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
     metadata: Value,
 ) -> Option<PolicyDecisionRecord> {
     let decision_id = format!("policy_decision_{}", Uuid::new_v4().simple());
@@ -643,6 +652,8 @@ async fn record_runtime_policy_decision(
     let record = PolicyDecisionRecord {
         decision_id: decision_id.clone(),
         tenant_context: run.tenant_context.clone(),
+        requester_context: verified_tenant_context
+            .and_then(tandem_types::GovernanceRequesterContext::from_verified_context),
         actor_id: run.tenant_context.actor_id.clone(),
         session_id: Some(session_id.to_string()),
         message_id: Some(message_id.to_string()),

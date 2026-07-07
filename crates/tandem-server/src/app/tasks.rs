@@ -411,6 +411,27 @@ fn session_context_run_event_input(event: &EngineEvent) -> Option<ContextRunEven
                 }),
             })
         }
+        "tool.routing.decision" => Some(ContextRunEventAppendInput {
+            event_type: "tool_routing_decision".to_string(),
+            status: ContextRunStatus::Running,
+            step_id: Some("session-run".to_string()),
+            payload: serde_json::json!({
+                "sessionID": event.properties.get("sessionID").cloned().unwrap_or(Value::Null),
+                "messageID": event.properties.get("messageID").cloned().unwrap_or(Value::Null),
+                "iteration": event.properties.get("iteration").cloned().unwrap_or(Value::Null),
+                "mode": event.properties.get("mode").cloned().unwrap_or(Value::Null),
+                "intent": event.properties.get("intent").cloned().unwrap_or(Value::Null),
+                "selectedToolCount": event.properties.get("selectedToolCount").cloned().unwrap_or(Value::Null),
+                "totalAvailableTools": event.properties.get("totalAvailableTools").cloned().unwrap_or(Value::Null),
+                "offeredTools": event.properties.get("offeredTools").cloned().unwrap_or(Value::Array(Vec::new())),
+                "hiddenByScope": event.properties.get("hiddenByScope").cloned().unwrap_or(Value::Array(Vec::new())),
+                "strictProjectionActive": event.properties.get("strictProjectionActive").cloned().unwrap_or(Value::Bool(false)),
+                "scopeAllowlist": event.properties.get("scopeAllowlist").cloned().unwrap_or(Value::Array(Vec::new())),
+                "tenantContext": event_tenant_context_value(event),
+                "why_next_step": "tool routing manifest recorded",
+                "step_status": "in_progress",
+            }),
+        }),
         "policy.decision.recorded" => {
             let record = event.properties.get("record")?;
             let decision = record

@@ -703,6 +703,7 @@ async fn record_memory_promotion_policy_decision(
     let record = tandem_types::PolicyDecisionRecord {
         decision_id: decision_id.clone(),
         tenant_context: tenant_context.clone(),
+        requester_context: None,
         actor_id: Some(actor.to_string()),
         session_id: source.and_then(|record| record.session_id.clone()),
         message_id: source.and_then(|record| record.message_id.clone()),

@@ -1009,6 +1009,7 @@ async fn record_mcp_context_assertion_decision(
     let record = PolicyDecisionRecord {
         decision_id: decision_id.clone(),
         tenant_context: tenant_context.clone(),
+        requester_context: None,
         actor_id,
         session_id: None,
         message_id: None,
@@ -1070,6 +1071,7 @@ async fn record_mcp_phase_tool_authority_decision(
     let record = PolicyDecisionRecord {
         decision_id: decision_id.clone(),
         tenant_context: run_as.effective_tenant_context.clone(),
+        requester_context: None,
         actor_id: run_as
             .requested_tenant_context
             .actor_id
@@ -1128,6 +1130,7 @@ async fn record_mcp_secret_scope_decision(
     let record = PolicyDecisionRecord {
         decision_id: decision_id.clone(),
         tenant_context: tenant_context.clone(),
+        requester_context: None,
         actor_id: tenant_context
             .actor_id
             .clone()

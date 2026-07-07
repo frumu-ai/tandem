@@ -621,7 +621,11 @@ impl EngineLoop {
                         });
                     }
                 }
-                if let Some(strict_context) = strict_tool_context.as_ref() {
+                let hidden_by_scope = if let Some(strict_context) = strict_tool_context.as_ref() {
+                    let before_strict_projection = tool_schemas
+                        .iter()
+                        .map(|schema| normalize_tool_name(&schema.name))
+                        .collect::<HashSet<_>>();
                     let now_ms = Utc::now().timestamp_millis().max(0) as u64;
                     tool_schemas.retain(|schema| {
                         crate::tool_capabilities::tool_schema_visible_to_strict_context(
@@ -630,7 +634,19 @@ impl EngineLoop {
                             now_ms,
                         )
                     });
-                }
+                    let after_strict_projection = tool_schemas
+                        .iter()
+                        .map(|schema| normalize_tool_name(&schema.name))
+                        .collect::<HashSet<_>>();
+                    let mut hidden = before_strict_projection
+                        .difference(&after_strict_projection)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    hidden.sort();
+                    hidden
+                } else {
+                    Vec::new()
+                };
                 if force_structured_handoff_final_response {
                     tool_schemas.clear();
                 }
@@ -676,6 +692,12 @@ impl EngineLoop {
                     );
                     anyhow::bail!("{detail}");
                 }
+                let allowed_tool_names = tool_schemas
+                    .iter()
+                    .map(|schema| normalize_tool_name(&schema.name))
+                    .collect::<HashSet<_>>();
+                let mut offered_tool_names = allowed_tool_names.iter().cloned().collect::<Vec<_>>();
+                offered_tool_names.sort();
                 let routing_decision = ToolRoutingDecision {
                     pass: if auto_tools_escalated { 2 } else { 1 },
                     mode: match requested_tool_mode {
@@ -705,13 +727,13 @@ impl EngineLoop {
                         "retrievalEnabled": retrieval_enabled,
                         "retrievalK": retrieval_k,
                         "fallbackToFullTools": retrieval_fallback_reason.is_some(),
-                        "fallbackReason": retrieval_fallback_reason
+                        "fallbackReason": retrieval_fallback_reason,
+                        "offeredTools": offered_tool_names,
+                        "hiddenByScope": hidden_by_scope,
+                        "strictProjectionActive": strict_tool_context.is_some(),
+                        "scopeAllowlist": request_tool_allowlist.clone(),
                     }),
                 ));
-                let allowed_tool_names = tool_schemas
-                    .iter()
-                    .map(|schema| normalize_tool_name(&schema.name))
-                    .collect::<HashSet<_>>();
                 if !email_tools_ever_offered && has_email_action_tools(&tool_schemas) {
                     email_tools_ever_offered = true;
                 }

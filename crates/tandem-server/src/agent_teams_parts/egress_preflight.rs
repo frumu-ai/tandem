@@ -243,6 +243,10 @@ async fn record_egress_preflight_policy_decision(
     let record = PolicyDecisionRecord {
         decision_id: decision_id.clone(),
         tenant_context: tenant_context.clone(),
+        requester_context: ctx
+            .verified_tenant_context
+            .as_ref()
+            .and_then(tandem_types::GovernanceRequesterContext::from_verified_context),
         actor_id,
         session_id: Some(ctx.session_id.clone()),
         message_id: Some(ctx.message_id.clone()),
