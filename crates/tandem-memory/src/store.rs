@@ -16,7 +16,10 @@
 use async_trait::async_trait;
 
 use crate::db::MemoryDatabase;
-use crate::types::{GlobalMemoryRecord, GlobalMemorySearchHit, MemoryResult, MemoryTenantScope};
+use crate::types::{
+    GlobalMemoryRecord, GlobalMemorySearchHit, GlobalMemoryWriteResult, MemoryResult,
+    MemoryTenantScope,
+};
 
 /// The full scope for a memory **read**: tenant plus the department and per-user
 /// dimensions the M1 work fills in. Bundling these here means backends receive
@@ -99,6 +102,14 @@ pub trait MemoryStore: Send + Sync {
         limit: i64,
         offset: i64,
     ) -> MemoryResult<Vec<GlobalMemoryRecord>>;
+
+    /// Insert or update a global memory record (dedup-aware). The record carries
+    /// its own tenant scope today; department / subject stamping moves onto a
+    /// [`MemoryWriteScope`] with TAN-646 / TAN-648.
+    async fn put_global_record(
+        &self,
+        record: &GlobalMemoryRecord,
+    ) -> MemoryResult<GlobalMemoryWriteResult>;
 }
 
 #[async_trait]
@@ -149,6 +160,13 @@ impl MemoryStore for MemoryDatabase {
             offset,
         )
         .await
+    }
+
+    async fn put_global_record(
+        &self,
+        record: &GlobalMemoryRecord,
+    ) -> MemoryResult<GlobalMemoryWriteResult> {
+        self.put_global_memory_record(record).await
     }
 }
 
