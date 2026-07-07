@@ -1010,6 +1010,14 @@ async fn open_semantic_memory_manager(state: &AppState) -> Option<MemoryManager>
 /// means no tenant boundary to enforce (local / incident-monitor system scope)
 /// and matches every candidate. Fails closed: if the owning run's tenant can't
 /// be resolved for a scoped caller, the candidate is hidden rather than leaked.
+/// A candidate promoted into governed memory is retained only as provenance for
+/// the promoted record (its file is referenced by the promoted memory's
+/// artifact_refs); it must not re-surface as an unpromoted candidate in
+/// retrieval (TAN-638).
+fn coder_candidate_is_promoted(candidate_payload: &Value) -> bool {
+    candidate_payload.get("promoted_at_ms").is_some()
+}
+
 async fn coder_candidate_run_visible_to_tenant(
     state: &AppState,
     record: &CoderRunRecord,
@@ -1082,6 +1090,9 @@ async fn list_repo_memory_candidates(
             let Ok(candidate_payload) = serde_json::from_str::<Value>(&candidate_raw) else {
                 continue;
             };
+            if coder_candidate_is_promoted(&candidate_payload) {
+                continue;
+            }
             let same_ref = github_ref.is_some_and(|reference| {
                 candidate_payload
                     .get("github_ref")
@@ -1219,6 +1230,9 @@ async fn list_repo_memory_candidate_payloads(
             let Ok(candidate_payload) = serde_json::from_str::<Value>(&candidate_raw) else {
                 continue;
             };
+            if coder_candidate_is_promoted(&candidate_payload) {
+                continue;
+            }
             let parsed_kind = candidate_payload
                 .get("kind")
                 .cloned()

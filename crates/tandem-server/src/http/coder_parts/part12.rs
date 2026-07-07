@@ -232,6 +232,36 @@ mod coder_memory_candidate_scoping_tests {
     }
 
     #[tokio::test]
+    async fn promoted_candidates_are_excluded_from_retrieval_but_retained_on_disk() {
+        let state = test_state().await;
+        let tenant = TenantContext::explicit("org-a", "ws-a", None);
+        let now = crate::now_ms();
+
+        let unpromoted = seed_candidate(&state, "open", &tenant, "still-open", now).await;
+        let promoted_path = seed_candidate(&state, "done", &tenant, "already-promoted", now).await;
+
+        // Mark the second candidate as promoted, mirroring the promotion path.
+        let mut payload: Value =
+            serde_json::from_str(&tokio::fs::read_to_string(&promoted_path).await.unwrap())
+                .unwrap();
+        payload
+            .as_object_mut()
+            .unwrap()
+            .insert("promoted_at_ms".to_string(), json!(now));
+        tokio::fs::write(&promoted_path, serde_json::to_string(&payload).unwrap())
+            .await
+            .unwrap();
+
+        let hits = list_repo_memory_candidates(&state, "org/shared", None, 20, Some(&tenant))
+            .await
+            .expect("list");
+        assert_eq!(summaries(&hits), vec!["still-open".to_string()]);
+        // The promoted candidate file is retained as provenance for the record.
+        assert!(promoted_path.exists());
+        assert!(unpromoted.exists());
+    }
+
+    #[tokio::test]
     async fn gc_reaps_candidates_older_than_retention() {
         let state = test_state().await;
         let tenant = TenantContext::explicit("org-a", "ws-a", None);
