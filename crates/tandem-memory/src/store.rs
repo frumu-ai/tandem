@@ -17,8 +17,8 @@ use async_trait::async_trait;
 
 use crate::db::MemoryDatabase;
 use crate::types::{
-    GlobalMemoryRecord, GlobalMemorySearchHit, GlobalMemoryWriteResult, MemoryError, MemoryResult,
-    MemoryTenantScope,
+    GlobalMemoryRecord, GlobalMemorySearchHit, GlobalMemoryWriteResult, MemoryChunk, MemoryError,
+    MemoryResult, MemoryTenantScope, MemoryTier,
 };
 
 /// Fail closed when a read scope requests department (`org_unit`) or per-user
@@ -34,6 +34,21 @@ fn reject_unsupported_narrowing(scope: &MemoryReadScope) -> MemoryResult<()> {
         return Err(MemoryError::InvalidConfig(
             "MemoryStore SQLite backend does not yet enforce org_unit/subject scope narrowing \
              (TAN-645/648); refusing to widen the read to tenant scope"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Like [`reject_unsupported_narrowing`], but for reads that DO enforce `subject`
+/// in the query (chunk vector search via `visible_subject`) yet cannot yet enforce
+/// department (`org_unit`). Rejects an `org_unit`-narrowed scope fail-closed rather
+/// than widening the read past the requested department (TAN-645/662).
+fn reject_unsupported_org_unit_narrowing(scope: &MemoryReadScope) -> MemoryResult<()> {
+    if scope.org_unit.is_some() {
+        return Err(MemoryError::InvalidConfig(
+            "MemoryStore SQLite backend does not yet enforce org_unit scope narrowing \
+             (TAN-645/662); refusing to widen the read past the requested department"
                 .to_string(),
         ));
     }
@@ -131,6 +146,24 @@ pub trait MemoryStore: Send + Sync {
         &self,
         record: &GlobalMemoryRecord,
     ) -> MemoryResult<GlobalMemoryWriteResult>;
+
+    /// Store (insert/replace) a memory chunk and its embedding. The chunk carries
+    /// its own tenant scope + subject today; department / subject stamping moves
+    /// onto a [`MemoryWriteScope`] with TAN-646 / TAN-648.
+    async fn put_chunk(&self, chunk: &MemoryChunk, embedding: &[f32]) -> MemoryResult<()>;
+
+    /// Vector-similarity search over a memory tier within `scope`. `scope.subject`
+    /// is enforced in the query (per-subject visibility); `scope.org_unit` is not
+    /// yet a query predicate, so it is rejected fail-closed (TAN-645/662).
+    async fn search_chunks(
+        &self,
+        scope: &MemoryReadScope,
+        query_embedding: &[f32],
+        tier: MemoryTier,
+        project_id: Option<&str>,
+        session_id: Option<&str>,
+        limit: i64,
+    ) -> MemoryResult<Vec<(MemoryChunk, f64)>>;
 }
 
 #[async_trait]
@@ -191,6 +224,34 @@ impl MemoryStore for MemoryDatabase {
     ) -> MemoryResult<GlobalMemoryWriteResult> {
         self.put_global_memory_record(record).await
     }
+
+    async fn put_chunk(&self, chunk: &MemoryChunk, embedding: &[f32]) -> MemoryResult<()> {
+        self.store_chunk(chunk, embedding).await
+    }
+
+    async fn search_chunks(
+        &self,
+        scope: &MemoryReadScope,
+        query_embedding: &[f32],
+        tier: MemoryTier,
+        project_id: Option<&str>,
+        session_id: Option<&str>,
+        limit: i64,
+    ) -> MemoryResult<Vec<(MemoryChunk, f64)>> {
+        // Subject narrowing IS enforced in the query (visible_subject); org_unit is
+        // not yet a query predicate, so reject it rather than silently widen.
+        reject_unsupported_org_unit_narrowing(scope)?;
+        self.search_similar_for_tenant(
+            query_embedding,
+            tier,
+            project_id,
+            session_id,
+            &scope.tenant,
+            limit,
+            scope.subject.as_deref(),
+        )
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -217,6 +278,19 @@ mod tests {
         let scope = MemoryWriteScope::tenant(MemoryTenantScope::local());
         assert!(scope.org_unit.is_none());
         assert!(scope.subject.is_none());
+    }
+
+    #[test]
+    fn chunk_search_guard_allows_subject_but_rejects_org_unit() {
+        // Chunk vector search enforces subject in the query, so subject-only is ok…
+        let mut by_subject = MemoryReadScope::tenant(MemoryTenantScope::local());
+        by_subject.subject = Some("user-a".to_string());
+        assert!(reject_unsupported_org_unit_narrowing(&by_subject).is_ok());
+
+        // …but department narrowing is not yet a query predicate → fail closed.
+        let mut by_dept = MemoryReadScope::tenant(MemoryTenantScope::local());
+        by_dept.org_unit = Some("finance".to_string());
+        assert!(reject_unsupported_org_unit_narrowing(&by_dept).is_err());
     }
 
     #[test]
