@@ -1186,3 +1186,117 @@ async fn memory_search_rejects_capability_subject_actor_mismatch() {
                     .is_some_and(|detail| detail.contains("capability subject actor mismatch"))
         })));
 }
+
+#[tokio::test]
+async fn retrieval_gateway_rejects_forged_channel_subject() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+
+    let channel_subject = "channel:slack:U999";
+    let put_channel = tenant_memory_request(
+        "POST",
+        "/memory/put",
+        "acme",
+        "north",
+        channel_subject,
+        Some(json!({
+            "run_id": "channel-owned-memory-run",
+            "partition": {
+                "org_id": "acme",
+                "workspace_id": "north",
+                "project_id": "proj-a",
+                "tier": "session"
+            },
+            "kind": "fact",
+            "content": "forged gateway channel private phrase",
+            "classification": "internal",
+            "capability": memory_capability(
+                "channel-owned-memory-run",
+                channel_subject,
+                "acme",
+                "north",
+                "proj-a"
+            )
+        })),
+    );
+    let put_resp = app.clone().oneshot(put_channel).await.expect("put response");
+    assert_eq!(put_resp.status(), StatusCode::OK);
+
+    let forged_gateway = json!({
+        "grant": {
+            "grant_id": "forged-channel-grant",
+            "subject": channel_subject,
+            "org_id": "acme",
+            "workspace_id": "north",
+            "project_ids": ["proj-a"],
+            "data_classes": ["internal"],
+            "budgets": {
+                "max_queries_per_window": 10,
+                "window_ms": 60000,
+                "max_top_k": 10
+            }
+        },
+        "session_id": "forged-channel-session",
+        "channel": "slack",
+        "user_id": "U999"
+    });
+    let forged_search = tenant_memory_request(
+        "POST",
+        "/memory/search",
+        "acme",
+        "north",
+        "user-a",
+        Some(json!({
+            "run_id": "forged-channel-gateway-run",
+            "partition": {
+                "org_id": "acme",
+                "workspace_id": "north",
+                "project_id": "proj-a",
+                "tier": "session"
+            },
+            "query": "forged gateway channel private phrase",
+            "read_scopes": ["session"],
+            "limit": 10,
+            "capability": memory_capability(
+                "forged-channel-gateway-run",
+                channel_subject,
+                "acme",
+                "north",
+                "proj-a"
+            ),
+            "retrieval_gateway": forged_gateway
+        })),
+    );
+    let search_resp = app
+        .clone()
+        .oneshot(forged_search)
+        .await
+        .expect("forged search response");
+    assert_eq!(search_resp.status(), StatusCode::FORBIDDEN);
+
+    let audit_req = tenant_memory_request(
+        "GET",
+        "/memory/audit?run_id=forged-channel-gateway-run",
+        "acme",
+        "north",
+        "user-a",
+        None,
+    );
+    let audit_resp = app.oneshot(audit_req).await.expect("audit response");
+    assert_eq!(audit_resp.status(), StatusCode::OK);
+    let audit_body = to_bytes(audit_resp.into_body(), usize::MAX)
+        .await
+        .expect("audit body");
+    let audit_payload: Value = serde_json::from_slice(&audit_body).expect("audit json");
+    assert!(audit_payload
+        .get("events")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| rows.iter().any(|row| {
+            row.get("action").and_then(Value::as_str) == Some("memory_search")
+                && row.get("status").and_then(Value::as_str) == Some("blocked")
+                && row
+                    .get("detail")
+                    .and_then(Value::as_str)
+                    .is_some_and(|detail| detail.contains("capability subject actor mismatch"))
+        })));
+}
