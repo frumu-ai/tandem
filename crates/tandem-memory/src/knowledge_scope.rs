@@ -70,6 +70,9 @@ impl KnowledgeScopePolicy {
             // applies to ordinary tenant-local memory.
             owner_org_unit_id: None,
             owner_subject: None,
+            // Grant-governed (SourceBinding evidence), so the department
+            // fail-closed default does not apply here.
+            tenant_shared: false,
         }
     }
 

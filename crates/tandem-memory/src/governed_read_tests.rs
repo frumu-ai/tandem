@@ -317,12 +317,32 @@ fn org_unit_restricted_record_visible_only_to_members() {
 }
 
 #[test]
-fn unrestricted_record_ignores_caller_org_units() {
-    // Records without an owning unit keep tenant-wide visibility regardless of
-    // which units the caller belongs to.
-    let filter = MemoryAccessFilter::strict(tenant_strict(DataBoundary::unrestricted()), 2_000)
-        .with_caller_org_units(["ou-sales".to_string()]);
-    let decision = filter.decision_for_global_record(&global_record(None));
+fn unscoped_record_is_fail_closed_for_department_scoped_caller() {
+    // TAN-647: a record with no owning unit is invisible to a department-scoped
+    // caller (fail closed), so legacy/untagged rows never leak across departments.
+    let department_filter =
+        MemoryAccessFilter::strict(tenant_strict(DataBoundary::unrestricted()), 2_000)
+            .with_caller_org_units(["ou-sales".to_string()]);
+    let decision = department_filter.decision_for_global_record(&global_record(None));
+    assert!(!decision.allowed);
+    assert_eq!(
+        decision.reason.as_deref(),
+        Some("org_unit_absent_fail_closed")
+    );
+
+    // …but an explicit `tenant_shared` record stays visible to every department.
+    let shared = global_record(Some(serde_json::json!({ "tenant_shared": true })));
+    let decision = department_filter.decision_for_global_record(&shared);
+    assert!(decision.allowed);
+    assert_eq!(
+        decision.reason.as_deref(),
+        Some("tenant_local_memory_allowed")
+    );
+
+    // A caller with NO department identity keeps the pre-org-unit visibility.
+    let no_department_filter =
+        MemoryAccessFilter::strict(tenant_strict(DataBoundary::unrestricted()), 2_000);
+    let decision = no_department_filter.decision_for_global_record(&global_record(None));
     assert!(decision.allowed);
     assert_eq!(
         decision.reason.as_deref(),
@@ -338,6 +358,33 @@ fn local_noop_ignores_org_unit_restriction() {
     }))));
     assert!(decision.allowed);
     assert_eq!(decision.reason.as_deref(), Some("local_noop"));
+}
+
+#[test]
+fn unscoped_chunk_is_fail_closed_for_department_scoped_caller() {
+    // TAN-647: the fail-closed department default applies to the chunk read path
+    // too (shared decision_for_target).
+    let untagged = tenant_chunk(None);
+    let department_filter =
+        MemoryAccessFilter::strict(tenant_strict(DataBoundary::unrestricted()), 2_000)
+            .with_caller_org_units(["ou-sales".to_string()]);
+    let decision = department_filter.decision_for_chunk(&untagged);
+    assert!(!decision.allowed);
+    assert_eq!(
+        decision.reason.as_deref(),
+        Some("org_unit_absent_fail_closed")
+    );
+
+    // An explicit tenant_shared chunk stays visible to every department.
+    let mut shared = tenant_chunk(None);
+    shared.metadata = Some(serde_json::json!({ "tenant_shared": true }));
+    let decision = department_filter.decision_for_chunk(&shared);
+    assert!(decision.allowed);
+
+    // A caller with no department identity keeps prior visibility.
+    let no_department_filter =
+        MemoryAccessFilter::strict(tenant_strict(DataBoundary::unrestricted()), 2_000);
+    assert!(no_department_filter.decision_for_chunk(&untagged).allowed);
 }
 
 #[test]
