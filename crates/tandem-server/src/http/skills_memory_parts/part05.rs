@@ -72,6 +72,7 @@ mod event_ingestion_fail_close_tests {
                 started_at_ms: 0,
                 host_tag: None,
                 tenant_context: TenantContext::default(),
+                owner_org_unit_id: None,
             },
         );
 
@@ -117,6 +118,7 @@ mod event_ingestion_fail_close_tests {
                 started_at_ms: 0,
                 host_tag: None,
                 tenant_context: TenantContext::default(),
+                owner_org_unit_id: None,
             },
         );
 

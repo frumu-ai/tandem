@@ -1427,6 +1427,17 @@ impl GovernedDistillationWriter {
                 object.insert("workflow_id".to_string(), json!(self.workflow_id));
                 object.insert("last_distilled_at_ms".to_string(), json!(crate::now_ms()));
             }
+            // Stamp the active department on the dedupe/update path too (TAN-646),
+            // so a repeated fact matching a pre-TAN-646 (unstamped) row gets its
+            // owner_org_unit_id set rather than staying tenant-wide. An existing
+            // department is preserved (first-collector wins); the update re-derives
+            // the column from this metadata.
+            next_metadata = memory_metadata_with_owner_org_unit(
+                Some(next_metadata),
+                crate::memory::subject::active_org_unit(self.verified_tenant_context.as_ref())
+                    .as_deref(),
+            )
+            .unwrap_or_else(|| json!({}));
             let _ = db
                 .update_global_memory_context_for_tenant(
                     &existing.id,
@@ -1536,6 +1547,35 @@ fn memory_metadata_with_storage_fields(
             obj.insert("artifact_refs".to_string(), json!(artifact_refs));
         }
         obj.insert("classification".to_string(), json!(classification));
+    }
+    Some(metadata)
+}
+
+/// Stamp the collector's active department (`owner_org_unit_id`) into a record's
+/// metadata so it flows into the first-class column via `put_global_memory_record`
+/// (TAN-645/646). A department already present in the metadata — client-supplied
+/// and membership-validated upstream — is preserved; otherwise the verified
+/// context's active department is written. No-op when there is no active
+/// department (unattributable data / local single-tenant mode).
+fn memory_metadata_with_owner_org_unit(
+    metadata: Option<Value>,
+    owner_org_unit_id: Option<&str>,
+) -> Option<Value> {
+    let Some(owner_org_unit_id) = owner_org_unit_id else {
+        return metadata;
+    };
+    if tandem_memory::types::owner_org_unit_id_from_metadata(metadata.as_ref()).is_some() {
+        return metadata;
+    }
+    let mut metadata = metadata.unwrap_or_else(|| json!({}));
+    if !metadata.is_object() {
+        metadata = json!({ "value": metadata });
+    }
+    if let Some(obj) = metadata.as_object_mut() {
+        obj.insert(
+            tandem_memory::types::OWNER_ORG_UNIT_METADATA_KEY.to_string(),
+            json!(owner_org_unit_id),
+        );
     }
     Some(metadata)
 }

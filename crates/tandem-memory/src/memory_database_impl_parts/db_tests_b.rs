@@ -606,6 +606,88 @@
     }
 
     #[tokio::test]
+    async fn test_update_context_rederives_owner_org_unit_column() {
+        // TAN-646 (review): update_global_memory_context_for_tenant must keep the
+        // owner_org_unit_id column consistent with the metadata it writes, so a
+        // dedupe/update path that stamps a department reaches the column — a row
+        // written unstamped becomes department-scoped after the update.
+        let (db, _temp) = setup_test_db().await;
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        let record = GlobalMemoryRecord {
+            id: "upd-1".to_string(),
+            user_id: "u".to_string(),
+            source_type: "fact".to_string(),
+            content: "acme distilled fact".to_string(),
+            content_hash: "upd-hash".to_string(),
+            run_id: "upd-run".to_string(),
+            session_id: None,
+            message_id: None,
+            tool_name: None,
+            project_tag: Some("acme".to_string()),
+            channel_tag: None,
+            host_tag: None,
+            metadata: Some(serde_json::json!({ "origin": "session_distillation" })),
+            provenance: None,
+            redaction_status: "passed".to_string(),
+            redaction_count: 0,
+            visibility: "private".to_string(),
+            demoted: false,
+            score_boost: 0.0,
+            created_at_ms: now,
+            updated_at_ms: now,
+            expires_at_ms: None,
+        };
+        assert!(db.put_global_memory_record(&record).await.unwrap().stored);
+
+        // Unstamped: a finance-scoped read does not see it yet.
+        let before = db
+            .list_global_memory_for_tenant_scoped(
+                "local",
+                "local",
+                None,
+                "u",
+                None,
+                Some("acme"),
+                None,
+                10,
+                0,
+                Some("finance"),
+            )
+            .await
+            .unwrap();
+        assert!(before.is_empty());
+
+        // Update the context with metadata that carries the department.
+        let updated_metadata =
+            serde_json::json!({ "origin": "session_distillation", "owner_org_unit_id": "finance" });
+        assert!(db
+            .update_global_memory_context_for_tenant(
+                "upd-1", "local", "local", None, "private", false, Some(&updated_metadata), None,
+            )
+            .await
+            .unwrap());
+
+        // Now the finance-scoped read returns it (column was re-derived).
+        let after = db
+            .list_global_memory_for_tenant_scoped(
+                "local",
+                "local",
+                None,
+                "u",
+                None,
+                Some("acme"),
+                None,
+                10,
+                0,
+                Some("finance"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].id, "upd-1");
+    }
+
+    #[tokio::test]
     async fn test_global_memory_dedup_distinguishes_department() {
         // TAN-645 (review): the same content collected for two departments in the
         // same tenant/user/run must persist as two rows — owner_org_unit_id is part
