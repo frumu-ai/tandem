@@ -1797,11 +1797,18 @@ impl MemoryDatabase {
     ) -> MemoryResult<bool> {
         let conn = self.conn.lock().await;
         let now_ms = chrono::Utc::now().timestamp_millis();
+        // Keep the first-class owner_org_unit_id column consistent with the
+        // metadata it is derived from on write (TAN-645/646): a context update
+        // that rewrites metadata must re-derive the department too, otherwise a
+        // dedupe/update path (e.g. session-distillation) leaves the column NULL or
+        // stale while the metadata carries the current department.
+        let owner_org_unit_id = owner_org_unit_id_from_metadata(metadata);
         let metadata = metadata.map(ToString::to_string).unwrap_or_default();
         let provenance = provenance.map(ToString::to_string).unwrap_or_default();
         let changed = conn.execute(
             "UPDATE memory_records
-             SET visibility = ?5, demoted = ?6, metadata = ?7, provenance = ?8, updated_at_ms = ?9
+             SET visibility = ?5, demoted = ?6, metadata = ?7, provenance = ?8, updated_at_ms = ?9,
+                 owner_org_unit_id = ?10
              WHERE id = ?1
                AND tenant_org_id = ?2
                AND tenant_workspace_id = ?3
@@ -1816,6 +1823,7 @@ impl MemoryDatabase {
                 metadata,
                 provenance,
                 now_ms,
+                owner_org_unit_id,
             ],
         )?;
         Ok(changed > 0)
