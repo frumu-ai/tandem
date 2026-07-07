@@ -4,7 +4,7 @@ use std::sync::{Arc, OnceLock};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tandem_types::{TenantContext, TenantSource};
+use tandem_types::{GovernanceRequesterContext, TenantContext, TenantSource};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
@@ -27,6 +27,8 @@ pub struct ProtectedAuditEnvelope {
     pub event_type: String,
     #[serde(default)]
     pub tenant_context: TenantContext,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester_context: Option<GovernanceRequesterContext>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actor: Option<String>,
     pub payload: Value,
@@ -54,6 +56,8 @@ struct AuditEnvelopeForHashing<'a> {
     tenant_deployment_id: &'a Option<String>,
     tenant_actor_id: &'a Option<String>,
     tenant_source: &'a TenantSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requester_context: Option<&'a GovernanceRequesterContext>,
     actor: &'a Option<String>,
     payload: &'a Value,
     created_at_ms: u64,
@@ -78,6 +82,7 @@ pub(crate) fn compute_audit_envelope_hash(envelope: &ProtectedAuditEnvelope) -> 
         tenant_deployment_id: &envelope.tenant_context.deployment_id,
         tenant_actor_id: &envelope.tenant_context.actor_id,
         tenant_source: &envelope.tenant_context.source,
+        requester_context: envelope.requester_context.as_ref(),
         actor: &envelope.actor,
         payload: &envelope.payload,
         created_at_ms: envelope.created_at_ms,
@@ -198,12 +203,14 @@ pub async fn append_protected_audit_event(
     } else {
         Some(last.record_hash.clone())
     };
+    let requester_context = requester_context_from_payload(&payload);
 
     let mut row = ProtectedAuditEnvelope {
         event_id: Uuid::new_v4().to_string(),
         durability: AuditDurability::DurableRequired,
         event_type: event_type.into(),
         tenant_context: tenant_context.clone(),
+        requester_context,
         actor,
         payload,
         created_at_ms: now_ms(),
@@ -251,6 +258,13 @@ pub async fn append_protected_audit_event(
             Err(err)
         }
     }
+}
+
+fn requester_context_from_payload(payload: &Value) -> Option<GovernanceRequesterContext> {
+    payload
+        .get("requester_context")
+        .or_else(|| payload.get("requesterContext"))
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
 }
 
 // ── Verification ─────────────────────────────────────────────────────────────

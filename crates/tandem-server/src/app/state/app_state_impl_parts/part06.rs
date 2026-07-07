@@ -1455,6 +1455,7 @@ impl AppState {
         let record = PolicyDecisionRecord {
             decision_id: decision_id.clone(),
             tenant_context: tenant_context.clone(),
+            requester_context: None,
             actor_id: actor_id.clone(),
             session_id: None,
             message_id: None,
@@ -1566,6 +1567,7 @@ impl AppState {
         let record = PolicyDecisionRecord {
             decision_id: decision_id.clone(),
             tenant_context: tenant_context.clone(),
+            requester_context: None,
             actor_id: actor_id.clone(),
             session_id: None,
             message_id: None,

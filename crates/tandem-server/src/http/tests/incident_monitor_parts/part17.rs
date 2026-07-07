@@ -40,6 +40,7 @@ fn governance_decision(
     tandem_types::PolicyDecisionRecord {
         decision_id: id.to_string(),
         tenant_context: governance_tenant(),
+        requester_context: None,
         actor_id: Some("actor-a".to_string()),
         session_id: None,
         message_id: None,

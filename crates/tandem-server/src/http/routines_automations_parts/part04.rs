@@ -1170,6 +1170,7 @@ async fn record_transition_guard_policy_decision(
     let decision = tandem_types::PolicyDecisionRecord {
         decision_id: format!("policy_decision_{}", uuid::Uuid::new_v4().simple()),
         tenant_context: run.tenant_context.clone(),
+        requester_context: None,
         actor_id: actor.actor_id.clone().or_else(|| actor.source.clone()),
         session_id: None,
         message_id: None,

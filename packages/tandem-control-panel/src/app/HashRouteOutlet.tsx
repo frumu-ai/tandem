@@ -35,6 +35,10 @@ const FilesPage = lazyNamed(() => import("../pages/FilesPage"), "FilesPage");
 const MemoryPage = lazyNamed(() => import("../pages/MemoryPage"), "MemoryPage");
 const RunsPage = lazyNamed(() => import("../pages/RunsPage"), "RunsPage");
 const ControlLoopPage = lazyNamed(() => import("../pages/ControlLoopPage"), "ControlLoopPage");
+const SlackGovernanceReceiptPage = lazyNamed(
+  () => import("../pages/SlackGovernanceReceiptPage"),
+  "SlackGovernanceReceiptPage"
+);
 const IncidentMonitorPage = lazyNamed(
   () => import("../pages/IncidentMonitorPage"),
   "IncidentMonitorPage"
@@ -130,6 +134,8 @@ function renderRoute(routeId: ReturnType<typeof ensureRouteId>, pageProps: any) 
       return <RunsPage {...pageProps} />;
     case "control-loop":
       return <ControlLoopPage {...pageProps} />;
+    case "slack-receipts":
+      return <SlackGovernanceReceiptPage {...pageProps} />;
     case "approvals":
       return <ApprovalsInboxPage {...pageProps} />;
     case "settings":

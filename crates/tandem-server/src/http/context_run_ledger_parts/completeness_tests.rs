@@ -7,6 +7,7 @@
         tandem_types::PolicyDecisionRecord {
             decision_id: decision_id.to_string(),
             tenant_context: tenant.clone(),
+            requester_context: None,
             actor_id: Some("finance-user".to_string()),
             session_id: None,
             message_id: None,
@@ -59,6 +60,7 @@
             durability: crate::audit::AuditDurability::DurableRequired,
             event_type: "fintech.protected_action.approved".to_string(),
             tenant_context: tenant.clone(),
+            requester_context: None,
             actor: Some("finance-user".to_string()),
             payload: json!({ "approval_id": approval_id, "tool": "mcp.bank.release_funds" }),
             created_at_ms: 20,

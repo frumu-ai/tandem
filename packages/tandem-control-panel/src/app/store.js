@@ -17,6 +17,7 @@ export const ROUTES = [
   ["memory", "Memory", "database"],
   ["runs", "Runs", "activity"],
   ["control-loop", "Control Loop", "radar"],
+  ["slack-receipts", "Slack Receipts", "file-check-2"],
   ["approvals", "Approvals", "shield-check"],
   ["settings", "Settings", "settings"],
   // Legacy routes kept for backwards compat (not in primary nav)
@@ -49,6 +50,7 @@ const NAV_ROUTE_ORDER = [
   "memory",
   "runs",
   "control-loop",
+  "slack-receipts",
   "approvals",
   "settings",
 ];
@@ -67,7 +69,7 @@ export const NAV_GROUPS = [
   { label: "Overview", routeIds: ["dashboard"] },
   { label: "Build", routeIds: ["chat", "planner", "studio", "workflows", "automations"] },
   { label: "Operate", routeIds: ["runs", "webhooks", "orchestrator", "coding", "incident-monitor"] },
-  { label: "Govern", routeIds: ["approvals", "control-loop", "enterprise-admin"] },
+  { label: "Govern", routeIds: ["approvals", "control-loop", "slack-receipts", "enterprise-admin"] },
   { label: "System", routeIds: ["agents", "memory", "files", "marketplace", "experiments", "settings"] },
 ];
 

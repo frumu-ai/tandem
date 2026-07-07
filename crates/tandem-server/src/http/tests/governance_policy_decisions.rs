@@ -19,6 +19,7 @@ fn policy_decision(
     PolicyDecisionRecord {
         decision_id: decision_id.to_string(),
         tenant_context,
+        requester_context: None,
         actor_id: Some("agent-policy-test".to_string()),
         session_id: Some(format!("session-{decision_id}")),
         message_id: Some(format!("message-{decision_id}")),

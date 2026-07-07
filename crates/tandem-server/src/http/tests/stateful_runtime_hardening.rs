@@ -1342,6 +1342,7 @@ fn policy_decision(
     PolicyDecisionRecord {
         decision_id: decision_id.to_string(),
         tenant_context,
+        requester_context: None,
         actor_id: Some("operator-a".to_string()),
         session_id: None,
         message_id: None,

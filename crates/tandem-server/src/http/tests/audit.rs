@@ -293,6 +293,44 @@ async fn protected_audit_appends_build_verifiable_chain() {
 }
 
 #[tokio::test]
+async fn protected_audit_stamps_requester_context_from_payload() {
+    let state = test_state().await;
+    let tenant = tandem_types::TenantContext::explicit(
+        "org-requester",
+        "workspace-requester",
+        Some("finance-user".to_string()),
+    );
+
+    crate::audit::append_protected_audit_event(
+        &state,
+        "test.requester_context",
+        &tenant,
+        Some("finance-user".to_string()),
+        json!({
+            "run_id": "run-requester-context",
+            "requester_context": {
+                "org_units": ["finance"],
+                "roles": ["finance_analyst"]
+            }
+        }),
+    )
+    .await
+    .expect("append requester context event");
+
+    let events = crate::audit::load_protected_audit_events_for_tenant(&state, &tenant).await;
+    assert_eq!(events.len(), 1);
+    let requester = events[0]
+        .requester_context
+        .as_ref()
+        .expect("requester context stamped");
+    assert_eq!(requester.org_units, vec!["finance".to_string()]);
+    assert_eq!(requester.roles, vec!["finance_analyst".to_string()]);
+
+    let result = crate::audit::verify_protected_audit_ledger(&state.protected_audit_path).await;
+    assert!(result.valid, "ledger should verify: {result:?}");
+}
+
+#[tokio::test]
 async fn protected_audit_query_filters_by_denial_event_type() {
     let state = test_state().await;
     let app = app_router(state.clone());

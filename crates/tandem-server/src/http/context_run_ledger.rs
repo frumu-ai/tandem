@@ -19,6 +19,8 @@ struct ContextRunLedgerEventView {
     record: ToolEffectLedgerRecord,
 }
 
+include!("context_run_ledger_parts/tool_manifest.rs");
+
 pub(super) async fn context_run_ledger(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
@@ -30,9 +32,11 @@ pub(super) async fn context_run_ledger(
     let events =
         load_context_run_ledger_source_events(&state, &run_id, query.since_seq, query.tail);
     let records = context_run_ledger_records(&events);
+    let tool_manifest = context_run_tool_manifest(&events, &records);
     Ok(Json(json!({
         "records": records,
         "summary": context_run_ledger_summary(&records),
+        "tool_manifest": tool_manifest,
     })))
 }
 
@@ -61,6 +65,7 @@ pub(super) async fn context_run_governance_evidence_export(
 
     let events = load_context_run_ledger_source_events(&state, &context_run.run_id, None, None);
     let records = context_run_ledger_records(&events);
+    let tool_manifest = context_run_tool_manifest(&events, &records);
     let run_ids = governance_evidence_run_ids(&context_run.run_id, automation_run.as_ref());
     let policy_decisions =
         load_governance_evidence_policy_decisions(&state, &tenant_context, &run_ids, &records)
@@ -131,6 +136,7 @@ pub(super) async fn context_run_governance_evidence_export(
         &context_run,
         automation_run.as_ref(),
         &records,
+        &tool_manifest,
         &policy_decisions,
         &memory_audit,
         &protected_audit,
@@ -348,6 +354,7 @@ fn governance_evidence_package_for_records(
     context_run: &ContextRunState,
     automation_run: Option<&crate::automation_v2::types::AutomationV2RunRecord>,
     records: &[ContextRunLedgerEventView],
+    tool_manifest: &ContextRunToolManifest,
     policy_decisions: &[PolicyDecisionRecord],
     memory_audit: &[crate::MemoryAuditEvent],
     protected_audit: &[ProtectedAuditEnvelope],
@@ -462,6 +469,7 @@ fn governance_evidence_package_for_records(
             memory_audit,
         ),
         "tool_calls": tool_calls,
+        "tool_manifest": tool_manifest,
         "tool_call_summary": context_run_ledger_summary(records),
         "policy_decisions": policy_decision_rows,
         "approvals": governance_evidence_approvals(automation_run),
@@ -519,6 +527,7 @@ fn governance_evidence_tool_call(row: &ContextRunLedgerEventView) -> Value {
 fn governance_evidence_policy_decision(decision: &PolicyDecisionRecord) -> Value {
     json!({
         "decision_id": decision.decision_id,
+        "requester_context": decision.requester_context.clone(),
         "actor_id": decision.actor_id,
         "session_id": decision.session_id,
         "message_id": decision.message_id,
@@ -562,6 +571,7 @@ fn governance_evidence_protected_audit_row(event: &ProtectedAuditEnvelope) -> Va
         "event_id": event.event_id,
         "event_type": event.event_type,
         "durability": event.durability,
+        "requester_context": event.requester_context.clone(),
         "actor": event.actor,
         "created_at_ms": event.created_at_ms,
         "payload": redacted_value_ref(&event.payload),
@@ -731,12 +741,22 @@ fn governance_evidence_actors(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let mut requester_org_units = BTreeSet::new();
+    let mut requester_roles = BTreeSet::new();
+    for decision in policy_decisions {
+        if let Some(requester) = decision.requester_context.as_ref() {
+            requester_org_units.extend(requester.org_units.iter().cloned());
+            requester_roles.extend(requester.roles.iter().cloned());
+        }
+    }
 
     json!({
         "tenant_actor_id": context_run.tenant_context.actor_id,
         "automation_actor_id": automation_run.and_then(|run| run.tenant_context.actor_id.clone()),
         "policy_actor_ids": policy_actor_ids.into_iter().collect::<Vec<_>>(),
         "memory_actor_ids": memory_actor_ids.into_iter().collect::<Vec<_>>(),
+        "requester_org_units": requester_org_units.into_iter().collect::<Vec<_>>(),
+        "requester_roles": requester_roles.into_iter().collect::<Vec<_>>(),
         "approval_deciders": approval_deciders,
     })
 }
@@ -1111,6 +1131,31 @@ mod tests {
         event
     }
 
+    fn tool_routing_event(
+        seq: u64,
+        offered: Vec<&str>,
+        hidden_by_scope: Vec<&str>,
+    ) -> ContextRunEventRecord {
+        ContextRunEventRecord {
+            event_id: format!("routing-event-{seq}"),
+            run_id: "run-1".to_string(),
+            seq,
+            ts_ms: seq * 10,
+            event_type: "tool_routing_decision".to_string(),
+            status: ContextRunStatus::Running,
+            revision: seq,
+            step_id: Some("session-run".to_string()),
+            task_id: None,
+            command_id: None,
+            payload: json!({
+                "sessionID": "session-1",
+                "messageID": "message-1",
+                "offeredTools": offered,
+                "hiddenByScope": hidden_by_scope,
+            }),
+        }
+    }
+
     #[test]
     fn context_run_ledger_filters_and_summarizes_records() {
         let records = context_run_ledger_records(&[
@@ -1142,6 +1187,35 @@ mod tests {
         assert_eq!(summary["by_status"]["started"].as_u64(), Some(1));
         assert_eq!(summary["by_status"]["succeeded"].as_u64(), Some(1));
         assert_eq!(summary["last_seq"].as_u64(), Some(3));
+    }
+
+    #[test]
+    fn context_run_tool_manifest_tracks_offered_used_and_hidden_by_scope() {
+        let events = vec![
+            tool_routing_event(
+                1,
+                vec!["mcp.crm.read_customer", "mcp.incident.read"],
+                vec!["mcp.finance.read_invoice"],
+            ),
+            tool_effect_event(2, "mcp.crm.read_customer", "outcome", "succeeded"),
+        ];
+        let records = context_run_ledger_records(&events);
+        let manifest = context_run_tool_manifest(&events, &records);
+
+        assert_eq!(
+            manifest.offered,
+            vec![
+                "mcp.crm.read_customer".to_string(),
+                "mcp.incident.read".to_string()
+            ]
+        );
+        assert_eq!(manifest.used, vec!["mcp.crm.read_customer".to_string()]);
+        assert_eq!(
+            manifest.hidden_by_scope,
+            vec!["mcp.finance.read_invoice".to_string()]
+        );
+        assert!(manifest.used_subset_offered);
+        assert!(manifest.used_unoffered.is_empty());
     }
 
     #[test]
@@ -1389,6 +1463,10 @@ mod tests {
         let policy_decisions = vec![tandem_types::PolicyDecisionRecord {
             decision_id: "decision-approval".to_string(),
             tenant_context: run.tenant_context.clone(),
+            requester_context: Some(tandem_types::GovernanceRequesterContext {
+                org_units: vec!["finance".to_string()],
+                roles: vec!["finance_analyst".to_string()],
+            }),
             actor_id: Some("finance-user".to_string()),
             session_id: Some("session-1".to_string()),
             message_id: Some("message-1".to_string()),
@@ -1428,6 +1506,10 @@ mod tests {
             durability: crate::audit::AuditDurability::DurableRequired,
             event_type: "approval.gate.approval_required".to_string(),
             tenant_context: run.tenant_context.clone(),
+            requester_context: Some(tandem_types::GovernanceRequesterContext {
+                org_units: vec!["finance".to_string()],
+                roles: vec!["finance_analyst".to_string()],
+            }),
             actor: Some("finance-user".to_string()),
             payload: json!({
                 "decision_id": "decision-approval",
@@ -1443,12 +1525,25 @@ mod tests {
             &context_run,
             Some(&run),
             &records,
+            &context_run_tool_manifest(&[], &records),
             &policy_decisions,
             &memory_audit,
             &protected_audit,
         );
 
         assert_eq!(package["schema_version"].as_u64(), Some(1));
+        assert_eq!(
+            package["actors"]["requester_org_units"][0].as_str(),
+            Some("finance")
+        );
+        assert_eq!(
+            package["policy_decisions"][0]["requester_context"]["roles"][0].as_str(),
+            Some("finance_analyst")
+        );
+        assert_eq!(
+            package["tool_manifest"]["used_subset_offered"].as_bool(),
+            Some(true)
+        );
         assert_eq!(
             package["policy_decisions"][0]["decision"].as_str(),
             Some("approval_required")
@@ -1602,6 +1697,7 @@ mod tests {
         let policy_decisions = vec![tandem_types::PolicyDecisionRecord {
             decision_id: "decision-1".to_string(),
             tenant_context: run.tenant_context.clone(),
+            requester_context: None,
             actor_id: Some("finance-user".to_string()),
             session_id: None,
             message_id: None,
@@ -1627,6 +1723,7 @@ mod tests {
             &context_run,
             Some(&run),
             &[],
+            &context_run_tool_manifest(&[], &[]),
             &policy_decisions,
             &[],
             &[],
@@ -1834,159 +1931,4 @@ mod tests {
 }
 
 #[cfg(test)]
-mod export_authority_tests {
-    use super::*;
-
-    fn strict_context_with_classes(
-        run_id: &str,
-        data_classes: Vec<tandem_types::DataClass>,
-    ) -> tandem_types::StrictTenantContext {
-        let resource = tandem_types::ResourceRef::new(
-            "org-a",
-            "workspace-a",
-            tandem_types::ResourceKind::AuditExport,
-            run_id,
-        );
-        let tenant_context =
-            TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "auditor-1");
-        let principal = tandem_types::PrincipalRef::human_user("auditor-1");
-        let grant = tandem_types::ScopedGrant::new(
-            "grant-export",
-            principal.clone(),
-            resource.clone(),
-            tandem_types::GrantSource::Direct,
-        )
-        .with_permissions(vec![tandem_types::AccessPermission::Read])
-        .with_data_classes(data_classes);
-        tandem_types::StrictTenantContext::new(
-            tenant_context,
-            principal.clone(),
-            tandem_types::AuthorityChain::from_request(
-                tandem_types::RequestPrincipal::authenticated_user(principal.id, "tandem-web"),
-            ),
-            tandem_types::ResourceScope::root(resource),
-            tandem_types::AssertionMetadata::new(
-                "tandem-web",
-                "tandem-runtime",
-                1_000,
-                9_999_999_999_999,
-                "assertion-export",
-            ),
-        )
-        .with_grants(vec![grant])
-    }
-
-    fn decision_with_classes(data_classes: Vec<tandem_types::DataClass>) -> PolicyDecisionRecord {
-        serde_json::from_value(json!({
-            "decision_id": "decision-1",
-            "tenant_context": TenantContext::local_implicit(),
-            "data_classes": data_classes,
-            "decision": "allow",
-            "reason_code": "test",
-            "reason": "test fixture",
-            "created_at_ms": 1_500,
-        }))
-        .expect("policy decision fixture")
-    }
-
-    #[test]
-    fn export_allowed_when_every_included_class_is_granted() {
-        let strict = strict_context_with_classes(
-            "run-1",
-            vec![
-                tandem_types::DataClass::Internal,
-                tandem_types::DataClass::Restricted,
-            ],
-        );
-        let decisions = vec![decision_with_classes(vec![
-            tandem_types::DataClass::Restricted,
-        ])];
-        assert_eq!(
-            governance_evidence_export_denial(&strict, "run-1", &decisions, None, 2_000),
-            None
-        );
-    }
-
-    #[test]
-    fn export_rejected_when_a_policy_decision_class_is_not_granted() {
-        // The principal can read Internal evidence but a included policy
-        // decision carries Restricted data: the whole package is rejected,
-        // so restricted data is never included in an unauthorized export.
-        let strict = strict_context_with_classes("run-1", vec![tandem_types::DataClass::Internal]);
-        let decisions = vec![decision_with_classes(vec![
-            tandem_types::DataClass::Restricted,
-        ])];
-        assert_eq!(
-            governance_evidence_export_denial(&strict, "run-1", &decisions, None, 2_000),
-            Some(tandem_types::DataClass::Restricted)
-        );
-    }
-
-    #[test]
-    fn export_rejected_without_any_grant_for_the_run_resource() {
-        // Grant is scoped to a different run: baseline Internal evidence is
-        // already unreadable, fail closed.
-        let strict =
-            strict_context_with_classes("run-other", vec![tandem_types::DataClass::Internal]);
-        assert_eq!(
-            governance_evidence_export_denial(&strict, "run-1", &[], None, 2_000),
-            Some(tandem_types::DataClass::Internal)
-        );
-    }
-
-    #[test]
-    fn export_rejected_when_an_artifact_class_is_not_granted() {
-        // A node output carrying a Restricted artifact class gates the export
-        // even when no policy decision carries that class (Codex P1 on
-        // PR #1557): artifact metadata is serialized into the package, so
-        // its classes must be readable too.
-        let strict = strict_context_with_classes("run-1", vec![tandem_types::DataClass::Internal]);
-        let mut run: crate::automation_v2::types::AutomationV2RunRecord =
-            serde_json::from_value(json!({
-                "run_id": "run-1",
-                "automation_id": "auto-1",
-                "tenant_context": TenantContext::local_implicit(),
-                "trigger_type": "manual",
-                "status": "completed",
-                "created_at_ms": 1_500,
-                "updated_at_ms": 1_500,
-                "checkpoint": {},
-            }))
-            .expect("run fixture");
-        run.checkpoint.node_outputs.insert(
-            "export_step".to_string(),
-            json!({
-                "artifact_id": "artifact-1",
-                "data_class": "restricted",
-                "content": "redacted"
-            }),
-        );
-        assert_eq!(
-            governance_evidence_export_denial(&strict, "run-1", &[], Some(&run), 2_000),
-            Some(tandem_types::DataClass::Restricted)
-        );
-
-        // With the Restricted grant the same package exports.
-        let granted = strict_context_with_classes(
-            "run-1",
-            vec![
-                tandem_types::DataClass::Internal,
-                tandem_types::DataClass::Restricted,
-            ],
-        );
-        assert_eq!(
-            governance_evidence_export_denial(&granted, "run-1", &[], Some(&run), 2_000),
-            None
-        );
-    }
-
-    #[test]
-    fn expired_assertion_fails_closed() {
-        let strict = strict_context_with_classes("run-1", vec![tandem_types::DataClass::Internal]);
-        // now_ms beyond the assertion expiry of the fixture
-        assert_eq!(
-            governance_evidence_export_denial(&strict, "run-1", &[], None, 99_999_999_999_999),
-            Some(tandem_types::DataClass::Internal)
-        );
-    }
-}
+include!("context_run_ledger_parts/export_authority_tests.rs");

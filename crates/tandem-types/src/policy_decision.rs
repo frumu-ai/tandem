@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tandem_enterprise_contract::{
     DataClass, EffectivePolicySnapshot, EffectivePolicySource, EnterprisePolicyEffect,
-    EnterprisePolicyScopeLevel, ResourceRef, TenantContext,
+    EnterprisePolicyScopeLevel, ResourceRef, TenantContext, VerifiedTenantContext,
 };
 
 pub const EFFECTIVE_POLICY_METADATA_KEY: &str = "effective_policy";
@@ -15,10 +15,32 @@ pub enum PolicyDecisionEffect {
     ApprovalRequired,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct GovernanceRequesterContext {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub org_units: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<String>,
+}
+
+impl GovernanceRequesterContext {
+    pub fn from_verified_context(context: &VerifiedTenantContext) -> Option<Self> {
+        if context.org_units.is_empty() && context.roles.is_empty() {
+            return None;
+        }
+        Some(Self {
+            org_units: context.org_units.clone(),
+            roles: context.roles.clone(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyDecisionRecord {
     pub decision_id: String,
     pub tenant_context: TenantContext,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester_context: Option<GovernanceRequesterContext>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -191,6 +213,7 @@ mod tests {
                 None,
                 "user-finance",
             ),
+            requester_context: None,
             actor_id: Some("user-finance".to_string()),
             session_id: None,
             message_id: None,
@@ -245,6 +268,7 @@ mod tests {
                 None,
                 "user-finance",
             ),
+            requester_context: None,
             actor_id: Some("user-finance".to_string()),
             session_id: None,
             message_id: None,
@@ -290,6 +314,7 @@ mod tests {
                 None,
                 "user-finance",
             ),
+            requester_context: None,
             actor_id: Some("user-finance".to_string()),
             session_id: Some("session-1".to_string()),
             message_id: Some("message-1".to_string()),
