@@ -57,6 +57,7 @@
     clippy::vec_init_then_push
 )]
 
+pub mod acme_demo;
 pub mod agent_teams;
 pub mod app;
 pub mod audit;

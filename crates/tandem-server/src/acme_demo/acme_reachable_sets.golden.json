@@ -1,0 +1,153 @@
+{
+  "profiles": [
+    {
+      "org_unit": "department/sales",
+      "reachable_memory": [
+        "sales_crm_hooli",
+        "sales_risk_flag",
+        "sales_support_theme"
+      ],
+      "reachable_tools": [
+        {
+          "approval_required": false,
+          "risk_tier": "customer_data_access",
+          "tool": "mcp.crm.search_accounts"
+        },
+        {
+          "approval_required": true,
+          "risk_tier": "external_send",
+          "tool": "mcp.email.send_email"
+        },
+        {
+          "approval_required": false,
+          "risk_tier": "read_discover",
+          "tool": "mcp.support.list_summaries"
+        }
+      ],
+      "slack_user": "U_SALES"
+    },
+    {
+      "org_unit": "department/engineering",
+      "reachable_memory": [
+        "eng_github_auth",
+        "eng_incident_sev2",
+        "eng_linear_milestone"
+      ],
+      "reachable_tools": [
+        {
+          "approval_required": true,
+          "risk_tier": "external_send",
+          "tool": "mcp.email.send_email"
+        },
+        {
+          "approval_required": false,
+          "risk_tier": "read_discover",
+          "tool": "mcp.github.read_repo"
+        },
+        {
+          "approval_required": false,
+          "risk_tier": "read_discover",
+          "tool": "mcp.incidents.list_incidents"
+        },
+        {
+          "approval_required": false,
+          "risk_tier": "read_discover",
+          "tool": "mcp.linear.list_issues"
+        }
+      ],
+      "slack_user": "U_ENG"
+    },
+    {
+      "org_unit": "department/finance",
+      "reachable_memory": [
+        "finance_contract_hooli",
+        "finance_invoice_hooli",
+        "finance_payment_run"
+      ],
+      "reachable_tools": [
+        {
+          "approval_required": true,
+          "risk_tier": "financial_record_access",
+          "tool": "mcp.contracts.read_contracts"
+        },
+        {
+          "approval_required": true,
+          "risk_tier": "external_send",
+          "tool": "mcp.email.send_email"
+        },
+        {
+          "approval_required": true,
+          "risk_tier": "financial_record_access",
+          "tool": "mcp.invoices.read_invoices"
+        }
+      ],
+      "slack_user": "U_FINANCE"
+    },
+    {
+      "org_unit": "department/leadership",
+      "reachable_memory": [
+        "contractor_project_x",
+        "eng_github_auth",
+        "eng_incident_sev2",
+        "eng_linear_milestone",
+        "leadership_board_summary",
+        "sales_crm_hooli",
+        "sales_risk_flag",
+        "sales_support_theme"
+      ],
+      "reachable_tools": [
+        {
+          "approval_required": false,
+          "risk_tier": "customer_data_access",
+          "tool": "mcp.crm.search_accounts"
+        },
+        {
+          "approval_required": true,
+          "risk_tier": "external_send",
+          "tool": "mcp.email.send_email"
+        },
+        {
+          "approval_required": false,
+          "risk_tier": "read_discover",
+          "tool": "mcp.github.read_repo"
+        },
+        {
+          "approval_required": false,
+          "risk_tier": "read_discover",
+          "tool": "mcp.incidents.list_incidents"
+        },
+        {
+          "approval_required": false,
+          "risk_tier": "read_discover",
+          "tool": "mcp.linear.list_issues"
+        },
+        {
+          "approval_required": false,
+          "risk_tier": "read_discover",
+          "tool": "mcp.support.list_summaries"
+        }
+      ],
+      "slack_user": "U_LEADER"
+    },
+    {
+      "org_unit": "department/contractor_acme_x",
+      "reachable_memory": [
+        "contractor_project_x"
+      ],
+      "reachable_tools": [
+        {
+          "approval_required": false,
+          "risk_tier": "read_discover",
+          "tool": "mcp.projects.x.read_spec"
+        }
+      ],
+      "slack_user": "U_CONTRACTOR"
+    }
+  ],
+  "prompt": "What's the latest on the Hooli account, and can you follow up with them?",
+  "tenant": {
+    "org_id": "acme",
+    "taxonomy_id": "department",
+    "workspace_id": "hq"
+  }
+}
