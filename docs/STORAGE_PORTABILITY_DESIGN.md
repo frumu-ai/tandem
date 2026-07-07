@@ -75,15 +75,26 @@ pub trait MemoryStore: Send + Sync {
 
 ## Decision 2 — vector portability (TAN-660)
 
-- `vec0` virtual table → **`pgvector` `vector(N)` column** with an ANN index
-  (HNSW default; IVFFlat as an alternative). Embedding dimension (currently 384)
-  and distance metric are **parameters of the store**, not baked into DDL.
-- **Scope-aware top-k is contractual on both backends:** the scope predicate
-  (tenant + org_unit + subject) must be applied *in the same query* as the ANN
-  search, never a global top-k followed by a filter. Postgres:
-  `... WHERE <scope predicate> ORDER BY embedding <=> $1 LIMIT $k`. SQLite keeps
-  today's per-tenant `vec0` scan. A shared contract test asserts no cross-scope
-  candidate can suppress an in-scope one on either backend.
+- `vec0` virtual table → **`pgvector` `vector(N)` column**. Embedding dimension
+  (currently 384) and distance metric are **parameters of the store**, not baked
+  into DDL.
+- **Scope-aware top-k is contractual on both backends:** cross-scope vectors must
+  never suppress in-scope results. This is subtle on Postgres: an **approximate**
+  ANN index (HNSW/IVFFlat) applies a `WHERE` scope filter *after* the index scan,
+  so a naive `WHERE <scope> ORDER BY embedding <=> $1 LIMIT $k` can return an ANN
+  candidate set dominated by out-of-scope rows and **miss closer in-scope hits**
+  for selective tenant/org/subject scopes (pgvector post-filtering behaviour).
+  The Postgres backend MUST therefore use one of:
+  1. **exact search for scoped queries** (no ANN index / disable index scan) —
+     simplest, correct, acceptable while per-scope row counts are small;
+  2. **per-scope partial or partitioned indexes** (e.g. partition by tenant) so
+     the ANN index is already scope-bounded; or
+  3. **iterative scan** (`hnsw.iterative_scan` / `ivfflat.iterative_scan`, pgvector
+     ≥ 0.8) with a bounded max, which re-scans until enough in-scope rows are found.
+
+  SQLite keeps today's per-tenant `vec0` scan. A shared contract test asserts, on
+  **both** backends, that adding many closer out-of-scope vectors does not drop or
+  reorder the in-scope top-k — this test gates the guarantee (it is not assumed).
 - Vector ops live behind the `MemoryStore` trait (`search_similar_for_scope`,
   `upsert_embedding`, `delete_embeddings_for_scope`), never as raw `vec0` SQL in
   business logic.
