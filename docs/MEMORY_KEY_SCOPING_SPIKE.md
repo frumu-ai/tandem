@@ -17,7 +17,7 @@ and if so, at what cost?
 ## TL;DR recommendation
 
 1. **Option 1 (org_unit as a key-scope dimension) is the right target**, and its
-   steady-state cost is modest **provided a scope-keyed DEK cache exists**.
+   steady-state cost is modest **provided a envelope-keyed DEK cache exists**.
    Reject Option 2 — it overloads `data_class`, which is also a DLP / decrypt-grant
    axis, and would entangle department membership with data-loss policy.
 2. **But Option 1 is currently premature.** The per-scope, KMS-backed envelope
@@ -25,7 +25,7 @@ and if so, at what cost?
    — it is designed and unit-tested only. Today's *active* encryption is a single
    process-wide key with **no tenant/data-class/department scoping at all**.
 3. **New prerequisite discovered:** wire the envelope + decrypt-broker + KMS
-   provider into the actual encrypt/decrypt path, with a scope-keyed DEK cache,
+   provider into the actual encrypt/decrypt path, with a envelope-keyed DEK cache,
    **before** TAN-662. Filed as a dependency (see "Impact" below). Adding
    `org_unit` to a key scope that nothing reads/writes would be dead code.
 
@@ -85,7 +85,7 @@ So *as written*, each DEK unwrap = one process spawn + one KMS API round-trip.
 On a hot retrieval path that decrypts N rows spanning K distinct key scopes, an
 un-cached design would issue up to **K KMS calls per query** (or N, if unwrap were
 done per row). This is the real cost driver — **not** the number of key
-dimensions. Any hosted deployment needs a scope-keyed DEK cache before encryption
+dimensions. Any hosted deployment needs a envelope-keyed DEK cache before encryption
 is viable at all, independent of the department question.
 
 ### 3. `data_class` is already an authorization axis (why Option 2 is bad)
@@ -101,8 +101,15 @@ membership to DLP policy. Rejected.
 
 ## Cost analysis — adding `org_unit` (Option 1)
 
-Assume the envelope/KMS path is wired **with** a scope-keyed DEK cache
-(`canonical_id → unwrapped DEK`, LRU, invalidated on rotation/revocation).
+Assume the envelope/KMS path is wired **with** an envelope-keyed DEK cache
+keyed by `(canonical_id, kek_version, rotation_epoch)` — **not** `canonical_id`
+alone. During rotation/backfill the same scope can hold rows under different
+`wrapped_dek` / `kek_version`, so a scope-only cache would return the first
+unwrapped DEK for later rows encrypted under a newer key version and cause GCM
+decrypt failures. Keying by the envelope's key identity lets old and new rows
+coexist; entries are LRU-evicted and invalidated on revocation. (Alternative:
+require every rotation to rewrite all rows before mixed versions are readable —
+rejected as operationally heavier than a versioned cache key.)
 
 - **Key / DEK count.** Distinct scopes today = `tenant × data_class × source`.
   Adding `org_unit` multiplies by department cardinality. Departments are
@@ -131,7 +138,7 @@ acceptable, and it buys per-department crypto-shred.
 
 1. **New prerequisite issue (P0 for the at-rest story):** *Wire the per-scope
    envelope + decrypt-broker + KMS provider into the memory encrypt/decrypt path,
-   with a scope-keyed DEK cache.* Until this lands, encrypted mode is single-key
+   with a envelope-keyed DEK cache.* Until this lands, encrypted mode is single-key
    and TAN-662 has nothing to extend. This is the true blocker, not department
    cost.
 2. **TAN-662 depends on (1)** and should add `org_unit` to `MemoryKeyScope`
