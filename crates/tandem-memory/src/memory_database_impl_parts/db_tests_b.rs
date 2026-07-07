@@ -484,6 +484,128 @@
     }
 
     #[tokio::test]
+    async fn test_global_memory_department_scoped_read_is_enforced_in_query() {
+        // TAN-645: owner_org_unit_id is a real column with a SQL predicate. Three
+        // records in the same tenant + user: Finance, Engineering, and an
+        // unstamped (tenant-wide) row. A department-scoped read must return only
+        // that department's rows; a tenant-only read (None) returns all three.
+        let (db, _temp) = setup_test_db().await;
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        let base = GlobalMemoryRecord {
+            id: "dept-finance".to_string(),
+            user_id: "same-user".to_string(),
+            source_type: "note".to_string(),
+            content: "acme quarterly context".to_string(),
+            content_hash: "hash-finance".to_string(),
+            run_id: "run-finance".to_string(),
+            session_id: None,
+            message_id: None,
+            tool_name: None,
+            project_tag: Some("acme".to_string()),
+            channel_tag: None,
+            host_tag: None,
+            metadata: Some(serde_json::json!({ "owner_org_unit_id": "finance" })),
+            provenance: None,
+            redaction_status: "passed".to_string(),
+            redaction_count: 0,
+            visibility: "private".to_string(),
+            demoted: false,
+            score_boost: 0.0,
+            created_at_ms: now,
+            updated_at_ms: now,
+            expires_at_ms: None,
+        };
+        let mut engineering = base.clone();
+        engineering.id = "dept-engineering".to_string();
+        engineering.content_hash = "hash-engineering".to_string();
+        engineering.run_id = "run-engineering".to_string();
+        engineering.metadata = Some(serde_json::json!({ "owner_org_unit_id": "engineering" }));
+        let mut unstamped = base.clone();
+        unstamped.id = "dept-none".to_string();
+        unstamped.content_hash = "hash-none".to_string();
+        unstamped.run_id = "run-none".to_string();
+        unstamped.metadata = None;
+
+        assert!(db.put_global_memory_record(&base).await.unwrap().stored);
+        assert!(db
+            .put_global_memory_record(&engineering)
+            .await
+            .unwrap()
+            .stored);
+        assert!(db.put_global_memory_record(&unstamped).await.unwrap().stored);
+
+        // Department-scoped search returns only that department's row (in-query).
+        let finance_hits = db
+            .search_global_memory_for_tenant_scoped(
+                "local",
+                "local",
+                None,
+                "same-user",
+                "acme quarterly context",
+                10,
+                Some("acme"),
+                None,
+                None,
+                Some("finance"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(finance_hits.len(), 1);
+        assert_eq!(finance_hits[0].record.id, "dept-finance");
+
+        // Department-scoped list likewise, and the unstamped row is NOT visible to
+        // a department read (fail-closed: NULL owner_org_unit_id != 'engineering').
+        let engineering_rows = db
+            .list_global_memory_for_tenant_scoped(
+                "local",
+                "local",
+                None,
+                "same-user",
+                Some("acme"),
+                Some("acme"),
+                None,
+                10,
+                0,
+                Some("engineering"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(engineering_rows.len(), 1);
+        assert_eq!(engineering_rows[0].id, "dept-engineering");
+
+        // Tenant-only read (no department narrowing) still returns all three rows.
+        let all_rows = db
+            .list_global_memory_for_tenant(
+                "local", "local", None, "same-user", None, None, None, 10, 0,
+            )
+            .await
+            .unwrap();
+        assert_eq!(all_rows.len(), 3);
+
+        // The MemoryStore trait seam wires scope.org_unit into the predicate.
+        use crate::store::{MemoryReadScope, MemoryStore};
+        use crate::types::MemoryTenantScope;
+        let mut scope = MemoryReadScope::tenant(MemoryTenantScope {
+            org_id: "local".to_string(),
+            workspace_id: "local".to_string(),
+            deployment_id: None,
+        });
+        scope.org_unit = Some("finance".to_string());
+        let trait_hits = MemoryStore::search_global_records(
+            &db,
+            &scope,
+            "same-user",
+            "acme quarterly context",
+            10,
+            Some("acme"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(trait_hits.len(), 1);
+        assert_eq!(trait_hits[0].record.id, "dept-finance");
+    }
+
+    #[tokio::test]
     async fn test_knowledge_registry_round_trip() {
         let (db, _temp) = setup_test_db().await;
         let now = chrono::Utc::now().timestamp_millis() as u64;

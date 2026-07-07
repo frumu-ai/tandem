@@ -3,6 +3,7 @@
 // Database Layer Module
 // SQLite + sqlite-vec for vector storage
 
+use crate::types::owner_org_unit_id_from_metadata;
 use crate::types::{
     CleanupLogEntry, ClearFileIndexResult, GlobalMemoryRecord, GlobalMemorySearchHit,
     GlobalMemoryWriteResult, KnowledgeCoverageRecord, KnowledgeItemRecord, KnowledgeItemStatus,

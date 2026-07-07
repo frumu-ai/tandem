@@ -1437,17 +1437,22 @@ impl MemoryDatabase {
             .as_ref()
             .map(ToString::to_string)
             .unwrap_or_default();
+        // Persist department ownership into the first-class column (TAN-645),
+        // sourced from the established metadata key so existing writers populate it
+        // without a signature change. TAN-646 will source this from the verified
+        // request context on every ingestion path.
+        let owner_org_unit_id = owner_org_unit_id_from_metadata(record.metadata.as_ref());
         conn.execute(
             "INSERT INTO memory_records(
                 id, tenant_org_id, tenant_workspace_id, tenant_deployment_id,
                 user_id, source_type, content, content_hash, run_id, session_id, message_id, tool_name,
                 project_tag, channel_tag, host_tag, metadata, provenance, redaction_status, redaction_count,
-                visibility, demoted, score_boost, created_at_ms, updated_at_ms, expires_at_ms
+                visibility, demoted, score_boost, created_at_ms, updated_at_ms, expires_at_ms, owner_org_unit_id
             ) VALUES (
                 ?1, ?2, ?3, ?4,
                 ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                 ?13, ?14, ?15, ?16, ?17, ?18, ?19,
-                ?20, ?21, ?22, ?23, ?24, ?25
+                ?20, ?21, ?22, ?23, ?24, ?25, ?26
             )",
             params![
                 record.id,
@@ -1475,6 +1480,7 @@ impl MemoryDatabase {
                 record.created_at_ms as i64,
                 record.updated_at_ms as i64,
                 record.expires_at_ms.map(|v| v as i64),
+                owner_org_unit_id,
             ],
         )?;
 
@@ -1497,6 +1503,43 @@ impl MemoryDatabase {
         project_tag: Option<&str>,
         channel_tag: Option<&str>,
         host_tag: Option<&str>,
+    ) -> MemoryResult<Vec<GlobalMemorySearchHit>> {
+        // Tenant-only path (no department narrowing) preserves prior behavior.
+        self.search_global_memory_for_tenant_scoped(
+            tenant_org_id,
+            tenant_workspace_id,
+            tenant_deployment_id,
+            user_id,
+            query,
+            limit,
+            project_tag,
+            channel_tag,
+            host_tag,
+            None,
+        )
+        .await
+    }
+
+    /// Department-scoped variant of [`Self::search_global_memory_for_tenant`]
+    /// (TAN-645). `owner_org_unit_id = None` matches all rows (tenant-only, the
+    /// behavior-preserving default); `Some(dept)` restricts to rows stamped with
+    /// that department via the SQL predicate `(?N IS NULL OR owner_org_unit_id =
+    /// ?N)`, so unstamped (NULL) rows are excluded from a department read
+    /// (fail-closed, TAN-647). Enforced in-query rather than post-filtered, so
+    /// LIMIT/ranking see the scoped set.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn search_global_memory_for_tenant_scoped(
+        &self,
+        tenant_org_id: &str,
+        tenant_workspace_id: &str,
+        tenant_deployment_id: Option<&str>,
+        user_id: &str,
+        query: &str,
+        limit: i64,
+        project_tag: Option<&str>,
+        channel_tag: Option<&str>,
+        host_tag: Option<&str>,
+        owner_org_unit_id: Option<&str>,
     ) -> MemoryResult<Vec<GlobalMemorySearchHit>> {
         let conn = self.conn.lock().await;
         let now_ms = chrono::Utc::now().timestamp_millis();
@@ -1523,6 +1566,7 @@ impl MemoryDatabase {
                AND (?7 IS NULL OR m.project_tag = ?7)
                AND (?8 IS NULL OR m.channel_tag = ?8)
                AND (?9 IS NULL OR m.host_tag = ?9)
+               AND (?11 IS NULL OR m.owner_org_unit_id = ?11)
              ORDER BY rank ASC
              LIMIT ?10"
         );
@@ -1539,7 +1583,8 @@ impl MemoryDatabase {
                     project_tag,
                     channel_tag,
                     host_tag,
-                    search_limit
+                    search_limit,
+                    owner_org_unit_id
                 ],
                 |row| {
                     let record = row_to_global_record(row)?;
@@ -1575,6 +1620,7 @@ impl MemoryDatabase {
                AND (?7 IS NULL OR channel_tag = ?7)
                AND (?8 IS NULL OR host_tag = ?8)
                AND (?9 = '' OR content LIKE ?10)
+               AND (?12 IS NULL OR owner_org_unit_id = ?12)
              ORDER BY created_at_ms DESC
              LIMIT ?11",
         )?;
@@ -1590,7 +1636,8 @@ impl MemoryDatabase {
                 host_tag,
                 query.trim(),
                 like,
-                search_limit
+                search_limit,
+                owner_org_unit_id
             ],
             |row| {
                 let record = row_to_global_record(row)?;
@@ -1759,6 +1806,7 @@ impl MemoryDatabase {
         Ok(out)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn list_global_memory_for_tenant(
         &self,
         tenant_org_id: &str,
@@ -1770,6 +1818,40 @@ impl MemoryDatabase {
         channel_tag: Option<&str>,
         limit: i64,
         offset: i64,
+    ) -> MemoryResult<Vec<GlobalMemoryRecord>> {
+        // Tenant-only path (no department narrowing) preserves prior behavior.
+        self.list_global_memory_for_tenant_scoped(
+            tenant_org_id,
+            tenant_workspace_id,
+            tenant_deployment_id,
+            user_id,
+            q,
+            project_tag,
+            channel_tag,
+            limit,
+            offset,
+            None,
+        )
+        .await
+    }
+
+    /// Department-scoped variant of [`Self::list_global_memory_for_tenant`]
+    /// (TAN-645). See [`Self::search_global_memory_for_tenant_scoped`] for the
+    /// `owner_org_unit_id` predicate semantics (`None` = tenant-wide;
+    /// `Some(dept)` restricts, excluding unstamped rows fail-closed).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn list_global_memory_for_tenant_scoped(
+        &self,
+        tenant_org_id: &str,
+        tenant_workspace_id: &str,
+        tenant_deployment_id: Option<&str>,
+        user_id: &str,
+        q: Option<&str>,
+        project_tag: Option<&str>,
+        channel_tag: Option<&str>,
+        limit: i64,
+        offset: i64,
+        owner_org_unit_id: Option<&str>,
     ) -> MemoryResult<Vec<GlobalMemoryRecord>> {
         let conn = self.conn.lock().await;
         let query = q.unwrap_or("").trim();
@@ -1788,6 +1870,7 @@ impl MemoryDatabase {
                AND (?5 = '' OR content LIKE ?6 OR source_type LIKE ?6 OR run_id LIKE ?6)
                AND (?7 IS NULL OR project_tag = ?7)
                AND (?8 IS NULL OR channel_tag = ?8)
+               AND (?11 IS NULL OR owner_org_unit_id = ?11)
              ORDER BY created_at_ms DESC
              LIMIT ?9 OFFSET ?10",
         )?;
@@ -1802,7 +1885,8 @@ impl MemoryDatabase {
                 project_tag,
                 channel_tag,
                 limit.clamp(1, 1000),
-                offset.max(0)
+                offset.max(0),
+                owner_org_unit_id
             ],
             row_to_global_record,
         )?;
