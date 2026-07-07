@@ -24,7 +24,6 @@ not (
   | test(=http::tests::memory::memory_import_can_use_default_local_manual_source_binding_projection)
   | test(=http::tests::memory::memory_import_quarantines_review_required_source_binding)
   | test(=http::tests::memory::memory_import_records_enterprise_ingestion_job_audit)
-  | test(=http::tests::sessions::channel_session_archival_writes_deduped_global_exchange_memory)
   | test(=http::tests::sessions::prompt_async_stream_error_persists_error_message_and_finishes_run)
   | test(=http::tests::sessions::prompt_async_streamed_write_preserves_provider_call_id_and_args_lineage)
 )

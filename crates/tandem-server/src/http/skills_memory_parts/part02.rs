@@ -720,6 +720,42 @@ pub(super) fn summarize_value(value: &Value, limit: usize) -> String {
     truncate_text(&text, limit)
 }
 
+/// How much of each tool invocation the run-finish ingestor persists into
+/// `memory_records` (TAN-637). Tool args and output are the noisiest, least
+/// re-surfaced content in the store, so the default keeps only the tool name
+/// and outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ToolEventCaptureMode {
+    /// Persist no tool invocation records.
+    Off,
+    /// One `tool_event` record per invocation: tool name + outcome, without
+    /// verbatim args or output (a short error snippet is kept — the outcome
+    /// is the signal these records exist for).
+    Summary,
+    /// Prior behavior: `tool_input`/`tool_output` records with truncated
+    /// verbatim args and output.
+    Full,
+}
+
+pub(super) fn tool_event_capture_mode() -> ToolEventCaptureMode {
+    match std::env::var("TANDEM_MEMORY_TOOL_EVENT_CAPTURE")
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "off" => ToolEventCaptureMode::Off,
+        "full" => ToolEventCaptureMode::Full,
+        _ => ToolEventCaptureMode::Summary,
+    }
+}
+
+/// Hard ceiling on persisted memory record content, applied after scrubbing
+/// (so redaction still sees the full text). Keeps a single pasted blob or
+/// giant tool payload from bloating memory.sqlite; FTS relevance for prompt
+/// context does not need more than this.
+pub(super) const MAX_MEMORY_RECORD_CONTENT_CHARS: usize = 8_000;
+
 pub(super) async fn persist_global_memory_record(
     state: &AppState,
     db: &MemoryDatabase,
@@ -753,7 +789,7 @@ pub(super) async fn persist_global_memory_record(
         );
         return;
     }
-    record.content = scrubbed;
+    record.content = truncate_text(&scrubbed, MAX_MEMORY_RECORD_CONTENT_CHARS);
     record.redaction_count = scrub.redactions;
     record.redaction_status = match scrub.status {
         ScrubStatus::Passed => "passed".to_string(),
@@ -810,6 +846,7 @@ pub(super) async fn ingest_run_messages(
     let Some(session) = state.storage.get_session(session_id).await else {
         return;
     };
+    let tool_capture = tool_event_capture_mode();
     for message in session.messages {
         let created_ms = message.created_at.timestamp_millis() as u64;
         if created_ms + 1_000 < ctx.started_at_ms {
@@ -890,6 +927,52 @@ pub(super) async fn ingest_run_messages(
                         error,
                     },
                 ) => {
+                    match tool_capture {
+                        ToolEventCaptureMode::Off => continue,
+                        ToolEventCaptureMode::Summary => {
+                            let now = crate::now_ms();
+                            let outcome = match error.as_deref() {
+                                Some(err) => {
+                                    format!("error {}", truncate_text(err.trim(), 200))
+                                }
+                                None => "ok".to_string(),
+                            };
+                            persist_global_memory_record(
+                                state,
+                                db,
+                                GlobalMemoryRecord {
+                                    id: Uuid::new_v4().to_string(),
+                                    user_id: ctx.user_id.clone(),
+                                    source_type: "tool_event".to_string(),
+                                    content: format!("tool={} outcome={}", tool, outcome),
+                                    content_hash: String::new(),
+                                    run_id: ctx.run_id.clone(),
+                                    session_id: Some(session_id.to_string()),
+                                    message_id: Some(message.id.clone()),
+                                    tool_name: Some(tool),
+                                    project_tag: session.project_id.clone(),
+                                    channel_tag: None,
+                                    host_tag: ctx.host_tag.clone(),
+                                    metadata: None,
+                                    provenance: Some(json!({
+                                        "origin_event_type": "session.run.finished",
+                                        "tenant_context": ctx.tenant_context,
+                                    })),
+                                    redaction_status: "passed".to_string(),
+                                    redaction_count: 0,
+                                    visibility: "private".to_string(),
+                                    demoted: false,
+                                    score_boost: 0.0,
+                                    created_at_ms: now,
+                                    updated_at_ms: now,
+                                    expires_at_ms: Some(now + 30 * 24 * 60 * 60 * 1000),
+                                },
+                            )
+                            .await;
+                            continue;
+                        }
+                        ToolEventCaptureMode::Full => {}
+                    }
                     let now = crate::now_ms();
                     let tool_input = summarize_value(&args, 1200);
                     persist_global_memory_record(

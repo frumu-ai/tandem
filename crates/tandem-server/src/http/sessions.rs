@@ -9,7 +9,6 @@ use super::*;
 use crate::app::rate_limit::{
     channel_rate_limit_key_from_session_metadata, retry_after_duration, ChannelRateLimitKind,
 };
-use sha2::{Digest, Sha256};
 use tandem_types::{RequestPrincipal, Session, ToolMode, VerifiedTenantContext};
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -265,212 +264,6 @@ pub(super) async fn apply_session_permission_rules(
             .permissions
             .add_rule(permission, pattern, action)
             .await;
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ArchivedExchangeCandidate {
-    user_message_id: String,
-    assistant_message_id: String,
-    user_text: String,
-    assistant_text: String,
-}
-
-fn message_text(message: &Message) -> Option<String> {
-    let text = message
-        .parts
-        .iter()
-        .filter_map(|part| match part {
-            MessagePart::Text { text } => Some(text.trim()),
-            _ => None,
-        })
-        .filter(|text| !text.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
-fn should_archive_user_text(text: &str) -> bool {
-    let trimmed = text.trim();
-    !trimmed.is_empty() && !trimmed.starts_with('/')
-}
-
-fn should_archive_assistant_text(text: &str) -> bool {
-    let trimmed = text.trim();
-    !trimmed.is_empty() && !trimmed.starts_with("ENGINE_ERROR:")
-}
-
-fn latest_archived_exchange_candidate(session: &Session) -> Option<ArchivedExchangeCandidate> {
-    let mut latest_assistant: Option<(usize, &Message, String)> = None;
-    for (idx, message) in session.messages.iter().enumerate().rev() {
-        if !matches!(message.role, MessageRole::Assistant) {
-            continue;
-        }
-        let Some(text) = message_text(message) else {
-            continue;
-        };
-        if !should_archive_assistant_text(&text) {
-            continue;
-        }
-        latest_assistant = Some((idx, message, text));
-        break;
-    }
-
-    let (assistant_idx, assistant_message, assistant_text) = latest_assistant?;
-    for message in session.messages[..assistant_idx].iter().rev() {
-        if !matches!(message.role, MessageRole::User) {
-            continue;
-        }
-        let Some(user_text) = message_text(message) else {
-            continue;
-        };
-        if !should_archive_user_text(&user_text) {
-            continue;
-        }
-        return Some(ArchivedExchangeCandidate {
-            user_message_id: message.id.clone(),
-            assistant_message_id: assistant_message.id.clone(),
-            user_text,
-            assistant_text,
-        });
-    }
-
-    None
-}
-
-fn archive_source_hash(session_id: &str, candidate: &ArchivedExchangeCandidate) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(session_id.as_bytes());
-    hasher.update(b":");
-    hasher.update(candidate.user_message_id.as_bytes());
-    hasher.update(b":");
-    hasher.update(candidate.assistant_message_id.as_bytes());
-    format!("{:x}", hasher.finalize())
-}
-
-fn archived_exchange_content(session: &Session, candidate: &ArchivedExchangeCandidate) -> String {
-    let mut lines = Vec::new();
-    lines.push(format!("Session title: {}", session.title));
-    if let Some(workspace_root) = session.workspace_root.as_deref() {
-        lines.push(format!("Workspace: {}", workspace_root));
-    }
-    if let Some(project_id) = session.project_id.as_deref() {
-        lines.push(format!("Project ID: {}", project_id));
-    }
-    lines.push(format!("User message ID: {}", candidate.user_message_id));
-    lines.push(format!(
-        "Assistant message ID: {}",
-        candidate.assistant_message_id
-    ));
-    lines.push(String::new());
-    lines.push("User:".to_string());
-    lines.push(candidate.user_text.clone());
-    lines.push(String::new());
-    lines.push("Assistant:".to_string());
-    lines.push(candidate.assistant_text.clone());
-    lines.join("\n")
-}
-
-pub(super) async fn archive_session_exchange_to_global_memory(state: AppState, session_id: String) {
-    let Some(session) = state.storage.get_session(&session_id).await else {
-        return;
-    };
-    let title = session.title.to_ascii_lowercase();
-    if !(title.starts_with("telegram ")
-        || title.starts_with("telegram —")
-        || title.starts_with("discord ")
-        || title.starts_with("discord —")
-        || title.starts_with("slack ")
-        || title.starts_with("slack —"))
-    {
-        return;
-    }
-    let Some(candidate) = latest_archived_exchange_candidate(&session) else {
-        return;
-    };
-
-    if let Some(parent) = state.memory_db_path.parent() {
-        if let Err(err) = std::fs::create_dir_all(parent) {
-            tracing::warn!(
-                "global chat exchange archival could not create memory db parent for session {}: {}",
-                session_id,
-                err
-            );
-            return;
-        }
-    }
-    let Ok(manager) = tandem_memory::manager::MemoryManager::new(&state.memory_db_path).await
-    else {
-        return;
-    };
-
-    let source_hash = archive_source_hash(&session_id, &candidate);
-    match manager
-        .db()
-        .global_chunk_exists_by_source_hash_for_tenant(
-            &source_hash,
-            &tandem_memory::types::MemoryTenantScope {
-                org_id: session.tenant_context.org_id.clone(),
-                workspace_id: session.tenant_context.workspace_id.clone(),
-                deployment_id: session.tenant_context.deployment_id.clone(),
-            },
-        )
-        .await
-    {
-        Ok(true) => return,
-        Ok(false) => {}
-        Err(err) => {
-            tracing::warn!(
-                "global memory dedupe check failed for session {}: {}",
-                session_id,
-                err
-            );
-            return;
-        }
-    }
-
-    let metadata = json!({
-        "source_kind": "chat_exchange",
-        "session_id": session_id,
-        "project_id": session.project_id,
-        "workspace_root": session.workspace_root,
-        "user_message_id": candidate.user_message_id,
-        "assistant_message_id": candidate.assistant_message_id,
-    });
-
-    let request = tandem_memory::types::StoreMessageRequest {
-        content: archived_exchange_content(&session, &candidate),
-        tier: tandem_memory::types::MemoryTier::Global,
-        session_id: Some(session.id.clone()),
-        project_id: session.project_id.clone(),
-        source: "chat_exchange".to_string(),
-        source_path: None,
-        source_mtime: None,
-        source_size: None,
-        source_hash: Some(source_hash),
-        tenant_scope: tandem_memory::types::MemoryTenantScope {
-            org_id: session.tenant_context.org_id.clone(),
-            workspace_id: session.tenant_context.workspace_id.clone(),
-            deployment_id: session.tenant_context.deployment_id.clone(),
-        },
-        // Archived chat exchanges are per-user memory: stamp the session actor
-        // so governed reads restrict them to their owner (TAN-607). Local
-        // sessions without an actor stay shared, matching prior behavior.
-        subject: session.tenant_context.actor_id.clone(),
-        metadata: Some(metadata),
-    };
-
-    if let Err(err) = manager.store_message(request).await {
-        tracing::warn!(
-            "global chat exchange archival failed for session {}: {}",
-            session.id,
-            err
-        );
     }
 }
 
@@ -1380,14 +1173,6 @@ pub(super) async fn execute_run(
         }),
     );
 
-    if status == "completed" {
-        let session_id_clone = session_id.clone();
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            archive_session_exchange_to_global_memory(state_clone, session_id_clone).await;
-        });
-    }
-
     Ok(())
 }
 
@@ -1986,6 +1771,3 @@ pub(super) async fn cancel_run_by_id(
 }
 
 include!("sessions_more.rs");
-
-#[cfg(test)]
-include!("sessions_tests.rs");
