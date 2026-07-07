@@ -58,9 +58,15 @@ impl MemoryKeyScope {
             .unwrap_or_else(|| "unknown".to_string());
         // The department segment must be structurally distinct from the
         // tenant-wide form so `dept/x` can never collide with a data-class or
-        // source segment, keeping per-department DEKs unambiguous.
+        // source segment, keeping per-department DEKs unambiguous. The org-unit
+        // value is caller-derived (`{taxonomy_id}/{unit_id}`) and legitimately
+        // contains `/`, so it is percent-encoded to prevent delimiter injection:
+        // without it, `org_unit="a/source/b"` (no source) would collide with
+        // `org_unit="a", source="b"` and share a DEK across departments.
         let dept = match self.org_unit.as_deref() {
-            Some(org_unit) if !org_unit.trim().is_empty() => format!("/dept/{org_unit}"),
+            Some(org_unit) if !org_unit.trim().is_empty() => {
+                format!("/dept/{}", encode_scope_segment(org_unit))
+            }
             _ => String::new(),
         };
         match self.source_binding_id.as_deref() {
@@ -234,6 +240,14 @@ pub fn validate_memory_envelope_for_required_write(
     validate_enterprise_source_binding(metadata, &envelope)
 }
 
+/// Percent-encode `%` and `/` so a caller-derived scope segment cannot inject a
+/// structural delimiter (`/dept/`, `/source/`) into a `canonical_id` and collide
+/// with a different scope (TAN-662). `%` is encoded first to keep the mapping
+/// unambiguous (so a literal `%2F` cannot be confused with an encoded `/`).
+fn encode_scope_segment(value: &str) -> String {
+    value.replace('%', "%25").replace('/', "%2F")
+}
+
 fn is_wildcard_scope(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
@@ -325,9 +339,11 @@ mod tests {
             .clone()
             .with_org_unit(Some("department/engineering".to_string()));
 
+        // The org-unit segment is percent-encoded so its internal `/` cannot be
+        // confused with a structural delimiter.
         assert_eq!(
             sales.canonical_id(),
-            "tandem/memory/acme/finance/prod/internal/dept/department/sales"
+            "tandem/memory/acme/finance/prod/internal/dept/department%2Fsales"
         );
         assert_ne!(sales.canonical_id(), engineering.canonical_id());
         // The tenant-wide (no-department) scope is distinct from any department.
@@ -342,8 +358,30 @@ mod tests {
         .with_org_unit(Some("department/sales".to_string()));
         assert_eq!(
             sales_sourced.canonical_id(),
-            "tandem/memory/acme/finance/prod/internal/dept/department/sales/source/drive-1"
+            "tandem/memory/acme/finance/prod/internal/dept/department%2Fsales/source/drive-1"
         );
+    }
+
+    #[test]
+    fn key_scope_canonical_id_resists_delimiter_injection() {
+        // TAN-662 (review, P1): a department id that embeds the reserved
+        // `/source/` delimiter must not collide with a distinct department+source
+        // scope, and a literal `%2F` must not collide with an encoded `/`.
+        let injected = MemoryKeyScope::new(&tenant_scope(), DataClass::Internal, None)
+            .with_org_unit(Some("department/sales/source/drive-1".to_string()));
+        let genuine = MemoryKeyScope::new(
+            &tenant_scope(),
+            DataClass::Internal,
+            Some("drive-1".to_string()),
+        )
+        .with_org_unit(Some("department/sales".to_string()));
+        assert_ne!(injected.canonical_id(), genuine.canonical_id());
+
+        let literal_percent = MemoryKeyScope::new(&tenant_scope(), DataClass::Internal, None)
+            .with_org_unit(Some("department%2Fsales".to_string()));
+        let real_slash = MemoryKeyScope::new(&tenant_scope(), DataClass::Internal, None)
+            .with_org_unit(Some("department/sales".to_string()));
+        assert_ne!(literal_percent.canonical_id(), real_slash.canonical_id());
     }
 
     #[test]
