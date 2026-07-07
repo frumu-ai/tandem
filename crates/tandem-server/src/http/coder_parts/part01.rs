@@ -13,7 +13,7 @@ use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use tandem_memory::{
-    types::{MemorySourceAccessTarget, MemoryTier},
+    types::{MemorySourceAccessTarget, MemoryTenantScope, MemoryTier},
     GovernedMemoryTier, MemoryClassification, MemoryContentKind, MemoryManager, MemoryPartition,
     MemoryPromoteRequest, MemoryPutRequest, PromotionReview,
 };
@@ -1001,8 +1001,21 @@ async fn load_coder_memory_candidate_payload(
     serde_json::from_str::<Value>(&raw).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+#[cfg(not(test))]
 async fn open_semantic_memory_manager(state: &AppState) -> Option<MemoryManager> {
     MemoryManager::new(&state.memory_db_path).await.ok()
+}
+
+#[cfg(test)]
+async fn open_semantic_memory_manager(state: &AppState) -> Option<MemoryManager> {
+    MemoryManager::new_with_embedding_service(
+        &state.memory_db_path,
+        tandem_memory::embeddings::EmbeddingService::deterministic_for_tests(
+            tandem_memory::types::DEFAULT_EMBEDDING_DIMENSION,
+        ),
+    )
+    .await
+    .ok()
 }
 
 /// A coder memory candidate belongs to its run's linked context run; only
@@ -1699,25 +1712,49 @@ async fn maybe_write_follow_on_duplicate_linkage_candidate(
     })))
 }
 
+fn coder_memory_tenant_scope(tenant_context: &tandem_types::TenantContext) -> MemoryTenantScope {
+    MemoryTenantScope {
+        org_id: tenant_context.org_id.clone(),
+        workspace_id: tenant_context.workspace_id.clone(),
+        deployment_id: tenant_context.deployment_id.clone(),
+    }
+}
+
 async fn list_project_memory_hits(
     state: &AppState,
     repo_binding: &CoderRepoBinding,
+    tenant_context: Option<&tandem_types::TenantContext>,
     query: &str,
     limit: usize,
 ) -> Vec<Value> {
     let Some(manager) = open_semantic_memory_manager(state).await else {
         return Vec::new();
     };
-    let Ok(results) = manager
-        .search(
-            query,
-            Some(MemoryTier::Project),
-            Some(&repo_binding.project_id),
-            None,
-            Some(limit.clamp(1, 20) as i64),
-        )
-        .await
-    else {
+    let tenant_scope = tenant_context.map(coder_memory_tenant_scope);
+    let results = if let Some(tenant_scope) = tenant_scope.as_ref() {
+        manager
+            .search_for_tenant(
+                query,
+                Some(MemoryTier::Project),
+                Some(&repo_binding.project_id),
+                None,
+                tenant_scope,
+                Some(limit.clamp(1, 20) as i64),
+            )
+            .await
+    } else {
+        // Local/system callers intentionally use the legacy local partition.
+        manager
+            .search(
+                query,
+                Some(MemoryTier::Project),
+                Some(&repo_binding.project_id),
+                None,
+                Some(limit.clamp(1, 20) as i64),
+            )
+            .await
+    };
+    let Ok(results) = results else {
         return Vec::new();
     };
     results
@@ -1790,16 +1827,15 @@ async fn list_governed_memory_hits(
     let mut hits = Vec::<Value>::new();
     let mut seen_ids = HashSet::<String>::new();
     for subject in governed_memory_subjects(record, tenant_context) {
-        let Ok(results) = db
-            .search_global_memory(
-                &subject,
-                query,
-                limit.clamp(1, 20) as i64,
-                Some(&record.repo_binding.project_id),
-                None,
-                None,
-            )
-            .await
+        let Ok(results) = search_governed_memory_for_coder_subject(
+            &db,
+            tenant_context,
+            &subject,
+            query,
+            limit,
+            Some(&record.repo_binding.project_id),
+        )
+        .await
         else {
             continue;
         };
@@ -1930,7 +1966,7 @@ async fn collect_coder_memory_hits(
     )
     .await?;
     let mut project_hits =
-        list_project_memory_hits(state, &record.repo_binding, query, limit).await;
+        list_project_memory_hits(state, &record.repo_binding, tenant_context, query, limit).await;
     let mut governed_hits =
         list_governed_memory_hits(state, record, tenant_context, query, limit).await;
     hits.append(&mut project_hits);
