@@ -944,6 +944,43 @@ mod tests {
     }
 
     #[test]
+    fn channel_memory_subject_uses_trusted_channel_identity() {
+        // TAN-639: channel contexts stamp/read a per-user subject derived from
+        // the engine-injected channel identity.
+        let channel_args = json!({
+            "content": "note",
+            "__channel_platform": "discord",
+            "__channel_user_id": "user-42",
+            "__channel_scope_id": "room-1",
+        });
+        assert_eq!(
+            channel_memory_subject(&channel_args).as_deref(),
+            Some("channel:discord:user-42")
+        );
+        // No channel identity -> no subject (local single-user, stays shared).
+        let local_args = json!({ "content": "note", "__session_id": "s1" });
+        assert_eq!(channel_memory_subject(&local_args), None);
+    }
+
+    #[test]
+    fn channel_memory_read_filter_scopes_to_subject() {
+        // A subject produces a LocalNoop filter carrying only caller_subject;
+        // no subject produces no filter (identical to the plain search).
+        let filter = channel_memory_read_filter(Some("channel:discord:user-42"))
+            .expect("filter for subject");
+        assert_eq!(
+            filter.caller_subject.as_deref(),
+            Some("channel:discord:user-42")
+        );
+        assert_eq!(
+            filter.mode,
+            tandem_memory::types::GovernedReadMode::LocalNoop
+        );
+        assert!(filter.caller_org_units.is_none());
+        assert!(channel_memory_read_filter(None).is_none());
+    }
+
+    #[test]
     fn memory_scope_policy_can_disable_global_visibility() {
         let args = json!({
             "__session_id": "session-123",
