@@ -85,18 +85,33 @@ channel process is trusted to assert the sender id it already authenticated.*
 
 ## Concrete wiring plan (Option B)
 
-1. **Header:** send the raw sender id on a dedicated `x-tandem-channel-user`
-   header (keep `x-tandem-client-id` as the memory-subject hint) plus the existing
-   `x-tandem-request-source: channel`. (`dispatcher_parts/part01.rs` / `part03.rs`.)
-2. **Middleware:** when `request-source == channel` and no verified assertion is
-   present, resolve server-side:
+1. **Headers** — the channel dispatcher sends, alongside `x-tandem-request-source: channel`:
+   - `x-tandem-channel-kind: slack|discord|telegram` — the **authoritative** channel
+     kind the middleware needs for `resolve_channel_user(…, kind, …)` and
+     `channel_bound_tenant(…, kind)`. Do **not** infer the kind from the
+     `x-tandem-client-id` memory-subject hint (e.g. `telegram:123`,
+     `dispatcher_parts/part03.rs:229-237`) — that is not an auth input, and inferring
+     it risks resolving against the wrong allowlist/tenant in multi-channel deployments.
+   - `x-tandem-channel-user: {surface_user_id}` — the raw sender id.
+   - `x-tandem-channel-auth: {credential}` — a **channel-specific** credential,
+     distinct from the shared API token (see Trust, below). (`dispatcher_parts/part01.rs` / `part03.rs`.)
+2. **Middleware — server-side channel resolution takes _precedence_.** For a request
+   carrying a valid `x-tandem-channel-auth` + `request-source: channel`, resolve the
+   per-sender identity **before** honoring any static `config.context_assertion`.
+   Otherwise a demo that leaves `TANDEM_CHANNEL_CONTEXT_ASSERTION` set (attached as
+   `x-tandem-context-assertion`, `dispatcher_parts/part01.rs:60-63`) would satisfy the
+   verified-assertion path first and run **every** sender under one static identity —
+   the per-sender org-unit filters would never engage. Resolution:
+   - validate `x-tandem-channel-auth` against the configured channel credential, else **deny**;
    - `resolve_channel_user(effective_config, kind, user)` → principal, else **deny**;
    - `channel_bound_tenant(effective_config, kind)` → `(org_id, workspace_id)`;
    - load org-unit memberships for `actor_id` from `EnterpriseState` (TAN-653);
    - assemble a `VerifiedTenantContext { human_actor, org_units, roles,
      strict_projection, … }`.
    (`crates/tandem-server/src/http/middleware.rs`, alongside
-   `resolve_enterprise_request_context_for_mode`.)
+   `resolve_enterprise_request_context_for_mode`.) Alternatively, **forbid** the static
+   channel assertion whenever per-sender channel resolution is enabled, so the two
+   identity paths can't conflict.
 3. **Auth mode:** the demo tenant runs `HostedSingleTenant` so the resolved
    context yields `GovernedStrict` reads (`memory/read_policy.rs`).
 4. **Fail-closed:** `Denied` → 403; `ChannelNotConfigured` → refuse; never fall
@@ -107,20 +122,34 @@ channel process is trusted to assert the sender id it already authenticated.*
 
 ## Security considerations
 
-- **Spoofing boundary:** Option B trusts the channel process's asserted sender.
-  Document this explicitly; gate it behind `request-source: channel` + the shared
-  token, and never accept `x-tandem-channel-user` from a non-channel source.
+- **Channel credential (non-spoofable channel identity) — REQUIRED.**
+  `x-tandem-request-source` and `x-tandem-channel-user` are caller-controlled, and
+  `auth_gate` today validates only the **shared** API token (`middleware.rs:343,1571-1600`)
+  — the *same* token the channel dispatcher uses. So the shared token is **not**
+  sufficient: any API-token client could set `request-source: channel` +
+  `x-tandem-channel-user` to impersonate an allowlisted sender. Option B therefore
+  requires a **channel-specific credential** (`x-tandem-channel-auth`) — a separate
+  secret / HMAC (ideally over the sender id + timestamp, with a replay window) that
+  the channel process holds and the middleware verifies **before** trusting the
+  asserted sender. Division of labor: the shared API token gates the endpoint; the
+  channel credential proves *the caller is the channel process*. Only after it
+  verifies is `x-tandem-channel-user` trusted.
 - **Replay / allowlist / bound-tenant:** unchanged from the interaction path;
   reuse `resolve_channel_user` (allowlist, deny-by-default) and `channel_bound_tenant`
   (prevents a channel acting on another tenant's run).
 
 ## Test plan
 
-- Mapped sender (in allowlist) → run resolves `Governed`, principal
-  `channel:slack:{user}`, bound tenant applied, org-units populated.
-- Unmapped sender → 403, no run.
-- `request-source: channel` with a spoofed `x-tandem-channel-user` from a
-  non-channel source → rejected.
+- Mapped sender (valid `x-tandem-channel-auth`, in allowlist) → run resolves
+  `Governed`, principal `channel:slack:{user}`, bound tenant applied, org-units populated.
+- **Impersonation:** a plain API-token client with **no** valid `x-tandem-channel-auth`
+  setting `request-source: channel` + `x-tandem-channel-user` → **rejected** (proves
+  the shared token alone cannot impersonate a channel sender).
+- Valid channel credential + unmapped sender → 403.
+- Missing/omitted `x-tandem-channel-kind` → rejected (no allowlist/tenant to resolve against).
+- **Static-assertion precedence:** with `TANDEM_CHANNEL_CONTEXT_ASSERTION` set *and*
+  a valid channel credential, each mapped sender resolves to its **own** principal
+  (not the static assertion identity).
 - Regression: local single-user (no channel source) path unchanged.
 - Interaction webhook path unchanged (shared resolver).
 
