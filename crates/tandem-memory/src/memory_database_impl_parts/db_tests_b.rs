@@ -606,6 +606,58 @@
     }
 
     #[tokio::test]
+    async fn test_global_memory_dedup_distinguishes_department() {
+        // TAN-645 (review): the same content collected for two departments in the
+        // same tenant/user/run must persist as two rows — owner_org_unit_id is part
+        // of the dedup key — rather than the second being dropped without a stamp.
+        let (db, _temp) = setup_test_db().await;
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        let finance = GlobalMemoryRecord {
+            id: "dup-finance".to_string(),
+            user_id: "u".to_string(),
+            source_type: "note".to_string(),
+            content: "same content".to_string(),
+            content_hash: "dup-hash".to_string(),
+            run_id: "dup-run".to_string(),
+            session_id: None,
+            message_id: None,
+            tool_name: None,
+            project_tag: None,
+            channel_tag: None,
+            host_tag: None,
+            metadata: Some(serde_json::json!({ "owner_org_unit_id": "finance" })),
+            provenance: None,
+            redaction_status: "passed".to_string(),
+            redaction_count: 0,
+            visibility: "private".to_string(),
+            demoted: false,
+            score_boost: 0.0,
+            created_at_ms: now,
+            updated_at_ms: now,
+            expires_at_ms: None,
+        };
+        let mut engineering = finance.clone();
+        engineering.id = "dup-engineering".to_string();
+        engineering.metadata = Some(serde_json::json!({ "owner_org_unit_id": "engineering" }));
+
+        // Different department → distinct row, not deduped.
+        assert!(db.put_global_memory_record(&finance).await.unwrap().stored);
+        assert!(db
+            .put_global_memory_record(&engineering)
+            .await
+            .unwrap()
+            .stored);
+        // Identical department → deduped as before.
+        assert!(db.put_global_memory_record(&finance).await.unwrap().deduped);
+
+        let all = db
+            .list_global_memory_for_tenant("local", "local", None, "u", None, None, None, 10, 0)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[tokio::test]
     async fn test_knowledge_registry_round_trip() {
         let (db, _temp) = setup_test_db().await;
         let now = chrono::Utc::now().timestamp_millis() as u64;
