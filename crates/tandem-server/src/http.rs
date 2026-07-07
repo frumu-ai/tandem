@@ -509,6 +509,23 @@ pub async fn serve_with_route_extensions(
         }
     });
 
+    // --- Coder memory candidate GC (runs every 12 hours) ---
+    // Coder memory candidates are plain JSON files under each context run's
+    // coder_memory/ dir with no other reaper; delete ones older than
+    // TANDEM_CODER_MEMORY_CANDIDATE_RETENTION_DAYS (default 90, 0 disables).
+    let coder_candidate_gc_state = state.clone();
+    let coder_candidate_gc_task = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(90)).await;
+        loop {
+            let retention_days: u64 = std::env::var("TANDEM_CODER_MEMORY_CANDIDATE_RETENTION_DAYS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(90);
+            coder::reap_coder_memory_candidates(&coder_candidate_gc_state, retention_days).await;
+            tokio::time::sleep(Duration::from_secs(12 * 60 * 60)).await;
+        }
+    });
+
     // --- Automation v2 runs archiver (runs at startup, then every 24h) ---
     // Moves terminal (completed/failed/blocked/cancelled) runs older than
     // TANDEM_AUTOMATION_V2_RUNS_RETENTION_DAYS (default 7) from the hot runs
@@ -653,6 +670,7 @@ pub async fn serve_with_route_extensions(
         approval_outbound.abort();
     }
     hygiene_task.abort();
+    coder_candidate_gc_task.abort();
     automation_governance_health_checker.abort();
     result?;
     Ok(())

@@ -528,9 +528,11 @@ pub(crate) async fn find_failure_pattern_duplicates(
     query: &str,
     fingerprint: Option<&str>,
     limit: usize,
+    tenant_context: Option<&tandem_types::TenantContext>,
 ) -> Result<Vec<Value>, StatusCode> {
     let mut hits =
-        list_repo_memory_candidates(state, repo_slug, None, limit.saturating_mul(3)).await?;
+        list_repo_memory_candidates(state, repo_slug, None, limit.saturating_mul(3), tenant_context)
+            .await?;
     if let Some(db) = super::skills_memory::open_global_memory_db_for_state(state).await {
         let mut seen_memory_ids = HashSet::<String>::new();
         for subject in subjects {
@@ -676,6 +678,14 @@ async fn write_coder_memory_candidate_artifact(
     payload: Value,
 ) -> Result<(String, ContextBlackboardArtifact), StatusCode> {
     let candidate_id = format!("memcand-{}", Uuid::new_v4().simple());
+    // Stamp the owning run's tenant so the candidate is self-describing for
+    // tenant-scoped retrieval and GC (TAN-638). Best-effort: retrieval also
+    // re-derives the tenant from the linked context run, so a missing stamp
+    // (e.g. the run state is gone) never widens visibility.
+    let tenant_context = load_context_run_state(state, &record.linked_context_run_id)
+        .await
+        .map(|run| run.tenant_context)
+        .ok();
     let stored_payload = json!({
         "candidate_id": candidate_id,
         "coder_run_id": record.coder_run_id,
@@ -687,6 +697,7 @@ async fn write_coder_memory_candidate_artifact(
         "payload": payload,
         "repo_binding": record.repo_binding,
         "github_ref": record.github_ref,
+        "tenant_context": tenant_context,
         "created_at_ms": crate::now_ms(),
     });
     let artifact = write_coder_artifact(

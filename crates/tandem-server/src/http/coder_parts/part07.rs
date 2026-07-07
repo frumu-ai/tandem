@@ -690,6 +690,7 @@ pub(super) async fn coder_memory_candidate_list(
         &record.repo_binding.repo_slug,
         record.github_ref.as_ref(),
         20,
+        Some(&tenant_context),
     )
     .await?;
     Ok(Json(json!({
@@ -930,6 +931,13 @@ pub(super) async fn coder_memory_candidate_promote(
             extra
         },
     );
+    // The candidate has been copied into governed memory; remove the source
+    // JSON so it is not retained as a duplicate unpromoted file and cannot
+    // re-surface in candidate retrieval (TAN-638). Best-effort: the promotion
+    // artifact above is the durable record.
+    let candidate_path =
+        coder_memory_candidate_path(&state, &record.linked_context_run_id, &candidate_id);
+    let _ = tokio::fs::remove_file(&candidate_path).await;
     Ok(Json(json!({
         "ok": true,
         "memory_id": put_response.id,

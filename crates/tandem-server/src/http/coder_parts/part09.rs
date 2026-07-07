@@ -134,6 +134,7 @@ pub(super) async fn coder_run_get(
         &record.repo_binding.repo_slug,
         record.github_ref.as_ref(),
         20,
+        Some(&run.tenant_context),
     )
     .await?;
     let serialized_artifacts = serialize_coder_artifacts(&blackboard.artifacts).await;

@@ -30,6 +30,8 @@ async fn persist_incident_monitor_failure_pattern_from_approved_draft(
         &format!("{summary_text} {detail}"),
         Some(&draft.fingerprint),
         3,
+        // Incident monitor is local/system-scoped (see local_implicit tenant).
+        None,
     )
     .await?;
     let recurrence_count =
@@ -194,6 +196,9 @@ pub(crate) async fn incident_monitor_failure_pattern_matches(
     excerpt: &[String],
     limit: usize,
 ) -> Vec<Value> {
+    // The incident monitor operates in the implicit local/system tenant scope
+    // (see `TenantContext::local_implicit()` throughout this module), so there
+    // is no cross-tenant boundary to enforce for its failure-pattern lookups.
     let mut rows = super::coder::query_failure_pattern_matches(
         state,
         repo_slug,
@@ -202,6 +207,7 @@ pub(crate) async fn incident_monitor_failure_pattern_matches(
         detail,
         excerpt,
         limit,
+        None,
     )
     .await
     .unwrap_or_default();

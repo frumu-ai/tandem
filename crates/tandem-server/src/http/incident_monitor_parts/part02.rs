@@ -353,6 +353,8 @@ pub(crate) async fn ensure_incident_monitor_triage_run(
         draft.detail.as_deref(),
         &[],
         3,
+        // Incident monitor is local/system-scoped (see local_implicit tenant).
+        None,
     )
     .await
     .map_err(|status| {

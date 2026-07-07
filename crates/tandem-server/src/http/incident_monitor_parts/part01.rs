@@ -1608,6 +1608,8 @@ async fn persist_incident_monitor_failure_pattern_memory(
         &query_text,
         Some(&fingerprint),
         3,
+        // Incident monitor is local/system-scoped (see local_implicit tenant).
+        None,
     )
     .await?;
     let recurrence_count = if let Some(count) =
