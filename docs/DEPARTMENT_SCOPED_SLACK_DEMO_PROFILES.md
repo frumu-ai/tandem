@@ -41,19 +41,30 @@ Demo tenant: `org_id = "acme"`, `workspace_id = "hq"` (single workspace).
 
 Principal for a Slack user: `PrincipalRef { kind: human_user, id:
 "channel:slack:{user}", … }` (matches `build_principal`, TAN-652). The unit
-principal: `PrincipalRef { kind: organization_unit | department, id: "{unit_id}" }`.
+principal must be the **canonical** org-unit principal that
+`OrganizationUnit::principal_ref()` and the admin HTTP path emit —
+`PrincipalRef::organization_unit("{taxonomy_id}/{unit_id}")`, i.e.
+`{ kind: organization_unit, id: "{taxonomy_id}/{unit_id}" }` (e.g. `department/sales`).
+The authority graph resolves units and grants by **exact principal equality**, so a
+bare `{unit_id}` or a `department`-kind principal would diverge from admin-created
+data and break effective-grant / ancestry resolution.
 
 ## Per-profile grants (resource + data-class intent)
 
 Resources are ACME-scoped `ResourceRef`s under the demo tenant. Data classes use
-the real `DataClass` set (`Internal`, `Confidential`, `Restricted`, `Credential`,
-`FinancialRecord`, `Executive`, `Public`). Redaction of a class = a data-boundary
-`Redact`/`Tokenize` action, not an `allow`.
+the **full** real `DataClass` set: `Public`, `Internal`, `Confidential`,
+`Restricted`, `Executive`, `Credential`, `Regulated`, `CustomerData`, `SourceCode`,
+`FinancialRecord`. Tag each ACME resource with its **specific** class — repo/GitHub
+→ `SourceCode`, CRM/customer records → `CustomerData`, invoices/payments/contracts
+→ `FinancialRecord` — not a generic `Internal`: `ScopedGrant::applies_to` only
+matches when the requested class is explicitly listed in the grant's `data_classes`,
+so mis-tagging silently changes the access matrix. Redaction of a class =
+a data-boundary `Redact`/`Tokenize` action, not an `allow`.
 
 - **Sales** — **allow** `acme/crm/*`, `acme/support/summaries/*`,
-  `acme/risk/customer` at `Internal`/`Confidential`. **Deny** `FinancialRecord`
-  (contract value, payment status) and raw repo.
-- **Engineering** — **allow** `acme/github/*`, `acme/linear/*`,
+  `acme/risk/customer` at `CustomerData`/`Confidential`. **Deny** `FinancialRecord`
+  (contract value, payment status) and `SourceCode` (raw repo).
+- **Engineering** — **allow** `acme/github/*` at `SourceCode`, `acme/linear/*`,
   `acme/incidents/*` at `Internal`. **Deny** `FinancialRecord` (contract/payment)
   — explicit `deny` grant so it beats any inherited allow.
 - **Finance** — **allow** `acme/invoices/*`, `acme/payments/*`,
