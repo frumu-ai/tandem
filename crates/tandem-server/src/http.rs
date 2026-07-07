@@ -482,10 +482,12 @@ pub async fn serve_with_route_extensions(
     // --- Memory hygiene background task (runs every 12 hours) ---
     // Opens a fresh connection to memory.sqlite each cycle â€” safe because WAL
     // mode allows concurrent readers alongside the main engine connection.
-    // run_hygiene runs the full reaper under the local tenant scope: session
-    // retention, expired memory_records, exchange retention, per-project chunk
-    // caps, and (opt-in) global-tier retention. TANDEM_MEMORY_RETENTION_DAYS=0
-    // keeps its historical meaning and disables the scheduled job entirely.
+    // run_hygiene_all_tenants runs the full reaper (session retention, expired
+    // memory_records, exchange retention, per-project chunk caps, and opt-in
+    // global-tier retention) once per tenant scope present in the database, so
+    // hosted/enterprise partitions are reaped alongside local rows.
+    // TANDEM_MEMORY_RETENTION_DAYS=0 keeps its historical meaning and disables
+    // the scheduled job entirely.
     let hygiene_task = tokio::spawn(async move {
         // Initial delay so startup is not impacted.
         tokio::time::sleep(Duration::from_secs(60)).await;
@@ -499,7 +501,7 @@ pub async fn serve_with_route_extensions(
                     Ok(paths) => {
                         match tandem_memory::db::MemoryDatabase::new(&paths.memory_db_path).await {
                             Ok(db) => {
-                                if let Err(e) = db.run_hygiene(retention_days).await {
+                                if let Err(e) = db.run_hygiene_all_tenants(retention_days).await {
                                     tracing::warn!("memory hygiene failed: {}", e);
                                 }
                             }

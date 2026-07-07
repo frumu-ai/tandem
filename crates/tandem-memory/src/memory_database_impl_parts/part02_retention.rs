@@ -334,6 +334,62 @@ impl MemoryDatabase {
             .await
     }
 
+    /// Enumerate every tenant scope that has memory rows in any table the
+    /// reapers touch. The local scope is always included so a fresh database
+    /// with no rows yet still gets its hygiene pass.
+    pub async fn list_memory_tenant_scopes(&self) -> MemoryResult<Vec<MemoryTenantScope>> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT tenant_org_id, tenant_workspace_id, tenant_deployment_id
+               FROM session_memory_chunks
+             UNION
+             SELECT DISTINCT tenant_org_id, tenant_workspace_id, tenant_deployment_id
+               FROM project_memory_chunks
+             UNION
+             SELECT DISTINCT tenant_org_id, tenant_workspace_id, tenant_deployment_id
+               FROM global_memory_chunks
+             UNION
+             SELECT DISTINCT tenant_org_id, tenant_workspace_id, tenant_deployment_id
+               FROM memory_records",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(MemoryTenantScope {
+                org_id: row.get(0)?,
+                workspace_id: row.get(1)?,
+                deployment_id: row.get(2)?,
+            })
+        })?;
+        let mut scopes = rows.collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+        drop(conn);
+        let local = MemoryTenantScope::local();
+        if !scopes.contains(&local) {
+            scopes.push(local);
+        }
+        Ok(scopes)
+    }
+
+    /// Run scheduled hygiene for every tenant scope present in the database
+    /// (hosted/enterprise deployments stamp real tenant scopes on rows, which
+    /// the local-scope wrapper above would never touch). Per-scope failures
+    /// are logged and skipped so one bad partition cannot starve the rest.
+    /// Returns the total number of rows deleted across all scopes.
+    pub async fn run_hygiene_all_tenants(&self, env_override_days: u32) -> MemoryResult<u64> {
+        let mut total = 0u64;
+        for scope in self.list_memory_tenant_scopes().await? {
+            match self.run_hygiene_for_tenant(env_override_days, &scope).await {
+                Ok(deleted) => total += deleted,
+                Err(error) => tracing::warn!(
+                    tenant_org_id = %scope.org_id,
+                    tenant_workspace_id = %scope.workspace_id,
+                    %error,
+                    "memory hygiene failed for tenant scope"
+                ),
+            }
+        }
+        Ok(total)
+    }
+
     pub async fn run_hygiene_for_tenant(
         &self,
         env_override_days: u32,

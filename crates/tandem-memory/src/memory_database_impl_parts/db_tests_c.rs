@@ -290,6 +290,44 @@
     }
 
     #[tokio::test]
+    async fn test_hygiene_all_tenants_reaps_every_partition() {
+        let (db, _temp) = setup_test_db().await;
+        let tenant_a = tenant_scope("org-a", "workspace-a");
+        let tenant_b = tenant_scope("org-b", "workspace-b");
+        let local = MemoryTenantScope::local();
+        let now_ms = Utc::now().timestamp_millis();
+
+        for (id, scope) in [
+            ("all-a-expired", &tenant_a),
+            ("all-b-expired", &tenant_b),
+            ("all-local-expired", &local),
+        ] {
+            let record =
+                retention_record(id, "note", now_ms - 10_000, Some(now_ms - 1_000), scope);
+            assert!(db.put_global_memory_record(&record).await.unwrap().stored);
+        }
+
+        let scopes = db.list_memory_tenant_scopes().await.unwrap();
+        assert!(scopes.contains(&tenant_a));
+        assert!(scopes.contains(&tenant_b));
+        assert!(scopes.contains(&local));
+
+        // The scheduled job entry point must reap all three partitions, not
+        // just the local one.
+        let deleted = db.run_hygiene_all_tenants(0).await.unwrap();
+        assert_eq!(deleted, 3);
+        assert!(get_record_for_scope(&db, "all-a-expired", &tenant_a)
+            .await
+            .is_none());
+        assert!(get_record_for_scope(&db, "all-b-expired", &tenant_b)
+            .await
+            .is_none());
+        assert!(get_record_for_scope(&db, "all-local-expired", &local)
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
     async fn test_hygiene_writes_cleanup_log_and_get_cleanup_log_reads_it() {
         let (db, _temp) = setup_test_db().await;
         let tenant_a = tenant_scope("org-a", "workspace-a");
