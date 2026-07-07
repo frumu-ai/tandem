@@ -521,9 +521,131 @@ async fn read_slack_signing_secret(state: &AppState) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Slack Events API ingress (TAN-654). Verifies the Slack signature, answers the
+/// `url_verification` handshake, dedups retried deliveries, and enforces the
+/// channel allowlist for a user message. Turning an authorized message into a
+/// *governed* session prompt runs under the verified principal designed in
+/// TAN-652 and is a tracked follow-up; until it lands this endpoint establishes
+/// the signed, allowlisted ingress surface without dispatching under an
+/// unverified identity.
+pub(crate) async fn slack_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let signing_secret = match read_slack_signing_secret(&state).await {
+        Some(secret) => secret,
+        None => return reject_unauthorized("slack signing secret not configured"),
+    };
+    let signature = headers
+        .get("x-slack-signature")
+        .and_then(|v| v.to_str().ok());
+    let timestamp = headers
+        .get("x-slack-request-timestamp")
+        .and_then(|v| v.to_str().ok());
+    let now = chrono::Utc::now().timestamp();
+    if let Err(error) = verify_slack_signature(&body, signature, timestamp, &signing_secret, now) {
+        tracing::warn!(target: "tandem_server::slack_events", ?error, "rejecting unsigned/forged Slack event");
+        return reject_unauthorized(&error.to_string());
+    }
+
+    let payload: Value = match serde_json::from_slice(&body) {
+        Ok(value) => value,
+        Err(_) => return reject_bad_request("invalid Slack event JSON"),
+    };
+
+    match payload.get("type").and_then(Value::as_str) {
+        // Slack setup handshake: echo the challenge (signature already verified).
+        Some("url_verification") => {
+            let challenge = payload
+                .get("challenge")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            (StatusCode::OK, challenge).into_response()
+        }
+        Some("event_callback") => handle_slack_event_callback(&state, &payload).await,
+        // Other envelope types are acknowledged so Slack does not retry.
+        _ => ok_empty(),
+    }
+}
+
+async fn handle_slack_event_callback(state: &AppState, payload: &Value) -> Response {
+    let Some(user_id) = slack_event_message_user(payload) else {
+        // Not an actionable user message (bot / subtype / non-message) — ack + drop.
+        return ok_empty();
+    };
+
+    // Dedup on the Slack event id (Slack retries deliveries within minutes).
+    if let Some(event_id) = payload.get("event_id").and_then(Value::as_str) {
+        let key = format!("event:{event_id}");
+        let mut guard = dedup_ring().lock().expect("dedup mutex poisoned");
+        if !guard.record_new(&key) {
+            return ok_empty();
+        }
+    }
+
+    // Allowlist gate — deny-by-default, same resolver as the interaction path.
+    let effective_config = state.config.get_effective_value().await;
+    match resolve_channel_user(&effective_config, ChannelKind::Slack, &user_id) {
+        ChannelIdentityResolution::Resolved(_principal) => {
+            // TAN-652 follow-up: dispatch to a governed session prompt under the
+            // resolved verified principal. Acknowledge receipt until that lands,
+            // rather than run under an unverified identity.
+            ok_empty()
+        }
+        ChannelIdentityResolution::Denied { .. } => {
+            tracing::warn!(target: "tandem_server::slack_events", user_id = %user_id, "dropping Slack message event from unauthorized user");
+            // Events must return 200 to avoid Slack retry storms; authorization is
+            // enforced by not dispatching, not by an error status.
+            ok_empty()
+        }
+        ChannelIdentityResolution::ChannelNotConfigured(_) => ok_empty(),
+    }
+}
+
+/// Extract the sender of an actionable user message from an `event_callback`
+/// payload, or `None` for bot / system / edited messages that must not be
+/// dispatched.
+fn slack_event_message_user(payload: &Value) -> Option<String> {
+    let event = payload.get("event")?;
+    if event.get("type").and_then(Value::as_str) != Some("message") {
+        return None;
+    }
+    // Ignore bot messages and message subtypes (edits, joins, deletions, …).
+    if event.get("bot_id").is_some() || event.get("subtype").is_some() {
+        return None;
+    }
+    event
+        .get("user")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slack_event_message_user_extracts_plain_message_sender() {
+        let payload = json!({
+            "type": "event_callback",
+            "event": { "type": "message", "user": "U123", "text": "hi" }
+        });
+        assert_eq!(slack_event_message_user(&payload).as_deref(), Some("U123"));
+    }
+
+    #[test]
+    fn slack_event_message_user_ignores_bot_subtype_and_non_message() {
+        let bot = json!({"event": {"type": "message", "user": "U1", "bot_id": "B1"}});
+        assert!(slack_event_message_user(&bot).is_none());
+        let edited = json!({"event": {"type": "message", "user": "U1", "subtype": "message_changed"}});
+        assert!(slack_event_message_user(&edited).is_none());
+        let non_message = json!({"event": {"type": "reaction_added", "user": "U1"}});
+        assert!(slack_event_message_user(&non_message).is_none());
+    }
 
     #[test]
     fn url_decode_handles_basic_pct_encodings() {
