@@ -3,6 +3,7 @@ fn validate_memory_capability_guardrail_context(
     verified_tenant_context: Option<&VerifiedTenantContext>,
     run_id: &str,
     partition: &tandem_memory::MemoryPartition,
+    retrieval_gateway: Option<&tandem_memory::MemoryRetrievalGatewayRequest>,
     capability: Option<MemoryCapabilityToken>,
 ) -> Result<MemoryCapabilityToken, (String, &'static str, StatusCode)> {
     let cap = match capability {
@@ -36,6 +37,7 @@ fn validate_memory_capability_guardrail_context(
     if !memory_capability_subject_matches_request_actor(
         tenant_context,
         verified_tenant_context,
+        retrieval_gateway,
         &cap.subject,
     )
     .map_err(|detail| (cap.subject.clone(), detail, StatusCode::FORBIDDEN))?
@@ -72,6 +74,7 @@ fn default_memory_capability_for_request(
 fn memory_capability_subject_matches_request_actor(
     tenant_context: &TenantContext,
     verified_tenant_context: Option<&VerifiedTenantContext>,
+    retrieval_gateway: Option<&tandem_memory::MemoryRetrievalGatewayRequest>,
     subject: &str,
 ) -> Result<bool, &'static str> {
     if crate::memory::subject::local_memory_subjects_are_unrestricted(
@@ -87,7 +90,47 @@ fn memory_capability_subject_matches_request_actor(
     )
     .map_err(|error| error.as_str())?;
     let subject = subject.trim();
-    Ok(subject == resolution.subject)
+    if subject == resolution.subject {
+        return Ok(true);
+    }
+    Ok(verified_channel_gateway_subject_matches(
+        verified_tenant_context,
+        retrieval_gateway,
+        subject,
+    ))
+}
+
+fn verified_channel_gateway_subject_matches(
+    verified_tenant_context: Option<&VerifiedTenantContext>,
+    retrieval_gateway: Option<&tandem_memory::MemoryRetrievalGatewayRequest>,
+    subject: &str,
+) -> bool {
+    if verified_tenant_context.is_none() {
+        return false;
+    }
+    let Some(gateway) = retrieval_gateway else {
+        return false;
+    };
+    if gateway.grant.subject.trim() != subject {
+        return false;
+    }
+    let Some(channel) = gateway
+        .channel
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    let Some(user_id) = gateway
+        .user_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    subject == format!("channel:{channel}:{user_id}")
 }
 
 struct MemoryAuthorityRequestValidation<'a> {
@@ -157,6 +200,7 @@ async fn validate_memory_put_capability_with_guardrail(
         verified_tenant_context,
         &request.run_id,
         &request.partition,
+        None,
         capability,
     ) {
         Ok(cap) => cap,
@@ -214,6 +258,7 @@ async fn validate_memory_promote_capability_with_guardrail(
         verified_tenant_context,
         &request.run_id,
         &request.partition,
+        None,
         capability,
     ) {
         Ok(cap) => cap,
@@ -271,6 +316,7 @@ async fn validate_memory_search_capability_with_guardrail(
         verified_tenant_context,
         &request.run_id,
         &request.partition,
+        request.retrieval_gateway.as_ref(),
         capability,
     ) {
         Ok(cap) => cap,
@@ -607,4 +653,122 @@ pub(super) async fn memory_put_impl_with_verified(
         partition_key,
         audit_id,
     })
+}
+
+#[cfg(test)]
+mod retrieval_gateway_subject_tests {
+    use super::*;
+
+    fn partition() -> tandem_memory::MemoryPartition {
+        tandem_memory::MemoryPartition {
+            org_id: "acme".to_string(),
+            workspace_id: "north".to_string(),
+            project_id: "proj-a".to_string(),
+            tier: tandem_memory::GovernedMemoryTier::Session,
+        }
+    }
+
+    fn channel_capability(subject: &str) -> tandem_memory::MemoryCapabilityToken {
+        tandem_memory::MemoryCapabilityToken {
+            run_id: "channel-gateway-run".to_string(),
+            subject: subject.to_string(),
+            org_id: "acme".to_string(),
+            workspace_id: "north".to_string(),
+            project_id: "proj-a".to_string(),
+            memory: tandem_memory::MemoryCapabilities::default(),
+            expires_at: 9_999_999_999_999,
+        }
+    }
+
+    fn channel_gateway(subject: &str) -> tandem_memory::MemoryRetrievalGatewayRequest {
+        tandem_memory::MemoryRetrievalGatewayRequest {
+            grant: tandem_memory::MemoryRetrievalGrant {
+                grant_id: "channel-gateway-grant".to_string(),
+                subject: subject.to_string(),
+                org_id: "acme".to_string(),
+                workspace_id: "north".to_string(),
+                project_ids: vec!["proj-a".to_string()],
+                source_binding_ids: Vec::new(),
+                source_object_ids: Vec::new(),
+                data_classes: Vec::new(),
+                budgets: tandem_memory::MemoryRetrievalBudgets::default(),
+                revoked: false,
+                expires_at: None,
+            },
+            session_id: Some("channel-session".to_string()),
+            channel: Some("slack".to_string()),
+            user_id: Some("U999".to_string()),
+        }
+    }
+
+    fn verified_channel_service_context(
+        tenant_context: tandem_types::TenantContext,
+    ) -> tandem_types::VerifiedTenantContext {
+        let request_principal =
+            tandem_types::RequestPrincipal::authenticated_user("channel-service", "tandem-channel");
+        let authority_chain = tandem_types::AuthorityChain::from_request(request_principal);
+        tandem_types::VerifiedTenantContext {
+            tenant_context,
+            human_actor: tandem_types::HumanActor::tandem_user("channel-service"),
+            authority_chain,
+            roles: Vec::new(),
+            org_units: Vec::new(),
+            capabilities: Vec::new(),
+            policy_version: None,
+            strict_projection: None,
+            issuer: "tandem-channel".to_string(),
+            audience: "tandem-runtime".to_string(),
+            issued_at_ms: 1_000,
+            expires_at_ms: 9_999_999_999_999,
+            assertion_id: "channel-service-assertion".to_string(),
+            assertion_key_id: None,
+        }
+    }
+
+    #[test]
+    fn verified_channel_gateway_may_use_sender_subject() {
+        let tenant_context = tandem_types::TenantContext::explicit_user_workspace(
+            "acme",
+            "north",
+            None,
+            "channel-service",
+        );
+        let verified = verified_channel_service_context(tenant_context.clone());
+        let subject = "channel:slack:U999";
+        let gateway = channel_gateway(subject);
+        let cap = validate_memory_capability_guardrail_context(
+            &tenant_context,
+            Some(&verified),
+            "channel-gateway-run",
+            &partition(),
+            Some(&gateway),
+            Some(channel_capability(subject)),
+        )
+        .expect("verified channel gateway subject should be accepted");
+
+        assert_eq!(cap.subject, subject);
+    }
+
+    #[test]
+    fn unverified_channel_gateway_subject_still_rejected() {
+        let tenant_context = tandem_types::TenantContext::explicit_user_workspace(
+            "acme",
+            "north",
+            None,
+            "user-a",
+        );
+        let subject = "channel:slack:U999";
+        let gateway = channel_gateway(subject);
+        let err = validate_memory_capability_guardrail_context(
+            &tenant_context,
+            None,
+            "channel-gateway-run",
+            &partition(),
+            Some(&gateway),
+            Some(channel_capability(subject)),
+        )
+        .expect_err("unverified forged channel subject should be rejected");
+
+        assert_eq!(err.1, "capability subject actor mismatch");
+    }
 }
