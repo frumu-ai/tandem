@@ -21,19 +21,21 @@ use crate::types::{
     MemoryResult, MemoryTenantScope, MemoryTier,
 };
 
-/// Fail closed when a read scope requests department (`org_unit`) or per-user
-/// (`subject`) narrowing that the current backend query cannot yet enforce.
+/// Fail closed when a read scope requests per-user (`subject`) narrowing that the
+/// global-record query cannot yet enforce.
 ///
 /// The [`MemoryStore`] contract says the backend enforces the scope predicate in
-/// the query. Until the SQLite schema carries `owner_org_unit_id` (TAN-645/662)
-/// and `owner_subject`/`private` (TAN-648), silently delegating a narrowed scope
-/// to the tenant-only query would **widen** the read and leak same-tenant records
-/// outside the requested department/private scope. Reject instead.
+/// the query. Department (`org_unit`) narrowing IS now enforced on the
+/// global-record surface via the `owner_org_unit_id` column + SQL predicate
+/// (TAN-645), so it is passed through rather than rejected. Per-user `subject`
+/// narrowing still lacks a column/predicate here (`owner_subject` / `private`,
+/// TAN-648), so silently delegating it to the tenant query would **widen** the
+/// read and leak same-tenant records — reject instead.
 fn reject_unsupported_narrowing(scope: &MemoryReadScope) -> MemoryResult<()> {
-    if scope.org_unit.is_some() || scope.subject.is_some() {
+    if scope.subject.is_some() {
         return Err(MemoryError::InvalidConfig(
-            "MemoryStore SQLite backend does not yet enforce org_unit/subject scope narrowing \
-             (TAN-645/648); refusing to widen the read to tenant scope"
+            "MemoryStore SQLite backend does not yet enforce subject scope narrowing \
+             (TAN-648); refusing to widen the read to tenant scope"
                 .to_string(),
         ));
     }
@@ -77,7 +79,9 @@ fn reject_unenforceable_chunk_read(scope: &MemoryReadScope) -> MemoryResult<()> 
 pub struct MemoryReadScope {
     /// Tenant partition (org / workspace / deployment).
     pub tenant: MemoryTenantScope,
-    /// Department (`owner_org_unit_id`) filter — reserved for TAN-645 / TAN-662.
+    /// Department (`owner_org_unit_id`) filter. Enforced in-query on the
+    /// global-record surface via the SQL predicate (TAN-645); the chunk surface
+    /// still rejects it fail-closed pending its own predicate (TAN-662).
     /// `None` = no department narrowing.
     pub org_unit: Option<String>,
     /// Per-user subject filter for `private` items — reserved for TAN-648.
@@ -195,8 +199,9 @@ impl MemoryStore for MemoryDatabase {
         // Fail closed on department/subject narrowing the tenant-only query can't
         // yet enforce, rather than silently widening the read (TAN-645/648).
         reject_unsupported_narrowing(scope)?;
-        // Behavior-preserving delegation to the existing tenant-scoped query.
-        self.search_global_memory_for_tenant(
+        // Department narrowing is enforced in-query via the owner_org_unit_id
+        // predicate (TAN-645); a None org_unit is tenant-wide (behavior-preserving).
+        self.search_global_memory_for_tenant_scoped(
             &scope.tenant.org_id,
             &scope.tenant.workspace_id,
             scope.tenant.deployment_id.as_deref(),
@@ -206,6 +211,7 @@ impl MemoryStore for MemoryDatabase {
             project_tag,
             None,
             None,
+            scope.org_unit.as_deref(),
         )
         .await
     }
@@ -220,7 +226,7 @@ impl MemoryStore for MemoryDatabase {
         offset: i64,
     ) -> MemoryResult<Vec<GlobalMemoryRecord>> {
         reject_unsupported_narrowing(scope)?;
-        self.list_global_memory_for_tenant(
+        self.list_global_memory_for_tenant_scoped(
             &scope.tenant.org_id,
             &scope.tenant.workspace_id,
             scope.tenant.deployment_id.as_deref(),
@@ -230,6 +236,7 @@ impl MemoryStore for MemoryDatabase {
             None,
             limit,
             offset,
+            scope.org_unit.as_deref(),
         )
         .await
     }
@@ -316,16 +323,23 @@ mod tests {
     }
 
     #[test]
-    fn narrowed_read_scope_is_rejected_until_backend_supports_it() {
-        // Department narrowing the SQLite query can't yet enforce must fail closed.
+    fn narrowed_read_scope_rejects_subject_but_allows_org_unit() {
+        // Department narrowing is now enforced in-query on the global-record
+        // surface (TAN-645 owner_org_unit_id predicate), so it is accepted.
         let mut by_dept = MemoryReadScope::tenant(MemoryTenantScope::local());
         by_dept.org_unit = Some("finance".to_string());
-        assert!(reject_unsupported_narrowing(&by_dept).is_err());
+        assert!(reject_unsupported_narrowing(&by_dept).is_ok());
 
-        // Per-user (private) narrowing likewise.
+        // Per-user (private) narrowing still lacks a column/predicate → fail closed.
         let mut by_subject = MemoryReadScope::tenant(MemoryTenantScope::local());
         by_subject.subject = Some("user-a".to_string());
         assert!(reject_unsupported_narrowing(&by_subject).is_err());
+
+        // A department read that also requests subject narrowing is still rejected.
+        let mut by_dept_and_subject = MemoryReadScope::tenant(MemoryTenantScope::local());
+        by_dept_and_subject.org_unit = Some("finance".to_string());
+        by_dept_and_subject.subject = Some("user-a".to_string());
+        assert!(reject_unsupported_narrowing(&by_dept_and_subject).is_err());
 
         // Tenant-only reads are accepted (behavior-preserving path).
         assert!(

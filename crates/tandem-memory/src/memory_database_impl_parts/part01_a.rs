@@ -963,7 +963,8 @@ impl MemoryDatabase {
                 score_boost REAL NOT NULL DEFAULT 0.0,
                 created_at_ms INTEGER NOT NULL,
                 updated_at_ms INTEGER NOT NULL,
-                expires_at_ms INTEGER
+                expires_at_ms INTEGER,
+                owner_org_unit_id TEXT
             )",
             [],
         )?;
@@ -990,6 +991,18 @@ impl MemoryDatabase {
                 [],
             )?;
         }
+        // Department (org-unit) ownership as a first-class, indexed scope column
+        // (TAN-645). Promotes what was previously only a JSON metadata key
+        // (`OWNER_ORG_UNIT_METADATA_KEY`) post-filtered in Rust into a real column
+        // enforced by a SQL predicate mirroring the tenant clause. NULL = tenant-wide
+        // (the pre-org-unit behavior); a department-scoped read excludes NULL rows
+        // (fail-closed, TAN-647).
+        if !memory_record_cols.contains("owner_org_unit_id") {
+            conn.execute(
+                "ALTER TABLE memory_records ADD COLUMN owner_org_unit_id TEXT",
+                [],
+            )?;
+        }
         conn.execute(
             "UPDATE memory_records
              SET tenant_org_id = 'local'
@@ -1002,10 +1015,30 @@ impl MemoryDatabase {
              WHERE tenant_workspace_id IS NULL OR tenant_workspace_id = ''",
             [],
         )?;
+        // Backfill the new column from the legacy metadata key so rows written
+        // before TAN-645 remain department-filterable once callers scope reads.
+        // Normalize with TRIM + NULLIF to match owner_org_unit_id_from_metadata
+        // (which trims and drops empties), so a backfilled `" finance "` compares
+        // equal to a freshly-written `"finance"` under the exact-match predicate.
+        conn.execute(
+            "UPDATE memory_records
+             SET owner_org_unit_id =
+                 NULLIF(TRIM(json_extract(metadata, '$.owner_org_unit_id')), '')
+             WHERE owner_org_unit_id IS NULL
+               AND metadata IS NOT NULL
+               AND metadata <> ''
+               AND json_valid(metadata)
+               AND NULLIF(TRIM(json_extract(metadata, '$.owner_org_unit_id')), '') IS NOT NULL",
+            [],
+        )?;
+        // Department is a distinguishing scope dimension (TAN-645): the same
+        // content collected for two departments must persist as two rows, so
+        // owner_org_unit_id participates in the dedup key. Recreated whenever the
+        // column set changes so pre-TAN-645 databases pick up the new dimension.
         conn.execute("DROP INDEX IF EXISTS idx_memory_records_dedup", [])?;
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_records_dedup
-                ON memory_records(tenant_org_id, tenant_workspace_id, IFNULL(tenant_deployment_id, ''), user_id, source_type, content_hash, run_id, IFNULL(session_id, ''), IFNULL(message_id, ''), IFNULL(tool_name, ''))",
+                ON memory_records(tenant_org_id, tenant_workspace_id, IFNULL(tenant_deployment_id, ''), user_id, source_type, content_hash, run_id, IFNULL(session_id, ''), IFNULL(message_id, ''), IFNULL(tool_name, ''), IFNULL(owner_org_unit_id, ''))",
             [],
         )?;
         conn.execute(
@@ -1016,6 +1049,13 @@ impl MemoryDatabase {
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_memory_records_run
                 ON memory_records(run_id)",
+            [],
+        )?;
+        // Supports the department-scoped read predicate (TAN-645): tenant + org-unit
+        // + user, most-recent-first, mirroring idx_memory_records_user_created.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memory_records_org_unit
+                ON memory_records(tenant_org_id, tenant_workspace_id, IFNULL(tenant_deployment_id, ''), owner_org_unit_id, user_id, created_at_ms DESC)",
             [],
         )?;
         conn.execute(

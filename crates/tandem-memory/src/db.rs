@@ -3,6 +3,7 @@
 // Database Layer Module
 // SQLite + sqlite-vec for vector storage
 
+use crate::types::owner_org_unit_id_from_metadata;
 use crate::types::{
     CleanupLogEntry, ClearFileIndexResult, GlobalMemoryRecord, GlobalMemorySearchHit,
     GlobalMemoryWriteResult, KnowledgeCoverageRecord, KnowledgeItemRecord, KnowledgeItemStatus,
@@ -86,6 +87,7 @@ pub fn strict_tenant_enforcement_default() -> bool {
 
 include!("memory_database_impl_parts/part01.rs");
 include!("memory_database_impl_parts/part02.rs");
+include!("memory_database_impl_parts/part02_global_scoped.rs");
 include!("memory_database_impl_parts/part02_retention.rs");
 include!("memory_database_impl_parts/part03.rs");
 
