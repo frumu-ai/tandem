@@ -60,7 +60,8 @@ pub struct SealedMemoryField {
 }
 
 /// Seals and unseals memory fields under per-scope, KMS-wrapped DEKs, caching the
-/// unwrapped DEKs by `(canonical_id, kek_version, rotation_epoch)`.
+/// unwrapped DEKs per envelope (keyed by scope + KEK version + rotation epoch +
+/// wrapped-DEK fingerprint).
 pub struct HostedMemoryEnvelopeCrypto {
     broker: MemoryDecryptBroker,
     wrap_provider: MemoryDekWrapProviderBox,
@@ -202,9 +203,16 @@ impl HostedMemoryEnvelopeCrypto {
             audit_id: audit_id.to_string(),
         };
         // The writer is authorized by construction; caching the DEK now makes the
-        // common seal→read-back path free of a KMS round-trip.
+        // common seal→read-back path free of a KMS round-trip. The cache key
+        // includes this row's own wrapped-DEK fingerprint so a later row in the
+        // same scope (with its own fresh DEK) does not clobber this entry.
         self.cache.insert(
-            MemoryDekCacheKey::new(canonical_id, self.kek_version.clone(), self.rotation_epoch),
+            MemoryDekCacheKey::new(
+                canonical_id,
+                self.kek_version.clone(),
+                self.rotation_epoch,
+                wrapped_dek_fingerprint(&envelope.wrapped_dek),
+            ),
             dek,
         );
         Ok(SealedMemoryField {
@@ -237,6 +245,7 @@ impl HostedMemoryEnvelopeCrypto {
             canonical_id,
             envelope.kek_version.clone(),
             envelope.rotation_epoch,
+            wrapped_dek_fingerprint(&envelope.wrapped_dek),
         );
         let dek = match self.cache.get(&cache_key) {
             Some(handle) => handle,
@@ -312,6 +321,20 @@ fn env_non_empty(name: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+/// A stable fingerprint of a row's wrapped DEK, used to give each envelope its
+/// own DEK-cache entry. Two rows in the same scope carry different `wrapped_dek`s
+/// (each seals a fresh DEK), so keying the cache on this prevents one row's DEK
+/// from evicting/masking another's.
+fn wrapped_dek_fingerprint(wrapped_dek: &str) -> String {
+    let digest = Sha256::digest(wrapped_dek.as_bytes());
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        out.push(char::from_digit((byte >> 4) as u32, 16).unwrap());
+        out.push(char::from_digit((byte & 0x0f) as u32, 16).unwrap());
+    }
+    out
 }
 
 #[cfg(test)]
@@ -459,6 +482,56 @@ mod tests {
             )
             .expect("unseal");
         assert_eq!(recovered, plaintext);
+    }
+
+    #[test]
+    fn multiple_rows_in_one_scope_both_round_trip() {
+        // Regression: each seal mints a fresh DEK, so two rows in the same scope +
+        // KEK version carry different wrapped_deks. Both must remain readable —
+        // the second seal must not evict or mask the first's cached DEK, and a
+        // cold-cache read of either must recover its own DEK.
+        let crypto = hosted();
+        let scope = finance_scope("acme");
+        let row_a = crypto
+            .seal(&scope, "row A: invoice INV-1", "decision-1", "audit-1")
+            .expect("seal A");
+        let row_b = crypto
+            .seal(&scope, "row B: invoice INV-2", "decision-1", "audit-1")
+            .expect("seal B");
+        assert_ne!(
+            row_a.envelope.wrapped_dek, row_b.envelope.wrapped_dek,
+            "each row seals its own DEK"
+        );
+        let who = principal("acme", vec![DataClass::FinancialRecord]);
+
+        // Warm cache (both entries present after the two seals).
+        assert_eq!(
+            crypto
+                .unseal(&row_a.envelope, &row_a.ciphertext, &who, None)
+                .expect("A hot"),
+            "row A: invoice INV-1"
+        );
+        assert_eq!(
+            crypto
+                .unseal(&row_b.envelope, &row_b.ciphertext, &who, None)
+                .expect("B hot"),
+            "row B: invoice INV-2"
+        );
+
+        // Cold cache: each row must unwrap its own DEK, in either order.
+        crypto.cache().clear();
+        assert_eq!(
+            crypto
+                .unseal(&row_b.envelope, &row_b.ciphertext, &who, None)
+                .expect("B cold"),
+            "row B: invoice INV-2"
+        );
+        assert_eq!(
+            crypto
+                .unseal(&row_a.envelope, &row_a.ciphertext, &who, None)
+                .expect("A cold"),
+            "row A: invoice INV-1"
+        );
     }
 
     #[test]

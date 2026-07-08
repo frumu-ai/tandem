@@ -6,13 +6,20 @@
 //! ([`crate::kms_providers`]) — so a decrypt-heavy read path must cache the
 //! unwrapped DEK. This module is that cache.
 //!
-//! **The cache key is `(canonical_id, kek_version, rotation_epoch)`, not
-//! `canonical_id` alone.** During rotation or backfill a single scope legitimately
-//! holds rows sealed under different KEK versions / rotation epochs (each with its
-//! own `wrapped_dek`). A scope-only cache would hand back the first-seen DEK for a
-//! row sealed under a newer version and cause AES-GCM authentication failures.
-//! Versioning the key lets old and new rows coexist through a rotation; entries
-//! are LRU-evicted, and a whole scope's entries are dropped on revocation.
+//! **The cache key identifies a single envelope's DEK, not a scope.** It is
+//! `(canonical_id, kek_version, rotation_epoch, wrapped_dek_fingerprint)`. Sealing
+//! generates a fresh DEK per field, so two rows in the same scope and KEK version
+//! carry *different* `wrapped_dek`s; keying by scope alone would let a later row's
+//! DEK clobber an earlier row's cache entry and return the wrong key (AES-GCM
+//! auth failure) — making ordinary multi-row scopes unreadable. Including the
+//! wrapped-DEK fingerprint gives each envelope its own entry, so multiple rows per
+//! scope and old/new rows through a rotation all resolve to the right DEK. The
+//! scope segment is retained so a revocation can drop every entry for a scope at
+//! once. Entries are LRU-evicted.
+//!
+//! (Keying by the wrapped DEK is also forward-compatible with a future per-scope
+//! DEK registry — reusing one DEK across a scope's rows simply collapses to one
+//! fingerprint, giving O(distinct scopes) KMS calls without a cache change.)
 //!
 //! DEK bytes are held in a [`SecretDek`] that zeroes its memory on drop, and are
 //! handed out behind an `Arc` so a cache eviction never leaves a live copy behind
@@ -64,14 +71,17 @@ impl std::fmt::Debug for SecretDek {
     }
 }
 
-/// The cache key: an envelope's scope identity plus the exact key version and
-/// rotation epoch the row was sealed under. Two rows in the same scope sealed
-/// under different KEK versions map to different entries.
+/// The cache key: a single envelope's DEK identity — the scope's `canonical_id`,
+/// the KEK version and rotation epoch the row was sealed under, and a fingerprint
+/// of the row's own `wrapped_dek`. The fingerprint is what lets two rows in the
+/// same scope (each with a fresh DEK) cache independently; the `canonical_id` is
+/// retained so an entire scope can be invalidated on revocation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MemoryDekCacheKey {
     pub canonical_id: String,
     pub kek_version: String,
     pub rotation_epoch: u64,
+    pub wrapped_dek_fingerprint: String,
 }
 
 impl MemoryDekCacheKey {
@@ -79,11 +89,13 @@ impl MemoryDekCacheKey {
         canonical_id: impl Into<String>,
         kek_version: impl Into<String>,
         rotation_epoch: u64,
+        wrapped_dek_fingerprint: impl Into<String>,
     ) -> Self {
         Self {
             canonical_id: canonical_id.into(),
             kek_version: kek_version.into(),
             rotation_epoch,
+            wrapped_dek_fingerprint: wrapped_dek_fingerprint.into(),
         }
     }
 }
@@ -100,8 +112,9 @@ struct Inner {
 }
 
 /// A concurrency-safe, LRU-bounded cache of unwrapped memory DEKs keyed by
-/// `(canonical_id, kek_version, rotation_epoch)`. Cheap to clone (`Arc` inside);
-/// share one instance across the read/write path.
+/// [`MemoryDekCacheKey`] (scope + KEK version + rotation epoch + wrapped-DEK
+/// fingerprint). Cheap to clone (`Arc` inside); share one across the read/write
+/// path.
 #[derive(Clone)]
 pub struct MemoryDekCache {
     inner: Arc<Mutex<Inner>>,
@@ -227,26 +240,55 @@ mod tests {
         [seed; MEMORY_DEK_LEN]
     }
 
+    fn key(scope: &str, version: &str, epoch: u64, fingerprint: &str) -> MemoryDekCacheKey {
+        MemoryDekCacheKey::new(scope, version, epoch, fingerprint)
+    }
+
     #[test]
     fn hit_and_miss() {
         let cache = MemoryDekCache::new(8);
-        let key = MemoryDekCacheKey::new("tandem/memory/acme/hq/prod/internal", "1", 0);
-        assert!(cache.get(&key).is_none(), "cold miss");
-        cache.insert(key.clone(), dek(7));
-        assert_eq!(cache.get(&key).unwrap().expose(), &dek(7), "warm hit");
+        let k = key("tandem/memory/acme/hq/prod/internal", "1", 0, "fp-a");
+        assert!(cache.get(&k).is_none(), "cold miss");
+        cache.insert(k.clone(), dek(7));
+        assert_eq!(cache.get(&k).unwrap().expose(), &dek(7), "warm hit");
     }
 
     #[test]
     fn different_scopes_do_not_collide() {
         let cache = MemoryDekCache::new(8);
-        let sales =
-            MemoryDekCacheKey::new("tandem/memory/acme/hq/prod/internal/dept/sales", "1", 0);
-        let finance =
-            MemoryDekCacheKey::new("tandem/memory/acme/hq/prod/internal/dept/finance", "1", 0);
+        let sales = key(
+            "tandem/memory/acme/hq/prod/internal/dept/sales",
+            "1",
+            0,
+            "fp-s",
+        );
+        let finance = key(
+            "tandem/memory/acme/hq/prod/internal/dept/finance",
+            "1",
+            0,
+            "fp-f",
+        );
         cache.insert(sales.clone(), dek(1));
         cache.insert(finance.clone(), dek(2));
         assert_eq!(cache.get(&sales).unwrap().expose(), &dek(1));
         assert_eq!(cache.get(&finance).unwrap().expose(), &dek(2));
+    }
+
+    #[test]
+    fn multiple_rows_in_one_scope_and_version_keep_distinct_deks() {
+        // The regression this key design exists for: two rows in the same scope
+        // and KEK version, each sealed with its own fresh DEK (distinct
+        // wrapped_dek fingerprints). Sealing the second must NOT evict the first,
+        // or reading the first row would decrypt with the wrong DEK.
+        let cache = MemoryDekCache::new(8);
+        let scope = "tandem/memory/acme/hq/prod/financial_record";
+        let row_a = key(scope, "1", 0, "fp-row-a");
+        let row_b = key(scope, "1", 0, "fp-row-b");
+        cache.insert(row_a.clone(), dek(41));
+        cache.insert(row_b.clone(), dek(42));
+        assert_eq!(cache.get(&row_a).unwrap().expose(), &dek(41));
+        assert_eq!(cache.get(&row_b).unwrap().expose(), &dek(42));
+        assert_eq!(cache.len(), 2);
     }
 
     #[test]
@@ -255,8 +297,8 @@ mod tests {
         // both DEKs must be independently cached so neither row fails to decrypt.
         let cache = MemoryDekCache::new(8);
         let scope = "tandem/memory/acme/hq/prod/financial_record";
-        let v1 = MemoryDekCacheKey::new(scope, "1", 0);
-        let v2 = MemoryDekCacheKey::new(scope, "2", 1);
+        let v1 = key(scope, "1", 0, "fp-v1");
+        let v2 = key(scope, "2", 1, "fp-v2");
         cache.insert(v1.clone(), dek(11));
         cache.insert(v2.clone(), dek(22));
         assert_eq!(cache.get(&v1).unwrap().expose(), &dek(11));
@@ -265,19 +307,19 @@ mod tests {
     }
 
     #[test]
-    fn invalidate_canonical_id_drops_all_versions_of_a_scope() {
+    fn invalidate_canonical_id_drops_all_entries_of_a_scope() {
         let cache = MemoryDekCache::new(8);
         let scope = "tandem/memory/acme/hq/prod/internal";
         let other = "tandem/memory/acme/hq/prod/confidential";
-        cache.insert(MemoryDekCacheKey::new(scope, "1", 0), dek(1));
-        cache.insert(MemoryDekCacheKey::new(scope, "2", 1), dek(2));
-        cache.insert(MemoryDekCacheKey::new(other, "1", 0), dek(3));
+        cache.insert(key(scope, "1", 0, "fp-1"), dek(1));
+        cache.insert(key(scope, "2", 1, "fp-2"), dek(2));
+        cache.insert(key(other, "1", 0, "fp-1"), dek(3));
         let dropped = cache.invalidate_canonical_id(scope);
-        assert_eq!(dropped, 2, "both versions of the revoked scope drop");
-        assert!(cache.get(&MemoryDekCacheKey::new(scope, "1", 0)).is_none());
-        assert!(cache.get(&MemoryDekCacheKey::new(scope, "2", 1)).is_none());
+        assert_eq!(dropped, 2, "both entries of the revoked scope drop");
+        assert!(cache.get(&key(scope, "1", 0, "fp-1")).is_none());
+        assert!(cache.get(&key(scope, "2", 1, "fp-2")).is_none());
         assert!(
-            cache.get(&MemoryDekCacheKey::new(other, "1", 0)).is_some(),
+            cache.get(&key(other, "1", 0, "fp-1")).is_some(),
             "unrelated scope survives"
         );
     }
@@ -285,9 +327,9 @@ mod tests {
     #[test]
     fn lru_evicts_least_recently_used() {
         let cache = MemoryDekCache::new(2);
-        let a = MemoryDekCacheKey::new("scope-a", "1", 0);
-        let b = MemoryDekCacheKey::new("scope-b", "1", 0);
-        let c = MemoryDekCacheKey::new("scope-c", "1", 0);
+        let a = key("scope-a", "1", 0, "fp-a");
+        let b = key("scope-b", "1", 0, "fp-b");
+        let c = key("scope-c", "1", 0, "fp-c");
         cache.insert(a.clone(), dek(1));
         cache.insert(b.clone(), dek(2));
         // Touch `a` so `b` becomes the LRU victim.
@@ -302,15 +344,11 @@ mod tests {
     #[test]
     fn reinsert_same_key_does_not_evict() {
         let cache = MemoryDekCache::new(1);
-        let key = MemoryDekCacheKey::new("scope", "1", 0);
-        cache.insert(key.clone(), dek(1));
-        cache.insert(key.clone(), dek(9));
+        let k = key("scope", "1", 0, "fp-a");
+        cache.insert(k.clone(), dek(1));
+        cache.insert(k.clone(), dek(9));
         assert_eq!(cache.len(), 1);
-        assert_eq!(
-            cache.get(&key).unwrap().expose(),
-            &dek(9),
-            "value refreshed"
-        );
+        assert_eq!(cache.get(&k).unwrap().expose(), &dek(9), "value refreshed");
     }
 
     #[test]
