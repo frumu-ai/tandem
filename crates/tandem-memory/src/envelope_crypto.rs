@@ -266,31 +266,32 @@ impl HostedMemoryEnvelopeCrypto {
             envelope.rotation_epoch,
             wrapped_dek_fingerprint(&envelope.wrapped_dek),
         );
+        // Authorization runs on EVERY unseal, independent of the DEK cache. The
+        // caller presents its own tenant scope; the broker denies unless that
+        // scope owns the envelope (cross-tenant gate) and carries the required
+        // data-class / source grants. The cache only ever saves the external KMS
+        // unwrap — never the access-control decision — so a DEK cached at write
+        // time cannot let an unauthorized reader bypass the broker.
+        let request = MemoryDecryptRequest {
+            envelope: envelope.clone(),
+            tenant_scope: principal.tenant_scope.clone(),
+            principal: principal.clone(),
+            // The broker binds an unwrap to the envelope's own write-time
+            // policy/audit ids, so they are taken from the envelope, not the
+            // caller.
+            policy_decision_id: envelope.policy_decision_id.clone(),
+            audit_id: envelope.audit_id.clone(),
+            break_glass_requested: false,
+            key_lifecycle_policy,
+        };
+        let ticket = self.broker.authorize_unwrap(request)?.ok_or_else(|| {
+            MemoryError::InvalidConfig(
+                "hosted memory decrypt broker returned no unwrap ticket".to_string(),
+            )
+        })?;
         let dek = match self.cache.get(&cache_key) {
             Some(handle) => handle,
             None => {
-                let tenant_scope = MemoryTenantScope {
-                    org_id: envelope.key_scope.org_id.clone(),
-                    workspace_id: envelope.key_scope.workspace_id.clone(),
-                    deployment_id: envelope.key_scope.deployment_id.clone(),
-                };
-                // The broker binds an unwrap to the envelope's own write-time
-                // policy/audit ids, so they are taken from the envelope, not the
-                // caller.
-                let request = MemoryDecryptRequest {
-                    envelope: envelope.clone(),
-                    tenant_scope,
-                    principal: principal.clone(),
-                    policy_decision_id: envelope.policy_decision_id.clone(),
-                    audit_id: envelope.audit_id.clone(),
-                    break_glass_requested: false,
-                    key_lifecycle_policy,
-                };
-                let ticket = self.broker.authorize_unwrap(request)?.ok_or_else(|| {
-                    MemoryError::InvalidConfig(
-                        "hosted memory decrypt broker returned no unwrap ticket".to_string(),
-                    )
-                })?;
                 let dek_bytes = self.unwrap_provider.unwrap_dek(&ticket)?;
                 let dek: [u8; KEY_LEN] = dek_bytes.as_slice().try_into().map_err(|_| {
                     MemoryError::InvalidConfig(format!(

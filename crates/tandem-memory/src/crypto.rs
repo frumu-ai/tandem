@@ -97,6 +97,15 @@ impl MemoryCryptoProvider {
         }
     }
 
+    /// A hosted-KMS provider that seals per-scope envelopes. Normally built via
+    /// [`from_mode`](Self::from_mode) from the environment; exposed for callers
+    /// (and tests) that construct the hosted crypto with an injected KMS client.
+    pub fn hosted(hosted: HostedMemoryEnvelopeCrypto) -> Self {
+        Self {
+            inner: CryptoInner::Hosted(Arc::new(hosted)),
+        }
+    }
+
     /// Resolve the provider from the environment-selected crypto mode.
     pub fn from_env() -> Self {
         let config = MemoryDecryptBrokerConfig::from_env()

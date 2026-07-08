@@ -1645,7 +1645,7 @@ impl MemoryDatabase {
                     let sql = format!(
                         "SELECT c.id, c.content, c.session_id, c.project_id, c.source, c.created_at, c.token_count, c.metadata,
                                 c.source_path, c.source_mtime, c.source_size, c.source_hash,
-                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject,
+                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject, c.crypto_envelope,
                                 vec_distance_cosine(v.embedding, ?5) AS distance
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
@@ -1681,7 +1681,7 @@ impl MemoryDatabase {
                     let sql = format!(
                         "SELECT c.id, c.content, c.session_id, c.project_id, c.source, c.created_at, c.token_count, c.metadata,
                                 c.source_path, c.source_mtime, c.source_size, c.source_hash,
-                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject,
+                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject, c.crypto_envelope,
                                 vec_distance_cosine(v.embedding, ?5) AS distance
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
@@ -1755,7 +1755,7 @@ impl MemoryDatabase {
                     let sql = format!(
                         "SELECT c.id, c.content, c.session_id, c.project_id, c.source, c.created_at, c.token_count, c.metadata,
                                 c.source_path, c.source_mtime, c.source_size, c.source_hash,
-                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject,
+                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject, c.crypto_envelope,
                                 vec_distance_cosine(v.embedding, ?5) AS distance
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
