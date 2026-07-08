@@ -53,17 +53,34 @@ impl<'a> GovernanceStore<'a> {
         }
     }
 
+    fn is_jsonl(file: GovernanceStoreFile) -> bool {
+        matches!(
+            file,
+            GovernanceStoreFile::ProtectedAudit | GovernanceStoreFile::MemoryAudit
+        )
+    }
+
     pub(crate) async fn read_text(
         &self,
         file: GovernanceStoreFile,
     ) -> anyhow::Result<Option<String>> {
         let path = self.path(file);
-        match fs::read_to_string(path).await {
+        if Self::is_jsonl(file) {
+            return match fs::read_to_string(path).await {
+                Ok(content) => Ok(Some(content)),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(err) => {
+                    Err(err).with_context(|| format!("read governance store {}", path.display()))
+                }
+            };
+        }
+
+        match crate::encrypted_file_store::read_text_file(path).await {
             Ok(content) => Ok(Some(content)),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(err) => {
-                Err(err).with_context(|| format!("read governance store {}", path.display()))
-            }
+            Err(err) => match err.downcast_ref::<std::io::Error>() {
+                Some(io_err) if io_err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                _ => Err(err).with_context(|| format!("read governance store {}", path.display())),
+            },
         }
     }
 
@@ -98,10 +115,14 @@ impl<'a> GovernanceStore<'a> {
         payload: &str,
     ) -> anyhow::Result<()> {
         let path = self.path(file);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await?;
+        if Self::is_jsonl(file) {
+            anyhow::bail!(
+                "write_text is unsupported for JSONL governance store {}; use append_jsonl_line",
+                path.display()
+            );
         }
-        fs::write(path, payload)
+
+        crate::encrypted_file_store::write_text_file(path, payload)
             .await
             .with_context(|| format!("write governance store {}", path.display()))?;
         Ok(())
@@ -117,19 +138,46 @@ impl<'a> GovernanceStore<'a> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).await?;
         }
+        let stored_line = crate::encrypted_file_store::encrypt_jsonl_line(line)?;
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
             .await
             .with_context(|| format!("open governance JSONL store {}", path.display()))?;
-        file.write_all(line.as_bytes()).await?;
+        file.write_all(stored_line.as_bytes()).await?;
         file.write_all(b"\n").await?;
         file.flush().await?;
         if durable {
             file.sync_all().await?;
         }
         Ok(())
+    }
+
+    pub(crate) async fn read_jsonl_lines(
+        &self,
+        file: GovernanceStoreFile,
+    ) -> anyhow::Result<Option<Vec<String>>> {
+        let path = self.path(file);
+        let content = match fs::read_to_string(path).await {
+            Ok(content) => content,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("read governance JSONL store {}", path.display()))
+            }
+        };
+
+        let mut lines = Vec::new();
+        for line in content.lines() {
+            match crate::encrypted_file_store::decrypt_jsonl_line(line)
+                .with_context(|| format!("decrypt governance JSONL store {}", path.display()))?
+            {
+                Some(plaintext) => lines.push(plaintext),
+                None => continue,
+            }
+        }
+        Ok(Some(lines))
     }
 }
 
@@ -158,16 +206,17 @@ mod tests {
         assert_eq!(loaded, value);
 
         store
-            .append_jsonl_line(GovernanceStoreFile::ProtectedAudit, "{\"seq\":1}", true)
+            .append_jsonl_line(GovernanceStoreFile::ProtectedAudit, r#"{"seq":1}"#, true)
             .await
             .expect("append jsonl");
-        let content = store
-            .read_text(GovernanceStoreFile::ProtectedAudit)
+        let lines = store
+            .read_jsonl_lines(GovernanceStoreFile::ProtectedAudit)
             .await
             .expect("read jsonl")
             .expect("jsonl exists");
-        assert!(content.contains("\"seq\":1"));
+        assert!(lines.iter().any(|line| line.contains(r#""seq":1"#)));
     }
+
     #[tokio::test]
     async fn org_unit_registries_load_through_store() {
         let state = crate::test_support::test_state().await;

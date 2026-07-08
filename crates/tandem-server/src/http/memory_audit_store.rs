@@ -21,21 +21,15 @@ pub(crate) async fn append_memory_audit(
 }
 
 pub(crate) async fn load_memory_audit_events(state: &AppState) -> Vec<crate::MemoryAuditEvent> {
-    let Ok(Some(content)) = governance_store::for_state(state)
-        .read_text(GovernanceStoreFile::MemoryAudit)
+    let Ok(Some(lines)) = governance_store::for_state(state)
+        .read_jsonl_lines(GovernanceStoreFile::MemoryAudit)
         .await
     else {
         return Vec::new();
     };
 
-    content
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-            serde_json::from_str::<crate::MemoryAuditEvent>(trimmed).ok()
-        })
+    lines
+        .iter()
+        .filter_map(|line| serde_json::from_str::<crate::MemoryAuditEvent>(line.trim()).ok())
         .collect()
 }

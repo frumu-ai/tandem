@@ -118,14 +118,30 @@ async fn protected_audit_lock_for(
         .clone()
 }
 
+fn parse_protected_audit_records(content: &str) -> anyhow::Result<Vec<ProtectedAuditEnvelope>> {
+    let mut records = Vec::new();
+    for line in content.lines() {
+        let Some(plaintext) = crate::encrypted_file_store::decrypt_jsonl_line(line)? else {
+            continue;
+        };
+        if let Ok(record) = serde_json::from_str::<ProtectedAuditEnvelope>(plaintext.trim()) {
+            records.push(record);
+        }
+    }
+    Ok(records)
+}
+
 async fn read_last_protected_audit_record(
     path: &std::path::Path,
-) -> Option<ProtectedAuditEnvelope> {
-    let content = fs::read_to_string(path).await.ok()?;
-    content
-        .lines()
-        .filter_map(|line| serde_json::from_str::<ProtectedAuditEnvelope>(line.trim()).ok())
-        .max_by_key(|e| e.seq)
+) -> anyhow::Result<Option<ProtectedAuditEnvelope>> {
+    let content = match fs::read_to_string(path).await {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    Ok(parse_protected_audit_records(&content)?
+        .into_iter()
+        .max_by_key(|e| e.seq))
 }
 
 pub fn protected_audit_event_matches_tenant(
@@ -149,17 +165,20 @@ pub async fn load_protected_audit_events_for_tenant(
         Ok(Some(content)) => content,
         Ok(None) | Err(_) => return Vec::new(),
     };
-    let mut rows = content
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-            serde_json::from_str::<ProtectedAuditEnvelope>(trimmed).ok()
-        })
-        .filter(|event| protected_audit_event_matches_tenant(event, tenant_context))
-        .collect::<Vec<_>>();
+    let mut rows = match parse_protected_audit_records(&content) {
+        Ok(records) => records,
+        Err(error) => {
+            tracing::warn!(
+                path = %state.protected_audit_path.display(),
+                error = ?error,
+                "failed to decrypt protected audit ledger"
+            );
+            return Vec::new();
+        }
+    }
+    .into_iter()
+    .filter(|event| protected_audit_event_matches_tenant(event, tenant_context))
+    .collect::<Vec<_>>();
     rows.sort_by(|a, b| {
         a.created_at_ms
             .cmp(&b.created_at_ms)
@@ -187,7 +206,7 @@ pub async fn append_protected_audit_event(
     // the last seq/hash is carried in memory under this same lock, so appends
     // do not re-read the whole ledger.
     if tail.is_none() {
-        *tail = Some(match read_last_protected_audit_record(&path).await {
+        *tail = Some(match read_last_protected_audit_record(&path).await? {
             Some(e) => LastAuditRecord {
                 seq: e.seq,
                 record_hash: e.record_hash,
@@ -223,7 +242,8 @@ pub async fn append_protected_audit_event(
     row.record_hash = compute_audit_envelope_hash(&row);
 
     // Perform the write, and — for durable events — fsync so the record
-    // survives power loss (flush() only reaches the OS page cache).
+    // survives power loss (flush() only reaches the OS page cache). The store
+    // facade encrypts JSONL rows for the file-backed implementation.
     let serialized = serde_json::to_string(&row)?;
     let write_result = crate::governance_store::for_state(state)
         .append_jsonl_line(
@@ -304,10 +324,19 @@ pub async fn verify_protected_audit_ledger(
         }
     };
 
-    let mut records: Vec<ProtectedAuditEnvelope> = content
-        .lines()
-        .filter_map(|line| serde_json::from_str(line.trim()).ok())
-        .collect();
+    let mut records: Vec<ProtectedAuditEnvelope> = match parse_protected_audit_records(&content) {
+        Ok(records) => records,
+        Err(_) => {
+            return AuditLedgerVerificationResult {
+                valid: false,
+                record_count: 0,
+                hashed_record_count: 0,
+                root_hash: None,
+                schema_version: 0,
+                violation: None,
+            }
+        }
+    };
     records.sort_by_key(|e| e.seq);
 
     let record_count = records.len() as u64;
@@ -428,6 +457,8 @@ pub async fn generate_audit_ledger_manifest(
     let result = verify_protected_audit_ledger(path).await;
     let last_seq = read_last_protected_audit_record(path)
         .await
+        .ok()
+        .flatten()
         .map(|e| e.seq)
         .unwrap_or(0);
     Ok(AuditLedgerManifest {

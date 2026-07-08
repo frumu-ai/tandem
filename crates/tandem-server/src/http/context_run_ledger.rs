@@ -802,10 +802,10 @@ async fn load_governance_evidence_memory_audit(
     run_ids: &BTreeSet<String>,
 ) -> Vec<crate::MemoryAuditEvent> {
     let mut rows = match crate::governance_store::for_state(state)
-        .read_text(crate::governance_store::GovernanceStoreFile::MemoryAudit)
+        .read_jsonl_lines(crate::governance_store::GovernanceStoreFile::MemoryAudit)
         .await
     {
-        Ok(Some(content)) => parse_jsonl_rows::<crate::MemoryAuditEvent>(&content),
+        Ok(Some(lines)) => parse_jsonl_rows::<crate::MemoryAuditEvent>(&lines),
         Ok(None) | Err(_) => Vec::new(),
     };
     if rows.is_empty() {
@@ -840,16 +840,10 @@ async fn load_governance_evidence_protected_audit(
     rows
 }
 
-fn parse_jsonl_rows<T: serde::de::DeserializeOwned>(content: &str) -> Vec<T> {
-    content
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-            serde_json::from_str::<T>(trimmed).ok()
-        })
+fn parse_jsonl_rows<T: serde::de::DeserializeOwned>(lines: &[String]) -> Vec<T> {
+    lines
+        .iter()
+        .filter_map(|line| serde_json::from_str::<T>(line.trim()).ok())
         .collect()
 }
 
