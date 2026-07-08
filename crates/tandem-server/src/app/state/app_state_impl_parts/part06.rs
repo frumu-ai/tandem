@@ -901,7 +901,7 @@ impl AppState {
         if !self.policy_decisions_path.exists() {
             return Ok(());
         }
-        let raw = fs::read_to_string(&self.policy_decisions_path).await?;
+        let raw = crate::encrypted_file_store::read_text_file(&self.policy_decisions_path).await?;
         let parsed =
             serde_json::from_str::<std::collections::HashMap<String, PolicyDecisionRecord>>(&raw)
                 .unwrap_or_default();
@@ -917,7 +917,8 @@ impl AppState {
             let guard = self.policy_decisions.read().await;
             serde_json::to_string_pretty(&*guard)?
         };
-        fs::write(&self.policy_decisions_path, payload).await?;
+        crate::encrypted_file_store::write_text_file(&self.policy_decisions_path, &payload)
+            .await?;
         Ok(())
     }
 
@@ -1334,9 +1335,9 @@ impl AppState {
             return Ok(());
         }
         check_file_permissions(&self.enterprise.policy_rules_path);
-        let bytes = fs::read(&self.enterprise.policy_rules_path).await?;
         let registry: std::collections::HashMap<String, EnterprisePolicyRule> =
-            serde_json::from_slice(&bytes)?;
+            crate::encrypted_file_store::read_json_file(&self.enterprise.policy_rules_path)
+                .await?;
         *self.enterprise.policy_rules.write().await = registry;
         Ok(())
     }

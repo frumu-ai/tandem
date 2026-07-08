@@ -597,11 +597,10 @@ impl AppState {
             return Ok(());
         }
         check_file_permissions(&self.enterprise.org_units_path);
-        let bytes = fs::read(&self.enterprise.org_units_path).await?;
         let registry: std::collections::HashMap<
             String,
             tandem_enterprise_contract::OrganizationUnit,
-        > = serde_json::from_slice(&bytes)?;
+        > = crate::encrypted_file_store::read_json_file(&self.enterprise.org_units_path).await?;
         *self.enterprise.org_units.write().await = registry;
         Ok(())
     }
@@ -611,11 +610,13 @@ impl AppState {
             return Ok(());
         }
         check_file_permissions(&self.enterprise.org_unit_memberships_path);
-        let bytes = fs::read(&self.enterprise.org_unit_memberships_path).await?;
         let registry: std::collections::HashMap<
             String,
             tandem_enterprise_contract::OrganizationUnitMembership,
-        > = serde_json::from_slice(&bytes)?;
+        > = crate::encrypted_file_store::read_json_file(
+            &self.enterprise.org_unit_memberships_path,
+        )
+        .await?;
         *self.enterprise.org_unit_memberships.write().await = registry;
         Ok(())
     }
@@ -625,11 +626,13 @@ impl AppState {
             return Ok(());
         }
         check_file_permissions(&self.enterprise.org_unit_access_grants_path);
-        let bytes = fs::read(&self.enterprise.org_unit_access_grants_path).await?;
         let registry: std::collections::HashMap<
             String,
             tandem_enterprise_contract::OrganizationUnitAccessGrant,
-        > = serde_json::from_slice(&bytes)?;
+        > = crate::encrypted_file_store::read_json_file(
+            &self.enterprise.org_unit_access_grants_path,
+        )
+        .await?;
         *self.enterprise.org_unit_access_grants.write().await = registry;
         Ok(())
     }
@@ -639,11 +642,13 @@ impl AppState {
             return Ok(());
         }
         check_file_permissions(&self.enterprise.cross_tenant_grants_path);
-        let bytes = fs::read(&self.enterprise.cross_tenant_grants_path).await?;
         let registry: std::collections::HashMap<
             String,
             tandem_enterprise_contract::CrossTenantGrantRecord,
-        > = serde_json::from_slice(&bytes)?;
+        > = crate::encrypted_file_store::read_json_file(
+            &self.enterprise.cross_tenant_grants_path,
+        )
+        .await?;
         *self.enterprise.cross_tenant_grants.write().await = registry;
         Ok(())
     }
@@ -653,9 +658,9 @@ impl AppState {
             return Ok(());
         }
         check_file_permissions(&self.enterprise.source_bindings_path);
-        let bytes = fs::read(&self.enterprise.source_bindings_path).await?;
         let registry: std::collections::HashMap<String, tandem_enterprise_contract::SourceBinding> =
-            serde_json::from_slice(&bytes)?;
+            crate::encrypted_file_store::read_json_file(&self.enterprise.source_bindings_path)
+                .await?;
         *self.enterprise.source_bindings.write().await = registry;
         Ok(())
     }
