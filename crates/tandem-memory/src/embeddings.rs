@@ -146,7 +146,7 @@ impl EmbeddingService {
 
     /// Returns whether semantic embeddings are currently available.
     pub fn is_available(&self) -> bool {
-        self.model.is_some()
+        self.deterministic || self.model.is_some()
     }
 
     /// Returns disabled reason if embeddings are unavailable.
