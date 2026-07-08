@@ -287,9 +287,41 @@ pub trait MemoryDekUnwrapProvider {
 
 pub type MemoryDekUnwrapProviderBox = Box<dyn MemoryDekUnwrapProvider + Send + Sync>;
 
+/// The write-side request to seal a fresh memory DEK under a scope's KEK: the KMS
+/// encrypts `plaintext_dek` (32 bytes) with `kek_id`/`kek_version`, binding the
+/// ciphertext to `encryption_context_hash` as additional authenticated data so a
+/// wrapped DEK can only be unwrapped under the same scope context (TAN-666).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryDekWrapRequest {
+    pub provider: String,
+    pub runtime_principal_id: String,
+    pub key_scope_id: String,
+    pub kek_id: String,
+    pub kek_version: String,
+    pub plaintext_dek: Vec<u8>,
+    pub encryption_context_hash: String,
+    pub audit_id: String,
+}
+
+/// Wraps a fresh memory DEK under a scope's KEK. The mirror of
+/// [`MemoryDekUnwrapProvider`] for the write path; unlike unwrap, wrapping is not
+/// principal-authorized (a writer may always seal its own new data) — the
+/// per-scope isolation comes from the KEK + the `encryption_context_hash` AAD.
+pub trait MemoryDekWrapProvider {
+    fn provider_id(&self) -> &str;
+    fn secret_family(&self) -> MemorySecretFamily;
+    fn wrap_dek(&self, request: &MemoryDekWrapRequest) -> MemoryResult<Vec<u8>>;
+}
+
+pub type MemoryDekWrapProviderBox = Box<dyn MemoryDekWrapProvider + Send + Sync>;
+
 impl MemoryDecryptBrokerConfig {
     pub fn build_dek_unwrap_provider(&self) -> MemoryResult<Option<MemoryDekUnwrapProviderBox>> {
         crate::kms_providers::memory_dek_unwrap_provider_from_config(self)
+    }
+
+    pub fn build_dek_wrap_provider(&self) -> MemoryResult<Option<MemoryDekWrapProviderBox>> {
+        crate::kms_providers::memory_dek_wrap_provider_from_config(self)
     }
 }
 

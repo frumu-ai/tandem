@@ -88,6 +88,13 @@ impl MemoryKeyScope {
                 == tenant_scope.deployment_id.as_deref().unwrap_or("")
     }
 
+    /// Validate that this scope is safe to seal a DEK under: no wildcard tenant,
+    /// deployment, or department segment (any of which would collapse per-scope
+    /// DEKs into a shared key). Called on the write path before wrapping.
+    pub fn validate_for_envelope(&self) -> MemoryResult<()> {
+        self.validate_partitioned()
+    }
+
     fn validate_partitioned(&self) -> MemoryResult<()> {
         for (field, value) in [
             ("org_id", self.org_id.as_str()),

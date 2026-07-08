@@ -4,9 +4,11 @@ pub mod context_uri;
 pub mod crypto;
 pub mod db;
 pub mod decrypt_broker;
+pub mod dek_cache;
 pub mod distillation;
 pub mod embeddings;
 pub mod envelope;
+pub mod envelope_crypto;
 pub mod governance;
 #[cfg(test)]
 mod governed_read_tests;

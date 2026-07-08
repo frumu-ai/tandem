@@ -8,12 +8,14 @@ use serde_json::Value;
 
 use crate::decrypt_broker::{
     MemoryDecryptBrokerConfig, MemoryDecryptPurpose, MemoryDekUnwrapProvider,
-    MemoryDekUnwrapProviderBox, MemoryDekUnwrapTicket, MemorySecretFamily,
+    MemoryDekUnwrapProviderBox, MemoryDekUnwrapTicket, MemoryDekWrapProvider,
+    MemoryDekWrapProviderBox, MemoryDekWrapRequest, MemorySecretFamily,
 };
 use crate::types::{MemoryError, MemoryResult};
 
 pub const GOOGLE_CLOUD_KMS_PROVIDER_ID: &str = "google_cloud_kms";
 const GOOGLE_KMS_DECRYPT_COMMAND_ENV: &str = "TANDEM_MEMORY_GOOGLE_KMS_DECRYPT_COMMAND";
+const GOOGLE_KMS_ENCRYPT_COMMAND_ENV: &str = "TANDEM_MEMORY_GOOGLE_KMS_ENCRYPT_COMMAND";
 const MEMORY_DEK_LEN: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -243,6 +245,244 @@ pub fn memory_dek_unwrap_provider_from_config(
         "unsupported hosted memory decrypt provider `{}`",
         config.provider
     )))
+}
+
+/// A KMS `encrypt` request that wraps a fresh memory DEK under a KEK. Mirror of
+/// [`GoogleCloudKmsDecryptRequest`] for the write path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GoogleCloudKmsEncryptRequest {
+    pub crypto_key_id: String,
+    pub plaintext: Vec<u8>,
+    pub additional_authenticated_data: Vec<u8>,
+    pub runtime_principal_id: String,
+    pub key_scope_id: String,
+    pub audit_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct GoogleCloudKmsCommandEncryptRequest {
+    crypto_key_id: String,
+    plaintext_base64: String,
+    additional_authenticated_data_base64: String,
+    runtime_principal_id: String,
+    key_scope_id: String,
+    audit_id: String,
+}
+
+pub trait GoogleCloudKmsEncryptClient {
+    fn encrypt(&self, request: &GoogleCloudKmsEncryptRequest) -> MemoryResult<Vec<u8>>;
+}
+
+#[derive(Debug, Clone)]
+pub struct GoogleCloudKmsDekWrapProvider<C> {
+    client: C,
+    runtime_principal_id: String,
+}
+
+impl<C> GoogleCloudKmsDekWrapProvider<C> {
+    pub fn new(client: C, runtime_principal_id: impl Into<String>) -> MemoryResult<Self> {
+        let runtime_principal_id = runtime_principal_id.into();
+        if is_wildcard_or_blank(&runtime_principal_id) {
+            return Err(MemoryError::InvalidConfig(
+                "google cloud kms memory provider requires a scoped runtime principal".to_string(),
+            ));
+        }
+        Ok(Self {
+            client,
+            runtime_principal_id,
+        })
+    }
+}
+
+impl<C> MemoryDekWrapProvider for GoogleCloudKmsDekWrapProvider<C>
+where
+    C: GoogleCloudKmsEncryptClient + Send + Sync,
+{
+    fn provider_id(&self) -> &str {
+        GOOGLE_CLOUD_KMS_PROVIDER_ID
+    }
+
+    fn secret_family(&self) -> MemorySecretFamily {
+        MemorySecretFamily::MemoryEnvelope
+    }
+
+    fn wrap_dek(&self, request: &MemoryDekWrapRequest) -> MemoryResult<Vec<u8>> {
+        if !provider_is_google_cloud_kms(&request.provider) {
+            return Err(MemoryError::InvalidConfig(format!(
+                "google cloud kms provider cannot wrap provider `{}`",
+                request.provider
+            )));
+        }
+        if request.runtime_principal_id != self.runtime_principal_id {
+            return Err(MemoryError::InvalidConfig(
+                "memory KMS runtime principal does not match configured provider principal"
+                    .to_string(),
+            ));
+        }
+        validate_google_cloud_kms_key_id(&request.kek_id)?;
+        if is_wildcard_or_blank(&request.kek_version) {
+            return Err(MemoryError::InvalidConfig(
+                "google cloud kms wrap requires an explicit key version".to_string(),
+            ));
+        }
+        if request.plaintext_dek.len() != MEMORY_DEK_LEN {
+            return Err(MemoryError::InvalidConfig(format!(
+                "memory DEK to wrap must be {MEMORY_DEK_LEN} bytes; got {}",
+                request.plaintext_dek.len()
+            )));
+        }
+        self.client.encrypt(&GoogleCloudKmsEncryptRequest {
+            crypto_key_id: request.kek_id.clone(),
+            plaintext: request.plaintext_dek.clone(),
+            additional_authenticated_data: request.encryption_context_hash.as_bytes().to_vec(),
+            runtime_principal_id: request.runtime_principal_id.clone(),
+            key_scope_id: request.key_scope_id.clone(),
+            audit_id: request.audit_id.clone(),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GoogleCloudKmsExternalEncryptCommandClient {
+    command_path: PathBuf,
+}
+
+impl GoogleCloudKmsExternalEncryptCommandClient {
+    pub fn new(command_path: impl Into<PathBuf>) -> MemoryResult<Self> {
+        let command_path = command_path.into();
+        if command_path.as_os_str().is_empty() {
+            return Err(MemoryError::InvalidConfig(
+                "google cloud kms encrypt command path is required".to_string(),
+            ));
+        }
+        Ok(Self { command_path })
+    }
+
+    pub fn from_env() -> MemoryResult<Option<Self>> {
+        let Ok(raw) = std::env::var(GOOGLE_KMS_ENCRYPT_COMMAND_ENV) else {
+            return Ok(None);
+        };
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        Self::new(trimmed).map(Some)
+    }
+
+    pub fn command_path(&self) -> &Path {
+        &self.command_path
+    }
+}
+
+impl GoogleCloudKmsEncryptClient for GoogleCloudKmsExternalEncryptCommandClient {
+    fn encrypt(&self, request: &GoogleCloudKmsEncryptRequest) -> MemoryResult<Vec<u8>> {
+        let command_request = GoogleCloudKmsCommandEncryptRequest {
+            crypto_key_id: request.crypto_key_id.clone(),
+            plaintext_base64: base64::engine::general_purpose::STANDARD.encode(&request.plaintext),
+            additional_authenticated_data_base64: base64::engine::general_purpose::STANDARD
+                .encode(&request.additional_authenticated_data),
+            runtime_principal_id: request.runtime_principal_id.clone(),
+            key_scope_id: request.key_scope_id.clone(),
+            audit_id: request.audit_id.clone(),
+        };
+        let input = serde_json::to_vec(&command_request)?;
+        let mut child = Command::new(&self.command_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|err| {
+                MemoryError::InvalidConfig(format!(
+                    "failed to spawn google cloud kms encrypt command `{}`: {err}",
+                    self.command_path.display()
+                ))
+            })?;
+        let mut stdin = child.stdin.take().ok_or_else(|| {
+            MemoryError::InvalidConfig(
+                "google cloud kms encrypt command did not expose stdin".to_string(),
+            )
+        })?;
+        stdin.write_all(&input).map_err(|err| {
+            MemoryError::InvalidConfig(format!(
+                "failed to write google cloud kms encrypt request: {err}"
+            ))
+        })?;
+        drop(stdin);
+        let output = child.wait_with_output().map_err(|err| {
+            MemoryError::InvalidConfig(format!(
+                "failed to wait for google cloud kms encrypt command: {err}"
+            ))
+        })?;
+        if !output.status.success() {
+            return Err(MemoryError::InvalidConfig(format!(
+                "google cloud kms encrypt command exited with status {}",
+                output.status
+            )));
+        }
+        decode_wrapped_dek_output(&output.stdout)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct UnconfiguredGoogleCloudKmsEncryptClient;
+
+impl GoogleCloudKmsEncryptClient for UnconfiguredGoogleCloudKmsEncryptClient {
+    fn encrypt(&self, _request: &GoogleCloudKmsEncryptRequest) -> MemoryResult<Vec<u8>> {
+        Err(MemoryError::InvalidConfig(
+            "google cloud kms memory encrypt provider is configured, but no encrypt client command is available"
+                .to_string(),
+        ))
+    }
+}
+
+pub fn memory_dek_wrap_provider_from_config(
+    config: &MemoryDecryptBrokerConfig,
+) -> MemoryResult<Option<MemoryDekWrapProviderBox>> {
+    if !config.hosted_required && provider_is_local(&config.provider) {
+        return Ok(None);
+    }
+    config.validate()?;
+    if provider_is_google_cloud_kms(&config.provider) {
+        if let Some(client) = GoogleCloudKmsExternalEncryptCommandClient::from_env()? {
+            return Ok(Some(Box::new(GoogleCloudKmsDekWrapProvider::new(
+                client,
+                config.runtime_principal_id.clone(),
+            )?)));
+        }
+        return Ok(Some(Box::new(GoogleCloudKmsDekWrapProvider::new(
+            UnconfiguredGoogleCloudKmsEncryptClient,
+            config.runtime_principal_id.clone(),
+        )?)));
+    }
+    Err(MemoryError::InvalidConfig(format!(
+        "unsupported hosted memory encrypt provider `{}`",
+        config.provider
+    )))
+}
+
+fn decode_wrapped_dek_output(output: &[u8]) -> MemoryResult<Vec<u8>> {
+    let trimmed = String::from_utf8_lossy(output).trim().to_string();
+    if trimmed.is_empty() {
+        return Err(MemoryError::InvalidConfig(
+            "google cloud kms encrypt command returned empty output".to_string(),
+        ));
+    }
+    if let Ok(value) = serde_json::from_str::<Value>(&trimmed) {
+        for key in [
+            "wrapped_dek",
+            "wrapped_dek_base64",
+            "ciphertext",
+            "ciphertext_base64",
+        ] {
+            if let Some(encoded) = value.get(key).and_then(Value::as_str) {
+                return decode_dek_bytes(encoded);
+            }
+        }
+        return Err(MemoryError::InvalidConfig(
+            "google cloud kms encrypt command JSON must include wrapped_dek_base64".to_string(),
+        ));
+    }
+    decode_dek_bytes(&trimmed)
 }
 
 fn decode_plaintext_dek_output(output: &[u8]) -> MemoryResult<Vec<u8>> {

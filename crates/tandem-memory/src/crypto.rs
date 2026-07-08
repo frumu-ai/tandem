@@ -24,28 +24,40 @@
 //! reads instead. See `docs/internal` / the BR-14 notes.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 
-use crate::decrypt_broker::{MemoryCryptoMode, MemoryDecryptBrokerConfig};
+use crate::decrypt_broker::{MemoryCryptoMode, MemoryDecryptBrokerConfig, MemoryDecryptPrincipal};
+use crate::envelope::{MemoryEnvelopeMetadata, MemoryKeyScope};
+use crate::envelope_crypto::HostedMemoryEnvelopeCrypto;
+use crate::key_lifecycle::MemoryKeyLifecyclePolicy;
 use crate::types::{MemoryError, MemoryResult};
 
 /// Self-describing prefix for an encrypted memory field (tandem crypto
 /// envelope, version 1).
-const CIPHERTEXT_PREFIX: &str = "tce1:";
+pub(crate) const CIPHERTEXT_PREFIX: &str = "tce1:";
 const LOCAL_KEY_FILE_ENV: &str = "TANDEM_MEMORY_LOCAL_KEY_FILE";
 const NONCE_LEN: usize = 12;
-const KEY_LEN: usize = 32;
+pub(crate) const KEY_LEN: usize = 32;
 
 #[derive(Clone)]
 enum CryptoInner {
-    /// No encryption (local plaintext / backward compatibility).
+    /// No encryption (local plaintext / backward compatibility). This is the
+    /// default single-tenant mode — no enterprise, no KMS, no broker involved.
     Plaintext,
-    /// Local AES-256-GCM with a host-held key.
+    /// Local AES-256-GCM with a single host-held key. Single-tenant encrypted
+    /// mode; still no KMS/enterprise dependency, and the key scope is ignored.
     LocalKey([u8; KEY_LEN]),
-    /// Hosted mode whose KMS-backed DEK provider is not yet available; writes
-    /// fail closed so plaintext is never persisted under a hosted requirement.
+    /// Hosted, multi-tenant mode: per-scope DEKs are wrapped by an external KMS
+    /// and cached (TAN-666). Only ever constructed when a hosted deployment is
+    /// fully provisioned (KMS commands + KEK); single-tenant instances never
+    /// reach this variant.
+    Hosted(Arc<HostedMemoryEnvelopeCrypto>),
+    /// Hosted mode requested but its KMS-backed DEK provider is not yet available;
+    /// writes fail closed so plaintext is never persisted under a hosted
+    /// requirement.
     HostedPending,
 }
 
@@ -61,6 +73,7 @@ impl std::fmt::Debug for MemoryCryptoProvider {
         let label = match self.inner {
             CryptoInner::Plaintext => "plaintext",
             CryptoInner::LocalKey(_) => "local_key",
+            CryptoInner::Hosted(_) => "hosted_kms",
             CryptoInner::HostedPending => "hosted_pending",
         };
         f.debug_struct("MemoryCryptoProvider")
@@ -108,10 +121,31 @@ impl MemoryCryptoProvider {
                     }
                 }
             }
-            // Hosted KMS-backed encryption requires a provisioned DEK provider
-            // (BR-12). Until then, fail closed rather than store plaintext.
-            MemoryCryptoMode::HostedKms { .. } => Self {
-                inner: CryptoInner::HostedPending,
+            // Hosted KMS-backed encryption (BR-12, TAN-666). Wire the real
+            // per-scope envelope crypto when the deployment is fully provisioned
+            // (hosted broker config + KMS encrypt/decrypt commands + KEK);
+            // otherwise fail closed rather than store plaintext. Single-tenant
+            // instances never select this mode, so they never require a KMS.
+            MemoryCryptoMode::HostedKms { .. } => match HostedMemoryEnvelopeCrypto::from_env() {
+                Ok(Some(hosted)) => Self {
+                    inner: CryptoInner::Hosted(Arc::new(hosted)),
+                },
+                Ok(None) => {
+                    tracing::warn!(
+                        "hosted memory encryption is required but the KMS provider/KEK is not fully provisioned; failing closed (memory writes will be rejected)"
+                    );
+                    Self {
+                        inner: CryptoInner::HostedPending,
+                    }
+                }
+                Err(err) => {
+                    tracing::error!(
+                        "hosted memory encryption could not be initialized ({err}); failing closed"
+                    );
+                    Self {
+                        inner: CryptoInner::HostedPending,
+                    }
+                }
             },
         }
     }
@@ -121,12 +155,52 @@ impl MemoryCryptoProvider {
         matches!(self.inner, CryptoInner::Plaintext)
     }
 
+    /// True when this provider seals per-scope envelopes (hosted KMS mode) and so
+    /// requires the scope-aware [`encrypt_field_scoped`](Self::encrypt_field_scoped)
+    /// / [`decrypt_field_scoped`](Self::decrypt_field_scoped) API.
+    pub fn is_hosted(&self) -> bool {
+        matches!(self.inner, CryptoInner::Hosted(_))
+    }
+
     /// Encrypt a memory text field for storage. Plaintext mode returns the input
-    /// unchanged; hosted-pending mode fails closed.
+    /// unchanged; hosted modes fail closed because sealing requires a key scope
+    /// (use [`encrypt_field_scoped`](Self::encrypt_field_scoped)).
     pub fn encrypt_field(&self, plaintext: &str) -> MemoryResult<String> {
         match &self.inner {
             CryptoInner::Plaintext => Ok(plaintext.to_string()),
             CryptoInner::LocalKey(key) => encrypt_with_key(key, plaintext),
+            CryptoInner::Hosted(_) => Err(MemoryError::InvalidConfig(
+                "hosted memory encryption requires a key scope; use encrypt_field_scoped (fail-closed)"
+                    .to_string(),
+            )),
+            CryptoInner::HostedPending => Err(MemoryError::InvalidConfig(
+                "hosted memory encryption requires a provisioned KMS provider; refusing to store plaintext (fail-closed)"
+                    .to_string(),
+            )),
+        }
+    }
+
+    /// Encrypt a memory field, honoring the per-scope envelope in hosted mode.
+    ///
+    /// Returns the stored ciphertext and, in hosted mode, the
+    /// [`MemoryEnvelopeMetadata`] that must be persisted (unencrypted) alongside
+    /// the row so the DEK can be recovered on read. Local/plaintext modes ignore
+    /// the scope and return `None` for the envelope — single-tenant behavior is
+    /// unchanged.
+    pub fn encrypt_field_scoped(
+        &self,
+        plaintext: &str,
+        scope: &MemoryKeyScope,
+        policy_decision_id: &str,
+        audit_id: &str,
+    ) -> MemoryResult<(String, Option<MemoryEnvelopeMetadata>)> {
+        match &self.inner {
+            CryptoInner::Plaintext => Ok((plaintext.to_string(), None)),
+            CryptoInner::LocalKey(key) => Ok((encrypt_with_key(key, plaintext)?, None)),
+            CryptoInner::Hosted(hosted) => {
+                let sealed = hosted.seal(scope, plaintext, policy_decision_id, audit_id)?;
+                Ok((sealed.ciphertext, Some(sealed.envelope)))
+            }
             CryptoInner::HostedPending => Err(MemoryError::InvalidConfig(
                 "hosted memory encryption requires a provisioned KMS provider; refusing to store plaintext (fail-closed)"
                     .to_string(),
@@ -144,6 +218,10 @@ impl MemoryCryptoProvider {
         let Some(hex_blob) = stored.strip_prefix(CIPHERTEXT_PREFIX) else {
             return match &self.inner {
                 CryptoInner::Plaintext | CryptoInner::LocalKey(_) => Ok(stored.to_string()),
+                CryptoInner::Hosted(_) => Err(MemoryError::InvalidConfig(
+                    "hosted memory mode requires encrypted rows (missing tce1 payload marker)"
+                        .to_string(),
+                )),
                 CryptoInner::HostedPending => Err(MemoryError::InvalidConfig(
                     "hosted memory mode requires encrypted rows (missing tce1 payload marker)"
                         .to_string(),
@@ -154,10 +232,46 @@ impl MemoryCryptoProvider {
         match &self.inner {
             CryptoInner::LocalKey(key) => decrypt_with_key(key, hex_blob),
             CryptoInner::Plaintext => Ok(stored.to_string()),
+            CryptoInner::Hosted(_) => Err(MemoryError::InvalidConfig(
+                "hosted memory decryption requires the row envelope; use decrypt_field_scoped"
+                    .to_string(),
+            )),
             CryptoInner::HostedPending => Err(MemoryError::InvalidConfig(
                 "encrypted memory field cannot be read without the configured decryption key"
                     .to_string(),
             )),
+        }
+    }
+
+    /// Decrypt a memory field, honoring the per-scope envelope in hosted mode.
+    ///
+    /// Local/plaintext modes ignore `envelope`/`principal` and behave exactly like
+    /// [`decrypt_field`](Self::decrypt_field) — single-tenant reads are unchanged.
+    /// Hosted mode requires the row's envelope and a decrypt principal; the DEK is
+    /// served from cache or unwrapped via the broker-authorized KMS path.
+    pub fn decrypt_field_scoped(
+        &self,
+        stored: &str,
+        envelope: Option<&MemoryEnvelopeMetadata>,
+        principal: Option<&MemoryDecryptPrincipal>,
+        key_lifecycle_policy: Option<MemoryKeyLifecyclePolicy>,
+    ) -> MemoryResult<String> {
+        match &self.inner {
+            CryptoInner::Plaintext | CryptoInner::LocalKey(_) => self.decrypt_field(stored),
+            CryptoInner::Hosted(hosted) => {
+                let envelope = envelope.ok_or_else(|| {
+                    MemoryError::InvalidConfig(
+                        "hosted memory decryption requires the row envelope".to_string(),
+                    )
+                })?;
+                let principal = principal.ok_or_else(|| {
+                    MemoryError::InvalidConfig(
+                        "hosted memory decryption requires a decrypt principal".to_string(),
+                    )
+                })?;
+                hosted.unseal(envelope, stored, principal, key_lifecycle_policy)
+            }
+            CryptoInner::HostedPending => self.decrypt_field(stored),
         }
     }
 
@@ -184,7 +298,12 @@ impl Default for MemoryCryptoProvider {
     }
 }
 
-fn encrypt_with_key(key: &[u8; KEY_LEN], plaintext: &str) -> MemoryResult<String> {
+/// Generate a fresh random 256-bit data-encryption key.
+pub(crate) fn random_dek() -> MemoryResult<[u8; KEY_LEN]> {
+    random_bytes::<KEY_LEN>()
+}
+
+pub(crate) fn encrypt_with_key(key: &[u8; KEY_LEN], plaintext: &str) -> MemoryResult<String> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     let nonce_bytes = random_bytes::<NONCE_LEN>()?;
     let ciphertext = cipher
@@ -196,7 +315,7 @@ fn encrypt_with_key(key: &[u8; KEY_LEN], plaintext: &str) -> MemoryResult<String
     Ok(format!("{CIPHERTEXT_PREFIX}{}", to_hex(&blob)))
 }
 
-fn decrypt_with_key(key: &[u8; KEY_LEN], hex_blob: &str) -> MemoryResult<String> {
+pub(crate) fn decrypt_with_key(key: &[u8; KEY_LEN], hex_blob: &str) -> MemoryResult<String> {
     let blob = from_hex(hex_blob).ok_or_else(|| {
         MemoryError::InvalidConfig("memory field ciphertext is malformed".to_string())
     })?;
