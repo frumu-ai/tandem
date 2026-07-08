@@ -1497,24 +1497,36 @@ fn context_memory_tenant_scope(
     }
 }
 
-/// Run a memory read under the caller's decrypt principal so hosted-KMS sealed
-/// rows (TAN-668) decrypt only for the scope the verified request is authorized
-/// for (TAN-672). Local/single-tenant requests carry no strict projection, so no
-/// principal is scoped and the read behaves exactly as before — sealed rows would
-/// fail closed, NULL-envelope rows read normally.
+/// Run a context memory read under the caller's decrypt principal so hosted-KMS
+/// sealed rows (TAN-668) decrypt only for the scope the verified request is
+/// authorized for (TAN-672).
+///
+/// A principal is scoped only when the caller's strict resource scope covers the
+/// workspace memory space these reads operate on — context layers seal under the
+/// tenant `Internal` key scope, which cannot distinguish two same-tenant nodes,
+/// so a caller whose projection is narrower than the workspace (e.g. one project)
+/// must NOT be able to decrypt arbitrary same-tenant summaries. When no principal
+/// is scoped, sealed rows fail closed and NULL-envelope (local) rows read
+/// normally — so single-tenant behavior is unchanged.
 async fn read_under_decrypt_principal<F, T>(
     verified_tenant_context: Option<&VerifiedTenantContext>,
+    tenant_context: &TenantContext,
     future: F,
 ) -> T
 where
     F: std::future::Future<Output = T>,
 {
-    match verified_tenant_context.and_then(|verified| {
-        crate::memory::decrypt_principal::memory_decrypt_principal_from_verified_context(
-            verified,
-            crate::now_ms(),
-        )
-    }) {
+    use crate::memory::decrypt_principal::{
+        memory_decrypt_principal_from_verified_context, verified_resource_scope_covers,
+        workspace_memory_space_resource,
+    };
+    let workspace_memory = workspace_memory_space_resource(tenant_context);
+    let principal = verified_tenant_context
+        .filter(|verified| verified_resource_scope_covers(verified, &workspace_memory))
+        .and_then(|verified| {
+            memory_decrypt_principal_from_verified_context(verified, crate::now_ms())
+        });
+    match principal {
         Some(principal) => {
             tandem_memory::decrypt_context::with_decrypt_principal(principal, future).await
         }
@@ -1555,6 +1567,7 @@ pub(super) async fn context_tree(
     // under the caller's decrypt principal in hosted mode.
     let tree = read_under_decrypt_principal(
         verified_tenant_context.as_deref(),
+        &tenant_context,
         manager.tree(&query.uri, max_depth, &scope),
     )
     .await
@@ -1581,6 +1594,7 @@ pub(super) async fn context_generate_layers(
     // (re)writing, so it must decrypt under the caller's principal in hosted mode.
     read_under_decrypt_principal(
         verified_tenant_context.as_deref(),
+        &tenant_context,
         manager.generate_layers_for_node(&input.node_id, &providers, &scope),
     )
     .await

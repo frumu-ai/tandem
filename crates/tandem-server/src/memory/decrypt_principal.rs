@@ -16,7 +16,8 @@ use tandem_memory::types::{effective_data_boundary_for_governed_read, MemoryTena
 use tandem_memory::MemoryDecryptPrincipal;
 use tandem_types::ResourceKind;
 use tandem_types::{
-    AccessEffect, AccessPermission, ResourceRef, StrictTenantContext, VerifiedTenantContext,
+    AccessEffect, AccessPermission, ResourceRef, StrictTenantContext, TenantContext,
+    VerifiedTenantContext,
 };
 
 /// Project a verified request context into a memory decrypt principal.
@@ -51,6 +52,37 @@ pub fn memory_decrypt_principal_from_verified_context(
         allowed_data_classes,
         allowed_source_binding_ids,
     ))
+}
+
+/// The workspace-level memory-space resource that context (tree/layer) reads
+/// operate on. Context nodes and their layers are tenant/workspace-scoped and
+/// seal under the tenant `Internal` key scope — not a per-resource scope — so
+/// the crypto boundary cannot distinguish two same-tenant nodes. A caller must
+/// therefore hold a resource scope that covers this workspace memory space
+/// before we grant a scoped decrypt (TAN-672 review).
+pub fn workspace_memory_space_resource(tenant_context: &TenantContext) -> ResourceRef {
+    ResourceRef::new(
+        tenant_context.org_id.clone(),
+        tenant_context.workspace_id.clone(),
+        ResourceKind::MemorySpace,
+        tenant_context.workspace_id.clone(),
+    )
+}
+
+/// True when the verified request's strict resource scope covers `resource`.
+/// Fail-closed: `false` when there is no strict projection. Used to gate a
+/// scoped decrypt so a caller whose projection is narrower than the tenant (e.g.
+/// scoped to one project or data room) cannot decrypt out-of-scope same-tenant
+/// content that merely shares the tenant `Internal` key scope.
+pub fn verified_resource_scope_covers(
+    verified: &VerifiedTenantContext,
+    resource: &ResourceRef,
+) -> bool {
+    verified
+        .strict_projection
+        .as_ref()
+        .map(|strict| strict.resource_scope.contains(resource))
+        .unwrap_or(false)
 }
 
 /// The verified actor id (never a client-supplied value): the tenant-context
@@ -269,6 +301,51 @@ mod tests {
         .is_none());
     }
 
+    fn project_scoped_strict(project_id: &str) -> StrictTenantContext {
+        let tenant_context = TenantContext::explicit_user_workspace(
+            "acme",
+            "hq",
+            Some("prod".to_string()),
+            "user-finance",
+        );
+        let authority_chain = AuthorityChain::from_request(RequestPrincipal::authenticated_user(
+            "user-finance",
+            "web",
+        ));
+        let mut project_ref = ResourceRef::new("acme", "hq", ResourceKind::Project, project_id);
+        project_ref.project_id = Some(project_id.to_string());
+        StrictTenantContext::new(
+            tenant_context,
+            PrincipalRef::human_user("user-finance"),
+            authority_chain,
+            ResourceScope::root(project_ref),
+            AssertionMetadata::new("web", "runtime", 1_000, 10_000, "assertion-a"),
+        )
+        .with_data_boundary(DataBoundary::allow(vec![DataClass::Internal]))
+    }
+
+    #[test]
+    fn workspace_scope_covers_workspace_memory() {
+        let verified = base_verified(Some(strict_with(
+            DataBoundary::allow(vec![DataClass::Internal]),
+            Vec::new(),
+        )));
+        let workspace_memory = workspace_memory_space_resource(&verified.tenant_context);
+        assert!(verified_resource_scope_covers(&verified, &workspace_memory));
+    }
+
+    #[test]
+    fn project_scope_does_not_cover_workspace_memory() {
+        // A projection scoped to one project is narrower than the workspace memory
+        // space context layers seal under, so a scoped decrypt is denied.
+        let verified = base_verified(Some(project_scoped_strict("project-x")));
+        let workspace_memory = workspace_memory_space_resource(&verified.tenant_context);
+        assert!(!verified_resource_scope_covers(
+            &verified,
+            &workspace_memory
+        ));
+    }
+
     /// End-to-end server-boundary test: the principal this module derives from a
     /// verified context actually authorizes (or denies) a real hosted-KMS sealed
     /// memory read via `with_decrypt_principal` — the exact composition the
@@ -439,6 +516,29 @@ mod tests {
             let result =
                 with_decrypt_principal(other, db.get_layer(&node, LayerType::L2, &tenant)).await;
             assert!(result.is_err(), "cross-tenant hosted read must be denied");
+        }
+
+        #[tokio::test]
+        async fn project_scoped_caller_cannot_decrypt_workspace_layer() {
+            let (_temp, db, node, tenant) = hosted_db_with_layer().await;
+
+            // A same-tenant caller whose projection is scoped to one project (not
+            // the workspace) holds Internal access, but the handler gate refuses to
+            // scope a decrypt principal for the workspace memory space it doesn't
+            // cover — so the sealed layer stays fail-closed.
+            let verified = base_verified(Some(project_scoped_strict("project-x")));
+            let workspace_memory = workspace_memory_space_resource(&verified.tenant_context);
+            let principal = Some(&verified)
+                .filter(|verified| verified_resource_scope_covers(verified, &workspace_memory))
+                .and_then(|verified| {
+                    memory_decrypt_principal_from_verified_context(verified, 2_000)
+                });
+            assert!(
+                principal.is_none(),
+                "a project-scoped projection must not yield a workspace decrypt principal"
+            );
+            // With no principal scoped, the sealed workspace layer fails closed.
+            assert!(db.get_layer(&node, LayerType::L2, &tenant).await.is_err());
         }
     }
 }
