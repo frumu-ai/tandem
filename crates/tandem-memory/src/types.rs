@@ -659,7 +659,12 @@ fn memory_metadata_is_connector_sourced(metadata: Option<&serde_json::Value>) ->
         .is_some_and(|label| label == "connector_sourced")
 }
 
-fn data_class_from_metadata(metadata: Option<&serde_json::Value>) -> Option<DataClass> {
+/// The data class a governed tenant-local read derives for a record, taken from
+/// its `classification` metadata label (e.g. `"financial_record"`). Returns
+/// `None` when unset or unrecognized, in which case callers fall back to the
+/// default class — so a seed that stamps the class under any other key is read as
+/// `Internal`.
+pub fn data_class_from_metadata(metadata: Option<&serde_json::Value>) -> Option<DataClass> {
     metadata
         .and_then(|value| value.get("classification"))
         .and_then(serde_json::Value::as_str)

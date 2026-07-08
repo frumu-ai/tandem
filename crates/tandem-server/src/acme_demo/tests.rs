@@ -68,28 +68,32 @@ fn every_profile_resolves_to_a_seeded_unit() {
 #[test]
 fn memory_rows_are_department_and_data_class_tagged() {
     let dataset = acme_demo_dataset();
-    let owning_units: BTreeSet<String> = dataset
+    let mut owning_units: BTreeSet<String> = dataset
         .profiles
         .iter()
         .map(DemoProfile::owner_org_unit_id)
         .collect();
+    // The credential row is owned by a real-but-unstaffed unit on purpose.
+    owning_units.insert(format!("{DEMO_TAXONOMY_ID}/{DEMO_UNSTAFFED_UNIT}"));
 
     for row in &dataset.memory_rows {
-        // Department tag is a canonical `{taxonomy}/{unit_id}` owned by a profile.
+        // Department tag is a canonical `{taxonomy}/{unit_id}`.
         assert!(
-            row.owner_org_unit_id.starts_with(&format!("{DEMO_TAXONOMY_ID}/")),
+            row.owner_org_unit_id
+                .starts_with(&format!("{DEMO_TAXONOMY_ID}/")),
             "row {} not department-tagged: {}",
             row.id,
             row.owner_org_unit_id
         );
         assert!(
             owning_units.contains(&row.owner_org_unit_id),
-            "row {} owned by an unseeded unit {}",
+            "row {} owned by an unknown unit {}",
             row.id,
             row.owner_org_unit_id
         );
-        // The put metadata carries the exact key the read filter + SQL column key
-        // on, plus the data class, so the tag can't drift on write.
+        // The put metadata carries the department key the read filter gates on and
+        // the class under `classification` — the exact key governed tenant-local
+        // reads derive the data class from — so the tag can't drift on write.
         let metadata = row.put_metadata();
         assert_eq!(
             metadata
@@ -98,8 +102,15 @@ fn memory_rows_are_department_and_data_class_tagged() {
             Some(row.owner_org_unit_id.as_str()),
         );
         assert_eq!(
-            metadata.get("data_class"),
+            metadata.get("classification"),
             Some(&serde_json::to_value(row.data_class).unwrap()),
+        );
+        // The governed reader must recover the row's exact class from the metadata.
+        assert_eq!(
+            tandem_memory::types::data_class_from_metadata(Some(&metadata)),
+            Some(row.data_class),
+            "row {} class must round-trip through classification",
+            row.id
         );
     }
 
@@ -186,7 +197,7 @@ fn tool_set_carries_the_expected_risk_tiers() {
 }
 
 #[test]
-fn departments_diverge_on_the_finance_boundary() {
+fn memory_reads_are_department_membership_gated() {
     let dataset = acme_demo_dataset();
     let now = DEMO_BASE_NOW_MS;
     let profile = |slack: &str| dataset.profile_for_slack_user(slack).unwrap().clone();
@@ -209,37 +220,98 @@ fn departments_diverge_on_the_finance_boundary() {
     let secret = row("shared_signing_key");
     let project = row("contractor_project_x");
 
-    // Finance reads its own invoices; nobody else does (fail closed / explicit deny).
-    assert!(profile_can_read(&dataset, &finance, &invoice, now));
+    // Finance reads its own invoices; nobody else does — not a member of finance.
+    assert!(profile_can_read_memory(&finance, &invoice, now));
     for other in [&sales, &engineering, &leadership, &contractor] {
         assert!(
-            !profile_can_read(&dataset, other, &invoice, now),
-            "{} must not read the invoice",
+            !profile_can_read_memory(other, &invoice, now),
+            "{} must not read the finance invoice",
             other.slack_user_id
         );
     }
 
     // Sales reads its own CRM row; contractor (single-project) cannot.
-    assert!(profile_can_read(&dataset, &sales, &crm, now));
-    assert!(!profile_can_read(&dataset, &contractor, &crm, now));
+    assert!(profile_can_read_memory(&sales, &crm, now));
+    assert!(!profile_can_read_memory(&contractor, &crm, now));
 
-    // Leadership reads cross-functional summaries (CRM) but not raw credentials.
-    assert!(profile_can_read(&dataset, &leadership, &crm, now));
-    assert!(
-        !profile_can_read(&dataset, &leadership, &secret, now),
-        "credentials are redacted even for leadership"
-    );
+    // The unstaffed credential row is unreachable to every profile.
+    for who in [&sales, &engineering, &finance, &leadership, &contractor] {
+        assert!(
+            !profile_can_read_memory(who, &secret, now),
+            "{} must not read the shared credential",
+            who.slack_user_id
+        );
+    }
 
     // The contractor's world is exactly its assigned project.
-    assert!(profile_can_read(&dataset, &contractor, &project, now));
+    assert!(profile_can_read_memory(&contractor, &project, now));
     let contractor_reach = profile_reachable_set(&dataset, &contractor, now);
     assert_eq!(
         contractor_reach["reachable_memory"],
         serde_json::json!(["contractor_project_x"]),
     );
+}
 
-    // Tool divergence: only Finance reaches the financial tools; only Engineering
-    // reaches the repo; email-send is offered to Sales but not the Contractor.
+#[test]
+fn enterprise_clearance_does_not_bypass_department_membership() {
+    // The two-layer model: Leadership holds a broad enterprise resource grant that
+    // *clears* the customer-data class the Sales CRM row carries, yet the memory
+    // filter still denies the specific row because Leadership is not a member of
+    // the Sales department. Clearance is necessary but not sufficient.
+    let dataset = acme_demo_dataset();
+    let now = DEMO_BASE_NOW_MS;
+    let leadership = dataset.profile_for_slack_user("U_LEADER").unwrap().clone();
+    let crm = dataset
+        .memory_rows
+        .iter()
+        .find(|row| row.id == "sales_crm_hooli")
+        .unwrap()
+        .clone();
+
+    assert!(
+        profile_holds_resource_grant(&dataset, &leadership, &crm.resource, crm.data_class, now),
+        "leadership should hold the org-wide clearance for customer data"
+    );
+    assert!(
+        !profile_can_read_memory(&leadership, &crm, now),
+        "but the sales-owned memory row stays behind the department boundary"
+    );
+    // Leadership reaches only its own department's memory (the exec summary).
+    let reach = profile_reachable_set(&dataset, &leadership, now);
+    assert_eq!(
+        reach["reachable_memory"],
+        serde_json::json!(["leadership_board_summary"]),
+    );
+
+    // Engineering's finance denial holds at the clearance layer too (explicit deny).
+    let engineering = dataset.profile_for_slack_user("U_ENG").unwrap().clone();
+    let invoice = dataset
+        .memory_rows
+        .iter()
+        .find(|row| row.id == "finance_invoice_hooli")
+        .unwrap()
+        .clone();
+    assert!(!profile_holds_resource_grant(
+        &dataset,
+        &engineering,
+        &invoice.resource,
+        invoice.data_class,
+        now
+    ));
+}
+
+#[test]
+fn tool_reachability_diverges_by_department() {
+    let dataset = acme_demo_dataset();
+    let now = DEMO_BASE_NOW_MS;
+    let profile = |slack: &str| dataset.profile_for_slack_user(slack).unwrap().clone();
+    let finance = profile("U_FINANCE");
+    let sales = profile("U_SALES");
+    let engineering = profile("U_ENG");
+    let contractor = profile("U_CONTRACTOR");
+
+    // Only Finance reaches the financial tools; only Engineering reaches the repo;
+    // email-send is offered to Sales but not the Contractor.
     let can_use = |profile: &DemoProfile, name: &str| {
         let tool = dataset
             .tools

@@ -7,7 +7,17 @@
 //! with [`ToolRiskTier`]s. The point of the dataset is that the *same* ACME
 //! question yields a *different* reachable memory/tool set per department, so the
 //! demo can show governance diverging by requester — enforced by the real
-//! intra-tenant authority graph, not by scripted branching.
+//! governance layers, not by scripted branching:
+//!
+//! * **memory** reachability is the M1 department-membership gate the running
+//!   system applies to tenant-local prompt memory (a row is readable only by a
+//!   member of its owning org unit — see [`profile_can_read_memory`]), and
+//! * **tool** reachability is the intra-tenant authority graph's per-unit tool
+//!   grants.
+//!
+//! These are distinct layers: holding an enterprise resource grant that clears a
+//! data class ([`profile_holds_resource_grant`]) does not by itself surface a
+//! memory row owned by another department.
 //!
 //! This is the executable companion to the design pinned in
 //! `docs/DEPARTMENT_SCOPED_SLACK_DEMO_PROFILES.md` (TAN-653). It is intentionally
@@ -28,15 +38,13 @@
 use serde_json::{json, Value};
 
 use tandem_core::{any_policy_matches, tool_schema_risk_tier};
-use tandem_enterprise_contract::authority::{
-    AuthorityAccessRequest, IntraTenantAuthorityGraph,
-};
+use tandem_enterprise_contract::authority::{AuthorityAccessRequest, IntraTenantAuthorityGraph};
 use tandem_memory::types::OWNER_ORG_UNIT_METADATA_KEY;
 use tandem_types::{
     AccessEffect, AccessPermission, DataClass, OrganizationUnit, OrganizationUnitAccessGrant,
     OrganizationUnitKind, OrganizationUnitMembership, OrganizationUnitMembershipSource,
-    PrincipalRef, ResourceKind, ResourceRef, ToolRiskTier, ToolSchema, ToolSecurityDescriptor,
-    TenantContext,
+    PrincipalRef, ResourceKind, ResourceRef, TenantContext, ToolRiskTier, ToolSchema,
+    ToolSecurityDescriptor,
 };
 
 #[cfg(test)]
@@ -86,7 +94,20 @@ impl DemoProfile {
     pub fn owner_org_unit_id(&self) -> String {
         format!("{DEMO_TAXONOMY_ID}/{}", self.unit_id)
     }
+
+    /// The org units this profile is a member of. Each demo profile belongs to
+    /// exactly one unit — the property that makes the department-membership gate
+    /// (M1) the binding constraint on memory reachability.
+    pub fn org_units(&self) -> Vec<String> {
+        vec![self.owner_org_unit_id()]
+    }
 }
+
+/// Owner of the shared credential row: a real org unit that **no** demo profile
+/// is a member of, so the `Credential` row it owns is unreachable to every
+/// profile — the demo's "credentials never surface" case, enforced by the same
+/// department-membership gate, not a special rule.
+pub const DEMO_UNSTAFFED_UNIT: &str = "security";
 
 /// A memory row in the demo, tagged by owning department and data class.
 #[derive(Debug, Clone)]
@@ -112,13 +133,16 @@ impl DemoMemoryRow {
     }
 
     /// Metadata a governed `memory_put` would carry for this row, so the seed
-    /// loader / harness stamps the exact `owner_org_unit_id` the read filter and
-    /// SQL column key on. Kept in one place so the tag can't drift from the
-    /// authority grants.
+    /// loader / harness reproduces the demo's boundaries exactly. Governed
+    /// tenant-local reads derive the data class from `classification`
+    /// (`tandem_memory::types::data_class_from_metadata`) and department-gate on
+    /// `owner_org_unit_id`, so both keys are stamped in the shapes those readers
+    /// expect — a bespoke `data_class` key would be silently ignored and the row
+    /// would read as the default `Internal` class.
     pub fn put_metadata(&self) -> Value {
         json!({
             OWNER_ORG_UNIT_METADATA_KEY: self.owner_org_unit_id,
-            "data_class": self.data_class,
+            "classification": self.data_class,
             "demo_row_id": self.id,
         })
     }
@@ -192,9 +216,7 @@ fn profile(
         display_name,
         kind,
         principal: PrincipalRef::human_user(actor_id),
-        unit_principal: PrincipalRef::organization_unit(format!(
-            "{DEMO_TAXONOMY_ID}/{unit_id}"
-        )),
+        unit_principal: PrincipalRef::organization_unit(format!("{DEMO_TAXONOMY_ID}/{unit_id}")),
     }
 }
 
@@ -238,9 +260,15 @@ fn allow_grant(
     resource: ResourceRef,
     data_classes: Vec<DataClass>,
 ) -> OrganizationUnitAccessGrant {
-    OrganizationUnitAccessGrant::active(grant_id, demo_tenant(), unit.clone(), resource, DEMO_BASE_NOW_MS)
-        .with_permissions(vec![AccessPermission::View, AccessPermission::Read])
-        .with_data_classes(data_classes)
+    OrganizationUnitAccessGrant::active(
+        grant_id,
+        demo_tenant(),
+        unit.clone(),
+        resource,
+        DEMO_BASE_NOW_MS,
+    )
+    .with_permissions(vec![AccessPermission::View, AccessPermission::Read])
+    .with_data_classes(data_classes)
 }
 
 fn deny_grant(
@@ -249,10 +277,16 @@ fn deny_grant(
     resource: ResourceRef,
     data_classes: Vec<DataClass>,
 ) -> OrganizationUnitAccessGrant {
-    OrganizationUnitAccessGrant::active(grant_id, demo_tenant(), unit.clone(), resource, DEMO_BASE_NOW_MS)
-        .with_effect(AccessEffect::Deny)
-        .with_permissions(vec![AccessPermission::View, AccessPermission::Read])
-        .with_data_classes(data_classes)
+    OrganizationUnitAccessGrant::active(
+        grant_id,
+        demo_tenant(),
+        unit.clone(),
+        resource,
+        DEMO_BASE_NOW_MS,
+    )
+    .with_effect(AccessEffect::Deny)
+    .with_permissions(vec![AccessPermission::View, AccessPermission::Read])
+    .with_data_classes(data_classes)
 }
 
 /// A tool-only grant: carries `tool_patterns` but no readable data class, so it
@@ -320,11 +354,7 @@ fn read_tool(name: &str, data_classes: Vec<DataClass>, expected: ToolRiskTier) -
 /// A tool whose risk tier is stamped *explicitly* on the descriptor, for tools
 /// whose name/data-class the generic classifier would otherwise mis-tier (e.g. a
 /// financial *read* whose name would trip the money-movement heuristic).
-fn tagged_tool(
-    name: &str,
-    data_classes: Vec<DataClass>,
-    risk_tier: ToolRiskTier,
-) -> DemoTool {
+fn tagged_tool(name: &str, data_classes: Vec<DataClass>, risk_tier: ToolRiskTier) -> DemoTool {
     let schema = ToolSchema {
         name: name.to_string(),
         description: format!("ACME demo tool {name}"),
@@ -367,7 +397,12 @@ pub fn acme_demo_dataset() -> AcmeDemoDataset {
     let tenant = demo_tenant();
 
     // ---- Profiles -------------------------------------------------------
-    let sales = profile("U_SALES", "sales", "Sales", OrganizationUnitKind::Department);
+    let sales = profile(
+        "U_SALES",
+        "sales",
+        "Sales",
+        OrganizationUnitKind::Department,
+    );
     let engineering = profile(
         "U_ENG",
         "engineering",
@@ -486,15 +521,16 @@ pub fn acme_demo_dataset() -> AcmeDemoDataset {
             DataClass::Confidential,
             "Exec summary: Hooli is a top-5 account; renewal on track, one open SEV and a payment slip.",
         ),
-        // A shared credential nobody should read raw (incl. leadership).
-        memory_row(
-            "shared_signing_key",
-            &leadership,
-            ResourceKind::SecretProviderCredential,
-            "secrets",
-            DataClass::Credential,
-            "Production signing key for the Hooli tenant; rotation scheduled 2026-08.",
-        ),
+        // A shared credential owned by an unstaffed unit — no demo profile is a
+        // member, so the department-membership gate makes it unreachable to all.
+        DemoMemoryRow {
+            id: "shared_signing_key",
+            owner_org_unit_id: format!("{DEMO_TAXONOMY_ID}/{DEMO_UNSTAFFED_UNIT}"),
+            data_class: DataClass::Credential,
+            resource: resource(ResourceKind::SecretProviderCredential, "secrets"),
+            subject: "platform-secops".to_string(),
+            summary: "Production signing key for the Hooli tenant; rotation scheduled 2026-08.",
+        },
         // Contractor — a single assigned project, nothing else.
         memory_row(
             "contractor_project_x",
@@ -578,7 +614,12 @@ pub fn acme_demo_dataset() -> AcmeDemoDataset {
         tool_grant(
             "g-eng-tools",
             &engineering.unit_principal,
-            patterns(&["mcp.github.*", "mcp.linear.*", "mcp.incidents.*", "mcp.email.*"]),
+            patterns(&[
+                "mcp.github.*",
+                "mcp.linear.*",
+                "mcp.incidents.*",
+                "mcp.email.*",
+            ]),
         ),
         // Finance: the FinancialRecord department.
         allow_grant(
@@ -696,19 +737,42 @@ pub fn acme_demo_dataset() -> AcmeDemoDataset {
     }
 }
 
-/// Whether `profile` can read `row`, per the intra-tenant authority graph, at the
-/// row's own data class (Read permission).
-pub fn profile_can_read(
+/// Whether the governed **memory** read filter would surface `row` to `profile`.
+///
+/// This models the M1 department-primary gate the running system applies to
+/// tenant-local prompt memory (`tandem_memory::types` `decision_for_target`,
+/// tenant-local branch): a department-owned row is readable **only by a member of
+/// its owning org unit**, fail closed — the resolved enterprise *resource* grants
+/// do not widen it. The demo's rows are neither subject-owned nor tenant-shared,
+/// so department membership is the sole gate; the broader filter (subject scope,
+/// `tenant_shared`, data-class boundary) is exercised by `governed_read_tests`.
+///
+/// This is deliberately a different layer from [`profile_holds_resource_grant`]:
+/// a caller can hold an enterprise resource grant for a class of data yet still
+/// be denied the specific memory row because it belongs to another department.
+pub fn profile_can_read_memory(profile: &DemoProfile, row: &DemoMemoryRow, _now_ms: u64) -> bool {
+    profile
+        .org_units()
+        .iter()
+        .any(|unit| unit == &row.owner_org_unit_id)
+}
+
+/// Whether `profile` holds an enterprise **resource** grant that would clear
+/// `resource` at `data_class` (Read), per the intra-tenant authority graph. This
+/// is the clearance layer — necessary but not sufficient for a memory read, which
+/// also requires department membership (see [`profile_can_read_memory`]).
+pub fn profile_holds_resource_grant(
     dataset: &AcmeDemoDataset,
     profile: &DemoProfile,
-    row: &DemoMemoryRow,
+    resource: &ResourceRef,
+    data_class: DataClass,
     now_ms: u64,
 ) -> bool {
     let request = AuthorityAccessRequest::new(
         profile.principal.clone(),
-        row.resource.clone(),
+        resource.clone(),
         AccessPermission::Read,
-        row.data_class,
+        data_class,
     );
     dataset.graph.evaluate(&request, now_ms).is_allow()
 }
@@ -743,7 +807,7 @@ pub fn profile_reachable_set(
     let mut resources: Vec<String> = dataset
         .memory_rows
         .iter()
-        .filter(|row| profile_can_read(dataset, profile, row, now_ms))
+        .filter(|row| profile_can_read_memory(profile, row, now_ms))
         .map(|row| row.id.to_string())
         .collect();
     resources.sort();

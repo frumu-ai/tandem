@@ -86,14 +86,7 @@
     {
       "org_unit": "department/leadership",
       "reachable_memory": [
-        "contractor_project_x",
-        "eng_github_auth",
-        "eng_incident_sev2",
-        "eng_linear_milestone",
-        "leadership_board_summary",
-        "sales_crm_hooli",
-        "sales_risk_flag",
-        "sales_support_theme"
+        "leadership_board_summary"
       ],
       "reachable_tools": [
         {
