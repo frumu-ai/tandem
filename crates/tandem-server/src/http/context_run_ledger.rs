@@ -801,7 +801,13 @@ async fn load_governance_evidence_memory_audit(
     tenant_context: &TenantContext,
     run_ids: &BTreeSet<String>,
 ) -> Vec<crate::MemoryAuditEvent> {
-    let mut rows = load_jsonl_rows::<crate::MemoryAuditEvent>(&state.memory_audit_path).await;
+    let mut rows = match crate::governance_store::for_state(state)
+        .read_text(crate::governance_store::GovernanceStoreFile::MemoryAudit)
+        .await
+    {
+        Ok(Some(content)) => parse_jsonl_rows::<crate::MemoryAuditEvent>(&content),
+        Ok(None) | Err(_) => Vec::new(),
+    };
     if rows.is_empty() {
         rows = state.memory_audit_log.read().await.clone();
     }
@@ -834,10 +840,7 @@ async fn load_governance_evidence_protected_audit(
     rows
 }
 
-async fn load_jsonl_rows<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Vec<T> {
-    let Ok(content) = tokio::fs::read_to_string(path).await else {
-        return Vec::new();
-    };
+fn parse_jsonl_rows<T: serde::de::DeserializeOwned>(content: &str) -> Vec<T> {
     content
         .lines()
         .filter_map(|line| {

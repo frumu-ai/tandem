@@ -599,55 +599,6 @@ pub(super) fn hash_text(input: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-pub(super) async fn append_memory_audit(
-    state: &AppState,
-    tenant_context: &TenantContext,
-    mut event: crate::MemoryAuditEvent,
-) -> Result<(), StatusCode> {
-    event.tenant_context = tenant_context.clone();
-    if let Some(parent) = state.memory_audit_path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    }
-    let line = serde_json::to_string(&event).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let mut file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&state.memory_audit_path)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    tokio::io::AsyncWriteExt::write_all(&mut file, line.as_bytes())
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    tokio::io::AsyncWriteExt::write_all(&mut file, b"\n")
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    file.sync_data()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let mut audit = state.memory_audit_log.write().await;
-    audit.push(event);
-    Ok(())
-}
-
-async fn load_memory_audit_events(path: &std::path::Path) -> Vec<crate::MemoryAuditEvent> {
-    let Ok(content) = tokio::fs::read_to_string(path).await else {
-        return Vec::new();
-    };
-
-    content
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-            serde_json::from_str::<crate::MemoryAuditEvent>(trimmed).ok()
-        })
-        .collect()
-}
-
 #[derive(Debug, Clone)]
 pub(super) struct RunMemoryContext {
     run_id: String,

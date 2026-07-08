@@ -106,6 +106,23 @@ so a Postgres deployment gets DB-backed tables while local keeps JSONL. The audi
 hash-chain (`ProtectedAuditEnvelope.seq/prev_hash/record_hash`) is preserved by
 making the Postgres table append-only with a monotonic `seq` per tenant.
 
+The compatibility backend remains file-backed and preserves the existing on-disk
+formats:
+
+- protected audit: JSONL at `audit/protected_events.log.jsonl`
+- memory audit: JSONL at `memory/audit.log.jsonl`
+- policy decisions: JSON object at `governance/policy_decisions.json`
+- enterprise org-unit registries: JSON objects at the existing `enterprise/*.json`
+  paths
+
+Existing deployments keep these files in place and the file backend reads them
+without conversion. A future PostgreSQL backend should implement the same logical
+operations from `GovernanceStoreFile` and migrate by importing the files once,
+preserving audit row order and `ProtectedAuditEnvelope.seq/prev_hash/record_hash`
+values exactly. Protected audit remains append-only; any DB implementation must
+allocate the next sequence under the same append lock or transaction boundary and
+verify the previous record hash before committing a new row.
+
 ## Migration strategy
 
 - **DDL in one migration module**, additive and nullable columns, a schema-version

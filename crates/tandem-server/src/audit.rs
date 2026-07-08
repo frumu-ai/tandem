@@ -5,8 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tandem_types::{GovernanceRequesterContext, TenantContext, TenantSource};
-use tokio::fs::{self, OpenOptions};
-use tokio::io::AsyncWriteExt;
+use tokio::fs;
 use uuid::Uuid;
 
 use crate::{now_ms, AppState};
@@ -143,9 +142,12 @@ pub async fn load_protected_audit_events_for_tenant(
     state: &AppState,
     tenant_context: &TenantContext,
 ) -> Vec<ProtectedAuditEnvelope> {
-    let content = match fs::read_to_string(&state.protected_audit_path).await {
-        Ok(content) => content,
-        Err(_) => return Vec::new(),
+    let content = match crate::governance_store::for_state(state)
+        .read_text(crate::governance_store::GovernanceStoreFile::ProtectedAudit)
+        .await
+    {
+        Ok(Some(content)) => content,
+        Ok(None) | Err(_) => return Vec::new(),
     };
     let mut rows = content
         .lines()
@@ -220,24 +222,16 @@ pub async fn append_protected_audit_event(
     };
     row.record_hash = compute_audit_envelope_hash(&row);
 
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .await?;
     // Perform the write, and — for durable events — fsync so the record
     // survives power loss (flush() only reaches the OS page cache).
-    let write_result: anyhow::Result<()> = async {
-        file.write_all(serde_json::to_string(&row)?.as_bytes())
-            .await?;
-        file.write_all(b"\n").await?;
-        file.flush().await?;
-        if matches!(row.durability, AuditDurability::DurableRequired) {
-            file.sync_all().await?;
-        }
-        Ok(())
-    }
-    .await;
+    let serialized = serde_json::to_string(&row)?;
+    let write_result = crate::governance_store::for_state(state)
+        .append_jsonl_line(
+            crate::governance_store::GovernanceStoreFile::ProtectedAudit,
+            &serialized,
+            matches!(row.durability, AuditDurability::DurableRequired),
+        )
+        .await;
 
     match write_result {
         Ok(()) => {

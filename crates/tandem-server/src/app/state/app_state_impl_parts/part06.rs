@@ -898,10 +898,12 @@ impl AppState {
     }
 
     pub async fn load_policy_decisions(&self) -> anyhow::Result<()> {
-        if !self.policy_decisions_path.exists() {
+        let Some(raw) = crate::governance_store::for_state(self)
+            .read_text(crate::governance_store::GovernanceStoreFile::PolicyDecisions)
+            .await?
+        else {
             return Ok(());
-        }
-        let raw = fs::read_to_string(&self.policy_decisions_path).await?;
+        };
         let parsed =
             serde_json::from_str::<std::collections::HashMap<String, PolicyDecisionRecord>>(&raw)
                 .unwrap_or_default();
@@ -910,14 +912,16 @@ impl AppState {
     }
 
     pub async fn persist_policy_decisions(&self) -> anyhow::Result<()> {
-        if let Some(parent) = self.policy_decisions_path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
         let payload = {
             let guard = self.policy_decisions.read().await;
             serde_json::to_string_pretty(&*guard)?
         };
-        fs::write(&self.policy_decisions_path, payload).await?;
+        crate::governance_store::for_state(self)
+            .write_text(
+                crate::governance_store::GovernanceStoreFile::PolicyDecisions,
+                &payload,
+            )
+            .await?;
         Ok(())
     }
 
@@ -1330,13 +1334,15 @@ impl AppState {
         if !self.enterprise.policy_rules.read().await.is_empty() {
             return Ok(());
         }
-        if !self.enterprise.policy_rules_path.exists() {
-            return Ok(());
-        }
         check_file_permissions(&self.enterprise.policy_rules_path);
-        let bytes = fs::read(&self.enterprise.policy_rules_path).await?;
-        let registry: std::collections::HashMap<String, EnterprisePolicyRule> =
-            serde_json::from_slice(&bytes)?;
+        let Some(registry) = crate::governance_store::for_state(self)
+            .read_json::<std::collections::HashMap<String, EnterprisePolicyRule>>(
+                crate::governance_store::GovernanceStoreFile::PolicyRules,
+            )
+            .await?
+        else {
+            return Ok(());
+        };
         *self.enterprise.policy_rules.write().await = registry;
         Ok(())
     }

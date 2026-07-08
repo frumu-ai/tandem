@@ -417,7 +417,7 @@ pub(super) async fn memory_audit(
     Query(query): Query<MemoryAuditQuery>,
 ) -> Json<Value> {
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
-    let mut entries = load_memory_audit_events(&state.memory_audit_path).await;
+    let mut entries = load_memory_audit_events(&state).await;
     if entries.is_empty() {
         entries = state.memory_audit_log.read().await.clone();
     }

@@ -593,69 +593,76 @@ impl AppState {
     }
 
     pub async fn load_enterprise_org_units(&self) -> anyhow::Result<()> {
-        if !self.enterprise.org_units_path.exists() {
-            return Ok(());
-        }
         check_file_permissions(&self.enterprise.org_units_path);
-        let bytes = fs::read(&self.enterprise.org_units_path).await?;
-        let registry: std::collections::HashMap<
-            String,
-            tandem_enterprise_contract::OrganizationUnit,
-        > = serde_json::from_slice(&bytes)?;
+        let Some(registry) = crate::governance_store::for_state(self)
+            .read_json::<std::collections::HashMap<
+                String,
+                tandem_enterprise_contract::OrganizationUnit,
+            >>(crate::governance_store::GovernanceStoreFile::OrgUnits)
+            .await?
+        else {
+            return Ok(());
+        };
         *self.enterprise.org_units.write().await = registry;
         Ok(())
     }
 
     pub async fn load_enterprise_org_unit_memberships(&self) -> anyhow::Result<()> {
-        if !self.enterprise.org_unit_memberships_path.exists() {
-            return Ok(());
-        }
         check_file_permissions(&self.enterprise.org_unit_memberships_path);
-        let bytes = fs::read(&self.enterprise.org_unit_memberships_path).await?;
-        let registry: std::collections::HashMap<
-            String,
-            tandem_enterprise_contract::OrganizationUnitMembership,
-        > = serde_json::from_slice(&bytes)?;
+        let Some(registry) = crate::governance_store::for_state(self)
+            .read_json::<std::collections::HashMap<
+                String,
+                tandem_enterprise_contract::OrganizationUnitMembership,
+            >>(crate::governance_store::GovernanceStoreFile::OrgUnitMemberships)
+            .await?
+        else {
+            return Ok(());
+        };
         *self.enterprise.org_unit_memberships.write().await = registry;
         Ok(())
     }
 
     pub async fn load_enterprise_org_unit_access_grants(&self) -> anyhow::Result<()> {
-        if !self.enterprise.org_unit_access_grants_path.exists() {
-            return Ok(());
-        }
         check_file_permissions(&self.enterprise.org_unit_access_grants_path);
-        let bytes = fs::read(&self.enterprise.org_unit_access_grants_path).await?;
-        let registry: std::collections::HashMap<
-            String,
-            tandem_enterprise_contract::OrganizationUnitAccessGrant,
-        > = serde_json::from_slice(&bytes)?;
+        let Some(registry) = crate::governance_store::for_state(self)
+            .read_json::<std::collections::HashMap<
+                String,
+                tandem_enterprise_contract::OrganizationUnitAccessGrant,
+            >>(crate::governance_store::GovernanceStoreFile::OrgUnitAccessGrants)
+            .await?
+        else {
+            return Ok(());
+        };
         *self.enterprise.org_unit_access_grants.write().await = registry;
         Ok(())
     }
 
     pub async fn load_enterprise_cross_tenant_grants(&self) -> anyhow::Result<()> {
-        if !self.enterprise.cross_tenant_grants_path.exists() {
-            return Ok(());
-        }
         check_file_permissions(&self.enterprise.cross_tenant_grants_path);
-        let bytes = fs::read(&self.enterprise.cross_tenant_grants_path).await?;
-        let registry: std::collections::HashMap<
-            String,
-            tandem_enterprise_contract::CrossTenantGrantRecord,
-        > = serde_json::from_slice(&bytes)?;
+        let Some(registry) = crate::governance_store::for_state(self)
+            .read_json::<std::collections::HashMap<
+                String,
+                tandem_enterprise_contract::CrossTenantGrantRecord,
+            >>(crate::governance_store::GovernanceStoreFile::CrossTenantGrants)
+            .await?
+        else {
+            return Ok(());
+        };
         *self.enterprise.cross_tenant_grants.write().await = registry;
         Ok(())
     }
 
     pub async fn load_enterprise_source_bindings(&self) -> anyhow::Result<()> {
-        if !self.enterprise.source_bindings_path.exists() {
-            return Ok(());
-        }
         check_file_permissions(&self.enterprise.source_bindings_path);
-        let bytes = fs::read(&self.enterprise.source_bindings_path).await?;
-        let registry: std::collections::HashMap<String, tandem_enterprise_contract::SourceBinding> =
-            serde_json::from_slice(&bytes)?;
+        let Some(registry) = crate::governance_store::for_state(self)
+            .read_json::<std::collections::HashMap<
+                String,
+                tandem_enterprise_contract::SourceBinding,
+            >>(crate::governance_store::GovernanceStoreFile::SourceBindings)
+            .await?
+        else {
+            return Ok(());
+        };
         *self.enterprise.source_bindings.write().await = registry;
         Ok(())
     }
