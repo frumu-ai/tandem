@@ -1497,6 +1497,43 @@ fn context_memory_tenant_scope(
     }
 }
 
+/// Run a context memory read under the caller's decrypt principal so hosted-KMS
+/// sealed rows (TAN-668) decrypt only for the scope the verified request is
+/// authorized for (TAN-672).
+///
+/// A principal is scoped only when the caller's strict resource scope covers the
+/// workspace memory space these reads operate on — context layers seal under the
+/// tenant `Internal` key scope, which cannot distinguish two same-tenant nodes,
+/// so a caller whose projection is narrower than the workspace (e.g. one project)
+/// must NOT be able to decrypt arbitrary same-tenant summaries. When no principal
+/// is scoped, sealed rows fail closed and NULL-envelope (local) rows read
+/// normally — so single-tenant behavior is unchanged.
+async fn read_under_decrypt_principal<F, T>(
+    verified_tenant_context: Option<&VerifiedTenantContext>,
+    tenant_context: &TenantContext,
+    future: F,
+) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    use crate::memory::decrypt_principal::{
+        memory_decrypt_principal_from_verified_context, verified_resource_scope_covers,
+        workspace_memory_space_resource,
+    };
+    let workspace_memory = workspace_memory_space_resource(tenant_context);
+    let principal = verified_tenant_context
+        .filter(|verified| verified_resource_scope_covers(verified, &workspace_memory))
+        .and_then(|verified| {
+            memory_decrypt_principal_from_verified_context(verified, crate::now_ms())
+        });
+    match principal {
+        Some(principal) => {
+            tandem_memory::decrypt_context::with_decrypt_principal(principal, future).await
+        }
+        None => future.await,
+    }
+}
+
 pub(super) async fn context_resolve_uri(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
@@ -1517,6 +1554,7 @@ pub(super) async fn context_resolve_uri(
 pub(super) async fn context_tree(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Query(query): Query<ContextTreeQuery>,
 ) -> Result<Json<Value>, StatusCode> {
     let manager = open_memory_manager_for_state(&state)
@@ -1524,14 +1562,16 @@ pub(super) async fn context_tree(
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let max_depth = query.max_depth.unwrap_or(3);
-    let tree = manager
-        .tree(
-            &query.uri,
-            max_depth,
-            &context_memory_tenant_scope(&tenant_context),
-        )
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let scope = context_memory_tenant_scope(&tenant_context);
+    // The tree walk decrypts each node's layer summaries (get_layer), so it runs
+    // under the caller's decrypt principal in hosted mode.
+    let tree = read_under_decrypt_principal(
+        verified_tenant_context.as_deref(),
+        &tenant_context,
+        manager.tree(&query.uri, max_depth, &scope),
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(json!({ "tree": tree })))
 }
@@ -1539,6 +1579,7 @@ pub(super) async fn context_tree(
 pub(super) async fn context_generate_layers(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Json(input): Json<ContextGenerateLayersRequest>,
 ) -> Result<Json<Value>, StatusCode> {
     let runtime_state = state.runtime.wait();
@@ -1548,17 +1589,19 @@ pub(super) async fn context_generate_layers(
         .await
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    manager
-        .generate_layers_for_node(
-            &input.node_id,
-            &providers,
-            &context_memory_tenant_scope(&tenant_context),
-        )
-        .await
-        .map_err(|e| {
-            tracing::warn!("Failed to generate layers: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let scope = context_memory_tenant_scope(&tenant_context);
+    // Layer generation reads the node's existing L0/L1/L2 (get_layer) before
+    // (re)writing, so it must decrypt under the caller's principal in hosted mode.
+    read_under_decrypt_principal(
+        verified_tenant_context.as_deref(),
+        &tenant_context,
+        manager.generate_layers_for_node(&input.node_id, &providers, &scope),
+    )
+    .await
+    .map_err(|e| {
+        tracing::warn!("Failed to generate layers: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     Ok(Json(json!({ "ok": true })))
 }
