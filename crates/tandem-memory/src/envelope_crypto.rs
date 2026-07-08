@@ -38,7 +38,7 @@ use crate::key_lifecycle::MemoryKeyLifecyclePolicy;
 use crate::kms_providers::{
     GoogleCloudKmsExternalCommandClient, GoogleCloudKmsExternalEncryptCommandClient,
 };
-use crate::types::{MemoryError, MemoryResult, MemoryTenantScope};
+use crate::types::{MemoryError, MemoryResult};
 
 use base64::Engine;
 use sha2::{Digest, Sha256};
@@ -317,7 +317,12 @@ impl HostedMemoryEnvelopeCrypto {
         stored_ciphertexts
             .iter()
             .map(|ciphertext| {
-                self.unseal(envelope, ciphertext, principal, key_lifecycle_policy.clone())
+                self.unseal(
+                    envelope,
+                    ciphertext,
+                    principal,
+                    key_lifecycle_policy.clone(),
+                )
             })
             .collect()
     }
@@ -378,6 +383,7 @@ fn wrapped_dek_fingerprint(wrapped_dek: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::MemoryTenantScope;
     use crate::kms_providers::{
         GoogleCloudKmsDecryptClient, GoogleCloudKmsDecryptRequest, GoogleCloudKmsDekUnwrapProvider,
         GoogleCloudKmsDekWrapProvider, GoogleCloudKmsEncryptClient, GoogleCloudKmsEncryptRequest,

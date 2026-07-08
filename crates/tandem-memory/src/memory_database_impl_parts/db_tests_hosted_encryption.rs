@@ -119,7 +119,7 @@ async fn hosted_chunk_round_trips_and_is_ciphertext_at_rest() {
         .unwrap()
         .with_crypto_provider(hosted_provider());
 
-    db.store_chunk(&finance_chunk(), &vec![0.1f32; DEFAULT_EMBEDDING_DIMENSION])
+    db.store_chunk(&finance_chunk(), &[0.1f32; DEFAULT_EMBEDDING_DIMENSION])
         .await
         .unwrap();
 
@@ -166,7 +166,7 @@ async fn hosted_read_without_a_principal_fails_closed() {
         .await
         .unwrap()
         .with_crypto_provider(hosted_provider());
-    db.store_chunk(&finance_chunk(), &vec![0.1f32; DEFAULT_EMBEDDING_DIMENSION])
+    db.store_chunk(&finance_chunk(), &[0.1f32; DEFAULT_EMBEDDING_DIMENSION])
         .await
         .unwrap();
 
@@ -182,7 +182,7 @@ async fn cross_tenant_principal_cannot_read_another_tenants_memory() {
         .await
         .unwrap()
         .with_crypto_provider(hosted_provider());
-    db.store_chunk(&finance_chunk(), &vec![0.1f32; DEFAULT_EMBEDDING_DIMENSION])
+    db.store_chunk(&finance_chunk(), &[0.1f32; DEFAULT_EMBEDDING_DIMENSION])
         .await
         .unwrap();
 
@@ -201,7 +201,7 @@ async fn wrong_data_class_principal_is_denied() {
         .await
         .unwrap()
         .with_crypto_provider(hosted_provider());
-    db.store_chunk(&finance_chunk(), &vec![0.1f32; DEFAULT_EMBEDDING_DIMENSION])
+    db.store_chunk(&finance_chunk(), &[0.1f32; DEFAULT_EMBEDDING_DIMENSION])
         .await
         .unwrap();
 
@@ -218,7 +218,7 @@ async fn local_mode_leaves_crypto_envelope_null_and_reads_back() {
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("local_memory.db");
     let db = MemoryDatabase::new(&path).await.unwrap();
-    db.store_chunk(&finance_chunk(), &vec![0.1f32; DEFAULT_EMBEDDING_DIMENSION])
+    db.store_chunk(&finance_chunk(), &[0.1f32; DEFAULT_EMBEDDING_DIMENSION])
         .await
         .unwrap();
 
@@ -237,4 +237,70 @@ async fn local_mode_leaves_crypto_envelope_null_and_reads_back() {
     let chunks = db.get_session_chunks("session-hosted").await.unwrap();
     assert_eq!(chunks.len(), 1);
     assert!(chunks[0].content.contains("120k"));
+}
+
+#[tokio::test]
+async fn hosted_layer_seals_content_and_reads_back_under_principal() {
+    // Layers (L0/L1/L2 summaries) seal under the tenant's Internal scope and
+    // read back only under an authorized decrypt principal, exactly like chunks.
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("hosted_memory.db");
+    let db = MemoryDatabase::new(&path)
+        .await
+        .unwrap()
+        .with_crypto_provider(hosted_provider());
+    let tenant = acme_finance_scope();
+
+    let node_id = db
+        .create_node(
+            "memory://acme/hq/summary.md",
+            None,
+            crate::types::NodeType::File,
+            None,
+            &tenant,
+        )
+        .await
+        .unwrap();
+    db.create_layer(
+        &node_id,
+        crate::types::LayerType::L2,
+        "Summary: ACME owes $120k on invoice INV-2043",
+        12,
+        None,
+        &tenant,
+    )
+    .await
+    .unwrap();
+
+    // Raw column is ciphertext with an envelope.
+    {
+        let conn = db.conn.lock().await;
+        let (content, envelope): (String, Option<String>) = conn
+            .query_row(
+                "SELECT content, crypto_envelope FROM memory_layers WHERE node_id = ?1",
+                params![node_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(content.starts_with("tce1:"), "layer content is ciphertext");
+        assert!(!content.contains("120k"));
+        assert!(envelope.is_some(), "hosted layers carry a crypto envelope");
+    }
+
+    // No principal → fail closed.
+    assert!(db
+        .get_layer(&node_id, crate::types::LayerType::L2, &tenant)
+        .await
+        .is_err());
+
+    // Internal-class principal for ACME reads it back (layers seal Internal).
+    let reader = principal("acme", vec![DataClass::Internal]);
+    let layer = with_decrypt_principal(
+        reader,
+        db.get_layer(&node_id, crate::types::LayerType::L2, &tenant),
+    )
+    .await
+    .unwrap()
+    .expect("layer present");
+    assert!(layer.content.contains("120k"));
 }
