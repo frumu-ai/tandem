@@ -215,8 +215,8 @@ fn memory_reads_are_department_membership_gated() {
     let engineering = profile("U_ENG");
     let leadership = profile("U_LEADER");
     let contractor = profile("U_CONTRACTOR");
-    let invoice = row("finance_invoice_hooli");
-    let crm = row("sales_crm_hooli");
+    let invoice = row("finance_invoice_acme");
+    let crm = row("sales_crm_acme");
     let secret = row("shared_signing_key");
     let project = row("contractor_project_x");
 
@@ -264,7 +264,7 @@ fn enterprise_clearance_does_not_bypass_department_membership() {
     let crm = dataset
         .memory_rows
         .iter()
-        .find(|row| row.id == "sales_crm_hooli")
+        .find(|row| row.id == "sales_crm_acme")
         .unwrap()
         .clone();
 
@@ -288,7 +288,7 @@ fn enterprise_clearance_does_not_bypass_department_membership() {
     let invoice = dataset
         .memory_rows
         .iter()
-        .find(|row| row.id == "finance_invoice_hooli")
+        .find(|row| row.id == "finance_invoice_acme")
         .unwrap()
         .clone();
     assert!(!profile_holds_resource_grant(

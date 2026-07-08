@@ -50,6 +50,9 @@ use tandem_types::{
 #[cfg(test)]
 mod tests;
 
+pub mod harness;
+pub use harness::{acme_slack_demo_receipt_for_profile, run_acme_slack_demo_harness};
+
 /// Organization id for the demo tenant.
 pub const DEMO_ORG_ID: &str = "acme";
 /// Workspace id for the demo tenant (single workspace; departments are units).
@@ -66,8 +69,7 @@ pub const DEMO_BASE_NOW_MS: u64 = 1_700_000_000_000;
 /// The demo prompt every profile asks. Reachability — not the model's answer — is
 /// what the demo governs, so the prompt is fixed and the divergence comes from
 /// which resources/tools each department can reach.
-pub const DEMO_PROMPT: &str =
-    "What's the latest on the Hooli account, and can you follow up with them?";
+pub const DEMO_PROMPT: &str = "@tandem what changed with customer ACME this week?";
 
 /// One of the five demo requester profiles.
 #[derive(Debug, Clone)]
@@ -439,12 +441,12 @@ pub fn acme_demo_dataset() -> AcmeDemoDataset {
     let memory_rows = vec![
         // Sales — customer-facing, no financial detail.
         memory_row(
-            "sales_crm_hooli",
+            "sales_crm_acme",
             &sales,
             ResourceKind::DataStore,
             "crm",
             DataClass::CustomerData,
-            "Hooli renewal in flight: primary contact Gavin Belson, expansion interest in seats.",
+            "ACME renewal in flight: primary contact Gavin Belson, expansion interest in seats.",
         ),
         memory_row(
             "sales_support_theme",
@@ -452,7 +454,7 @@ pub fn acme_demo_dataset() -> AcmeDemoDataset {
             ResourceKind::DataStore,
             "support",
             DataClass::Confidential,
-            "Top support theme this quarter for Hooli: onboarding friction on SSO.",
+            "Top support theme this quarter for ACME: onboarding friction on SSO.",
         ),
         memory_row(
             "sales_risk_flag",
@@ -460,7 +462,7 @@ pub fn acme_demo_dataset() -> AcmeDemoDataset {
             ResourceKind::DataStore,
             "risk",
             DataClass::Confidential,
-            "Account risk note: Hooli champion changed roles; relationship risk medium.",
+            "Account risk note: ACME champion changed roles; relationship risk medium.",
         ),
         // Engineering — source + delivery, no financial detail.
         memory_row(
@@ -469,7 +471,7 @@ pub fn acme_demo_dataset() -> AcmeDemoDataset {
             ResourceKind::Repository,
             "github",
             DataClass::SourceCode,
-            "auth-service main: JWT rotation landed in PR #4821; Hooli SSO integration branch open.",
+            "auth-service main: JWT rotation landed in PR #4821; ACME SSO integration branch open.",
         ),
         memory_row(
             "eng_linear_milestone",
@@ -477,7 +479,7 @@ pub fn acme_demo_dataset() -> AcmeDemoDataset {
             ResourceKind::DataStore,
             "linear",
             DataClass::Internal,
-            "Linear: Hooli SSO epic in progress, targeted for the M2 milestone.",
+            "Linear: ACME SSO epic in progress, targeted for the M2 milestone.",
         ),
         memory_row(
             "eng_incident_sev2",
@@ -485,16 +487,16 @@ pub fn acme_demo_dataset() -> AcmeDemoDataset {
             ResourceKind::DataStore,
             "incidents",
             DataClass::Internal,
-            "Incident log: SEV-2 cache stampede affecting Hooli tenant, mitigated 2026-06-14.",
+            "Incident log: SEV-2 cache stampede affecting ACME tenant, mitigated 2026-06-14.",
         ),
         // Finance — the FinancialRecord department.
         memory_row(
-            "finance_invoice_hooli",
+            "finance_invoice_acme",
             &finance,
             ResourceKind::DataStore,
             "invoices",
             DataClass::FinancialRecord,
-            "Invoice INV-2043: Hooli, $120k, net-30, currently unpaid (7 days overdue).",
+            "Invoice INV-2043: ACME, $120k, net-30, currently unpaid (7 days overdue).",
         ),
         memory_row(
             "finance_payment_run",
@@ -502,15 +504,15 @@ pub fn acme_demo_dataset() -> AcmeDemoDataset {
             ResourceKind::DataStore,
             "payments",
             DataClass::FinancialRecord,
-            "Payment run 2026-07-01: $412k disbursed; Hooli refund of $8k pending approval.",
+            "Payment run 2026-07-01: $412k disbursed; ACME refund of $8k pending approval.",
         ),
         memory_row(
-            "finance_contract_hooli",
+            "finance_contract_acme",
             &finance,
             ResourceKind::DataStore,
             "contracts",
             DataClass::FinancialRecord,
-            "Hooli MSA: auto-renew on 2026-09-01 with a 14% price uplift clause.",
+            "ACME MSA: auto-renew on 2026-09-01 with a 14% price uplift clause.",
         ),
         // Leadership — cross-functional summary at Confidential (not raw finance).
         memory_row(
@@ -519,7 +521,7 @@ pub fn acme_demo_dataset() -> AcmeDemoDataset {
             ResourceKind::Document,
             "board",
             DataClass::Confidential,
-            "Exec summary: Hooli is a top-5 account; renewal on track, one open SEV and a payment slip.",
+            "Exec summary: ACME is a top-5 account; renewal on track, one open SEV and a payment slip.",
         ),
         // A shared credential owned by an unstaffed unit — no demo profile is a
         // member, so the department-membership gate makes it unreachable to all.
@@ -529,7 +531,7 @@ pub fn acme_demo_dataset() -> AcmeDemoDataset {
             data_class: DataClass::Credential,
             resource: resource(ResourceKind::SecretProviderCredential, "secrets"),
             subject: "platform-secops".to_string(),
-            summary: "Production signing key for the Hooli tenant; rotation scheduled 2026-08.",
+            summary: "Production signing key for the ACME tenant; rotation scheduled 2026-08.",
         },
         // Contractor — a single assigned project, nothing else.
         memory_row(
@@ -538,7 +540,7 @@ pub fn acme_demo_dataset() -> AcmeDemoDataset {
             ResourceKind::Project,
             "project-x",
             DataClass::Internal,
-            "Project X spec: build the Hooli widget export; scope limited to the export pipeline.",
+            "Project X spec: build the ACME widget export; scope limited to the export pipeline.",
         ),
     ];
 
