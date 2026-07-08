@@ -94,12 +94,20 @@ Rules for new tests (these keep plain `cargo test` usable for filtered runs):
 Stop the running service before rebuilding so the old engine is not competing for CPU during the
 compile and the installed binary is replaced cleanly.
 
+Use the `tandem-ai/enterprise` feature for local service builds that should match the standard
+release artifact: enterprise routes, premium governance, and Google Drive connectors compiled in.
+The bare `cargo build -p tandem-ai` command is still the minimal public/dev composition and does
+not include the enterprise server.
+
 ```bash
 sudo systemctl stop tandem-engine
-cargo build -p tandem-ai --profile fast-release
+cargo build -p tandem-ai --profile fast-release --features tandem-ai/enterprise
 sudo install -m 755 target/fast-release/tandem-engine /usr/local/bin/tandem-engine
 sudo systemctl restart tandem-engine
 ```
+
+Only use `--features tandem-ai/enterprise-full` for the hosted Linux/local-embeddings build; it
+adds the heavyweight `fastembed`/`ort` stack on top of the standard enterprise release feature set.
 
 Run storage cleanup commands with the installed binary path so local shells do not accidentally
 hit the npm `tandem-engine` shim first.
