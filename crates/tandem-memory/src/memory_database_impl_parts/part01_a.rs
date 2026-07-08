@@ -55,6 +55,15 @@ impl MemoryDatabase {
                 [],
             )?;
         }
+        // Per-scope envelope for hosted-KMS encryption (TAN-668). NULL for
+        // local/plaintext rows; carries the wrapped DEK + key scope for hosted
+        // rows so `content`/`metadata` can be decrypted before use.
+        if !existing_cols.contains("crypto_envelope") {
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN crypto_envelope TEXT"),
+                [],
+            )?;
+        }
         self.backfill_chunk_scope_columns(conn, table)
     }
 
@@ -1255,10 +1264,23 @@ impl MemoryDatabase {
                 embedding_id TEXT,
                 created_at TEXT NOT NULL,
                 source_chunk_id TEXT,
+                crypto_envelope TEXT,
                 FOREIGN KEY (node_id) REFERENCES memory_nodes(id)
             )",
             [],
         )?;
+        // Per-scope envelope for hosted-KMS encryption (TAN-668) on existing DBs.
+        let layer_existing_cols: HashSet<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(memory_layers)")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            rows.collect::<Result<HashSet<_>, _>>()?
+        };
+        if !layer_existing_cols.contains("crypto_envelope") {
+            conn.execute(
+                "ALTER TABLE memory_layers ADD COLUMN crypto_envelope TEXT",
+                [],
+            )?;
+        }
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_memory_layers_node ON memory_layers(node_id)",
             [],
@@ -1468,6 +1490,41 @@ impl MemoryDatabase {
         }
     }
 
+    /// Seal a row's `content` + optional `metadata` under the row's at-rest key
+    /// scope (TAN-668). Returns the stored content, stored metadata (empty when
+    /// there is none), and the serialized `crypto_envelope` to persist — `None` in
+    /// local/plaintext modes (a no-op there, so single-tenant storage is
+    /// unchanged). In hosted mode both fields share one DEK/envelope.
+    fn seal_row_columns(
+        &self,
+        content: &str,
+        metadata_plain: &str,
+        key_scope: &crate::envelope::MemoryKeyScope,
+    ) -> MemoryResult<(String, String, Option<String>)> {
+        let (policy_decision_id, audit_id) = memory_write_authorization_ids();
+        let (mut ciphertexts, envelope) = if metadata_plain.is_empty() {
+            self.crypto
+                .encrypt_row_scoped(&[content], key_scope, &policy_decision_id, &audit_id)?
+        } else {
+            self.crypto.encrypt_row_scoped(
+                &[content, metadata_plain],
+                key_scope,
+                &policy_decision_id,
+                &audit_id,
+            )?
+        };
+        let content_stored = ciphertexts.remove(0);
+        let metadata_stored = if metadata_plain.is_empty() {
+            String::new()
+        } else {
+            ciphertexts.remove(0)
+        };
+        let crypto_envelope = envelope
+            .map(|envelope| serde_json::to_string(&envelope))
+            .transpose()?;
+        Ok((content_stored, metadata_stored, crypto_envelope))
+    }
+
     /// Store a chunk with its embedding
     pub async fn store_chunk(&self, chunk: &MemoryChunk, embedding: &[f32]) -> MemoryResult<()> {
         self.deny_local_scope_in_strict_mode("memory store", &chunk.tenant_scope)?;
@@ -1480,20 +1537,22 @@ impl MemoryDatabase {
         };
 
         let created_at_str = chunk.created_at.to_rfc3339();
-        // Encrypt semantic payloads at rest (no-op in local plaintext mode).
-        let content_stored = self.crypto.encrypt_field(&chunk.content)?;
+        // Department (owner_org_unit_id) and tenant_shared persist as first-class
+        // scope columns (TAN-645/647).
         let owner_org_unit_id = owner_org_unit_id_from_metadata(chunk.metadata.as_ref());
         let tenant_shared = tenant_shared_from_metadata(chunk.metadata.as_ref());
+        // Encrypt semantic payloads at rest under the row's key scope (no-op in
+        // local plaintext mode; per-scope KMS envelope in hosted mode). This
+        // supersedes the unscoped encrypt_field for content and metadata.
         let metadata_plain = chunk
             .metadata
             .as_ref()
             .map(|m| m.to_string())
             .unwrap_or_default();
-        let metadata_str = if metadata_plain.is_empty() {
-            String::new()
-        } else {
-            self.crypto.encrypt_field(&metadata_plain)?
-        };
+        let key_scope =
+            crate::types::memory_key_scope_from_metadata(&chunk.tenant_scope, chunk.metadata.as_ref());
+        let (content_stored, metadata_str, crypto_envelope) =
+            self.seal_row_columns(&chunk.content, &metadata_plain, &key_scope)?;
 
         // Insert chunk
         match chunk.tier {
@@ -1503,8 +1562,8 @@ impl MemoryDatabase {
                         "INSERT INTO {} (
                             id, content, session_id, project_id, source, created_at, token_count, metadata,
                             source_path, source_mtime, source_size, source_hash,
-                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject, owner_org_unit_id, tenant_shared
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject, owner_org_unit_id, tenant_shared, crypto_envelope
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
                         chunks_table
                     ),
                     params![
@@ -1525,7 +1584,8 @@ impl MemoryDatabase {
                         chunk.tenant_scope.deployment_id.as_deref(),
                         chunk.subject.as_deref(),
                         owner_org_unit_id.as_deref(),
-                        i64::from(tenant_shared)
+                        i64::from(tenant_shared),
+                        crypto_envelope
                     ],
                 )?;
             }
@@ -1535,8 +1595,8 @@ impl MemoryDatabase {
                         "INSERT INTO {} (
                             id, content, project_id, session_id, source, created_at, token_count, metadata,
                             source_path, source_mtime, source_size, source_hash,
-                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject, owner_org_unit_id, tenant_shared
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject, owner_org_unit_id, tenant_shared, crypto_envelope
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
                         chunks_table
                     ),
                     params![
@@ -1557,7 +1617,8 @@ impl MemoryDatabase {
                         chunk.tenant_scope.deployment_id.as_deref(),
                         chunk.subject.as_deref(),
                         owner_org_unit_id.as_deref(),
-                        i64::from(tenant_shared)
+                        i64::from(tenant_shared),
+                        crypto_envelope
                     ],
                 )?;
             }
@@ -1567,8 +1628,8 @@ impl MemoryDatabase {
                         "INSERT INTO {} (
                             id, content, source, created_at, token_count, metadata,
                             source_path, source_mtime, source_size, source_hash,
-                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject, owner_org_unit_id, tenant_shared
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject, owner_org_unit_id, tenant_shared, crypto_envelope
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                         chunks_table
                     ),
                     params![
@@ -1587,7 +1648,8 @@ impl MemoryDatabase {
                         chunk.tenant_scope.deployment_id.as_deref(),
                         chunk.subject.as_deref(),
                         owner_org_unit_id.as_deref(),
-                        i64::from(tenant_shared)
+                        i64::from(tenant_shared),
+                        crypto_envelope
                     ],
                 )?;
             }
@@ -1678,7 +1740,7 @@ impl MemoryDatabase {
                     let sql = format!(
                         "SELECT c.id, c.content, c.session_id, c.project_id, c.source, c.created_at, c.token_count, c.metadata,
                                 c.source_path, c.source_mtime, c.source_size, c.source_hash,
-                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject,
+                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject, c.crypto_envelope,
                                 vec_distance_cosine(v.embedding, ?5) AS distance
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
@@ -1716,7 +1778,7 @@ impl MemoryDatabase {
                     let sql = format!(
                         "SELECT c.id, c.content, c.session_id, c.project_id, c.source, c.created_at, c.token_count, c.metadata,
                                 c.source_path, c.source_mtime, c.source_size, c.source_hash,
-                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject,
+                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject, c.crypto_envelope,
                                 vec_distance_cosine(v.embedding, ?5) AS distance
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
@@ -1754,7 +1816,7 @@ impl MemoryDatabase {
                     let sql = format!(
                         "SELECT c.id, c.content, c.session_id, c.project_id, c.source, c.created_at, c.token_count, c.metadata,
                                 c.source_path, c.source_mtime, c.source_size, c.source_hash,
-                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject,
+                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject, c.crypto_envelope,
                                 vec_distance_cosine(v.embedding, ?4) AS distance
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
@@ -1794,7 +1856,7 @@ impl MemoryDatabase {
                     let sql = format!(
                         "SELECT c.id, c.content, c.session_id, c.project_id, c.source, c.created_at, c.token_count, c.metadata,
                                 c.source_path, c.source_mtime, c.source_size, c.source_hash,
-                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject,
+                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject, c.crypto_envelope,
                                 vec_distance_cosine(v.embedding, ?5) AS distance
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
@@ -1832,7 +1894,7 @@ impl MemoryDatabase {
                     let sql = format!(
                         "SELECT c.id, c.content, c.session_id, c.project_id, c.source, c.created_at, c.token_count, c.metadata,
                                 c.source_path, c.source_mtime, c.source_size, c.source_hash,
-                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject,
+                                c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject, c.crypto_envelope,
                                 vec_distance_cosine(v.embedding, ?4) AS distance
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
@@ -1871,7 +1933,7 @@ impl MemoryDatabase {
                 let sql = format!(
                     "SELECT c.id, c.content, c.source, c.created_at, c.token_count, c.metadata,
                             c.source_path, c.source_mtime, c.source_size, c.source_hash,
-                            c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject,
+                            c.tenant_org_id, c.tenant_workspace_id, c.tenant_deployment_id, c.subject, c.crypto_envelope,
                             vec_distance_cosine(v.embedding, ?4) AS distance
                      FROM {} AS v
                      JOIN {} AS c ON v.chunk_id = c.id

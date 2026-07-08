@@ -38,7 +38,7 @@ use crate::key_lifecycle::MemoryKeyLifecyclePolicy;
 use crate::kms_providers::{
     GoogleCloudKmsExternalCommandClient, GoogleCloudKmsExternalEncryptCommandClient,
 };
-use crate::types::{MemoryError, MemoryResult, MemoryTenantScope};
+use crate::types::{MemoryError, MemoryResult};
 
 use base64::Engine;
 use sha2::{Digest, Sha256};
@@ -170,6 +170,25 @@ impl HostedMemoryEnvelopeCrypto {
         policy_decision_id: &str,
         audit_id: &str,
     ) -> MemoryResult<SealedMemoryField> {
+        let (mut ciphertexts, envelope) =
+            self.seal_fields(scope, &[plaintext], policy_decision_id, audit_id)?;
+        Ok(SealedMemoryField {
+            ciphertext: ciphertexts.remove(0),
+            envelope,
+        })
+    }
+
+    /// Seal several fields of one row (e.g. content + metadata) under a **single**
+    /// fresh per-scope DEK and a **single** envelope, so the whole row costs one
+    /// KMS wrap and shares one cache entry. Returns the ciphertexts in the input
+    /// order plus the envelope to persist once alongside the row.
+    pub fn seal_fields(
+        &self,
+        scope: &MemoryKeyScope,
+        plaintexts: &[&str],
+        policy_decision_id: &str,
+        audit_id: &str,
+    ) -> MemoryResult<(Vec<String>, MemoryEnvelopeMetadata)> {
         scope.validate_for_envelope()?;
         if policy_decision_id.trim().is_empty() || audit_id.trim().is_empty() {
             return Err(MemoryError::InvalidConfig(
@@ -190,7 +209,10 @@ impl HostedMemoryEnvelopeCrypto {
             audit_id: audit_id.to_string(),
         })?;
         let wrapped_dek = base64::engine::general_purpose::STANDARD.encode(wrapped);
-        let ciphertext = encrypt_with_key(&dek, plaintext)?;
+        let ciphertexts = plaintexts
+            .iter()
+            .map(|plaintext| encrypt_with_key(&dek, plaintext))
+            .collect::<MemoryResult<Vec<_>>>()?;
         let envelope = MemoryEnvelopeMetadata {
             key_scope: scope.clone(),
             kek_id: self.kek_id.clone(),
@@ -215,10 +237,7 @@ impl HostedMemoryEnvelopeCrypto {
             ),
             dek,
         );
-        Ok(SealedMemoryField {
-            ciphertext,
-            envelope,
-        })
+        Ok((ciphertexts, envelope))
     }
 
     /// Unseal a stored `tce1:` field. On a cache miss the unwrap is authorized by
@@ -247,31 +266,32 @@ impl HostedMemoryEnvelopeCrypto {
             envelope.rotation_epoch,
             wrapped_dek_fingerprint(&envelope.wrapped_dek),
         );
+        // Authorization runs on EVERY unseal, independent of the DEK cache. The
+        // caller presents its own tenant scope; the broker denies unless that
+        // scope owns the envelope (cross-tenant gate) and carries the required
+        // data-class / source grants. The cache only ever saves the external KMS
+        // unwrap — never the access-control decision — so a DEK cached at write
+        // time cannot let an unauthorized reader bypass the broker.
+        let request = MemoryDecryptRequest {
+            envelope: envelope.clone(),
+            tenant_scope: principal.tenant_scope.clone(),
+            principal: principal.clone(),
+            // The broker binds an unwrap to the envelope's own write-time
+            // policy/audit ids, so they are taken from the envelope, not the
+            // caller.
+            policy_decision_id: envelope.policy_decision_id.clone(),
+            audit_id: envelope.audit_id.clone(),
+            break_glass_requested: false,
+            key_lifecycle_policy,
+        };
+        let ticket = self.broker.authorize_unwrap(request)?.ok_or_else(|| {
+            MemoryError::InvalidConfig(
+                "hosted memory decrypt broker returned no unwrap ticket".to_string(),
+            )
+        })?;
         let dek = match self.cache.get(&cache_key) {
             Some(handle) => handle,
             None => {
-                let tenant_scope = MemoryTenantScope {
-                    org_id: envelope.key_scope.org_id.clone(),
-                    workspace_id: envelope.key_scope.workspace_id.clone(),
-                    deployment_id: envelope.key_scope.deployment_id.clone(),
-                };
-                // The broker binds an unwrap to the envelope's own write-time
-                // policy/audit ids, so they are taken from the envelope, not the
-                // caller.
-                let request = MemoryDecryptRequest {
-                    envelope: envelope.clone(),
-                    tenant_scope,
-                    principal: principal.clone(),
-                    policy_decision_id: envelope.policy_decision_id.clone(),
-                    audit_id: envelope.audit_id.clone(),
-                    break_glass_requested: false,
-                    key_lifecycle_policy,
-                };
-                let ticket = self.broker.authorize_unwrap(request)?.ok_or_else(|| {
-                    MemoryError::InvalidConfig(
-                        "hosted memory decrypt broker returned no unwrap ticket".to_string(),
-                    )
-                })?;
                 let dek_bytes = self.unwrap_provider.unwrap_dek(&ticket)?;
                 let dek: [u8; KEY_LEN] = dek_bytes.as_slice().try_into().map_err(|_| {
                     MemoryError::InvalidConfig(format!(
@@ -282,6 +302,29 @@ impl HostedMemoryEnvelopeCrypto {
             }
         };
         decrypt_with_key(dek.expose(), hex_blob)
+    }
+
+    /// Unseal several fields of one row that were sealed together under one
+    /// envelope. The first field authorizes + KMS-unwraps the shared DEK; the
+    /// rest hit the cache, so a whole row costs one unwrap.
+    pub fn unseal_fields(
+        &self,
+        envelope: &MemoryEnvelopeMetadata,
+        stored_ciphertexts: &[&str],
+        principal: &MemoryDecryptPrincipal,
+        key_lifecycle_policy: Option<MemoryKeyLifecyclePolicy>,
+    ) -> MemoryResult<Vec<String>> {
+        stored_ciphertexts
+            .iter()
+            .map(|ciphertext| {
+                self.unseal(
+                    envelope,
+                    ciphertext,
+                    principal,
+                    key_lifecycle_policy.clone(),
+                )
+            })
+            .collect()
     }
 
     /// Drop every cached DEK for a scope (all key versions) on revocation.
@@ -344,6 +387,7 @@ mod tests {
         GoogleCloudKmsDecryptClient, GoogleCloudKmsDecryptRequest, GoogleCloudKmsDekUnwrapProvider,
         GoogleCloudKmsDekWrapProvider, GoogleCloudKmsEncryptClient, GoogleCloudKmsEncryptRequest,
     };
+    use crate::types::MemoryTenantScope;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tandem_enterprise_contract::DataClass;

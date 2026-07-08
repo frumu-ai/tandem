@@ -38,6 +38,17 @@ pub struct MemoryDatabase {
     strict_tenant_enforcement: std::sync::atomic::AtomicBool,
 }
 
+/// Write-time authorization anchors stamped into a row's crypto envelope
+/// (TAN-668). The decrypt broker later requires an unwrap to present the same
+/// ids, which are read back from the stored envelope — so they need only be
+/// stable per row. Fresh per write.
+fn memory_write_authorization_ids() -> (String, String) {
+    (
+        format!("memory-write-{}", uuid::Uuid::new_v4().simple()),
+        format!("memory-audit-{}", uuid::Uuid::new_v4().simple()),
+    )
+}
+
 static SCHEMA_INIT_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 const MEMORY_SCHEMA_MIGRATIONS: &[(i64, &str)] = &[
     (1, "bootstrap_memory_schema"),
@@ -98,14 +109,17 @@ fn row_to_chunk(
     tier: MemoryTier,
     crypto: &crate::crypto::MemoryCryptoProvider,
 ) -> Result<MemoryChunk, rusqlite::Error> {
+    // The decrypt principal is scoped by the caller (tandem-server's retrieval
+    // gateway) via a task-local for the duration of a request's reads, so the
+    // shared multi-tenant DB does not thread it through every read signature
+    // (TAN-668). None in local/plaintext modes; required for hosted-sealed rows.
+    let principal = crate::decrypt_context::current_decrypt_principal();
+    let principal = principal.as_ref();
     let map_decrypt_err = |err: crate::types::MemoryError| {
         rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(err))
     };
     let id: String = row.get(0)?;
     let content_raw: String = row.get(1)?;
-    let content = crypto
-        .decrypt_field(&content_raw)
-        .map_err(map_decrypt_err)?;
     let (session_id, project_id, source_idx, created_at_idx, token_count_idx, metadata_idx) =
         match tier {
             MemoryTier::Session => (
@@ -131,9 +145,54 @@ fn row_to_chunk(
     let created_at_str: String = row.get(created_at_idx)?;
     let token_count: i64 = row.get(token_count_idx)?;
     let metadata_raw: Option<String> = row.get(metadata_idx)?;
-    let metadata_str = match metadata_raw {
-        Some(s) if !s.is_empty() => Some(crypto.decrypt_field(&s).map_err(map_decrypt_err)?),
-        other => other,
+    // A hosted-sealed row carries its per-scope envelope (unencrypted) in the
+    // `crypto_envelope` column, read *before* content so the DEK can be recovered
+    // (TAN-668). Absent/empty column = a legacy / local-key / plaintext row. The
+    // column may not be in every SELECT; `.ok()` yields None there, which decodes
+    // as a legacy row and fails closed for genuinely hosted-sealed content.
+    let crypto_envelope_raw: Option<String> = row
+        .get::<_, Option<String>>("crypto_envelope")
+        .ok()
+        .flatten()
+        .filter(|value| !value.trim().is_empty());
+    let envelope: Option<crate::envelope::MemoryEnvelopeMetadata> = match crypto_envelope_raw {
+        Some(ref raw) => Some(
+            serde_json::from_str(raw)
+                .map_err(|err| map_decrypt_err(crate::types::MemoryError::from(err)))?,
+        ),
+        None => None,
+    };
+    let metadata_present = metadata_raw
+        .as_deref()
+        .map(|value| !value.is_empty())
+        .unwrap_or(false);
+    let (content, metadata_str) = if let Some(envelope) = envelope.as_ref() {
+        // Hosted-sealed: content (+ metadata) share one envelope/DEK; the first
+        // field unwraps the DEK via the broker, the rest hit the cache.
+        let mut fields: Vec<&str> = vec![content_raw.as_str()];
+        if metadata_present {
+            fields.push(metadata_raw.as_deref().unwrap_or_default());
+        }
+        let decrypted = crypto
+            .decrypt_row_scoped(&fields, Some(envelope), principal, None)
+            .map_err(map_decrypt_err)?;
+        let content = decrypted[0].clone();
+        let metadata_str = if metadata_present {
+            decrypted.get(1).cloned()
+        } else {
+            None
+        };
+        (content, metadata_str)
+    } else {
+        // Legacy / local-key / plaintext row: decrypt each column independently.
+        let content = crypto
+            .decrypt_field(&content_raw)
+            .map_err(map_decrypt_err)?;
+        let metadata_str = match metadata_raw {
+            Some(s) if !s.is_empty() => Some(crypto.decrypt_field(&s).map_err(map_decrypt_err)?),
+            other => other,
+        };
+        (content, metadata_str)
     };
 
     let created_at = DateTime::parse_from_rfc3339(&created_at_str)
@@ -459,7 +518,7 @@ impl MemoryDatabase {
         let sql = format!(
             "SELECT memory_layers.id, memory_layers.node_id, memory_layers.layer_type,
                     memory_layers.content, memory_layers.token_count, memory_layers.embedding_id,
-                    memory_layers.created_at, memory_layers.source_chunk_id
+                    memory_layers.created_at, memory_layers.source_chunk_id, memory_layers.crypto_envelope
              FROM memory_layers
              JOIN memory_nodes ON memory_nodes.id = memory_layers.node_id
              WHERE memory_layers.node_id = ?1 AND memory_layers.layer_type = ?2 AND {tenant_clause}"
@@ -479,22 +538,45 @@ impl MemoryDatabase {
                 let layer_type = layer_type_str
                     .parse()
                     .unwrap_or(crate::types::LayerType::L2);
-                Ok(crate::types::MemoryLayer {
-                    id: row.get(0)?,
-                    node_id: row.get(1)?,
-                    layer_type,
-                    content: row.get(3)?,
-                    token_count: row.get(4)?,
-                    embedding_id: row.get(5)?,
-                    created_at: row.get::<_, String>(6)?.parse().unwrap_or_default(),
-                    source_chunk_id: row.get(7)?,
-                })
+                let crypto_envelope: Option<String> = row.get(8)?;
+                Ok((
+                    crate::types::MemoryLayer {
+                        id: row.get(0)?,
+                        node_id: row.get(1)?,
+                        layer_type,
+                        content: row.get(3)?,
+                        token_count: row.get(4)?,
+                        embedding_id: row.get(5)?,
+                        created_at: row.get::<_, String>(6)?.parse().unwrap_or_default(),
+                        source_chunk_id: row.get(7)?,
+                    },
+                    crypto_envelope,
+                ))
             },
         );
 
         match result {
-            Ok(mut layer) => {
-                layer.content = self.crypto.decrypt_field(&layer.content)?;
+            Ok((mut layer, crypto_envelope)) => {
+                // A hosted-sealed layer carries an envelope and is decrypted under
+                // the caller's task-local decrypt principal (fail-closed if absent
+                // or unauthorized). Legacy/local rows have no envelope and decrypt
+                // via the unscoped path, so single-tenant reads are unchanged.
+                let envelope = crypto_envelope
+                    .filter(|s| !s.is_empty())
+                    .map(|s| serde_json::from_str::<crate::envelope::MemoryEnvelopeMetadata>(&s))
+                    .transpose()
+                    .map_err(|e| {
+                        MemoryError::InvalidConfig(format!(
+                            "failed to parse layer crypto envelope: {e}"
+                        ))
+                    })?;
+                let principal = crate::decrypt_context::current_decrypt_principal();
+                layer.content = self.crypto.decrypt_field_scoped(
+                    &layer.content,
+                    envelope.as_ref(),
+                    principal.as_ref(),
+                    None,
+                )?;
                 Ok(Some(layer))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -513,7 +595,27 @@ impl MemoryDatabase {
     ) -> MemoryResult<String> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
-        let content_stored = self.crypto.encrypt_field(content)?;
+        // Layers are L0/L1/L2 summaries derived from a node's chunks; they carry
+        // no classification or department of their own, so they seal under the
+        // tenant's Internal scope. Local/plaintext modes ignore the scope and
+        // leave crypto_envelope NULL, so single-tenant layers are unchanged.
+        let key_scope = crate::types::memory_key_scope_from_metadata(tenant_scope, None);
+        let (policy_decision_id, audit_id) = memory_write_authorization_ids();
+        let (content_stored, envelope) = self.crypto.encrypt_field_scoped(
+            content,
+            &key_scope,
+            &policy_decision_id,
+            &audit_id,
+        )?;
+        let crypto_envelope = envelope
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| {
+                MemoryError::InvalidConfig(format!(
+                    "failed to serialize layer crypto envelope: {e}"
+                ))
+            })?;
 
         let conn = self.conn.lock().await;
         // A layer write against a node outside the tenant scope must fail exactly
@@ -536,9 +638,9 @@ impl MemoryDatabase {
             )));
         }
         conn.execute(
-            "INSERT INTO memory_layers (id, node_id, layer_type, content, token_count, created_at, source_chunk_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![id, node_id, layer_type.to_string(), content_stored, token_count, now, source_chunk_id],
+            "INSERT INTO memory_layers (id, node_id, layer_type, content, token_count, created_at, source_chunk_id, crypto_envelope)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![id, node_id, layer_type.to_string(), content_stored, token_count, now, source_chunk_id, crypto_envelope],
         )?;
 
         Ok(id)
