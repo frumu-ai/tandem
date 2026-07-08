@@ -20,7 +20,7 @@ Tandem has two memory stores with different identity models:
 | Dimension | Chunk store | Records store | Enforced by |
 | --- | --- | --- | --- |
 | Tenant (org / workspace / deployment) | `tenant_org_id` / `tenant_workspace_id` / `tenant_deployment_id` columns | same columns | SQL predicates (`tenant_scope_matches_sql_clause`) on every accessor, plus strict-mode rejection of the `local` scope |
-| Org unit (department) | `owner_org_unit_id` in record metadata | same | `MemoryAccessFilter` tenant-local branch: caller must be a member of the owning unit (`org_unit_scope_mismatch`); membership comes from the signed assertion's `org_units` |
+| Org unit (department) | `owner_org_unit_id` and `tenant_shared` columns, stamped from chunk metadata | `owner_org_unit_id` column plus `tenant_shared` metadata | SQL predicates narrow scoped reads before ranking/listing; `MemoryAccessFilter` tenant-local branch then requires caller membership in the owning unit (`org_unit_scope_mismatch`); membership comes from the signed assertion's `org_units` |
 | User (subject) | `subject` column, stamped at write | `user_id` column | Chunks: `MemoryAccessFilter` tenant-local branch (`subject_scope_mismatch`). Records: SQL `user_id` predicates on list/search |
 | Session / project | `session_id` / `project_id` columns | `project_tag` | Server-resolved partition (never model-supplied), SQL predicates |
 | Data class / boundary | `classification` in metadata | same | `MemoryAccessFilter` data-boundary check |
@@ -28,9 +28,15 @@ Tandem has two memory stores with different identity models:
 
 ## Semantics
 
-- **Unset means shared.** A chunk/record without `subject` or
-  `owner_org_unit_id` keeps the pre-scoping visibility: shared within its
-  tenant/tier scope. Restriction is opt-in at write time.
+- **Department-shared access must be explicit.** In governed department-scoped
+  access, a chunk/record without `owner_org_unit_id` is denied by default;
+  `tenant_shared` is the explicit authorization label for genuinely tenant-wide
+  content. Storage APIs that accept an `owner_org_unit_id` SQL predicate may
+  still return only stamped department rows before the final access filter.
+  Tenant-only/local legacy reads preserve the pre-scoping behavior.
+- **Subject-owned memory remains subject-scoped.** A chunk/record with a
+  private owner subject is readable only by that subject; absence of
+  `owner_org_unit_id` does not by itself hide the owner's own private memory.
 - **Fail closed.** In governed mode, missing caller information (no verified
   context, no memberships, no resolved subject) denies access to any
   restricted record rather than falling back to shared.

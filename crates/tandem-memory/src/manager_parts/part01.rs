@@ -286,11 +286,20 @@ impl MemoryManager {
         };
 
         let now_ms = Utc::now().timestamp_millis();
-        // Push the subject restriction into the SQL top-k so a caller's own
-        // chunks cannot be starved out of the candidate window by other
-        // subjects' closer matches; the access filter below remains as the
-        // authoritative post-check.
+        // Push supported scope restrictions into the SQL top-k so a caller's
+        // own chunks cannot be starved out of the candidate window by other
+        // subjects/departments' closer matches; the access filter below remains
+        // as the authoritative post-check.
         let visible_subject = access_filter.and_then(|filter| filter.caller_subject.as_deref());
+        let visible_owner_org_unit = access_filter
+            .and_then(|filter| filter.caller_org_units.as_ref())
+            .and_then(|units| {
+                if units.len() == 1 {
+                    units.iter().next().map(String::as_str)
+                } else {
+                    None
+                }
+            });
         for search_tier in tiers_to_search {
             let tier_results = match self
                 .db
@@ -302,6 +311,7 @@ impl MemoryManager {
                     tenant_scope,
                     candidate_limit,
                     visible_subject,
+                    visible_owner_org_unit,
                 )
                 .await
             {
@@ -333,6 +343,7 @@ impl MemoryManager {
                                 tenant_scope,
                                 candidate_limit,
                                 visible_subject,
+                                visible_owner_org_unit,
                             )
                             .await
                         {

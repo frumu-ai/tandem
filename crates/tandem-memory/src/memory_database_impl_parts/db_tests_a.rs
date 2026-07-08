@@ -562,7 +562,8 @@
                 None,
                 &tenant_a,
                 1,
-                            None,
+                None,
+                None,
             )
             .await
             .unwrap();
@@ -605,12 +606,158 @@
         .unwrap();
 
         let results = db
-            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &tenant_a, 10, None)
+            .search_similar_for_tenant(
+                &vector,
+                MemoryTier::Global,
+                None,
+                None,
+                &tenant_a,
+                10,
+                None,
+                None,
+            )
             .await
             .unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0.id, "tenant-a-identical");
+    }
+
+    #[tokio::test]
+    async fn test_vector_chunk_department_scope_is_stamped_and_enforced_in_query() {
+        let (db, _temp) = setup_test_db().await;
+        let tenant = tenant_scope("org-a", "workspace-a");
+        let vector = embedding(0.4, 0.6);
+
+        let mut finance = test_vector_chunk(
+            "finance-vector",
+            MemoryTier::Global,
+            tenant.clone(),
+            "finance acme context",
+            None,
+        );
+        finance.metadata = Some(serde_json::json!({ "owner_org_unit_id": "finance" }));
+
+        let mut engineering = test_vector_chunk(
+            "engineering-vector",
+            MemoryTier::Global,
+            tenant.clone(),
+            "engineering acme context",
+            None,
+        );
+        engineering.metadata = Some(serde_json::json!({ "owner_org_unit_id": "engineering" }));
+
+        let unstamped = test_vector_chunk(
+            "unstamped-vector",
+            MemoryTier::Global,
+            tenant.clone(),
+            "unstamped acme context",
+            None,
+        );
+
+        db.store_chunk(&finance, &vector).await.unwrap();
+        db.store_chunk(&engineering, &vector).await.unwrap();
+        db.store_chunk(&unstamped, &vector).await.unwrap();
+
+        let stored_owner: Option<String> = {
+            let conn = db.conn.lock().await;
+            conn.query_row(
+                "SELECT owner_org_unit_id FROM global_memory_chunks WHERE id = ?1",
+                params!["finance-vector"],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(stored_owner.as_deref(), Some("finance"));
+
+        let finance_results = db
+            .search_similar_for_tenant(
+                &vector,
+                MemoryTier::Global,
+                None,
+                None,
+                &tenant,
+                10,
+                Some("user-a"),
+                Some("finance"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(finance_results.len(), 1);
+        assert_eq!(finance_results[0].0.id, "finance-vector");
+
+        use crate::store::{MemoryReadScope, MemoryStore};
+        let mut scope = MemoryReadScope::tenant(tenant);
+        scope.subject = Some("user-a".to_string());
+        scope.org_unit = Some("engineering".to_string());
+        let trait_results = MemoryStore::search_chunks(
+            &db,
+            &scope,
+            &vector,
+            MemoryTier::Global,
+            None,
+            None,
+            10,
+        )
+        .await
+        .unwrap();
+        assert_eq!(trait_results.len(), 1);
+        assert_eq!(trait_results[0].0.id, "engineering-vector");
+
+        let mut private_without_department = test_vector_chunk(
+            "private-without-department",
+            MemoryTier::Global,
+            scope.tenant.clone(),
+            "private user context",
+            None,
+        );
+        private_without_department.subject = Some("user-a".to_string());
+        db.store_chunk(&private_without_department, &vector)
+            .await
+            .unwrap();
+
+        let mut tenant_shared = test_vector_chunk(
+            "tenant-shared-vector",
+            MemoryTier::Global,
+            scope.tenant.clone(),
+            "shared tenant context",
+            None,
+        );
+        tenant_shared.metadata = Some(serde_json::json!({ "tenant_shared": true }));
+        db.store_chunk(&tenant_shared, &vector).await.unwrap();
+        let stored_tenant_shared: i64 = {
+            let conn = db.conn.lock().await;
+            conn.query_row(
+                "SELECT tenant_shared FROM global_memory_chunks WHERE id = ?1",
+                params!["tenant-shared-vector"],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(stored_tenant_shared, 1);
+
+        let finance_results = db
+            .search_similar_for_tenant(
+                &vector,
+                MemoryTier::Global,
+                None,
+                None,
+                &scope.tenant,
+                10,
+                Some("user-a"),
+                Some("finance"),
+            )
+            .await
+            .unwrap();
+        let result_ids = finance_results
+            .iter()
+            .map(|(chunk, _)| chunk.id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(result_ids.contains("finance-vector"));
+        assert!(result_ids.contains("private-without-department"));
+        assert!(result_ids.contains("tenant-shared-vector"));
+        assert!(!result_ids.contains("engineering-vector"));
+        assert!(!result_ids.contains("unstamped-vector"));
     }
 
     #[tokio::test]
@@ -643,7 +790,8 @@
                 Some("shared-session"),
                 &tenant_b,
                 10,
-                            None,
+                None,
+                None,
             )
             .await
             .unwrap();
@@ -660,7 +808,8 @@
                 Some("shared-session"),
                 &tenant_a,
                 10,
-                            None,
+                None,
+                None,
             )
             .await
             .unwrap();
@@ -698,7 +847,16 @@
         .unwrap();
 
         let cross_deployment = db
-            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &deployment_two, 10, None)
+            .search_similar_for_tenant(
+                &vector,
+                MemoryTier::Global,
+                None,
+                None,
+                &deployment_two,
+                10,
+                None,
+                None,
+            )
             .await
             .unwrap();
         assert!(
@@ -707,7 +865,16 @@
         );
 
         let missing_deployment = db
-            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &no_deployment, 10, None)
+            .search_similar_for_tenant(
+                &vector,
+                MemoryTier::Global,
+                None,
+                None,
+                &no_deployment,
+                10,
+                None,
+                None,
+            )
             .await
             .unwrap();
         assert!(
@@ -716,7 +883,16 @@
         );
 
         let own = db
-            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &deployment_one, 10, None)
+            .search_similar_for_tenant(
+                &vector,
+                MemoryTier::Global,
+                None,
+                None,
+                &deployment_one,
+                10,
+                None,
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(own.len(), 1);
@@ -746,7 +922,16 @@
         db.set_strict_tenant_enforcement(true);
 
         let read_err = db
-            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &local_scope, 10, None)
+            .search_similar_for_tenant(
+                &vector,
+                MemoryTier::Global,
+                None,
+                None,
+                &local_scope,
+                10,
+                None,
+                None,
+            )
             .await
             .expect_err("strict mode must deny local-scope reads");
         assert!(matches!(read_err, MemoryError::TenantScopeViolation(_)));
@@ -781,7 +966,16 @@
         .await
         .expect("explicit tenant writes succeed in strict mode");
         let results = db
-            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &tenant_a, 10, None)
+            .search_similar_for_tenant(
+                &vector,
+                MemoryTier::Global,
+                None,
+                None,
+                &tenant_a,
+                10,
+                None,
+                None,
+            )
             .await
             .expect("explicit tenant reads succeed in strict mode");
         assert_eq!(results.len(), 1);
@@ -827,7 +1021,16 @@
         assert_eq!(cross_delete, 0);
 
         let tenant_b_results = db
-            .search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &tenant_b, 10, None)
+            .search_similar_for_tenant(
+                &vector,
+                MemoryTier::Global,
+                None,
+                None,
+                &tenant_b,
+                10,
+                None,
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(tenant_b_results.len(), 1);
@@ -839,7 +1042,16 @@
             .unwrap();
         assert_eq!(own_delete, 1);
         assert_eq!(
-            db.search_similar_for_tenant(&vector, MemoryTier::Global, None, None, &tenant_b, 10, None)
+            db.search_similar_for_tenant(
+                &vector,
+                MemoryTier::Global,
+                None,
+                None,
+                &tenant_b,
+                10,
+                None,
+                None,
+            )
                 .await
                 .unwrap()
                 .len(),
@@ -1289,4 +1501,3 @@
             .unwrap();
         assert_eq!(tenant_b_stats.last_indexed_files, Some(3));
     }
-
