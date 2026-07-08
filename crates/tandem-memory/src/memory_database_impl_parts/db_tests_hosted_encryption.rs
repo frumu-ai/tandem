@@ -348,6 +348,7 @@ async fn hosted_global_chunk_is_returned_by_vector_search() {
             &acme_finance_scope(),
             10,
             None,
+            None,
         ),
     )
     .await
