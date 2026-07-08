@@ -637,6 +637,7 @@ pub(super) async fn open_memory_manager() -> Option<tandem_memory::MemoryManager
         .ok()
 }
 
+#[cfg(not(test))]
 pub(super) async fn open_memory_manager_for_state(
     state: &AppState,
 ) -> Option<tandem_memory::MemoryManager> {
@@ -646,6 +647,23 @@ pub(super) async fn open_memory_manager_for_state(
     tandem_memory::MemoryManager::new(&state.memory_db_path)
         .await
         .ok()
+}
+
+#[cfg(test)]
+pub(super) async fn open_memory_manager_for_state(
+    state: &AppState,
+) -> Option<tandem_memory::MemoryManager> {
+    if let Some(parent) = state.memory_db_path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    tandem_memory::MemoryManager::new_with_embedding_service(
+        &state.memory_db_path,
+        tandem_memory::embeddings::EmbeddingService::deterministic_for_tests(
+            tandem_memory::types::DEFAULT_EMBEDDING_DIMENSION,
+        ),
+    )
+    .await
+    .ok()
 }
 
 pub(super) fn event_run_id(event: &EngineEvent) -> Option<String> {
