@@ -732,12 +732,32 @@ pub fn memory_key_scope_from_metadata(
     tenant_scope: &MemoryTenantScope,
     metadata: Option<&serde_json::Value>,
 ) -> crate::envelope::MemoryKeyScope {
+    // Mirror the governed-read data-class precedence exactly: a connector-sourced
+    // row carries its governed class under `enterprise_source_binding.data_class`
+    // (often with no top-level `classification`), so seal under that first and
+    // only fall back to `classification`, then `Internal`. Sealing under a
+    // different class than the governed filter checks would let the wrong
+    // principal unwrap (or lock the right one out).
+    let data_class = source_binding_data_class_from_metadata(metadata)
+        .or_else(|| data_class_from_metadata(metadata))
+        .unwrap_or(DataClass::Internal);
     crate::envelope::MemoryKeyScope::new(
         tenant_scope,
-        data_class_from_metadata(metadata).unwrap_or(DataClass::Internal),
+        data_class,
         source_binding_id_from_metadata(metadata),
     )
     .with_org_unit(owner_org_unit_id_from_metadata(metadata))
+}
+
+/// The governed data class carried by a connector row's source binding
+/// (`enterprise_source_binding.data_class`), if present. This is the same field
+/// `MemorySourceAccessTarget`/`source_binding_target_from_metadata` read, so the
+/// at-rest key scope and the governed-read scope agree on the class.
+fn source_binding_data_class_from_metadata(
+    metadata: Option<&serde_json::Value>,
+) -> Option<DataClass> {
+    let binding = metadata?.get("enterprise_source_binding")?;
+    serde_json::from_value(binding.get("data_class")?.clone()).ok()
 }
 
 fn data_class_from_label(label: &str) -> Option<DataClass> {

@@ -383,11 +383,11 @@ fn wrapped_dek_fingerprint(wrapped_dek: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::MemoryTenantScope;
     use crate::kms_providers::{
         GoogleCloudKmsDecryptClient, GoogleCloudKmsDecryptRequest, GoogleCloudKmsDekUnwrapProvider,
         GoogleCloudKmsDekWrapProvider, GoogleCloudKmsEncryptClient, GoogleCloudKmsEncryptRequest,
     };
+    use crate::types::MemoryTenantScope;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tandem_enterprise_contract::DataClass;

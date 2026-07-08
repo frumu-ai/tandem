@@ -304,3 +304,105 @@ async fn hosted_layer_seals_content_and_reads_back_under_principal() {
     .expect("layer present");
     assert!(layer.content.contains("120k"));
 }
+
+/// A connector-sourced chunk whose governed data class lives under
+/// `enterprise_source_binding.data_class` with NO top-level `classification`.
+fn source_bound_finance_chunk() -> MemoryChunk {
+    let mut chunk = finance_chunk();
+    chunk.id = "hosted-source-bound-1".to_string();
+    chunk.metadata = Some(serde_json::json!({
+        "enterprise_source_binding": {
+            "binding_id": "notion-finance-db",
+            "data_class": "financial_record",
+        },
+    }));
+    chunk
+}
+
+#[tokio::test]
+async fn hosted_global_chunk_is_returned_by_vector_search() {
+    // TAN-668 review: the global-tier search SELECT must project crypto_envelope,
+    // or hosted global rows are handed to the legacy decrypt path and dropped.
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("hosted_memory.db");
+    let db = MemoryDatabase::new(&path)
+        .await
+        .unwrap()
+        .with_crypto_provider(hosted_provider());
+
+    let mut global = finance_chunk();
+    global.id = "hosted-global-1".to_string();
+    global.tier = MemoryTier::Global;
+    global.session_id = None;
+    let vector = vec![0.1f32; DEFAULT_EMBEDDING_DIMENSION];
+    db.store_chunk(&global, &vector).await.unwrap();
+
+    let finance = principal("acme", vec![DataClass::FinancialRecord]);
+    let results = with_decrypt_principal(
+        finance,
+        db.search_similar_for_tenant(
+            &vector,
+            MemoryTier::Global,
+            None,
+            None,
+            &acme_finance_scope(),
+            10,
+            None,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(results.len(), 1, "hosted global chunk must survive search");
+    assert!(results[0].0.content.contains("120k"));
+}
+
+#[tokio::test]
+async fn source_binding_data_class_drives_the_key_scope() {
+    // TAN-668 review: a connector row stamps its class under the source binding,
+    // not a top-level `classification`. The key scope must seal under that class
+    // (FinancialRecord), so a matching source principal decrypts and an
+    // Internal-only principal without the source grant is denied.
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("hosted_memory.db");
+    let db = MemoryDatabase::new(&path)
+        .await
+        .unwrap()
+        .with_crypto_provider(hosted_provider());
+
+    // Sealing succeeds only because the key scope's data class now matches the
+    // binding's — the envelope validator rejects a mismatch, so an Internal
+    // default would fail this write closed.
+    db.store_chunk(
+        &source_bound_finance_chunk(),
+        &[0.1f32; DEFAULT_EMBEDDING_DIMENSION],
+    )
+    .await
+    .unwrap();
+
+    // A Finance principal that also holds the source-binding grant decrypts it.
+    let source_reader = MemoryDecryptPrincipal::retrieval_gateway(
+        "kb-mcp-retrieval-gateway",
+        MemoryTenantScope {
+            org_id: "acme".to_string(),
+            workspace_id: "hq".to_string(),
+            deployment_id: Some("prod".to_string()),
+        },
+        vec![DataClass::FinancialRecord],
+        vec!["notion-finance-db".to_string()],
+    );
+    let chunks = with_decrypt_principal(source_reader, db.get_session_chunks("session-hosted"))
+        .await
+        .unwrap();
+    assert_eq!(chunks.len(), 1);
+    assert!(chunks[0].content.contains("120k"));
+
+    // An Internal-only principal (the class the old derivation defaulted to) is
+    // denied — proving the scope did not collapse to Internal.
+    let internal_reader = principal("acme", vec![DataClass::Internal]);
+    assert!(
+        with_decrypt_principal(internal_reader, db.get_session_chunks("session-hosted"))
+            .await
+            .is_err(),
+        "Internal principal must not decrypt a FinancialRecord source-bound row"
+    );
+}
