@@ -8,7 +8,7 @@
 //! approvals, memory audit, protected events, redactions, final response).
 
 use serde_json::{json, Value};
-use tandem_core::tool_schema_risk_tier;
+use tandem_core::{tool_schema_risk_tier, ToolEffectLedgerPhase, ToolEffectLedgerStatus};
 use tandem_types::{DataClass, PolicyDecisionEffect};
 
 use super::{
@@ -67,7 +67,14 @@ pub fn acme_slack_demo_receipt_for_profile(
     let grants = profile_grants(dataset, profile);
     let (returned_memory, hidden_memory) = memory_scope_rows(dataset, profile);
     let (offered_tools, hidden_tools) = tool_scope_rows(dataset, profile);
-    let used_tools = used_tools_for_profile(profile);
+    let requested_tools = requested_tools_for_profile(profile);
+    let approval_blocked_tools =
+        approval_blocked_tools_for_profile(dataset, &requested_tools, &offered_tools);
+    let used_tools = requested_tools
+        .iter()
+        .filter(|tool| !approval_blocked_tools.contains(*tool))
+        .cloned()
+        .collect::<Vec<_>>();
     let policy_decisions = policy_decisions_for_profile(
         dataset,
         profile,
@@ -78,12 +85,18 @@ pub fn acme_slack_demo_receipt_for_profile(
         &hidden_tools,
     );
     let approval_required_events =
-        approval_required_events_for_profile(dataset, profile, &run_id, &used_tools);
+        approval_required_events_for_profile(dataset, profile, &run_id, &approval_blocked_tools);
+    let pending_gate = pending_gate_for_approval_events(&approval_required_events);
     let redactions = redactions_for_hidden_memory(&hidden_memory);
     let final_response = final_slack_response(profile);
     let memory_audit = memory_audit_rows(profile, &run_id, &returned_memory, &hidden_memory);
     let protected_events = protected_audit_rows(profile, &run_id, &role, &final_response);
-    let tool_manifest = tool_manifest(&offered_tools, &hidden_tools, &used_tools);
+    let tool_manifest = tool_manifest(
+        &offered_tools,
+        &hidden_tools,
+        &used_tools,
+        &approval_blocked_tools,
+    );
 
     json!({
         "run_id": run_id,
@@ -133,12 +146,13 @@ pub fn acme_slack_demo_receipt_for_profile(
             "offered": offered_tools,
             "hidden_by_scope": hidden_tools,
             "used": used_tools,
+            "blocked_by_approval": approval_blocked_tools,
         },
         "policy_decisions": policy_decisions,
         "approvals": {
             "approval_required_events": approval_required_events,
-            "pending_gate": Value::Null,
-            "gate_history": approval_required_events,
+            "pending_gate": pending_gate.clone(),
+            "gate_history": [],
         },
         "redactions": redactions,
         "final_slack_visible_response": final_response,
@@ -150,6 +164,7 @@ pub fn acme_slack_demo_receipt_for_profile(
             &tool_manifest,
             &policy_decisions,
             &approval_required_events,
+            &pending_gate,
             &memory_audit,
             &protected_events,
             &redactions,
@@ -273,7 +288,7 @@ fn tool_scope_rows(dataset: &AcmeDemoDataset, profile: &DemoProfile) -> (Vec<Str
     (offered, hidden)
 }
 
-fn used_tools_for_profile(profile: &DemoProfile) -> Vec<String> {
+fn requested_tools_for_profile(profile: &DemoProfile) -> Vec<String> {
     let names: &[&str] = match profile.unit_id {
         "sales" => &["mcp.crm.search_accounts", "mcp.support.list_summaries"],
         "engineering" => &[
@@ -293,6 +308,25 @@ fn used_tools_for_profile(profile: &DemoProfile) -> Vec<String> {
     let mut rows = names
         .iter()
         .map(|name| (*name).to_string())
+        .collect::<Vec<_>>();
+    rows.sort();
+    rows
+}
+
+fn approval_blocked_tools_for_profile(
+    dataset: &AcmeDemoDataset,
+    requested_tools: &[String],
+    offered_tools: &[String],
+) -> Vec<String> {
+    let mut rows = dataset
+        .tools
+        .iter()
+        .filter(|tool| {
+            requested_tools.contains(&tool.schema.name)
+                && offered_tools.contains(&tool.schema.name)
+                && tool.approval_required()
+        })
+        .map(|tool| tool.schema.name.clone())
         .collect::<Vec<_>>();
     rows.sort();
     rows
@@ -358,19 +392,21 @@ fn approval_required_events_for_profile(
     dataset: &AcmeDemoDataset,
     profile: &DemoProfile,
     run_id: &str,
-    used_tools: &[String],
+    approval_blocked_tools: &[String],
 ) -> Vec<Value> {
     let mut rows = dataset
         .tools
         .iter()
-        .filter(|tool| used_tools.contains(&tool.schema.name) && tool.approval_required())
+        .filter(|tool| approval_blocked_tools.contains(&tool.schema.name))
         .map(|tool| {
             json!({
                 "approval_id": format!("approval-{run_id}-{}", sanitize_id(&tool.schema.name)),
+                "policy_decision_id": format!("pd-{run_id}-{}", sanitize_id(&tool.schema.name)),
                 "run_id": run_id,
                 "tool": tool.schema.name,
                 "risk_tier": tool_schema_risk_tier(&tool.schema).as_str(),
                 "decision": "approval_required",
+                "status": "blocked",
                 "reason": "risk tier requires an approval gate before the tool can execute",
                 "requested_at_ms": DEMO_BASE_NOW_MS,
                 "requester_org_units": profile.org_units(),
@@ -379,6 +415,19 @@ fn approval_required_events_for_profile(
         .collect::<Vec<_>>();
     rows.sort_by(|a, b| value_str(a, "approval_id").cmp(&value_str(b, "approval_id")));
     rows
+}
+
+fn pending_gate_for_approval_events(approval_required_events: &[Value]) -> Value {
+    if approval_required_events.is_empty() {
+        return Value::Null;
+    }
+    json!({
+        "node_id": "finance_sensitive_tool_reads",
+        "title": "Approval required for sensitive finance reads",
+        "tools": ids_from_rows(approval_required_events, "tool"),
+        "decisions": ["approve", "deny"],
+        "requested_at_ms": DEMO_BASE_NOW_MS,
+    })
 }
 
 fn redactions_for_hidden_memory(hidden_memory: &[Value]) -> Vec<Value> {
@@ -458,7 +507,12 @@ fn protected_audit_rows(
     ]
 }
 
-fn tool_manifest(offered: &[String], hidden: &[String], used: &[String]) -> Value {
+fn tool_manifest(
+    offered: &[String],
+    hidden: &[String],
+    used: &[String],
+    blocked_by_approval: &[String],
+) -> Value {
     let used_unoffered = used
         .iter()
         .filter(|tool| !offered.contains(*tool))
@@ -467,6 +521,7 @@ fn tool_manifest(offered: &[String], hidden: &[String], used: &[String]) -> Valu
     json!({
         "offered": offered,
         "used": used,
+        "blocked_by_approval": blocked_by_approval,
         "hidden_by_scope": hidden,
         "used_subset_offered": used_unoffered.is_empty(),
         "used_unoffered": used_unoffered,
@@ -482,16 +537,19 @@ fn control_panel_receipt(
     tool_manifest: &Value,
     policy_decisions: &[Value],
     approval_required_events: &[Value],
+    pending_gate: &Value,
     memory_audit: &[Value],
     protected_events: &[Value],
     redactions: &[Value],
     final_response: &str,
 ) -> Value {
+    let ledger_records = tool_ledger_records(run_id, context_run_id, tool_manifest);
+    let ledger_record_count = ledger_records.len();
     json!({
         "ledger": {
-            "records": used_tool_ledger_records(run_id, context_run_id, tool_manifest),
+            "records": ledger_records,
             "summary": {
-                "record_count": tool_manifest["used"].as_array().map(Vec::len).unwrap_or_default(),
+                "record_count": ledger_record_count,
             },
             "tool_manifest": tool_manifest,
         },
@@ -511,6 +569,7 @@ fn control_panel_receipt(
                 },
                 "counts": {
                     "tool_calls": tool_manifest["used"].as_array().map(Vec::len).unwrap_or_default(),
+                    "blocked_tool_calls": tool_manifest["blocked_by_approval"].as_array().map(Vec::len).unwrap_or_default(),
                     "policy_decisions": policy_decisions.len(),
                     "approval_records": approval_required_events.len(),
                     "memory_audit_records": memory_audit.len(),
@@ -529,8 +588,8 @@ fn control_panel_receipt(
             "tool_manifest": tool_manifest,
             "policy_decisions": policy_decisions,
             "approvals": {
-                "pending_gate": Value::Null,
-                "gate_history": approval_required_events,
+                "pending_gate": pending_gate,
+                "gate_history": [],
                 "approval_required_events": approval_required_events,
             },
             "memory_audit": memory_audit,
@@ -555,12 +614,8 @@ fn control_panel_receipt(
     })
 }
 
-fn used_tool_ledger_records(
-    run_id: &str,
-    context_run_id: &str,
-    tool_manifest: &Value,
-) -> Vec<Value> {
-    tool_manifest["used"]
+fn tool_ledger_records(run_id: &str, context_run_id: &str, tool_manifest: &Value) -> Vec<Value> {
+    let mut records = tool_manifest["used"]
         .as_array()
         .into_iter()
         .flatten()
@@ -570,15 +625,52 @@ fn used_tool_ledger_records(
                 "seq": idx + 1,
                 "event_id": format!("ledger-{run_id}-{}", idx + 1),
                 "record": {
+                    "session_id": format!("session-{run_id}"),
+                    "message_id": format!("msg-{run_id}"),
+                    "tool_call_id": format!("call-{run_id}-{}", sanitize_id(tool.as_str().unwrap_or_default())),
                     "run_id": run_id,
                     "context_run_id": context_run_id,
                     "tool": tool,
-                    "phase": "completed",
-                    "status": "succeeded",
+                    "phase": ToolEffectLedgerPhase::Outcome,
+                    "status": ToolEffectLedgerStatus::Succeeded,
                 },
             })
         })
-        .collect()
+        .collect::<Vec<_>>();
+    let start_seq = records.len();
+    records.extend(
+        tool_manifest["blocked_by_approval"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .map(|(idx, tool)| {
+                let seq = start_seq + idx + 1;
+                let tool_name = tool.as_str().unwrap_or_default();
+                json!({
+                    "seq": seq,
+                    "event_id": format!("ledger-{run_id}-{seq}"),
+                    "record": {
+                        "session_id": format!("session-{run_id}"),
+                        "message_id": format!("msg-{run_id}"),
+                        "tool_call_id": format!("call-{run_id}-{}", sanitize_id(tool_name)),
+                        "run_id": run_id,
+                        "context_run_id": context_run_id,
+                        "tool": tool,
+                        "phase": ToolEffectLedgerPhase::Outcome,
+                        "status": ToolEffectLedgerStatus::Blocked,
+                        "policy_decision_id": format!("pd-{run_id}-{}", sanitize_id(tool_name)),
+                        "args_summary": {
+                            "type": "object",
+                            "field_count": 0,
+                            "keys": [],
+                        },
+                        "error": "approval_required",
+                    },
+                })
+            }),
+    );
+    records
 }
 
 fn requester_context(profile: &DemoProfile, role: &str) -> Value {
@@ -592,7 +684,7 @@ fn final_slack_response(profile: &DemoProfile) -> &'static str {
     match profile.unit_id {
         "sales" => "ACME changes this week: renewal is active, SSO onboarding friction is the top support theme, and the champion change keeps relationship risk at medium. Financial/payment details and raw repo details were not included.",
         "engineering" => "Engineering view for ACME: JWT rotation landed, the SSO integration branch remains open, the Linear epic targets M2, and the SEV-2 cache incident was mitigated. Contract value and payment status are hidden.",
-        "finance" => "Finance view for ACME: INV-2043 is $120k net-30 and 7 days overdue, an $8k refund is pending approval, and the MSA auto-renews on 2026-09-01 with a 14% uplift. Raw repo details are hidden; financial reads are approval-gated.",
+        "finance" => "Finance memory view for ACME: INV-2043 is $120k net-30 and 7 days overdue, an $8k refund is pending approval, and the MSA auto-renews on 2026-09-01 with a 14% uplift. Raw repo details are hidden; live financial tool reads are awaiting approval.",
         "leadership" => "Leadership view for ACME: top-5 account, renewal on track, one open SEV, and a payment slip noted with financial details redacted.",
         "contractor_acme_x" => "Contractor view: only Project X export-pipeline material is in scope. Customer account, finance, repo, and support details are unavailable for this requester.",
         _ => "No ACME demo response is configured for this requester.",
@@ -669,6 +761,7 @@ mod tests {
             assert!(run["tools"]["offered"].as_array().is_some());
             assert!(run["tools"]["hidden_by_scope"].as_array().is_some());
             assert!(run["tools"]["used"].as_array().is_some());
+            assert!(run["tools"]["blocked_by_approval"].as_array().is_some());
             assert_nonempty_array(&run["policy_decisions"]);
             assert!(run["approvals"]["approval_required_events"]
                 .as_array()
@@ -732,10 +825,21 @@ mod tests {
             let offered = string_array(&run["tools"]["offered"]);
             let hidden = string_array(&run["tools"]["hidden_by_scope"]);
             let used = string_array(&run["tools"]["used"]);
+            let blocked = string_array(&run["tools"]["blocked_by_approval"]);
             for tool in &used {
                 assert!(
                     offered.contains(tool),
                     "used tool must have been offered: {tool}"
+                );
+            }
+            for tool in &blocked {
+                assert!(
+                    offered.contains(tool),
+                    "approval-blocked tool must have been offered: {tool}"
+                );
+                assert!(
+                    !used.contains(tool),
+                    "approval-blocked tool must not be counted as used: {tool}"
                 );
             }
             for tool in hidden {
@@ -746,6 +850,10 @@ mod tests {
                 assert!(
                     !used.contains(&tool),
                     "hidden tool must not be used: {tool}"
+                );
+                assert!(
+                    !blocked.contains(&tool),
+                    "hidden tool must not be approval-blocked: {tool}"
                 );
             }
         }
@@ -770,18 +878,54 @@ mod tests {
             .iter()
             .filter_map(|event| event["tool"].as_str().map(str::to_string))
             .collect::<Vec<_>>();
-        assert!(tools.contains(&"mcp.invoices.read_invoices".to_string()));
-        assert!(tools.contains(&"mcp.contracts.read_contracts".to_string()));
+        let expected_finance_tools = ["mcp.invoices.read_invoices", "mcp.contracts.read_contracts"];
+        for tool in expected_finance_tools {
+            assert!(tools.contains(&tool.to_string()));
+        }
+
+        let used = string_array(&finance["tools"]["used"]);
+        let blocked = string_array(&finance["tools"]["blocked_by_approval"]);
+        for tool in expected_finance_tools {
+            assert!(
+                !used.contains(&tool.to_string()),
+                "approval-gated finance tool must not be marked used: {tool}"
+            );
+            assert!(
+                blocked.contains(&tool.to_string()),
+                "approval-gated finance tool should be blocked pending approval: {tool}"
+            );
+        }
+        assert!(finance["approvals"]["pending_gate"].is_object());
+        assert!(finance["approvals"]["gate_history"]
+            .as_array()
+            .is_some_and(Vec::is_empty));
+
+        let ledger_records = finance["control_panel_receipt"]["ledger"]["records"]
+            .as_array()
+            .expect("ledger records");
+        for tool in expected_finance_tools {
+            let record = ledger_records
+                .iter()
+                .find(|row| row["record"]["tool"].as_str() == Some(tool))
+                .unwrap_or_else(|| panic!("missing blocked ledger record for {tool}"));
+            assert_eq!(record["record"]["status"].as_str(), Some("blocked"));
+            assert_eq!(
+                record["record"]["policy_decision_id"].as_str(),
+                Some(format!("pd-acme-slack-demo-finance-{}", sanitize_id(tool)).as_str())
+            );
+        }
 
         for run in receipt_runs() {
             if run["profile"]["slack_user_id"].as_str() == Some("U_FINANCE") {
                 continue;
             }
             let offered = string_array(&run["tools"]["offered"]);
-            assert!(
-                !offered.contains(&"mcp.invoices.read_invoices".to_string()),
-                "non-finance profiles must not globally receive finance read tools"
-            );
+            for tool in expected_finance_tools {
+                assert!(
+                    !offered.contains(&tool.to_string()),
+                    "non-finance profiles must not globally receive finance read tools"
+                );
+            }
         }
     }
 
@@ -790,6 +934,13 @@ mod tests {
         for run in receipt_runs() {
             let receipt = &run["control_panel_receipt"];
             assert!(receipt["ledger"]["tool_manifest"].is_object());
+            let ledger_records = receipt["ledger"]["records"]
+                .as_array()
+                .expect("ledger records");
+            assert_eq!(
+                receipt["ledger"]["summary"]["record_count"].as_u64(),
+                Some(ledger_records.len() as u64)
+            );
             let package = &receipt["evidence_package"];
             assert_eq!(
                 package["package_type"].as_str(),
@@ -802,6 +953,9 @@ mod tests {
             assert!(package["tool_manifest"]["used_subset_offered"]
                 .as_bool()
                 .unwrap_or(false));
+            assert!(package["tool_manifest"]["blocked_by_approval"]
+                .as_array()
+                .is_some());
             assert!(package["policy_decisions"].as_array().is_some());
             assert!(package["approvals"].is_object());
             assert!(package["memory_audit"].as_array().is_some());

@@ -22,6 +22,6 @@ Profiles covered:
 - Leadership user
 - External contractor
 
-For each profile the harness emits and validates a control-panel-compatible governance receipt containing Slack identity, resolved Tandem principal, tenant/runtime context, department role/grants, memory returned vs hidden, tools offered/used/hidden, policy decisions, approval-required events, redactions, and the final Slack-visible response.
+For each profile the harness emits and validates a control-panel-compatible governance receipt containing Slack identity, resolved Tandem principal, tenant/runtime context, department role/grants, memory returned vs hidden, tools offered/used/hidden or blocked by approval, policy decisions, approval-required events, redactions, and the final Slack-visible response.
 
 The harness is resettable because it consumes `acme_demo_dataset()` only; no live Slack delivery, manual copy/paste, or durable external state is required.
