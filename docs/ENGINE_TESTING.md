@@ -94,10 +94,16 @@ Rules for new tests (these keep plain `cargo test` usable for filtered runs):
 Stop the running service before rebuilding so the old engine is not competing for CPU during the
 compile and the installed binary is replaced cleanly.
 
-Use the `tandem-ai/enterprise` feature for local service builds that should match the standard
-release artifact: enterprise routes, premium governance, and Google Drive connectors compiled in.
-The bare `cargo build -p tandem-ai` command is still the minimal public/dev composition and does
-not include the enterprise server.
+Choose the build feature set for what you are testing:
+
+- `tandem-ai/enterprise` matches the standard release artifact: enterprise routes, premium
+  governance, and Google Drive connectors compiled in, but without the heavyweight local embedding
+  stack.
+- `tandem-ai/enterprise-full` adds local semantic memory embeddings (`fastembed`/`ort`) on top of
+  the enterprise feature set. Use this when you expect local agent memory import/search/retrieval to
+  work without an external embedding service.
+- Bare `cargo build -p tandem-ai` is the minimal public/dev composition and does not include the
+  enterprise server or local embeddings.
 
 ```bash
 sudo systemctl stop tandem-engine
@@ -106,8 +112,14 @@ sudo install -m 755 target/fast-release/tandem-engine /usr/local/bin/tandem-engi
 sudo systemctl restart tandem-engine
 ```
 
-Only use `--features tandem-ai/enterprise-full` for the hosted Linux/local-embeddings build; it
-adds the heavyweight `fastembed`/`ort` stack on top of the standard enterprise release feature set.
+For local control-panel testing that needs semantic memory, use:
+
+```bash
+sudo systemctl stop tandem-engine
+cargo build -p tandem-ai --profile fast-release --features tandem-ai/enterprise-full
+sudo install -m 755 target/fast-release/tandem-engine /usr/local/bin/tandem-engine
+sudo systemctl restart tandem-engine
+```
 
 Run storage cleanup commands with the installed binary path so local shells do not accidentally
 hit the npm `tandem-engine` shim first.
