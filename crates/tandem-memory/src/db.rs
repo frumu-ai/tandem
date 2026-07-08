@@ -3,7 +3,7 @@
 // Database Layer Module
 // SQLite + sqlite-vec for vector storage
 
-use crate::types::owner_org_unit_id_from_metadata;
+use crate::types::{owner_org_unit_id_from_metadata, tenant_shared_from_metadata};
 use crate::types::{
     CleanupLogEntry, ClearFileIndexResult, GlobalMemoryRecord, GlobalMemorySearchHit,
     GlobalMemoryWriteResult, KnowledgeCoverageRecord, KnowledgeItemRecord, KnowledgeItemStatus,
@@ -53,6 +53,7 @@ static SCHEMA_INIT_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 const MEMORY_SCHEMA_MIGRATIONS: &[(i64, &str)] = &[
     (1, "bootstrap_memory_schema"),
     (2, "memory_config_retention_columns"),
+    (3, "chunk_owner_org_unit_scope"),
 ];
 
 fn ensure_schema_migrations_table(conn: &Connection) -> MemoryResult<()> {

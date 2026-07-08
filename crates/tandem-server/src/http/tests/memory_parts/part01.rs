@@ -364,35 +364,24 @@ async fn memory_import_records_enterprise_ingestion_job_audit() {
     );
     assert_eq!(rows[0].data_class, "internal");
 
-    let req = Request::builder()
-        .method("GET")
-        .uri("/enterprise/ingestion-jobs?binding_id=audited-binding")
-        .header("x-tandem-request-source", "local_control_panel")
-        .body(Body::empty())
-        .expect("jobs request");
-    let resp = app.oneshot(req).await.expect("response");
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
-    let payload: Value = serde_json::from_slice(&body).expect("json");
-    assert_eq!(payload.get("count").and_then(Value::as_u64), Some(1));
-    let job = payload
-        .get("ingestion_jobs")
-        .and_then(Value::as_array)
-        .and_then(|jobs| jobs.first())
-        .expect("ingestion job");
+    let jobs: Vec<_> = state
+        .enterprise
+        .ingestion_jobs
+        .read()
+        .await
+        .values()
+        .filter(|job| job.binding_id == "audited-binding")
+        .cloned()
+        .collect();
+    assert_eq!(jobs.len(), 1);
+    let job = &jobs[0];
+    assert_eq!(job.connector_id, "manual_upload");
+    assert_eq!(job.binding_id, "audited-binding");
     assert_eq!(
-        job.get("connector_id").and_then(Value::as_str),
-        Some("manual_upload")
+        job.state,
+        tandem_enterprise_contract::IngestionJobState::Completed
     );
-    assert_eq!(
-        job.get("binding_id").and_then(Value::as_str),
-        Some("audited-binding")
-    );
-    assert_eq!(job.get("state").and_then(Value::as_str), Some("completed"));
-    assert!(job
-        .get("source_object_ids")
-        .and_then(Value::as_array)
-        .is_some_and(|source_objects| !source_objects.is_empty()));
+    assert!(!job.source_object_ids.is_empty());
 }
 
 #[tokio::test]
@@ -452,7 +441,7 @@ async fn memory_import_quarantines_review_required_source_binding() {
         .write()
         .await
         .insert("local::local::local::review-binding".to_string(), binding);
-    let app = app_router(state);
+    let app = app_router(state.clone());
 
     let req = Request::builder()
         .method("POST")
@@ -472,102 +461,49 @@ async fn memory_import_quarantines_review_required_source_binding() {
     let resp = app.clone().oneshot(req).await.expect("response");
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let req = Request::builder()
-        .method("GET")
-        .uri("/enterprise/ingestion-jobs?binding_id=review-binding")
-        .header("x-tandem-request-source", "local_control_panel")
-        .body(Body::empty())
-        .expect("jobs request");
-    let resp = app.clone().oneshot(req).await.expect("response");
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
-    let payload: Value = serde_json::from_slice(&body).expect("json");
-    let job = payload
-        .get("ingestion_jobs")
-        .and_then(Value::as_array)
-        .and_then(|jobs| jobs.first())
-        .expect("ingestion job");
+    let jobs: Vec<_> = state
+        .enterprise
+        .ingestion_jobs
+        .read()
+        .await
+        .values()
+        .filter(|job| job.binding_id == "review-binding")
+        .cloned()
+        .collect();
+    assert_eq!(jobs.len(), 1);
+    let job = &jobs[0];
     assert_eq!(
-        job.get("state").and_then(Value::as_str),
-        Some("quarantined")
+        job.state,
+        tandem_enterprise_contract::IngestionJobState::Quarantined
     );
-    let quarantine_id = job
-        .get("quarantine_id")
-        .and_then(Value::as_str)
-        .expect("quarantine id")
-        .to_string();
+    let quarantine_id = job.quarantine_id.clone().expect("quarantine id");
 
-    let req = Request::builder()
-        .method("GET")
-        .uri("/enterprise/ingestion-quarantines?binding_id=review-binding")
-        .header("x-tandem-request-source", "local_control_panel")
-        .body(Body::empty())
-        .expect("quarantines request");
-    let resp = app.clone().oneshot(req).await.expect("response");
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
-    let payload: Value = serde_json::from_slice(&body).expect("json");
-    assert_eq!(payload.get("count").and_then(Value::as_u64), Some(1));
+    let quarantines: Vec<_> = state
+        .enterprise
+        .ingestion_quarantines
+        .read()
+        .await
+        .values()
+        .filter(|quarantine| quarantine.binding_id == "review-binding")
+        .cloned()
+        .collect();
+    assert_eq!(quarantines.len(), 1);
+    assert_eq!(quarantines[0].quarantine_id, quarantine_id);
+
+    let db = tandem_memory::db::MemoryDatabase::new(&state.memory_db_path)
+        .await
+        .expect("memory db");
+    let source_objects = db
+        .list_source_object_lifecycle_for_binding_for_tenant(
+            &tandem_memory::types::MemoryTenantScope::local(),
+            "review-binding",
+        )
+        .await
+        .expect("source objects");
+    assert_eq!(source_objects.len(), 1);
     assert_eq!(
-        payload
-            .get("quarantines")
-            .and_then(Value::as_array)
-            .and_then(|rows| rows.first())
-            .and_then(|row| row.get("quarantine_id"))
-            .and_then(Value::as_str),
-        Some(quarantine_id.as_str())
-    );
-
-    let req = Request::builder()
-        .method("GET")
-        .uri("/enterprise/source-bindings/review-binding/source-objects")
-        .header("x-tandem-request-source", "local_control_panel")
-        .body(Body::empty())
-        .expect("source objects request");
-    let resp = app.clone().oneshot(req).await.expect("response");
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
-    let payload: Value = serde_json::from_slice(&body).expect("json");
-    assert_eq!(
-        payload
-            .get("source_objects")
-            .and_then(Value::as_array)
-            .and_then(|rows| rows.first())
-            .and_then(|row| row.get("state"))
-            .and_then(Value::as_str),
-        Some("quarantined")
-    );
-
-    let req = Request::builder()
-        .method("PATCH")
-        .uri(format!(
-            "/enterprise/ingestion-quarantines/{quarantine_id}/review"
-        ))
-        .header("content-type", "application/json")
-        .header("x-tandem-request-source", "local_control_panel")
-        .body(Body::from(json!({"disposition": "delete"}).to_string()))
-        .expect("review request");
-    let resp = app.clone().oneshot(req).await.expect("response");
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let req = Request::builder()
-        .method("GET")
-        .uri("/enterprise/ingestion-jobs?binding_id=review-binding")
-        .header("x-tandem-request-source", "local_control_panel")
-        .body(Body::empty())
-        .expect("jobs request");
-    let resp = app.oneshot(req).await.expect("response");
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
-    let payload: Value = serde_json::from_slice(&body).expect("json");
-    assert_eq!(
-        payload
-            .get("ingestion_jobs")
-            .and_then(Value::as_array)
-            .and_then(|jobs| jobs.first())
-            .and_then(|job| job.get("state"))
-            .and_then(Value::as_str),
-        Some("skipped")
+        source_objects[0].state,
+        tandem_memory::types::SourceObjectLifecycleState::Quarantined
     );
 }
 

@@ -37,6 +37,90 @@ impl MemoryDatabase {
         Ok(())
     }
 
+    fn ensure_chunk_scope_columns(
+        &self,
+        conn: &Connection,
+        table: &str,
+        existing_cols: &HashSet<String>,
+    ) -> MemoryResult<()> {
+        if !existing_cols.contains("owner_org_unit_id") {
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN owner_org_unit_id TEXT"),
+                [],
+            )?;
+        }
+        if !existing_cols.contains("tenant_shared") {
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN tenant_shared INTEGER NOT NULL DEFAULT 0"),
+                [],
+            )?;
+        }
+        // Per-scope envelope for hosted-KMS encryption (TAN-668). NULL for
+        // local/plaintext rows; carries the wrapped DEK + key scope for hosted
+        // rows so `content`/`metadata` can be decrypted before use.
+        if !existing_cols.contains("crypto_envelope") {
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN crypto_envelope TEXT"),
+                [],
+            )?;
+        }
+        self.backfill_chunk_scope_columns(conn, table)
+    }
+
+    fn backfill_chunk_scope_columns(&self, conn: &Connection, table: &str) -> MemoryResult<()> {
+        let rows = {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT id, metadata FROM {table}
+                 WHERE (owner_org_unit_id IS NULL OR tenant_shared = 0)
+                   AND metadata IS NOT NULL
+                   AND TRIM(metadata) != ''"
+            ))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+
+        for (id, metadata_stored) in rows {
+            let Some(metadata_stored) = metadata_stored else {
+                continue;
+            };
+            let metadata_plain = match self.crypto.decrypt_field(&metadata_stored) {
+                Ok(metadata_plain) => metadata_plain,
+                Err(err) => {
+                    tracing::warn!(
+                        table = table,
+                        chunk_id = id.as_str(),
+                        "skipping owner_org_unit_id backfill for unreadable chunk metadata: {}",
+                        err
+                    );
+                    continue;
+                }
+            };
+            let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&metadata_plain) else {
+                continue;
+            };
+            let owner_org_unit_id = owner_org_unit_id_from_metadata(Some(&metadata));
+            let tenant_shared = tenant_shared_from_metadata(Some(&metadata));
+            if owner_org_unit_id.is_none() && !tenant_shared {
+                continue;
+            };
+            conn.execute(
+                &format!(
+                    "UPDATE {table}
+                     SET owner_org_unit_id = COALESCE(owner_org_unit_id, ?1),
+                         tenant_shared = CASE WHEN ?2 = 1 THEN 1 ELSE tenant_shared END
+                     WHERE id = ?3"
+                ),
+                params![owner_org_unit_id.as_deref(), i64::from(tenant_shared), id],
+            )?;
+        }
+
+        Ok(())
+    }
+
     /// Initialize or open the memory database
     pub async fn new(db_path: &Path) -> MemoryResult<Self> {
         if let Some(parent) = db_path.parent() {
@@ -151,7 +235,9 @@ impl MemoryDatabase {
                 source TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 token_count INTEGER NOT NULL DEFAULT 0,
-                metadata TEXT
+                metadata TEXT,
+                owner_org_unit_id TEXT,
+                tenant_shared INTEGER NOT NULL DEFAULT 0
             )",
             [],
         )?;
@@ -208,15 +294,7 @@ impl MemoryDatabase {
                 [],
             )?;
         }
-        // Per-scope envelope for hosted-KMS encryption (TAN-668). NULL for
-        // local/plaintext rows; carries the wrapped DEK + key scope for hosted
-        // rows so `content`/`metadata` can be decrypted before use.
-        if !session_existing_cols.contains("crypto_envelope") {
-            conn.execute(
-                "ALTER TABLE session_memory_chunks ADD COLUMN crypto_envelope TEXT",
-                [],
-            )?;
-        }
+        self.ensure_chunk_scope_columns(&conn, "session_memory_chunks", &session_existing_cols)?;
         conn.execute(
             "UPDATE session_memory_chunks SET tenant_org_id = 'local' WHERE tenant_org_id IS NULL OR tenant_org_id = ''",
             [],
@@ -248,7 +326,9 @@ impl MemoryDatabase {
                 source TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 token_count INTEGER NOT NULL DEFAULT 0,
-                metadata TEXT
+                metadata TEXT,
+                owner_org_unit_id TEXT,
+                tenant_shared INTEGER NOT NULL DEFAULT 0
             )",
             [],
         )?;
@@ -309,13 +389,7 @@ impl MemoryDatabase {
                 [],
             )?;
         }
-        // Per-scope envelope for hosted-KMS encryption (TAN-668); NULL for local rows.
-        if !existing_cols.contains("crypto_envelope") {
-            conn.execute(
-                "ALTER TABLE project_memory_chunks ADD COLUMN crypto_envelope TEXT",
-                [],
-            )?;
-        }
+        self.ensure_chunk_scope_columns(&conn, "project_memory_chunks", &existing_cols)?;
         conn.execute(
             "UPDATE project_memory_chunks SET tenant_org_id = 'local' WHERE tenant_org_id IS NULL OR tenant_org_id = ''",
             [],
@@ -487,7 +561,9 @@ impl MemoryDatabase {
                 source TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 token_count INTEGER NOT NULL DEFAULT 0,
-                metadata TEXT
+                metadata TEXT,
+                owner_org_unit_id TEXT,
+                tenant_shared INTEGER NOT NULL DEFAULT 0
             )",
             [],
         )?;
@@ -544,13 +620,7 @@ impl MemoryDatabase {
                 [],
             )?;
         }
-        // Per-scope envelope for hosted-KMS encryption (TAN-668); NULL for local rows.
-        if !global_existing_cols.contains("crypto_envelope") {
-            conn.execute(
-                "ALTER TABLE global_memory_chunks ADD COLUMN crypto_envelope TEXT",
-                [],
-            )?;
-        }
+        self.ensure_chunk_scope_columns(&conn, "global_memory_chunks", &global_existing_cols)?;
         conn.execute(
             "UPDATE global_memory_chunks SET tenant_org_id = 'local' WHERE tenant_org_id IS NULL OR tenant_org_id = ''",
             [],
@@ -700,6 +770,10 @@ impl MemoryDatabase {
             [],
         )?;
         conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_chunks_tenant_org_unit_session ON session_memory_chunks(tenant_org_id, tenant_workspace_id, IFNULL(tenant_deployment_id, ''), owner_org_unit_id, session_id)",
+            [],
+        )?;
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_session_chunks_project ON session_memory_chunks(project_id)",
             [],
         )?;
@@ -716,6 +790,10 @@ impl MemoryDatabase {
             [],
         )?;
         conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_project_chunks_tenant_org_unit_project ON project_memory_chunks(tenant_org_id, tenant_workspace_id, IFNULL(tenant_deployment_id, ''), owner_org_unit_id, project_id)",
+            [],
+        )?;
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_project_file_chunks ON project_memory_chunks(project_id, source, source_path)",
             [],
         )?;
@@ -729,6 +807,10 @@ impl MemoryDatabase {
         )?;
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_global_chunks_tenant_created ON global_memory_chunks(tenant_org_id, tenant_workspace_id, IFNULL(tenant_deployment_id, ''), created_at DESC)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_global_chunks_tenant_org_unit_created ON global_memory_chunks(tenant_org_id, tenant_workspace_id, IFNULL(tenant_deployment_id, ''), owner_org_unit_id, created_at DESC)",
             [],
         )?;
         conn.execute(
@@ -1455,8 +1537,13 @@ impl MemoryDatabase {
         };
 
         let created_at_str = chunk.created_at.to_rfc3339();
+        // Department (owner_org_unit_id) and tenant_shared persist as first-class
+        // scope columns (TAN-645/647).
+        let owner_org_unit_id = owner_org_unit_id_from_metadata(chunk.metadata.as_ref());
+        let tenant_shared = tenant_shared_from_metadata(chunk.metadata.as_ref());
         // Encrypt semantic payloads at rest under the row's key scope (no-op in
-        // local plaintext mode; per-scope KMS envelope in hosted mode).
+        // local plaintext mode; per-scope KMS envelope in hosted mode). This
+        // supersedes the unscoped encrypt_field for content and metadata.
         let metadata_plain = chunk
             .metadata
             .as_ref()
@@ -1475,8 +1562,8 @@ impl MemoryDatabase {
                         "INSERT INTO {} (
                             id, content, session_id, project_id, source, created_at, token_count, metadata,
                             source_path, source_mtime, source_size, source_hash,
-                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject, crypto_envelope
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject, owner_org_unit_id, tenant_shared, crypto_envelope
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
                         chunks_table
                     ),
                     params![
@@ -1496,6 +1583,8 @@ impl MemoryDatabase {
                         chunk.tenant_scope.workspace_id.as_str(),
                         chunk.tenant_scope.deployment_id.as_deref(),
                         chunk.subject.as_deref(),
+                        owner_org_unit_id.as_deref(),
+                        i64::from(tenant_shared),
                         crypto_envelope
                     ],
                 )?;
@@ -1506,8 +1595,8 @@ impl MemoryDatabase {
                         "INSERT INTO {} (
                             id, content, project_id, session_id, source, created_at, token_count, metadata,
                             source_path, source_mtime, source_size, source_hash,
-                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject, crypto_envelope
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject, owner_org_unit_id, tenant_shared, crypto_envelope
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
                         chunks_table
                     ),
                     params![
@@ -1527,6 +1616,8 @@ impl MemoryDatabase {
                         chunk.tenant_scope.workspace_id.as_str(),
                         chunk.tenant_scope.deployment_id.as_deref(),
                         chunk.subject.as_deref(),
+                        owner_org_unit_id.as_deref(),
+                        i64::from(tenant_shared),
                         crypto_envelope
                     ],
                 )?;
@@ -1537,8 +1628,8 @@ impl MemoryDatabase {
                         "INSERT INTO {} (
                             id, content, source, created_at, token_count, metadata,
                             source_path, source_mtime, source_size, source_hash,
-                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject, crypto_envelope
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject, owner_org_unit_id, tenant_shared, crypto_envelope
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                         chunks_table
                     ),
                     params![
@@ -1556,6 +1647,8 @@ impl MemoryDatabase {
                         chunk.tenant_scope.workspace_id.as_str(),
                         chunk.tenant_scope.deployment_id.as_deref(),
                         chunk.subject.as_deref(),
+                        owner_org_unit_id.as_deref(),
+                        i64::from(tenant_shared),
                         crypto_envelope
                     ],
                 )?;
@@ -1599,6 +1692,7 @@ impl MemoryDatabase {
             &MemoryTenantScope::local(),
             limit,
             None,
+            None,
         )
         .await
     }
@@ -1617,6 +1711,7 @@ impl MemoryDatabase {
         tenant_scope: &MemoryTenantScope,
         limit: i64,
         visible_subject: Option<&str>,
+        owner_org_unit_id: Option<&str>,
     ) -> MemoryResult<Vec<(MemoryChunk, f64)>> {
         self.deny_local_scope_in_strict_mode("memory search", tenant_scope)?;
         let conn = self.conn.lock().await;
@@ -1651,6 +1746,7 @@ impl MemoryDatabase {
                          JOIN {} AS c ON v.chunk_id = c.id
                          WHERE c.session_id = ?1 AND {}
                            AND (?7 IS NULL OR c.subject IS NULL OR c.subject = ?7)
+                           AND (?8 IS NULL OR c.owner_org_unit_id = ?8 OR c.tenant_shared = 1 OR (c.owner_org_unit_id IS NULL AND c.subject = ?7))
                          ORDER BY distance
                          LIMIT ?6",
                         vectors_table, chunks_table, tenant_clause
@@ -1665,7 +1761,8 @@ impl MemoryDatabase {
                                 tenant_scope.deployment_id.as_deref(),
                                 embedding_json,
                                 limit,
-                                visible_subject
+                                visible_subject,
+                                owner_org_unit_id
                             ],
                             |row| {
                                 Ok((
@@ -1687,6 +1784,7 @@ impl MemoryDatabase {
                          JOIN {} AS c ON v.chunk_id = c.id
                          WHERE c.project_id = ?1 AND {}
                            AND (?7 IS NULL OR c.subject IS NULL OR c.subject = ?7)
+                           AND (?8 IS NULL OR c.owner_org_unit_id = ?8 OR c.tenant_shared = 1 OR (c.owner_org_unit_id IS NULL AND c.subject = ?7))
                          ORDER BY distance
                          LIMIT ?6",
                         vectors_table, chunks_table, tenant_clause
@@ -1701,7 +1799,8 @@ impl MemoryDatabase {
                                 tenant_scope.deployment_id.as_deref(),
                                 embedding_json,
                                 limit,
-                                visible_subject
+                                visible_subject,
+                                owner_org_unit_id
                             ],
                             |row| {
                                 Ok((
@@ -1723,6 +1822,7 @@ impl MemoryDatabase {
                          JOIN {} AS c ON v.chunk_id = c.id
                          WHERE {}
                            AND (?6 IS NULL OR c.subject IS NULL OR c.subject = ?6)
+                           AND (?7 IS NULL OR c.owner_org_unit_id = ?7 OR c.tenant_shared = 1 OR (c.owner_org_unit_id IS NULL AND c.subject = ?6))
                          ORDER BY distance
                          LIMIT ?5",
                         vectors_table, chunks_table, tenant_clause
@@ -1736,7 +1836,8 @@ impl MemoryDatabase {
                                 tenant_scope.deployment_id.as_deref(),
                                 embedding_json,
                                 limit,
-                                visible_subject
+                                visible_subject,
+                                owner_org_unit_id
                             ],
                             |row| {
                                 Ok((
@@ -1761,6 +1862,7 @@ impl MemoryDatabase {
                          JOIN {} AS c ON v.chunk_id = c.id
                          WHERE c.project_id = ?1 AND {}
                            AND (?7 IS NULL OR c.subject IS NULL OR c.subject = ?7)
+                           AND (?8 IS NULL OR c.owner_org_unit_id = ?8 OR c.tenant_shared = 1 OR (c.owner_org_unit_id IS NULL AND c.subject = ?7))
                          ORDER BY distance
                          LIMIT ?6",
                         vectors_table, chunks_table, tenant_clause
@@ -1775,7 +1877,8 @@ impl MemoryDatabase {
                                 tenant_scope.deployment_id.as_deref(),
                                 embedding_json,
                                 limit,
-                                visible_subject
+                                visible_subject,
+                                owner_org_unit_id
                             ],
                             |row| {
                                 Ok((
@@ -1797,6 +1900,7 @@ impl MemoryDatabase {
                          JOIN {} AS c ON v.chunk_id = c.id
                          WHERE {}
                            AND (?6 IS NULL OR c.subject IS NULL OR c.subject = ?6)
+                           AND (?7 IS NULL OR c.owner_org_unit_id = ?7 OR c.tenant_shared = 1 OR (c.owner_org_unit_id IS NULL AND c.subject = ?6))
                          ORDER BY distance
                          LIMIT ?5",
                         vectors_table, chunks_table, tenant_clause
@@ -1810,7 +1914,8 @@ impl MemoryDatabase {
                                 tenant_scope.deployment_id.as_deref(),
                                 embedding_json,
                                 limit,
-                                visible_subject
+                                visible_subject,
+                                owner_org_unit_id
                             ],
                             |row| {
                                 Ok((
@@ -1834,6 +1939,7 @@ impl MemoryDatabase {
                      JOIN {} AS c ON v.chunk_id = c.id
                      WHERE {}
                        AND (?6 IS NULL OR c.subject IS NULL OR c.subject = ?6)
+                       AND (?7 IS NULL OR c.owner_org_unit_id = ?7 OR c.tenant_shared = 1 OR (c.owner_org_unit_id IS NULL AND c.subject = ?6))
                      ORDER BY distance
                      LIMIT ?5",
                     vectors_table, chunks_table, tenant_clause
@@ -1847,7 +1953,8 @@ impl MemoryDatabase {
                             tenant_scope.deployment_id.as_deref(),
                             embedding_json,
                             limit,
-                            visible_subject
+                            visible_subject,
+                            owner_org_unit_id
                         ],
                         |row| {
                             Ok((
