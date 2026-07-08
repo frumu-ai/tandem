@@ -4,6 +4,7 @@ pub mod context_uri;
 pub mod crypto;
 pub mod db;
 pub mod decrypt_broker;
+pub mod decrypt_context;
 pub mod dek_cache;
 pub mod distillation;
 pub mod embeddings;

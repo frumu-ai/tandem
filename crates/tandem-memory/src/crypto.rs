@@ -275,6 +275,77 @@ impl MemoryCryptoProvider {
         }
     }
 
+    /// Encrypt a whole row's fields (e.g. `[content, metadata]`) under one key
+    /// scope. In hosted mode every field shares a single DEK and envelope, so the
+    /// row costs one KMS wrap; the returned envelope must be persisted **once**
+    /// alongside the row (the `crypto_envelope` column) and is `None` in
+    /// local/plaintext modes, which encrypt each field with the single host key.
+    pub fn encrypt_row_scoped(
+        &self,
+        plaintexts: &[&str],
+        scope: &MemoryKeyScope,
+        policy_decision_id: &str,
+        audit_id: &str,
+    ) -> MemoryResult<(Vec<String>, Option<MemoryEnvelopeMetadata>)> {
+        match &self.inner {
+            CryptoInner::Plaintext => {
+                Ok((plaintexts.iter().map(|p| p.to_string()).collect(), None))
+            }
+            CryptoInner::LocalKey(key) => {
+                let ciphertexts = plaintexts
+                    .iter()
+                    .map(|plaintext| encrypt_with_key(key, plaintext))
+                    .collect::<MemoryResult<Vec<_>>>()?;
+                Ok((ciphertexts, None))
+            }
+            CryptoInner::Hosted(hosted) => {
+                let (ciphertexts, envelope) =
+                    hosted.seal_fields(scope, plaintexts, policy_decision_id, audit_id)?;
+                Ok((ciphertexts, Some(envelope)))
+            }
+            CryptoInner::HostedPending => Err(MemoryError::InvalidConfig(
+                "hosted memory encryption requires a provisioned KMS provider; refusing to store plaintext (fail-closed)"
+                    .to_string(),
+            )),
+        }
+    }
+
+    /// Decrypt a whole row's fields. The caller passes the row's stored
+    /// `crypto_envelope` (if any): `Some` means the row was hosted-sealed and is
+    /// decrypted via the broker-authorized KMS path (a `principal` is required);
+    /// `None` means a legacy/local row decrypted with the single host key. This
+    /// makes reads branch on the row, not the process mode, so hosted-sealed and
+    /// legacy rows coexist. Fail-closed: a hosted-sealed row read by a local
+    /// provider, or without a principal, is rejected rather than leaked.
+    pub fn decrypt_row_scoped(
+        &self,
+        stored: &[&str],
+        envelope: Option<&MemoryEnvelopeMetadata>,
+        principal: Option<&MemoryDecryptPrincipal>,
+        key_lifecycle_policy: Option<MemoryKeyLifecyclePolicy>,
+    ) -> MemoryResult<Vec<String>> {
+        match (&self.inner, envelope) {
+            (CryptoInner::Hosted(hosted), Some(envelope)) => {
+                let principal = principal.ok_or_else(|| {
+                    MemoryError::InvalidConfig(
+                        "hosted memory decryption requires a decrypt principal".to_string(),
+                    )
+                })?;
+                hosted.unseal_fields(envelope, stored, principal, key_lifecycle_policy)
+            }
+            // A hosted-sealed row (has an envelope) read by a non-hosted provider
+            // cannot be decrypted here — fail closed rather than return ciphertext.
+            (_, Some(_)) => Err(MemoryError::InvalidConfig(
+                "row is hosted-sealed (carries a crypto envelope) but the memory crypto provider is not hosted-KMS".to_string(),
+            )),
+            // No envelope: a legacy / local-key / plaintext row.
+            (_, None) => stored
+                .iter()
+                .map(|value| self.decrypt_field(value))
+                .collect(),
+        }
+    }
+
     /// Encrypt an optional JSON-ish metadata string if present.
     pub fn encrypt_optional(&self, value: Option<&str>) -> MemoryResult<Option<String>> {
         match value {

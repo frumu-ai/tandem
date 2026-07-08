@@ -38,6 +38,17 @@ pub struct MemoryDatabase {
     strict_tenant_enforcement: std::sync::atomic::AtomicBool,
 }
 
+/// Write-time authorization anchors stamped into a row's crypto envelope
+/// (TAN-668). The decrypt broker later requires an unwrap to present the same
+/// ids, which are read back from the stored envelope — so they need only be
+/// stable per row. Fresh per write.
+fn memory_write_authorization_ids() -> (String, String) {
+    (
+        format!("memory-write-{}", uuid::Uuid::new_v4().simple()),
+        format!("memory-audit-{}", uuid::Uuid::new_v4().simple()),
+    )
+}
+
 static SCHEMA_INIT_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 const MEMORY_SCHEMA_MIGRATIONS: &[(i64, &str)] = &[
     (1, "bootstrap_memory_schema"),
@@ -97,14 +108,17 @@ fn row_to_chunk(
     tier: MemoryTier,
     crypto: &crate::crypto::MemoryCryptoProvider,
 ) -> Result<MemoryChunk, rusqlite::Error> {
+    // The decrypt principal is scoped by the caller (tandem-server's retrieval
+    // gateway) via a task-local for the duration of a request's reads, so the
+    // shared multi-tenant DB does not thread it through every read signature
+    // (TAN-668). None in local/plaintext modes; required for hosted-sealed rows.
+    let principal = crate::decrypt_context::current_decrypt_principal();
+    let principal = principal.as_ref();
     let map_decrypt_err = |err: crate::types::MemoryError| {
         rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(err))
     };
     let id: String = row.get(0)?;
     let content_raw: String = row.get(1)?;
-    let content = crypto
-        .decrypt_field(&content_raw)
-        .map_err(map_decrypt_err)?;
     let (session_id, project_id, source_idx, created_at_idx, token_count_idx, metadata_idx) =
         match tier {
             MemoryTier::Session => (
@@ -130,9 +144,52 @@ fn row_to_chunk(
     let created_at_str: String = row.get(created_at_idx)?;
     let token_count: i64 = row.get(token_count_idx)?;
     let metadata_raw: Option<String> = row.get(metadata_idx)?;
-    let metadata_str = match metadata_raw {
-        Some(s) if !s.is_empty() => Some(crypto.decrypt_field(&s).map_err(map_decrypt_err)?),
-        other => other,
+    // A hosted-sealed row carries its per-scope envelope (unencrypted) in the
+    // `crypto_envelope` column, read *before* content so the DEK can be recovered
+    // (TAN-668). Absent/empty column = a legacy / local-key / plaintext row. The
+    // column may not be in every SELECT; `.ok()` yields None there, which decodes
+    // as a legacy row and fails closed for genuinely hosted-sealed content.
+    let crypto_envelope_raw: Option<String> = row
+        .get::<_, Option<String>>("crypto_envelope")
+        .ok()
+        .flatten()
+        .filter(|value| !value.trim().is_empty());
+    let envelope: Option<crate::envelope::MemoryEnvelopeMetadata> = match crypto_envelope_raw {
+        Some(ref raw) => Some(
+            serde_json::from_str(raw)
+                .map_err(|err| map_decrypt_err(crate::types::MemoryError::from(err)))?,
+        ),
+        None => None,
+    };
+    let metadata_present = metadata_raw
+        .as_deref()
+        .map(|value| !value.is_empty())
+        .unwrap_or(false);
+    let (content, metadata_str) = if let Some(envelope) = envelope.as_ref() {
+        // Hosted-sealed: content (+ metadata) share one envelope/DEK; the first
+        // field unwraps the DEK via the broker, the rest hit the cache.
+        let mut fields: Vec<&str> = vec![content_raw.as_str()];
+        if metadata_present {
+            fields.push(metadata_raw.as_deref().unwrap_or_default());
+        }
+        let decrypted = crypto
+            .decrypt_row_scoped(&fields, Some(envelope), principal, None)
+            .map_err(map_decrypt_err)?;
+        let content = decrypted[0].clone();
+        let metadata_str = if metadata_present {
+            decrypted.get(1).cloned()
+        } else {
+            None
+        };
+        (content, metadata_str)
+    } else {
+        // Legacy / local-key / plaintext row: decrypt each column independently.
+        let content = crypto.decrypt_field(&content_raw).map_err(map_decrypt_err)?;
+        let metadata_str = match metadata_raw {
+            Some(s) if !s.is_empty() => Some(crypto.decrypt_field(&s).map_err(map_decrypt_err)?),
+            other => other,
+        };
+        (content, metadata_str)
     };
 
     let created_at = DateTime::parse_from_rfc3339(&created_at_str)

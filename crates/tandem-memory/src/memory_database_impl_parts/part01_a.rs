@@ -208,6 +208,15 @@ impl MemoryDatabase {
                 [],
             )?;
         }
+        // Per-scope envelope for hosted-KMS encryption (TAN-668). NULL for
+        // local/plaintext rows; carries the wrapped DEK + key scope for hosted
+        // rows so `content`/`metadata` can be decrypted before use.
+        if !session_existing_cols.contains("crypto_envelope") {
+            conn.execute(
+                "ALTER TABLE session_memory_chunks ADD COLUMN crypto_envelope TEXT",
+                [],
+            )?;
+        }
         conn.execute(
             "UPDATE session_memory_chunks SET tenant_org_id = 'local' WHERE tenant_org_id IS NULL OR tenant_org_id = ''",
             [],
@@ -297,6 +306,13 @@ impl MemoryDatabase {
         if !existing_cols.contains("subject") {
             conn.execute(
                 "ALTER TABLE project_memory_chunks ADD COLUMN subject TEXT",
+                [],
+            )?;
+        }
+        // Per-scope envelope for hosted-KMS encryption (TAN-668); NULL for local rows.
+        if !existing_cols.contains("crypto_envelope") {
+            conn.execute(
+                "ALTER TABLE project_memory_chunks ADD COLUMN crypto_envelope TEXT",
                 [],
             )?;
         }
@@ -525,6 +541,13 @@ impl MemoryDatabase {
         if !global_existing_cols.contains("subject") {
             conn.execute(
                 "ALTER TABLE global_memory_chunks ADD COLUMN subject TEXT",
+                [],
+            )?;
+        }
+        // Per-scope envelope for hosted-KMS encryption (TAN-668); NULL for local rows.
+        if !global_existing_cols.contains("crypto_envelope") {
+            conn.execute(
+                "ALTER TABLE global_memory_chunks ADD COLUMN crypto_envelope TEXT",
                 [],
             )?;
         }
@@ -1159,10 +1182,23 @@ impl MemoryDatabase {
                 embedding_id TEXT,
                 created_at TEXT NOT NULL,
                 source_chunk_id TEXT,
+                crypto_envelope TEXT,
                 FOREIGN KEY (node_id) REFERENCES memory_nodes(id)
             )",
             [],
         )?;
+        // Per-scope envelope for hosted-KMS encryption (TAN-668) on existing DBs.
+        let layer_existing_cols: HashSet<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(memory_layers)")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            rows.collect::<Result<HashSet<_>, _>>()?
+        };
+        if !layer_existing_cols.contains("crypto_envelope") {
+            conn.execute(
+                "ALTER TABLE memory_layers ADD COLUMN crypto_envelope TEXT",
+                [],
+            )?;
+        }
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_memory_layers_node ON memory_layers(node_id)",
             [],
@@ -1372,6 +1408,41 @@ impl MemoryDatabase {
         }
     }
 
+    /// Seal a row's `content` + optional `metadata` under the row's at-rest key
+    /// scope (TAN-668). Returns the stored content, stored metadata (empty when
+    /// there is none), and the serialized `crypto_envelope` to persist — `None` in
+    /// local/plaintext modes (a no-op there, so single-tenant storage is
+    /// unchanged). In hosted mode both fields share one DEK/envelope.
+    fn seal_row_columns(
+        &self,
+        content: &str,
+        metadata_plain: &str,
+        key_scope: &crate::envelope::MemoryKeyScope,
+    ) -> MemoryResult<(String, String, Option<String>)> {
+        let (policy_decision_id, audit_id) = memory_write_authorization_ids();
+        let (mut ciphertexts, envelope) = if metadata_plain.is_empty() {
+            self.crypto
+                .encrypt_row_scoped(&[content], key_scope, &policy_decision_id, &audit_id)?
+        } else {
+            self.crypto.encrypt_row_scoped(
+                &[content, metadata_plain],
+                key_scope,
+                &policy_decision_id,
+                &audit_id,
+            )?
+        };
+        let content_stored = ciphertexts.remove(0);
+        let metadata_stored = if metadata_plain.is_empty() {
+            String::new()
+        } else {
+            ciphertexts.remove(0)
+        };
+        let crypto_envelope = envelope
+            .map(|envelope| serde_json::to_string(&envelope))
+            .transpose()?;
+        Ok((content_stored, metadata_stored, crypto_envelope))
+    }
+
     /// Store a chunk with its embedding
     pub async fn store_chunk(&self, chunk: &MemoryChunk, embedding: &[f32]) -> MemoryResult<()> {
         self.deny_local_scope_in_strict_mode("memory store", &chunk.tenant_scope)?;
@@ -1384,18 +1455,17 @@ impl MemoryDatabase {
         };
 
         let created_at_str = chunk.created_at.to_rfc3339();
-        // Encrypt semantic payloads at rest (no-op in local plaintext mode).
-        let content_stored = self.crypto.encrypt_field(&chunk.content)?;
+        // Encrypt semantic payloads at rest under the row's key scope (no-op in
+        // local plaintext mode; per-scope KMS envelope in hosted mode).
         let metadata_plain = chunk
             .metadata
             .as_ref()
             .map(|m| m.to_string())
             .unwrap_or_default();
-        let metadata_str = if metadata_plain.is_empty() {
-            String::new()
-        } else {
-            self.crypto.encrypt_field(&metadata_plain)?
-        };
+        let key_scope =
+            crate::types::memory_key_scope_from_metadata(&chunk.tenant_scope, chunk.metadata.as_ref());
+        let (content_stored, metadata_str, crypto_envelope) =
+            self.seal_row_columns(&chunk.content, &metadata_plain, &key_scope)?;
 
         // Insert chunk
         match chunk.tier {
@@ -1405,8 +1475,8 @@ impl MemoryDatabase {
                         "INSERT INTO {} (
                             id, content, session_id, project_id, source, created_at, token_count, metadata,
                             source_path, source_mtime, source_size, source_hash,
-                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject, crypto_envelope
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                         chunks_table
                     ),
                     params![
@@ -1425,7 +1495,8 @@ impl MemoryDatabase {
                         chunk.tenant_scope.org_id.as_str(),
                         chunk.tenant_scope.workspace_id.as_str(),
                         chunk.tenant_scope.deployment_id.as_deref(),
-                        chunk.subject.as_deref()
+                        chunk.subject.as_deref(),
+                        crypto_envelope
                     ],
                 )?;
             }
@@ -1435,8 +1506,8 @@ impl MemoryDatabase {
                         "INSERT INTO {} (
                             id, content, project_id, session_id, source, created_at, token_count, metadata,
                             source_path, source_mtime, source_size, source_hash,
-                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject, crypto_envelope
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                         chunks_table
                     ),
                     params![
@@ -1455,7 +1526,8 @@ impl MemoryDatabase {
                         chunk.tenant_scope.org_id.as_str(),
                         chunk.tenant_scope.workspace_id.as_str(),
                         chunk.tenant_scope.deployment_id.as_deref(),
-                        chunk.subject.as_deref()
+                        chunk.subject.as_deref(),
+                        crypto_envelope
                     ],
                 )?;
             }
@@ -1465,8 +1537,8 @@ impl MemoryDatabase {
                         "INSERT INTO {} (
                             id, content, source, created_at, token_count, metadata,
                             source_path, source_mtime, source_size, source_hash,
-                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject, crypto_envelope
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                         chunks_table
                     ),
                     params![
@@ -1483,7 +1555,8 @@ impl MemoryDatabase {
                         chunk.tenant_scope.org_id.as_str(),
                         chunk.tenant_scope.workspace_id.as_str(),
                         chunk.tenant_scope.deployment_id.as_deref(),
-                        chunk.subject.as_deref()
+                        chunk.subject.as_deref(),
+                        crypto_envelope
                     ],
                 )?;
             }

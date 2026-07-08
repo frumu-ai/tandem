@@ -709,6 +709,37 @@ pub fn tenant_shared_from_metadata(metadata: Option<&serde_json::Value>) -> bool
         .unwrap_or(false)
 }
 
+/// The connector source-binding id a record carries, if any (used as the
+/// source dimension of the at-rest key scope).
+pub fn source_binding_id_from_metadata(metadata: Option<&serde_json::Value>) -> Option<String> {
+    metadata
+        .and_then(|value| value.get("enterprise_source_binding"))
+        .and_then(|binding| binding.get("binding_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+/// Derive the at-rest encryption key scope (TAN-668) for a row from its tenant
+/// scope + metadata: department (`owner_org_unit_id`), data class (from
+/// `classification`, default `Internal`), and source binding. This mirrors the
+/// governed-read target derivation so the DEK scope a row is sealed under and the
+/// access-filter scope it is read under agree. Subject/`private` is an
+/// access-control axis, not a key dimension, so it is intentionally not part of
+/// the key scope.
+pub fn memory_key_scope_from_metadata(
+    tenant_scope: &MemoryTenantScope,
+    metadata: Option<&serde_json::Value>,
+) -> crate::envelope::MemoryKeyScope {
+    crate::envelope::MemoryKeyScope::new(
+        tenant_scope,
+        data_class_from_metadata(metadata).unwrap_or(DataClass::Internal),
+        source_binding_id_from_metadata(metadata),
+    )
+    .with_org_unit(owner_org_unit_id_from_metadata(metadata))
+}
+
 fn data_class_from_label(label: &str) -> Option<DataClass> {
     match label.trim().to_ascii_lowercase().replace('-', "_").as_str() {
         "public" => Some(DataClass::Public),
