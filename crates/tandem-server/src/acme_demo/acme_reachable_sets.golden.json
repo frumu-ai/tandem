@@ -3,7 +3,7 @@
     {
       "org_unit": "department/sales",
       "reachable_memory": [
-        "sales_crm_hooli",
+        "sales_crm_acme",
         "sales_risk_flag",
         "sales_support_theme"
       ],
@@ -60,8 +60,8 @@
     {
       "org_unit": "department/finance",
       "reachable_memory": [
-        "finance_contract_hooli",
-        "finance_invoice_hooli",
+        "finance_contract_acme",
+        "finance_invoice_acme",
         "finance_payment_run"
       ],
       "reachable_tools": [
@@ -137,7 +137,7 @@
       "slack_user": "U_CONTRACTOR"
     }
   ],
-  "prompt": "What's the latest on the Hooli account, and can you follow up with them?",
+  "prompt": "@tandem what changed with customer ACME this week?",
   "tenant": {
     "org_id": "acme",
     "taxonomy_id": "department",
