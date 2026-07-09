@@ -160,7 +160,8 @@ Ordinary tenant-local memory reads now enforce department ownership:
 `owner_org_unit_id` is a first-class, indexed, Postgres-portable column that also
 scopes vector search, the active department is stamped onto every ingestion path
 from the verified context, and department-unscoped records are fail-closed to
-department-scoped callers unless explicitly marked `tenant_shared`. An opt-in
+department-scoped callers unless explicitly marked `tenant_shared` or owned by
+the calling subject (the writer's own `private`/subject-scoped memory). An opt-in
 `private` flag additionally restricts a record to its collecting user on top of
 tenant + department. A cross-department isolation matrix and eval cases guard
 the model.
