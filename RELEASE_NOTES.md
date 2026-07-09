@@ -6,11 +6,16 @@ This is the canonical release-notes file used by release tooling.
 
 Tandem 0.6.8 is a hosted-v1 readiness follow-up. It hardens hosted session
 isolation, completes the native Linear webhook path and Webhooks hub, expands
-memory isolation across tenant/org/user boundaries, stabilizes the
-tandem-server test path used by CI and local full-suite runs, settles the
-0.6.8 BUSL/open-core licensing posture, removes a production-linked GPL
-dependency, and updates the OpenAI Codex catalog to the documented GPT-5.6
-preview model ids.
+memory isolation across tenant/org/user boundaries, and adds hosted-KMS
+per-scope memory encryption at rest with department as a cryptographic key
+dimension. It ships an end-to-end department-scoped Slack governance demo,
+extracts governance decision logic into the BUSL governance engine, encrypts
+the file-based governance stores at rest, and lays the storage-portability
+groundwork (a `MemoryStore` trait and a PostgreSQL/pgvector design). It also
+enforces `retention_days` with real reapers, stabilizes the tandem-server test
+path used by CI and local full-suite runs, settles the 0.6.8 BUSL/open-core
+licensing posture, removes a production-linked GPL dependency, and updates the
+OpenAI Codex catalog to the documented GPT-5.6 preview model ids.
 
 ### Linear Webhooks And Webhooks Hub
 
@@ -110,6 +115,76 @@ cleans up process-wide test overrides, and documents local nextest recipes that
 match CI's profile, feature flags, stack size, and isolated `TANDEM_HOME`.
 This addresses the class of tests that passed in isolation but failed under
 full parallel execution.
+
+### Memory Encryption At Rest (Hosted KMS)
+
+Hosted deployments can now encrypt memory at rest under per-scope,
+KMS-wrapped data-encryption keys. Each write generates a fresh DEK, encrypts the
+field with AES-256-GCM, wraps the DEK with the scope's key-encryption key
+(binding it to the scope), and stores the resulting `tce1:` ciphertext alongside
+an unencrypted envelope in a new `crypto_envelope` column. On read, a decrypt
+broker authorizes every unwrap against the requesting principal — tenant, data
+class, and source-binding grants — and the key's lifecycle state before the DEK
+is recovered from an envelope-keyed cache or a KMS unwrap. Chunk content and
+metadata and context layers all flow through this path.
+
+Department (`org_unit`) is now a cryptographic key dimension, not just an
+access-control one: data collected by different departments in the same tenant
+and data class no longer shares a DEK, so a raw database dump cannot decrypt one
+department's rows with another's key. `tandem-server` projects a request's
+verified tenant context into a memory decrypt principal — gated on the caller's
+strict resource scope — and threads it into the hosted context-layer reads, so a
+sealed row decrypts only for a caller authorized for its scope.
+
+Single-tenant and local instances are unaffected: with no KMS provisioned, the
+`crypto_envelope` column stays NULL and read/write behavior is unchanged. The
+system fails closed when the scope, principal, or envelope data is missing or
+invalid. The searchable FTS index and vector embeddings remain plaintext by
+design (they cannot be encrypted without breaking search); that residual at-rest
+exposure is documented as an accepted, mitigated decision.
+
+### Department-Scoped Slack Governance Demo
+
+A new signed Slack Events ingress endpoint turns an inbound Slack message into a
+governed session prompt under real signature verification. On top of it,
+Tandem now ships an end-to-end department-scoped governance demo: an ACME data
+set tagged by department and data class, a small tool set tagged with risk
+tiers, five requester profiles (Sales, Engineering, Finance, Leadership, and an
+external contractor), and a demo harness that runs one prompt through all five
+to show how reachable memory, offered tools, policy decisions, approvals,
+redactions, and receipts diverge by requester. The Control Panel adds a
+Slack-request governance receipt view that stitches a run into a single
+requester → memory → tools → decisions → approvals → status receipt.
+
+Ordinary tenant-local memory reads now enforce department ownership:
+`owner_org_unit_id` is a first-class, indexed, Postgres-portable column that also
+scopes vector search, the active department is stamped onto every ingestion path
+from the verified context, and department-unscoped records are fail-closed to
+department-scoped callers unless explicitly marked `tenant_shared`. An opt-in
+`private` flag additionally restricts a record to its collecting user on top of
+tenant + department. A cross-department isolation matrix and eval cases guard
+the model.
+
+### Governance Engine, Encrypted Stores, And Storage Portability
+
+Governance decision logic moved out of `tandem-server` into the BUSL governance
+engine, and enterprise routes plus governance now ship in every standard release
+artifact. The file-based audit, policy-decision, and org-unit/grant stores are
+encrypted at rest behind a governance store abstraction without breaking the
+audit hash chain. As groundwork for a PostgreSQL backend alongside SQLite, a
+`MemoryStore` trait with scope types and chunk operations, and a
+PostgreSQL/pgvector portability design, now decouple the memory layer from
+`rusqlite`.
+
+### Retention And Channel-Memory Hygiene
+
+`retention_days` is now enforced by real reapers that delete expired rows and
+record a cleanup log, rather than being advertised without teeth. Automatic
+archiving of channel exchanges is removed and runtime tool-output capture is
+opt-in, so agent-collected memory is not silently accumulated. Coder and channel
+memory retrieval is scoped to the tenant and channel subject (with coder-candidate
+garbage collection), retrieval-gateway channel subjects are bound, and event
+ingestion fails closed when it cannot attribute a run context.
 
 ## v0.6.7 (2026-07-05)
 

@@ -27,6 +27,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `BUSL-1.1` licensing for `tandem-enterprise-server` and documented
   that the permissive `@frumu/tandem-enterprise` installer downloads enterprise
   binaries containing BUSL-licensed components.
+- Added hosted-KMS per-scope memory encryption at rest: a per-scope envelope
+  crypto core (fresh DEK per scope, AES-256-GCM field encryption, KMS-wrapped
+  DEKs, and an envelope-keyed DEK cache), a decrypt broker that authorizes each
+  unwrap against the requesting principal (tenant, data class, source grant) and
+  key-lifecycle state, and wiring into the memory read/write path so chunk
+  content/metadata and context layers are sealed on write behind a new
+  `crypto_envelope` column and decrypted on read only for an authorized
+  principal. Single-tenant/local instances are unaffected — no KMS, NULL
+  envelope, and unchanged behavior.
+- Added department (`org_unit`) as a cryptographic key dimension in
+  `MemoryKeyScope`, so at rest, data collected by different departments in the
+  same tenant and data class no longer shares a DEK.
+- Added a server-side decrypt-principal boundary that projects a request's
+  verified tenant context into a memory decrypt principal, gated on the caller's
+  strict resource scope, and wires it into the hosted context-layer read path.
+- Added a signed Slack Events ingress endpoint that turns an inbound Slack
+  message into a governed session prompt, plus an end-to-end ACME
+  department-scoped governance demo: a data set tagged by department and data
+  class, risk-tier-tagged tools, five requester profiles, a demo harness, and a
+  Control Panel Slack-request governance receipt view.
+- Added an opt-in `private` flag for per-user (subject) memory scoping on top of
+  tenant + department, plus a per-user subject dimension on vector memory chunks.
+- Added real retention reapers with a cleanup log so `retention_days` is
+  enforced rather than advertised, and made runtime tool-output capture opt-in
+  while stopping automatic archiving of channel exchanges.
+- Added a storage-backend abstraction (`MemoryStore` trait, scope types, and
+  chunk operations) and a PostgreSQL/pgvector portability design as the
+  foundation for a Postgres memory backend alongside SQLite.
+- Added a governance store abstraction and at-rest encryption for the
+  file-based audit, policy-decision, and org-unit/grant stores.
 
 ### Changed
 
@@ -57,6 +87,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated tandem-server local full-suite test recipes and documentation to
   match CI's nextest profile, feature flags, stack size, and isolated
   `TANDEM_HOME` behavior.
+- Promoted `owner_org_unit_id` (department) to a first-class, indexed,
+  Postgres-portable memory column with a SQL scope predicate that also scopes
+  vector search, and stamped the active department onto every ingestion path
+  from the verified request context. Department-unscoped records are now
+  fail-closed to department-scoped callers unless explicitly marked
+  `tenant_shared`.
+- Moved governance decision logic out of `tandem-server` into the BUSL
+  governance engine, and made enterprise routes and governance ship in every
+  standard release artifact.
+- Relicensed `tandem-incident-monitor` to `BUSL-1.1` and documented the
+  resulting mixed-license engine binaries.
+- Scoped coder and channel memory retrieval to the tenant and channel subject,
+  and bound retrieval-gateway channel subjects, so a shared database cannot
+  surface another tenant's, user's, or department's records.
 
 ### Fixed
 
@@ -84,6 +128,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed the shipped GPL-3.0 `html2md` dependency from Tandem browser/tooling
   binaries and documented the remaining `auto_generate_cdp` GPL exception as
   build-only code that is not linked into distributed artifacts.
+- Hosted-KMS memory encryption enforces cross-tenant and cross-department
+  confidentiality at rest structurally — every scope gets a distinct
+  KMS-wrapped DEK, so a raw database dump cannot decrypt one scope's rows with
+  another's key — and fails closed when the scope, principal, or envelope data
+  is missing or invalid, or when the caller is not authorized for the row's
+  scope.
+- The file-based audit, policy-decision, and org-unit/grant stores are now
+  encrypted at rest without breaking the audit hash chain.
+- Event ingestion now fails closed when there is no attributable run context,
+  and hosted prompt-memory audit paths are guarded.
 
 ## [0.6.7] - 2026-07-05
 
