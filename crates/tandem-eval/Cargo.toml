@@ -1,6 +1,6 @@
 [package]
 name = "tandem-eval"
-version = "0.6.7"
+version = "0.6.8"
 description = "Evaluation harness and regression tooling for Tandem"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/frumu-ai/tandem"
@@ -25,16 +25,16 @@ serde_yaml = "0.9"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 uuid = { version = "1", features = ["v4"] }
-tandem-incident-monitor = { path = "../tandem-incident-monitor", version = "0.6.7" }
-tandem-core = { path = "../tandem-core", version = "0.6.7" }
-tandem-memory = { path = "../tandem-memory", version = "0.6.7" }
-tandem-observability = { path = "../tandem-observability", version = "0.6.7" }
-tandem-orchestrator = { path = "../tandem-orchestrator", version = "0.6.7" }
-tandem-providers = { path = "../tandem-providers", version = "0.6.7" }
-tandem-runtime = { path = "../tandem-runtime", version = "0.6.7" }
-tandem-server = { path = "../tandem-server", version = "0.6.7", default-features = false }
-tandem-tools = { path = "../tandem-tools", version = "0.6.7" }
-tandem-types = { path = "../tandem-types", version = "0.6.7" }
+tandem-incident-monitor = { path = "../tandem-incident-monitor", version = "0.6.8" }
+tandem-core = { path = "../tandem-core", version = "0.6.8" }
+tandem-memory = { path = "../tandem-memory", version = "0.6.8" }
+tandem-observability = { path = "../tandem-observability", version = "0.6.8" }
+tandem-orchestrator = { path = "../tandem-orchestrator", version = "0.6.8" }
+tandem-providers = { path = "../tandem-providers", version = "0.6.8" }
+tandem-runtime = { path = "../tandem-runtime", version = "0.6.8" }
+tandem-server = { path = "../tandem-server", version = "0.6.8", default-features = false }
+tandem-tools = { path = "../tandem-tools", version = "0.6.8" }
+tandem-types = { path = "../tandem-types", version = "0.6.8" }
 
 [dev-dependencies]
 tempfile = "3"

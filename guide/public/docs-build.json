@@ -5,7 +5,7 @@
   "git_short_sha": "local",
   "git_ref": "local",
   "git_ref_name": "local",
-  "built_at": "2026-07-05T16:36:19.329Z",
-  "engine_version": "0.6.7",
+  "built_at": "2026-07-09T10:22:38.084Z",
+  "engine_version": "0.6.8",
   "docs_channel": "stable"
 }

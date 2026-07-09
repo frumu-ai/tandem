@@ -27,4 +27,7 @@ ignore = [
     "RUSTSEC-2025-0134", # rustls-pemfile 1.x, transitive through reqwest 0.11
     "RUSTSEC-2025-0141", # bincode 1.x, transitive through syntect/ppt-rs
     "RUSTSEC-2026-0105", # core2, transitive through image/rav1e
+    "RUSTSEC-2026-0192", # ttf-parser, transitive through lopdf/pdf-extract
+    "RUSTSEC-2026-0194", # quick-xml 0.39, transitive through wayland-scanner codegen
+    "RUSTSEC-2026-0195", # quick-xml 0.39, transitive through wayland-scanner codegen
 ]

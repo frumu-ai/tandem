@@ -2,7 +2,7 @@
 
 This is the canonical release-notes file used by release tooling.
 
-## v0.6.8 (Unreleased)
+## v0.6.8 (2026-07-09)
 
 Tandem 0.6.8 is a hosted-v1 readiness follow-up. It hardens hosted session
 isolation, completes the native Linear webhook path and Webhooks hub, expands
