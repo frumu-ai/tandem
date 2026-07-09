@@ -92,7 +92,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vector search, and stamped the active department onto every ingestion path
   from the verified request context. Department-unscoped records are now
   fail-closed to department-scoped callers unless explicitly marked
-  `tenant_shared`.
+  `tenant_shared` or owned by the calling subject (the writer's own
+  `private`/subject-scoped memory).
 - Moved governance decision logic out of `tandem-server` into the BUSL
   governance engine, and made enterprise routes and governance ship in every
   standard release artifact.
