@@ -14,6 +14,7 @@ use tandem_automation::{
 
 mod goal_control;
 mod migration;
+mod runtime_records;
 mod transition;
 
 pub use goal_control::{GoalCancellationResult, GoalControlOutcome};
@@ -33,9 +34,7 @@ pub struct OrchestrationStorePaths {
 
 impl OrchestrationStorePaths {
     pub fn from_runtime_events_path(runtime_events_path: &Path) -> Self {
-        let root = runtime_events_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."));
+        let root = canonical_stateful_runtime_root(runtime_events_path);
         Self {
             database_path: root.join("stateful_runtime.sqlite3"),
             engine_lock_path: root.join("stateful_runtime.engine.lock"),
@@ -50,6 +49,15 @@ impl OrchestrationStorePaths {
             database_path: root.join("stateful_runtime.sqlite3"),
             engine_lock_path: root.join("stateful_runtime.engine.lock"),
         }
+    }
+}
+
+fn canonical_stateful_runtime_root(path: &Path) -> &Path {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    if parent.file_name().is_some_and(|name| name == "runtime") {
+        parent.parent().unwrap_or(parent)
+    } else {
+        parent
     }
 }
 

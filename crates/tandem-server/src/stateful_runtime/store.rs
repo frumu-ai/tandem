@@ -14,6 +14,8 @@ use super::phases::phase_state_from_status;
 use super::types::{StatefulRunEventRecord, StatefulRunSnapshotRecord};
 
 const STATEFUL_RUN_EVENT_LOG_COMPACTED_TYPE: &str = "stateful_runtime.event_log_compacted";
+const STATEFUL_RUNTIME_EVENT_LOG_FILE_NAME: &str = "stateful_events.jsonl";
+const STATEFUL_RUNTIME_SNAPSHOTS_DIRECTORY_NAME: &str = "stateful_snapshots";
 
 static STATEFUL_RUN_EVENT_APPEND_CURSORS: LazyLock<
     tokio::sync::Mutex<HashMap<StatefulRunEventCursorKey, StatefulRunEventAppendCursor>>,
@@ -84,10 +86,50 @@ pub struct StatefulRunEventQuery<'a> {
     pub tail: bool,
 }
 
+fn authoritative_stateful_store_for_event_path(
+    path: &Path,
+) -> Option<super::OrchestrationStateStore> {
+    if path.file_name()?.to_str()? != STATEFUL_RUNTIME_EVENT_LOG_FILE_NAME {
+        return None;
+    }
+    let paths = super::OrchestrationStorePaths::from_runtime_events_path(path);
+    if !paths.database_path.exists() {
+        return None;
+    }
+    let store = super::OrchestrationStateStore::open(paths).ok()?;
+    store
+        .legacy_runtime_migration_complete()
+        .ok()
+        .filter(|complete| *complete)
+        .map(|_| store)
+}
+
+fn authoritative_stateful_store_for_snapshot_root(
+    root: &Path,
+) -> Option<super::OrchestrationStateStore> {
+    if root.file_name()?.to_str()? != STATEFUL_RUNTIME_SNAPSHOTS_DIRECTORY_NAME {
+        return None;
+    }
+    let runtime_root = root.parent()?;
+    authoritative_stateful_store_for_event_path(
+        &runtime_root.join(STATEFUL_RUNTIME_EVENT_LOG_FILE_NAME),
+    )
+}
+
 pub async fn append_stateful_run_event(
     path: &Path,
     record: &StatefulRunEventRecord,
 ) -> anyhow::Result<()> {
+    if let Some(store) = authoritative_stateful_store_for_event_path(path) {
+        let event = record.clone();
+        let inserted =
+            tokio::task::spawn_blocking(move || store.append_stateful_runtime_event(&event))
+                .await
+                .map_err(|error| anyhow::anyhow!("stateful event store task failed: {error}"))??;
+        if !inserted {
+            return Ok(());
+        }
+    }
     let mut cursors = STATEFUL_RUN_EVENT_APPEND_CURSORS.lock().await;
     append_stateful_run_event_unlocked(path, record).await?;
     invalidate_stateful_run_event_cursors_for_path(&mut cursors, path);
@@ -134,6 +176,19 @@ pub async fn append_stateful_run_event_once(
     path: &Path,
     record: &StatefulRunEventRecord,
 ) -> anyhow::Result<bool> {
+    if let Some(store) = authoritative_stateful_store_for_event_path(path) {
+        let event = record.clone();
+        let inserted =
+            tokio::task::spawn_blocking(move || store.append_stateful_runtime_event_once(&event))
+                .await
+                .map_err(|error| anyhow::anyhow!("stateful event store task failed: {error}"))??;
+        if inserted {
+            let mut cursors = STATEFUL_RUN_EVENT_APPEND_CURSORS.lock().await;
+            append_stateful_run_event_unlocked(path, record).await?;
+            invalidate_stateful_run_event_cursors_for_path(&mut cursors, path);
+        }
+        return Ok(inserted);
+    }
     let mut cursors = STATEFUL_RUN_EVENT_APPEND_CURSORS.lock().await;
     if stateful_run_event_exists(path, record) {
         return Ok(false);
@@ -148,6 +203,22 @@ pub async fn append_stateful_run_event_once_with_next_seq(
     tenant_context: &TenantContext,
     record: &StatefulRunEventRecord,
 ) -> anyhow::Result<(bool, u64)> {
+    if let Some(store) = authoritative_stateful_store_for_event_path(path) {
+        let event = record.clone();
+        let (inserted, seq) = tokio::task::spawn_blocking(move || {
+            store.append_stateful_runtime_event_once_with_next_seq(&event)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("stateful event store task failed: {error}"))??;
+        if inserted {
+            let mut compatibility_record = record.clone();
+            compatibility_record.seq = seq;
+            let mut cursors = STATEFUL_RUN_EVENT_APPEND_CURSORS.lock().await;
+            append_stateful_run_event_unlocked(path, &compatibility_record).await?;
+            invalidate_stateful_run_event_cursors_for_path(&mut cursors, path);
+        }
+        return Ok((inserted, seq));
+    }
     let mut cursors = STATEFUL_RUN_EVENT_APPEND_CURSORS.lock().await;
     let key = StatefulRunEventCursorKey::new(path, tenant_context, &record.run_id);
     let cursor = cursors
@@ -239,6 +310,14 @@ fn invalidate_stateful_run_event_cursors_for_path(
 }
 
 pub fn load_stateful_run_events(path: &Path) -> Vec<StatefulRunEventRecord> {
+    if let Some(store) = authoritative_stateful_store_for_event_path(path) {
+        return store
+            .load_stateful_runtime_events()
+            .unwrap_or_else(|error| {
+                tracing::error!(error = %error, "failed to load authoritative stateful events");
+                Vec::new()
+            });
+    }
     let Ok(content) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -268,12 +347,18 @@ pub async fn compact_stateful_run_event_log(
     retention_ms: u64,
     now_ms: u64,
 ) -> anyhow::Result<usize> {
-    if retention_ms == 0 || !path.exists() {
+    if retention_ms == 0 {
+        return Ok(0);
+    }
+    let authoritative_store = authoritative_stateful_store_for_event_path(path);
+    if authoritative_store.is_none() && !path.exists() {
         return Ok(0);
     }
 
     let mut cursors = STATEFUL_RUN_EVENT_APPEND_CURSORS.lock().await;
-    repair_jsonl_torn_tail(path, "stateful run event log").await?;
+    if authoritative_store.is_none() {
+        repair_jsonl_torn_tail(path, "stateful run event log").await?;
+    }
 
     let cutoff_ms = now_ms.saturating_sub(retention_ms);
     let mut retained = Vec::new();
@@ -321,6 +406,13 @@ pub async fn compact_stateful_run_event_log(
             .then_with(|| left.seq.cmp(&right.seq))
             .then_with(|| left.event_id.cmp(&right.event_id))
     });
+    if let Some(store) = authoritative_store {
+        tokio::task::spawn_blocking(move || store.replace_stateful_runtime_events(&retained))
+            .await
+            .map_err(|error| anyhow::anyhow!("stateful event compaction task failed: {error}"))??;
+        invalidate_stateful_run_event_cursors_for_path(&mut cursors, path);
+        return Ok(pruned);
+    }
     write_stateful_run_event_rows(path, &retained).await?;
     invalidate_stateful_run_event_cursors_for_path(&mut cursors, path);
     Ok(pruned)
@@ -511,6 +603,12 @@ pub async fn write_stateful_run_snapshot(
     root: &Path,
     snapshot: &StatefulRunSnapshotRecord,
 ) -> anyhow::Result<PathBuf> {
+    if let Some(store) = authoritative_stateful_store_for_snapshot_root(root) {
+        let snapshot = snapshot.clone();
+        tokio::task::spawn_blocking(move || store.put_stateful_runtime_snapshot(&snapshot))
+            .await
+            .map_err(|error| anyhow::anyhow!("stateful snapshot store task failed: {error}"))??;
+    }
     let dir = root.join(safe_path_segment(&snapshot.run_id));
     tokio::fs::create_dir_all(&dir).await.with_context(|| {
         format!(
@@ -530,6 +628,24 @@ pub fn list_stateful_run_snapshots(
     run_id: &str,
     limit: Option<usize>,
 ) -> Vec<StatefulRunSnapshotRecord> {
+    if let Some(store) = authoritative_stateful_store_for_snapshot_root(root) {
+        let mut snapshots = store
+            .list_stateful_runtime_snapshots(run_id)
+            .unwrap_or_else(|error| {
+                tracing::error!(error = %error, "failed to load authoritative stateful snapshots");
+                Vec::new()
+            })
+            .into_iter()
+            .filter(|snapshot| snapshot.visible_to_tenant(tenant))
+            .collect::<Vec<_>>();
+        if let Some(limit) = limit.filter(|limit| *limit > 0) {
+            if snapshots.len() > limit {
+                let remove_count = snapshots.len() - limit;
+                snapshots.drain(0..remove_count);
+            }
+        }
+        return snapshots;
+    }
     let dir = root.join(safe_path_segment(run_id));
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -615,6 +731,11 @@ pub fn read_stateful_run_snapshot_for_run(
     run_id: &str,
     snapshot_id: &str,
 ) -> anyhow::Result<Option<StatefulRunSnapshotRecord>> {
+    if let Some(store) = authoritative_stateful_store_for_snapshot_root(root) {
+        let snapshot = store.get_stateful_runtime_snapshot(snapshot_id)?;
+        return Ok(snapshot
+            .filter(|snapshot| snapshot.run_id == run_id && snapshot.visible_to_tenant(tenant)));
+    }
     let path = stateful_run_snapshot_path(root, run_id, snapshot_id);
     if !path.exists() {
         return Ok(None);
@@ -1271,6 +1392,100 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![3]
         );
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn migrated_runtime_events_and_snapshots_ignore_compatibility_file_changes() {
+        let root = std::env::temp_dir().join(format!(
+            "stateful-runtime-sqlite-cutover-{}",
+            Uuid::new_v4()
+        ));
+        let runtime_events_path = root.join("runtime").join("events.jsonl");
+        let runs_path = root.join("automation_v2_runs.json");
+        let store = super::super::OrchestrationStateStore::from_automation_runs_path(&runs_path)
+            .expect("open orchestration store");
+        let migration_paths = super::super::LegacyRuntimeMigrationPaths::from_runtime_paths(
+            runs_path.clone(),
+            &runtime_events_path,
+        );
+        store
+            .import_legacy_runtime_state(&migration_paths, 100)
+            .expect("complete empty migration");
+
+        assert_eq!(
+            store.paths().database_path,
+            super::super::OrchestrationStorePaths::from_runtime_events_path(&runtime_events_path)
+                .database_path
+        );
+
+        let paths = StatefulRuntimeStoragePaths::from_runtime_events_path(&runtime_events_path);
+        let tenant = tenant("org-a", "workspace-a");
+        let event = event(0, "run-a", tenant.clone());
+        let (inserted, seq) =
+            append_stateful_run_event_once_with_next_seq(&paths.run_events_path, &tenant, &event)
+                .await
+                .expect("append event through SQLite");
+        assert!(inserted);
+        assert_eq!(seq, 1);
+
+        let status = StatefulWorkflowRunStatus::Running;
+        let phase_state = phase_state_from_status("run-a", &status, 100, Some("validate"));
+        let snapshot = StatefulRunSnapshotRecord {
+            schema_version: 1,
+            snapshot_id: "snapshot-a".to_string(),
+            run_id: "run-a".to_string(),
+            seq,
+            created_at_ms: 100,
+            scope: StatefulRuntimeScope::from_tenant_context(tenant.clone()),
+            status,
+            phase: phase_state.phase,
+            phase_history: phase_state.phase_history,
+            allowed_next_phases: phase_state.allowed_next_phases,
+            phase_id: Some("validate".to_string()),
+            source_record_kind: None,
+            checkpoint: Some(json!({ "node": "validate" })),
+            payload_digest: None,
+            workflow_definition_version: None,
+            workflow_definition_snapshot_hash: None,
+            metadata: None,
+        };
+        let snapshot_path = write_stateful_run_snapshot(&paths.snapshots_root, &snapshot)
+            .await
+            .expect("write snapshot through SQLite");
+
+        std::fs::write(&paths.run_events_path, "{not-json}\n")
+            .expect("corrupt compatibility event log");
+        std::fs::write(&snapshot_path, "{not-json}\n").expect("corrupt compatibility snapshot");
+
+        let events = query_stateful_run_events(
+            &paths.run_events_path,
+            &tenant,
+            StatefulRunEventQuery {
+                run_id: "run-a",
+                after_seq: None,
+                before_seq: None,
+                limit: None,
+                tail: false,
+            },
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_id, event.event_id);
+        assert_eq!(
+            list_stateful_run_snapshots(&paths.snapshots_root, &tenant, "run-a", None),
+            vec![snapshot.clone()]
+        );
+        assert_eq!(
+            read_stateful_run_snapshot_for_run(
+                &paths.snapshots_root,
+                &tenant,
+                "run-a",
+                "snapshot-a"
+            )
+            .expect("read SQLite snapshot"),
+            Some(snapshot)
+        );
+
         let _ = tokio::fs::remove_dir_all(root).await;
     }
 }
