@@ -1392,47 +1392,8 @@ pub(crate) fn build_automation_pending_gate(
     node: &AutomationFlowNode,
 ) -> Option<AutomationPendingGate> {
     let (instructions, decisions, rework_targets, expiry_policy) =
-        if let Some(tandem_automation::AutomationWaitSpec::Approval {
-            decisions,
-            expires_after_ms,
-            timeout,
-        }) = node.wait.as_ref()
-        {
-            let expiry_policy = timeout
-                .as_ref()
-                .map(|timeout| crate::AutomationGateExpiryPolicy {
-                    expires_after_ms: Some(timeout.expires_after_ms),
-                    on_expiry: Some(match timeout.on_timeout {
-                        tandem_automation::WaitTimeoutAction::Cancel => {
-                            crate::AutomationGateExpiryAction::Cancel
-                        }
-                        tandem_automation::WaitTimeoutAction::Escalate => {
-                            crate::AutomationGateExpiryAction::Escalate
-                        }
-                        tandem_automation::WaitTimeoutAction::Remind => {
-                            crate::AutomationGateExpiryAction::Remind
-                        }
-                        tandem_automation::WaitTimeoutAction::Resume => {
-                            crate::AutomationGateExpiryAction::Resume
-                        }
-                    }),
-                    escalate_to: timeout.escalate_to.clone(),
-                    remind_every_ms: timeout.remind_every_ms,
-                })
-                .or_else(|| {
-                    expires_after_ms.map(|expires_after_ms| crate::AutomationGateExpiryPolicy {
-                        expires_after_ms: Some(expires_after_ms),
-                        on_expiry: Some(crate::AutomationGateExpiryAction::Cancel),
-                        escalate_to: None,
-                        remind_every_ms: None,
-                    })
-                });
-            (
-                Some(node.objective.clone()),
-                decisions.clone(),
-                Vec::new(),
-                expiry_policy,
-            )
+        if let Some(parts) = crate::app::state::explicit_automation_wait_gate_parts(node) {
+            parts
         } else {
             let gate = node.gate.as_ref()?;
             (

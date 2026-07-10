@@ -4,7 +4,10 @@ use tandem_automation::{
     WaitTimeoutAction, WaitTimeoutPolicy, WebhookCorrelationField,
 };
 
-use super::{automation, AppState, AutomationRunStatus, AutomationWebhookWaitReplayOutcome};
+use super::{
+    automation, AppState, AutomationRunStatus, AutomationStopKind,
+    AutomationWebhookWaitReplayOutcome,
+};
 use crate::stateful_runtime::{
     append_stateful_run_event_once_with_next_seq, begin_claimed_stateful_wait_wake_completion,
     claim_stateful_wait_for_resolution, finish_claimed_stateful_wait_completion,
@@ -21,6 +24,41 @@ const MAX_EXTERNAL_WAIT_RESOLUTION_BYTES: usize = 16 * 1024;
 const EXTERNAL_WAIT_RESOLUTION_LEASE_MS: u64 = 60_000;
 
 impl AppState {
+    pub(crate) async fn park_first_runnable_automation_v2_wait(
+        &self,
+        run: &AutomationV2RunRecord,
+        runnable: &[AutomationFlowNode],
+    ) -> bool {
+        let Some(wait_node) = runnable
+            .iter()
+            .find(|node| node.is_explicit_wait_node() && !super::is_automation_approval_node(node))
+        else {
+            return false;
+        };
+        if let Err(error) = self.register_automation_v2_wait_node(run, wait_node).await {
+            let detail = format!(
+                "failed to register wait node `{}`: {error}",
+                wait_node.node_id
+            );
+            let _ = self
+                .update_automation_v2_run(&run.run_id, |row| {
+                    row.status = AutomationRunStatus::Failed;
+                    row.detail = Some(detail.clone());
+                    row.stop_kind = Some(AutomationStopKind::GuardrailStopped);
+                    row.stop_reason = Some(detail.clone());
+                    automation::record_automation_lifecycle_event_with_metadata(
+                        row,
+                        "wait_node_registration_failed",
+                        Some(detail.clone()),
+                        Some(AutomationStopKind::GuardrailStopped),
+                        Some(json!({ "node_id": &wait_node.node_id })),
+                    );
+                })
+                .await;
+        }
+        true
+    }
+
     /// Repair the crash window between durably parking a run and durably
     /// inserting its wait record. Only runs carrying the registration-started
     /// lifecycle marker are eligible, so an operator-paused run is never
@@ -359,6 +397,51 @@ impl AppState {
         )
         .await
     }
+}
+
+pub(crate) fn explicit_automation_wait_gate_parts(
+    node: &AutomationFlowNode,
+) -> Option<(
+    Option<String>,
+    Vec<String>,
+    Vec<String>,
+    Option<crate::AutomationGateExpiryPolicy>,
+)> {
+    let AutomationWaitSpec::Approval {
+        decisions,
+        expires_after_ms,
+        timeout,
+    } = node.wait.as_ref()?
+    else {
+        return None;
+    };
+    let expiry_policy = timeout
+        .as_ref()
+        .map(|timeout| crate::AutomationGateExpiryPolicy {
+            expires_after_ms: Some(timeout.expires_after_ms),
+            on_expiry: Some(match timeout.on_timeout {
+                WaitTimeoutAction::Cancel => crate::AutomationGateExpiryAction::Cancel,
+                WaitTimeoutAction::Escalate => crate::AutomationGateExpiryAction::Escalate,
+                WaitTimeoutAction::Remind => crate::AutomationGateExpiryAction::Remind,
+                WaitTimeoutAction::Resume => crate::AutomationGateExpiryAction::Resume,
+            }),
+            escalate_to: timeout.escalate_to.clone(),
+            remind_every_ms: timeout.remind_every_ms,
+        })
+        .or_else(|| {
+            expires_after_ms.map(|expires_after_ms| crate::AutomationGateExpiryPolicy {
+                expires_after_ms: Some(expires_after_ms),
+                on_expiry: Some(crate::AutomationGateExpiryAction::Cancel),
+                escalate_to: None,
+                remind_every_ms: None,
+            })
+        });
+    Some((
+        Some(node.objective.clone()),
+        decisions.clone(),
+        Vec::new(),
+        expiry_policy,
+    ))
 }
 
 fn automation_v2_wait_record(

@@ -1360,33 +1360,10 @@ pub async fn run_automation_v2_run(
             break;
         }
 
-        if let Some(wait_node) = runnable.iter().find(|node| {
-            node.is_explicit_wait_node() && !crate::app::state::is_automation_approval_node(node)
-        }) {
-            if let Err(error) = state
-                .register_automation_v2_wait_node(&latest, wait_node)
-                .await
-            {
-                let detail = format!(
-                    "failed to register wait node `{}`: {error}",
-                    wait_node.node_id
-                );
-                let _ = state
-                    .update_automation_v2_run(&run_id, |row| {
-                        row.status = AutomationRunStatus::Failed;
-                        row.detail = Some(detail.clone());
-                        row.stop_kind = Some(AutomationStopKind::GuardrailStopped);
-                        row.stop_reason = Some(detail.clone());
-                        crate::app::state::automation::lifecycle::record_automation_lifecycle_event_with_metadata(
-                            row,
-                            "wait_node_registration_failed",
-                            Some(detail.clone()),
-                            Some(AutomationStopKind::GuardrailStopped),
-                            Some(json!({ "node_id": &wait_node.node_id })),
-                        );
-                    })
-                    .await;
-            }
+        if state
+            .park_first_runnable_automation_v2_wait(&latest, &runnable)
+            .await
+        {
             break;
         }
 
