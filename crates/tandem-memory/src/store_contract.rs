@@ -461,6 +461,7 @@ pub enum MemoryStoreMutationRequest {
 
 /// Typed values returned by [`MemoryStoreMutationRequest`].
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum MemoryStoreMutationResult {
     Affected(u64),
     Changed(bool),
@@ -489,6 +490,7 @@ pub enum MemoryStoreBatchMode {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum MemoryStoreBatchOperation {
     Write(MemoryStoreWriteRequest),
     Mutation(MemoryStoreMutationRequest),
@@ -501,6 +503,7 @@ pub struct MemoryStoreBatchRequest {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum MemoryStoreBatchValue {
     Write(MemoryStoreWriteResult),
     Mutation(MemoryStoreMutationResult),

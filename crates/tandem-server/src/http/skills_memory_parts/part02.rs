@@ -1908,10 +1908,7 @@ async fn source_objects_seen_since(
             "memory store returned an unexpected source lifecycle result".to_string(),
         ));
     };
-    records = records
-        .into_iter()
-        .filter(|record| record.last_seen_at_ms >= started_at_ms)
-        .collect();
+    records.retain(|record| record.last_seen_at_ms >= started_at_ms);
     records.sort_by(|left, right| left.source_object_id.cmp(&right.source_object_id));
     records.dedup_by(|left, right| left.source_object_id == right.source_object_id);
     Ok(records)
