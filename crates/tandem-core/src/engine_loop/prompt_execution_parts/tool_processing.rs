@@ -115,6 +115,33 @@
                         } else {
                             tool_signature(&tool_key, &args)
                         };
+                        if let Some(replayed_call_id) = call_id
+                            .as_ref()
+                            .filter(|id| {
+                                executed_provider_call_ids.get(id.as_str())
+                                    == Some(&signature)
+                            })
+                        {
+                            rejected_tool_call_in_cycle = true;
+                            duplicate_signature_hit_in_cycle = true;
+                            self.event_bus.publish(EngineEvent::new(
+                                "tool.loop_guard.triggered",
+                                json!({
+                                    "sessionID": session_id,
+                                    "messageID": user_message_id,
+                                    "tool": tool_key,
+                                    "reason": "provider_call_id_replayed",
+                                    "callID": replayed_call_id,
+                                    "signatureHash": stable_hash(&signature),
+                                    "loop_guard_triggered": true
+                                }),
+                            ));
+                            outputs.push(format!(
+                                "Tool `{}` call skipped: the provider replayed already-completed call `{}` with identical arguments.",
+                                tool_key, replayed_call_id
+                            ));
+                            continue;
+                        }
                         if is_shell_tool_name(&tool_key)
                             && shell_mismatch_signatures.contains(&signature)
                         {
@@ -234,6 +261,7 @@
                         } else {
                             Vec::new()
                         };
+                        let provider_call_id = call_id.clone();
                         let tool_output_result = self
                             .execute_tool_with_permission(
                                 &session_id,
@@ -259,6 +287,9 @@
                             continue;
                         };
                         {
+                            if let Some(id) = provider_call_id {
+                                executed_provider_call_ids.insert(id, signature.clone());
+                            }
                             let productive = is_productive_tool_output(&tool_key, &output);
                             if output.contains("WEBSEARCH_QUERY_MISSING") {
                                 websearch_query_blocked = true;

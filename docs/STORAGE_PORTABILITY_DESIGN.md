@@ -6,21 +6,45 @@ the backend abstraction (**TAN-659**) and the vector-store portability path
 M1 schema work (`TAN-645` `owner_org_unit_id`, `TAN-648` `private`, `TAN-666`
 envelope encryption).
 
+## Implementation status (as of 0.6.8)
+
+This document is the design; only part of it is implemented. What exists today:
+
+- **`MemoryStore` trait** (`crates/tandem-memory/src/store.rs`): a
+  behavior-preserving first slice. `MemoryDatabase` implements it by delegating
+  to the existing rusqlite-backed methods; `MemoryManager` and most call sites
+  still use `MemoryDatabase` directly, and DDL remains SQLite-specific.
+  Completing the abstraction and a portable migration layer is TAN-677 (in
+  progress); persisted `private`/`owner_subject` scope columns are TAN-679 (in
+  progress) — the store seam currently fails closed on `subject` narrowing for
+  global records because SQL cannot yet enforce it.
+- **No PostgreSQL backend.** There is no `pgvector`, `tokio-postgres`, `sqlx`,
+  or other Postgres dependency in the workspace; the pgvector path below is
+  unimplemented design, tracked as TAN-678.
+- **Envelope encryption** (TAN-666) shipped: per-scope DEK envelopes with
+  hosted-KMS key scoping (`envelope.rs`, `envelope_crypto.rs`,
+  `kms_providers.rs`, `decrypt_broker.rs`, `dek_cache.rs`).
+- **Governance file stores** are encrypted at rest (TAN-664) and work with
+  scoped hosted-KMS encryption (TAN-675). The FTS and embedding search
+  surfaces remain plaintext at rest — see
+  `docs/MEMORY_SEARCH_SURFACE_AT_REST.md` and TAN-681.
+
 ## Current state (grounded)
 
 - **Memory DB:** `rusqlite` 0.32 (bundled SQLite), raw SQL strings throughout
-  `crates/tandem-memory/src/memory_database_impl_parts/*` and `db.rs`. Opened once
-  at `crates/tandem-server/src/http.rs:496`. No storage abstraction.
+  `crates/tandem-memory/src/memory_database_impl_parts/*` and `db.rs`, now
+  fronted by the first-slice `MemoryStore` seam described above.
 - **Vectors:** `sqlite-vec` 0.1.7 — `vec0` **virtual tables**
   (`part01_a.rs:220,315,543`), a **loaded SQLite extension**. KNN via per-tenant
   top-k scans (`search_similar_for_tenant`, `part01_a.rs:1484`) that push the
   tenant/subject scope into the `WHERE` so another scope's vectors can't suppress
   candidates.
 - **Audit / policy / org-units:** flat JSON/JSONL files (`audit.rs:224`,
-  `config/paths.rs`) — see `TAN-661`.
-- **Workspace has no SQL abstraction dependency today:** no `sqlx`,
-  `tokio-postgres`, `diesel`, `sea-orm`, or `pgvector` anywhere in `Cargo.lock`.
-  The memory crate already depends on `async-trait` and `tokio`.
+  `config/paths.rs`) behind the `GovernanceStoreFile` abstraction — see
+  `TAN-661`/`TAN-664`.
+- **No Postgres dependency yet:** no `sqlx`, `tokio-postgres`, `diesel`,
+  `sea-orm`, or `pgvector` anywhere in `Cargo.lock`. The memory crate already
+  depends on `async-trait` and `tokio`.
 
 ## Decision 1 — backend abstraction (TAN-659)
 

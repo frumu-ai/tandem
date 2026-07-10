@@ -8,7 +8,7 @@ Tandem 0.6.8 is a hosted-v1 readiness follow-up. It hardens hosted session
 isolation, completes the native Linear webhook path and Webhooks hub, expands
 memory isolation across tenant/org/user boundaries, and adds hosted-KMS
 per-scope memory encryption at rest with department as a cryptographic key
-dimension. It ships an end-to-end department-scoped Slack governance demo,
+dimension. It ships a department-scoped Slack governance demo harness,
 extracts governance decision logic into the BUSL governance engine, encrypts
 the file-based governance stores at rest, and lays the storage-portability
 groundwork (a `MemoryStore` trait and a PostgreSQL/pgvector design). It also
@@ -147,14 +147,17 @@ exposure is documented as an accepted, mitigated decision.
 
 A new signed Slack Events ingress endpoint turns an inbound Slack message into a
 governed session prompt under real signature verification. On top of it,
-Tandem now ships an end-to-end department-scoped governance demo: an ACME data
+Tandem now ships a department-scoped governance demo: an ACME data
 set tagged by department and data class, a small tool set tagged with risk
 tiers, five requester profiles (Sales, Engineering, Finance, Leadership, and an
-external contractor), and a demo harness that runs one prompt through all five
-to show how reachable memory, offered tools, policy decisions, approvals,
-redactions, and receipts diverge by requester. The Control Panel adds a
-Slack-request governance receipt view that stitches a run into a single
-requester → memory → tools → decisions → approvals → status receipt.
+external contractor), and a fixture-driven demo harness that replays one prompt
+across all five to show how reachable memory, offered tools, policy decisions,
+approvals, redactions, and receipts diverge by requester. The harness validates
+the governance-receipt shape over the seeded dataset rather than executing a
+live governed run; the production-path end-to-end demo is tracked as follow-up
+work. The Control Panel adds a Slack-request governance receipt view that
+stitches a run into a single requester → memory → tools → decisions →
+approvals → status receipt.
 
 Ordinary tenant-local memory reads now enforce department ownership:
 `owner_org_unit_id` is a first-class, indexed, Postgres-portable column that also

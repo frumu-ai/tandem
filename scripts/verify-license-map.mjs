@@ -120,6 +120,45 @@ for (const mappedPath of mapped.keys()) {
   }
 }
 
+// --- Release-fact consistency (TAN-683) -------------------------------------
+// docs/LICENSING.md states release facts (BUSL Change Date, released version)
+// that live authoritatively elsewhere; keep the prose from drifting again.
+
+const licensingDoc = read(mapPath);
+
+// Every BUSL crate LICENSE must agree on one Change Date, and any explicit
+// date the licensing doc states must match it.
+const buslChangeDates = new Set();
+for (const member of members) {
+  const licenseFile = `${member}/LICENSE`;
+  if (!exists(licenseFile)) continue;
+  const changeDate = read(licenseFile).match(/^Change Date:\s*(\S+)/m)?.[1];
+  if (changeDate) buslChangeDates.add(changeDate);
+}
+if (buslChangeDates.size > 1) {
+  problems.push(
+    `BUSL LICENSE files disagree on Change Date: ${[...buslChangeDates].sort().join(", ")}`
+  );
+} else if (buslChangeDates.size === 1) {
+  const [actual] = buslChangeDates;
+  for (const [, stated] of licensingDoc.matchAll(/`(\d{4}-\d{2}-\d{2})`/g)) {
+    if (stated !== actual) {
+      problems.push(
+        `${mapPath} states Change Date ${stated}, but the BUSL LICENSE files say ${actual}`
+      );
+    }
+  }
+}
+
+// A version RELEASE_NOTES.md already lists as released must not be described
+// as "the next release".
+const nextRelease = licensingDoc.match(/\*\*(\d+\.\d+\.\d+)\*\*\s*\(the next release\)/);
+if (nextRelease && read("RELEASE_NOTES.md").includes(`## v${nextRelease[1]} (`)) {
+  problems.push(
+    `${mapPath} calls ${nextRelease[1]} "the next release", but RELEASE_NOTES.md already lists it as released`
+  );
+}
+
 if (problems.length > 0) {
   console.error(`License map is out of sync with package manifests:\n`);
   for (const p of problems.sort()) console.error(`  - ${p}`);

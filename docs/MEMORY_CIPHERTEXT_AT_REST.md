@@ -51,7 +51,9 @@ retrieval gateway, BR-02) plus the documented residual below:
 Residual: embeddings can leak semantic content via inversion, and FTS content is
 plaintext. Both are tenant-partitioned and only returned through authority-filtered
 read paths. True encryption here requires a searchable-encryption / encrypted-index
-architecture, tracked as a separate effort (not BR-14).
+architecture, tracked as **TAN-681** (see
+`docs/MEMORY_SEARCH_SURFACE_AT_REST.md` for the accepted-risk decision and
+required infra mitigations until it lands).
 
 ## Remaining encryptable columns (follow-up within BR-14)
 

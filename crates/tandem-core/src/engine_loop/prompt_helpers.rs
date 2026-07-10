@@ -110,9 +110,11 @@ pub(super) fn is_transient_provider_stream_error(error_text: &str) -> bool {
     {
         return false;
     }
-    lower.contains("provider stream chunk error")
-        || lower.contains("stream chunk error")
-        || lower.contains("provider stream connect timeout")
+    // Only concrete transport-level signatures are transient. A generic
+    // mid-stream chunk error (e.g. a provider-reported failure) must be
+    // terminal: retrying re-dispatches the full prompt and can loop forever
+    // against a provider that fails deterministically.
+    lower.contains("provider stream connect timeout")
         || lower.contains("provider stream idle timeout")
         || lower.contains("connect timeout")
         || lower.contains("connection timed out")

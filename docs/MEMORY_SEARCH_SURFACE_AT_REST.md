@@ -19,10 +19,11 @@ BR-14). A raw database dump therefore still exposes:
 These are protected by authority-scoped reads (the M1 tenant/department/subject
 access filters), **not** by cryptography.
 
-> Note: per the TAN-665 spike (`docs/MEMORY_KEY_SCOPING_SPIKE.md`), even the
-> *payload* encryption is currently a single process-wide key until the
-> per-scope envelope/KMS path is wired (TAN-666). This decision concerns the
-> search surface specifically, which stays plaintext regardless of key scoping.
+> Note: the per-scope envelope/KMS path from the TAN-665 spike
+> (`docs/MEMORY_KEY_SCOPING_SPIKE.md`) has since landed (TAN-666): payload
+> encryption uses per-scope DEK envelopes with hosted-KMS key scoping rather
+> than a single process-wide key. This decision concerns the search surface
+> specifically, which stays plaintext regardless of key scoping.
 
 ## Options considered
 
@@ -77,11 +78,13 @@ An actor with a raw dump *and* the ability to bypass infra-layer at-rest (e.g. a
 live-host memory read, or a compromised DB host) can read the FTS content and
 invert embeddings to approximate memory text. This is accepted for now and
 bounded by: access control as the primary gate, infra-layer FDE, and dump
-restriction. Revisit with Option 3 once TAN-666 + TAN-660 land.
+restriction.
 
 ## Follow-up
 
-- File an implementation issue for **Option 3 (encrypted embeddings +
-  decrypt-side rerank)** once TAN-666 (envelope/KMS wiring) and TAN-660
-  (pgvector portability) are complete — that is when the crypto path and the
-  vector abstraction both exist to build it correctly.
+- **TAN-681** tracks the implementation follow-up for protecting the FTS and
+  embedding surface (Option 3: encrypted embeddings + decrypt-side rerank).
+  The envelope/KMS prerequisite (TAN-666) has landed; the vector-store
+  portability prerequisite is still open — the pgvector backend is design-only
+  and implemented under TAN-678. Until TAN-681 lands, the search surface is
+  plaintext at rest and the Option 1 mitigations above are required.
