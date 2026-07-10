@@ -1,6 +1,7 @@
 pub mod adapters;
 pub mod definition;
 mod durable_io;
+pub mod orchestration_store;
 mod outbox_reconcile;
 pub mod phases;
 pub mod reliability;
@@ -19,6 +20,9 @@ pub use definition::{
     automation_run_definition_fields, automation_run_definition_metadata,
     automation_run_definition_snapshot_hash_mismatch, ensure_automation_run_definition_metadata,
     stable_definition_snapshot_hash, stamp_automation_run_definition_metadata,
+};
+pub use orchestration_store::{
+    AtomicHandoffCommit, OrchestrationStateStore, OrchestrationStorePaths, StatefulEngineLock,
 };
 pub use phases::*;
 pub use reliability::{

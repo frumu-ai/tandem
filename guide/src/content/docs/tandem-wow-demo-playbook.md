@@ -148,11 +148,13 @@ Use this when you want to show human control over a high-impact workflow.
 What to include:
 
 - a handoff or approval boundary
-- `requires_approval: true` for routine-based flows, or `handoff_config.auto_approve: false` for handoff-based automations
+- `requires_approval: true` for routine-based flows, or an Automation V2 approval node before the only mutation-capable step
 - a review step before anything downstream consumes the artifact
 - separate nodes for draft/create, approval, and post-approval execution
 - node-level tool/MCP policies so only the post-approval node has send/publish tools
 - a final output path that makes the result visible
+
+`handoff_config.auto_approve: false` only stages an envelope in the handoff inbox. It does not create a governed approval gate or a public approve action.
 
 Why it works:
 

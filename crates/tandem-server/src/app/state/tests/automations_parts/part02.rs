@@ -32,6 +32,22 @@ async fn automation_v2_run_history_lists_archived_blocked_runs() {
         .await;
     assert_eq!(filtered.len(), 1);
     assert_eq!(filtered[0].run_id, "run-history-blocked");
+
+    state
+        .load_automation_v2_runs()
+        .await
+        .expect("reload hot automation runs");
+    assert!(state
+        .automation_v2_runs
+        .read()
+        .await
+        .get("run-history-blocked")
+        .is_none());
+    assert!(state
+        .list_automation_v2_runs(None, 20)
+        .await
+        .iter()
+        .any(|row| row.run_id == "run-history-blocked"));
 }
 
 #[tokio::test]

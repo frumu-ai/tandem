@@ -1,273 +1,189 @@
 ---
 title: Connected-Agent Handoffs
-description: Configure handoff artifacts, watch conditions, and filesystem scope policies for V2 automations in Tandem.
+description: Pass typed file artifacts between Automation V2 workflows using the currently supported handoff watch condition.
 ---
 
-Connected-agent handoffs let a V2 automation declare how it stages artifacts between agents, what filesystem events trigger re-evaluation, and which paths each agent is allowed to touch.
+Connected-agent handoffs are Tandem's current file-backed bridge between two Automation V2 workflows. An upstream workflow deposits a typed handoff envelope; a downstream workflow watches its approved directory and starts a new run when a matching handoff is available.
 
-The three fields involved are:
+This is a compatibility feature for simple, sequential workflow-to-workflow handoffs. It is not yet the versioned, durable orchestration graph described in [Building Stateful Workflows in Tandem](./stateful-workflows/): it has no public goal record, named transition graph, loop policy, correlated wait node, or transactional cross-workflow lineage.
 
-| Field              | Purpose                                                            |
-| ------------------ | ------------------------------------------------------------------ |
-| `handoff_config`   | Directory layout for inbox / approved / archived handoff artifacts |
-| `watch_conditions` | Filesystem conditions that gate or trigger automation behaviour    |
-| `scope_policy`     | Filesystem sandbox applied to all agents in the automation         |
+## Current lifecycle
 
-All three are optional. Omitting them leaves the automation in its default open-access, no-handoff-staging mode.
+```mermaid
+flowchart LR
+  A["Upstream run creates a handoff envelope"] --> B{"auto_approve"}
+  B -->|true| C["approved directory"]
+  B -->|false| D["inbox directory"]
+  D --> E["External or operator promotion required"]
+  E --> C
+  C --> F["HandoffAvailable watch matches"]
+  F --> G["Downstream Automation V2 run queued"]
+  G --> H["Envelope archived with consuming run ID"]
+```
 
-## handoff_config
+The scheduler evaluates active automations with watch conditions. It skips an automation that already has a queued or running run, and it starts at most one matching run per evaluation.
 
-`handoff_config` controls where agents write output artifacts and how those artifacts are promoted through a review flow.
+## Supported fields
 
-### Shape
+| Field              | Current behavior                                                                                        |
+| ------------------ | ------------------------------------------------------------------------------------------------------- |
+| `handoff_config`   | Selects the inbox, approved, and archived directories and whether deposits bypass the inbox.            |
+| `watch_conditions` | Supports only `kind: "handoff_available"`, optionally filtered by source automation and artifact type.  |
+| `scope_policy`     | Restricts the relative workspace paths agents may read and write and the paths the scheduler may watch. |
+
+All three fields are optional. Omitting `watch_conditions` means handoffs do not start the automation.
+
+## Configure the handoff directories
 
 ```json
 {
-  "inbox_dir": "shared/handoffs/inbox",
-  "approved_dir": "shared/handoffs/approved",
-  "archived_dir": "shared/handoffs/archived",
-  "auto_approve": true
+  "handoff_config": {
+    "inbox_dir": "shared/handoffs/inbox",
+    "approved_dir": "shared/handoffs/approved",
+    "archived_dir": "shared/handoffs/archived",
+    "auto_approve": true
+  }
 }
 ```
 
-All paths are relative to the automation's `workspace_root`.
+Paths are relative to the automation workspace root.
 
-| Field          | Default                    | Description                                                                                                            |
-| -------------- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `inbox_dir`    | `shared/handoffs/inbox`    | Where agents deposit new handoff artifacts                                                                             |
-| `approved_dir` | `shared/handoffs/approved` | Where approved artifacts land after review                                                                             |
-| `archived_dir` | `shared/handoffs/archived` | Where old artifacts are retired                                                                                        |
-| `auto_approve` | `true`                     | When `true`, artifacts move directly to `approved_dir`; when `false`, they wait in `inbox_dir` for a human review step |
+| Field          | Default                    | Meaning                                                                              |
+| -------------- | -------------------------- | ------------------------------------------------------------------------------------ |
+| `inbox_dir`    | `shared/handoffs/inbox`    | Staging directory when automatic approval is disabled.                               |
+| `approved_dir` | `shared/handoffs/approved` | Directory scanned by the downstream watch evaluator.                                 |
+| `archived_dir` | `shared/handoffs/archived` | Destination for a consumed envelope.                                                 |
+| `auto_approve` | `true`                     | Writes directly to the approved directory when true; writes to the inbox when false. |
 
-### When to use manual approval
+`auto_approve: false` does **not** create an Automation V2 approval gate and Tandem does not currently expose a public handoff-promotion API. Something outside this file-handoff path must review and move the envelope from the inbox to the approved directory. Use an Automation V2 approval node when approval must be governed inside a run.
 
-Set `auto_approve: false` when:
+## Watch for a matching handoff
 
-- the automation produces content that requires human sign-off before downstream agents consume it
-- you want an inbox → review → approve loop before archiving
-
-Set `auto_approve: true` (the default) when the automation is fully trusted and downstream consumption should happen immediately.
-
-### HTTP: set handoff_config on create
-
-```bash
-curl -sS -X POST http://127.0.0.1:39731/automations/v2 \
-  -H "content-type: application/json" \
-  -d '{
-    "name": "daily-content-pipeline",
-    "handoff_config": {
-      "inbox_dir": "pipeline/inbox",
-      "approved_dir": "pipeline/approved",
-      "archived_dir": "pipeline/archived",
-      "auto_approve": false
-    },
-    "schedule": { "type": "interval", "interval_seconds": 86400 }
-  }'
-```
-
-### HTTP: update handoff_config on an existing automation
-
-```bash
-curl -sS -X PATCH http://127.0.0.1:39731/automations/v2/daily-content-pipeline \
-  -H "content-type: application/json" \
-  -d '{
-    "handoff_config": {
-      "inbox_dir": "pipeline/inbox",
-      "approved_dir": "pipeline/approved",
-      "archived_dir": "pipeline/archived",
-      "auto_approve": true
-    }
-  }'
-```
-
-## watch_conditions
-
-`watch_conditions` is an array of filesystem rules that the automation evaluator inspects during execution. Each condition describes a path pattern and what the evaluator should look for.
-
-### Shape
+The only implemented watch condition is `handoff_available`:
 
 ```json
 {
   "watch_conditions": [
     {
-      "path": "shared/handoffs/inbox",
-      "condition": "any_file_present"
-    },
-    {
-      "path": "job-search/reports",
-      "condition": "modified_since_last_run"
+      "kind": "handoff_available",
+      "source_automation_id": "opportunity-scout",
+      "artifact_type": "shortlist"
     }
   ]
 }
 ```
 
-Each entry uses prefix-matching against the filesystem under `workspace_root`.
+Both filters are optional. With neither filter, the condition accepts any approved envelope whose `target_automation_id` is the watching automation.
 
-### Watch condition types
+Conditions such as `any_file_present`, `modified_since_last_run`, `empty`, `file_exists`, `flag_set`, and `upstream_completed` are not implemented and must not be sent to the Automation V2 API.
 
-| Condition                 | Description                                                         |
-| ------------------------- | ------------------------------------------------------------------- |
-| `any_file_present`        | Passes when at least one file exists at or under the path           |
-| `modified_since_last_run` | Passes when any file was modified since the previous automation run |
-| `empty`                   | Passes when no files are present                                    |
+The watch starts a new Automation V2 run at its eligible root nodes. It does not invoke a node by ID and it does not resume an existing run.
 
-### HTTP: set watch_conditions on create
+## Handoff envelope
 
-```bash
-curl -sS -X POST http://127.0.0.1:39731/automations/v2 \
-  -H "content-type: application/json" \
-  -d '{
-    "name": "inbox-processor",
-    "watch_conditions": [
-      { "path": "shared/handoffs/inbox", "condition": "any_file_present" }
-    ],
-    "schedule": { "type": "interval", "interval_seconds": 900 }
-  }'
-```
-
-## scope_policy
-
-`scope_policy` defines the filesystem sandbox that constrains what agents in the automation may read, write, or access. When omitted, agents have no path restrictions (open policy).
-
-### Shape
+An approved handoff is a JSON file named from its `handoff_id`. Its current shape is:
 
 ```json
 {
-  "readable_paths": ["shared/", "job-search/reports/"],
-  "writable_paths": ["shared/handoffs/inbox/"],
-  "denied_paths": [".env", ".tandem/secrets/"],
-  "watch_paths": ["shared/handoffs/inbox/"]
+  "handoff_id": "hoff-20260710-01",
+  "source_automation_id": "opportunity-scout",
+  "source_run_id": "automation-v2-run-source",
+  "source_node_id": "rank_opportunities",
+  "target_automation_id": "proposal-writer",
+  "artifact_type": "shortlist",
+  "created_at_ms": 1783641600000,
+  "content_path": "job-search/shortlists/2026-07-10.md",
+  "content_digest": "sha256-hex-digest",
+  "metadata": {
+    "summary": "Three reviewed opportunities"
+  }
 }
 ```
 
-All paths use prefix matching relative to `workspace_root`.
+`content_path` is a relative pointer to the real artifact. Treat the envelope and the referenced content as untrusted input. Validate the artifact type, path, digest, and content before using them in an external mutation.
 
-| Field            | Description                                                                |
-| ---------------- | -------------------------------------------------------------------------- |
-| `readable_paths` | Agents may read files at or under these paths. Empty = all paths readable. |
-| `writable_paths` | Agents may write to these paths. Should be a subset of `readable_paths`.   |
-| `denied_paths`   | Always blocked, even if also listed in readable/writable. Takes priority.  |
-| `watch_paths`    | Paths the watch evaluator may scan. Defaults to `readable_paths` if empty. |
+When consumed, the archived envelope gains `consumed_by_run_id`, `consumed_by_automation_id`, and `consumed_at_ms`.
 
-### Priority order
+## Restrict filesystem access
 
-`denied_paths` takes priority over everything else. A path listed in both `readable_paths` and `denied_paths` is always blocked.
-
-### HTTP: apply a scope policy
-
-```bash
-curl -sS -X PATCH http://127.0.0.1:39731/automations/v2/daily-content-pipeline \
-  -H "content-type: application/json" \
-  -d '{
-    "scope_policy": {
-      "readable_paths": ["shared/", "pipeline/"],
-      "writable_paths": ["pipeline/inbox/"],
-      "denied_paths": [".env"],
-      "watch_paths": ["pipeline/inbox/"]
-    }
-  }'
+```json
+{
+  "scope_policy": {
+    "readable_paths": ["shared/handoffs/", "job-search/shortlists/"],
+    "writable_paths": ["job-search/proposals/"],
+    "denied_paths": [".env", ".tandem/secrets/"],
+    "watch_paths": ["shared/handoffs/approved/"]
+  }
+}
 ```
 
-### Removing a scope policy (open access)
+| Field            | Behavior                                                                             |
+| ---------------- | ------------------------------------------------------------------------------------ |
+| `readable_paths` | Agents may read these prefixes. An empty list inherits unrestricted workspace reads. |
+| `writable_paths` | Agents may write these prefixes; writable paths are also readable.                   |
+| `denied_paths`   | Always wins over readable and writable prefixes.                                     |
+| `watch_paths`    | Restricts scheduler scans. When empty, it falls back to `readable_paths`.            |
 
-Send `scope_policy: null` to revert to open access:
+Path matching is relative to the workspace root and uses whole-prefix semantics.
 
-```bash
-curl -sS -X PATCH http://127.0.0.1:39731/automations/v2/daily-content-pipeline \
-  -H "content-type: application/json" \
-  -d '{ "scope_policy": null }'
-```
+## Complete downstream configuration
 
-## Control Panel UI
-
-In the **Edit workflow automation** dialog (Automations page → three-dot menu → Edit), the **Handoffs** tab exposes all three fields:
-
-### Handoff config panel
-
-- **Auto-approve toggle** — switches between immediate promotion (emerald/green) and manual inbox review (amber/yellow)
-- **Inbox directory** — editable path field, defaults to `shared/handoffs/inbox`
-- **Approved directory** — defaults to `shared/handoffs/approved`
-- **Archived directory** — defaults to `shared/handoffs/archived`
-- **Reset** button — restores all fields to system defaults
-
-### Scope policy panel
-
-- Shows **Open policy** when no restrictions are set
-- When paths are defined, shows coloured badges: denied (red), readable (sky), writable (amber), watch (violet)
-- Four multi-line path editors — one path per line, prefix matching
-- **Clear** button removes all paths and reverts to open policy
-
-Changes are saved with the rest of the automation when you click **Save**.
-
-## Full example: intake pipeline with manual review
+This example configures a downstream workflow to accept only `shortlist` artifacts from `opportunity-scout`:
 
 ```bash
-curl -sS -X POST http://127.0.0.1:39731/automations/v2 \
+curl -sS -X PATCH http://127.0.0.1:39731/automations/v2/proposal-writer \
   -H "content-type: application/json" \
   -d '{
-    "name": "daily-intake-pipeline",
-    "status": "active",
-    "schedule": { "type": "cron", "cron_expression": "0 8 * * *", "timezone": "UTC" },
-    "workspace_root": "/workspace/ops",
     "handoff_config": {
-      "inbox_dir": "intake/inbox",
-      "approved_dir": "intake/approved",
-      "archived_dir": "intake/archived",
-      "auto_approve": false
+      "inbox_dir": "shared/handoffs/inbox",
+      "approved_dir": "shared/handoffs/approved",
+      "archived_dir": "shared/handoffs/archived",
+      "auto_approve": true
     },
     "watch_conditions": [
-      { "path": "intake/inbox", "condition": "any_file_present" }
-    ],
-    "scope_policy": {
-      "readable_paths": ["intake/", "shared/context/"],
-      "writable_paths": ["intake/inbox/"],
-      "denied_paths": [".env", ".tandem/secrets/"],
-      "watch_paths": ["intake/inbox/"]
-    },
-    "agents": [
       {
-        "agent_id": "intake",
-        "display_name": "Intake",
-        "tool_policy": { "allowlist": ["read", "write"], "denylist": [] }
+        "kind": "handoff_available",
+        "source_automation_id": "opportunity-scout",
+        "artifact_type": "shortlist"
       }
     ],
-    "flow": {
-      "nodes": [
-        {
-          "node_id": "ingest",
-          "agent_id": "intake",
-          "objective": "Read all files in intake/inbox, summarise each, and write a digest to intake/inbox/digest.md."
-        }
-      ]
+    "scope_policy": {
+      "readable_paths": ["shared/handoffs/", "job-search/shortlists/"],
+      "writable_paths": ["job-search/proposals/"],
+      "denied_paths": [".env", ".tandem/secrets/"],
+      "watch_paths": ["shared/handoffs/approved/"]
     }
   }'
 ```
 
-Run it immediately:
+Creating an envelope is currently an engine/internal integration operation, not a public HTTP, SDK, or MCP method. If your client writes an envelope directly, it must use the exact current schema, validate the workspace-relative path, write atomically, and preserve a stable `handoff_id` for retries.
 
-```bash
-curl -sS -X POST http://127.0.0.1:39731/automations/v2/daily-intake-pipeline/run_now \
-  -H "content-type: application/json" -d '{}'
-```
+## Control Panel
 
-## WorkflowEditDraft type reference
+Open **Automations**, edit the downstream workflow, and expand **Connected agents**. The editor exposes:
 
-If you are extending the control panel TypeScript code, the three fields live on `WorkflowEditDraft`:
+- handoff directory configuration and the `auto_approve` switch;
+- `HandoffAvailable` source and artifact-type filters;
+- readable, writable, denied, and watch path prefixes;
+- the current inbox, approved, and archived handoff lists when the server supports handoff inspection.
 
-```ts
-interface WorkflowEditDraft {
-  // ...other fields...
-  handoffConfig: any | null; // maps to handoff_config on the API
-  watchConditions: any[]; // maps to watch_conditions on the API
-  scopePolicy: any | null; // maps to scope_policy on the API
-}
-```
+This screen configures one workflow's file handoffs. It is not a visual multi-workflow composer and it does not display a durable long-running goal across several runs.
 
-`workflowAutomationToEditDraft` reads these from the raw automation object using both camelCase and snake_case variants for forward compatibility.
+## Reliability limits
+
+The current bridge uses workspace files and in-memory scheduler evaluation. Keep these limitations in mind:
+
+- handoff consumption and downstream-run creation are not one database transaction in the legacy path;
+- the filesystem envelope is the compatibility record, not a durable orchestration event stream;
+- there is no public loop bound, goal deadline, cross-workflow budget, compensation plan, or terminal outcome;
+- changing the downstream workflow does not pin an existing goal to a published definition snapshot;
+- a terminal downstream run does not automatically choose another workflow unless another approved handoff is produced.
+
+For state inside one Automation V2 run—including checkpoints, waits, approvals, events, snapshots, and recovery—use [Building Stateful Workflows in Tandem](./stateful-workflows/). Versioned multi-workflow goals, named transition loops, correlated waits, and transactional lineage require the orchestration runtime and authoring surfaces rather than this compatibility bridge.
 
 ## See also
 
-- [Creating And Running Workflows And Missions](./creating-and-running-workflows-and-missions/)
-- [Control Panel (Web Admin)](./control-panel/)
+- [Building Stateful Workflows in Tandem](./stateful-workflows/)
+- [Automation V2 Webhooks](./automation-v2-webhooks/)
 - [MCP Automated Agents](./mcp-automated-agents/)
-- [V2 Automations API](./reference/engine-commands/)
+- [Control Panel](./control-panel/)
