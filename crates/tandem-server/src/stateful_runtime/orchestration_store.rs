@@ -12,7 +12,18 @@ use tandem_automation::{
     WorkflowHandoffStatus,
 };
 
-const SCHEMA_VERSION: i64 = 1;
+mod goal_control;
+mod migration;
+mod transition;
+
+pub use goal_control::{GoalCancellationResult, GoalControlOutcome};
+pub use migration::{LegacyRuntimeMigrationPaths, LegacyRuntimeMigrationReport};
+pub use transition::{
+    GovernedTransitionRequest, GovernedTransitionResult, OrchestrationTransitionAuthority,
+    WorkflowCompletionResult,
+};
+
+const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrchestrationStorePaths {
@@ -411,57 +422,95 @@ impl OrchestrationStateStore {
         link: &GoalRunLink,
         updated_goal: &LongRunningGoal,
     ) -> anyhow::Result<AtomicHandoffCommit> {
+        self.commit_handoff_transition_with_event(handoff, downstream_run, link, updated_goal, None)
+    }
+
+    fn commit_handoff_transition_with_event(
+        &self,
+        handoff: &WorkflowHandoff,
+        downstream_run: &AutomationV2RunRecord,
+        link: &GoalRunLink,
+        updated_goal: &LongRunningGoal,
+        transition_event: Option<&crate::stateful_runtime::StatefulRunEventRecord>,
+    ) -> anyhow::Result<AtomicHandoffCommit> {
         validate_atomic_transition(handoff, downstream_run, link, updated_goal)?;
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let existing = transaction
                 .query_row(
-                    "SELECT handoff_id, consumed_by_run_id FROM workflow_handoffs
+                    "SELECT handoff_id, status, consumed_by_run_id FROM workflow_handoffs
                      WHERE goal_id = ?1 AND idempotency_key = ?2",
                     params![handoff.goal_id, handoff.idempotency_key],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                        ))
+                    },
                 )
                 .optional()?;
-            if let Some((handoff_id, consumed_by_run_id)) = existing {
+            let mut update_existing = false;
+            if let Some((handoff_id, status, consumed_by_run_id)) = existing {
                 if handoff_id == handoff.handoff_id
                     && consumed_by_run_id.as_deref() == Some(downstream_run.run_id.as_str())
                 {
                     return Ok(AtomicHandoffCommit::AlreadyCommitted);
                 }
-                bail!(
-                    "idempotency key {} is already bound to handoff {} and run {:?}",
-                    handoff.idempotency_key,
-                    handoff_id,
-                    consumed_by_run_id
-                );
+                if handoff_id == handoff.handoff_id
+                    && consumed_by_run_id.is_none()
+                    && matches!(status.as_str(), "pending_approval" | "approved")
+                {
+                    update_existing = true;
+                } else {
+                    bail!(
+                        "idempotency key {} is already bound to handoff {} and run {:?}",
+                        handoff.idempotency_key,
+                        handoff_id,
+                        consumed_by_run_id
+                    );
+                }
             }
 
             let mut consumed = handoff.clone();
             consumed.status = WorkflowHandoffStatus::Consumed;
             consumed.consumed_by_run_id = Some(downstream_run.run_id.clone());
             consumed.updated_at_ms = consumed.updated_at_ms.max(downstream_run.created_at_ms);
-            transaction.execute(
-                "INSERT INTO workflow_handoffs
+            if update_existing {
+                transaction.execute(
+                    "UPDATE workflow_handoffs SET status = 'consumed', consumed_by_run_id = ?2,
+                        handoff_json = ?3, updated_at_ms = ?4 WHERE handoff_id = ?1",
+                    params![
+                        consumed.handoff_id,
+                        consumed.consumed_by_run_id,
+                        serde_json::to_string(&consumed)?,
+                        consumed.updated_at_ms,
+                    ],
+                )?;
+            } else {
+                transaction.execute(
+                    "INSERT INTO workflow_handoffs
                     (handoff_id, goal_id, idempotency_key, org_id, workspace_id, deployment_id,
                      source_run_id, target_automation_id, status, consumed_by_run_id,
                      handoff_json, created_at_ms, updated_at_ms)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'consumed', ?9, ?10, ?11, ?12)",
-                params![
-                    consumed.handoff_id,
-                    consumed.goal_id,
-                    consumed.idempotency_key,
-                    consumed.tenant_context.org_id,
-                    consumed.tenant_context.workspace_id,
-                    consumed.tenant_context.deployment_id,
-                    consumed.source_run_id,
-                    consumed.target_automation_id,
-                    consumed.consumed_by_run_id,
-                    serde_json::to_string(&consumed)?,
-                    consumed.created_at_ms,
-                    consumed.updated_at_ms,
-                ],
-            )?;
+                    params![
+                        consumed.handoff_id,
+                        consumed.goal_id,
+                        consumed.idempotency_key,
+                        consumed.tenant_context.org_id,
+                        consumed.tenant_context.workspace_id,
+                        consumed.tenant_context.deployment_id,
+                        consumed.source_run_id,
+                        consumed.target_automation_id,
+                        consumed.consumed_by_run_id,
+                        serde_json::to_string(&consumed)?,
+                        consumed.created_at_ms,
+                        consumed.updated_at_ms,
+                    ],
+                )?;
+            }
             upsert_automation_run(&transaction, downstream_run)?;
             transaction.execute(
                 "INSERT INTO goal_run_links
@@ -481,6 +530,27 @@ impl OrchestrationStateStore {
                 ],
             )?;
             upsert_goal(&transaction, updated_goal)?;
+            if let Some(event) = transition_event {
+                let mut event = event.clone();
+                event.seq = next_event_seq(&transaction, &event.run_id)?;
+                transaction.execute(
+                    "INSERT INTO stateful_events
+                        (event_id, goal_id, run_id, seq, event_json, created_at_ms,
+                         org_id, workspace_id, deployment_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        event.event_id,
+                        handoff.goal_id,
+                        event.run_id,
+                        event.seq,
+                        serde_json::to_string(&event)?,
+                        event.occurred_at_ms,
+                        event.scope.tenant_context.org_id,
+                        event.scope.tenant_context.workspace_id,
+                        event.scope.tenant_context.deployment_id,
+                    ],
+                )?;
+            }
             transaction.commit()?;
             Ok(AtomicHandoffCommit::Committed)
         })
@@ -642,16 +712,80 @@ fn initialize_schema(connection: &mut Connection) -> anyhow::Result<()> {
             [],
         )?;
     }
-    let version: i64 = connection.query_row(
+    let mut version: i64 = connection.query_row(
         "SELECT schema_version FROM schema_metadata LIMIT 1",
         [],
         |row| row.get(0),
     )?;
+    if version == 1 {
+        migrate_schema_v1_to_v2(connection)?;
+        version = 2;
+    }
     if version != SCHEMA_VERSION {
         bail!(
             "unsupported orchestration store schema version {version}; expected {SCHEMA_VERSION}"
         );
     }
+    Ok(())
+}
+
+fn migrate_schema_v1_to_v2(connection: &mut Connection) -> anyhow::Result<()> {
+    connection.execute_batch(
+        "BEGIN IMMEDIATE;
+         CREATE TABLE IF NOT EXISTS stateful_migrations (
+            migration_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            source_fingerprint TEXT NOT NULL,
+            record_count INTEGER NOT NULL,
+            started_at_ms INTEGER NOT NULL,
+            completed_at_ms INTEGER
+         );
+         CREATE TABLE IF NOT EXISTS tool_effects (
+            effect_id TEXT PRIMARY KEY,
+            goal_id TEXT,
+            run_id TEXT,
+            org_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            deployment_id TEXT,
+            status TEXT NOT NULL,
+            effect_json TEXT NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_tool_effects_scope_status
+            ON tool_effects (org_id, workspace_id, status);
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_stateful_events_run_seq
+            ON stateful_events (run_id, seq);
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_stateful_snapshots_run_seq
+            ON stateful_snapshots (run_id, seq);
+         COMMIT;",
+    )?;
+    add_scope_columns(connection, "automation_waits")?;
+    add_scope_columns(connection, "stateful_events")?;
+    add_scope_columns(connection, "stateful_snapshots")?;
+    add_scope_columns(connection, "outbox_effects")?;
+    add_scope_columns(connection, "dead_letters")?;
+    add_scope_columns(connection, "compensations")?;
+    connection.execute("UPDATE schema_metadata SET schema_version = 2", [])?;
+    Ok(())
+}
+
+fn add_scope_columns(connection: &Connection, table: &str) -> anyhow::Result<()> {
+    for (column, definition) in [
+        ("org_id", "TEXT NOT NULL DEFAULT ''"),
+        ("workspace_id", "TEXT NOT NULL DEFAULT ''"),
+        ("deployment_id", "TEXT"),
+    ] {
+        if !table_has_column(connection, table, column)? {
+            connection.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+                [],
+            )?;
+        }
+    }
+    connection.execute(
+        &format!("CREATE INDEX IF NOT EXISTS idx_{table}_scope ON {table} (org_id, workspace_id)"),
+        [],
+    )?;
     Ok(())
 }
 
@@ -729,6 +863,15 @@ fn upsert_goal(connection: &Connection, goal: &LongRunningGoal) -> anyhow::Resul
         ],
     )?;
     Ok(())
+}
+
+fn next_event_seq(connection: &Connection, run_id: &str) -> anyhow::Result<u64> {
+    let last: Option<u64> = connection.query_row(
+        "SELECT MAX(seq) FROM stateful_events WHERE run_id = ?1",
+        [run_id],
+        |row| row.get(0),
+    )?;
+    Ok(last.unwrap_or(0).saturating_add(1))
 }
 
 fn validate_atomic_transition(

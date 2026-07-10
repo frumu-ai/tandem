@@ -22,7 +22,10 @@ pub use definition::{
     stable_definition_snapshot_hash, stamp_automation_run_definition_metadata,
 };
 pub use orchestration_store::{
-    AtomicHandoffCommit, OrchestrationStateStore, OrchestrationStorePaths, StatefulEngineLock,
+    AtomicHandoffCommit, GoalCancellationResult, GoalControlOutcome, GovernedTransitionRequest,
+    GovernedTransitionResult, LegacyRuntimeMigrationPaths, LegacyRuntimeMigrationReport,
+    OrchestrationStateStore, OrchestrationStorePaths, OrchestrationTransitionAuthority,
+    StatefulEngineLock, WorkflowCompletionResult,
 };
 pub use phases::*;
 pub use reliability::{
