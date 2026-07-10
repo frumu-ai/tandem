@@ -37,7 +37,7 @@ async fn wait_for_runtime_ready_or_exit(state: &AppState, component: &str) -> bo
 
 async fn wait_for_runtime_installed_or_exit(state: &AppState, component: &str) -> bool {
     for _ in 0..120 {
-        if state.is_ready() {
+        if state.runtime.get().is_some() {
             return true;
         }
         let startup = state.startup_snapshot().await;
@@ -856,6 +856,13 @@ pub async fn run_session_context_run_journaler(state: AppState) {
 }
 
 pub async fn run_runtime_event_log_persister(state: AppState) {
+    run_runtime_event_log_persister_with_registration_signal(state, None).await;
+}
+
+async fn run_runtime_event_log_persister_with_registration_signal(
+    state: AppState,
+    registered: Option<tokio::sync::oneshot::Sender<()>>,
+) {
     // Register the queue as soon as RuntimeState exists so ready-gated
     // publishers cannot race ahead and drop early runtime events.
     if !wait_for_runtime_installed_or_exit(&state, "runtime_event_log_persister").await {
@@ -866,6 +873,9 @@ pub async fn run_runtime_event_log_persister(state: AppState) {
         tracing::warn!("runtime event log persister: skipped because queue was already registered");
         return;
     };
+    if let Some(registered) = registered {
+        let _ = registered.send(());
+    }
 
     let retention_days = std::env::var("TANDEM_RUNTIME_EVENT_LOG_RETENTION_DAYS")
         .ok()
@@ -1028,13 +1038,14 @@ mod runtime_event_log_persister_tests {
         }
         let tenant = TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "user-a");
 
-        let persister = tokio::spawn(run_runtime_event_log_persister(state.clone()));
-        for _ in 0..50 {
-            if state.event_bus.runtime_event_log_queue_is_registered() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        let (registered_tx, registered_rx) = tokio::sync::oneshot::channel();
+        let persister = tokio::spawn(run_runtime_event_log_persister_with_registration_signal(
+            state.clone(),
+            Some(registered_tx),
+        ));
+        registered_rx
+            .await
+            .expect("persister should remain active through queue registration");
         assert!(
             state.event_bus.runtime_event_log_queue_is_registered(),
             "persister should register its queue before consuming runtime events"

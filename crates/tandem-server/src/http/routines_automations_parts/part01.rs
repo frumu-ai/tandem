@@ -845,6 +845,18 @@ pub(super) fn routine_error_response(error: RoutineStoreError) -> (StatusCode, J
     }
 }
 
+fn routine_creation_audit_error_response(error: anyhow::Error) -> (StatusCode, Json<Value>) {
+    tracing::error!(error = ?error, "routine creation rolled back after protected audit failure");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({
+            "error": "Routine creation was rolled back because its required audit record could not be persisted",
+            "code": "PROTECTED_AUDIT_PERSISTENCE_FAILED",
+            "retryable": true,
+        })),
+    )
+}
+
 /// GOV-B2b: routine mutations (create/run/approve/deny/pause/resume) require a
 /// verified human actor. Routines have no per-routine governance/approval record,
 /// so agent-authored routine work is refused here — an agent that needs governed
@@ -913,11 +925,14 @@ pub(super) async fn routines_create(
         next_fire_at_ms: input.next_fire_at_ms,
         last_fired_at_ms: None,
     };
+    let previous = state
+        .get_routine_for_tenant(&routine.routine_id, &tenant_context)
+        .await;
     let stored = state
         .put_routine(routine)
         .await
         .map_err(routine_error_response)?;
-    crate::audit::append_protected_audit_event(
+    if let Err(audit_error) = crate::audit::append_protected_audit_event(
         &state,
         "routine.created",
         &tenant_context,
@@ -930,7 +945,21 @@ pub(super) async fn routines_create(
         }),
     )
     .await
-    .map_err(super::protected_audit_error_response)?;
+    {
+        let rollback = match previous {
+            Some(previous) => state.put_routine(previous).await.map(|_| ()),
+            None => state
+                .delete_routine_for_tenant(&stored.routine_id, &tenant_context)
+                .await
+                .map(|_| ()),
+        };
+        if let Err(rollback_error) = rollback {
+            return Err(super::protected_audit_error_response(anyhow::anyhow!(
+                "routine creation audit failed ({audit_error:#}) and rollback failed ({rollback_error:?})"
+            )));
+        }
+        return Err(routine_creation_audit_error_response(audit_error));
+    }
     state
         .event_bus
         .publish(crate::routines::types::tenant_scoped_engine_event(

@@ -234,6 +234,13 @@ fn credential_keyring_entry(provider_id: &str) -> Option<keyring::Entry> {
     .ok()
 }
 
+fn load_provider_credential_from_keyring(provider_id: &str) -> Option<ProviderCredential> {
+    credential_keyring_entry(provider_id)
+        .and_then(|entry| entry.get_password().ok())
+        .and_then(|secret| serde_json::from_str::<ProviderCredential>(&secret).ok())
+        .and_then(|credential| normalize_provider_credential(credential).ok())
+}
+
 fn provider_auth_keyring_disabled() -> bool {
     std::env::var("TANDEM_PROVIDER_AUTH_DISABLE_KEYRING")
         .ok()
@@ -1313,15 +1320,9 @@ pub fn load_provider_credentials() -> HashMap<String, ProviderCredential> {
     let mut out = HashMap::new();
 
     for provider_id in known {
-        if let Some(entry) = credential_keyring_entry(&provider_id) {
-            if let Ok(secret) = entry.get_password() {
-                if let Ok(credential) = serde_json::from_str::<ProviderCredential>(&secret) {
-                    if let Ok(normalized) = normalize_provider_credential(credential) {
-                        out.insert(provider_id.clone(), normalized);
-                        continue;
-                    }
-                }
-            }
+        if let Some(credential) = load_provider_credential_from_keyring(&provider_id) {
+            out.insert(provider_id.clone(), credential);
+            continue;
         }
 
         if let Some(credential) = fallback.get(&provider_id) {
@@ -1358,12 +1359,8 @@ pub fn load_provider_credentials_for_tenant_in_dir(
     known
         .into_iter()
         .filter_map(|provider_id| {
-            let credential = fallback.get(&provider_id).cloned().or_else(|| {
-                credential_keyring_entry(&provider_id)
-                    .and_then(|entry| entry.get_password().ok())
-                    .and_then(|secret| serde_json::from_str::<ProviderCredential>(&secret).ok())
-                    .and_then(|credential| normalize_provider_credential(credential).ok())
-            })?;
+            let credential = load_provider_credential_from_keyring(&provider_id)
+                .or_else(|| fallback.get(&provider_id).cloned())?;
             strip_tenant_scoped_provider_id(tenant_context, &provider_id).map(|stripped| {
                 (
                     stripped.clone(),
@@ -1392,12 +1389,8 @@ pub fn list_provider_oauth_tenant_contexts_in_dir(
     let credentials = known
         .into_iter()
         .filter_map(|provider_id| {
-            let credential = fallback.get(&provider_id).cloned().or_else(|| {
-                credential_keyring_entry(&provider_id)
-                    .and_then(|entry| entry.get_password().ok())
-                    .and_then(|secret| serde_json::from_str::<ProviderCredential>(&secret).ok())
-                    .and_then(|credential| normalize_provider_credential(credential).ok())
-            })?;
+            let credential = load_provider_credential_from_keyring(&provider_id)
+                .or_else(|| fallback.get(&provider_id).cloned())?;
             Some((provider_id, credential))
         })
         .collect();
@@ -1620,9 +1613,15 @@ fn compare_and_set_provider_oauth_credential_for_tenant_in_dir_unlocked(
     }
     let scoped_provider_id = tenant_scoped_provider_id(tenant_context, &provider_id);
     let mut fallback = load_credential_fallback_map_from_dir(security_dir);
-    let current = fallback
-        .get(&scoped_provider_id)
-        .cloned()
+    let keyring_entry = credential_keyring_entry(&scoped_provider_id);
+    let keyring_current = keyring_entry
+        .as_ref()
+        .and_then(|entry| entry.get_password().ok())
+        .and_then(|secret| serde_json::from_str::<ProviderCredential>(&secret).ok())
+        .and_then(|credential| normalize_provider_credential(credential).ok());
+    let current_is_keyring_backed = keyring_current.is_some();
+    let current = keyring_current
+        .or_else(|| fallback.get(&scoped_provider_id).cloned())
         .map(|credential| credential_with_provider_id(credential, provider_id.clone()));
     let expected = expected
         .cloned()
@@ -1635,24 +1634,38 @@ fn compare_and_set_provider_oauth_credential_for_tenant_in_dir_unlocked(
         return Ok(false);
     }
 
+    let has_replacement = replacement.is_some();
     match replacement {
         Some(mut replacement) => {
             replacement.provider_id = provider_id;
             let replacement =
                 normalize_provider_credential(ProviderCredential::OAuth(replacement))?;
-            fallback.insert(
-                scoped_provider_id.clone(),
-                credential_with_provider_id(replacement, scoped_provider_id.clone()),
-            );
+            let replacement = credential_with_provider_id(replacement, scoped_provider_id.clone());
+            if current_is_keyring_backed {
+                let serialized = serde_json::to_string(&replacement)?;
+                keyring_entry
+                    .as_ref()
+                    .expect("keyring-backed credential has an entry")
+                    .set_password(&serialized)?;
+                fallback.remove(&scoped_provider_id);
+            } else {
+                fallback.insert(scoped_provider_id.clone(), replacement);
+            }
         }
         None => {
+            if current_is_keyring_backed {
+                keyring_entry
+                    .as_ref()
+                    .expect("keyring-backed credential has an entry")
+                    .delete_password()?;
+            }
             fallback.remove(&scoped_provider_id);
         }
     }
     save_credential_fallback_map_to_dir(security_dir, &fallback)?;
 
     let mut known = load_provider_credentials_index_from_dir(security_dir);
-    if fallback.contains_key(&scoped_provider_id) {
+    if has_replacement {
         known.insert(scoped_provider_id);
     } else {
         known.remove(&scoped_provider_id);

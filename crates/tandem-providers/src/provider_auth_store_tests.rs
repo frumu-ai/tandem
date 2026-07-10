@@ -3,6 +3,72 @@ use super::*;
 use tempfile::tempdir;
 use tokio::sync::Barrier;
 
+#[derive(Debug)]
+struct SharedTestCredential {
+    key: String,
+}
+
+fn shared_test_keyring() -> &'static std::sync::Mutex<HashMap<String, String>> {
+    static STORE: OnceLock<std::sync::Mutex<HashMap<String, String>>> = OnceLock::new();
+    STORE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+impl keyring::credential::CredentialApi for SharedTestCredential {
+    fn set_password(&self, password: &str) -> keyring::Result<()> {
+        shared_test_keyring()
+            .lock()
+            .expect("shared keyring lock")
+            .insert(self.key.clone(), password.to_string());
+        Ok(())
+    }
+
+    fn get_password(&self) -> keyring::Result<String> {
+        shared_test_keyring()
+            .lock()
+            .expect("shared keyring lock")
+            .get(&self.key)
+            .cloned()
+            .ok_or(keyring::Error::NoEntry)
+    }
+
+    fn delete_password(&self) -> keyring::Result<()> {
+        shared_test_keyring()
+            .lock()
+            .expect("shared keyring lock")
+            .remove(&self.key)
+            .map(|_| ())
+            .ok_or(keyring::Error::NoEntry)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+#[derive(Debug)]
+struct SharedTestCredentialBuilder;
+
+impl keyring::credential::CredentialBuilderApi for SharedTestCredentialBuilder {
+    fn build(
+        &self,
+        target: Option<&str>,
+        service: &str,
+        user: &str,
+    ) -> keyring::Result<Box<keyring::credential::Credential>> {
+        Ok(Box::new(SharedTestCredential {
+            key: format!("{}::{service}::{user}", target.unwrap_or_default()),
+        }))
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn persistence(&self) -> keyring::credential::CredentialPersistence {
+        keyring::credential::CredentialPersistence::ProcessOnly
+    }
+}
+
 const CROSS_PROCESS_WORKER_TEST: &str =
     "provider_auth_store::provider_auth_store_tests::cross_process_credential_mutation_worker";
 
@@ -223,6 +289,47 @@ fn cross_process_credential_mutation_worker() {
             std::fs::write(result_path, if swapped { "swapped" } else { "stale" })
                 .expect("write stale refresh result");
         }
+        "keyring-cas" => {
+            keyring::set_default_credential_builder(Box::new(SharedTestCredentialBuilder));
+            let provider_id = "openai-codex";
+            let scoped_provider_id = tenant_scoped_provider_id(&tenant, provider_id);
+            let expected = oauth_credential("keyring-original");
+            let persisted = credential_with_provider_id(
+                ProviderCredential::OAuth(expected.clone()),
+                scoped_provider_id.clone(),
+            );
+            credential_keyring_entry(&scoped_provider_id)
+                .expect("test keyring entry")
+                .set_password(&serde_json::to_string(&persisted).expect("serialize credential"))
+                .expect("seed keyring credential");
+            save_provider_credentials_index_to_dir(
+                &security_dir,
+                &HashSet::from([scoped_provider_id.clone()]),
+            )
+            .expect("seed credential index");
+
+            let swapped = compare_and_set_provider_oauth_credential_for_tenant_in_dir(
+                &security_dir,
+                &tenant,
+                provider_id,
+                &expected,
+                Some(oauth_credential("keyring-refreshed")),
+            )
+            .expect("compare and set keyring credential");
+            assert!(swapped, "keyring-backed credential must match CAS");
+            assert!(
+                !load_credential_fallback_map_from_dir(&security_dir)
+                    .contains_key(&scoped_provider_id),
+                "refresh must preserve keyring storage"
+            );
+            let refreshed = load_provider_oauth_credential_for_tenant_in_dir(
+                &security_dir,
+                &tenant,
+                provider_id,
+            )
+            .expect("refreshed keyring credential");
+            assert_eq!(refreshed.access_token, "access-keyring-refreshed");
+        }
         other => panic!("unknown credential worker action {other}"),
     }
 }
@@ -242,6 +349,15 @@ fn credential_worker_command(
         .env("TANDEM_TEST_PROVIDER_CREDENTIAL_DIR", security_dir)
         .env("TANDEM_TEST_PROVIDER_CREDENTIAL_LABEL", label);
     command
+}
+
+#[test]
+fn keyring_backed_oauth_credential_can_be_refreshed_with_compare_and_set() {
+    let dir = tempdir().expect("tempdir");
+    let status = credential_worker_command(dir.path(), "keyring-cas", "keyring-cas")
+        .status()
+        .expect("run isolated keyring CAS worker");
+    assert!(status.success(), "keyring CAS worker must succeed");
 }
 
 #[test]

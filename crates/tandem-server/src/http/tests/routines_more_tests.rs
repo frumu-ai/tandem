@@ -2,6 +2,58 @@
 // (same module via include!).
 
 #[tokio::test]
+async fn routines_create_rolls_back_when_protected_audit_persistence_fails() {
+    let state = test_state().await;
+    tokio::fs::create_dir_all(&state.protected_audit_path)
+        .await
+        .expect("make protected audit path unwritable as a file");
+    crate::audit::reset_protected_audit_tail_for_test(&state.protected_audit_path).await;
+    let tenant = TenantContext::local_implicit();
+    let app = app_router(state.clone());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/routines")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "routine_id": "routine-audit-failure",
+                        "name": "Must be audited",
+                        "schedule": { "interval_seconds": { "seconds": 60 } },
+                        "entrypoint": "mission.default"
+                    })
+                    .to_string(),
+                ))
+                .expect("create request"),
+        )
+        .await
+        .expect("create response");
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("error body");
+    let payload: Value = serde_json::from_slice(&body).expect("error json");
+    assert_eq!(
+        payload.get("code").and_then(Value::as_str),
+        Some("PROTECTED_AUDIT_PERSISTENCE_FAILED")
+    );
+    assert!(
+        state
+            .get_routine_for_tenant("routine-audit-failure", &tenant)
+            .await
+            .is_none(),
+        "an unaudited routine must not remain active"
+    );
+    assert!(
+        state.list_routines_for_tenant(&tenant).await.is_empty(),
+        "the failed routine must also be absent from the scheduler view"
+    );
+}
+
+#[tokio::test]
 async fn routines_run_now_requires_approval_for_external_side_effects_when_enabled() {
     let state = test_state().await;
     let app = app_router(state.clone());
