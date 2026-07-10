@@ -120,6 +120,7 @@ pub async fn append_stateful_run_event(
     path: &Path,
     record: &StatefulRunEventRecord,
 ) -> anyhow::Result<()> {
+    let mut cursors = STATEFUL_RUN_EVENT_APPEND_CURSORS.lock().await;
     if let Some(store) = authoritative_stateful_store_for_event_path(path) {
         let event = record.clone();
         let inserted =
@@ -130,7 +131,6 @@ pub async fn append_stateful_run_event(
             return Ok(());
         }
     }
-    let mut cursors = STATEFUL_RUN_EVENT_APPEND_CURSORS.lock().await;
     append_stateful_run_event_unlocked(path, record).await?;
     invalidate_stateful_run_event_cursors_for_path(&mut cursors, path);
     Ok(())
@@ -176,6 +176,7 @@ pub async fn append_stateful_run_event_once(
     path: &Path,
     record: &StatefulRunEventRecord,
 ) -> anyhow::Result<bool> {
+    let mut cursors = STATEFUL_RUN_EVENT_APPEND_CURSORS.lock().await;
     if let Some(store) = authoritative_stateful_store_for_event_path(path) {
         let event = record.clone();
         let inserted =
@@ -183,13 +184,11 @@ pub async fn append_stateful_run_event_once(
                 .await
                 .map_err(|error| anyhow::anyhow!("stateful event store task failed: {error}"))??;
         if inserted {
-            let mut cursors = STATEFUL_RUN_EVENT_APPEND_CURSORS.lock().await;
             append_stateful_run_event_unlocked(path, record).await?;
             invalidate_stateful_run_event_cursors_for_path(&mut cursors, path);
         }
         return Ok(inserted);
     }
-    let mut cursors = STATEFUL_RUN_EVENT_APPEND_CURSORS.lock().await;
     if stateful_run_event_exists(path, record) {
         return Ok(false);
     }
@@ -203,6 +202,7 @@ pub async fn append_stateful_run_event_once_with_next_seq(
     tenant_context: &TenantContext,
     record: &StatefulRunEventRecord,
 ) -> anyhow::Result<(bool, u64)> {
+    let mut cursors = STATEFUL_RUN_EVENT_APPEND_CURSORS.lock().await;
     if let Some(store) = authoritative_stateful_store_for_event_path(path) {
         let event = record.clone();
         let (inserted, seq) = tokio::task::spawn_blocking(move || {
@@ -213,13 +213,11 @@ pub async fn append_stateful_run_event_once_with_next_seq(
         if inserted {
             let mut compatibility_record = record.clone();
             compatibility_record.seq = seq;
-            let mut cursors = STATEFUL_RUN_EVENT_APPEND_CURSORS.lock().await;
             append_stateful_run_event_unlocked(path, &compatibility_record).await?;
             invalidate_stateful_run_event_cursors_for_path(&mut cursors, path);
         }
         return Ok((inserted, seq));
     }
-    let mut cursors = STATEFUL_RUN_EVENT_APPEND_CURSORS.lock().await;
     let key = StatefulRunEventCursorKey::new(path, tenant_context, &record.run_id);
     let cursor = cursors
         .entry(key.clone())

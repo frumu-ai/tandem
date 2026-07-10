@@ -1,4 +1,4 @@
-use anyhow::Context;
+use anyhow::{bail, Context};
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
 
 use super::OrchestrationStateStore;
@@ -57,7 +57,17 @@ impl OrchestrationStateStore {
             let seq = last_seq.unwrap_or(0).saturating_add(1).max(1);
             let mut next = event.clone();
             next.seq = seq;
-            insert_event(&transaction, &next)?;
+            if !insert_event(&transaction, &next)? {
+                let existing_run_id: String = transaction.query_row(
+                    "SELECT run_id FROM stateful_events WHERE event_id = ?1",
+                    [&event.event_id],
+                    |row| row.get(0),
+                )?;
+                bail!(
+                    "stateful event ID `{}` is already stored for run `{existing_run_id}`",
+                    event.event_id
+                );
+            }
             transaction.commit()?;
             Ok((true, seq))
         })
@@ -210,4 +220,64 @@ fn event_seq_by_id(
         }
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use tandem_types::TenantContext;
+
+    use super::*;
+    use crate::stateful_runtime::StatefulRuntimeScope;
+
+    fn event(run_id: &str) -> StatefulRunEventRecord {
+        StatefulRunEventRecord {
+            schema_version: 1,
+            event_id: "shared-event-id".to_string(),
+            run_id: run_id.to_string(),
+            seq: 0,
+            event_type: "stateful_runtime.test".to_string(),
+            occurred_at_ms: 100,
+            scope: StatefulRuntimeScope::from_tenant_context(
+                TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "user-a"),
+            ),
+            actor: None,
+            phase_id: None,
+            phase_transition: None,
+            wait_kind: None,
+            causation_id: None,
+            correlation_id: None,
+            payload: json!({}),
+        }
+    }
+
+    #[test]
+    fn next_sequence_rejects_event_ids_owned_by_another_run() {
+        let directory = tempfile::tempdir().expect("create test directory");
+        let store = OrchestrationStateStore::from_automation_runs_path(
+            &directory.path().join("automation_v2_runs.json"),
+        )
+        .expect("open orchestration store");
+        let first = event("run-a");
+
+        assert_eq!(
+            store
+                .append_stateful_runtime_event_once_with_next_seq(&first)
+                .expect("store first event"),
+            (true, 1)
+        );
+
+        let error = store
+            .append_stateful_runtime_event_once_with_next_seq(&event("run-b"))
+            .expect_err("reject cross-run event ID collision");
+        assert!(error.to_string().contains("already stored for run `run-a`"));
+        assert_eq!(
+            store.load_stateful_runtime_events().unwrap(),
+            vec![{
+                let mut stored = first;
+                stored.seq = 1;
+                stored
+            }]
+        );
+    }
 }
