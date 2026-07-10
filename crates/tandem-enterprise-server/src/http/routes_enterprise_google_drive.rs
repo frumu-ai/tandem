@@ -17,6 +17,10 @@ use tandem_memory::types::{
     MemoryImportStats, MemoryTenantScope, MemoryTier, SourceObjectLifecycleRecord,
     SourceObjectLifecycleState,
 };
+use tandem_memory::{
+    MemoryChunkSelector, MemoryReadScope, MemoryStoreMutationRequest, MemoryStoreQueryRequest,
+    MemoryStoreQueryResult,
+};
 
 use crate::enterprise_connectors::google_drive::GoogleDriveClient;
 use crate::enterprise_connectors::google_drive_ingestion::{
@@ -263,15 +267,22 @@ async fn run_google_drive_import_operation(
     };
     let tenant_scope = memory_tenant_scope(&tenant_context);
     let source_object_filter = if let Some(source_object_id) = input.source_object_id.as_deref() {
-        let record = memory_manager
-            .db()
-            .get_source_object_lifecycle_by_id_for_tenant(
-                &tenant_scope,
-                &binding.binding_id,
-                source_object_id,
-            )
+        let records = memory_manager
+            .store()
+            .query(MemoryStoreQueryRequest::SourceObjectLifecyclesForBinding {
+                scope: MemoryReadScope::tenant(tenant_scope.clone()),
+                source_binding_id: binding.binding_id.clone(),
+            })
             .await
-            .map_err(|_| internal_error("ENTERPRISE_GOOGLE_DRIVE_REINDEX_SOURCE_OBJECT_FAILED"))?
+            .map_err(|_| internal_error("ENTERPRISE_GOOGLE_DRIVE_REINDEX_SOURCE_OBJECT_FAILED"))?;
+        let MemoryStoreQueryResult::SourceObjectLifecycles(records) = records else {
+            return Err(internal_error(
+                "ENTERPRISE_GOOGLE_DRIVE_REINDEX_SOURCE_OBJECT_FAILED",
+            ));
+        };
+        let record = records
+            .into_iter()
+            .find(|record| record.source_object_id == source_object_id)
             .ok_or_else(|| {
                 bad_request("ENTERPRISE_GOOGLE_DRIVE_REINDEX_SOURCE_OBJECT_NOT_FOUND")
             })?;
@@ -631,10 +642,20 @@ async fn source_objects_seen_since(
     binding_id: &str,
     started_at_ms: u64,
 ) -> Result<Vec<SourceObjectLifecycleRecord>, tandem_memory::types::MemoryError> {
-    let mut records: Vec<_> = manager
-        .db()
-        .list_source_object_lifecycle_for_binding_for_tenant(tenant_scope, binding_id)
-        .await?
+    let records = manager
+        .store()
+        .query(MemoryStoreQueryRequest::SourceObjectLifecyclesForBinding {
+            scope: MemoryReadScope::tenant(tenant_scope.clone()),
+            source_binding_id: binding_id.to_string(),
+        })
+        .await
+        .map_err(tandem_memory::types::MemoryError::from)?;
+    let MemoryStoreQueryResult::SourceObjectLifecycles(records) = records else {
+        return Err(tandem_memory::types::MemoryError::InvalidConfig(
+            "memory store returned an unexpected source lifecycle result".to_string(),
+        ));
+    };
+    let mut records: Vec<_> = records
         .into_iter()
         .filter(|record| record.last_seen_at_ms >= started_at_ms)
         .collect();
@@ -651,35 +672,37 @@ async fn quarantine_source_bound_import(
     changed_at_ms: u64,
 ) -> Result<(), tandem_memory::types::MemoryError> {
     for record in source_objects {
+        let selector = MemoryChunkSelector {
+            tier: record.tier,
+            project_id: record.project_id.clone(),
+            session_id: record.session_id.clone(),
+        };
+        let scope = MemoryReadScope::tenant(tenant_scope.clone());
         manager
-            .db()
-            .delete_file_chunks_by_path_for_tenant(
-                record.tier,
-                record.session_id.as_deref(),
-                record.project_id.as_deref(),
-                &record.indexed_path,
-                tenant_scope,
-            )
+            .store()
+            .mutate(MemoryStoreMutationRequest::DeleteChunksBySourcePath {
+                scope: scope.clone(),
+                selector: selector.clone(),
+                source_path: record.indexed_path.clone(),
+            })
             .await?;
         manager
-            .db()
-            .delete_import_index_entry_for_tenant(
-                record.tier,
-                record.session_id.as_deref(),
-                record.project_id.as_deref(),
-                &record.indexed_path,
-                tenant_scope,
-            )
+            .store()
+            .mutate(MemoryStoreMutationRequest::DeleteImportIndexEntry {
+                scope: scope.clone(),
+                selector,
+                path: record.indexed_path.clone(),
+            })
             .await?;
         manager
-            .db()
-            .mark_source_object_lifecycle_state_for_tenant(
-                tenant_scope,
-                binding_id,
-                &record.source_object_id,
-                SourceObjectLifecycleState::Quarantined,
+            .store()
+            .mutate(MemoryStoreMutationRequest::SetSourceObjectLifecycleState {
+                scope,
+                source_binding_id: binding_id.to_string(),
+                source_object_id: record.source_object_id.clone(),
+                state: SourceObjectLifecycleState::Quarantined,
                 changed_at_ms,
-            )
+            })
             .await?;
     }
     Ok(())
