@@ -39,6 +39,7 @@ fn brief_with_unreviewed_discovered_files_is_blocked_with_structured_metadata() 
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -154,6 +155,7 @@ fn research_brief_without_source_coverage_flag_gets_semantic_block_reason_and_ne
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",

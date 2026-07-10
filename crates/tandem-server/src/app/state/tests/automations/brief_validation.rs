@@ -23,6 +23,7 @@ fn completed_brief_without_read_is_blocked_even_if_it_looks_confident() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -77,6 +78,7 @@ fn brief_with_timed_out_websearch_is_blocked_when_web_research_is_required() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -217,6 +219,7 @@ fn brief_prewrite_requirements_follow_external_research_defaults() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",

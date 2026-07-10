@@ -79,6 +79,7 @@ fn marketing_template_automation_migrates_to_split_research_flow() {
                     max_tool_calls: None,
                     stage_kind: None,
                     gate: None,
+                    wait: None,
                     metadata: Some(json!({
                         "builder": {
                             "title": "Research Brief",
@@ -115,6 +116,7 @@ fn marketing_template_automation_migrates_to_split_research_flow() {
                     max_tool_calls: None,
                     stage_kind: None,
                     gate: None,
+                    wait: None,
                     metadata: None,
                 },
             ],
@@ -294,6 +296,7 @@ fn research_finalize_validation_accepts_upstream_read_evidence() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -451,6 +454,7 @@ fn generic_artifact_validation_rejects_stale_verified_output_on_retry() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/research-sources.json"
@@ -544,6 +548,7 @@ fn mcp_grounding_citations_accept_verified_output_without_local_read_gates() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/research-sources.json",
@@ -640,6 +645,7 @@ fn generic_artifact_validation_warns_on_weak_report_markdown() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "report.md"
@@ -736,6 +742,7 @@ fn publish_node_blocks_when_upstream_editorial_validation_failed() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "role": "publisher"
@@ -793,6 +800,7 @@ fn report_markdown_blocks_when_rich_upstream_evidence_is_reduced_to_generic_summ
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "report.md"
@@ -918,6 +926,7 @@ fn report_markdown_accepts_structured_synthesis_without_inline_citations_when_up
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "analyze-findings.md"
@@ -1053,6 +1062,7 @@ fn research_synthesis_does_not_require_fresh_workspace_reads_for_mcp_artifact_br
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "draft-final-report.md"
@@ -1166,6 +1176,7 @@ fn report_markdown_legacy_metadata_is_forced_to_strict_without_emergency_rollbac
             max_tool_calls: None,
             stage_kind: None,
             gate: None,
+            wait: None,
             metadata: Some(json!({
                 "quality_mode": "legacy",
                 "builder": {
@@ -1300,6 +1311,7 @@ fn report_markdown_legacy_quality_mode_allows_generic_synthesis_with_emergency_r
             max_tool_calls: None,
             stage_kind: None,
             gate: None,
+            wait: None,
             metadata: Some(json!({
                 "quality_mode": "legacy",
                 "builder": {
@@ -1433,6 +1445,7 @@ fn report_markdown_rejects_generic_synthesis_without_evidence_anchors_when_upstr
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "generate-report.md"
@@ -1554,6 +1567,7 @@ fn report_markdown_accepts_rich_html_synthesis_when_upstream_is_rich() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "generate-report.md"
@@ -1690,6 +1704,7 @@ fn report_markdown_rejects_generic_html_synthesis_without_evidence_anchors_when_
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "generate-report.md"
@@ -1827,6 +1842,7 @@ fn research_brief_full_pipeline_overrides_llm_blocked_to_needs_repair_without_so
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",

@@ -99,6 +99,7 @@ fn sample_automation(workspace_root: &str, automation_id: &str) -> crate::Automa
                 max_tool_calls: None,
                 stage_kind: None,
                 gate: None,
+                wait: None,
                 metadata: None,
             }],
         },

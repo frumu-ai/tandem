@@ -4,11 +4,10 @@ pub async fn run_automation_v2_scheduler(state: AppState) {
 
 pub(crate) fn is_automation_approval_node(node: &AutomationFlowNode) -> bool {
     matches!(node.stage_kind, Some(AutomationNodeStageKind::Approval))
-        || node
-            .gate
-            .as_ref()
-            .map(|gate| gate.required)
-            .unwrap_or(false)
+        || matches!(
+            node.effective_wait(),
+            Some(tandem_automation::AutomationWaitSpec::Approval { .. })
+        )
 }
 
 pub(crate) fn automation_guardrail_failure(
@@ -1392,7 +1391,59 @@ pub(crate) fn automation_output_session_id(output: &Value) -> Option<String> {
 pub(crate) fn build_automation_pending_gate(
     node: &AutomationFlowNode,
 ) -> Option<AutomationPendingGate> {
-    let gate = node.gate.as_ref()?;
+    let (instructions, decisions, rework_targets, expiry_policy) =
+        if let Some(tandem_automation::AutomationWaitSpec::Approval {
+            decisions,
+            expires_after_ms,
+            timeout,
+        }) = node.wait.as_ref()
+        {
+            let expiry_policy = timeout
+                .as_ref()
+                .map(|timeout| crate::AutomationGateExpiryPolicy {
+                    expires_after_ms: Some(timeout.expires_after_ms),
+                    on_expiry: Some(match timeout.on_timeout {
+                        tandem_automation::WaitTimeoutAction::Cancel => {
+                            crate::AutomationGateExpiryAction::Cancel
+                        }
+                        tandem_automation::WaitTimeoutAction::Escalate => {
+                            crate::AutomationGateExpiryAction::Escalate
+                        }
+                        tandem_automation::WaitTimeoutAction::Remind => {
+                            crate::AutomationGateExpiryAction::Remind
+                        }
+                        tandem_automation::WaitTimeoutAction::Resume => {
+                            crate::AutomationGateExpiryAction::Resume
+                        }
+                    }),
+                    escalate_to: timeout.escalate_to.clone(),
+                    remind_every_ms: timeout.remind_every_ms,
+                })
+                .or_else(|| {
+                    expires_after_ms.map(|expires_after_ms| crate::AutomationGateExpiryPolicy {
+                        expires_after_ms: Some(expires_after_ms),
+                        on_expiry: Some(crate::AutomationGateExpiryAction::Cancel),
+                        escalate_to: None,
+                        remind_every_ms: None,
+                    })
+                });
+            (
+                Some(node.objective.clone()),
+                decisions.clone(),
+                Vec::new(),
+                expiry_policy,
+            )
+        } else {
+            let gate = node.gate.as_ref()?;
+            (
+                gate.instructions.clone(),
+                gate.decisions.clone(),
+                gate.rework_targets.clone(),
+                gate.expiry_policy
+                    .clone()
+                    .or_else(|| automation_gate_expiry_policy_from_node_metadata(node)),
+            )
+        };
     Some(AutomationPendingGate {
         node_id: node.node_id.clone(),
         title: node
@@ -1403,9 +1454,9 @@ pub(crate) fn build_automation_pending_gate(
             .and_then(Value::as_str)
             .unwrap_or(node.objective.as_str())
             .to_string(),
-        instructions: gate.instructions.clone(),
-        decisions: gate.decisions.clone(),
-        rework_targets: gate.rework_targets.clone(),
+        instructions,
+        decisions,
+        rework_targets,
         requested_at_ms: now_ms(),
         upstream_node_ids: node.depends_on.clone(),
         metadata: node
@@ -1414,10 +1465,7 @@ pub(crate) fn build_automation_pending_gate(
             .and_then(|metadata| metadata.get("approval"))
             .and_then(|approval| approval.get("metadata"))
             .cloned(),
-        expiry_policy: gate
-            .expiry_policy
-            .clone()
-            .or_else(|| automation_gate_expiry_policy_from_node_metadata(node)),
+        expiry_policy,
     })
 }
 

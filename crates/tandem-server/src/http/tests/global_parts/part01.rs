@@ -870,6 +870,7 @@ pub(in crate::http::tests) async fn create_test_automation_v2(
                     max_tool_calls: None,
                     stage_kind: Some(crate::AutomationNodeStageKind::Workstream),
                     gate: None,
+                    wait: None,
                     metadata: Some(json!({
                         "builder": {
                             "title": "Draft",
@@ -896,6 +897,7 @@ pub(in crate::http::tests) async fn create_test_automation_v2(
                     max_tool_calls: None,
                     stage_kind: Some(crate::AutomationNodeStageKind::Review),
                     gate: None,
+                    wait: None,
                     metadata: Some(json!({
                         "builder": {
                             "title": "Review",
@@ -932,6 +934,7 @@ pub(in crate::http::tests) async fn create_test_automation_v2(
                         instructions: Some("Check the review output".to_string()),
                         expiry_policy: None,
                     }),
+                    wait: None,
                     metadata: Some(json!({
                         "builder": {
                             "title": "Approval",
@@ -1032,6 +1035,7 @@ async fn create_branched_test_automation_v2(
                     max_tool_calls: None,
                     stage_kind: Some(crate::AutomationNodeStageKind::Workstream),
                     gate: None,
+                    wait: None,
                     metadata: Some(json!({
                         "builder": {
                             "title": "Research",
@@ -1058,6 +1062,7 @@ async fn create_branched_test_automation_v2(
                     max_tool_calls: None,
                     stage_kind: Some(crate::AutomationNodeStageKind::Workstream),
                     gate: None,
+                    wait: None,
                     metadata: Some(json!({
                         "builder": {
                             "title": "Analysis",
@@ -1084,6 +1089,7 @@ async fn create_branched_test_automation_v2(
                     max_tool_calls: None,
                     stage_kind: Some(crate::AutomationNodeStageKind::Workstream),
                     gate: None,
+                    wait: None,
                     metadata: Some(json!({
                         "builder": {
                             "title": "Draft",
@@ -1116,6 +1122,7 @@ async fn create_branched_test_automation_v2(
                     max_tool_calls: None,
                     stage_kind: Some(crate::AutomationNodeStageKind::Workstream),
                     gate: None,
+                    wait: None,
                     metadata: Some(json!({
                         "builder": {
                             "title": "Publish",
@@ -1901,6 +1908,7 @@ async fn automation_v2_run_projects_backlog_tasks_into_context_blackboard() {
                 max_tool_calls: None,
                 stage_kind: Some(crate::AutomationNodeStageKind::Workstream),
                 gate: None,
+                wait: None,
                 metadata: Some(json!({
                     "builder": {
                         "title": "Plan Backlog Task",

@@ -942,6 +942,7 @@ fn build_channel_automation(draft: &ChannelAutomationDraftRecord, now: u64) -> A
                 max_tool_calls: Some(16),
                 stage_kind: None,
                 gate: None,
+                wait: None,
                 metadata: Some(json!({
                     "created_from": "channel_automation_draft",
                     "source_platform": draft.channel_context.source_platform,

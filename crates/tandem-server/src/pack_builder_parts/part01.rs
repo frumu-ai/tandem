@@ -344,6 +344,7 @@ fn build_pack_builder_automation(
                 max_tool_calls: None,
                 stage_kind: Some(crate::AutomationNodeStageKind::Workstream),
                 gate: None,
+                wait: None,
                 metadata: Some(json!({
                     "builder": {
                         "origin": "pack_builder",

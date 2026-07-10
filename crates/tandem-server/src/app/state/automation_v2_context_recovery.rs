@@ -363,6 +363,7 @@ fn recovered_node(node_id: &str, objective: &str) -> AutomationFlowNode {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({ "recovered_from": "context_run" })),
     }
 }

@@ -27,6 +27,7 @@ fn test_flow_node(
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata,
     }
 }
@@ -96,6 +97,7 @@ fn report_markdown_retries_accept_html_sibling_outputs() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/generate-report.md"
@@ -181,6 +183,7 @@ fn automation_resolve_verified_output_path_accepts_file_path_schema_with_dot_seg
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/report.md"
@@ -246,6 +249,7 @@ fn citations_nodes_do_not_require_files_reviewed_sections_by_default() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/research-sources.json",

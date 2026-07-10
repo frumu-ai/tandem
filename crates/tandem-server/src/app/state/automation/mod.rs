@@ -13,11 +13,12 @@ pub(crate) use extraction::{
 };
 pub(crate) use gates::{
     apply_automation_gate_decision, apply_automation_gate_decision_with_transition_guard,
-    apply_automation_gate_expiry, automation_gate_decision_settles_wait,
-    automation_gate_expires_at_ms, automation_gate_has_settled_decision,
-    automation_gate_rejects_late_human_decision, effective_automation_gate_expiry_policy,
-    pause_automation_run_for_gate, recover_settled_automation_gate_decision,
-    AutomationGateDecisionOutcome, AutomationGateTransitionGuardDenial,
+    apply_automation_gate_expiry, apply_automation_gate_timeout_resume,
+    automation_gate_decision_settles_wait, automation_gate_expires_at_ms,
+    automation_gate_has_settled_decision, automation_gate_rejects_late_human_decision,
+    effective_automation_gate_expiry_policy, pause_automation_run_for_gate,
+    recover_settled_automation_gate_decision, AutomationGateDecisionOutcome,
+    AutomationGateTransitionGuardDenial,
 };
 pub(crate) mod legacy_defaults;
 pub(crate) mod lifecycle;
@@ -78,6 +79,13 @@ pub fn automation_node_output_enforcement(
     node: &AutomationFlowNode,
 ) -> crate::AutomationOutputEnforcement {
     enforcement::automation_node_output_enforcement(node)
+}
+
+pub(crate) fn automation_wait_payload_schema_validation_issue(
+    schema: &Value,
+    payload: &Value,
+) -> Option<String> {
+    logic::automation_output_schema_validation_issue(schema, payload)
 }
 
 pub(crate) fn automation_node_research_stage(node: &AutomationFlowNode) -> Option<String> {

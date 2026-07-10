@@ -1413,6 +1413,7 @@ fn standup_synthesis_effective_required_output_path_uses_report_template() {
         max_tool_calls: None,
         stage_kind: Some(crate::AutomationNodeStageKind::Orchestrator),
         gate: None,
+        wait: None,
         metadata: None,
     };
     let started_at_ms = chrono::DateTime::parse_from_rfc3339("2026-04-14T09:00:00Z")
@@ -1693,6 +1694,7 @@ fn incident_monitor_context_artifacts_do_not_require_workspace_output_paths() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/incident_monitor.research.json"

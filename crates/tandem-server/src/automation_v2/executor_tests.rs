@@ -31,6 +31,7 @@ fn test_automation() -> crate::automation_v2::types::AutomationV2Spec {
                 max_tool_calls: None,
                 stage_kind: None,
                 gate: None,
+                wait: None,
                 metadata: None,
             }],
         },
@@ -126,6 +127,7 @@ fn test_node(
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     }
 }
@@ -569,6 +571,7 @@ fn promote_materialized_output_completes_missing_output_repairs() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/runs/run-test/artifacts/research-brief.json"
@@ -1646,6 +1649,7 @@ fn repair_expected_contract_uses_normalized_upstream_synthesis_enforcement() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/synthesize-report.json"

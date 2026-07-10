@@ -213,6 +213,7 @@ fn collect_inputs_nodes_do_not_infer_web_research_from_current_date_language() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/collect-inputs.json"
@@ -254,6 +255,7 @@ fn summarize_automation_tool_activity_recovers_tools_from_synthetic_summary() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let mut session = Session::new(Some("synthetic summary".to_string()), None);
@@ -323,6 +325,7 @@ fn summarize_automation_tool_activity_counts_auth_failed_websearch_as_attempted(
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let mut session = Session::new(Some("auth failed websearch".to_string()), None);
@@ -389,6 +392,7 @@ fn summarize_automation_tool_activity_treats_backend_unavailable_websearch_as_un
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let mut session = Session::new(Some("backend unavailable websearch".to_string()), None);
@@ -453,6 +457,7 @@ fn summarize_automation_tool_activity_treats_partial_websearch_with_results_as_s
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let mut session = Session::new(Some("partial websearch".to_string()), None);
@@ -539,6 +544,7 @@ fn summarize_automation_tool_activity_treats_zero_result_websearch_as_failure() 
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let mut session = Session::new(Some("zero result websearch".to_string()), None);
@@ -610,6 +616,7 @@ fn summarize_automation_tool_activity_treats_runtime_websearch_string_result_as_
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let mut session = Session::new(Some("runtime websearch".to_string()), None);
@@ -733,6 +740,7 @@ fn build_automation_attempt_evidence_captures_runtime_websearch_success() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/research-sources.json"
@@ -880,6 +888,7 @@ fn detect_automation_blocker_category_prefers_delivery_category_from_canonical_e
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "delivery": {
                 "method": "email",
@@ -939,6 +948,7 @@ fn detect_automation_node_failure_kind_marks_provider_transport_failures() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
 

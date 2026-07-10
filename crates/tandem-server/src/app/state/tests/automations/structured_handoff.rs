@@ -34,6 +34,7 @@ fn incident_monitor_structured_handoff_with_blocked_inner_status_completes_node(
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "incident_monitor": {
                 "artifact_type": "incident_monitor_fix_proposal",
@@ -118,6 +119,7 @@ fn structured_handoff_nodes_fail_when_only_fallback_tool_summary_is_returned() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: None,
     };
     let mut session = Session::new(
@@ -199,6 +201,7 @@ fn structured_handoff_missing_is_repairable_even_without_enforcement_metadata() 
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: None,
     };
     let mut session = Session::new(
@@ -327,6 +330,7 @@ fn structured_handoff_nodes_require_concrete_reads_without_output_path() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: None,
     };
     let session = Session::new(
@@ -426,6 +430,7 @@ fn structured_handoff_blocks_when_exact_named_source_read_fails_but_copy_is_disc
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: None,
     };
     let mut session = Session::new(
@@ -510,6 +515,7 @@ fn wrap_automation_node_output_includes_parsed_structured_handoff() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: None,
     };
     let mut session = Session::new(Some("structured-handoff-wrap".to_string()), None);
@@ -594,6 +600,7 @@ fn wrap_automation_node_output_attaches_source_material_from_reads() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: None,
     };
     let mut session = Session::new(
@@ -688,6 +695,7 @@ fn wrap_automation_node_output_strips_read_only_files_from_write_targets() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: None,
     };
     let mut session = Session::new(

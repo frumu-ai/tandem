@@ -177,6 +177,7 @@ fn map_node(
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: eval_node_metadata(case, node, options),
     }
 }

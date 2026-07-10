@@ -59,7 +59,7 @@ pub use waits::{
     begin_claimed_stateful_wait_reminder_completion,
     begin_claimed_stateful_wait_timeout_completion, begin_claimed_stateful_wait_wake_completion,
     cancel_stateful_wait_after_phase_guard_denial, claim_due_stateful_wait,
-    claim_matching_stateful_webhook_wait, due_stateful_waits,
+    claim_matching_stateful_webhook_wait, claim_stateful_wait_for_resolution, due_stateful_waits,
     finish_claimed_stateful_wait_completion, finish_claimed_stateful_wait_reminder_completion,
     list_stateful_waits, load_stateful_waits, mark_stateful_wait_timeout_result,
     mark_stateful_wait_woken, prune_stateful_wait_store, release_claimed_stateful_wait,

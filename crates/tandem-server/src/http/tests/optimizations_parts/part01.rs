@@ -59,6 +59,7 @@ fn sample_automation(workspace_root: &str) -> crate::AutomationV2Spec {
                 max_tool_calls: None,
                 stage_kind: None,
                 gate: None,
+                wait: None,
                 metadata: None,
             }],
         },

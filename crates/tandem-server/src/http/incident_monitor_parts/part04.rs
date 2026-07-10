@@ -148,6 +148,7 @@ fn incident_monitor_triage_node(
         max_tool_calls: Some(24),
         stage_kind: Some(crate::AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "inputs": inputs.clone(),
             "builder": {

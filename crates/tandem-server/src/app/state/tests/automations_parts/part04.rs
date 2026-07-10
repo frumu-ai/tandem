@@ -99,6 +99,7 @@ fn prompt_orders_required_workspace_writes_before_run_artifact() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/research-sources.json",
@@ -211,6 +212,7 @@ fn prompt_includes_email_delivery_metadata_for_notify_user() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "delivery": {
                 "method": "email",
@@ -342,6 +344,7 @@ fn prompt_compacts_upstream_outputs_for_downstream_nodes() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let agent = AutomationAgentProfile {
@@ -478,6 +481,7 @@ async fn execute_collect_inputs_node_uses_deterministic_shortcut() {
                 max_tool_calls: None,
                 stage_kind: None,
                 gate: None,
+                wait: None,
                 metadata: Some(json!({
                     "inputs": {
                         "topic": "autonomous AI agentic workflows",
@@ -671,6 +675,7 @@ fn workflow_artifact_guard_covers_the_folded_delivery_artifact() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "delivery": {
                 "method": "email",

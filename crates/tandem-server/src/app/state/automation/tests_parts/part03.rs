@@ -41,6 +41,7 @@ async fn reconcile_verified_output_path_unwraps_json_handoff_wrapper_from_sessio
             max_tool_calls: None,
             stage_kind: None,
             gate: None,
+            wait: None,
             metadata: Some(json!({
                 "builder": {
                     "output_path": output_path
@@ -143,6 +144,7 @@ async fn reconcile_verified_output_path_promotes_legacy_workspace_artifact_into_
             max_tool_calls: None,
             stage_kind: None,
             gate: None,
+            wait: None,
             metadata: Some(json!({
                 "builder": {
                     "output_path": output_path
@@ -223,6 +225,7 @@ async fn reconcile_verified_output_path_does_not_promote_unrelated_workspace_fil
             max_tool_calls: None,
             stage_kind: None,
             gate: None,
+            wait: None,
             metadata: Some(json!({
                 "builder": {
                     "output_path": output_path

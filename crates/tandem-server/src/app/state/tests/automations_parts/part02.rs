@@ -839,6 +839,7 @@ async fn stale_running_automation_runs_mark_in_progress_nodes_as_repairable() {
                 max_tool_calls: None,
                 stage_kind: None,
                 gate: None,
+                wait: None,
                 metadata: None,
             }],
         },
@@ -1252,6 +1253,7 @@ async fn stale_running_automation_runs_fail_terminal_in_progress_nodes() {
                 max_tool_calls: None,
                 stage_kind: None,
                 gate: None,
+                wait: None,
                 metadata: None,
             }],
         },
@@ -1453,6 +1455,7 @@ fn email_flow_node(node_id: &str, objective: &str, depends_on: Vec<String>) -> A
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     }
 }

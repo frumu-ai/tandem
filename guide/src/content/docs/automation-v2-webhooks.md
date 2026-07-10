@@ -5,9 +5,8 @@ description: Trigger Automation V2 workflows from external providers with signed
 
 Automation V2 workflows can be triggered by external webhooks. For publicly
 authorable workflows, an accepted webhook starts a new Automation V2 run at the
-eligible root nodes. Tandem's runtime can instead wake an already-registered
-matching wait, but no public Automation V2, API, SDK, or MCP authoring surface
-currently declares those correlated waits. Tandem verifies every delivery,
+eligible root nodes. A workflow can also declare a typed correlated webhook
+wait; a matching delivery wakes that wait and resumes the same run. Tandem verifies every delivery,
 resolves the tenant from the stored trigger (never from the payload), and records
 the delivery durably. Payloads are treated as untrusted external event data,
 never as instructions.
@@ -53,11 +52,16 @@ stored trigger.
 
 Webhook intake is decoupled from workflow execution. An accepted delivery is
 written to a durable inbox first, then drained to start a new run or wake a
-matching wait that the runtime has already registered. Public Automation V2
-authoring currently covers the new-run path, not declaration of a correlated
-webhook wait. This keeps intake fast and resilient: a delivery is not lost if
+matching wait that the runtime has already registered from a public Automation
+V2 `wait` node. This keeps intake fast and resilient: a delivery is not lost if
 the runtime is briefly busy, and duplicate deliveries (same body) do not queue a
 second run.
+
+Webhook waits do not jump to an arbitrary node. The wait node must already be
+eligible in the published DAG, and its `correlation` must match the accepted
+delivery by provider event ID, idempotency key, or body digest. See
+[Author durable wait nodes](../stateful-workflows/#author-durable-wait-nodes)
+for the complete schema and timeout rules.
 
 ## Notion webhooks
 
@@ -98,11 +102,12 @@ when you need page/database/comment bodies.
    token** (available exactly once) and paste it into Notion to verify the
    subscription. Tandem never shows the token again.
 7. **Trigger an event.** Once Notion sends a signed event, Tandem verifies
-   `X-Notion-Signature`, records the delivery, and starts a new Automation V2
-   run for the publicly authorable workflow described here. The status advances
+   `X-Notion-Signature` and records the delivery. It starts a new Automation V2
+   run when no registered wait matches, or wakes the matching typed webhook
+   wait and resumes that existing run. The status advances
    to **Verified — receiving signed events**.
 8. **Confirm.** The accepted delivery appears in **Recent deliveries** and links
-   to the queued run.
+   to either the queued run or the woken run and wait.
 
 ### Verification and safety
 

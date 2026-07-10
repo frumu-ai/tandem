@@ -50,6 +50,7 @@ async fn automation_v2_backlog_task_claim_and_requeue_routes_work() {
                 max_tool_calls: None,
                 stage_kind: Some(crate::AutomationNodeStageKind::Workstream),
                 gate: None,
+                wait: None,
                 metadata: Some(json!({
                     "builder": {
                         "title": "Plan Backlog Task",

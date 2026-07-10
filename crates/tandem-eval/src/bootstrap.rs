@@ -800,6 +800,7 @@ fn action_firewall_eval_automation(
                     max_tool_calls: None,
                     stage_kind: None,
                     gate: None,
+                    wait: None,
                     metadata: None,
                 })
                 .collect(),

@@ -100,6 +100,7 @@ fn code_workflow_rejects_unsafe_raw_source_rewrites() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let mut session = Session::new(Some("synthetic summary".to_string()), None);
@@ -169,6 +170,7 @@ fn summarize_automation_tool_activity_counts_auth_failed_websearch_as_attempted(
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let mut session = Session::new(Some("auth failed websearch".to_string()), None);
@@ -235,6 +237,7 @@ fn summarize_automation_tool_activity_treats_backend_unavailable_websearch_as_un
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let mut session = Session::new(Some("backend unavailable websearch".to_string()), None);
@@ -299,6 +302,7 @@ fn summarize_automation_tool_activity_treats_partial_websearch_with_results_as_s
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let mut session = Session::new(Some("partial websearch".to_string()), None);
@@ -375,6 +379,7 @@ fn summarize_automation_tool_activity_treats_runtime_websearch_string_result_as_
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let mut session = Session::new(Some("runtime websearch".to_string()), None);
@@ -498,6 +503,7 @@ fn build_automation_attempt_evidence_captures_runtime_websearch_success() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/research-sources.json"
@@ -626,6 +632,7 @@ fn detect_automation_blocker_category_prefers_delivery_category_from_canonical_e
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "delivery": {
                 "method": "email",
@@ -685,6 +692,7 @@ fn report_generation_objective_does_not_imply_email_delivery_execution() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/generate-report.html"
@@ -718,6 +726,7 @@ fn execute_goal_objective_with_gmail_draft_or_send_requires_email_delivery() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
 
@@ -747,6 +756,7 @@ fn email_delivery_status_uses_recipient_from_objective_when_metadata_missing() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
 
@@ -810,6 +820,7 @@ fn email_delivery_success_is_terminal_even_without_parseable_final_status() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
 
@@ -872,6 +883,7 @@ fn research_workflow_failure_kind_detects_missing_citations() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -928,6 +940,7 @@ fn research_workflow_defaults_to_warning_without_strict_source_coverage() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -1012,6 +1025,7 @@ fn artifact_validation_uses_structured_repair_exhaustion_state_from_session_text
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -1106,6 +1120,7 @@ fn research_artifact_validation_requires_citations_and_web_sources_reviewed() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -1231,6 +1246,7 @@ fn research_validation_uses_websearch_result_urls_as_citation_evidence() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -1347,6 +1363,7 @@ fn research_citations_validation_accepts_external_research_without_files_reviewe
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/research-sources.json",
@@ -1510,6 +1527,7 @@ fn marketing_template_automation_migrates_to_split_research_flow() {
                     max_tool_calls: None,
                     stage_kind: None,
                     gate: None,
+                    wait: None,
                     metadata: Some(json!({
                         "builder": {
                             "title": "Research Brief",
@@ -1546,6 +1564,7 @@ fn marketing_template_automation_migrates_to_split_research_flow() {
                     max_tool_calls: None,
                     stage_kind: None,
                     gate: None,
+                    wait: None,
                     metadata: None,
                 },
             ],

@@ -57,6 +57,7 @@ async fn automation_v2_publish_block_smoke_skips_external_action_receipts() {
                     max_tool_calls: None,
                     stage_kind: Some(crate::AutomationNodeStageKind::Workstream),
                     gate: None,
+                    wait: None,
                     metadata: Some(json!({
                         "builder": {
                             "output_path": "final-report.md",
@@ -82,6 +83,7 @@ async fn automation_v2_publish_block_smoke_skips_external_action_receipts() {
                     max_tool_calls: None,
                     stage_kind: Some(crate::AutomationNodeStageKind::Workstream),
                     gate: None,
+                    wait: None,
                     metadata: Some(json!({
                         "builder": {
                             "role": "publisher"

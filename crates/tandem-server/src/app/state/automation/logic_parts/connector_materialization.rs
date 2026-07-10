@@ -1549,6 +1549,7 @@ mod connector_source_artifact_recovery_tests {
             max_tool_calls: None,
             stage_kind: None,
             gate: None,
+            wait: None,
             metadata: Some(json!({
                 "source_query": "local llm data privacy corporate",
                 "search_query": "(local llm data privacy corporate) AND subreddit:LocalLLaMA"

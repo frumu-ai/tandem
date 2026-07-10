@@ -956,6 +956,7 @@ async fn automation_v2_research_workflow_smoke_exposes_blocked_artifact_state() 
                     max_tool_calls: None,
                     stage_kind: Some(crate::AutomationNodeStageKind::Workstream),
                     gate: None,
+                    wait: None,
                     metadata: Some(json!({
                         "builder": {
                             "title": "Research Brief",
@@ -983,6 +984,7 @@ async fn automation_v2_research_workflow_smoke_exposes_blocked_artifact_state() 
                     max_tool_calls: None,
                     stage_kind: Some(crate::AutomationNodeStageKind::Workstream),
                     gate: None,
+                    wait: None,
                     metadata: Some(json!({
                         "builder": {
                             "title": "Draft Copy",
@@ -1348,6 +1350,7 @@ async fn automation_v2_research_workflow_smoke_exposes_citation_validation_state
                 max_tool_calls: None,
                 stage_kind: Some(crate::AutomationNodeStageKind::Workstream),
                 gate: None,
+                wait: None,
                 metadata: Some(json!({
                     "builder": {
                         "output_path": "marketing-brief.md",
@@ -1646,6 +1649,7 @@ async fn automation_v2_code_workflow_smoke_exposes_verify_failed_state() {
                 max_tool_calls: None,
                 stage_kind: Some(crate::AutomationNodeStageKind::Workstream),
                 gate: None,
+                wait: None,
                 metadata: Some(json!({
                     "builder": {
                         "title": "Implement Fix",
@@ -1840,6 +1844,7 @@ async fn automation_v2_editorial_workflow_smoke_exposes_quality_validation_state
                 max_tool_calls: None,
                 stage_kind: Some(crate::AutomationNodeStageKind::Workstream),
                 gate: None,
+                wait: None,
                 metadata: Some(json!({
                     "builder": {
                         "output_path": "final-report.md",

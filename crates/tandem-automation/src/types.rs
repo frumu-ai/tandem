@@ -393,6 +393,7 @@ pub enum AutomationGateExpiryAction {
     Cancel,
     Escalate,
     Remind,
+    Resume,
 }
 
 impl From<tandem_plan_compiler::api::ProjectedAutomationGateExpiryAction>
@@ -461,8 +462,67 @@ pub struct AutomationFlowNode {
     pub stage_kind: Option<AutomationNodeStageKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate: Option<AutomationApprovalGate>,
+    /// A durable, non-agent wait step. Wait nodes never invoke a model, tool,
+    /// or MCP server; the runtime completes them from a governed wake source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait: Option<crate::orchestration::AutomationWaitSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+}
+
+impl AutomationFlowNode {
+    /// Returns the explicit wait specification, or projects a legacy approval
+    /// gate into the unified approval-wait model for runtime compatibility.
+    pub fn effective_wait(&self) -> Option<crate::orchestration::AutomationWaitSpec> {
+        if let Some(wait) = self.wait.as_ref() {
+            return Some(wait.clone());
+        }
+        let gate = self.gate.as_ref()?;
+        if !gate.required {
+            return None;
+        }
+        let timeout = gate
+            .expiry_policy
+            .as_ref()
+            .and_then(|policy| {
+                policy
+                    .expires_after_ms
+                    .map(|expires_after_ms| (policy, expires_after_ms))
+            })
+            .map(
+                |(policy, expires_after_ms)| crate::orchestration::WaitTimeoutPolicy {
+                    expires_after_ms,
+                    on_timeout: match policy
+                        .on_expiry
+                        .unwrap_or(AutomationGateExpiryAction::Cancel)
+                    {
+                        AutomationGateExpiryAction::Cancel => {
+                            crate::orchestration::WaitTimeoutAction::Cancel
+                        }
+                        AutomationGateExpiryAction::Escalate => {
+                            crate::orchestration::WaitTimeoutAction::Escalate
+                        }
+                        AutomationGateExpiryAction::Remind => {
+                            crate::orchestration::WaitTimeoutAction::Remind
+                        }
+                        AutomationGateExpiryAction::Resume => {
+                            crate::orchestration::WaitTimeoutAction::Resume
+                        }
+                    },
+                    escalate_to: policy.escalate_to.clone(),
+                    remind_every_ms: policy.remind_every_ms,
+                },
+            );
+        Some(crate::orchestration::AutomationWaitSpec::Approval {
+            decisions: gate.decisions.clone(),
+            expires_after_ms: None,
+            timeout,
+        })
+    }
+
+    pub fn is_explicit_wait_node(&self) -> bool {
+        self.wait.is_some()
+    }
 }
 
 impl<I, O> From<tandem_plan_compiler::api::ProjectedAutomationNode<I, O>> for AutomationFlowNode
@@ -545,6 +605,7 @@ where
             max_tool_calls: None,
             stage_kind: value.stage_kind.map(Into::into),
             gate: value.gate.map(Into::into),
+            wait: None,
             metadata,
         }
     }
