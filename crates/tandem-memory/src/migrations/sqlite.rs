@@ -213,6 +213,13 @@ fn backfill_memory_record_private_owner(tx: &Transaction<'_>) -> MemoryResult<()
                  CASE
                      WHEN metadata IS NOT NULL AND metadata <> '' AND json_valid(metadata)
                      THEN NULLIF(TRIM(json_extract(metadata, '$.owner_subject')), '')
+                 END,
+                 CASE
+                     WHEN source_type IN (
+                         'user_message', 'assistant_final', 'tool_event', 'tool_input',
+                         'tool_output', 'question_prompt', 'plan_todos'
+                     )
+                     THEN COALESCE(NULLIF(TRIM(user_id), ''), 'legacy-unowned:' || id)
                  END
              ),
              private = CASE
@@ -221,6 +228,13 @@ fn backfill_memory_record_private_owner(tx: &Transaction<'_>) -> MemoryResult<()
                      CASE
                          WHEN metadata IS NOT NULL AND metadata <> '' AND json_valid(metadata)
                          THEN NULLIF(TRIM(json_extract(metadata, '$.owner_subject')), '')
+                     END,
+                     CASE
+                         WHEN source_type IN (
+                             'user_message', 'assistant_final', 'tool_event', 'tool_input',
+                             'tool_output', 'question_prompt', 'plan_todos'
+                         )
+                         THEN COALESCE(NULLIF(TRIM(user_id), ''), 'legacy-unowned:' || id)
                      END
                  ) IS NULL THEN 0
                  ELSE 1

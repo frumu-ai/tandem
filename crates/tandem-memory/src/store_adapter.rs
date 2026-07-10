@@ -881,9 +881,8 @@ impl MemoryStore for MemoryDatabase {
                         "resetting the memory backend requires confirm_data_loss=true",
                     ));
                 }
-                return Err(MemoryStoreError::unsupported(
-                    "full backend reset requires a MemoryDatabase-owned exclusive operation gate held across table drop and schema initialization",
-                ));
+                self.reset_all_memory_tables().await?;
+                true
             }
         };
         Ok(MemoryBackendRecoveryResult {

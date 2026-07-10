@@ -74,6 +74,31 @@ async fn tan_679_list_record_ids(
     .collect()
 }
 
+async fn tan_679_search_record_ids(
+    db: &MemoryDatabase,
+    tenant: &MemoryTenantScope,
+    caller_subject: Option<&str>,
+    owner_org_unit_id: Option<&str>,
+) -> std::collections::BTreeSet<String> {
+    db.search_global_memory_for_tenant_scoped(
+        &tenant.org_id,
+        &tenant.workspace_id,
+        tenant.deployment_id.as_deref(),
+        caller_subject,
+        "legacy",
+        100,
+        Some("tan-679"),
+        None,
+        None,
+        owner_org_unit_id,
+    )
+    .await
+    .unwrap()
+    .into_iter()
+    .map(|hit| hit.record.id)
+    .collect()
+}
+
 async fn tan_679_search_chunk_ids(
     db: &MemoryDatabase,
     tenant: &MemoryTenantScope,
@@ -354,16 +379,27 @@ async fn tan_679_legacy_private_scope_backfill_does_not_widen_visibility() {
             );",
         )
         .unwrap();
-        for (id, metadata, content_hash) in [
+        for (id, user_id, source_type, metadata, content_hash) in [
             (
                 "legacy-record-private",
+                "collector",
+                "note",
                 r#"{"owner_org_unit_id":"finance","owner_subject":"subject-a"}"#,
                 "legacy-private-hash",
             ),
             (
                 "legacy-record-shared",
+                "collector",
+                "note",
                 r#"{"owner_org_unit_id":"finance"}"#,
                 "legacy-shared-hash",
+            ),
+            (
+                "legacy-record-user-message",
+                "subject-a",
+                "user_message",
+                r#"{"owner_org_unit_id":"finance"}"#,
+                "legacy-user-message-hash",
             ),
         ] {
             conn.execute(
@@ -372,9 +408,9 @@ async fn tan_679_legacy_private_scope_backfill_does_not_widen_visibility() {
                     user_id, source_type, content, content_hash, run_id, project_tag,
                     metadata, redaction_status, created_at_ms, updated_at_ms
                  ) VALUES (?1, 'org-a', 'workspace-a', 'deployment-1',
-                    'collector', 'note', 'legacy TAN-679 record', ?2, 'legacy-run', 'tan-679',
-                    ?3, 'passed', ?4, ?4)",
-                params![id, content_hash, metadata, now_ms],
+                    ?2, ?3, 'legacy TAN-679 record', ?4, 'legacy-run', 'tan-679',
+                    ?5, 'passed', ?6, ?6)",
+                params![id, user_id, source_type, content_hash, metadata, now_ms],
             )
             .unwrap();
         }
@@ -438,6 +474,13 @@ async fn tan_679_legacy_private_scope_backfill_does_not_widen_visibility() {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
+        let legacy_user_message_scope: (i64, Option<String>) = conn
+            .query_row(
+                "SELECT private, owner_subject FROM memory_records WHERE id = ?1",
+                params!["legacy-record-user-message"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
         let shared_chunk_scope: (i64, Option<String>) = conn
             .query_row(
                 "SELECT private, owner_subject FROM global_memory_chunks WHERE id = ?1",
@@ -446,6 +489,7 @@ async fn tan_679_legacy_private_scope_backfill_does_not_widen_visibility() {
             )
             .unwrap();
         assert_eq!(record_scope, (1, Some("subject-a".to_string())));
+        assert_eq!(legacy_user_message_scope, (1, Some("subject-a".to_string())));
         assert_eq!(chunk_scope, (1, Some("subject-a".to_string())));
         assert_eq!(shared_record_scope, (0, None));
         assert_eq!(shared_chunk_scope, (0, None));
@@ -462,7 +506,11 @@ async fn tan_679_legacy_private_scope_backfill_does_not_widen_visibility() {
     let tenant = tenant_scope("org-a", "workspace-a");
     assert_eq!(
         tan_679_list_record_ids(&db, &tenant, Some("subject-a"), Some("finance")).await,
-        ["legacy-record-private", "legacy-record-shared"]
+        [
+            "legacy-record-private",
+            "legacy-record-shared",
+            "legacy-record-user-message",
+        ]
             .into_iter()
             .map(str::to_string)
             .collect()
@@ -473,6 +521,21 @@ async fn tan_679_legacy_private_scope_backfill_does_not_widen_visibility() {
     );
     assert_eq!(
         tan_679_list_record_ids(&db, &tenant, None, Some("finance")).await,
+        ["legacy-record-shared".to_string()].into_iter().collect()
+    );
+    assert_eq!(
+        tan_679_search_record_ids(&db, &tenant, Some("subject-a"), Some("finance")).await,
+        [
+            "legacy-record-private",
+            "legacy-record-shared",
+            "legacy-record-user-message",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+    );
+    assert_eq!(
+        tan_679_search_record_ids(&db, &tenant, Some("subject-b"), Some("finance")).await,
         ["legacy-record-shared".to_string()].into_iter().collect()
     );
 

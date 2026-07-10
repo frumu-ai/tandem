@@ -826,13 +826,16 @@ async fn read_local_memory_chunks(
     manager: &MemoryManager,
     selector: tandem_memory::store::MemoryChunkSelector,
     limit: Option<i64>,
+    caller_subject: Option<&str>,
 ) -> anyhow::Result<Vec<tandem_memory::types::MemoryChunk>> {
+    let mut scope = tandem_memory::store::MemoryReadScope::tenant(
+        tandem_memory::types::MemoryTenantScope::local(),
+    );
+    scope.subject = caller_subject.map(ToString::to_string);
     let result = manager
         .store()
         .read(tandem_memory::store::MemoryStoreReadRequest::Chunks {
-            scope: tandem_memory::store::MemoryReadScope::tenant(
-                tandem_memory::types::MemoryTenantScope::local(),
-            ),
+            scope,
             selector,
             limit,
         })
@@ -929,6 +932,7 @@ impl Tool for MemoryListTool {
 
         let db_path = resolve_memory_db_path(&args);
         let manager = MemoryManager::new(&db_path).await?;
+        let caller_subject = channel_memory_subject(&args);
 
         let mut chunks: Vec<tandem_memory::types::MemoryChunk> = Vec::new();
         match tier.as_str() {
@@ -944,6 +948,7 @@ impl Tool for MemoryListTool {
                         &manager,
                         tandem_memory::store::MemoryChunkSelector::session(sid),
                         None,
+                        caller_subject.as_deref(),
                     )
                     .await?,
                 );
@@ -960,6 +965,7 @@ impl Tool for MemoryListTool {
                         &manager,
                         tandem_memory::store::MemoryChunkSelector::project(pid),
                         None,
+                        caller_subject.as_deref(),
                     )
                     .await?,
                 );
@@ -970,6 +976,7 @@ impl Tool for MemoryListTool {
                         &manager,
                         tandem_memory::store::MemoryChunkSelector::global(),
                         Some(limit as i64),
+                        caller_subject.as_deref(),
                     )
                     .await?,
                 );
@@ -981,6 +988,7 @@ impl Tool for MemoryListTool {
                             &manager,
                             tandem_memory::store::MemoryChunkSelector::session(sid),
                             None,
+                            caller_subject.as_deref(),
                         )
                         .await?,
                     );
@@ -991,6 +999,7 @@ impl Tool for MemoryListTool {
                             &manager,
                             tandem_memory::store::MemoryChunkSelector::project(pid),
                             None,
+                            caller_subject.as_deref(),
                         )
                         .await?,
                     );
@@ -1001,6 +1010,7 @@ impl Tool for MemoryListTool {
                             &manager,
                             tandem_memory::store::MemoryChunkSelector::global(),
                             Some(limit as i64),
+                            caller_subject.as_deref(),
                         )
                         .await?,
                     );
@@ -1015,10 +1025,9 @@ impl Tool for MemoryListTool {
             }
         }
 
-        // In a shared channel scope, hide other users' subject-scoped chunks so
-        // memory_list can't be used to read notes stored under another channel
-        // user's subject (TAN-639). Non-channel contexts keep everything.
-        if let Some(subject) = channel_memory_subject(&args) {
+        // Keep a defense-in-depth check after the storage-level subject predicate
+        // so memory_list cannot expose another channel user's private notes.
+        if let Some(subject) = caller_subject {
             chunks.retain(|chunk| {
                 channel_subject_allows(chunk.subject.as_deref(), Some(subject.as_str()))
             });

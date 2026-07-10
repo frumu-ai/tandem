@@ -1344,6 +1344,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn memory_list_keeps_a_channel_owners_private_notes_visible() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let db_path = temp_dir.path().join("memory.sqlite");
+        let db = tandem_memory::db::MemoryDatabase::new(&db_path)
+            .await
+            .expect("memory database");
+        let chunk = portable_delete_test_chunk(
+            "private-channel-chunk",
+            "workspace-abc",
+            Some("channel:discord:user-a"),
+        );
+        db.store_chunk(
+            &chunk,
+            &vec![0.0; tandem_memory::types::DEFAULT_EMBEDDING_DIMENSION],
+        )
+        .await
+        .expect("store private chunk");
+
+        let result = MemoryListTool
+            .execute(json!({
+                "tier": "project",
+                "__project_id": "workspace-abc",
+                "__channel_platform": "discord",
+                "__channel_user_id": "user-a",
+                "__channel_scope_id": "room-a",
+                "__memory_db_path": db_path,
+            }))
+            .await
+            .expect("memory list");
+
+        assert_eq!(result.metadata["count"], json!(1));
+        assert!(result.output.contains("private-channel-chunk"));
+    }
+
+    #[tokio::test]
     async fn memory_delete_privacy_preflight_fails_closed() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let db = Arc::new(

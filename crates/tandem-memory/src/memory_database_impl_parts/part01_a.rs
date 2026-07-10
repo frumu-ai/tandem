@@ -1352,6 +1352,7 @@ impl MemoryDatabase {
     /// and recreate the schema in-place so new writes can proceed.
     /// This intentionally clears memory content for the active DB file.
     pub async fn reset_all_memory_tables(&self) -> MemoryResult<()> {
+        let _schema_init_guard = SCHEMA_INIT_LOCK.lock().await;
         let table_names = {
             let conn = self.conn.lock().await;
             let mut stmt = conn.prepare(

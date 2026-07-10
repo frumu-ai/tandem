@@ -1239,24 +1239,24 @@ async fn vacuum_and_backend_reset_safety_are_explicit_contract_operations() {
         .expect_err("unconfirmed reset must be rejected");
     assert_eq!(error.kind, MemoryStoreErrorKind::InvalidRequest);
 
-    let error = store
+    let reset = store
         .recover_backend(MemoryBackendRecoveryRequest {
             action: MemoryBackendRecoveryAction::ResetAllData,
             confirm_data_loss: true,
         })
         .await
-        .expect_err("reset remains unavailable without an exclusive database gate");
-    assert_eq!(error.kind, MemoryStoreErrorKind::Unsupported);
+        .expect("confirmed reset clears the backend");
+    assert!(reset.changed);
 
-    let after_rejected_reset = store
+    let after_reset = store
         .read(MemoryStoreReadRequest::ContextNode {
             scope: MemoryReadScope::tenant(tenant_scope),
             uri: "memory://survives-unconfirmed-reset".to_string(),
         })
         .await
-        .expect("read backend after rejected reset");
+        .expect("read backend after reset");
     assert!(matches!(
-        after_rejected_reset,
-        MemoryStoreReadResult::ContextNode(Some(_))
+        after_reset,
+        MemoryStoreReadResult::ContextNode(None)
     ));
 }
