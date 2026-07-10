@@ -179,12 +179,11 @@ the release version bump; the LICENSE files it discovers are any
 `crates/*/LICENSE` containing the BUSL-1.1 text, so newly relicensed crates
 are covered without script changes.
 
-BUSL applies separately to each version, so a license change is prospective: the
-grant and Change Date above first take effect in **0.6.8** (the next release).
-`0.6.7` and earlier remain under the terms they were released with. The
-`Change Date` currently in the `LICENSE` files (`2030-07-06`) is a placeholder
-for the 0.6.8 line and is finalized to the actual release date + 4 years when
-0.6.8 is cut.
+BUSL applies separately to each version, so a license change is prospective:
+the grant and Change Date above first took effect in **0.6.8** (released
+2026-07-09). `0.6.7` and earlier remain under the terms they were released
+with. The `Change Date` in the shipped 0.6.8 `LICENSE` files is `2030-07-09` —
+the 0.6.8 release date plus four years, per the rolling-window policy above.
 
 ## License Texts
 
