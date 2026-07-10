@@ -280,14 +280,14 @@ impl MemoryStore for MemoryDatabase {
             }
             MemoryStoreQueryRequest::SearchGlobalRecords {
                 scope,
-                user_id: _,
+                user_id,
                 query,
                 limit,
                 project_tag,
             } => {
                 self.enforce_store_tenant_scope("global memory search", &scope.tenant)?;
-                Ok(MemoryStoreQueryResult::GlobalSearchHits(
-                    self.search_global_memory_for_tenant_scoped(
+                let mut hits = self
+                    .search_global_memory_for_tenant_scoped(
                         &scope.tenant.org_id,
                         &scope.tenant.workspace_id,
                         scope.tenant.deployment_id.as_deref(),
@@ -299,12 +299,13 @@ impl MemoryStore for MemoryDatabase {
                         None,
                         scope.org_unit.as_deref(),
                     )
-                    .await?,
-                ))
+                    .await?;
+                hits.retain(|hit| hit.record.user_id == user_id);
+                Ok(MemoryStoreQueryResult::GlobalSearchHits(hits))
             }
             MemoryStoreQueryRequest::ListGlobalRecords {
                 scope,
-                user_id: _,
+                user_id,
                 query,
                 project_tag,
                 channel_tag,
@@ -312,8 +313,8 @@ impl MemoryStore for MemoryDatabase {
                 offset,
             } => {
                 self.enforce_store_tenant_scope("global memory list", &scope.tenant)?;
-                Ok(MemoryStoreQueryResult::GlobalRecords(
-                    self.list_global_memory_for_tenant_scoped(
+                let mut records = self
+                    .list_global_memory_for_tenant_scoped(
                         &scope.tenant.org_id,
                         &scope.tenant.workspace_id,
                         scope.tenant.deployment_id.as_deref(),
@@ -325,8 +326,9 @@ impl MemoryStore for MemoryDatabase {
                         offset,
                         scope.org_unit.as_deref(),
                     )
-                    .await?,
-                ))
+                    .await?;
+                records.retain(|record| record.user_id == user_id);
+                Ok(MemoryStoreQueryResult::GlobalRecords(records))
             }
             MemoryStoreQueryRequest::KnowledgeSpaces { scope, project_id } => {
                 reject_unimplemented_narrowing(&scope)?;
