@@ -226,16 +226,62 @@ impl OrchestrationStateStore {
         })
     }
 
+    /// Replace the hot Automation V2 run index while retaining full historical
+    /// rows for archive and audit reads.
+    pub fn sync_hot_automation_runs<'a>(
+        &self,
+        runs: impl IntoIterator<Item = &'a AutomationV2RunRecord>,
+    ) -> anyhow::Result<usize> {
+        let runs = runs.into_iter().collect::<Vec<_>>();
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute(
+                "UPDATE automation_runs SET is_hot = 0 WHERE is_hot != 0",
+                [],
+            )?;
+            for run in &runs {
+                upsert_automation_run(&transaction, run)?;
+                transaction.execute(
+                    "UPDATE automation_runs SET is_hot = 1 WHERE run_id = ?1",
+                    [&run.run_id],
+                )?;
+            }
+            transaction.commit()?;
+            Ok(runs.len())
+        })
+    }
+
     pub fn load_automation_runs(&self) -> anyhow::Result<Vec<AutomationV2RunRecord>> {
         self.with_connection(|connection| {
-            let mut statement = connection
-                .prepare("SELECT run_json FROM automation_runs ORDER BY created_at_ms, run_id")?;
+            let mut statement = connection.prepare(
+                "SELECT run_json FROM automation_runs
+                 WHERE is_hot = 1 ORDER BY created_at_ms, run_id",
+            )?;
             let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
             let mut runs = Vec::new();
             for row in rows {
                 runs.push(serde_json::from_str(&row?)?);
             }
             Ok(runs)
+        })
+    }
+
+    pub fn get_automation_run(
+        &self,
+        run_id: &str,
+    ) -> anyhow::Result<Option<AutomationV2RunRecord>> {
+        self.with_connection(|connection| {
+            let payload = connection
+                .query_row(
+                    "SELECT run_json FROM automation_runs WHERE run_id = ?1",
+                    [run_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            payload
+                .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
+                .transpose()
         })
     }
 
@@ -489,6 +535,7 @@ fn initialize_schema(connection: &mut Connection) -> anyhow::Result<()> {
             workspace_id TEXT NOT NULL,
             deployment_id TEXT,
             status TEXT NOT NULL,
+            is_hot INTEGER NOT NULL DEFAULT 1,
             run_json TEXT NOT NULL,
             created_at_ms INTEGER NOT NULL,
             updated_at_ms INTEGER NOT NULL
@@ -588,6 +635,12 @@ fn initialize_schema(connection: &mut Connection) -> anyhow::Result<()> {
          );
          COMMIT;",
     )?;
+    if !table_has_column(connection, "automation_runs", "is_hot")? {
+        connection.execute(
+            "ALTER TABLE automation_runs ADD COLUMN is_hot INTEGER NOT NULL DEFAULT 1",
+            [],
+        )?;
+    }
     let version: i64 = connection.query_row(
         "SELECT schema_version FROM schema_metadata LIMIT 1",
         [],
@@ -609,10 +662,11 @@ fn upsert_automation_run(
     connection.execute(
         "INSERT INTO automation_runs
             (run_id, automation_id, org_id, workspace_id, deployment_id, status,
-             run_json, created_at_ms, updated_at_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             is_hot, run_json, created_at_ms, updated_at_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, ?9)
          ON CONFLICT(run_id) DO UPDATE SET
             status = excluded.status,
+            is_hot = 1,
             run_json = excluded.run_json,
             updated_at_ms = excluded.updated_at_ms
          WHERE excluded.updated_at_ms >= automation_runs.updated_at_ms",
@@ -629,6 +683,21 @@ fn upsert_automation_run(
         ],
     )?;
     Ok(())
+}
+
+fn table_has_column(
+    connection: &Connection,
+    table_name: &str,
+    column_name: &str,
+) -> anyhow::Result<bool> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table_name})"))?;
+    let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for column in columns {
+        if column? == column_name {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn upsert_goal(connection: &Connection, goal: &LongRunningGoal) -> anyhow::Result<()> {
@@ -886,6 +955,33 @@ mod tests {
         assert!(store
             .commit_handoff_transition(&handoff(), &cross_tenant_run, &link, &goal("run-2"))
             .is_err());
+    }
+
+    #[test]
+    fn hot_sync_retains_archived_rows_without_reloading_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = OrchestrationStateStore::open(OrchestrationStorePaths {
+            database_path: directory.path().join("runtime.sqlite3"),
+            engine_lock_path: directory.path().join("engine.lock"),
+        })
+        .unwrap();
+        let archived = run("run-archived");
+        let hot = run("run-hot");
+
+        store.sync_hot_automation_runs([&archived, &hot]).unwrap();
+        store.sync_hot_automation_runs([&hot]).unwrap();
+
+        let loaded = store.load_automation_runs().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].run_id, "run-hot");
+        assert_eq!(
+            store
+                .get_automation_run("run-archived")
+                .unwrap()
+                .unwrap()
+                .run_id,
+            "run-archived"
+        );
     }
 
     #[test]

@@ -69,18 +69,6 @@ impl AppState {
             let automations = self.automations_v2.read().await;
             (runs.clone(), automations.clone())
         };
-        let database_snapshot = runs_snapshot.values().cloned().collect::<Vec<_>>();
-        let automation_runs_path = self.automation_v2_runs_path.clone();
-        tokio::task::spawn_blocking(move || {
-            crate::stateful_runtime::OrchestrationStateStore::from_automation_runs_path(
-                &automation_runs_path,
-            )?
-            .upsert_automation_runs(database_snapshot.iter())
-        })
-        .await
-        .map_err(|error| {
-            anyhow::anyhow!("automation run database persist task failed: {error}")
-        })??;
         for run in runs_snapshot.values() {
             write_automation_v2_run_history_shard(&self.automation_v2_runs_path, run).await?;
         }
@@ -91,6 +79,18 @@ impl AppState {
             &automations_snapshot,
             automation_v2_hot_cutoff_ms(),
         );
+        let database_snapshot = compacted.values().cloned().collect::<Vec<_>>();
+        let automation_runs_path = self.automation_v2_runs_path.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::stateful_runtime::OrchestrationStateStore::from_automation_runs_path(
+                &automation_runs_path,
+            )?
+            .sync_hot_automation_runs(database_snapshot.iter())
+        })
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!("automation run database persist task failed: {error}")
+        })??;
         let payload = serialize_automation_v2_runs_file(compacted)?;
         if let Some(parent) = self.automation_v2_runs_path.parent() {
             fs::create_dir_all(parent).await?;
