@@ -639,12 +639,9 @@ fn decode_codex_jwt_claims(token: &str) -> Option<Value> {
     let header: Value = serde_json::from_slice(&header_decoded).ok()?;
 
     // SECURITY: Reject tokens with alg:"none" to prevent algorithm substitution attacks
-    if let Some(alg) = header.get("alg").and_then(Value::as_str) {
-        if alg.eq_ignore_ascii_case("none") {
-            return None; // Reject unsigned tokens
-        }
-    } else {
-        return None; // Missing algorithm
+    let alg = header.get("alg").and_then(Value::as_str)?;
+    if alg.eq_ignore_ascii_case("none") {
+        return None; // Reject unsigned tokens
     }
 
     // Decode payload
