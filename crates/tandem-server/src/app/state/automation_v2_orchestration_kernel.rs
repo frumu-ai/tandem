@@ -139,6 +139,17 @@ impl AppState {
         let store =
             OrchestrationStateStore::from_automation_runs_path(&self.automation_v2_runs_path)?;
         let result = store.cancel_goal(goal_id, tenant, reason, actor, now_ms)?;
+        for session_id in &result.cancelled_session_ids {
+            let _ = self.cancellations.cancel(session_id).await;
+        }
+        for instance_id in &result.cancelled_instance_ids {
+            let _ = self
+                .agent_teams
+                .cancel_instance(self, instance_id, reason)
+                .await;
+        }
+        self.forget_automation_v2_sessions(&result.cancelled_session_ids)
+            .await;
         if let Some(cancelled_run) = result.cancelled_run.as_ref() {
             self.automation_v2_runs
                 .write()
@@ -160,6 +171,18 @@ impl AppState {
                 .await?;
             }
             self.persist_automation_v2_runs().await?;
+            self.event_bus
+                .publish(crate::routines::types::tenant_scoped_engine_event(
+                    "orchestration.goal.cancelled",
+                    tenant,
+                    json!({
+                        "goalID": goal_id,
+                        "runID": cancelled_run.run_id,
+                        "reason": reason,
+                        "cancelledSessionIDs": &result.cancelled_session_ids,
+                        "cancelledInstanceIDs": &result.cancelled_instance_ids,
+                    }),
+                ));
         }
         Ok(result)
     }
@@ -380,5 +403,78 @@ fn transition_target_automation_id<'a>(
         OrchestrationNodeKind::Terminal { .. } => {
             bail!("terminal transition must use the terminal settlement path")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tandem_automation::{GoalPolicy, LongRunningGoalStatus};
+    use tandem_types::{PrincipalKind, PrincipalRef, TenantContext};
+
+    use super::*;
+    use crate::app::state::tests::AutomationRunBuilder;
+
+    #[tokio::test]
+    async fn cancellation_signals_live_sessions_after_the_durable_goal_transition() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut state = crate::test_support::test_state().await;
+        state.automation_v2_runs_path = directory.path().join("automation_v2_runs.json");
+        let tenant = TenantContext::local_implicit();
+        let mut run = AutomationRunBuilder::new("run-1", "executor")
+            .status(AutomationRunStatus::Running)
+            .build();
+        run.active_session_ids = vec!["session-1".to_string()];
+        run.latest_session_id = Some("session-1".to_string());
+        run.active_instance_ids = vec!["instance-1".to_string()];
+        state
+            .automation_v2_runs
+            .write()
+            .await
+            .insert(run.run_id.clone(), run.clone());
+        let store =
+            OrchestrationStateStore::from_automation_runs_path(&state.automation_v2_runs_path)
+                .unwrap();
+        store.upsert_automation_runs([&run]).unwrap();
+        store
+            .put_goal(&LongRunningGoal {
+                schema_version: 1,
+                goal_id: "goal-1".to_string(),
+                orchestration_id: "orch-1".to_string(),
+                orchestration_version: 1,
+                objective: "Stop work".to_string(),
+                status: LongRunningGoalStatus::Active,
+                tenant_context: tenant.clone(),
+                policy: GoalPolicy::default(),
+                active_run_id: Some(run.run_id.clone()),
+                current_node_id: Some("execute".to_string()),
+                hop_count: 1,
+                total_tokens: 0,
+                total_cost_usd: 0.0,
+                created_at_ms: 1,
+                updated_at_ms: 1,
+                finished_at_ms: None,
+                final_artifact: None,
+                metadata: None,
+            })
+            .unwrap();
+        let cancellation = state.cancellations.create("session-1").await;
+
+        let result = state
+            .cancel_long_running_goal(
+                "goal-1",
+                &tenant,
+                "operator cancelled",
+                &PrincipalRef::new(PrincipalKind::HumanUser, "operator"),
+            )
+            .await
+            .unwrap();
+
+        assert!(cancellation.is_cancelled());
+        assert_eq!(result.cancelled_session_ids, vec!["session-1"]);
+        assert_eq!(result.cancelled_instance_ids, vec!["instance-1"]);
+        let persisted = state.get_automation_v2_run("run-1").await.unwrap();
+        assert_eq!(persisted.status, AutomationRunStatus::Cancelled);
+        assert!(persisted.active_session_ids.is_empty());
+        assert!(persisted.active_instance_ids.is_empty());
     }
 }
