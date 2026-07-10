@@ -42,6 +42,32 @@ impl AppState {
         .map_err(|error| anyhow::anyhow!("automation run database load task failed: {error}"))?
     }
 
+    /// Imports the legacy runtime exactly once. Later loads must not read
+    /// legacy files back into SQLite because the completed marker makes the
+    /// transactional store authoritative.
+    pub(super) async fn migrate_legacy_stateful_runtime(&self) -> anyhow::Result<bool> {
+        let automation_runs_path = self.automation_v2_runs_path.clone();
+        let runtime_events_path = self.runtime_events_path.clone();
+        let imported_at_ms = now_ms();
+        tokio::task::spawn_blocking(move || {
+            let store =
+                crate::stateful_runtime::OrchestrationStateStore::from_automation_runs_path(
+                    &automation_runs_path,
+                )?;
+            if store.legacy_runtime_migration_complete()? {
+                return Ok(true);
+            }
+            let paths = crate::stateful_runtime::LegacyRuntimeMigrationPaths::from_runtime_paths(
+                automation_runs_path,
+                &runtime_events_path,
+            );
+            store.import_legacy_runtime_state(&paths, imported_at_ms)?;
+            Ok(false)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("stateful runtime migration task failed: {error}"))?
+    }
+
     pub(super) async fn import_automation_v2_runs_to_stateful_store(
         &self,
         runs: &HashMap<String, AutomationV2RunRecord>,
@@ -98,5 +124,45 @@ impl AppState {
         fs::write(&self.automation_v2_runs_path, &payload).await?;
         let _ = cleanup_stale_legacy_automation_v2_runs_file(&self.automation_v2_runs_path).await;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn completed_runtime_migration_ignores_later_legacy_run_file_changes() {
+        let root = std::env::temp_dir().join(format!(
+            "tandem-stateful-runtime-authoritative-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let runs_path = root.join("automation_v2_runs.json");
+        std::fs::write(
+            &runs_path,
+            include_str!("tests/fixtures/automation_v2_runs_v1_envelope.json"),
+        )
+        .unwrap();
+
+        let mut first = crate::app::state::tests::test_state_with_path(root.join("shared.json"));
+        first.automation_v2_runs_path = runs_path.clone();
+        first.load_automation_v2_runs().await.unwrap();
+        assert!(first
+            .automation_v2_runs
+            .read()
+            .await
+            .contains_key("run-fixture-versioned"));
+
+        std::fs::write(&runs_path, "{not-json}\n").unwrap();
+        let mut restarted =
+            crate::app::state::tests::test_state_with_path(root.join("shared-restart.json"));
+        restarted.automation_v2_runs_path = runs_path;
+        restarted.load_automation_v2_runs().await.unwrap();
+        assert!(restarted
+            .automation_v2_runs
+            .read()
+            .await
+            .contains_key("run-fixture-versioned"));
     }
 }

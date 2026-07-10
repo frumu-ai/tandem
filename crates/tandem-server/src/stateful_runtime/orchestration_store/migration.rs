@@ -36,6 +36,22 @@ impl LegacyRuntimeMigrationPaths {
             handoff_root: None,
         }
     }
+
+    /// Builds migration sources from the live paths, which may be configured
+    /// outside the default runtime root in a desktop or test deployment.
+    pub fn from_runtime_paths(automation_runs_path: PathBuf, runtime_events_path: &Path) -> Self {
+        let runtime_root = runtime_events_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."));
+        Self {
+            automation_runs_path,
+            run_events_path: runtime_root.join("stateful_events.jsonl"),
+            snapshots_root: runtime_root.join("stateful_snapshots"),
+            waits_path: runtime_root.join("stateful_waits.json"),
+            reliability_path: runtime_root.join("stateful_reliability.json"),
+            handoff_root: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -85,21 +101,6 @@ impl OrchestrationStateStore {
         paths: &LegacyRuntimeMigrationPaths,
         imported_at_ms: u64,
     ) -> anyhow::Result<LegacyRuntimeMigrationReport> {
-        let rows = load_legacy_rows(paths)?;
-        let fingerprint = stable_definition_snapshot_hash(&rows);
-        let mut report = LegacyRuntimeMigrationReport {
-            automation_runs: rows.automation_runs.len(),
-            events: rows.events.len(),
-            snapshots: rows.snapshots.len(),
-            waits: rows.waits.len(),
-            outbox: rows.reliability.outbox.len(),
-            tool_effects: rows.reliability.tool_effects.len(),
-            dead_letters: rows.reliability.dead_letters.len(),
-            compensations: rows.reliability.compensations.len(),
-            handoffs: rows.handoffs.len(),
-            ..Default::default()
-        };
-
         self.with_connection(|connection| {
             let existing = connection
                 .query_row(
@@ -109,21 +110,32 @@ impl OrchestrationStateStore {
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                 )
                 .optional()?;
-            if let Some((status, existing_fingerprint)) = existing {
+            if let Some((status, _existing_fingerprint)) = existing {
                 if status == "complete" {
-                    if existing_fingerprint != fingerprint {
-                        bail!(
-                            "legacy state changed after migration completed; SQLite remains authoritative"
-                        );
-                    }
-                    report.already_complete = true;
-                    return Ok(report);
+                    return Ok(LegacyRuntimeMigrationReport {
+                        already_complete: true,
+                        ..Default::default()
+                    });
                 }
             }
 
-            let transaction = connection.transaction_with_behavior(
-                rusqlite::TransactionBehavior::Immediate,
-            )?;
+            let rows = load_legacy_rows(paths)?;
+            let fingerprint = stable_definition_snapshot_hash(&rows);
+            let report = LegacyRuntimeMigrationReport {
+                automation_runs: rows.automation_runs.len(),
+                events: rows.events.len(),
+                snapshots: rows.snapshots.len(),
+                waits: rows.waits.len(),
+                outbox: rows.reliability.outbox.len(),
+                tool_effects: rows.reliability.tool_effects.len(),
+                dead_letters: rows.reliability.dead_letters.len(),
+                compensations: rows.reliability.compensations.len(),
+                handoffs: rows.handoffs.len(),
+                ..Default::default()
+            };
+
+            let transaction =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             transaction.execute(
                 "INSERT INTO stateful_migrations
                     (migration_id, status, source_fingerprint, record_count,
@@ -631,6 +643,40 @@ mod tests {
                     connection
                         .query_row("SELECT COUNT(*) FROM stateful_events", [], |row| row.get(0))?;
                 assert_eq!(events, 0);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn completed_migration_keeps_sqlite_authoritative_when_legacy_files_change() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = LegacyRuntimeMigrationPaths::from_runtime_root(directory.path());
+        std::fs::write(
+            &paths.run_events_path,
+            format!("{}\n", serde_json::to_string(&event()).unwrap()),
+        )
+        .unwrap();
+        let store = store(directory.path());
+
+        store.import_legacy_runtime_state(&paths, 100).unwrap();
+        let mut later_event = event();
+        later_event.event_id = "event-written-after-cutover".to_string();
+        later_event.seq = 8;
+        std::fs::write(
+            &paths.run_events_path,
+            format!("{}\n", serde_json::to_string(&later_event).unwrap()),
+        )
+        .unwrap();
+
+        let report = store.import_legacy_runtime_state(&paths, 200).unwrap();
+        assert!(report.already_complete);
+        store
+            .with_connection(|connection| {
+                let event_count: u64 =
+                    connection
+                        .query_row("SELECT COUNT(*) FROM stateful_events", [], |row| row.get(0))?;
+                assert_eq!(event_count, 1);
                 Ok(())
             })
             .unwrap();

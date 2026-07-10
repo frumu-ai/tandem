@@ -1175,7 +1175,41 @@ impl AppState {
 
     pub async fn load_automation_v2_runs(&self) -> anyhow::Result<()> {
         let mut merged = std::collections::HashMap::<String, AutomationV2RunRecord>::new();
+        let stateful_store_was_authoritative = self.migrate_legacy_stateful_runtime().await?;
         let database_runs = self.load_automation_v2_runs_from_stateful_store().await?;
+        if stateful_store_was_authoritative {
+            let database_run_count = database_runs.len();
+            merged.extend(
+                database_runs
+                    .into_iter()
+                    .map(|run| (run.run_id.clone(), run)),
+            );
+            let recovered_context_runs =
+                automation_v2_context_recovery::merge_recovered_automation_v2_runs(
+                    self,
+                    &mut merged,
+                )
+                .await;
+            let before_recovered_context_cleanup = merged.len();
+            merged.retain(|_, run| !automation_v2_run_is_nonterminal_recovered_context_run(run));
+            let dropped_nonterminal_recovered_context_runs =
+                before_recovered_context_cleanup.saturating_sub(merged.len());
+            *self.automation_v2_runs.write().await = merged;
+            let recovered = self
+                .recover_automation_definitions_from_run_snapshots()
+                .await?;
+            if recovered_context_runs > 0 || dropped_nonterminal_recovered_context_runs > 0 {
+                self.persist_automation_v2_runs().await?;
+            }
+            tracing::info!(
+                database_run_count,
+                recovered,
+                recovered_context_runs,
+                dropped_nonterminal_recovered_context_runs,
+                "loaded automation v2 runs from authoritative stateful store"
+            );
+            return Ok(());
+        }
         let mut loaded_from_alternate = false;
         let mut canonical_loaded = false;
         let mut runs_store_upgraded = false;
