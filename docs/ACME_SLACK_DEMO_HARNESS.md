@@ -29,7 +29,13 @@ production path for all five seeded requester profiles:
   evidence are read back from the production stores;
 - duplicate Slack deliveries are absorbed by the durable claim (no second run
   or post), and a full reset+replay run proves the harness is reproducible
-  from the seeded dataset alone.
+  from the seeded dataset alone;
+- each governed run persists a Slack-attributed context run (TAN-686):
+  selectable via `GET /context/runs?run_type=session&source=channel:slack`,
+  with the run ledger and (under premium governance) the governance-evidence
+  package correlating the Slack requester identity and the approval-gate
+  policy decision end to end — this is what the control panel's Slack
+  Governance Receipts page reads.
 
 Run everything (fixture + E2E) with one command — the same tests run in
 required CI via the workspace nextest job:

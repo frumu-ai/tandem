@@ -66,7 +66,8 @@ pub(super) async fn context_run_governance_evidence_export(
     let events = load_context_run_ledger_source_events(&state, &context_run.run_id, None, None);
     let records = context_run_ledger_records(&events);
     let tool_manifest = context_run_tool_manifest(&events, &records);
-    let run_ids = governance_evidence_run_ids(&context_run.run_id, automation_run.as_ref());
+    let run_ids =
+        governance_evidence_run_ids(&context_run.run_id, automation_run.as_ref(), &events);
     let policy_decisions =
         load_governance_evidence_policy_decisions(&state, &tenant_context, &run_ids, &records)
             .await;
@@ -434,6 +435,8 @@ fn governance_evidence_package_for_records(
             "automation_v2_run_id": automation_run.map(|run| run.run_id.clone()),
             "automation_id": automation_run.map(|run| run.automation_id.clone()),
             "run_type": context_run.run_type,
+            "source_client": context_run.source_client,
+            "source_metadata": context_run.source_metadata,
             "goal": run_goal,
             "goal_sha256": crate::sha256_hex(&[run_goal]),
             "tenant_context": context_run.tenant_context,
@@ -783,7 +786,10 @@ async fn load_governance_evidence_policy_decisions(
         let Some(decision) = state.get_policy_decision(decision_id).await else {
             continue;
         };
-        if decision.tenant_context == *tenant_context {
+        // Tenant scope, not struct equality: a decision carries the acting
+        // requester's actor_id in its tenant context, which an operator's
+        // reader tenant will never equal field-for-field.
+        if super::tenant_matches(tenant_context, &decision.tenant_context) {
             rows.insert(decision.decision_id.clone(), decision);
         }
     }
@@ -811,7 +817,10 @@ async fn load_governance_evidence_memory_audit(
     if rows.is_empty() {
         rows = state.memory_audit_log.read().await.clone();
     }
-    rows.retain(|event| event.tenant_context == *tenant_context && run_ids.contains(&event.run_id));
+    rows.retain(|event| {
+        super::tenant_matches(tenant_context, &event.tenant_context)
+            && run_ids.contains(&event.run_id)
+    });
     rows.sort_by(|a, b| {
         a.created_at_ms
             .cmp(&b.created_at_ms)
@@ -856,6 +865,7 @@ fn automation_run_id_from_context_run_id(context_run_id: &str) -> Option<String>
 fn governance_evidence_run_ids(
     context_run_id: &str,
     automation_run: Option<&crate::automation_v2::types::AutomationV2RunRecord>,
+    events: &[super::ContextRunEventRecord],
 ) -> BTreeSet<String> {
     let mut ids = BTreeSet::from([context_run_id.to_string()]);
     if let Some(stripped) = context_run_id.strip_prefix("automation-v2-") {
@@ -868,6 +878,24 @@ fn governance_evidence_run_ids(
         ids.insert(super::context_runs::automation_v2_context_run_id(
             &run.run_id,
         ));
+    }
+    // Engine run ids journaled into this context run's own event log. A
+    // governed session run executes and attributes evidence under a distinct
+    // engine run id (e.g. the deterministic `slack-<sha256>` id of a Slack
+    // claim), so policy decisions and protected audit written during
+    // execution are keyed to that id, not to `session-<id>`. The journaled
+    // `session_run_started`/`session_run_finished` payloads carry it.
+    for event in events {
+        if let Some(run_id) = event
+            .payload
+            .get("runID")
+            .and_then(serde_json::Value::as_str)
+        {
+            let trimmed = run_id.trim();
+            if !trimmed.is_empty() {
+                ids.insert(trimmed.to_string());
+            }
+        }
     }
     ids
 }
@@ -1322,6 +1350,7 @@ mod tests {
             run_type: "automation_v2".to_string(),
             tenant_context: run.tenant_context.clone(),
             source_client: None,
+            source_metadata: None,
             model_provider: None,
             model_id: None,
             mcp_servers: Vec::new(),

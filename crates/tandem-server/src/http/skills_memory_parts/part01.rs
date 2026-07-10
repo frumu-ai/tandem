@@ -285,6 +285,7 @@ pub(super) async fn ensure_skill_router_context_run(
         run_type: "skill_router".to_string(),
         tenant_context: TenantContext::local_implicit(),
         source_client: Some("skills_api".to_string()),
+        source_metadata: None,
         model_provider: None,
         model_id: None,
         mcp_servers: Vec::new(),

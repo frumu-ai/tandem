@@ -1611,6 +1611,7 @@ pub(crate) async fn sync_automation_v2_run_blackboard(
             run_type: "automation_v2".to_string(),
             tenant_context: run.tenant_context.clone(),
             source_client: Some("automation_v2_scheduler".to_string()),
+            source_metadata: None,
             model_provider: None,
             model_id: None,
             mcp_servers: Vec::new(),
@@ -1918,11 +1919,29 @@ pub(crate) async fn ensure_session_context_run(
             lease_epoch: 0,
         })
         .unwrap_or_default();
+    // Channel-originated sessions (e.g. governed Slack runs) carry their
+    // origin so `GET /context/runs?source=channel:slack` can select them and
+    // receipts can correlate the run with its channel identity.
+    let channel_kind = session
+        .source_kind
+        .as_deref()
+        .filter(|kind| *kind == "channel")
+        .and_then(|_| session.source_metadata.as_ref())
+        .and_then(|metadata| metadata.get("channel"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let run = ContextRunState {
         run_id: run_id.clone(),
         run_type: "session".to_string(),
         tenant_context: session.tenant_context.clone(),
-        source_client: Some("session_api".to_string()),
+        source_client: Some(match channel_kind.as_deref() {
+            Some(kind) => format!("channel:{kind}"),
+            None => "session_api".to_string(),
+        }),
+        source_metadata: channel_kind
+            .is_some()
+            .then(|| session.source_metadata.clone())
+            .flatten(),
         model_provider: session.provider.clone(),
         model_id: session.model.as_ref().map(|model| model.model_id.clone()),
         mcp_servers: Vec::new(),

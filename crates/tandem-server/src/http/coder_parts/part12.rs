@@ -157,6 +157,7 @@ mod coder_memory_candidate_scoping_tests {
             run_type: "coder".to_string(),
             tenant_context: tenant.clone(),
             source_client: None,
+            source_metadata: None,
             model_provider: None,
             model_id: None,
             mcp_servers: Vec::new(),

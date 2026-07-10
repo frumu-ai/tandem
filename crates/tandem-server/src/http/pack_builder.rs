@@ -127,6 +127,7 @@ pub(super) async fn ensure_pack_builder_context_run(
         tenant_context: tandem_types::TenantContext::local_implicit(),
         run_type: "pack_builder".to_string(),
         source_client: Some("pack_builder_api".to_string()),
+        source_metadata: None,
         model_provider: None,
         model_id: None,
         mcp_servers: Vec::new(),

@@ -3,6 +3,13 @@ import { useQuery } from "@tanstack/react-query";
 import { AnimatedPage, Badge, LoadingState, PanelCard, Toolbar } from "../ui/index.tsx";
 import { Icon } from "../ui/Icon";
 import type { AppPageProps } from "./pageTypes";
+import {
+  evidenceCompleteness,
+  receiptCorrelation,
+  receiptOptionLabel,
+  slackIdentityOf,
+  slackReceiptRuns,
+} from "./slackGovernanceReceiptModel.mjs";
 
 function toArray(input: any, key: string) {
   if (Array.isArray(input)) return input;
@@ -75,20 +82,53 @@ function ToolList({ title, rows, tone }: { title: string; rows: any[]; tone: "ok
   );
 }
 
+function SlackIdentityCard({ run, packagePayload }: { run: any; packagePayload: any }) {
+  const identity = slackIdentityOf(run);
+  const correlation = receiptCorrelation(run, packagePayload);
+  if (!identity) return null;
+  return (
+    <PanelCard
+      title="Slack Identity"
+      subtitle={
+        correlation.identityConsistent
+          ? "Run and evidence identities agree"
+          : "Run and evidence identities disagree — inspect before trusting this receipt"
+      }
+    >
+      <div className="grid gap-3 md:grid-cols-3">
+        <Metric label="Workspace (team)" value={identity.teamId || "unknown"} />
+        <Metric label="Channel" value={identity.channelId || "unknown"} />
+        <Metric label="Slack user" value={identity.userId || "unknown"} />
+        <Metric label="Thread" value={identity.threadTs || "none"} />
+        <Metric label="Context run" value={correlation.contextRunId} />
+        <Metric
+          label="Evidence run"
+          value={correlation.packageContextRunId || "not exported yet"}
+        />
+      </div>
+    </PanelCard>
+  );
+}
+
 export function SlackGovernanceReceiptPage({ api, toast }: AppPageProps) {
   const [selectedContextRunId, setSelectedContextRunId] = useState("");
 
   const contextRunsQuery = useQuery({
     queryKey: ["slack-governance-receipts", "context-runs"],
     queryFn: () =>
-      api("/api/engine/context/runs?limit=120").catch((error: any) => ({
-        runs: [],
-        error: String(error?.message || error),
-      })),
+      api("/api/engine/context/runs?limit=120&run_type=session&source=channel%3Aslack").catch(
+        (error: any) => ({
+          runs: [],
+          error: String(error?.message || error),
+        })
+      ),
     refetchInterval: 10000,
   });
 
-  const contextRuns = sortedRecent(toArray(contextRunsQuery.data, "runs"));
+  // Server-side `source=channel:slack` filtering plus a defensive client-side
+  // pass: receipts on this page are exclusively Slack-originated session runs,
+  // never "whatever context run happens to be newest".
+  const contextRuns = sortedRecent(slackReceiptRuns(toArray(contextRunsQuery.data, "runs")));
   const effectiveRunId = safeString(selectedContextRunId || runIdOf(contextRuns[0]));
 
   const ledgerQuery = useQuery({
@@ -125,6 +165,9 @@ export function SlackGovernanceReceiptPage({ api, toast }: AppPageProps) {
 
   const counts = run.counts || {};
   const receiptUnavailable = !!evidenceQuery.data?.error;
+  const evidenceMissing: string[] = receiptUnavailable
+    ? []
+    : evidenceCompleteness(evidenceQuery.data ? packagePayload : null).missing;
   const selectedRun = useMemo(
     () => contextRuns.find((candidate) => runIdOf(candidate) === effectiveRunId),
     [contextRuns, effectiveRunId]
@@ -150,17 +193,21 @@ export function SlackGovernanceReceiptPage({ api, toast }: AppPageProps) {
         >
           {contextRuns.map((run) => (
             <option key={runIdOf(run)} value={runIdOf(run)}>
-              {runIdOf(run)}
+              {receiptOptionLabel(run)}
             </option>
           ))}
         </select>
       </Toolbar>
 
       {!effectiveRunId && contextRunsQuery.isLoading ? (
-        <LoadingState title="Loading receipts" text="Fetching recent context runs." />
+        <LoadingState title="Loading receipts" text="Fetching governed Slack runs." />
       ) : !effectiveRunId ? (
-        <PanelCard title="No receipts" subtitle="No context runs are available yet.">
-          <div className="tcp-subtle">Run the Slack demo harness, then return here.</div>
+        <PanelCard title="No receipts" subtitle="No governed Slack runs have been recorded yet.">
+          <div className="tcp-subtle">
+            Receipts appear after a signed Slack message runs through the governed ingress. The
+            five-profile ACME E2E (`acme_slack_demo` in tandem-server) exercises and persists this
+            exact flow.
+          </div>
         </PanelCard>
       ) : (
         <>
@@ -170,6 +217,23 @@ export function SlackGovernanceReceiptPage({ api, toast }: AppPageProps) {
             <Metric label="Approvals" value={counts.approval_records ?? approvals.length} />
             <Metric label="Memory audit" value={counts.memory_audit_records ?? memoryAudit.length} />
           </div>
+
+          <SlackIdentityCard run={selectedRun} packagePayload={packagePayload} />
+
+          {evidenceMissing.length && !receiptUnavailable ? (
+            <PanelCard
+              title="Partial evidence"
+              subtitle="Sections missing from the persisted evidence package — not zeros."
+            >
+              <div className="flex flex-wrap gap-2">
+                {evidenceMissing.map((section: string) => (
+                  <Badge key={section} tone="warn">
+                    {section}
+                  </Badge>
+                ))}
+              </div>
+            </PanelCard>
+          ) : null}
 
           {receiptUnavailable ? (
             <PanelCard

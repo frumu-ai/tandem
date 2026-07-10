@@ -46,7 +46,10 @@ use crate::acme_demo::{
 /// presence in provider prompt context / Slack responses is what turns "the
 /// engine retrieved real memory" into an assertable fact per department.
 fn row_marker(row_id: &str) -> String {
-    format!("ACME-MARKER-{}", row_id.to_ascii_uppercase().replace('_', "-"))
+    format!(
+        "ACME-MARKER-{}",
+        row_id.to_ascii_uppercase().replace('_', "-")
+    )
 }
 
 fn demo_tenant() -> TenantContext {
@@ -569,6 +572,161 @@ async fn acme_slack_demo_e2e_five_profiles_run_the_production_path() {
     world.mock_task.abort();
 }
 
+fn demo_tenant_get(uri: &str) -> Request<Body> {
+    Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("x-tandem-org-id", DEMO_ORG_ID)
+        .header("x-tandem-workspace-id", DEMO_WORKSPACE_ID)
+        .header("x-tandem-actor-id", "acme-receipt-reader")
+        .body(Body::empty())
+        .expect("tenant request")
+}
+
+async fn get_json(app: &axum::Router, uri: &str) -> (StatusCode, Value) {
+    let response = app
+        .clone()
+        .oneshot(demo_tenant_get(uri))
+        .await
+        .expect("response");
+    let status = response.status();
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let payload = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    (status, payload)
+}
+
+/// Poll `GET /context/runs` (production list API, tenant-scoped) until the
+/// expected number of Slack-originated session receipts is visible.
+async fn wait_for_slack_receipts(app: &axum::Router, expected: usize) -> Vec<Value> {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let (status, payload) = get_json(
+                app,
+                "/context/runs?run_type=session&source=channel:slack&limit=50",
+            )
+            .await;
+            if status == StatusCode::OK {
+                let runs = payload
+                    .get("runs")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                if runs.len() >= expected {
+                    return runs;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("Slack receipts did not persist in time")
+}
+
+/// TAN-686 substrate: running the production-path demo persists one
+/// selectable, Slack-attributed context run per profile, readable through the
+/// production `/context/runs` APIs with tenant isolation intact.
+#[tokio::test]
+async fn acme_slack_demo_e2e_persists_selectable_slack_receipts() {
+    let world = seed_acme_e2e_world(false).await;
+    let journaler = tokio::spawn(crate::run_session_context_run_journaler(
+        world.state.clone(),
+    ));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let app = app_router(world.state.clone());
+
+    for (index, profile) in world.dataset.profiles.iter().enumerate() {
+        submit_demo_prompt(
+            &app,
+            profile,
+            &format!("Ev-acme-receipt-{index}"),
+            &format!("1800000300.{index:06}"),
+        )
+        .await;
+    }
+    wait_for_posts(&world.slack_mock, world.dataset.profiles.len()).await;
+    wait_for_slack_tasks(&world.state).await;
+
+    let runs = wait_for_slack_receipts(&app, world.dataset.profiles.len()).await;
+    assert_eq!(runs.len(), 5, "five selectable Slack receipts");
+
+    for profile in &world.dataset.profiles {
+        let run = runs
+            .iter()
+            .find(|run| {
+                run.pointer("/source_metadata/user_id")
+                    .and_then(Value::as_str)
+                    == Some(profile.slack_user_id)
+            })
+            .unwrap_or_else(|| panic!("no persisted receipt for {}", profile.slack_user_id));
+        assert_eq!(
+            run.get("source_client").and_then(Value::as_str),
+            Some("channel:slack")
+        );
+        assert_eq!(
+            run.pointer("/source_metadata/slack_channel_id")
+                .and_then(Value::as_str),
+            Some(DEMO_SLACK_CHANNEL_ID)
+        );
+        assert_eq!(
+            run.pointer("/source_metadata/slack_team_id")
+                .and_then(Value::as_str),
+            Some(DEMO_SLACK_TEAM_ID)
+        );
+        assert_eq!(
+            run.pointer("/tenant_context/org_id")
+                .and_then(Value::as_str),
+            Some(DEMO_ORG_ID)
+        );
+        let run_id = run
+            .get("run_id")
+            .and_then(Value::as_str)
+            .expect("receipt run id");
+        assert!(run_id.starts_with("session-"), "session-scoped receipt id");
+
+        // The single-run and ledger production endpoints serve the receipt.
+        let (status, _) = get_json(&app, &format!("/context/runs/{run_id}")).await;
+        assert_eq!(status, StatusCode::OK, "context run readable");
+        let (status, ledger) =
+            get_json(&app, &format!("/context/runs/{run_id}/ledger?tail=200")).await;
+        assert_eq!(status, StatusCode::OK, "ledger readable");
+        assert!(ledger.get("tool_manifest").is_some());
+    }
+
+    // Tenant isolation: another tenant sees none of these receipts.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/context/runs?run_type=session&source=channel:slack&limit=50")
+                .header("x-tandem-org-id", "other-org")
+                .header("x-tandem-workspace-id", DEMO_WORKSPACE_ID)
+                .header("x-tandem-actor-id", "other-actor")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let payload: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(
+        payload
+            .get("runs")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or_default(),
+        0,
+        "Slack receipts must not leak across tenants"
+    );
+
+    journaler.abort();
+    world.mock_task.abort();
+}
+
 /// Reset/replay: rebuilding the seeded world from the dataset and replaying
 /// the same five prompts yields the same governed outcome — the harness is
 /// deterministic end to end, not dependent on residue from a previous run.
@@ -631,6 +789,10 @@ async fn acme_slack_demo_e2e_finance_sensitive_tool_enters_the_real_approval_gat
     std::env::set_var("TANDEM_RUNTIME_AUTH_MODE", "hosted_single_tenant");
 
     let world = seed_acme_e2e_world(true).await;
+    let journaler = tokio::spawn(crate::run_session_context_run_journaler(
+        world.state.clone(),
+    ));
+    tokio::time::sleep(Duration::from_millis(50)).await;
     let app = app_router(world.state.clone());
     let finance = world
         .dataset
@@ -667,7 +829,10 @@ async fn acme_slack_demo_e2e_finance_sensitive_tool_enters_the_real_approval_gat
                 && decision.policy_id.as_deref() == Some("approval_gate_matrix")
         })
         .expect("approval-gate policy decision must be persisted");
-    assert_eq!(gate_decision.decision, PolicyDecisionEffect::ApprovalRequired);
+    assert_eq!(
+        gate_decision.decision,
+        PolicyDecisionEffect::ApprovalRequired
+    );
     assert_eq!(gate_decision.tenant_context.org_id, DEMO_ORG_ID);
 
     // ...and mirrored into the hash-chained protected audit ledger.
@@ -676,14 +841,69 @@ async fn acme_slack_demo_e2e_finance_sensitive_tool_enters_the_real_approval_gat
     assert!(
         audit.iter().any(|event| {
             event.event_type == "approval.gate.approval_required"
-                && event
-                    .payload
-                    .get("decision_id")
-                    .and_then(Value::as_str)
+                && event.payload.get("decision_id").and_then(Value::as_str)
                     == Some(gate_decision.decision_id.as_str())
         }),
         "approval-required gate evidence must be in the protected audit ledger"
     );
 
+    // The governed run is complete; drop back to local auth mode so the
+    // header-tenant receipt reads work (hosted mode requires transport
+    // tokens the test reader does not carry). The RAII guard still restores
+    // the original value on exit.
+    std::env::remove_var("TANDEM_RUNTIME_AUTH_MODE");
+
+    // The receipt built from persisted production evidence correlates the
+    // gate decision: the journaled Blocked ledger record carries the policy
+    // decision id, so the governance-evidence export links it end to end.
+    #[cfg(feature = "premium-governance")]
+    {
+        let receipts = wait_for_slack_receipts(&app, 1).await;
+        let run_id = receipts[0]
+            .get("run_id")
+            .and_then(Value::as_str)
+            .expect("finance receipt run id")
+            .to_string();
+        let (status, evidence) =
+            get_json(&app, &format!("/context/runs/{run_id}/governance-evidence")).await;
+        assert_eq!(status, StatusCode::OK, "evidence export readable");
+        let package = evidence
+            .get("evidence_package")
+            .cloned()
+            .unwrap_or(Value::Null);
+        assert_eq!(
+            package
+                .pointer("/run/source_metadata/user_id")
+                .and_then(Value::as_str),
+            Some(finance.slack_user_id),
+            "receipt carries the Slack requester identity"
+        );
+        let package_decisions = package
+            .get("policy_decisions")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            package_decisions.iter().any(|decision| {
+                decision.get("decision_id").and_then(Value::as_str)
+                    == Some(gate_decision.decision_id.as_str())
+            }),
+            "evidence package must correlate the persisted gate decision"
+        );
+        assert!(
+            package
+                .pointer("/audit/protected_events")
+                .and_then(Value::as_array)
+                .is_some_and(|events| {
+                    events.iter().any(|event| {
+                        event.get("event_type").and_then(Value::as_str)
+                            == Some("approval.gate.approval_required")
+                    })
+                }),
+            "evidence package must include the approval-required protected audit"
+        );
+    }
+
+    journaler.abort();
     world.mock_task.abort();
 }

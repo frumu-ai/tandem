@@ -1492,6 +1492,7 @@ pub(super) async fn context_run_create_impl(
             .source_client
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty()),
+        source_metadata: None,
         model_provider: input
             .model_provider
             .map(|v| v.trim().to_string())
@@ -1539,6 +1540,11 @@ pub(super) async fn context_run_list(
         .as_ref()
         .map(|v| v.trim().to_ascii_lowercase())
         .filter(|v| !v.is_empty());
+    let source_filter = query
+        .source
+        .as_ref()
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty());
     let limit = query.limit.unwrap_or(100).clamp(1, 1000);
     let mut rows = Vec::<ContextRunState>::new();
     for candidate in list_context_run_state_candidates(&state).await? {
@@ -1553,6 +1559,17 @@ pub(super) async fn context_run_list(
             }
             if let Some(run_type) = run_type_filter.as_deref() {
                 if run.run_type.trim().to_ascii_lowercase() != run_type {
+                    continue;
+                }
+            }
+            if let Some(source) = source_filter.as_deref() {
+                let run_source = run
+                    .source_client
+                    .as_deref()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase();
+                if run_source != source {
                     continue;
                 }
             }

@@ -386,7 +386,9 @@ async fn seed_governed_slack_identity_for_user(
         .insert(grant.grant_id.clone(), grant);
 }
 
-pub(super) async fn seed_acme_demo_authority(state: &AppState) -> crate::acme_demo::AcmeDemoDataset {
+pub(super) async fn seed_acme_demo_authority(
+    state: &AppState,
+) -> crate::acme_demo::AcmeDemoDataset {
     let dataset = crate::acme_demo::acme_demo_dataset();
     state.enterprise.org_units.write().await.extend(
         dataset
