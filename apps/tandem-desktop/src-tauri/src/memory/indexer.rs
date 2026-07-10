@@ -1,6 +1,8 @@
 use crate::error::Result;
 use crate::memory::manager::MemoryManager;
-use crate::memory::types::{MemoryTenantScope, MemoryTier, StoreMessageRequest};
+use crate::memory::types::{
+    MemoryTenantScope, MemoryTier, ProjectMemoryStats, StoreMessageRequest,
+};
 use ignore::WalkBuilder;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -8,6 +10,12 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
+use tandem_memory::{
+    MemoryBackendHealthRequest, MemoryChunkSelector, MemoryImportIndexEntry, MemoryReadScope,
+    MemoryStoreMutationRequest, MemoryStoreMutationResult, MemoryStoreQueryRequest,
+    MemoryStoreQueryResult, MemoryStoreReadRequest, MemoryStoreReadResult, MemoryStoreWriteRequest,
+    MemoryWriteScope,
+};
 use tauri::{AppHandle, Emitter};
 
 #[derive(Serialize, Clone)]
@@ -50,6 +58,65 @@ pub struct IndexingStats {
     pub deleted_files: usize,
     pub chunks_created: usize,
     pub errors: usize,
+}
+
+fn local_read_scope() -> MemoryReadScope {
+    MemoryReadScope::tenant(MemoryTenantScope::local())
+}
+
+fn local_write_scope() -> MemoryWriteScope {
+    MemoryWriteScope::tenant(MemoryTenantScope::local())
+}
+
+fn project_selector(project_id: &str) -> MemoryChunkSelector {
+    MemoryChunkSelector::project(project_id)
+}
+
+fn memory_store_error(error: impl std::fmt::Display) -> crate::error::TandemError {
+    crate::error::TandemError::Memory(error.to_string())
+}
+
+async fn project_memory_stats(
+    memory_manager: &MemoryManager,
+    project_id: &str,
+) -> Result<ProjectMemoryStats> {
+    let result = memory_manager
+        .store()
+        .read(MemoryStoreReadRequest::ProjectStats {
+            scope: local_read_scope(),
+            project_id: project_id.to_string(),
+        })
+        .await
+        .map_err(memory_store_error)?;
+    match result {
+        MemoryStoreReadResult::ProjectStats(stats) => Ok(stats),
+        _ => Err(crate::error::TandemError::Memory(
+            "memory store returned an unexpected result for project stats".to_string(),
+        )),
+    }
+}
+
+async fn clear_project_file_index_through_store(
+    memory_manager: &MemoryManager,
+    project_id: &str,
+    vacuum: bool,
+) -> Result<crate::memory::types::ClearFileIndexResult> {
+    let result = memory_manager
+        .store()
+        .mutate(MemoryStoreMutationRequest::ClearProjectFileIndex {
+            scope: local_read_scope(),
+            project_id: project_id.to_string(),
+            vacuum,
+        })
+        .await
+        .map_err(memory_store_error)?;
+    match result {
+        MemoryStoreMutationResult::ClearFileIndex(result) => Ok(result),
+        _ => Err(crate::error::TandemError::Memory(
+            "memory store returned an unexpected result for clearing the project file index"
+                .to_string(),
+        )),
+    }
 }
 
 pub async fn index_workspace(
@@ -145,18 +212,44 @@ async fn index_workspace_impl(
 
     // One-time legacy cleanup: older versions may have file chunks but no file index, which
     // makes incremental indexing impossible and can cause duplication on re-index.
-    let db = memory_manager.db();
-    if db.ensure_vector_tables_healthy().await.unwrap_or(false) {
+    let store = memory_manager.store();
+    let read_scope = local_read_scope();
+    let write_scope = local_write_scope();
+    let selector = project_selector(project_id);
+    let health = store
+        .backend_health(MemoryBackendHealthRequest { repair: true })
+        .await
+        .map_err(memory_store_error)?;
+    if health.repaired {
         tracing::warn!(
             "Repaired memory vector tables before indexing project {}. Resetting file index to force reindex.",
             project_id
         );
-        let _ = db.clear_project_file_index(project_id, false).await;
+        let _ = clear_project_file_index_through_store(memory_manager, project_id, false).await;
     }
-    if db.project_file_index_count(project_id).await? == 0
-        && db.project_has_file_chunks(project_id).await?
+    let indexed_paths = store
+        .query(MemoryStoreQueryRequest::ImportIndexPaths {
+            scope: read_scope.clone(),
+            selector: selector.clone(),
+        })
+        .await
+        .map_err(memory_store_error)?;
+    let existing_indexed_paths: HashSet<String> = match indexed_paths {
+        MemoryStoreQueryResult::Paths(paths) => paths.into_iter().collect(),
+        _ => {
+            return Err(crate::error::TandemError::Memory(
+                "memory store returned an unexpected result for project file index paths"
+                    .to_string(),
+            ));
+        }
+    };
+    if existing_indexed_paths.is_empty()
+        && project_memory_stats(memory_manager, project_id)
+            .await?
+            .file_index_chunks
+            > 0
     {
-        let _ = db.clear_project_file_index(project_id, false).await?;
+        let _ = clear_project_file_index_through_store(memory_manager, project_id, false).await?;
     }
 
     let stats = Arc::new(std::sync::Mutex::new(IndexingStats {
@@ -169,11 +262,6 @@ async fn index_workspace_impl(
         errors: 0,
     }));
 
-    let existing_indexed_paths: HashSet<String> = db
-        .list_file_index_paths(project_id)
-        .await?
-        .into_iter()
-        .collect();
     let mut seen_paths: HashSet<String> = HashSet::new();
 
     for path in files {
@@ -198,7 +286,25 @@ async fn index_workspace_impl(
             .unwrap_or(0);
         let size = meta.len() as i64;
 
-        let existing = db.get_file_index_entry(project_id, &relative_path).await?;
+        let existing = store
+            .read(MemoryStoreReadRequest::ImportIndexEntry {
+                scope: read_scope.clone(),
+                selector: selector.clone(),
+                path: relative_path.clone(),
+            })
+            .await
+            .map_err(memory_store_error)?;
+        let existing = match existing {
+            MemoryStoreReadResult::ImportIndexEntry(entry) => {
+                entry.map(|entry| (entry.modified_at, entry.size, entry.hash))
+            }
+            _ => {
+                return Err(crate::error::TandemError::Memory(
+                    "memory store returned an unexpected result for project file index entry"
+                        .to_string(),
+                ));
+            }
+        };
         if let Some((existing_mtime, existing_size, _)) = &existing {
             if *existing_mtime == mtime && *existing_size == size {
                 let mut s = stats.lock().unwrap();
@@ -247,8 +353,19 @@ async fn index_workspace_impl(
 
         if let Some((_, _, existing_hash)) = &existing {
             if existing_hash == &hash {
-                db.upsert_file_index_entry(project_id, &relative_path, mtime, size, &hash)
-                    .await?;
+                store
+                    .write(MemoryStoreWriteRequest::ImportIndexEntry {
+                        scope: write_scope.clone(),
+                        selector: selector.clone(),
+                        path: relative_path.clone(),
+                        entry: MemoryImportIndexEntry {
+                            modified_at: mtime,
+                            size,
+                            hash: hash.clone(),
+                        },
+                    })
+                    .await
+                    .map_err(memory_store_error)?;
                 let mut s = stats.lock().unwrap();
                 s.files_processed += 1;
                 s.skipped_files += 1;
@@ -273,8 +390,12 @@ async fn index_workspace_impl(
         }
 
         // Changed file: remove previous chunks for this path, then re-index and update the file index entry.
-        if let Err(err) = db
-            .delete_project_file_chunks_by_path(project_id, &relative_path)
+        if let Err(err) = store
+            .mutate(MemoryStoreMutationRequest::DeleteChunksBySourcePath {
+                scope: read_scope.clone(),
+                selector: selector.clone(),
+                source_path: relative_path.clone(),
+            })
             .await
         {
             tracing::warn!(
@@ -282,7 +403,9 @@ async fn index_workspace_impl(
                 relative_path,
                 err
             );
-            let _ = db.ensure_vector_tables_healthy().await;
+            let _ = store
+                .backend_health(MemoryBackendHealthRequest { repair: true })
+                .await;
             let mut s = stats.lock().unwrap();
             s.files_processed += 1;
             s.errors += 1;
@@ -309,8 +432,19 @@ async fn index_workspace_impl(
 
         match memory_manager.store_message(request).await {
             Ok(chunks) => {
-                db.upsert_file_index_entry(project_id, &relative_path, mtime, size, &hash)
-                    .await?;
+                store
+                    .write(MemoryStoreWriteRequest::ImportIndexEntry {
+                        scope: write_scope.clone(),
+                        selector: selector.clone(),
+                        path: relative_path.clone(),
+                        entry: MemoryImportIndexEntry {
+                            modified_at: mtime,
+                            size,
+                            hash: hash.clone(),
+                        },
+                    })
+                    .await
+                    .map_err(memory_store_error)?;
                 let mut s = stats.lock().unwrap();
                 s.files_processed += 1;
                 s.indexed_files += 1;
@@ -352,14 +486,27 @@ async fn index_workspace_impl(
 
     if !removed.is_empty() {
         for rel in removed {
-            if let Err(err) = db
-                .delete_project_file_chunks_by_path(project_id, &rel)
+            if let Err(err) = store
+                .mutate(MemoryStoreMutationRequest::DeleteChunksBySourcePath {
+                    scope: read_scope.clone(),
+                    selector: selector.clone(),
+                    source_path: rel.clone(),
+                })
                 .await
             {
                 tracing::warn!("Failed to delete removed file chunks for {}: {}", rel, err);
-                let _ = db.ensure_vector_tables_healthy().await;
+                let _ = store
+                    .backend_health(MemoryBackendHealthRequest { repair: true })
+                    .await;
             }
-            if let Err(err) = db.delete_file_index_entry(project_id, &rel).await {
+            if let Err(err) = store
+                .mutate(MemoryStoreMutationRequest::DeleteImportIndexEntry {
+                    scope: read_scope.clone(),
+                    selector: selector.clone(),
+                    path: rel.clone(),
+                })
+                .await
+            {
                 tracing::warn!(
                     "Failed to delete removed file index entry for {}: {}",
                     rel,
@@ -385,15 +532,16 @@ async fn index_workspace_impl(
     };
 
     // Persist last run summary for UI/cooldown.
-    if let Err(err) = db
-        .upsert_project_index_status(
-            project_id,
-            snapshot.0 as i64,
-            snapshot.1 as i64,
-            snapshot.2 as i64,
-            snapshot.3 as i64,
-            snapshot.6 as i64,
-        )
+    if let Err(err) = store
+        .write(MemoryStoreWriteRequest::ProjectIndexStatus {
+            scope: write_scope,
+            project_id: project_id.to_string(),
+            total_files: snapshot.0 as i64,
+            processed_files: snapshot.1 as i64,
+            indexed_files: snapshot.2 as i64,
+            skipped_files: snapshot.3 as i64,
+            errors: snapshot.6 as i64,
+        })
         .await
     {
         tracing::warn!("Failed to persist index status for {}: {}", project_id, err);
@@ -470,7 +618,7 @@ mod tests {
         assert_eq!(s2.indexed_files, 0);
         assert_eq!(s2.skipped_files, 3);
 
-        let stats = manager.db().get_project_stats("project-1").await.unwrap();
+        let stats = project_memory_stats(&manager, "project-1").await.unwrap();
         assert_eq!(stats.indexed_files, 3);
         assert!(stats.file_index_chunks > 0);
     }
@@ -507,7 +655,7 @@ mod tests {
         assert_eq!(s3.total_files, 1);
         assert_eq!(s3.deleted_files, 1);
 
-        let stats = manager.db().get_project_stats("project-2").await.unwrap();
+        let stats = project_memory_stats(&manager, "project-2").await.unwrap();
         assert_eq!(stats.indexed_files, 1);
     }
 
@@ -540,17 +688,15 @@ mod tests {
         };
         manager.store_message(req).await.unwrap();
 
-        let before = manager.db().get_project_stats("project-3").await.unwrap();
+        let before = project_memory_stats(&manager, "project-3").await.unwrap();
         assert!(before.file_index_chunks > 0);
         assert!(before.project_chunks > before.file_index_chunks);
 
-        let _ = manager
-            .db()
-            .clear_project_file_index("project-3", false)
+        let _ = clear_project_file_index_through_store(&manager, "project-3", false)
             .await
             .unwrap();
 
-        let after = manager.db().get_project_stats("project-3").await.unwrap();
+        let after = project_memory_stats(&manager, "project-3").await.unwrap();
         assert_eq!(after.file_index_chunks, 0);
         assert_eq!(after.indexed_files, 0);
         // Non-file chunks should remain.

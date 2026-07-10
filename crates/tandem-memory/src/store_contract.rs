@@ -1,11 +1,12 @@
 use std::fmt;
 
 use crate::types::{
-    CleanupLogEntry, GlobalMemoryRecord, GlobalMemorySearchHit, GlobalMemoryWriteResult,
-    KnowledgeCoverageRecord, KnowledgeItemRecord, KnowledgePromotionRequest,
-    KnowledgePromotionResult, KnowledgeSpaceRecord, LayerType, MemoryChunk, MemoryConfig,
-    MemoryError, MemoryLayer, MemoryNode, MemoryStats, MemoryTenantScope, MemoryTier, NodeType,
-    ProjectMemoryStats, SourceObjectLifecycleRecord, TreeNode,
+    CleanupLogEntry, ClearFileIndexResult, GlobalMemoryRecord, GlobalMemorySearchHit,
+    GlobalMemoryWriteResult, KnowledgeCoverageRecord, KnowledgeItemRecord,
+    KnowledgePromotionRequest, KnowledgePromotionResult, KnowledgeSpaceRecord, LayerType,
+    MemoryChunk, MemoryConfig, MemoryError, MemoryLayer, MemoryNode, MemoryStats,
+    MemoryTenantScope, MemoryTier, NodeType, ProjectMemoryStats, SourceObjectLifecycleRecord,
+    TreeNode,
 };
 
 use super::{MemoryReadScope, MemoryWriteScope};
@@ -327,6 +328,15 @@ pub enum MemoryStoreWriteRequest {
         path: String,
         entry: MemoryImportIndexEntry,
     },
+    ProjectIndexStatus {
+        scope: MemoryWriteScope,
+        project_id: String,
+        total_files: i64,
+        processed_files: i64,
+        indexed_files: i64,
+        skipped_files: i64,
+        errors: i64,
+    },
     /// Insert a source object or refresh its active lifecycle state.
     SourceObjectLifecycle {
         scope: MemoryWriteScope,
@@ -377,6 +387,11 @@ pub enum MemoryStoreMutationRequest {
     ClearProject {
         scope: MemoryReadScope,
         project_id: String,
+    },
+    ClearProjectFileIndex {
+        scope: MemoryReadScope,
+        project_id: String,
+        vacuum: bool,
     },
     DeleteGlobalRecord {
         scope: MemoryReadScope,
@@ -450,6 +465,7 @@ pub enum MemoryStoreMutationResult {
     Affected(u64),
     Changed(bool),
     SourcePathDelete(MemorySourcePathDeleteResult),
+    ClearFileIndex(ClearFileIndexResult),
     Promotion(Option<KnowledgePromotionResult>),
     Completed,
 }

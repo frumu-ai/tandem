@@ -1,6 +1,58 @@
 // Memory Management
 // ============================================================================
 
+use tandem_memory::{
+    MemoryReadScope, MemoryStoreMutationRequest, MemoryStoreMutationResult, MemoryStoreReadRequest,
+    MemoryStoreReadResult,
+};
+
+fn local_memory_read_scope() -> MemoryReadScope {
+    MemoryReadScope::tenant(MemoryTenantScope::local())
+}
+
+async fn project_memory_stats_from_store(
+    manager: &crate::memory::MemoryManager,
+    project_id: String,
+) -> Result<ProjectMemoryStats> {
+    let result = manager
+        .store()
+        .read(MemoryStoreReadRequest::ProjectStats {
+            scope: local_memory_read_scope(),
+            project_id,
+        })
+        .await
+        .map_err(|error| TandemError::Memory(error.to_string()))?;
+    match result {
+        MemoryStoreReadResult::ProjectStats(stats) => Ok(stats),
+        _ => Err(TandemError::Memory(
+            "memory store returned an unexpected result for project stats".to_string(),
+        )),
+    }
+}
+
+async fn clear_project_file_index_from_store(
+    manager: &crate::memory::MemoryManager,
+    project_id: String,
+    vacuum: bool,
+) -> Result<ClearFileIndexResult> {
+    let result = manager
+        .store()
+        .mutate(MemoryStoreMutationRequest::ClearProjectFileIndex {
+            scope: local_memory_read_scope(),
+            project_id,
+            vacuum,
+        })
+        .await
+        .map_err(|error| TandemError::Memory(error.to_string()))?;
+    match result {
+        MemoryStoreMutationResult::ClearFileIndex(result) => Ok(result),
+        _ => Err(TandemError::Memory(
+            "memory store returned an unexpected result for clearing the project file index"
+                .to_string(),
+        )),
+    }
+}
+
 /// Get statistics about the vector database memory usage
 #[tauri::command]
 pub async fn get_memory_stats(state: State<'_, AppState>) -> Result<MemoryStats> {
@@ -77,11 +129,7 @@ pub async fn get_project_memory_stats(
     project_id: String,
 ) -> Result<ProjectMemoryStats> {
     if let Some(manager) = &state.memory_manager {
-        manager
-            .db()
-            .get_project_stats(&project_id)
-            .await
-            .map_err(|e| TandemError::Memory(e.to_string()))
+        project_memory_stats_from_store(manager, project_id).await
     } else {
         Err(TandemError::Memory(
             "Memory manager not initialized".to_string(),
@@ -96,11 +144,7 @@ pub async fn clear_project_file_index(
     vacuum: bool,
 ) -> Result<ClearFileIndexResult> {
     if let Some(manager) = &state.memory_manager {
-        manager
-            .db()
-            .clear_project_file_index(&project_id, vacuum)
-            .await
-            .map_err(|e| TandemError::Memory(e.to_string()))
+        clear_project_file_index_from_store(manager, project_id, vacuum).await
     } else {
         Err(TandemError::Memory(
             "Memory manager not initialized".to_string(),

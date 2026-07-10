@@ -572,6 +572,46 @@ async fn import_index_round_trips_through_typed_contract() {
     };
     assert_eq!(paths, vec!["src/main.rs"]);
 
+    let cleared = store
+        .mutate(MemoryStoreMutationRequest::ClearProjectFileIndex {
+            scope: MemoryReadScope::tenant(tenant.clone()),
+            project_id: "project-a".to_string(),
+            vacuum: false,
+        })
+        .await
+        .expect("clear project file index");
+    assert!(matches!(
+        cleared,
+        MemoryStoreMutationResult::ClearFileIndex(_)
+    ));
+
+    let result = store
+        .read(MemoryStoreReadRequest::ImportIndexEntry {
+            scope: MemoryReadScope::tenant(tenant.clone()),
+            selector: selector.clone(),
+            path: "src/main.rs".to_string(),
+        })
+        .await
+        .expect("read cleared import index entry");
+    assert!(matches!(
+        result,
+        MemoryStoreReadResult::ImportIndexEntry(None)
+    ));
+
+    store
+        .write(MemoryStoreWriteRequest::ImportIndexEntry {
+            scope: MemoryWriteScope::tenant(tenant.clone()),
+            selector: selector.clone(),
+            path: "src/main.rs".to_string(),
+            entry: MemoryImportIndexEntry {
+                modified_at: 42,
+                size: 128,
+                hash: "abc123".to_string(),
+            },
+        })
+        .await
+        .expect("restore import index entry");
+
     store
         .mutate(MemoryStoreMutationRequest::DeleteImportIndexEntry {
             scope: MemoryReadScope::tenant(tenant),

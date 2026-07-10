@@ -473,6 +473,28 @@ impl MemoryStore for MemoryDatabase {
                 .await?;
                 Ok(MemoryStoreWriteResult::Stored)
             }
+            MemoryStoreWriteRequest::ProjectIndexStatus {
+                scope,
+                project_id,
+                total_files,
+                processed_files,
+                indexed_files,
+                skipped_files,
+                errors,
+            } => {
+                reject_unimplemented_write_narrowing(&scope)?;
+                self.upsert_project_index_status_for_tenant(
+                    &project_id,
+                    total_files,
+                    processed_files,
+                    indexed_files,
+                    skipped_files,
+                    errors,
+                    &scope.tenant,
+                )
+                .await?;
+                Ok(MemoryStoreWriteResult::Stored)
+            }
             MemoryStoreWriteRequest::SourceObjectLifecycle { scope, record } => {
                 validate_source_object_write_scope(&scope, &record)?;
                 self.upsert_source_object_active_for_tenant(&record).await?;
@@ -584,6 +606,17 @@ impl MemoryStore for MemoryDatabase {
                 reject_unimplemented_narrowing(&scope)?;
                 Ok(MemoryStoreMutationResult::Affected(
                     self.clear_project_memory_for_tenant(&project_id, &scope.tenant)
+                        .await?,
+                ))
+            }
+            MemoryStoreMutationRequest::ClearProjectFileIndex {
+                scope,
+                project_id,
+                vacuum,
+            } => {
+                reject_unimplemented_narrowing(&scope)?;
+                Ok(MemoryStoreMutationResult::ClearFileIndex(
+                    self.clear_project_file_index_for_tenant(&project_id, vacuum, &scope.tenant)
                         .await?,
                 ))
             }
