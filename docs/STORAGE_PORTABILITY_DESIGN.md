@@ -8,16 +8,20 @@ envelope encryption).
 
 ## Implementation status (as of 0.6.8)
 
-This document is the design; only part of it is implemented. What exists today:
+This document remains the design record. The SQLite-backed implementation now
+has the following completed foundation:
 
-- **`MemoryStore` trait** (`crates/tandem-memory/src/store.rs`): a
-  behavior-preserving first slice. `MemoryDatabase` implements it by delegating
-  to the existing rusqlite-backed methods; `MemoryManager` and most call sites
-  still use `MemoryDatabase` directly, and DDL remains SQLite-specific.
-  Completing the abstraction and a portable migration layer is TAN-677 (in
-  progress); persisted `private`/`owner_subject` scope columns are TAN-679 (in
-  progress) — the store seam currently fails closed on `subject` narrowing for
-  global records because SQL cannot yet enforce it.
+- **`MemoryStore` contract** (`crates/tandem-memory/src/store.rs`): an
+  operation-level interface for scoped reads, queries, writes, mutations,
+  batches, health, recovery, and migrations. `MemoryManager`, the importer,
+  server HTTP/prompt/scheduler paths, and tools use the contract rather than
+  concrete `MemoryDatabase` in production business logic (TAN-677).
+- **Portable migration model:** a centralized, ordered logical registry with
+  SQLite translations. Legacy schema versions 1-4 are explicit bootstrap
+  baselines; version 5 migrates and backfills private owner scope transactionally.
+- **Private owner scope:** `private` and `owner_subject` are queryable columns
+  on memory records and chunks. Tenant, active org-unit, and shared-or-owner
+  predicates run before FTS/vector ranking, pagination, and mutation (TAN-679).
 - **No PostgreSQL backend.** There is no `pgvector`, `tokio-postgres`, `sqlx`,
   or other Postgres dependency in the workspace; the pgvector path below is
   unimplemented design, tracked as TAN-678.
@@ -31,9 +35,10 @@ This document is the design; only part of it is implemented. What exists today:
 
 ## Current state (grounded)
 
-- **Memory DB:** `rusqlite` 0.32 (bundled SQLite), raw SQL strings throughout
-  `crates/tandem-memory/src/memory_database_impl_parts/*` and `db.rs`, now
-  fronted by the first-slice `MemoryStore` seam described above.
+- **Memory DB:** an object-safe, operation-level `MemoryStore` contract now owns
+  scoped read, query, write, mutation, maintenance, health, and migration
+  capabilities. `MemoryDatabase` is the bundled SQLite adapter; SQLite SQL and
+  driver values remain in the backend implementation.
 - **Vectors:** `sqlite-vec` 0.1.7 — `vec0` **virtual tables**
   (`part01_a.rs:220,315,543`), a **loaded SQLite extension**. KNN via per-tenant
   top-k scans (`search_similar_for_tenant`, `part01_a.rs:1484`) that push the
@@ -42,9 +47,15 @@ This document is the design; only part of it is implemented. What exists today:
 - **Audit / policy / org-units:** flat JSON/JSONL files (`audit.rs:224`,
   `config/paths.rs`) behind the `GovernanceStoreFile` abstraction — see
   `TAN-661`/`TAN-664`.
-- **No Postgres dependency yet:** no `sqlx`, `tokio-postgres`, `diesel`,
-  `sea-orm`, or `pgvector` anywhere in `Cargo.lock`. The memory crate already
-  depends on `async-trait` and `tokio`.
+- **Backend-neutral callers:** `MemoryManager`, the importer, and memory tools
+  route storage workflows through typed contract requests, including context
+  trees/layers, source lifecycle, maintenance, and scoped deletes. The concrete
+  database retained by the SQLite constructor is a compatibility handle, not a
+  business-logic dependency; `new_with_store` runs the same manager against any
+  contract implementation.
+- **Workspace dependencies:** no `sqlx`, `tokio-postgres`, `diesel`, `sea-orm`,
+  or `pgvector` is used by the SQLite backend. The contract uses the existing
+  `async-trait` and `tokio` dependencies.
 
 ## Decision 1 — backend abstraction (TAN-659)
 
@@ -74,28 +85,30 @@ Rationale:
 - Reuses the existing `async-trait`; no new heavyweight dependency; the SQLite
   impl is a behavior-preserving wrap of today's code.
 
-### Shape (illustrative, not final)
+### Implemented shape
 
 ```rust
 #[async_trait]
 pub trait MemoryStore: Send + Sync {
-    async fn put_chunk(&self, scope: &MemoryWriteScope, chunk: &MemoryChunk) -> MemoryResult<()>;
-    async fn search_similar_for_scope(
-        &self, scope: &MemoryReadScope, embedding: &[f32], limit: usize,
-    ) -> MemoryResult<Vec<MemoryChunkHit>>;
-    async fn search_records_for_tenant(
-        &self, scope: &MemoryReadScope, query: &str, limit: i64, /* tags */
-    ) -> MemoryResult<Vec<GlobalMemorySearchHit>>;
-    // … put_record, list, promote/demote, cleanup, knowledge spaces …
+    async fn read(&self, request: MemoryStoreReadRequest) -> MemoryStoreResult<MemoryStoreReadResult>;
+    async fn query(&self, request: MemoryStoreQueryRequest) -> MemoryStoreResult<MemoryStoreQueryResult>;
+    async fn write(&self, request: MemoryStoreWriteRequest) -> MemoryStoreResult<MemoryStoreWriteResult>;
+    async fn mutate(&self, request: MemoryStoreMutationRequest) -> MemoryStoreResult<MemoryStoreMutationResult>;
+    async fn batch(&self, request: MemoryStoreBatchRequest) -> MemoryStoreResult<MemoryStoreBatchResult>;
+    async fn backend_health(&self, request: MemoryBackendHealthRequest) -> MemoryStoreResult<MemoryBackendHealthResult>;
+    async fn migration_capabilities(&self, request: MemoryMigrationCapabilityRequest) -> MemoryStoreResult<MemoryMigrationCapabilityResult>;
 }
 ```
 
-- `MemoryReadScope` / `MemoryWriteScope` carry the full scope tuple
-  (tenant + `owner_org_unit_id` + `subject`/`private` + data_class/source) so the
-  scope contract is uniform across backends. Enforcement stays in the query, per
-  backend.
-- `SqliteMemoryStore` = current rusqlite + sqlite-vec, refactored behind the trait.
-- `PostgresMemoryStore` = `tokio-postgres` (+ `deadpool-postgres` pool) + `pgvector`.
+- `MemoryReadScope` / `MemoryWriteScope` carry the storage scope tuple (tenant +
+  active `owner_org_unit_id` + owner subject). Data-class and source grants stay
+  in the governed retrieval layer, while every predicate represented by the
+  storage scope is enforced before ranking and limits in each backend.
+- `MemoryDatabase` = current rusqlite + sqlite-vec compatibility adapter behind
+  the trait.
+- `PostgresMemoryStore` is the next concrete adapter (TAN-678), using
+  `tokio-postgres` (+ `deadpool-postgres`) and `pgvector` against this completed
+  operation contract and migration registry.
 
 ## Decision 2 — vector portability (TAN-660)
 
@@ -149,8 +162,15 @@ verify the previous record hash before committing a new row.
 
 ## Migration strategy
 
-- **DDL in one migration module**, additive and nullable columns, a schema-version
-  table. No SQLite-only column types/pragmas in new tables.
+- **Logical schema in one migration module:** ordered migrations describe
+  portable tables, columns, defaults, backfills, and constraints. The SQLite
+  ledger validates version/name identity and records executable migrations in
+  the same transaction that applies them.
+- SQLite versions 1-4 are explicitly marked as legacy bootstrap baselines while
+  their existing DDL remains in the compatibility initializer. Version 5
+  (`private_owner_subject_scope`) is translated and applied by the migration
+  coordinator. Later migrations must be executable translations and may not be
+  stamped without a translator.
 - New M1 columns (`owner_org_unit_id`, `private`/`owner_subject`) and the envelope
   metadata land as portable columns through this module.
 - Greenfield Postgres needs no dual-write; document an export/import path for
@@ -158,11 +178,10 @@ verify the previous record hash before committing a new row.
 
 ## Sequencing (recommended)
 
-1. **TAN-659** — introduce `MemoryStore` trait + `SqliteMemoryStore` (behavior-
-   preserving); route `MemoryDatabase` call sites through it. Ships with the
-   existing test suite green (no behavior change).
-2. **TAN-645 / TAN-648** — add `owner_org_unit_id` + `private` as scope fields on
-   the trait's data types and the SQLite schema (via the migration module).
+1. **TAN-659 / TAN-677** — complete the `MemoryStore` vocabulary and route
+   memory business workflows through the SQLite adapter.
+2. **TAN-645 / TAN-648 / TAN-679** — persist `owner_org_unit_id`, `private`, and
+   `owner_subject`; enforce shared-or-owner visibility before ranking and limit.
 3. **TAN-666** — envelope encryption + DEK cache expressed through the store.
 4. **TAN-660 / TAN-661** — `PostgresMemoryStore` + `pgvector`, and the file-store
    backends, once the trait surface is stable.

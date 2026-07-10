@@ -1395,6 +1395,8 @@ impl MemoryDatabase {
         // dedup key so the same content collected for two departments persists as
         // two rows rather than the second being dropped without its scope stamped.
         let owner_org_unit_id = owner_org_unit_id_from_metadata(record.metadata.as_ref());
+        let owner_subject = crate::types::owner_subject_from_metadata(record.metadata.as_ref());
+        let private = owner_subject.is_some();
 
         let existing: Option<String> = conn
             .query_row(
@@ -1410,6 +1412,8 @@ impl MemoryDatabase {
                    AND IFNULL(message_id, '') = IFNULL(?9, '')
                    AND IFNULL(tool_name, '') = IFNULL(?10, '')
                    AND IFNULL(owner_org_unit_id, '') = IFNULL(?11, '')
+                   AND private = ?12
+                   AND IFNULL(owner_subject, '') = IFNULL(?13, '')
                  LIMIT 1",
                 params![
                     tenant_org_id,
@@ -1422,7 +1426,9 @@ impl MemoryDatabase {
                     record.session_id,
                     record.message_id,
                     record.tool_name,
-                    owner_org_unit_id
+                    owner_org_unit_id,
+                    i64::from(private),
+                    owner_subject.as_deref()
                 ],
                 |row| row.get(0),
             )
@@ -1451,12 +1457,13 @@ impl MemoryDatabase {
                 id, tenant_org_id, tenant_workspace_id, tenant_deployment_id,
                 user_id, source_type, content, content_hash, run_id, session_id, message_id, tool_name,
                 project_tag, channel_tag, host_tag, metadata, provenance, redaction_status, redaction_count,
-                visibility, demoted, score_boost, created_at_ms, updated_at_ms, expires_at_ms, owner_org_unit_id
+                visibility, demoted, score_boost, created_at_ms, updated_at_ms, expires_at_ms, owner_org_unit_id,
+                private, owner_subject
             ) VALUES (
                 ?1, ?2, ?3, ?4,
                 ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                 ?13, ?14, ?15, ?16, ?17, ?18, ?19,
-                ?20, ?21, ?22, ?23, ?24, ?25, ?26
+                ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28
             )",
             params![
                 record.id,
@@ -1485,6 +1492,8 @@ impl MemoryDatabase {
                 record.updated_at_ms as i64,
                 record.expires_at_ms.map(|v| v as i64),
                 owner_org_unit_id,
+                i64::from(private),
+                owner_subject,
             ],
         )?;
 
@@ -1513,7 +1522,7 @@ impl MemoryDatabase {
             tenant_org_id,
             tenant_workspace_id,
             tenant_deployment_id,
-            user_id,
+            Some(user_id),
             query,
             limit,
             project_tag,
@@ -1695,7 +1704,7 @@ impl MemoryDatabase {
             tenant_org_id,
             tenant_workspace_id,
             tenant_deployment_id,
-            user_id,
+            Some(user_id),
             q,
             project_tag,
             channel_tag,
@@ -1797,18 +1806,18 @@ impl MemoryDatabase {
     ) -> MemoryResult<bool> {
         let conn = self.conn.lock().await;
         let now_ms = chrono::Utc::now().timestamp_millis();
-        // Keep the first-class owner_org_unit_id column consistent with the
-        // metadata it is derived from on write (TAN-645/646): a context update
-        // that rewrites metadata must re-derive the department too, otherwise a
-        // dedupe/update path (e.g. session-distillation) leaves the column NULL or
-        // stale while the metadata carries the current department.
+        // Keep the first-class scope columns consistent with trusted metadata on
+        // every context rewrite. Otherwise a dedupe/update path can leave the
+        // queryable scope stale while metadata carries the current policy.
         let owner_org_unit_id = owner_org_unit_id_from_metadata(metadata);
+        let owner_subject = crate::types::owner_subject_from_metadata(metadata);
+        let private = owner_subject.is_some();
         let metadata = metadata.map(ToString::to_string).unwrap_or_default();
         let provenance = provenance.map(ToString::to_string).unwrap_or_default();
         let changed = conn.execute(
             "UPDATE memory_records
              SET visibility = ?5, demoted = ?6, metadata = ?7, provenance = ?8, updated_at_ms = ?9,
-                 owner_org_unit_id = ?10
+                 owner_org_unit_id = ?10, private = ?11, owner_subject = ?12
              WHERE id = ?1
                AND tenant_org_id = ?2
                AND tenant_workspace_id = ?3
@@ -1824,6 +1833,8 @@ impl MemoryDatabase {
                 provenance,
                 now_ms,
                 owner_org_unit_id,
+                i64::from(private),
+                owner_subject,
             ],
         )?;
         Ok(changed > 0)

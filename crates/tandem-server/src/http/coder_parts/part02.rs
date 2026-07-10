@@ -521,43 +521,38 @@ pub(crate) fn failure_pattern_fingerprint(
 }
 
 async fn search_governed_memory_for_coder_subject(
-    db: &tandem_memory::db::MemoryDatabase,
+    store: &dyn tandem_memory::MemoryStore,
     tenant_context: Option<&tandem_types::TenantContext>,
     subject: &str,
     query: &str,
     limit: usize,
     project_tag: Option<&str>,
 ) -> tandem_memory::types::MemoryResult<Vec<tandem_memory::types::GlobalMemorySearchHit>> {
-    if let Some(tenant_context) = tenant_context {
-        let scope = coder_memory_tenant_scope(tenant_context);
-        db.search_global_memory_for_tenant(
-            &scope.org_id,
-            &scope.workspace_id,
-            scope.deployment_id.as_deref(),
-            subject,
-            query,
-            limit.clamp(1, 20) as i64,
-            project_tag,
-            None,
-            None,
-        )
+    let tenant_scope = tenant_context
+        .map(coder_memory_tenant_scope)
+        .unwrap_or_else(tandem_memory::types::MemoryTenantScope::local);
+    let mut scope = tandem_memory::MemoryReadScope::tenant(tenant_scope);
+    scope.subject = Some(subject.to_string());
+    match store
+        .query(tandem_memory::MemoryStoreQueryRequest::SearchGlobalRecords {
+            scope,
+            user_id: subject.to_string(),
+            query: query.to_string(),
+            limit: limit.clamp(1, 20) as i64,
+            project_tag: project_tag.map(ToString::to_string),
+        })
         .await
-    } else {
-        // Local/system callers intentionally use the legacy local partition.
-        db.search_global_memory(
-            subject,
-            query,
-            limit.clamp(1, 20) as i64,
-            project_tag,
-            None,
-            None,
-        )
-        .await
+        .map_err(tandem_memory::types::MemoryError::from)?
+    {
+        tandem_memory::MemoryStoreQueryResult::GlobalSearchHits(hits) => Ok(hits),
+        _ => Err(tandem_memory::types::MemoryError::InvalidConfig(
+            "memory store returned an unexpected global-record search result".to_string(),
+        )),
     }
 }
 
 async fn list_governed_memory_for_coder_subject(
-    db: &tandem_memory::db::MemoryDatabase,
+    store: &dyn tandem_memory::MemoryStore,
     tenant_context: Option<&tandem_types::TenantContext>,
     subject: &str,
     q: Option<&str>,
@@ -565,24 +560,28 @@ async fn list_governed_memory_for_coder_subject(
     limit: i64,
     offset: i64,
 ) -> tandem_memory::types::MemoryResult<Vec<tandem_memory::types::GlobalMemoryRecord>> {
-    if let Some(tenant_context) = tenant_context {
-        let scope = coder_memory_tenant_scope(tenant_context);
-        db.list_global_memory_for_tenant(
-            &scope.org_id,
-            &scope.workspace_id,
-            scope.deployment_id.as_deref(),
-            subject,
-            q,
-            project_tag,
-            None,
+    let tenant_scope = tenant_context
+        .map(coder_memory_tenant_scope)
+        .unwrap_or_else(tandem_memory::types::MemoryTenantScope::local);
+    let mut scope = tandem_memory::MemoryReadScope::tenant(tenant_scope);
+    scope.subject = Some(subject.to_string());
+    match store
+        .query(tandem_memory::MemoryStoreQueryRequest::ListGlobalRecords {
+            scope,
+            user_id: subject.to_string(),
+            query: q.map(ToString::to_string),
+            project_tag: project_tag.map(ToString::to_string),
+            channel_tag: None,
             limit,
             offset,
-        )
+        })
         .await
-    } else {
-        // Local/system callers intentionally use the legacy local partition.
-        db.list_global_memory(subject, q, project_tag, None, limit, offset)
-            .await
+        .map_err(tandem_memory::types::MemoryError::from)?
+    {
+        tandem_memory::MemoryStoreQueryResult::GlobalRecords(records) => Ok(records),
+        _ => Err(tandem_memory::types::MemoryError::InvalidConfig(
+            "memory store returned an unexpected global-record list result".to_string(),
+        )),
     }
 }
 
@@ -599,11 +598,11 @@ pub(crate) async fn find_failure_pattern_duplicates(
     let mut hits =
         list_repo_memory_candidates(state, repo_slug, None, limit.saturating_mul(3), tenant_context)
             .await?;
-    if let Some(db) = super::skills_memory::open_global_memory_db_for_state(state).await {
+    if let Some(store) = super::skills_memory::open_global_memory_store_for_state(state).await {
         let mut seen_memory_ids = HashSet::<String>::new();
         for subject in subjects {
             let Ok(results) = search_governed_memory_for_coder_subject(
-                &db,
+                store.as_ref(),
                 tenant_context,
                 subject,
                 query,
@@ -643,7 +642,7 @@ pub(crate) async fn find_failure_pattern_duplicates(
         {
             for subject in subjects {
                 let Ok(records) = list_governed_memory_for_coder_subject(
-                    &db,
+                    store.as_ref(),
                     tenant_context,
                     subject,
                     None,

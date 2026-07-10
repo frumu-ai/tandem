@@ -540,7 +540,7 @@
                 "local",
                 "local",
                 None,
-                "same-user",
+                Some("same-user"),
                 "acme quarterly context",
                 10,
                 Some("acme"),
@@ -560,7 +560,7 @@
                 "local",
                 "local",
                 None,
-                "same-user",
+                Some("same-user"),
                 Some("acme"),
                 Some("acme"),
                 None,
@@ -583,7 +583,9 @@
         assert_eq!(all_rows.len(), 3);
 
         // The MemoryStore trait seam wires scope.org_unit into the predicate.
-        use crate::store::{MemoryReadScope, MemoryStore};
+        use crate::store::{
+            MemoryReadScope, MemoryStore, MemoryStoreQueryRequest, MemoryStoreQueryResult,
+        };
         use crate::types::MemoryTenantScope;
         let mut scope = MemoryReadScope::tenant(MemoryTenantScope {
             org_id: "local".to_string(),
@@ -591,16 +593,21 @@
             deployment_id: None,
         });
         scope.org_unit = Some("finance".to_string());
-        let trait_hits = MemoryStore::search_global_records(
+        let trait_result = MemoryStore::query(
             &db,
-            &scope,
-            "same-user",
-            "acme quarterly context",
-            10,
-            Some("acme"),
+            MemoryStoreQueryRequest::SearchGlobalRecords {
+                scope,
+                user_id: "same-user".to_string(),
+                query: "acme quarterly context".to_string(),
+                limit: 10,
+                project_tag: Some("acme".to_string()),
+            },
         )
         .await
         .unwrap();
+        let MemoryStoreQueryResult::GlobalSearchHits(trait_hits) = trait_result else {
+            panic!("unexpected memory store query result");
+        };
         assert_eq!(trait_hits.len(), 1);
         assert_eq!(trait_hits[0].record.id, "dept-finance");
     }
@@ -645,7 +652,7 @@
                 "local",
                 "local",
                 None,
-                "u",
+                Some("u"),
                 None,
                 Some("acme"),
                 None,
@@ -673,7 +680,7 @@
                 "local",
                 "local",
                 None,
-                "u",
+                Some("u"),
                 None,
                 Some("acme"),
                 None,

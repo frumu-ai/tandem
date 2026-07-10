@@ -612,7 +612,7 @@ impl MemoryDatabase {
             },
         )?;
         rows.collect::<Result<Vec<_>, _>>()
-            .map_err(MemoryError::Database)
+            .map_err(MemoryError::from)
     }
 
     pub async fn delete_global_memory(&self, id: &str) -> MemoryResult<bool> {

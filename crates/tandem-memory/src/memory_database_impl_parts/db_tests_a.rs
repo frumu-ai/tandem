@@ -686,28 +686,34 @@
         assert_eq!(finance_results.len(), 1);
         assert_eq!(finance_results[0].0.id, "finance-vector");
 
-        use crate::store::{MemoryReadScope, MemoryStore};
-        let mut scope = MemoryReadScope::tenant(tenant);
+        use crate::store::{
+            MemoryChunkSelector, MemoryReadScope, MemoryStore, MemoryStoreQueryRequest,
+            MemoryStoreQueryResult,
+        };
+        let mut scope = MemoryReadScope::tenant(tenant.clone());
         scope.subject = Some("user-a".to_string());
         scope.org_unit = Some("engineering".to_string());
-        let trait_results = MemoryStore::search_chunks(
+        let trait_result = MemoryStore::query(
             &db,
-            &scope,
-            &vector,
-            MemoryTier::Global,
-            None,
-            None,
-            10,
+            MemoryStoreQueryRequest::SimilarChunks {
+                scope: scope.clone(),
+                selector: MemoryChunkSelector::global(),
+                query_embedding: vector.clone(),
+                limit: 10,
+            },
         )
         .await
         .unwrap();
+        let MemoryStoreQueryResult::SimilarChunks(trait_results) = trait_result else {
+            panic!("unexpected memory store query result");
+        };
         assert_eq!(trait_results.len(), 1);
         assert_eq!(trait_results[0].0.id, "engineering-vector");
 
         let mut private_without_department = test_vector_chunk(
             "private-without-department",
             MemoryTier::Global,
-            scope.tenant.clone(),
+            tenant.clone(),
             "private user context",
             None,
         );
@@ -754,7 +760,9 @@
             .map(|(chunk, _)| chunk.id.as_str())
             .collect::<std::collections::BTreeSet<_>>();
         assert!(result_ids.contains("finance-vector"));
-        assert!(result_ids.contains("private-without-department"));
+        // Private ownership is additive to department scope. A subject match
+        // cannot make an unstamped row visible inside a department query.
+        assert!(!result_ids.contains("private-without-department"));
         assert!(result_ids.contains("tenant-shared-vector"));
         assert!(!result_ids.contains("engineering-vector"));
         assert!(!result_ids.contains("unstamped-vector"));

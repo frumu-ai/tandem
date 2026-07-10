@@ -1,6 +1,12 @@
 use crate::governance::GovernedMemoryTier;
 use crate::knowledge_scope::{metadata_with_knowledge_scope, KnowledgeScopePolicy};
 use crate::manager::MemoryManager;
+use crate::store::{
+    MemoryBackendHealthRequest, MemoryChunkSelector, MemoryImportIndexEntry, MemoryReadScope,
+    MemoryStore, MemoryStoreMutationRequest, MemoryStoreMutationResult, MemoryStoreQueryRequest,
+    MemoryStoreQueryResult, MemoryStoreReadRequest, MemoryStoreReadResult, MemoryStoreWriteRequest,
+    MemoryStoreWriteResult, MemoryWriteScope,
+};
 use crate::types::{
     MemoryError, MemoryImportFormat, MemoryImportProgress, MemoryImportRequest,
     MemoryImportSourceBinding, MemoryImportStats, MemoryTier, SourceObjectLifecycleRecord,
@@ -47,15 +53,9 @@ where
         Err(err) => return Err(err),
     };
     let total_files = files.len();
-    let db = memory_manager.db();
+    let store = memory_manager.store().as_ref();
 
-    let existing_indexed_paths: HashSet<String> = db
-        .list_import_index_paths_for_tenant(
-            request.tier,
-            request.session_id.as_deref(),
-            request.project_id.as_deref(),
-            &request.tenant_scope,
-        )
+    let existing_indexed_paths: HashSet<String> = list_import_index_paths(store, request)
         .await?
         .into_iter()
         .filter(|path| path.starts_with(&format!("{namespace}/")))
@@ -93,19 +93,11 @@ where
             .unwrap_or(0);
         let size = meta.len() as i64;
 
-        let existing = db
-            .get_import_index_entry_for_tenant(
-                request.tier,
-                request.session_id.as_deref(),
-                request.project_id.as_deref(),
-                &indexed_path,
-                &request.tenant_scope,
-            )
-            .await?;
-        if let Some((existing_mtime, existing_size, existing_hash)) = &existing {
-            if *existing_mtime == mtime && *existing_size == size {
+        let existing = get_import_index_entry(store, request, &indexed_path).await?;
+        if let Some(existing) = &existing {
+            if existing.modified_at == mtime && existing.size == size {
                 let mut content_hash = None;
-                let mut source_hash = Some(existing_hash.clone());
+                let mut source_hash = Some(existing.hash.clone());
                 if let Some(binding) = request.source_binding.as_ref() {
                     if let Ok(content) = std::fs::read_to_string(&path) {
                         if !content.trim().is_empty() {
@@ -121,7 +113,7 @@ where
                                 content_hash: &next_content_hash,
                             };
                             backfill_source_bound_import_metadata(
-                                db,
+                                store,
                                 request,
                                 binding,
                                 &metadata_context,
@@ -141,7 +133,7 @@ where
                     source_hash,
                     now_ms(),
                 ) {
-                    db.upsert_source_object_active_for_tenant(&record).await?;
+                    upsert_source_object_lifecycle(store, request, record).await?;
                 }
                 stats.files_processed += 1;
                 stats.skipped_files += 1;
@@ -173,19 +165,10 @@ where
             .as_ref()
             .map(|binding| scoped_source_hash(&content_hash, &indexed_path, binding))
             .unwrap_or_else(|| content_hash.clone());
-        if let Some((_, _, existing_hash)) = &existing {
-            if existing_hash == &hash {
-                db.upsert_import_index_entry_for_tenant(
-                    request.tier,
-                    request.session_id.as_deref(),
-                    request.project_id.as_deref(),
-                    &indexed_path,
-                    mtime,
-                    size,
-                    &hash,
-                    &request.tenant_scope,
-                )
-                .await?;
+        if let Some(existing) = &existing {
+            if existing.hash == hash {
+                upsert_import_index_entry(store, request, &indexed_path, mtime, size, &hash)
+                    .await?;
                 if let Some(binding) = request.source_binding.as_ref() {
                     let metadata_context = ImportFileMetadataContext {
                         canonical_root: &canonical_root,
@@ -195,8 +178,13 @@ where
                         path: &path,
                         content_hash: &content_hash,
                     };
-                    backfill_source_bound_import_metadata(db, request, binding, &metadata_context)
-                        .await?;
+                    backfill_source_bound_import_metadata(
+                        store,
+                        request,
+                        binding,
+                        &metadata_context,
+                    )
+                    .await?;
                 }
                 if let Some(record) = source_object_lifecycle_record(
                     request,
@@ -207,7 +195,7 @@ where
                     Some(hash.clone()),
                     now_ms(),
                 ) {
-                    db.upsert_source_object_active_for_tenant(&record).await?;
+                    upsert_source_object_lifecycle(store, request, record).await?;
                 }
                 stats.files_processed += 1;
                 stats.skipped_files += 1;
@@ -216,22 +204,15 @@ where
             }
         }
 
-        if let Err(err) = db
-            .delete_file_chunks_by_path_for_tenant(
-                request.tier,
-                request.session_id.as_deref(),
-                request.project_id.as_deref(),
-                &indexed_path,
-                &request.tenant_scope,
-            )
-            .await
-        {
+        if let Err(err) = delete_chunks_by_source_path(store, request, &indexed_path).await {
             tracing::warn!(
                 "Failed to delete stale chunks for import path {} ({}). Attempting vector repair.",
                 indexed_path,
                 err
             );
-            let _ = db.ensure_vector_tables_healthy().await;
+            let _ = store
+                .backend_health(MemoryBackendHealthRequest { repair: true })
+                .await;
             stats.files_processed += 1;
             stats.errors += 1;
             emit_progress(&mut on_progress, &stats, total_files, &relative_path);
@@ -267,17 +248,8 @@ where
 
         match memory_manager.store_message(store_request).await {
             Ok(chunks) => {
-                db.upsert_import_index_entry_for_tenant(
-                    request.tier,
-                    request.session_id.as_deref(),
-                    request.project_id.as_deref(),
-                    &indexed_path,
-                    mtime,
-                    size,
-                    &hash,
-                    &request.tenant_scope,
-                )
-                .await?;
+                upsert_import_index_entry(store, request, &indexed_path, mtime, size, &hash)
+                    .await?;
                 if let Some(record) = source_object_lifecycle_record(
                     request,
                     request.source_binding.as_ref(),
@@ -287,7 +259,7 @@ where
                     Some(hash.clone()),
                     now_ms(),
                 ) {
-                    db.upsert_source_object_active_for_tenant(&record).await?;
+                    upsert_source_object_lifecycle(store, request, record).await?;
                 }
                 stats.files_processed += 1;
                 stats.indexed_files += 1;
@@ -308,35 +280,19 @@ where
             .cloned()
             .collect();
         for indexed_path in removed {
-            if let Err(err) = db
-                .delete_file_chunks_by_path_for_tenant(
-                    request.tier,
-                    request.session_id.as_deref(),
-                    request.project_id.as_deref(),
-                    &indexed_path,
-                    &request.tenant_scope,
-                )
-                .await
-            {
+            if let Err(err) = delete_chunks_by_source_path(store, request, &indexed_path).await {
                 tracing::warn!(
                     "Failed to delete removed imported chunks for {}: {}",
                     indexed_path,
                     err
                 );
-                let _ = db.ensure_vector_tables_healthy().await;
+                let _ = store
+                    .backend_health(MemoryBackendHealthRequest { repair: true })
+                    .await;
                 stats.errors += 1;
                 continue;
             }
-            if let Err(err) = db
-                .delete_import_index_entry_for_tenant(
-                    request.tier,
-                    request.session_id.as_deref(),
-                    request.project_id.as_deref(),
-                    &indexed_path,
-                    &request.tenant_scope,
-                )
-                .await
-            {
+            if let Err(err) = delete_import_index_entry(store, request, &indexed_path).await {
                 tracing::warn!(
                     "Failed to delete removed import index entry for {}: {}",
                     indexed_path,
@@ -346,8 +302,9 @@ where
                 continue;
             }
             if let Some(binding) = request.source_binding.as_ref() {
-                db.tombstone_source_object_for_tenant(
-                    &request.tenant_scope,
+                tombstone_source_object_lifecycle(
+                    store,
+                    request,
                     &binding.binding_id,
                     &indexed_path,
                     now_ms(),
@@ -359,6 +316,186 @@ where
     }
 
     Ok(stats)
+}
+
+fn import_selector(request: &MemoryImportRequest) -> MemoryChunkSelector {
+    MemoryChunkSelector {
+        tier: request.tier,
+        project_id: request.project_id.clone(),
+        session_id: request.session_id.clone(),
+    }
+}
+
+fn import_read_scope(request: &MemoryImportRequest) -> MemoryReadScope {
+    MemoryReadScope::tenant(request.tenant_scope.clone())
+}
+
+fn import_write_scope(request: &MemoryImportRequest) -> MemoryWriteScope {
+    MemoryWriteScope::tenant(request.tenant_scope.clone())
+}
+
+fn unexpected_store_result(operation: &str) -> MemoryError {
+    MemoryError::InvalidConfig(format!(
+        "memory store returned an unexpected result for {operation}"
+    ))
+}
+
+async fn list_import_index_paths(
+    store: &dyn MemoryStore,
+    request: &MemoryImportRequest,
+) -> Result<Vec<String>, MemoryError> {
+    match store
+        .query(MemoryStoreQueryRequest::ImportIndexPaths {
+            scope: import_read_scope(request),
+            selector: import_selector(request),
+        })
+        .await?
+    {
+        MemoryStoreQueryResult::Paths(paths) => Ok(paths),
+        _ => Err(unexpected_store_result("list import index paths")),
+    }
+}
+
+async fn get_import_index_entry(
+    store: &dyn MemoryStore,
+    request: &MemoryImportRequest,
+    indexed_path: &str,
+) -> Result<Option<MemoryImportIndexEntry>, MemoryError> {
+    match store
+        .read(MemoryStoreReadRequest::ImportIndexEntry {
+            scope: import_read_scope(request),
+            selector: import_selector(request),
+            path: indexed_path.to_string(),
+        })
+        .await?
+    {
+        MemoryStoreReadResult::ImportIndexEntry(entry) => Ok(entry),
+        _ => Err(unexpected_store_result("read import index entry")),
+    }
+}
+
+async fn upsert_import_index_entry(
+    store: &dyn MemoryStore,
+    request: &MemoryImportRequest,
+    indexed_path: &str,
+    modified_at: i64,
+    size: i64,
+    hash: &str,
+) -> Result<(), MemoryError> {
+    match store
+        .write(MemoryStoreWriteRequest::ImportIndexEntry {
+            scope: import_write_scope(request),
+            selector: import_selector(request),
+            path: indexed_path.to_string(),
+            entry: MemoryImportIndexEntry {
+                modified_at,
+                size,
+                hash: hash.to_string(),
+            },
+        })
+        .await?
+    {
+        MemoryStoreWriteResult::Stored => Ok(()),
+        _ => Err(unexpected_store_result("upsert import index entry")),
+    }
+}
+
+async fn delete_import_index_entry(
+    store: &dyn MemoryStore,
+    request: &MemoryImportRequest,
+    indexed_path: &str,
+) -> Result<(), MemoryError> {
+    match store
+        .mutate(MemoryStoreMutationRequest::DeleteImportIndexEntry {
+            scope: import_read_scope(request),
+            selector: import_selector(request),
+            path: indexed_path.to_string(),
+        })
+        .await?
+    {
+        MemoryStoreMutationResult::Changed(_) => Ok(()),
+        _ => Err(unexpected_store_result("delete import index entry")),
+    }
+}
+
+async fn delete_chunks_by_source_path(
+    store: &dyn MemoryStore,
+    request: &MemoryImportRequest,
+    indexed_path: &str,
+) -> Result<(), MemoryError> {
+    match store
+        .mutate(MemoryStoreMutationRequest::DeleteChunksBySourcePath {
+            scope: import_read_scope(request),
+            selector: import_selector(request),
+            source_path: indexed_path.to_string(),
+        })
+        .await?
+    {
+        MemoryStoreMutationResult::SourcePathDelete(_) => Ok(()),
+        _ => Err(unexpected_store_result("delete chunks by source path")),
+    }
+}
+
+async fn update_chunk_metadata_by_source_path(
+    store: &dyn MemoryStore,
+    request: &MemoryImportRequest,
+    indexed_path: &str,
+    metadata: serde_json::Value,
+) -> Result<(), MemoryError> {
+    match store
+        .mutate(
+            MemoryStoreMutationRequest::UpdateChunkMetadataBySourcePath {
+                scope: import_read_scope(request),
+                selector: import_selector(request),
+                source_path: indexed_path.to_string(),
+                metadata,
+            },
+        )
+        .await?
+    {
+        MemoryStoreMutationResult::Affected(_) => Ok(()),
+        _ => Err(unexpected_store_result(
+            "update chunk metadata by source path",
+        )),
+    }
+}
+
+async fn upsert_source_object_lifecycle(
+    store: &dyn MemoryStore,
+    request: &MemoryImportRequest,
+    record: SourceObjectLifecycleRecord,
+) -> Result<(), MemoryError> {
+    match store
+        .write(MemoryStoreWriteRequest::SourceObjectLifecycle {
+            scope: import_write_scope(request),
+            record,
+        })
+        .await?
+    {
+        MemoryStoreWriteResult::Stored => Ok(()),
+        _ => Err(unexpected_store_result("upsert source object lifecycle")),
+    }
+}
+
+async fn tombstone_source_object_lifecycle(
+    store: &dyn MemoryStore,
+    request: &MemoryImportRequest,
+    source_binding_id: &str,
+    native_object_id: &str,
+    tombstoned_at_ms: u64,
+) -> Result<(), MemoryError> {
+    match store
+        .mutate(MemoryStoreMutationRequest::TombstoneSourceObjectLifecycle {
+            scope: import_read_scope(request),
+            source_binding_id: source_binding_id.to_string(),
+            native_object_id: native_object_id.to_string(),
+            tombstoned_at_ms,
+        })
+        .await?
+    {
+        MemoryStoreMutationResult::Changed(_) => Ok(()),
+        _ => Err(unexpected_store_result("tombstone source object lifecycle")),
+    }
 }
 
 fn validate_scope(request: &MemoryImportRequest) -> Result<(), MemoryError> {
@@ -667,21 +804,13 @@ fn import_file_metadata(
 }
 
 async fn backfill_source_bound_import_metadata(
-    db: &crate::db::MemoryDatabase,
+    store: &dyn MemoryStore,
     request: &MemoryImportRequest,
     binding: &MemoryImportSourceBinding,
     context: &ImportFileMetadataContext<'_>,
 ) -> Result<(), MemoryError> {
     let metadata = import_file_metadata(request, Some(binding), context)?;
-    db.update_file_chunks_metadata_by_path_for_tenant(
-        request.tier,
-        request.session_id.as_deref(),
-        request.project_id.as_deref(),
-        context.indexed_path,
-        &request.tenant_scope,
-        &metadata,
-    )
-    .await?;
+    update_chunk_metadata_by_source_path(store, request, context.indexed_path, metadata).await?;
     Ok(())
 }
 

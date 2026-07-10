@@ -7,9 +7,9 @@
 // - context-tree tenancy: part07 `context_tree_endpoints_are_tenant_scoped` (TAN-602)
 // - cross-user demote/delete authz: part04 (TAN-604)
 
-/// Axis: user × records-store RECALL (TAN-601/TAN-608a). Two users in one
-/// tenant; each user's /memory/search recall must exclude the other's records,
-/// not merely reject unauthorized operations.
+/// Axis: private user × records-store RECALL (TAN-601/TAN-608a). Two users in
+/// one tenant; each user's explicitly private /memory/search recall must exclude
+/// the other's records, not merely reject unauthorized operations.
 #[tokio::test]
 async fn matrix_records_recall_is_subject_scoped_within_tenant() {
     let state = test_state().await;
@@ -33,6 +33,7 @@ async fn matrix_records_recall_is_subject_scoped_within_tenant() {
                 "kind": "note",
                 "content": content,
                 "classification": "internal",
+                "private": true,
                 "capability": memory_capability(run_id, actor, "acme", "north", "proj-a")
             })),
         )
@@ -220,11 +221,10 @@ async fn open_global_memory_db_for_state_test(
         .expect("memory db")
 }
 
-/// Axis: tenant × user × distillation (TAN-608f). Distilling tenant/user A's
-/// session emits records visible only to A's scoped read — not to another
-/// subject in the same tenant and not to another tenant.
+/// Axis: tenant × distillation (TAN-608f). Distillation has no private opt-in,
+/// so its output is shared within the writing tenant and excluded from others.
 #[tokio::test]
-async fn matrix_distillation_output_scoped_to_writing_tenant_and_subject() {
+async fn matrix_distillation_output_scoped_to_writing_tenant() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind listener");
@@ -322,7 +322,7 @@ async fn matrix_distillation_output_scoped_to_writing_tenant_and_subject() {
             .any(|hit| hit.record.content.contains("metric dashboards")),
         "writer recalls their distilled fact"
     );
-    // Another subject in the same tenant does not.
+    // With no private opt-in, another subject in the same tenant also sees it.
     let sibling = db
         .search_global_memory_for_tenant(
             "acme",
@@ -340,8 +340,8 @@ async fn matrix_distillation_output_scoped_to_writing_tenant_and_subject() {
     assert!(
         sibling
             .iter()
-            .all(|hit| !hit.record.content.contains("metric dashboards")),
-        "distilled facts must not leak across subjects"
+            .any(|hit| hit.record.content.contains("metric dashboards")),
+        "non-private distilled facts are tenant-shared"
     );
     // Another tenant does not.
     let foreign = db

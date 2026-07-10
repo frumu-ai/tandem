@@ -1364,6 +1364,7 @@ fn source_bound_memory_metadata(
         "resource_id": resource_id
     });
     json!({
+        "owner_org_unit_id": "source-readers",
         "enterprise_source_binding": {
             "binding_id": binding_id,
             "connector_id": "manual-upload",
@@ -1488,7 +1489,7 @@ fn verified_source_bound_memory_context(
         human_actor: tandem_types::HumanActor::tandem_user(subject),
         authority_chain,
         roles: Vec::new(),
-        org_units: Vec::new(),
+        org_units: vec!["source-readers".to_string()],
         capabilities: Vec::new(),
         policy_version: None,
         strict_projection: Some(strict_projection),

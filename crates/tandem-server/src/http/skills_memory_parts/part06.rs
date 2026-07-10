@@ -523,7 +523,7 @@ pub(super) async fn memory_put_impl_with_verified(
     let partition_key = request.partition.key();
     let kind = memory_kind_for_request(request.kind.clone());
     let audit_id = Uuid::new_v4().to_string();
-    let db = open_global_memory_db_for_state(state)
+    let store = open_global_memory_store_for_state(state)
         .await
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
     let artifact_refs = request.artifact_refs.clone();
@@ -607,7 +607,7 @@ pub(super) async fn memory_put_impl_with_verified(
         partition_key,
         memory_linkage_detail(&memory_linkage_value)
     );
-    persist_global_memory_record(&state, &db, record).await;
+    persist_global_memory_record(&state, store.as_ref(), record).await;
     append_memory_audit(
         &state,
         tenant_context,

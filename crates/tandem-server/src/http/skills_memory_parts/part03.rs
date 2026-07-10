@@ -1,6 +1,7 @@
 pub(super) async fn workflow_learning_candidate_promote(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Path(candidate_id): Path<String>,
     Json(input): Json<WorkflowLearningCandidatePromoteRequest>,
 ) -> Result<Json<Value>, StatusCode> {
@@ -25,9 +26,16 @@ pub(super) async fn workflow_learning_candidate_promote(
         &candidate,
         tandem_memory::GovernedMemoryTier::Session,
     );
+    let capability_subject = crate::memory::subject::request_memory_subject(
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+        None,
+    )
+    .map_err(|_| StatusCode::FORBIDDEN)?
+    .subject;
     let capability = issue_run_memory_capability(
         &run_id,
-        tenant_context.actor_id.as_deref(),
+        Some(&capability_subject),
         &session_partition,
         RunMemoryCapabilityPolicy::CoderWorkflow,
     );
@@ -82,6 +90,8 @@ pub(super) async fn workflow_learning_candidate_promote(
         backfill_workflow_learning_source_memory_scope(
             &state,
             &tenant_context,
+            verified_tenant_context.as_deref(),
+            &capability.subject,
             &memory_id,
             &knowledge_scope_policy,
         )
@@ -108,9 +118,10 @@ pub(super) async fn workflow_learning_candidate_promote(
                 true,
             )
             .ok_or(StatusCode::FORBIDDEN)?;
-        let response = memory_put_impl(
+        let response = memory_put_impl_with_verified(
             &state,
             &tenant_context,
+            verified_tenant_context.as_deref(),
             MemoryPutRequest {
                 private: false,
                 run_id: run_id.clone(),
@@ -135,9 +146,10 @@ pub(super) async fn workflow_learning_candidate_promote(
         .await?;
         response.id
     };
-    let promote_response = memory_promote_impl(
+    let promote_response = memory_promote_impl_with_verified(
         &state,
         &tenant_context,
+        verified_tenant_context.as_deref(),
         MemoryPromoteRequest {
             run_id: run_id.clone(),
             source_memory_id: source_memory_id.clone(),
@@ -195,22 +207,51 @@ pub(super) async fn workflow_learning_candidate_promote(
 async fn backfill_workflow_learning_source_memory_scope(
     state: &AppState,
     tenant_context: &TenantContext,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
+    caller_subject: &str,
     memory_id: &str,
     knowledge_scope_policy: &tandem_memory::KnowledgeScopePolicy,
 ) -> Result<(), StatusCode> {
-    let db = open_global_memory_db_for_state(state)
+    let store = open_global_memory_store_for_state(state)
         .await
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    let Some(source) = db
-        .get_global_memory_for_tenant(
-            memory_id,
-            &tenant_context.org_id,
-            &tenant_context.workspace_id,
-            tenant_context.deployment_id.as_deref(),
-        )
+    let local_unrestricted = crate::memory::subject::local_memory_subjects_are_unrestricted(
+        tenant_context,
+        verified_tenant_context,
+    );
+    let mut scope = if local_unrestricted {
+        tandem_memory::MemoryReadScope::trusted_unrestricted(MemoryTenantScope {
+            org_id: tenant_context.org_id.clone(),
+            workspace_id: tenant_context.workspace_id.clone(),
+            deployment_id: tenant_context.deployment_id.clone(),
+        })
+    } else {
+        let (owner_org_unit_id, resolved_subject) = trusted_memory_database_scope(
+            tenant_context,
+            verified_tenant_context,
+            Some(caller_subject),
+        )?;
+        let mut scope = tandem_memory::MemoryReadScope::tenant(MemoryTenantScope {
+            org_id: tenant_context.org_id.clone(),
+            workspace_id: tenant_context.workspace_id.clone(),
+            deployment_id: tenant_context.deployment_id.clone(),
+        });
+        scope.org_unit = owner_org_unit_id;
+        scope.subject = resolved_subject;
+        scope
+    };
+    let source = match store
+        .read(tandem_memory::MemoryStoreReadRequest::GlobalRecord {
+            scope: scope.clone(),
+            id: memory_id.to_string(),
+        })
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    else {
+    {
+        tandem_memory::MemoryStoreReadResult::GlobalRecord(record) => record,
+        _ => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+    let Some(source) = source else {
         return Ok(());
     };
     if tandem_memory::metadata_has_knowledge_scope(source.metadata.as_ref()) {
@@ -221,18 +262,20 @@ async fn backfill_workflow_learning_source_memory_scope(
         knowledge_scope_policy,
     )
     .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    db.update_global_memory_context_for_tenant(
-        &source.id,
-        &tenant_context.org_id,
-        &tenant_context.workspace_id,
-        tenant_context.deployment_id.as_deref(),
-        &source.visibility,
-        source.demoted,
-        Some(&metadata),
-        source.provenance.as_ref(),
-    )
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let updated = store
+        .mutate(tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+            scope,
+            id: source.id.clone(),
+            visibility: source.visibility.clone(),
+            demoted: source.demoted,
+            metadata: Some(metadata),
+            provenance: source.provenance.clone(),
+        })
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !matches!(updated, tandem_memory::MemoryStoreMutationResult::Changed(true)) {
+        return Err(StatusCode::NOT_FOUND);
+    }
     Ok(())
 }
 
@@ -475,7 +518,19 @@ pub(super) async fn memory_list(
         }
         resolution.subject
     };
-    let page = if let Some(db) = open_global_memory_db_for_state(&state).await {
+    let page = if let Some(store) = open_global_memory_store_for_state(&state).await {
+        let (owner_org_unit_id, caller_subject) = trusted_memory_database_scope(
+            &tenant_context,
+            verified_tenant_context,
+            Some(&user_id),
+        )?;
+        let mut scope = tandem_memory::MemoryReadScope::tenant(MemoryTenantScope {
+            org_id: tenant_context.org_id.clone(),
+            workspace_id: tenant_context.workspace_id.clone(),
+            deployment_id: tenant_context.deployment_id.clone(),
+        });
+        scope.org_unit = owner_org_unit_id;
+        scope.subject = caller_subject;
         let source_access_filter = crate::memory::read_policy::governed_memory_read_filter(
             crate::config::env::resolve_runtime_auth_mode(),
             verified_tenant_context,
@@ -483,23 +538,50 @@ pub(super) async fn memory_list(
             crate::now_ms(),
         )
         .map(|filter| filter.with_caller_subject(user_id.clone()));
-        db.list_global_memory_for_tenant(
-            &tenant_context.org_id,
-            &tenant_context.workspace_id,
-            tenant_context.deployment_id.as_deref(),
-            &user_id,
-            Some(&q),
-            query.project_id.as_deref(),
-            query.channel_tag.as_deref(),
-            limit as i64,
-            offset as i64,
-        )
-        .await
-        .unwrap_or_default()
+        const STORAGE_PAGE_SIZE: i64 = 1_000;
+        let authorized_end = offset.saturating_add(limit);
+        let mut storage_offset = 0i64;
+        let mut authorized_seen = 0usize;
+        let mut authorized_page = Vec::with_capacity(limit);
+        while authorized_seen < authorized_end {
+            let rows = match store
+                .query(tandem_memory::MemoryStoreQueryRequest::ListGlobalRecords {
+                    scope: scope.clone(),
+                    user_id: user_id.clone(),
+                    query: Some(q.clone()),
+                    project_tag: query.project_id.clone(),
+                    channel_tag: query.channel_tag.clone(),
+                    limit: STORAGE_PAGE_SIZE,
+                    offset: storage_offset,
+                })
+                .await
+            {
+                Ok(tandem_memory::MemoryStoreQueryResult::GlobalRecords(rows)) => rows,
+                _ => Vec::new(),
+            };
+            let row_count = rows.len();
+            for row in rows {
+                if !global_memory_record_visible_to_access_filter(
+                    &row,
+                    source_access_filter.as_ref(),
+                ) {
+                    continue;
+                }
+                if authorized_seen >= offset && authorized_page.len() < limit {
+                    authorized_page.push(row);
+                }
+                authorized_seen = authorized_seen.saturating_add(1);
+                if authorized_seen >= authorized_end {
+                    break;
+                }
+            }
+            if row_count < STORAGE_PAGE_SIZE as usize {
+                break;
+            }
+            storage_offset = storage_offset.saturating_add(STORAGE_PAGE_SIZE);
+        }
+        authorized_page
         .into_iter()
-        .filter(|row| {
-            global_memory_record_visible_to_access_filter(row, source_access_filter.as_ref())
-        })
         .map(|row| {
             json!({
                 "id": row.id,
@@ -537,6 +619,18 @@ pub(super) async fn memory_list(
     })))
 }
 
+fn trusted_memory_database_scope(
+    _tenant_context: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+    trusted_subject: Option<&str>,
+) -> Result<(Option<String>, Option<String>), StatusCode> {
+    Ok((
+        crate::memory::subject::required_active_org_unit(verified)
+            .map_err(|_| StatusCode::FORBIDDEN)?,
+        trusted_subject.map(ToString::to_string),
+    ))
+}
+
 /// Enforce per-user ownership before an admin-style mutation (demote/delete)
 /// of a global memory record. Mirrors `memory_list`'s governed-mode behavior:
 /// outside local-unrestricted mode, the caller's resolved memory subject must
@@ -567,18 +661,65 @@ pub(super) async fn memory_delete(
     Path(id): Path<String>,
     Query(query): Query<MemoryDeleteQuery>,
 ) -> Result<Json<Value>, StatusCode> {
-    let db = open_global_memory_db_for_state(&state)
+    let store = open_global_memory_store_for_state(&state)
         .await
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    let record = db
-        .get_global_memory_for_tenant(
-            &id,
-            &tenant_context.org_id,
-            &tenant_context.workspace_id,
-            tenant_context.deployment_id.as_deref(),
+    let caller_subject = if crate::memory::subject::local_memory_subjects_are_unrestricted(
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+    ) {
+        None
+    } else {
+        Some(
+            crate::memory::subject::request_memory_subject(
+                &tenant_context,
+                verified_tenant_context.as_deref(),
+                None,
+            )
+            .map_err(|_| StatusCode::FORBIDDEN)?
+            .subject,
         )
+    };
+    let local_unrestricted = crate::memory::subject::local_memory_subjects_are_unrestricted(
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+    );
+    // Legacy tenant-authenticated callers retain the historical ownership-error
+    // semantics (403 rather than a scoped 404); verified enterprise callers use
+    // the fail-closed owner/department predicate below.
+    let legacy_unverified = !local_unrestricted && verified_tenant_context.is_none();
+    let scope = if local_unrestricted || legacy_unverified {
+        tandem_memory::MemoryReadScope::trusted_unrestricted(MemoryTenantScope {
+            org_id: tenant_context.org_id.clone(),
+            workspace_id: tenant_context.workspace_id.clone(),
+            deployment_id: tenant_context.deployment_id.clone(),
+        })
+    } else {
+        let (owner_org_unit_id, resolved_subject) = trusted_memory_database_scope(
+            &tenant_context,
+            verified_tenant_context.as_deref(),
+            caller_subject.as_deref(),
+        )?;
+        let mut scope = tandem_memory::MemoryReadScope::tenant(MemoryTenantScope {
+            org_id: tenant_context.org_id.clone(),
+            workspace_id: tenant_context.workspace_id.clone(),
+            deployment_id: tenant_context.deployment_id.clone(),
+        });
+        scope.org_unit = owner_org_unit_id;
+        scope.subject = resolved_subject;
+        scope
+    };
+    let record = match store
+        .read(tandem_memory::MemoryStoreReadRequest::GlobalRecord {
+            scope: scope.clone(),
+            id: id.clone(),
+        })
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    {
+        tandem_memory::MemoryStoreReadResult::GlobalRecord(record) => record,
+        _ => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
     let Some(record) = record else {
         emit_missing_memory_delete_audit(&state, &tenant_context, &id, "memory not found").await?;
         return Err(StatusCode::NOT_FOUND);
@@ -647,15 +788,17 @@ pub(super) async fn memory_delete(
         },
     )
     .await?;
-    let deleted = db
-        .delete_global_memory_for_tenant(
-            &id,
-            &tenant_context.org_id,
-            &tenant_context.workspace_id,
-            tenant_context.deployment_id.as_deref(),
-        )
+    let deleted = match store
+        .mutate(tandem_memory::MemoryStoreMutationRequest::DeleteGlobalRecord {
+            scope,
+            id: id.clone(),
+        })
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    {
+        tandem_memory::MemoryStoreMutationResult::Changed(deleted) => deleted,
+        _ => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
     if !deleted {
         return Err(StatusCode::NOT_FOUND);
     }

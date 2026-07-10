@@ -10,28 +10,30 @@ use crate::envelope::validate_memory_envelope_for_write;
 use crate::provider_egress::{
     complete_memory_prompt, MemoryProviderEgressContext, MemoryProviderEgressKind,
 };
+use crate::store::{
+    MemoryBackendRecoveryAction, MemoryBackendRecoveryRequest, MemoryChunkSelector,
+    MemoryCleanupLogWrite, MemoryReadScope, MemoryStore, MemoryStoreError,
+    MemoryStoreMutationRequest, MemoryStoreMutationResult, MemoryStoreQueryRequest,
+    MemoryStoreQueryResult, MemoryStoreReadRequest, MemoryStoreReadResult, MemoryStoreWriteRequest,
+    MemoryStoreWriteResult, MemoryWriteScope,
+};
 use crate::types::{
-    CleanupLogEntry, DirectoryListing, EmbeddingHealth, KnowledgeCoverageRecord,
-    KnowledgeItemRecord, KnowledgePromotionRequest, KnowledgePromotionResult, KnowledgeSpaceRecord,
-    LayerType, MemoryChunk, MemoryConfig, MemoryContext, MemoryError, MemoryLayer, MemoryNode,
-    MemoryResult, MemoryRetrievalMeta, MemorySearchResult, MemoryStats, MemoryTenantScope,
-    MemoryTier, NodeType, StoreMessageRequest, TreeNode,
+    CleanupLogEntry, DirectoryListing, EmbeddingHealth, LayerType, MemoryChunk, MemoryConfig,
+    MemoryContext, MemoryError, MemoryLayer, MemoryNode, MemoryResult, MemoryRetrievalMeta,
+    MemorySearchResult, MemoryStats, MemoryTenantScope, MemoryTier, NodeType, StoreMessageRequest,
+    TreeNode,
 };
 use chrono::Utc;
-use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
-use tandem_orchestrator::{
-    build_knowledge_coverage_key, normalize_knowledge_segment, KnowledgeBinding, KnowledgePackItem,
-    KnowledgePreflightRequest, KnowledgePreflightResult, KnowledgeReuseDecision,
-    KnowledgeReuseMode, KnowledgeScope, KnowledgeTrustLevel,
-};
 use tandem_providers::{MemoryConsolidationConfig, ProviderRegistry};
 use tokio::sync::Mutex;
 
 /// High-level memory manager that coordinates database, embeddings, and chunking
 pub struct MemoryManager {
-    db: Arc<MemoryDatabase>,
+    store: Arc<dyn MemoryStore>,
+    #[cfg(test)]
+    compatibility_db: Option<Arc<MemoryDatabase>>,
     embedding_service: Arc<Mutex<EmbeddingService>>,
     tokenizer: Tokenizer,
 }
@@ -60,14 +62,24 @@ impl MemoryManager {
             .clamp(0.0, 1.0)
     }
 
-    fn is_malformed_database_error(err: &crate::types::MemoryError) -> bool {
+    fn is_malformed_database_error(err: &impl std::fmt::Display) -> bool {
         err.to_string()
             .to_lowercase()
             .contains("database disk image is malformed")
     }
 
+    /// The portable store used by memory business operations.
+    pub fn store(&self) -> &Arc<dyn MemoryStore> {
+        &self.store
+    }
+
+    /// Test-only compatibility access for fixtures that seed the SQLite adapter
+    /// directly. Production business code only receives [`MemoryStore`].
+    #[cfg(test)]
     pub fn db(&self) -> &Arc<MemoryDatabase> {
-        &self.db
+        self.compatibility_db.as_ref().expect(
+            "MemoryManager::db is only available for managers constructed with a SQLite path",
+        )
     }
 
     /// Initialize the memory manager
@@ -82,14 +94,178 @@ impl MemoryManager {
         embedding_service: EmbeddingService,
     ) -> MemoryResult<Self> {
         let db = Arc::new(MemoryDatabase::new(db_path).await?);
+        let store: Arc<dyn MemoryStore> = db.clone();
+        let manager = Self::build(store, embedding_service)?;
+        #[cfg(test)]
+        {
+            let mut manager = manager;
+            manager.compatibility_db = Some(db);
+            return Ok(manager);
+        }
+        #[cfg(not(test))]
+        {
+            Ok(manager)
+        }
+    }
+
+    /// Build a manager over any portable memory store.
+    pub fn new_with_store(
+        store: Arc<dyn MemoryStore>,
+        embedding_service: EmbeddingService,
+    ) -> MemoryResult<Self> {
+        Self::build(store, embedding_service)
+    }
+
+    fn build(
+        store: Arc<dyn MemoryStore>,
+        embedding_service: EmbeddingService,
+    ) -> MemoryResult<Self> {
         let embedding_service = Arc::new(Mutex::new(embedding_service));
         let tokenizer = Tokenizer::new()?;
 
         Ok(Self {
-            db,
+            store,
+            #[cfg(test)]
+            compatibility_db: None,
             embedding_service,
             tokenizer,
         })
+    }
+
+    fn read_scope(tenant_scope: &MemoryTenantScope) -> MemoryReadScope {
+        MemoryReadScope::tenant(tenant_scope.clone())
+    }
+
+    fn search_scope(
+        tenant_scope: &MemoryTenantScope,
+        access_filter: Option<&crate::types::MemoryAccessFilter>,
+    ) -> MemoryReadScope {
+        let mut scope = Self::read_scope(tenant_scope);
+        scope.subject = access_filter.and_then(|filter| filter.caller_subject.clone());
+        scope.org_unit = access_filter
+            .and_then(|filter| filter.caller_org_units.as_ref())
+            .and_then(|units| {
+                if units.len() == 1 {
+                    units.iter().next().cloned()
+                } else {
+                    None
+                }
+            });
+        scope
+    }
+
+    fn chunk_write_scope(chunk: &MemoryChunk) -> MemoryWriteScope {
+        MemoryWriteScope {
+            tenant: chunk.tenant_scope.clone(),
+            org_unit: crate::types::owner_org_unit_id_from_metadata(chunk.metadata.as_ref()),
+            subject: chunk.subject.clone(),
+        }
+    }
+
+    async fn read_project_config(
+        &self,
+        project_id: &str,
+        tenant_scope: &MemoryTenantScope,
+    ) -> MemoryResult<MemoryConfig> {
+        match self
+            .store
+            .read(MemoryStoreReadRequest::ProjectConfig {
+                scope: Self::read_scope(tenant_scope),
+                project_id: project_id.to_string(),
+            })
+            .await
+            .map_err(MemoryError::from)?
+        {
+            MemoryStoreReadResult::ProjectConfig(config) => Ok(config),
+            _ => Err(Self::unexpected_store_result("read project config")),
+        }
+    }
+
+    async fn read_chunks(
+        &self,
+        selector: MemoryChunkSelector,
+        scope: MemoryReadScope,
+        limit: Option<i64>,
+    ) -> MemoryResult<Vec<MemoryChunk>> {
+        match self
+            .store
+            .read(MemoryStoreReadRequest::Chunks {
+                scope,
+                selector,
+                limit,
+            })
+            .await
+            .map_err(MemoryError::from)?
+        {
+            MemoryStoreReadResult::Chunks(chunks) => Ok(chunks),
+            _ => Err(Self::unexpected_store_result("read chunks")),
+        }
+    }
+
+    async fn write_chunk(
+        &self,
+        chunk: &MemoryChunk,
+        embedding: &[f32],
+    ) -> Result<(), MemoryStoreError> {
+        match self
+            .store
+            .write(MemoryStoreWriteRequest::Chunk {
+                scope: Self::chunk_write_scope(chunk),
+                chunk: chunk.clone(),
+                embedding: embedding.to_vec(),
+            })
+            .await?
+        {
+            MemoryStoreWriteResult::Stored => Ok(()),
+            _ => Err(MemoryStoreError::new(
+                crate::store::MemoryStoreErrorKind::Internal,
+                "memory store returned the wrong result for write chunk",
+            )),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn query_similar_chunks(
+        &self,
+        query_embedding: &[f32],
+        tier: MemoryTier,
+        project_id: Option<&str>,
+        session_id: Option<&str>,
+        scope: &MemoryReadScope,
+        limit: i64,
+    ) -> Result<Vec<(MemoryChunk, f64)>, MemoryStoreError> {
+        let selector = if tier == MemoryTier::Session && session_id.is_none() {
+            MemoryChunkSelector::all_sessions()
+        } else {
+            MemoryChunkSelector {
+                tier,
+                project_id: project_id.map(ToString::to_string),
+                session_id: session_id.map(ToString::to_string),
+            }
+        };
+
+        match self
+            .store
+            .query(MemoryStoreQueryRequest::SimilarChunks {
+                scope: scope.clone(),
+                selector,
+                query_embedding: query_embedding.to_vec(),
+                limit,
+            })
+            .await?
+        {
+            MemoryStoreQueryResult::SimilarChunks(results) => Ok(results),
+            _ => Err(MemoryStoreError::new(
+                crate::store::MemoryStoreErrorKind::Internal,
+                "memory store returned the wrong result for similar-chunk query",
+            )),
+        }
+    }
+
+    fn unexpected_store_result(operation: &str) -> MemoryError {
+        MemoryError::InvalidConfig(format!(
+            "memory store returned an unexpected result for {operation}"
+        ))
     }
 
     /// Store a message in memory
@@ -101,19 +277,12 @@ impl MemoryManager {
     pub async fn store_message(&self, request: StoreMessageRequest) -> MemoryResult<Vec<String>> {
         validate_memory_envelope_for_write(&request.tenant_scope, request.metadata.as_ref())?;
 
-        if self
-            .db
-            .ensure_vector_tables_healthy()
-            .await
-            .unwrap_or(false)
-        {
+        if self.repair_store().await {
             tracing::warn!("Memory vector tables were repaired before storing message chunks");
         }
 
         let config = if let Some(ref pid) = request.project_id {
-            self.db
-                .get_or_create_config_for_tenant(pid, &request.tenant_scope)
-                .await?
+            self.read_project_config(pid, &request.tenant_scope).await?
         } else {
             MemoryConfig::default()
         };
@@ -164,38 +333,32 @@ impl MemoryManager {
                 metadata: request.metadata.clone(),
             };
 
-            // Store in database (retry once after vector-table self-heal).
-            if let Err(err) = self.db.store_chunk(&chunk, &embedding).await {
+            // Store through the backend-neutral contract, retrying once after
+            // backend-owned vector/index repair.
+            if let Err(err) = self.write_chunk(&chunk, &embedding).await {
                 tracing::warn!("Failed to store memory chunk {}: {}", chunk.id, err);
-                let repaired = {
-                    let repaired_after_error =
-                        self.db.try_repair_after_error(&err).await.unwrap_or(false);
-                    repaired_after_error
-                        || self
-                            .db
-                            .ensure_vector_tables_healthy()
-                            .await
-                            .unwrap_or(false)
-                };
+                let repaired = self.repair_store().await;
                 if repaired {
                     tracing::warn!(
                         "Retrying memory chunk insert after vector table repair: {}",
                         chunk.id
                     );
-                    if let Err(retry_err) = self.db.store_chunk(&chunk, &embedding).await {
+                    if let Err(retry_err) = self.write_chunk(&chunk, &embedding).await {
                         if Self::is_malformed_database_error(&retry_err) {
                             tracing::warn!(
                                 "Memory DB still malformed after vector repair. Resetting memory tables and retrying chunk insert: {}",
                                 chunk.id
                             );
-                            self.db.reset_all_memory_tables().await?;
-                            self.db.store_chunk(&chunk, &embedding).await?;
+                            self.reset_store().await?;
+                            self.write_chunk(&chunk, &embedding)
+                                .await
+                                .map_err(MemoryError::from)?;
                         } else {
-                            return Err(retry_err);
+                            return Err(retry_err.into());
                         }
                     }
                 } else {
-                    return Err(err);
+                    return Err(err.into());
                 }
             }
             chunk_ids.push(chunk_id);
@@ -293,28 +456,16 @@ impl MemoryManager {
         // own chunks cannot be starved out of the candidate window by other
         // subjects/departments' closer matches; the access filter below remains
         // as the authoritative post-check.
-        let visible_subject = access_filter.and_then(|filter| filter.caller_subject.as_deref());
-        let visible_owner_org_unit = access_filter
-            .and_then(|filter| filter.caller_org_units.as_ref())
-            .and_then(|units| {
-                if units.len() == 1 {
-                    units.iter().next().map(String::as_str)
-                } else {
-                    None
-                }
-            });
+        let scope = Self::search_scope(tenant_scope, access_filter);
         for search_tier in tiers_to_search {
             let tier_results = match self
-                .db
-                .search_similar_for_tenant(
+                .query_similar_chunks(
                     &query_embedding,
                     search_tier,
                     project_id,
                     session_id,
-                    tenant_scope,
+                    &scope,
                     candidate_limit,
-                    visible_subject,
-                    visible_owner_org_unit,
                 )
                 .await
             {
@@ -325,28 +476,16 @@ impl MemoryManager {
                         search_tier,
                         err
                     );
-                    let repaired = {
-                        let repaired_after_error =
-                            self.db.try_repair_after_error(&err).await.unwrap_or(false);
-                        repaired_after_error
-                            || self
-                                .db
-                                .ensure_vector_tables_healthy()
-                                .await
-                                .unwrap_or(false)
-                    };
+                    let repaired = self.repair_store().await;
                     if repaired {
                         match self
-                            .db
-                            .search_similar_for_tenant(
+                            .query_similar_chunks(
                                 &query_embedding,
                                 search_tier,
                                 project_id,
                                 session_id,
-                                tenant_scope,
+                                &scope,
                                 candidate_limit,
-                                visible_subject,
-                                visible_owner_org_unit,
                             )
                             .await
                         {
@@ -389,560 +528,6 @@ impl MemoryManager {
         results.truncate(effective_limit as usize);
 
         Ok(results)
-    }
-
-    pub async fn upsert_knowledge_space(&self, space: &KnowledgeSpaceRecord) -> MemoryResult<()> {
-        validate_memory_envelope_for_write(&MemoryTenantScope::local(), space.metadata.as_ref())?;
-        self.db.upsert_knowledge_space(space).await
-    }
-
-    pub async fn upsert_knowledge_space_for_tenant(
-        &self,
-        space: &KnowledgeSpaceRecord,
-        tenant_scope: &MemoryTenantScope,
-    ) -> MemoryResult<()> {
-        validate_memory_envelope_for_write(tenant_scope, space.metadata.as_ref())?;
-        self.db
-            .upsert_knowledge_space_for_tenant(space, tenant_scope)
-            .await
-    }
-
-    pub async fn get_knowledge_space(
-        &self,
-        id: &str,
-    ) -> MemoryResult<Option<KnowledgeSpaceRecord>> {
-        self.db.get_knowledge_space(id).await
-    }
-
-    pub async fn get_knowledge_space_for_tenant(
-        &self,
-        id: &str,
-        tenant_scope: &MemoryTenantScope,
-    ) -> MemoryResult<Option<KnowledgeSpaceRecord>> {
-        self.db
-            .get_knowledge_space_for_tenant(id, tenant_scope)
-            .await
-    }
-
-    pub async fn list_knowledge_spaces(
-        &self,
-        project_id: Option<&str>,
-    ) -> MemoryResult<Vec<KnowledgeSpaceRecord>> {
-        self.db.list_knowledge_spaces(project_id).await
-    }
-
-    pub async fn list_knowledge_spaces_for_tenant(
-        &self,
-        project_id: Option<&str>,
-        tenant_scope: &MemoryTenantScope,
-    ) -> MemoryResult<Vec<KnowledgeSpaceRecord>> {
-        self.db
-            .list_knowledge_spaces_for_tenant(project_id, tenant_scope)
-            .await
-    }
-
-    pub async fn upsert_knowledge_item(&self, item: &KnowledgeItemRecord) -> MemoryResult<()> {
-        validate_memory_envelope_for_write(&MemoryTenantScope::local(), item.metadata.as_ref())?;
-        self.db.upsert_knowledge_item(item).await
-    }
-
-    pub async fn upsert_knowledge_item_for_tenant(
-        &self,
-        item: &KnowledgeItemRecord,
-        tenant_scope: &MemoryTenantScope,
-    ) -> MemoryResult<()> {
-        validate_memory_envelope_for_write(tenant_scope, item.metadata.as_ref())?;
-        self.db
-            .upsert_knowledge_item_for_tenant(item, tenant_scope)
-            .await
-    }
-
-    pub async fn get_knowledge_item(&self, id: &str) -> MemoryResult<Option<KnowledgeItemRecord>> {
-        self.db.get_knowledge_item(id).await
-    }
-
-    pub async fn get_knowledge_item_for_tenant(
-        &self,
-        id: &str,
-        tenant_scope: &MemoryTenantScope,
-    ) -> MemoryResult<Option<KnowledgeItemRecord>> {
-        self.db
-            .get_knowledge_item_for_tenant(id, tenant_scope)
-            .await
-    }
-
-    pub async fn list_knowledge_items(
-        &self,
-        space_id: &str,
-        coverage_key: Option<&str>,
-    ) -> MemoryResult<Vec<KnowledgeItemRecord>> {
-        self.db.list_knowledge_items(space_id, coverage_key).await
-    }
-
-    pub async fn list_knowledge_items_for_tenant(
-        &self,
-        space_id: &str,
-        coverage_key: Option<&str>,
-        tenant_scope: &MemoryTenantScope,
-    ) -> MemoryResult<Vec<KnowledgeItemRecord>> {
-        self.db
-            .list_knowledge_items_for_tenant(space_id, coverage_key, tenant_scope)
-            .await
-    }
-
-    pub async fn upsert_knowledge_coverage(
-        &self,
-        coverage: &KnowledgeCoverageRecord,
-    ) -> MemoryResult<()> {
-        validate_memory_envelope_for_write(
-            &MemoryTenantScope::local(),
-            coverage.metadata.as_ref(),
-        )?;
-        self.db.upsert_knowledge_coverage(coverage).await
-    }
-
-    pub async fn upsert_knowledge_coverage_for_tenant(
-        &self,
-        coverage: &KnowledgeCoverageRecord,
-        tenant_scope: &MemoryTenantScope,
-    ) -> MemoryResult<()> {
-        validate_memory_envelope_for_write(tenant_scope, coverage.metadata.as_ref())?;
-        self.db
-            .upsert_knowledge_coverage_for_tenant(coverage, tenant_scope)
-            .await
-    }
-
-    pub async fn get_knowledge_coverage(
-        &self,
-        coverage_key: &str,
-        space_id: &str,
-    ) -> MemoryResult<Option<KnowledgeCoverageRecord>> {
-        self.db.get_knowledge_coverage(coverage_key, space_id).await
-    }
-
-    pub async fn get_knowledge_coverage_for_tenant(
-        &self,
-        coverage_key: &str,
-        space_id: &str,
-        tenant_scope: &MemoryTenantScope,
-    ) -> MemoryResult<Option<KnowledgeCoverageRecord>> {
-        self.db
-            .get_knowledge_coverage_for_tenant(coverage_key, space_id, tenant_scope)
-            .await
-    }
-
-    pub async fn promote_knowledge_item(
-        &self,
-        request: &KnowledgePromotionRequest,
-    ) -> MemoryResult<Option<KnowledgePromotionResult>> {
-        self.db.promote_knowledge_item(request).await
-    }
-
-    pub async fn promote_knowledge_item_for_tenant(
-        &self,
-        request: &KnowledgePromotionRequest,
-        tenant_scope: &MemoryTenantScope,
-    ) -> MemoryResult<Option<KnowledgePromotionResult>> {
-        self.db
-            .promote_knowledge_item_for_tenant(request, tenant_scope)
-            .await
-    }
-
-    fn space_matches_ref(
-        space: &KnowledgeSpaceRecord,
-        space_ref: &tandem_orchestrator::KnowledgeSpaceRef,
-        project_id: &str,
-    ) -> bool {
-        if space.scope != space_ref.scope {
-            return false;
-        }
-        match space_ref.scope {
-            KnowledgeScope::Project | KnowledgeScope::Run => {
-                let target_project = space_ref.project_id.as_deref().unwrap_or(project_id);
-                if space.project_id.as_deref() != Some(target_project) {
-                    return false;
-                }
-            }
-            KnowledgeScope::Global => {}
-        }
-        if let Some(namespace) = space_ref.namespace.as_deref() {
-            if space.namespace.as_deref() != Some(namespace) {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn select_preflight_namespace(
-        binding: &KnowledgeBinding,
-        spaces: &[KnowledgeSpaceRecord],
-    ) -> Option<String> {
-        if let Some(namespace) = binding.namespace.clone() {
-            return Some(namespace);
-        }
-        if binding.read_spaces.len() == 1 {
-            if let Some(namespace) = binding.read_spaces[0].namespace.clone() {
-                return Some(namespace);
-            }
-        }
-        if spaces.len() == 1 {
-            return spaces[0].namespace.clone();
-        }
-        let mut unique = HashSet::new();
-        for space in spaces {
-            if let Some(namespace) = space.namespace.as_ref() {
-                unique.insert(namespace);
-            }
-        }
-        if unique.len() == 1 {
-            unique.into_iter().next().map(|value| value.to_string())
-        } else {
-            None
-        }
-    }
-
-    fn binding_uses_explicit_spaces(binding: &KnowledgeBinding) -> bool {
-        !binding.read_spaces.is_empty() || !binding.promote_spaces.is_empty()
-    }
-
-    fn namespace_matches(space_namespace: Option<&str>, binding_namespace: Option<&str>) -> bool {
-        match (space_namespace, binding_namespace) {
-            (None, None) => true,
-            (Some(space), Some(binding)) => {
-                normalize_knowledge_segment(space) == normalize_knowledge_segment(binding)
-            }
-            _ => false,
-        }
-    }
-
-    fn is_fresh_enough(
-        freshness_expires_at_ms: Option<u64>,
-        freshness_policy_ms: Option<u64>,
-        coverage_last_promoted_at_ms: Option<u64>,
-        item_created_at_ms: u64,
-        now_ms: u64,
-    ) -> bool {
-        if let Some(expires_at_ms) = freshness_expires_at_ms {
-            return expires_at_ms > now_ms;
-        }
-        let Some(policy_ms) = freshness_policy_ms else {
-            return true;
-        };
-        let basis_ms = coverage_last_promoted_at_ms.unwrap_or(item_created_at_ms);
-        now_ms.saturating_sub(basis_ms) <= policy_ms
-    }
-
-    async fn resolve_preflight_spaces(
-        &self,
-        request: &KnowledgePreflightRequest,
-        _coverage_key: &str,
-        tenant_scope: &MemoryTenantScope,
-    ) -> MemoryResult<Vec<KnowledgeSpaceRecord>> {
-        let binding = &request.binding;
-        let mut spaces = Vec::new();
-        let mut seen_space_ids = HashSet::new();
-
-        let push_space = |space: KnowledgeSpaceRecord,
-                          spaces: &mut Vec<KnowledgeSpaceRecord>,
-                          seen_space_ids: &mut HashSet<String>| {
-            if seen_space_ids.insert(space.id.clone()) {
-                spaces.push(space);
-            }
-        };
-
-        if Self::binding_uses_explicit_spaces(binding) {
-            for space_ref in binding
-                .read_spaces
-                .iter()
-                .chain(binding.promote_spaces.iter())
-            {
-                if let Some(space_id) = space_ref.space_id.as_deref() {
-                    if let Some(space) = self
-                        .get_knowledge_space_for_tenant(space_id, tenant_scope)
-                        .await?
-                    {
-                        push_space(space, &mut spaces, &mut seen_space_ids);
-                    }
-                    continue;
-                }
-
-                match space_ref.scope {
-                    KnowledgeScope::Run => {}
-                    KnowledgeScope::Project => {
-                        let candidate_project_id = space_ref
-                            .project_id
-                            .as_deref()
-                            .unwrap_or(&request.project_id);
-                        let project_spaces = self
-                            .list_knowledge_spaces_for_tenant(
-                                Some(candidate_project_id),
-                                tenant_scope,
-                            )
-                            .await?;
-                        for space in project_spaces.into_iter().filter(|space| {
-                            Self::space_matches_ref(space, space_ref, &request.project_id)
-                        }) {
-                            push_space(space, &mut spaces, &mut seen_space_ids);
-                        }
-                    }
-                    KnowledgeScope::Global => {
-                        let global_spaces = self
-                            .list_knowledge_spaces_for_tenant(None, tenant_scope)
-                            .await?;
-                        for space in global_spaces.into_iter().filter(|space| {
-                            Self::space_matches_ref(space, space_ref, &request.project_id)
-                        }) {
-                            push_space(space, &mut spaces, &mut seen_space_ids);
-                        }
-                    }
-                }
-            }
-            return Ok(spaces);
-        }
-
-        if request.project_id.trim().is_empty() {
-            return Ok(spaces);
-        }
-
-        let project_spaces = self
-            .list_knowledge_spaces_for_tenant(Some(&request.project_id), tenant_scope)
-            .await?;
-        let requested_namespace = if binding.namespace.is_some() {
-            binding.namespace.clone()
-        } else {
-            Self::select_preflight_namespace(binding, &project_spaces)
-        };
-        let Some(requested_namespace) = requested_namespace else {
-            return Ok(spaces);
-        };
-
-        for space in project_spaces.into_iter().filter(|space| {
-            space.scope == KnowledgeScope::Project
-                && Self::namespace_matches(
-                    space.namespace.as_deref(),
-                    Some(requested_namespace.as_str()),
-                )
-        }) {
-            push_space(space, &mut spaces, &mut seen_space_ids);
-        }
-        Ok(spaces)
-    }
-
-    pub async fn preflight_knowledge(
-        &self,
-        request: &KnowledgePreflightRequest,
-    ) -> MemoryResult<KnowledgePreflightResult> {
-        self.preflight_knowledge_for_tenant(request, &MemoryTenantScope::local())
-            .await
-    }
-
-    pub async fn preflight_knowledge_for_tenant(
-        &self,
-        request: &KnowledgePreflightRequest,
-        tenant_scope: &MemoryTenantScope,
-    ) -> MemoryResult<KnowledgePreflightResult> {
-        let binding = &request.binding;
-        let project_spaces = if request.project_id.trim().is_empty() {
-            Vec::new()
-        } else {
-            self.list_knowledge_spaces_for_tenant(Some(&request.project_id), tenant_scope)
-                .await?
-        };
-        let namespace = binding
-            .namespace
-            .clone()
-            .or_else(|| Self::select_preflight_namespace(binding, &project_spaces));
-        let coverage_key = build_knowledge_coverage_key(
-            &request.project_id,
-            namespace.as_deref(),
-            &request.task_family,
-            &request.subject,
-        );
-
-        if !binding.enabled || binding.reuse_mode == KnowledgeReuseMode::Disabled {
-            return Ok(KnowledgePreflightResult {
-                project_id: request.project_id.clone(),
-                namespace,
-                task_family: request.task_family.clone(),
-                subject: request.subject.clone(),
-                coverage_key,
-                decision: KnowledgeReuseDecision::Disabled,
-                reuse_reason: None,
-                skip_reason: Some("knowledge reuse is disabled for this binding".to_string()),
-                freshness_reason: None,
-                items: Vec::new(),
-            });
-        }
-
-        let spaces = self
-            .resolve_preflight_spaces(request, &coverage_key, tenant_scope)
-            .await?;
-        if spaces.is_empty() {
-            return Ok(KnowledgePreflightResult {
-                project_id: request.project_id.clone(),
-                namespace,
-                task_family: request.task_family.clone(),
-                subject: request.subject.clone(),
-                coverage_key,
-                decision: KnowledgeReuseDecision::NoPriorKnowledge,
-                reuse_reason: None,
-                skip_reason: Some("no reusable knowledge spaces were found".to_string()),
-                freshness_reason: None,
-                items: Vec::new(),
-            });
-        }
-
-        let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
-        let mut fresh_items = Vec::new();
-        let mut stale_items = Vec::new();
-        let mut freshest_reason = None;
-
-        for space in &spaces {
-            let items = self
-                .list_knowledge_items_for_tenant(&space.id, Some(&coverage_key), tenant_scope)
-                .await?;
-            let coverage = self
-                .get_knowledge_coverage_for_tenant(&coverage_key, &space.id, tenant_scope)
-                .await?;
-            for item in items {
-                if !item.status.is_active() {
-                    continue;
-                }
-                let Some(trust_level) = item.status.as_trust_level() else {
-                    continue;
-                };
-                if !trust_level.meets_floor(binding.trust_floor) {
-                    continue;
-                }
-                let freshness_expires_at_ms = item.freshness_expires_at_ms.or_else(|| {
-                    coverage
-                        .as_ref()
-                        .and_then(|coverage| coverage.freshness_expires_at_ms)
-                });
-                let pack_item = KnowledgePackItem {
-                    item_id: item.id.clone(),
-                    space_id: space.id.clone(),
-                    coverage_key: item.coverage_key.clone(),
-                    title: item.title.clone(),
-                    summary: item.summary.clone(),
-                    trust_level,
-                    status: item.status.to_string(),
-                    artifact_refs: item.artifact_refs.clone(),
-                    source_memory_ids: item.source_memory_ids.clone(),
-                    freshness_expires_at_ms,
-                };
-                if Self::is_fresh_enough(
-                    freshness_expires_at_ms,
-                    binding.freshness_ms,
-                    coverage
-                        .as_ref()
-                        .and_then(|coverage| coverage.last_promoted_at_ms),
-                    item.created_at_ms,
-                    now_ms,
-                ) {
-                    fresh_items.push(pack_item);
-                } else {
-                    freshest_reason = Some(match freshness_expires_at_ms {
-                        Some(expires_at_ms) => format!(
-                            "coverage `{}` in space `{}` expired at {}",
-                            coverage_key, space.id, expires_at_ms
-                        ),
-                        None => format!(
-                            "coverage `{}` in space `{}` lacks freshness metadata",
-                            coverage_key, space.id
-                        ),
-                    });
-                    stale_items.push(pack_item);
-                }
-            }
-        }
-
-        fresh_items.sort_by(|left, right| {
-            right
-                .trust_level
-                .rank()
-                .cmp(&left.trust_level.rank())
-                .then_with(|| {
-                    right
-                        .freshness_expires_at_ms
-                        .unwrap_or(0)
-                        .cmp(&left.freshness_expires_at_ms.unwrap_or(0))
-                })
-                .then_with(|| left.title.cmp(&right.title))
-        });
-        stale_items.sort_by(|left, right| {
-            right
-                .trust_level
-                .rank()
-                .cmp(&left.trust_level.rank())
-                .then_with(|| left.title.cmp(&right.title))
-        });
-
-        if let Some(freshest_trust_level) = fresh_items.first().map(|item| item.trust_level) {
-            let selected = fresh_items
-                .into_iter()
-                .take(MAX_KNOWLEDGE_PACK_ITEMS)
-                .collect::<Vec<_>>();
-            let decision = match freshest_trust_level {
-                KnowledgeTrustLevel::ApprovedDefault => {
-                    KnowledgeReuseDecision::ReuseApprovedDefault
-                }
-                _ => KnowledgeReuseDecision::ReusePromoted,
-            };
-            let selected_count = selected.len();
-            return Ok(KnowledgePreflightResult {
-                project_id: request.project_id.clone(),
-                namespace,
-                task_family: request.task_family.clone(),
-                subject: request.subject.clone(),
-                coverage_key,
-                decision,
-                reuse_reason: Some(format!(
-                    "reusing {} promoted knowledge item(s) from {} space(s)",
-                    selected_count,
-                    spaces.len()
-                )),
-                skip_reason: None,
-                freshness_reason: None,
-                items: selected,
-            });
-        }
-
-        if !stale_items.is_empty() {
-            let selected = stale_items
-                .into_iter()
-                .take(MAX_KNOWLEDGE_PACK_ITEMS)
-                .collect::<Vec<_>>();
-            return Ok(KnowledgePreflightResult {
-                project_id: request.project_id.clone(),
-                namespace,
-                task_family: request.task_family.clone(),
-                subject: request.subject.clone(),
-                coverage_key,
-                decision: KnowledgeReuseDecision::RefreshRequired,
-                reuse_reason: None,
-                skip_reason: Some(
-                    "prior knowledge exists but is not fresh enough to reuse".to_string(),
-                ),
-                freshness_reason: freshest_reason.or_else(|| {
-                    Some("matching knowledge exists but freshness policy rejected it".to_string())
-                }),
-                items: selected,
-            });
-        }
-
-        Ok(KnowledgePreflightResult {
-            project_id: request.project_id.clone(),
-            namespace,
-            task_family: request.task_family.clone(),
-            subject: request.subject.clone(),
-            coverage_key,
-            decision: KnowledgeReuseDecision::NoPriorKnowledge,
-            reuse_reason: None,
-            skip_reason: Some("no active promoted knowledge matched this coverage key".to_string()),
-            freshness_reason: None,
-            items: Vec::new(),
-        })
     }
 
     /// Retrieve context for a message
@@ -1033,9 +618,7 @@ impl MemoryManager {
         access_filter: Option<&crate::types::MemoryAccessFilter>,
     ) -> MemoryResult<(MemoryContext, MemoryRetrievalMeta)> {
         let config = if let Some(pid) = project_id {
-            self.db
-                .get_or_create_config_for_tenant(pid, tenant_scope)
-                .await?
+            self.read_project_config(pid, tenant_scope).await?
         } else {
             MemoryConfig::default()
         };
@@ -1044,12 +627,15 @@ impl MemoryManager {
 
         // Get recent session chunks
         let current_session = if let Some(sid) = session_id {
-            self.db
-                .get_session_chunks_for_tenant(sid, tenant_scope)
-                .await?
-                .into_iter()
-                .filter(|chunk| memory_chunk_visible_to_access_filter(chunk, access_filter))
-                .collect()
+            self.read_chunks(
+                MemoryChunkSelector::session(sid),
+                Self::search_scope(tenant_scope, access_filter),
+                None,
+            )
+            .await?
+            .into_iter()
+            .filter(|chunk| memory_chunk_visible_to_access_filter(chunk, access_filter))
+            .collect()
         } else {
             Vec::new()
         };
@@ -1186,23 +772,28 @@ impl MemoryManager {
         session_id: &str,
         tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<u64> {
-        let count = self
-            .db
-            .clear_session_memory_for_tenant(session_id, tenant_scope)
-            .await?;
+        let count = match self
+            .store
+            .mutate(MemoryStoreMutationRequest::ClearSession {
+                scope: Self::read_scope(tenant_scope),
+                session_id: session_id.to_string(),
+            })
+            .await
+            .map_err(MemoryError::from)?
+        {
+            MemoryStoreMutationResult::Affected(count) => count,
+            _ => return Err(Self::unexpected_store_result("clear session")),
+        };
 
-        // Log cleanup
-        self.db
-            .log_cleanup_for_tenant(
-                "manual",
-                MemoryTier::Session,
-                None,
-                Some(session_id),
-                count as i64,
-                0,
-                tenant_scope,
-            )
-            .await?;
+        self.write_cleanup_log(
+            "manual",
+            MemoryTier::Session,
+            None,
+            Some(session_id),
+            count as i64,
+            tenant_scope,
+        )
+        .await?;
 
         Ok(count)
     }
@@ -1218,42 +809,58 @@ impl MemoryManager {
         project_id: &str,
         tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<u64> {
-        let count = self
-            .db
-            .clear_project_memory_for_tenant(project_id, tenant_scope)
-            .await?;
+        let count = match self
+            .store
+            .mutate(MemoryStoreMutationRequest::ClearProject {
+                scope: Self::read_scope(tenant_scope),
+                project_id: project_id.to_string(),
+            })
+            .await
+            .map_err(MemoryError::from)?
+        {
+            MemoryStoreMutationResult::Affected(count) => count,
+            _ => return Err(Self::unexpected_store_result("clear project")),
+        };
 
-        // Log cleanup
-        self.db
-            .log_cleanup_for_tenant(
-                "manual",
-                MemoryTier::Project,
-                Some(project_id),
-                None,
-                count as i64,
-                0,
-                tenant_scope,
-            )
-            .await?;
+        self.write_cleanup_log(
+            "manual",
+            MemoryTier::Project,
+            Some(project_id),
+            None,
+            count as i64,
+            tenant_scope,
+        )
+        .await?;
 
         Ok(count)
     }
 
     /// Get memory statistics
     pub async fn get_stats(&self) -> MemoryResult<MemoryStats> {
-        self.db.get_stats().await
+        self.get_stats_for_tenant(&MemoryTenantScope::local()).await
     }
 
     pub async fn get_stats_for_tenant(
         &self,
         tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<MemoryStats> {
-        self.db.get_stats_for_tenant(tenant_scope).await
+        match self
+            .store
+            .read(MemoryStoreReadRequest::Stats {
+                scope: Self::read_scope(tenant_scope),
+            })
+            .await
+            .map_err(MemoryError::from)?
+        {
+            MemoryStoreReadResult::Stats(stats) => Ok(stats),
+            _ => Err(Self::unexpected_store_result("read memory stats")),
+        }
     }
 
     /// Get memory configuration for a project
     pub async fn get_config(&self, project_id: &str) -> MemoryResult<MemoryConfig> {
-        self.db.get_or_create_config(project_id).await
+        self.get_config_for_tenant(project_id, &MemoryTenantScope::local())
+            .await
     }
 
     pub async fn get_config_for_tenant(
@@ -1261,14 +868,13 @@ impl MemoryManager {
         project_id: &str,
         tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<MemoryConfig> {
-        self.db
-            .get_or_create_config_for_tenant(project_id, tenant_scope)
-            .await
+        self.read_project_config(project_id, tenant_scope).await
     }
 
     /// Update memory configuration for a project
     pub async fn set_config(&self, project_id: &str, config: &MemoryConfig) -> MemoryResult<()> {
-        self.db.update_config(project_id, config).await
+        self.set_config_for_tenant(project_id, config, &MemoryTenantScope::local())
+            .await
     }
 
     pub async fn set_config_for_tenant(
@@ -1277,9 +883,19 @@ impl MemoryManager {
         config: &MemoryConfig,
         tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<()> {
-        self.db
-            .update_config_for_tenant(project_id, config, tenant_scope)
+        match self
+            .store
+            .write(MemoryStoreWriteRequest::ProjectConfig {
+                scope: MemoryWriteScope::tenant(tenant_scope.clone()),
+                project_id: project_id.to_string(),
+                config: config.clone(),
+            })
             .await
+            .map_err(MemoryError::from)?
+        {
+            MemoryStoreWriteResult::Stored => Ok(()),
+            _ => Err(Self::unexpected_store_result("write project config")),
+        }
     }
 
     pub async fn resolve_uri(
@@ -1287,7 +903,18 @@ impl MemoryManager {
         uri: &str,
         tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<Option<MemoryNode>> {
-        self.db.get_node_by_uri(uri, tenant_scope).await
+        match self
+            .store
+            .read(MemoryStoreReadRequest::ContextNode {
+                scope: Self::read_scope(tenant_scope),
+                uri: uri.to_string(),
+            })
+            .await
+            .map_err(MemoryError::from)?
+        {
+            MemoryStoreReadResult::ContextNode(node) => Ok(node),
+            _ => Err(Self::unexpected_store_result("resolve context URI")),
+        }
     }
 
     pub async fn list_directory(
@@ -1295,7 +922,18 @@ impl MemoryManager {
         uri: &str,
         tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<DirectoryListing> {
-        let nodes = self.db.list_directory(uri, tenant_scope).await?;
+        let nodes = match self
+            .store
+            .query(MemoryStoreQueryRequest::ContextNodes {
+                scope: Self::read_scope(tenant_scope),
+                parent_uri: uri.to_string(),
+            })
+            .await
+            .map_err(MemoryError::from)?
+        {
+            MemoryStoreQueryResult::ContextNodes(nodes) => nodes,
+            _ => return Err(Self::unexpected_store_result("list context directory")),
+        };
         let directories: Vec<MemoryNode> = nodes
             .iter()
             .filter(|n| n.node_type == NodeType::Directory)
@@ -1322,7 +960,19 @@ impl MemoryManager {
         max_depth: usize,
         tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<Vec<TreeNode>> {
-        self.db.get_children_tree(uri, max_depth, tenant_scope).await
+        match self
+            .store
+            .query(MemoryStoreQueryRequest::ContextTree {
+                scope: Self::read_scope(tenant_scope),
+                parent_uri: uri.to_string(),
+                max_depth,
+            })
+            .await
+            .map_err(MemoryError::from)?
+        {
+            MemoryStoreQueryResult::ContextTree(tree) => Ok(tree),
+            _ => Err(Self::unexpected_store_result("read context tree")),
+        }
     }
 
     pub async fn create_context_node(
@@ -1335,15 +985,21 @@ impl MemoryManager {
         let parsed_uri =
             ContextUri::parse(uri).map_err(|e| MemoryError::InvalidConfig(e.message))?;
         let parent_uri = parsed_uri.parent().map(|p| p.to_string());
-        self.db
-            .create_node(
-                uri,
-                parent_uri.as_deref(),
+        match self
+            .store
+            .write(MemoryStoreWriteRequest::ContextNode {
+                scope: MemoryWriteScope::tenant(tenant_scope.clone()),
+                uri: uri.to_string(),
+                parent_uri,
                 node_type,
-                metadata.as_ref(),
-                tenant_scope,
-            )
+                metadata,
+            })
             .await
+            .map_err(MemoryError::from)?
+        {
+            MemoryStoreWriteResult::ContextNodeCreated(id) => Ok(id),
+            _ => Err(Self::unexpected_store_result("create context node")),
+        }
     }
 
     pub async fn get_context_layer(
@@ -1352,7 +1008,19 @@ impl MemoryManager {
         layer_type: LayerType,
         tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<Option<MemoryLayer>> {
-        self.db.get_layer(node_id, layer_type, tenant_scope).await
+        match self
+            .store
+            .read(MemoryStoreReadRequest::ContextLayer {
+                scope: Self::read_scope(tenant_scope),
+                node_id: node_id.to_string(),
+                layer_type,
+            })
+            .await
+            .map_err(MemoryError::from)?
+        {
+            MemoryStoreReadResult::ContextLayer(layer) => Ok(layer),
+            _ => Err(Self::unexpected_store_result("read context layer")),
+        }
     }
 
     pub async fn store_content_with_layers(
@@ -1374,22 +1042,20 @@ impl MemoryManager {
             NodeType::Directory
         };
 
-        let parent_uri = parsed_uri.parent().map(|p| p.to_string());
         let node_id = self
-            .db
-            .create_node(
-                uri,
-                parent_uri.as_deref(),
-                node_type,
-                metadata.as_ref(),
-                tenant_scope,
-            )
+            .create_context_node(uri, node_type, metadata, tenant_scope)
             .await?;
 
         let token_count = self.tokenizer.count_tokens(content) as i64;
-        self.db
-            .create_layer(&node_id, LayerType::L2, content, token_count, None, tenant_scope)
-            .await?;
+        self.write_context_layer(
+            &node_id,
+            LayerType::L2,
+            content,
+            token_count,
+            None,
+            tenant_scope,
+        )
+        .await?;
 
         Ok(node_id)
     }
@@ -1411,7 +1077,9 @@ impl MemoryManager {
         tenant_scope: &MemoryTenantScope,
         provider_egress: Option<&MemoryProviderEgressContext>,
     ) -> MemoryResult<()> {
-        let l2_layer = self.db.get_layer(node_id, LayerType::L2, tenant_scope).await?;
+        let l2_layer = self
+            .get_context_layer(node_id, LayerType::L2, tenant_scope)
+            .await?;
         let l2_content = match l2_layer {
             Some(layer) => layer.content,
             None => return Ok(()),
@@ -1428,25 +1096,35 @@ impl MemoryManager {
         let l1_tokens = self.tokenizer.count_tokens(&l1_content) as i64;
 
         if self
-            .db
-            .get_layer(node_id, LayerType::L0, tenant_scope)
+            .get_context_layer(node_id, LayerType::L0, tenant_scope)
             .await?
             .is_none()
         {
-            self.db
-                .create_layer(node_id, LayerType::L0, &l0_content, l0_tokens, None, tenant_scope)
-                .await?;
+            self.write_context_layer(
+                node_id,
+                LayerType::L0,
+                &l0_content,
+                l0_tokens,
+                None,
+                tenant_scope,
+            )
+            .await?;
         }
 
         if self
-            .db
-            .get_layer(node_id, LayerType::L1, tenant_scope)
+            .get_context_layer(node_id, LayerType::L1, tenant_scope)
             .await?
             .is_none()
         {
-            self.db
-                .create_layer(node_id, LayerType::L1, &l1_content, l1_tokens, None, tenant_scope)
-                .await?;
+            self.write_context_layer(
+                node_id,
+                LayerType::L1,
+                &l1_content,
+                l1_tokens,
+                None,
+                tenant_scope,
+            )
+            .await?;
         }
 
         Ok(())
@@ -1458,7 +1136,9 @@ impl MemoryManager {
         layer_type: LayerType,
         tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<Option<String>> {
-        let layer = self.db.get_layer(node_id, layer_type, tenant_scope).await?;
+        let layer = self
+            .get_context_layer(node_id, layer_type, tenant_scope)
+            .await?;
         Ok(layer.map(|l| l.content))
     }
 
@@ -1499,49 +1179,54 @@ impl MemoryManager {
     ) -> MemoryResult<u64> {
         let mut total_cleaned = 0u64;
 
-        if let Some(pid) = project_id {
-            // Get config for this project
-            let config = self
-                .db
-                .get_or_create_config_for_tenant(pid, tenant_scope)
-                .await?;
-
-            if config.auto_cleanup {
-                // Clean up old session memory
-                let cleaned = self
-                    .db
-                    .cleanup_old_sessions_for_tenant(config.session_retention_days, tenant_scope)
-                    .await?;
-                total_cleaned += cleaned;
-
-                if cleaned > 0 {
-                    self.db
-                        .log_cleanup_for_tenant(
-                            "auto",
-                            MemoryTier::Session,
-                            Some(pid),
-                            None,
-                            cleaned as i64,
-                            0,
-                            tenant_scope,
-                        )
-                        .await?;
-                }
+        let retention_days = if let Some(pid) = project_id {
+            let config = self.read_project_config(pid, tenant_scope).await?;
+            if !config.auto_cleanup {
+                return Ok(0);
             }
+            config.session_retention_days
         } else {
-            // Clean up all projects with auto_cleanup enabled
-            // This would require listing all projects, for now just clean session memory
-            // with a default retention period
-            let cleaned = self
-                .db
-                .cleanup_old_sessions_for_tenant(30, tenant_scope)
-                .await?;
-            total_cleaned += cleaned;
-        }
+            30
+        };
+        let retention_days = u32::try_from(retention_days).map_err(|_| {
+            MemoryError::InvalidConfig("session_retention_days must fit in u32".to_string())
+        })?;
 
-        // Vacuum if significant cleanup occurred
+        let cleaned = match self
+            .store
+            .mutate(MemoryStoreMutationRequest::RunHygiene {
+                scope: Self::read_scope(tenant_scope),
+                retention_days,
+            })
+            .await
+            .map_err(MemoryError::from)?
+        {
+            MemoryStoreMutationResult::Affected(cleaned) => cleaned,
+            _ => return Err(Self::unexpected_store_result("run memory hygiene")),
+        };
+        total_cleaned += cleaned;
+
+        if cleaned > 0 {
+            self.write_cleanup_log(
+                "auto",
+                MemoryTier::Session,
+                project_id,
+                None,
+                cleaned as i64,
+                tenant_scope,
+            )
+            .await?;
+        }
         if total_cleaned > 100 {
-            self.db.vacuum().await?;
+            match self
+                .store
+                .mutate(MemoryStoreMutationRequest::Vacuum)
+                .await
+                .map_err(MemoryError::from)?
+            {
+                MemoryStoreMutationResult::Completed => {}
+                _ => return Err(Self::unexpected_store_result("vacuum memory store")),
+            }
         }
 
         Ok(total_cleaned)
@@ -1554,28 +1239,35 @@ impl MemoryManager {
         tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<()> {
         if let Some(pid) = project_id {
-            let config = self
-                .db
-                .get_or_create_config_for_tenant(pid, tenant_scope)
-                .await?;
+            let config = self.read_project_config(pid, tenant_scope).await?;
 
-            // Evict oldest project chunks (and their vector rows) over the cap
-            let evicted = self
-                .db
-                .enforce_project_chunk_cap_for_tenant(pid, config.max_chunks, tenant_scope)
-                .await?;
+            let evicted = match self
+                .store
+                .mutate(MemoryStoreMutationRequest::EnforceProjectChunkCap {
+                    scope: Self::read_scope(tenant_scope),
+                    project_id: pid.clone(),
+                    max_chunks: config.max_chunks,
+                })
+                .await
+                .map_err(MemoryError::from)?
+            {
+                MemoryStoreMutationResult::Affected(evicted) => evicted,
+                _ => {
+                    return Err(Self::unexpected_store_result(
+                        "enforce project memory chunk cap",
+                    ))
+                }
+            };
             if evicted > 0 {
-                self.db
-                    .log_cleanup_for_tenant(
-                        "auto",
-                        MemoryTier::Project,
-                        Some(pid),
-                        None,
-                        evicted as i64,
-                        0,
-                        tenant_scope,
-                    )
-                    .await?;
+                self.write_cleanup_log(
+                    "auto",
+                    MemoryTier::Project,
+                    Some(pid),
+                    None,
+                    evicted as i64,
+                    tenant_scope,
+                )
+                .await?;
             }
         }
 
@@ -1584,7 +1276,18 @@ impl MemoryManager {
 
     /// Get cleanup log entries (newest first)
     pub async fn get_cleanup_log(&self, limit: i64) -> MemoryResult<Vec<CleanupLogEntry>> {
-        self.db.get_cleanup_log(limit).await
+        match self
+            .store
+            .query(MemoryStoreQueryRequest::CleanupLog {
+                scope: Self::read_scope(&MemoryTenantScope::local()),
+                limit,
+            })
+            .await
+            .map_err(MemoryError::from)?
+        {
+            MemoryStoreQueryResult::CleanupLog(entries) => Ok(entries),
+            _ => Err(Self::unexpected_store_result("read cleanup log")),
+        }
     }
 
     /// Count tokens in text
@@ -1616,14 +1319,8 @@ impl MemoryManager {
         providers: &ProviderRegistry,
         config: &MemoryConsolidationConfig,
     ) -> MemoryResult<Option<String>> {
-        self.consolidate_session_with_egress(
-            session_id,
-            project_id,
-            providers,
-            config,
-            None,
-        )
-        .await
+        self.consolidate_session_with_egress(session_id, project_id, providers, config, None)
+            .await
     }
 
     pub async fn consolidate_session_with_egress(
@@ -1638,7 +1335,13 @@ impl MemoryManager {
             return Ok(None);
         }
 
-        let chunks = self.db.get_session_chunks(session_id).await?;
+        let chunks = self
+            .read_chunks(
+                MemoryChunkSelector::session(session_id),
+                Self::read_scope(&MemoryTenantScope::local()),
+                None,
+            )
+            .await?;
         if chunks.is_empty() {
             return Ok(None);
         }
@@ -1718,10 +1421,23 @@ impl MemoryManager {
             metadata: None,
         };
 
-        self.db.store_chunk(&chunk, &embedding).await?;
+        self.write_chunk(&chunk, &embedding)
+            .await
+            .map_err(MemoryError::from)?;
 
         // Clear original chunks now that they are consolidated
-        self.db.clear_session_memory(session_id).await?;
+        match self
+            .store
+            .mutate(MemoryStoreMutationRequest::ClearSession {
+                scope: Self::read_scope(&MemoryTenantScope::local()),
+                session_id: session_id.to_string(),
+            })
+            .await
+            .map_err(MemoryError::from)?
+        {
+            MemoryStoreMutationResult::Affected(_) => {}
+            _ => return Err(Self::unexpected_store_result("clear consolidated session")),
+        }
 
         tracing::info!(
             "Session {session_id} consolidated into summary chunk. Original chunks cleared."
