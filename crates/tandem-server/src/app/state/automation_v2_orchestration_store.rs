@@ -165,4 +165,41 @@ mod tests {
             .await
             .contains_key("run-fixture-versioned"));
     }
+
+    #[tokio::test]
+    async fn initial_runtime_migration_quarantines_a_corrupt_legacy_checkpoint() {
+        let root = std::env::temp_dir().join(format!(
+            "tandem-stateful-runtime-corrupt-legacy-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let runs_path = root.join("automation_v2_runs.json");
+        let mut fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "tests/fixtures/automation_v2_runs_v1_envelope.json"
+        ))
+        .unwrap();
+        fixture["runs"]["run-fixture-versioned"]["checkpoint"] =
+            serde_json::json!("corrupted checkpoint payload");
+        std::fs::write(&runs_path, serde_json::to_string_pretty(&fixture).unwrap()).unwrap();
+
+        let mut state = crate::app::state::tests::test_state_with_path(root.join("shared.json"));
+        state.automation_v2_runs_path = runs_path;
+        state.load_automation_v2_runs().await.unwrap();
+        let run = state
+            .automation_v2_runs
+            .read()
+            .await
+            .get("run-fixture-versioned")
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            run.status,
+            crate::automation_v2::types::AutomationRunStatus::Blocked
+        );
+        assert_eq!(run.checkpoint.blocked_nodes, vec!["checkpoint"]);
+        assert!(run
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("checkpoint could not be parsed")));
+    }
 }

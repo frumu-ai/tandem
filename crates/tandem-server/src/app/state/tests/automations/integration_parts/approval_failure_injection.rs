@@ -460,7 +460,7 @@ fn approval_failure_injection_stale_gate_decision_is_rejected() {
 }
 
 #[test]
-fn approval_failure_injection_corrupt_checkpoint_loads_as_blocked_diagnostic() {
+fn approval_failure_injection_corrupt_legacy_checkpoint_is_ignored_after_sqlite_cutover() {
     run_restart_resume_test_with_large_stack(|| async {
         let workspace_root = restart_test_workspace("tandem-approval-corrupt-checkpoint");
         let state = ready_test_state().await;
@@ -481,25 +481,17 @@ fn approval_failure_injection_corrupt_checkpoint_loads_as_blocked_diagnostic() {
 
         let (reloaded, recovered) = reload_automation_state_after_restart(&state).await;
         assert_eq!(recovered, 0);
-        let quarantined = reloaded
+        let loaded = reloaded
             .get_automation_v2_run(&run.run_id)
             .await
-            .expect("quarantined run");
-        assert_eq!(quarantined.status, AutomationRunStatus::Blocked);
-        assert_eq!(quarantined.checkpoint.blocked_nodes, vec!["checkpoint"]);
-        assert!(quarantined
-            .detail
-            .as_deref()
-            .is_some_and(|detail| detail.contains("checkpoint could not be parsed")));
-        assert!(quarantined
-            .checkpoint
-            .last_failure
-            .as_ref()
-            .is_some_and(|failure| failure.node_id == "checkpoint"));
+            .expect("run from SQLite");
+        assert_eq!(loaded.status, AutomationRunStatus::Queued);
+        assert!(loaded.checkpoint.blocked_nodes.is_empty());
+        assert!(loaded.detail.is_none());
         assert!(reloaded
             .claim_specific_automation_v2_run(&run.run_id)
             .await
-            .is_none());
+            .is_some());
         let _ = std::fs::remove_dir_all(&workspace_root);
     });
 }
