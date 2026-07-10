@@ -3,6 +3,7 @@ pub mod enterprise_scope;
 pub mod execution_profile;
 pub mod governance;
 pub mod mcp_policy;
+pub mod orchestration;
 pub mod retry_policy;
 pub mod routine;
 pub mod run_mutability;
@@ -30,6 +31,7 @@ pub use execution_profile::{
 };
 pub use governance::*;
 pub use mcp_policy::{AutomationAgentMcpPolicy, AutomationMcpConnectionGrant, AutomationMcpRunAs};
+pub use orchestration::*;
 pub use retry_policy::*;
 pub use routine::RoutineMisfirePolicy;
 pub use scheduler::{QueueReason, SchedulerMetadata};

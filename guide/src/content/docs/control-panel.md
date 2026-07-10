@@ -201,15 +201,15 @@ For a copy-paste, proof-style runbook for this exact path, see [Automation Examp
 
 Saved workflows auto-migrate to `workflow_structure_version = 2` while preserving automation IDs and original research node IDs used by downstream nodes.
 
-## Edit Workflow Automation Dialog (Handoffs Tab)
+## Edit Workflow Automation Dialog (Connected Agents)
 
-The **Edit workflow automation** dialog (Automations page → three-dot menu → Edit) now includes a **Handoffs** tab that exposes three connected-agent fields on V2 automations:
+The **Edit workflow automation** dialog (Automations page → three-dot menu → Edit) includes a **Connected agents** section for three V2 automation fields:
 
 ### Handoff config
 
 Controls the directory layout for staged handoff artifacts, relative to the automation's workspace root.
 
-- **Auto-approve toggle** — when on (default), artifacts move directly to the approved directory; when off, they wait in the inbox for a manual review step
+- **Auto-approve toggle** — when on (default), deposits go directly to the approved directory; when off, they remain in the inbox until an external process or operator moves the envelope
 - **Inbox directory** — where agents write new output artifacts (default: `shared/handoffs/inbox`)
 - **Approved directory** — where promoted artifacts land (default: `shared/handoffs/approved`)
 - **Archived directory** — where old artifacts are retired (default: `shared/handoffs/archived`)
@@ -229,9 +229,9 @@ Path entries use one path per line, prefix matching relative to workspace root.
 
 ### Watch conditions
 
-Array of filesystem conditions that the automation evaluator checks. Each condition has a `path` and a `condition` type (`any_file_present`, `modified_since_last_run`, `empty`).
+The editor currently supports only `HandoffAvailable`. You can optionally filter it by source automation and artifact type. It watches approved handoff envelopes; it is not a general filesystem-condition editor.
 
-See [Connected-Agent Handoffs](./connected-agent-handoffs/) for the full reference including API shapes, HTTP examples, and WorkflowEditDraft type annotations.
+See [Connected-Agent Handoffs](./connected-agent-handoffs/) for the supported handoff envelope, `HandoffAvailable` filters, scope policy, and current reliability limits.
 
 ## Optimize Tab (AutoResearch)
 

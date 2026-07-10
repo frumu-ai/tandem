@@ -272,6 +272,8 @@ pub struct AppState {
     pub automation_webhook_secret_material_path: PathBuf,
     pub(crate) idempotency_keys_path: PathBuf,
     pub runtime_events_path: PathBuf,
+    pub(crate) stateful_engine_lock:
+        Arc<std::sync::Mutex<Option<crate::stateful_runtime::StatefulEngineLock>>>,
     pub optimization_campaigns_path: PathBuf,
     pub optimization_experiments_path: PathBuf,
     pub incident_monitor_config_path: PathBuf,

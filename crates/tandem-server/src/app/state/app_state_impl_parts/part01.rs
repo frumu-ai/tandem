@@ -164,7 +164,10 @@ async fn validate_incident_monitor_monitored_projects(
             crate::http::routines_automations::validate_model_policy(model_policy)
                 .map_err(anyhow::Error::msg)?;
         }
-        validate_incident_monitor_source_binding_destinations(project, &configured_destination_ids)?;
+        validate_incident_monitor_source_binding_destinations(
+            project,
+            &configured_destination_ids,
+        )?;
 
         let mut source_ids = std::collections::HashSet::new();
         for source in &mut project.log_sources {
@@ -278,9 +281,9 @@ impl AppState {
             context_packs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             optimization_campaigns: Arc::new(RwLock::new(std::collections::HashMap::new())),
             optimization_experiments: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            incident_monitor_config: Arc::new(
-                RwLock::new(config::env::resolve_incident_monitor_env_config()),
-            ),
+            incident_monitor_config: Arc::new(RwLock::new(
+                config::env::resolve_incident_monitor_env_config(),
+            )),
             incident_monitor_drafts: Arc::new(RwLock::new(std::collections::HashMap::new())),
             incident_monitor_incidents: Arc::new(RwLock::new(std::collections::HashMap::new())),
             incident_monitor_posts: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -288,19 +291,25 @@ impl AppState {
             incident_monitor_reassessment_pending: Default::default(),
             incident_monitor_log_watcher_state_path:
                 config::paths::resolve_incident_monitor_log_watcher_state_path(),
-            incident_monitor_log_source_states: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            incident_monitor_log_source_states: Arc::new(RwLock::new(
+                std::collections::HashMap::new(),
+            )),
             incident_monitor_log_watcher_status: Arc::new(RwLock::new(
                 IncidentMonitorLogWatcherStatus::default(),
             )),
-            incident_monitor_log_evidence_dir: config::paths::resolve_incident_monitor_log_evidence_dir(),
+            incident_monitor_log_evidence_dir:
+                config::paths::resolve_incident_monitor_log_evidence_dir(),
             incident_monitor_intake_keys: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            incident_monitor_intake_keys_path: config::paths::resolve_incident_monitor_intake_keys_path(),
+            incident_monitor_intake_keys_path:
+                config::paths::resolve_incident_monitor_intake_keys_path(),
             external_actions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             policy_decisions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             goal_capability_learning_store: Arc::new(
                 crate::goal_capability_learning::GoalCapabilityLearningDecisionStore::new(),
             ),
-            incident_monitor_runtime_status: Arc::new(RwLock::new(IncidentMonitorRuntimeStatus::default())),
+            incident_monitor_runtime_status: Arc::new(RwLock::new(
+                IncidentMonitorRuntimeStatus::default(),
+            )),
             oauth: crate::app::state::OAuthState::new(),
             workflows: Arc::new(RwLock::new(WorkflowRegistry::default())),
             workflow_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -322,19 +331,21 @@ impl AppState {
             automation_v2_runs_path: config::paths::resolve_automation_v2_runs_path(),
             automation_v2_runs_archive_path: config::paths::resolve_automation_v2_runs_archive_path(
             ),
-            automation_webhook_triggers_path: config::paths::resolve_automation_webhook_triggers_path(
-            ),
+            automation_webhook_triggers_path:
+                config::paths::resolve_automation_webhook_triggers_path(),
             automation_webhook_deliveries_path:
                 config::paths::resolve_automation_webhook_deliveries_path(),
             automation_webhook_secret_material_path:
                 config::paths::resolve_automation_webhook_secret_material_path(),
             idempotency_keys_path: config::paths::resolve_idempotency_keys_path(),
             runtime_events_path: config::paths::resolve_runtime_events_path(),
+            stateful_engine_lock: Arc::new(std::sync::Mutex::new(None)),
             optimization_campaigns_path: config::paths::resolve_optimization_campaigns_path(),
             optimization_experiments_path: config::paths::resolve_optimization_experiments_path(),
             incident_monitor_config_path: config::paths::resolve_incident_monitor_config_path(),
             incident_monitor_drafts_path: config::paths::resolve_incident_monitor_drafts_path(),
-            incident_monitor_incidents_path: config::paths::resolve_incident_monitor_incidents_path(),
+            incident_monitor_incidents_path: config::paths::resolve_incident_monitor_incidents_path(
+            ),
             incident_monitor_posts_path: config::paths::resolve_incident_monitor_posts_path(),
             external_actions_path: config::paths::resolve_external_actions_path(),
             policy_decisions_path: config::paths::resolve_policy_decisions_path(),
@@ -480,6 +491,22 @@ impl AppState {
     }
 
     pub async fn mark_ready(&self, runtime: RuntimeState) -> anyhow::Result<()> {
+        {
+            let mut guard = self
+                .stateful_engine_lock
+                .lock()
+                .map_err(|_| anyhow::anyhow!("stateful engine lock guard was poisoned"))?;
+            if guard.is_none() {
+                let paths =
+                    crate::stateful_runtime::OrchestrationStorePaths::from_automation_runs_path(
+                        &self.automation_v2_runs_path,
+                    );
+                let engine_lock =
+                    crate::stateful_runtime::StatefulEngineLock::acquire(&paths.engine_lock_path)?;
+                let _store = crate::stateful_runtime::OrchestrationStateStore::open(paths)?;
+                *guard = Some(engine_lock);
+            }
+        }
         runtime
             .engine_loop
             .set_tool_dispatch_ledger(Arc::new(AppStateToolDispatchLedger {
@@ -639,12 +666,13 @@ impl AppState {
 
     pub async fn load_enterprise_cross_tenant_grants(&self) -> anyhow::Result<()> {
         check_file_permissions(&self.enterprise.cross_tenant_grants_path);
-        let Some(registry) = crate::governance_store::for_state(self)
-            .read_json::<std::collections::HashMap<
-                String,
-                tandem_enterprise_contract::CrossTenantGrantRecord,
-            >>(crate::governance_store::GovernanceStoreFile::CrossTenantGrants)
-            .await?
+        let Some(registry) =
+            crate::governance_store::for_state(self)
+                .read_json::<std::collections::HashMap<
+                    String,
+                    tandem_enterprise_contract::CrossTenantGrantRecord,
+                >>(crate::governance_store::GovernanceStoreFile::CrossTenantGrants)
+                .await?
         else {
             return Ok(());
         };
@@ -1658,6 +1686,15 @@ impl AppState {
 
     pub async fn load_automation_v2_runs(&self) -> anyhow::Result<()> {
         let mut merged = std::collections::HashMap::<String, AutomationV2RunRecord>::new();
+        let automation_runs_path = self.automation_v2_runs_path.clone();
+        let database_runs = tokio::task::spawn_blocking(move || {
+            crate::stateful_runtime::OrchestrationStateStore::from_automation_runs_path(
+                &automation_runs_path,
+            )?
+            .load_automation_runs()
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("automation run database load task failed: {error}"))??;
         let mut loaded_from_alternate = false;
         let mut canonical_loaded = false;
         let mut runs_store_upgraded = false;
@@ -1715,6 +1752,15 @@ impl AppState {
                 path_counts.push((path.clone(), usize::from(path.exists())));
             }
         }
+        let database_run_count = database_runs.len();
+        for run in database_runs {
+            match merged.get(&run.run_id) {
+                Some(existing) if existing.updated_at_ms > run.updated_at_ms => {}
+                _ => {
+                    merged.insert(run.run_id.clone(), run);
+                }
+            }
+        }
         let recovered_context_runs =
             automation_v2_context_recovery::merge_recovered_automation_v2_runs(self, &mut merged)
                 .await;
@@ -1730,12 +1776,27 @@ impl AppState {
         tracing::info!(
             active_path = active_runs_path,
             canonical_loaded,
+            database_run_count,
             path_counts = ?run_path_count_summary,
             merged_count = merged.len(),
             recovered_context_runs,
             dropped_nonterminal_recovered_context_runs,
             "loaded automation v2 runs"
         );
+        let database_snapshot = merged.values().cloned().collect::<Vec<_>>();
+        let automation_runs_path = self.automation_v2_runs_path.clone();
+        let imported_at_ms = now_ms();
+        tokio::task::spawn_blocking(move || {
+            let store =
+                crate::stateful_runtime::OrchestrationStateStore::from_automation_runs_path(
+                    &automation_runs_path,
+                )?;
+            store.import_legacy_runs(&automation_runs_path, &database_snapshot, imported_at_ms)
+        })
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!("automation run database import task failed: {error}")
+        })??;
         *self.automation_v2_runs.write().await = merged;
         let recovered = self
             .recover_automation_definitions_from_run_snapshots()
@@ -1772,6 +1833,18 @@ impl AppState {
             let automations = self.automations_v2.read().await;
             (runs.clone(), automations.clone())
         };
+        let database_snapshot = runs_snapshot.values().cloned().collect::<Vec<_>>();
+        let automation_runs_path = self.automation_v2_runs_path.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::stateful_runtime::OrchestrationStateStore::from_automation_runs_path(
+                &automation_runs_path,
+            )?
+            .upsert_automation_runs(database_snapshot.iter())
+        })
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!("automation run database persist task failed: {error}")
+        })??;
         for run in runs_snapshot.values() {
             write_automation_v2_run_history_shard(&self.automation_v2_runs_path, run).await?;
         }

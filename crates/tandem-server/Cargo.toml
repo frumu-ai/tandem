@@ -28,12 +28,14 @@ cron = "0.12"
 dirs = "6"
 ed25519-dalek = "2"
 flate2 = "1"
+fs2 = "0.4"
 hmac = "0.12"
 futures = "0.3"
 ignore = "0.4"
 image = "0.25"
 regex = "1"
 reqwest = { version = "0.12", default-features = true, features = ["json"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
