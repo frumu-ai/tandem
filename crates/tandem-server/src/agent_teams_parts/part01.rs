@@ -704,6 +704,22 @@ fn runtime_auth_mode_requires_verified_tool_context(mode: RuntimeAuthMode) -> bo
     )
 }
 
+/// The security descriptor of the registered tool with this (normalized)
+/// name, or `None` when the name is not in the registry.
+async fn registered_tool_security_descriptor(
+    state: &AppState,
+    tool: &str,
+) -> Option<ToolSecurityDescriptor> {
+    let normalized = normalize_tool_name(tool);
+    state
+        .tools
+        .list()
+        .await
+        .into_iter()
+        .find(|schema| normalize_tool_name(&schema.name) == normalized)
+        .map(|schema| tandem_core::tool_schema_security_descriptor(&schema))
+}
+
 /// CT-20: resolve a tool against the declarative approval gate matrix.
 ///
 /// Classifies the tool into a risk tier and, for tiers that require approval by
@@ -717,8 +733,14 @@ pub(crate) async fn evaluate_action_gate_tool_policy(
     ctx: &ToolPolicyContext,
     tool: &str,
 ) -> Option<ToolPolicyDecision> {
-    let risk_tier =
-        tool_risk_tier_from_name_and_descriptor(tool, &ToolSecurityDescriptor::default());
+    // Classify with the registered tool's actual security descriptor: an
+    // explicitly tagged tier (e.g. FinancialRecordAccess on a financial read
+    // whose name trips no heuristic) must gate exactly like a name-derived
+    // one. Unregistered names fall back to the name-only heuristics.
+    let descriptor = registered_tool_security_descriptor(state, tool)
+        .await
+        .unwrap_or_default();
+    let risk_tier = tool_risk_tier_from_name_and_descriptor(tool, &descriptor);
     if !risk_tier.approval_required_by_default() {
         return None;
     }
