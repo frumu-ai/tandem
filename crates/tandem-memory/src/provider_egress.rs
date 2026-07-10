@@ -81,6 +81,7 @@ impl MemoryProviderEgressContext {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn complete_memory_prompt(
     providers: &ProviderRegistry,
     prompt: &str,

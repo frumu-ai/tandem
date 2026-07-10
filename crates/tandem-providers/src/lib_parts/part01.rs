@@ -712,6 +712,7 @@ pub trait Provider: Send + Sync {
         Ok(Box::pin(stream))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn stream_with_auth_override(
         &self,
         messages: Vec<ChatMessage>,

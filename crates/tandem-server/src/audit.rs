@@ -112,6 +112,7 @@ impl ProtectedAuditChainLock {
         tokio::task::spawn_blocking(move || {
             let file = std::fs::OpenOptions::new()
                 .create(true)
+                .truncate(false)
                 .read(true)
                 .write(true)
                 .open(&lock_path)

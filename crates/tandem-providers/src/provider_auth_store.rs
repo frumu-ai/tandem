@@ -82,6 +82,7 @@ impl ProviderCredentialMutationFileLock {
                 use std::os::unix::fs::OpenOptionsExt;
                 std::fs::OpenOptions::new()
                     .create(true)
+                    .truncate(false)
                     .read(true)
                     .write(true)
                     .mode(0o600)
@@ -91,6 +92,7 @@ impl ProviderCredentialMutationFileLock {
             {
                 std::fs::OpenOptions::new()
                     .create(true)
+                    .truncate(false)
                     .read(true)
                     .write(true)
                     .open(&lock_path)?
@@ -287,7 +289,7 @@ fn strip_tenant_scoped_provider_id(
 }
 
 fn decode_tenant_scope_component(encoded: &str) -> Option<String> {
-    if encoded.len() % 2 != 0 {
+    if !encoded.len().is_multiple_of(2) {
         return None;
     }
     let bytes = encoded
