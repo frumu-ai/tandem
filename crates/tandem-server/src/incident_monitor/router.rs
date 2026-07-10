@@ -865,7 +865,7 @@ fn publish_audit_payload(
         "requested_destination_ids": &request.destination_ids,
         "effective_destination_ids": &preview.effective_destination_ids,
         "selected_destination_id": selected_destination.map(|row| row.destination_id.as_str()),
-        "selected_destination_kind": selected_destination.map(|row| format!("{:?}", &row.kind)),
+        "selected_destination_kind": selected_destination.map(|row| format!("{:?}", row.kind)),
         "route_ids": preview.matches.iter().filter_map(|row| row.route_id.clone()).collect::<Vec<_>>(),
         "blocked": preview.blocked,
         "blocked_reasons": &preview.blocked_reasons,
