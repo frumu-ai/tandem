@@ -1465,21 +1465,8 @@ impl AppState {
     ) -> Option<AutomationV2RunRecord> {
         match outcome.run_status {
             crate::stateful_runtime::StatefulWorkflowRunStatus::Running => {
-                self.requeue_automation_v2_run_from_stateful_wait_wake(
-                    &outcome.run_id,
-                    &outcome.wait_id,
-                    &outcome.event_type,
-                    outcome.event_seq,
-                    format!(
-                        "stateful wait `{}` completed; run queued for resume",
-                        outcome.wait_id
-                    ),
-                    json!({
-                        "wait_status": &outcome.wait_status,
-                        "lag_ms": outcome.lag_ms,
-                    }),
-                )
-                .await
+                self.apply_automation_v2_running_wait_scheduler_outcome(outcome)
+                    .await
             }
             crate::stateful_runtime::StatefulWorkflowRunStatus::Cancelled => {
                 let mut applied = false;

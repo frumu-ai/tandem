@@ -37,6 +37,73 @@ fn approval_wait_projects_to_the_existing_governed_gate_path() {
 }
 
 #[tokio::test]
+async fn approval_resume_scheduler_outcome_settles_the_gate_before_requeue() {
+    let state = ready_test_state().await;
+    let node = AutomationNodeBuilder::new("approve-release")
+        .wait(AutomationWaitSpec::Approval {
+            decisions: vec!["approve".to_string(), "deny".to_string()],
+            expires_after_ms: None,
+            timeout: Some(WaitTimeoutPolicy {
+                expires_after_ms: 1,
+                on_timeout: WaitTimeoutAction::Resume,
+                escalate_to: None,
+                remind_every_ms: None,
+            }),
+        })
+        .build();
+    let automation = AutomationSpecBuilder::new("auto-approval-resume")
+        .nodes(vec![node.clone()])
+        .build();
+    let run = state
+        .create_automation_v2_run(&automation, "manual")
+        .await
+        .expect("create run");
+    let gate = crate::app::state::build_automation_pending_gate(&node).expect("pending gate");
+    state
+        .update_automation_v2_run(&run.run_id, |row| {
+            crate::app::state::automation::pause_automation_run_for_gate(
+                row,
+                gate.clone(),
+                Vec::new(),
+            );
+        })
+        .await
+        .expect("pause for approval");
+
+    let paths = crate::stateful_runtime::StatefulRuntimeStoragePaths::from_runtime_events_path(
+        &state.runtime_events_path,
+    );
+    let tick = crate::stateful_runtime::process_due_stateful_waits(
+        &paths,
+        gate.requested_at_ms.saturating_add(2),
+        Default::default(),
+    )
+    .await;
+    assert_eq!(tick.completed, 1);
+    assert_eq!(
+        tick.outcomes[0].event_type,
+        "stateful_runtime.wait.timeout_resumed"
+    );
+    state
+        .apply_stateful_wait_scheduler_outcome(&tick.outcomes[0])
+        .await
+        .expect("settle approval resume");
+
+    let resumed = state.get_automation_v2_run(&run.run_id).await.unwrap();
+    assert_eq!(resumed.status, AutomationRunStatus::Queued);
+    assert!(resumed.checkpoint.awaiting_gate.is_none());
+    assert!(resumed.checkpoint.completed_nodes.contains(&node.node_id));
+    assert_eq!(
+        resumed
+            .checkpoint
+            .gate_history
+            .last()
+            .map(|row| row.decision.as_str()),
+        Some("timeout_resume")
+    );
+}
+
+#[tokio::test]
 async fn webhook_wait_registers_a_public_correlation_constraint() {
     let state = ready_test_state().await;
     let node = AutomationNodeBuilder::new("wait-for-callback")

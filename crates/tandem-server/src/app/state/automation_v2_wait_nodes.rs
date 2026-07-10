@@ -23,7 +23,89 @@ const MAX_WAIT_BINDING_STRING_BYTES: usize = 512;
 const MAX_EXTERNAL_WAIT_RESOLUTION_BYTES: usize = 16 * 1024;
 const EXTERNAL_WAIT_RESOLUTION_LEASE_MS: u64 = 60_000;
 
+enum AutomationApprovalResumeSchedulerOutcome {
+    NotApplicable,
+    Handled(Option<AutomationV2RunRecord>),
+}
+
 impl AppState {
+    pub(crate) async fn apply_automation_v2_running_wait_scheduler_outcome(
+        &self,
+        outcome: &crate::stateful_runtime::StatefulWaitSchedulerOutcome,
+    ) -> Option<AutomationV2RunRecord> {
+        match self
+            .apply_automation_v2_approval_resume_scheduler_outcome(outcome)
+            .await
+        {
+            AutomationApprovalResumeSchedulerOutcome::Handled(updated) => updated,
+            AutomationApprovalResumeSchedulerOutcome::NotApplicable => {
+                self.requeue_automation_v2_run_from_stateful_wait_wake(
+                    &outcome.run_id,
+                    &outcome.wait_id,
+                    &outcome.event_type,
+                    outcome.event_seq,
+                    format!(
+                        "stateful wait `{}` completed; run queued for resume",
+                        outcome.wait_id
+                    ),
+                    json!({
+                        "wait_status": &outcome.wait_status,
+                        "lag_ms": outcome.lag_ms,
+                    }),
+                )
+                .await
+            }
+        }
+    }
+
+    pub(crate) async fn apply_automation_v2_approval_resume_scheduler_outcome(
+        &self,
+        outcome: &crate::stateful_runtime::StatefulWaitSchedulerOutcome,
+    ) -> AutomationApprovalResumeSchedulerOutcome {
+        if outcome.event_type != "stateful_runtime.wait.timeout_resumed" {
+            return AutomationApprovalResumeSchedulerOutcome::NotApplicable;
+        }
+        let paths =
+            StatefulRuntimeStoragePaths::from_runtime_events_path(&self.runtime_events_path);
+        let is_approval_wait = list_stateful_waits(
+            &paths.waits_path,
+            &outcome.tenant_context,
+            StatefulWaitQuery {
+                run_id: Some(&outcome.run_id),
+                wait_kind: Some(StatefulWaitKind::Approval),
+                status: None,
+                limit: None,
+            },
+        )
+        .iter()
+        .any(|wait| wait.wait_id == outcome.wait_id);
+        if !is_approval_wait {
+            return AutomationApprovalResumeSchedulerOutcome::NotApplicable;
+        }
+
+        let Some(run) = self.get_automation_v2_run(&outcome.run_id).await else {
+            return AutomationApprovalResumeSchedulerOutcome::Handled(None);
+        };
+        if run.status != AutomationRunStatus::AwaitingApproval {
+            return AutomationApprovalResumeSchedulerOutcome::Handled(Some(run));
+        }
+        let Some(gate) = run.checkpoint.awaiting_gate.clone() else {
+            return AutomationApprovalResumeSchedulerOutcome::Handled(Some(run));
+        };
+        let Some(policy) = automation::effective_automation_gate_expiry_policy(&gate) else {
+            return AutomationApprovalResumeSchedulerOutcome::Handled(Some(run));
+        };
+        let Some(expires_at_ms) = automation::automation_gate_expires_at_ms(&gate) else {
+            return AutomationApprovalResumeSchedulerOutcome::Handled(Some(run));
+        };
+        let _ = self
+            .resume_awaiting_approval_gate(&run, &gate, &policy, expires_at_ms)
+            .await;
+        AutomationApprovalResumeSchedulerOutcome::Handled(
+            self.get_automation_v2_run(&outcome.run_id).await,
+        )
+    }
+
     pub(crate) async fn park_first_runnable_automation_v2_wait(
         &self,
         run: &AutomationV2RunRecord,
