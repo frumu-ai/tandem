@@ -524,7 +524,7 @@ impl AppState {
             guard.updated_at_ms = now;
         }
         self.persist_automation_governance().await?;
-        let _ = append_protected_audit_event(
+        append_protected_audit_event(
             self,
             format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.record.updated"),
             &tandem_types::TenantContext::local_implicit(),
@@ -542,7 +542,7 @@ impl AppState {
                 "creationPaused": record.creation_paused,
             }),
         )
-        .await;
+        .await?;
         Ok(record)
     }
 
@@ -804,7 +804,7 @@ impl AppState {
             grant
         };
         self.persist_automation_governance().await?;
-        let _ = append_protected_audit_event(
+        append_protected_audit_event(
             self,
             format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.grant.created"),
             &tandem_types::TenantContext::local_implicit(),
@@ -818,7 +818,7 @@ impl AppState {
                 "grant": grant,
             }),
         )
-        .await;
+        .await?;
         Ok(grant)
     }
 
@@ -851,7 +851,7 @@ impl AppState {
             stored
         };
         self.persist_automation_governance().await?;
-        let _ = append_protected_audit_event(
+        append_protected_audit_event(
             self,
             format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.grant.revoked"),
             &tandem_types::TenantContext::local_implicit(),
@@ -865,7 +865,7 @@ impl AppState {
                 "reason": reason,
             }),
         )
-        .await;
+        .await?;
         Ok(Some(stored))
     }
 
@@ -913,7 +913,7 @@ impl AppState {
             guard.updated_at_ms = now;
         }
         self.persist_automation_governance().await?;
-        let _ = append_protected_audit_event(
+        append_protected_audit_event(
             self,
             format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.requested"),
             tenant_context,
@@ -927,7 +927,7 @@ impl AppState {
                 "request": request,
             }),
         )
-        .await;
+        .await?;
         Ok(request)
     }
 
@@ -1015,7 +1015,7 @@ impl AppState {
         // the requesting tenant, and the caller sees the same `None` (HTTP 404) as a
         // missing receipt so existence is not leaked across the tenant boundary.
         if !approval_receipt_matches_tenant(&existing, tenant_context) {
-            let _ = append_protected_audit_event(
+            append_protected_audit_event(
                 self,
                 format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.cross_tenant_denied"),
                 tenant_context,
@@ -1029,7 +1029,7 @@ impl AppState {
                     "reason": "cross_tenant_receipt_replay",
                 }),
             )
-            .await;
+            .await?;
             return Ok(None);
         }
         let stored = self
@@ -1050,7 +1050,7 @@ impl AppState {
             guard.updated_at_ms = now_ms();
         }
         self.persist_automation_governance().await?;
-        let _ = append_protected_audit_event(
+        append_protected_audit_event(
             self,
             format!(
                 "{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.{}",
@@ -1066,7 +1066,7 @@ impl AppState {
                 "approval": stored,
             }),
         )
-        .await;
+        .await?;
         Ok(Some(stored))
     }
 
@@ -1113,7 +1113,7 @@ impl AppState {
             }
             self.persist_automation_governance().await?;
             self.persist_automations_v2_locked().await?;
-            let _ = append_protected_audit_event(
+            append_protected_audit_event(
                 self,
                 format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.deleted"),
                 &tandem_types::TenantContext::local_implicit(),
@@ -1127,7 +1127,7 @@ impl AppState {
                     "deletedAtMs": now,
                 }),
             )
-            .await;
+            .await?;
         }
         Ok(removed)
     }
@@ -1254,7 +1254,7 @@ impl AppState {
         }
         self.persist_automation_governance().await?;
         if let Some(approval) = approval {
-            let _ = append_protected_audit_event(
+            append_protected_audit_event(
                 self,
                 format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.requested"),
                 &tandem_types::TenantContext::local_implicit(),
@@ -1268,7 +1268,7 @@ impl AppState {
                     "request": approval,
                 }),
             )
-            .await;
+            .await?;
         }
         Ok(())
     }
@@ -1295,7 +1295,7 @@ impl AppState {
             guard.updated_at_ms = now;
         }
         self.persist_automation_governance().await?;
-        let _ = append_protected_audit_event(
+        append_protected_audit_event(
             self,
             format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.review.agent_acknowledged"),
             &tandem_types::TenantContext::local_implicit(),
@@ -1309,7 +1309,7 @@ impl AppState {
                 "notes": notes,
             }),
         )
-        .await;
+        .await?;
         Ok(())
     }
 
@@ -1337,7 +1337,7 @@ impl AppState {
             stored
         };
         self.persist_automation_governance().await?;
-        let _ = append_protected_audit_event(
+        append_protected_audit_event(
             self,
             format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.review.automation_acknowledged"),
             &tandem_types::TenantContext::local_implicit(),
@@ -1351,7 +1351,7 @@ impl AppState {
                 "notes": notes,
             }),
         )
-        .await;
+        .await?;
         Ok(Some(stored))
     }
 
@@ -1421,7 +1421,7 @@ impl AppState {
         }
         self.persist_automation_governance().await?;
         if let Some(approval) = evaluation.approval_request {
-            let _ = append_protected_audit_event(
+            append_protected_audit_event(
                 self,
                 format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.requested"),
                 &tandem_types::TenantContext::local_implicit(),
@@ -1435,10 +1435,10 @@ impl AppState {
                     "request": approval,
                 }),
             )
-            .await;
+            .await?;
         }
 
-        let _ = append_protected_audit_event(
+        append_protected_audit_event(
             self,
             format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.dependency_revoked"),
             &tandem_types::TenantContext::local_implicit(),
@@ -1451,7 +1451,7 @@ impl AppState {
                 "reviewRequestID": created_review_id,
             }),
         )
-        .await;
+        .await?;
 
         Ok(())
     }
@@ -1547,7 +1547,7 @@ impl AppState {
         }
         self.persist_automation_governance().await?;
         if let Some(approval) = approval {
-            let _ = append_protected_audit_event(
+            append_protected_audit_event(
                 self,
                 format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.requested"),
                 &tandem_types::TenantContext::local_implicit(),
@@ -1561,7 +1561,7 @@ impl AppState {
                     "request": approval,
                 }),
             )
-            .await;
+            .await?;
         }
         Ok(())
     }
@@ -1652,7 +1652,7 @@ impl AppState {
             }
 
             for approval in &evaluation.approval_requests {
-                let _ = append_protected_audit_event(
+                append_protected_audit_event(
                     self,
                     format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.requested"),
                     &tandem_types::TenantContext::local_implicit(),
@@ -1666,7 +1666,7 @@ impl AppState {
                         "request": approval,
                     }),
                 )
-                .await;
+                .await?;
             }
 
             finding_count += evaluation.record.health_findings.len();
@@ -1718,7 +1718,7 @@ impl AppState {
             guard.updated_at_ms = now;
         }
         self.persist_automation_governance().await?;
-        let _ = append_protected_audit_event(
+        append_protected_audit_event(
             self,
             format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.retired"),
             &tandem_types::TenantContext::local_implicit(),
@@ -1729,7 +1729,7 @@ impl AppState {
                 "actor": actor,
             }),
         )
-        .await;
+        .await?;
         Ok(Some(stored))
     }
 
@@ -1777,7 +1777,7 @@ impl AppState {
             guard.updated_at_ms = now;
         }
         self.persist_automation_governance().await?;
-        let _ = append_protected_audit_event(
+        append_protected_audit_event(
             self,
             format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.retirement.extended"),
             &tandem_types::TenantContext::local_implicit(),
@@ -1789,7 +1789,7 @@ impl AppState {
                 "actor": actor,
             }),
         )
-        .await;
+        .await?;
         Ok(Some(stored))
     }
 
@@ -1872,7 +1872,7 @@ impl AppState {
         self.persist_automation_governance().await?;
 
         for warning in &evaluation.warnings {
-            let _ = append_protected_audit_event(
+            append_protected_audit_event(
                 self,
                 format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.spend.warning"),
                 &tenant_context,
@@ -1890,7 +1890,7 @@ impl AppState {
                     "weeklySpendCapUsd": warning.weekly_spend_cap_usd,
                 }),
             )
-            .await;
+            .await?;
         }
 
         let requested_approvals = evaluation
@@ -1899,7 +1899,7 @@ impl AppState {
             .map(|approval| approval.approval_id.clone())
             .collect::<Vec<_>>();
         for approval in &evaluation.approvals {
-            let _ = append_protected_audit_event(
+            append_protected_audit_event(
                 self,
                 format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.approval.requested"),
                 &tenant_context,
@@ -1913,7 +1913,7 @@ impl AppState {
                     "request": approval,
                 }),
             )
-            .await;
+            .await?;
         }
 
         if !evaluation.hard_stops.is_empty() {
@@ -1960,7 +1960,7 @@ impl AppState {
                     );
                 })
                 .await;
-            let _ = append_protected_audit_event(
+            append_protected_audit_event(
                 self,
                 format!("{GOVERNANCE_AUDIT_EVENT_PREFIX}.spend.paused"),
                 &tenant_context,
@@ -1982,7 +1982,7 @@ impl AppState {
                     "detail": detail,
                 }),
             )
-            .await;
+            .await?;
         }
 
         Ok(())

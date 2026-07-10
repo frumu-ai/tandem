@@ -74,6 +74,15 @@ pub struct SlackConfigFile {
     pub bot_token: String,
     #[serde(default)]
     pub channel_id: String,
+    /// Slack workspace identifier (the `T...` team ID) expected on every
+    /// signed Events API callback. This is distinct from Tandem's tenant
+    /// workspace ID under `tenant.workspace_id`.
+    #[serde(default, alias = "workspace_id")]
+    pub team_id: Option<String>,
+    /// Slack application identifier (the `A...` API app ID) expected on every
+    /// signed Events API callback.
+    #[serde(default, alias = "api_app_id")]
+    pub app_id: Option<String>,
     #[serde(default = "default_allow_all")]
     pub allowed_users: Vec<String>,
     #[serde(default)]
@@ -86,12 +95,15 @@ pub struct SlackConfigFile {
     pub model_id: Option<String>,
     #[serde(default)]
     pub security_profile: tandem_channels::config::ChannelSecurityProfile,
-    /// Slack app signing secret. Required when the Slack interactions endpoint
-    /// (`POST /channels/slack/interactions`) is enabled — every interaction
-    /// payload from Slack is HMAC-SHA256 signed using this secret. Stored in
-    /// the OS keystore in production; this field is the in-memory copy.
+    /// Slack app signing secret. Required for the Slack interactions and Events
+    /// API endpoints; every payload is HMAC-SHA256 signed using this secret.
+    /// Stored in the OS keystore in production; this field is the in-memory copy.
     #[serde(default)]
     pub signing_secret: Option<String>,
+    /// Route signed Slack Events API message deliveries through the server.
+    /// This disables the legacy history poller to prevent duplicate ingress.
+    #[serde(default)]
+    pub events_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

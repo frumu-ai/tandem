@@ -2,6 +2,8 @@
 mod tests {
     use super::*;
     use futures::StreamExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
@@ -69,6 +71,291 @@ mod tests {
         assert!(err
             .to_string()
             .contains("provider `openruter` is not configured"));
+    }
+
+    #[tokio::test]
+    async fn codex_auth_overrides_are_task_scoped_and_tenant_isolated() {
+        let registry = ProviderRegistry::new(cfg(&["openai-codex"], None, false));
+        let tenant_a = TenantContext::explicit("org-a", "workspace-a", None);
+        let tenant_b = TenantContext::explicit("org-b", "workspace-b", None);
+        let tenant_missing = TenantContext::explicit("org-c", "workspace-c", None);
+        registry
+            .set_tenant_provider_bearer_token(
+                &tenant_a,
+                "openai-codex",
+                "tenant-a-token".to_string(),
+            )
+            .await;
+        registry
+            .set_tenant_provider_bearer_token(
+                &tenant_b,
+                "openai-codex",
+                "tenant-b-token".to_string(),
+            )
+            .await;
+
+        let (auth_a, auth_b) = tokio::join!(
+            registry.scope_tenant_provider_auth(
+                tenant_a.clone(),
+                registry.auth_override_for_provider("openai-codex")
+            ),
+            registry.scope_tenant_provider_auth(
+                tenant_b.clone(),
+                registry.auth_override_for_provider("openai-codex")
+            ),
+        );
+        assert!(matches!(auth_a, ProviderAuthOverride::Bearer(token) if token == "tenant-a-token"));
+        assert!(matches!(auth_b, ProviderAuthOverride::Bearer(token) if token == "tenant-b-token"));
+
+        let missing = registry
+            .scope_tenant_provider_auth(
+                tenant_missing,
+                registry.auth_override_for_provider("openai-codex"),
+            )
+            .await;
+        assert!(matches!(missing, ProviderAuthOverride::Suppress));
+        let local = registry
+            .scope_tenant_provider_auth(
+                TenantContext::local_implicit(),
+                registry.auth_override_for_provider("openai-codex"),
+            )
+            .await;
+        assert!(matches!(local, ProviderAuthOverride::Inherit));
+
+        registry
+            .clear_tenant_provider_bearer_token(&tenant_a, "openai-codex")
+            .await;
+        assert!(
+            !registry
+                .tenant_provider_auth_is_loaded(&tenant_a, "openai-codex")
+                .await
+        );
+        assert!(
+            registry
+                .tenant_provider_auth_is_loaded(&tenant_b, "openai-codex")
+                .await
+        );
+    }
+
+    #[derive(Clone)]
+    struct CapturingCodexProvider {
+        attempts: Arc<AtomicUsize>,
+        seen_auth: Arc<Mutex<Vec<ProviderAuthOverride>>>,
+        fail_auth_attempts: usize,
+    }
+
+    #[async_trait]
+    impl Provider for CapturingCodexProvider {
+        fn info(&self) -> ProviderInfo {
+            ProviderInfo {
+                id: "openai-codex".to_string(),
+                name: "capturing codex".to_string(),
+                models: Vec::new(),
+            }
+        }
+
+        async fn complete(
+            &self,
+            prompt: &str,
+            _model_override: Option<&str>,
+        ) -> anyhow::Result<String> {
+            Ok(prompt.to_string())
+        }
+
+        async fn complete_with_auth_override(
+            &self,
+            prompt: &str,
+            _model_override: Option<&str>,
+            auth_override: ProviderAuthOverride,
+        ) -> anyhow::Result<String> {
+            self.seen_auth
+                .lock()
+                .expect("capture lock")
+                .push(auth_override);
+            let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
+            if attempt < self.fail_auth_attempts {
+                return Err(ProviderAuthenticationError::new(
+                    401,
+                    "provider request failed with status 401",
+                )
+                .into());
+            }
+            Ok(prompt.to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn hosted_dispatches_never_inherit_local_or_other_tenant_codex_auth() {
+        let registry = ProviderRegistry::new(cfg(&[], None, false));
+        let seen_auth = Arc::new(Mutex::new(Vec::new()));
+        registry
+            .replace_for_test(
+                vec![Arc::new(CapturingCodexProvider {
+                    attempts: Arc::new(AtomicUsize::new(0)),
+                    seen_auth: seen_auth.clone(),
+                    fail_auth_attempts: 0,
+                })],
+                Some("openai-codex".to_string()),
+            )
+            .await;
+        let tenant_a = TenantContext::explicit("org-a", "workspace-a", None);
+        let tenant_b = TenantContext::explicit("org-b", "workspace-b", None);
+        let tenant_missing = TenantContext::explicit("org-missing", "workspace-missing", None);
+        registry
+            .set_tenant_provider_bearer_token(
+                &tenant_a,
+                "openai-codex",
+                "tenant-a-token".to_string(),
+            )
+            .await;
+        registry
+            .set_tenant_provider_bearer_token(
+                &tenant_b,
+                "openai-codex",
+                "tenant-b-token".to_string(),
+            )
+            .await;
+
+        let (a, b, missing, local) = tokio::join!(
+            registry.scope_tenant_provider_auth(
+                tenant_a,
+                registry.complete_for_provider(Some("openai-codex"), "a", None),
+            ),
+            registry.scope_tenant_provider_auth(
+                tenant_b,
+                registry.complete_for_provider(Some("openai-codex"), "b", None),
+            ),
+            registry.scope_tenant_provider_auth(
+                tenant_missing,
+                registry.complete_for_provider(Some("openai-codex"), "missing", None),
+            ),
+            registry.scope_tenant_provider_auth(
+                TenantContext::local_implicit(),
+                registry.complete_for_provider(Some("openai-codex"), "local", None),
+            ),
+        );
+        assert_eq!(a.expect("tenant a"), "a");
+        assert_eq!(b.expect("tenant b"), "b");
+        assert_eq!(missing.expect("missing tenant"), "missing");
+        assert_eq!(local.expect("local"), "local");
+
+        let captured = seen_auth.lock().expect("capture lock").clone();
+        assert!(captured.iter().any(
+            |auth| matches!(auth, ProviderAuthOverride::Bearer(token) if token == "tenant-a-token")
+        ));
+        assert!(captured.iter().any(
+            |auth| matches!(auth, ProviderAuthOverride::Bearer(token) if token == "tenant-b-token")
+        ));
+        assert!(captured
+            .iter()
+            .any(|auth| matches!(auth, ProviderAuthOverride::Suppress)));
+        assert!(captured
+            .iter()
+            .any(|auth| matches!(auth, ProviderAuthOverride::Inherit)));
+    }
+
+    #[tokio::test]
+    async fn typed_auth_failure_retries_only_one_provider_dispatch_with_fresh_auth() {
+        let registry = ProviderRegistry::new(cfg(&[], None, false));
+        let tenant = TenantContext::explicit("org-hosted", "workspace-hosted", None);
+        registry
+            .set_tenant_provider_bearer_token(&tenant, "openai-codex", "expired-token".to_string())
+            .await;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let seen_auth = Arc::new(Mutex::new(Vec::new()));
+        registry
+            .replace_for_test(
+                vec![Arc::new(CapturingCodexProvider {
+                    attempts: attempts.clone(),
+                    seen_auth: seen_auth.clone(),
+                    fail_auth_attempts: 1,
+                })],
+                Some("openai-codex".to_string()),
+            )
+            .await;
+        let refreshes = Arc::new(AtomicUsize::new(0));
+        let recovery = ProviderAuthRecovery::new({
+            let registry = registry.clone();
+            let tenant = tenant.clone();
+            let refreshes = refreshes.clone();
+            move |_| {
+                let registry = registry.clone();
+                let tenant = tenant.clone();
+                let refreshes = refreshes.clone();
+                async move {
+                    refreshes.fetch_add(1, Ordering::SeqCst);
+                    registry
+                        .set_tenant_provider_bearer_token(
+                            &tenant,
+                            "openai-codex",
+                            "fresh-token".to_string(),
+                        )
+                        .await;
+                    Ok(true)
+                }
+            }
+        });
+
+        let output = registry
+            .scope_tenant_provider_auth_with_recovery(
+                tenant,
+                recovery,
+                registry.complete_for_provider(Some("openai-codex"), "request", None),
+            )
+            .await
+            .expect("recovered dispatch");
+        assert_eq!(output, "request");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(refreshes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            seen_auth.lock().expect("capture lock").as_slice(),
+            [
+                ProviderAuthOverride::Bearer("expired-token".to_string()),
+                ProviderAuthOverride::Bearer("fresh-token".to_string()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn second_typed_auth_failure_is_returned_without_a_third_dispatch() {
+        let registry = ProviderRegistry::new(cfg(&[], None, false));
+        let tenant = TenantContext::explicit("org-hosted", "workspace-hosted", None);
+        let attempts = Arc::new(AtomicUsize::new(0));
+        registry
+            .replace_for_test(
+                vec![Arc::new(CapturingCodexProvider {
+                    attempts: attempts.clone(),
+                    seen_auth: Arc::new(Mutex::new(Vec::new())),
+                    fail_auth_attempts: usize::MAX,
+                })],
+                Some("openai-codex".to_string()),
+            )
+            .await;
+        let refreshes = Arc::new(AtomicUsize::new(0));
+        let recovery = ProviderAuthRecovery::new({
+            let refreshes = refreshes.clone();
+            move |_| {
+                let refreshes = refreshes.clone();
+                async move {
+                    refreshes.fetch_add(1, Ordering::SeqCst);
+                    Ok(true)
+                }
+            }
+        });
+
+        let error = registry
+            .scope_tenant_provider_auth_with_recovery(
+                tenant,
+                recovery,
+                registry.complete_for_provider(Some("openai-codex"), "request", None),
+            )
+            .await
+            .expect_err("second 401 must surface");
+        assert!(error
+            .downcast_ref::<ProviderAuthenticationError>()
+            .is_some());
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(refreshes.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -333,7 +620,14 @@ mod tests {
         )];
         let cancel = CancellationToken::new();
         let stream = provider
-            .stream(messages, None, ToolMode::Auto, Some(tools), SamplingParams::default(), cancel)
+            .stream(
+                messages,
+                None,
+                ToolMode::Auto,
+                Some(tools),
+                SamplingParams::default(),
+                cancel,
+            )
             .await
             .expect("stream");
 
@@ -458,7 +752,14 @@ mod tests {
         )];
         let cancel = CancellationToken::new();
         let stream = provider
-            .stream(messages, None, ToolMode::Auto, Some(tools), SamplingParams::default(), cancel)
+            .stream(
+                messages,
+                None,
+                ToolMode::Auto,
+                Some(tools),
+                SamplingParams::default(),
+                cancel,
+            )
             .await
             .expect("stream");
 
@@ -563,7 +864,14 @@ mod tests {
         }];
         let cancel = CancellationToken::new();
         let stream = provider
-            .stream(messages, None, ToolMode::Auto, None, SamplingParams::default(), cancel)
+            .stream(
+                messages,
+                None,
+                ToolMode::Auto,
+                None,
+                SamplingParams::default(),
+                cancel,
+            )
             .await
             .expect("stream");
 
@@ -996,7 +1304,14 @@ mod tests {
         }];
         let cancel = CancellationToken::new();
         let stream = provider
-            .stream(messages, None, ToolMode::Auto, None, SamplingParams::default(), cancel)
+            .stream(
+                messages,
+                None,
+                ToolMode::Auto,
+                None,
+                SamplingParams::default(),
+                cancel,
+            )
             .await
             .expect("stream");
 

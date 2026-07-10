@@ -1434,11 +1434,12 @@ async fn execute_action(
         }
         ParsedWorkflowAction::Agent { agent_id } => {
             let workspace_root = state.workspace_index.snapshot().await.root;
-            let session = Session::new(
+            let mut session = Session::new(
                 Some(format!("Workflow {} / {}", workflow_id, agent_id)),
                 Some(workspace_root.clone()),
             );
             let session_id = session.id.clone();
+            session.tenant_context = tenant_context.clone();
             state.storage.save_session(session).await?;
             let prompt = action_spec
                 .with
@@ -1459,14 +1460,16 @@ async fn execute_action(
                 prewrite_requirements: None,
                 sampling: Default::default(),
             };
-            state
-                .engine_loop
-                .run_prompt_async_with_context(
-                    session_id.clone(),
-                    request,
-                    Some(format!("workflow:{workflow_id}")),
-                )
-                .await?;
+            crate::http::session_run_retry::run_prompt_with_auth_recovery(
+                state,
+                &session_id,
+                run_id,
+                crate::http::session_run_retry::PromptExecutionSurface::Workflow,
+                request,
+                Some(format!("workflow:{workflow_id}")),
+                tenant_context,
+            )
+            .await?;
             Ok(json!({ "agentID": agent_id, "sessionID": session_id }))
         }
     }

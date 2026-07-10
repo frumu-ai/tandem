@@ -192,10 +192,10 @@ async fn memory_promote_impl_with_verified(
             require_scope_metadata,
             now,
         )
-    .map_err(|error| {
-        tracing::warn!("invalid knowledge scope metadata on memory promotion: {error}");
-        StatusCode::FORBIDDEN
-    })?;
+        .map_err(|error| {
+            tracing::warn!("invalid knowledge scope metadata on memory promotion: {error}");
+            StatusCode::FORBIDDEN
+        })?;
     if !scope_decision.allowed {
         let policy_decision = record_memory_promotion_policy_decision(
             state,
@@ -556,18 +556,6 @@ async fn memory_promote_impl_with_verified(
             Some(&next_provenance),
         ))
     );
-    db.update_global_memory_context_for_tenant(
-        &new_id,
-        &tenant_context.org_id,
-        &tenant_context.workspace_id,
-        tenant_context.deployment_id.as_deref(),
-        "shared",
-        false,
-        next_metadata.as_ref(),
-        Some(&next_provenance),
-    )
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     append_memory_audit(
         &state,
         tenant_context,
@@ -593,6 +581,18 @@ async fn memory_promote_impl_with_verified(
         },
     )
     .await?;
+    db.update_global_memory_context_for_tenant(
+        &new_id,
+        &tenant_context.org_id,
+        &tenant_context.workspace_id,
+        tenant_context.deployment_id.as_deref(),
+        "shared",
+        false,
+        next_metadata.as_ref(),
+        Some(&next_provenance),
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     publish_tenant_event(
         state,
         tenant_context,
@@ -1365,28 +1365,6 @@ pub(super) async fn memory_demote(
         verified_tenant_context.as_deref(),
         &record.user_id,
     )?;
-    let changed = db
-        .set_global_memory_visibility_for_tenant(
-            &input.id,
-            &tenant_context.org_id,
-            &tenant_context.workspace_id,
-            tenant_context.deployment_id.as_deref(),
-            "private",
-            true,
-        )
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if !changed {
-        emit_missing_memory_demote_audit(
-            &state,
-            &tenant_context,
-            &input.run_id,
-            &input.id,
-            "memory not found",
-        )
-        .await?;
-        return Err(StatusCode::NOT_FOUND);
-    }
     let partition_key = memory_linkage(&record)
         .get("partition_key")
         .and_then(Value::as_str)
@@ -1425,6 +1403,20 @@ pub(super) async fn memory_demote(
         },
     )
     .await?;
+    let changed = db
+        .set_global_memory_visibility_for_tenant(
+            &input.id,
+            &tenant_context.org_id,
+            &tenant_context.workspace_id,
+            tenant_context.deployment_id.as_deref(),
+            "private",
+            true,
+        )
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !changed {
+        return Err(StatusCode::NOT_FOUND);
+    }
     publish_tenant_event(
         &state,
         &tenant_context,
@@ -1590,12 +1582,35 @@ pub(super) async fn context_generate_layers(
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let scope = context_memory_tenant_scope(&tenant_context);
+    let layer_run_id = format!("context-layer-run-{}", uuid::Uuid::new_v4());
+    let layer_session_id = format!("context-layer-session-{}", input.node_id);
+    let provider_egress = crate::provider_egress::memory_egress_context(
+        &state,
+        Some(&tenant_context),
+        verified_tenant_context.as_deref(),
+        Some(&layer_run_id),
+        Some(&layer_session_id),
+    );
     // Layer generation reads the node's existing L0/L1/L2 (get_layer) before
     // (re)writing, so it must decrypt under the caller's principal in hosted mode.
-    read_under_decrypt_principal(
+    let layer_future = read_under_decrypt_principal(
         verified_tenant_context.as_deref(),
         &tenant_context,
-        manager.generate_layers_for_node(&input.node_id, &providers, &scope),
+        manager.generate_layers_for_node_with_egress(
+            &input.node_id,
+            &providers,
+            &scope,
+            Some(&provider_egress),
+        ),
+    );
+    crate::http::session_run_retry::scope_provider_auth_for_tenant(
+        &state,
+        &tenant_context,
+        crate::http::session_run_retry::PromptExecutionSurface::KnowledgeBase,
+        Some(&layer_session_id),
+        Some(&layer_run_id),
+        None,
+        layer_future,
     )
     .await
     .map_err(|e| {
@@ -1618,6 +1633,7 @@ pub(super) async fn context_distill(
         .run_id
         .clone()
         .unwrap_or_else(|| format!("distill-{}", input.session_id));
+    let provider_auth_run_id = run_id.clone();
     let project_id = input
         .project_id
         .clone()
@@ -1645,6 +1661,13 @@ pub(super) async fn context_distill(
         &partition,
         RunMemoryCapabilityPolicy::CoderWorkflow,
     );
+    let provider_egress = crate::provider_egress::memory_egress_context(
+        &state,
+        Some(&tenant_context),
+        verified_tenant_context.as_deref(),
+        Some(&run_id),
+        Some(&input.session_id),
+    );
     let writer = GovernedDistillationWriter {
         state: state.clone(),
         tenant_context: tenant_context.clone(),
@@ -1657,14 +1680,24 @@ pub(super) async fn context_distill(
         subject,
     };
     let threshold = input.importance_threshold.unwrap_or(0.5).clamp(0.0, 1.0);
-    let distiller = tandem_memory::SessionDistiller::with_threshold(Arc::new(providers), threshold);
-    let report = distiller
-        .distill_with_writer(&input.session_id, &input.conversation, &writer)
-        .await
-        .map_err(|e| {
-            tracing::warn!("Failed to distill session: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let distiller = tandem_memory::SessionDistiller::with_threshold(Arc::new(providers), threshold)
+        .with_provider_egress(provider_egress);
+    let distillation_future =
+        distiller.distill_with_writer(&input.session_id, &input.conversation, &writer);
+    let report = crate::http::session_run_retry::scope_provider_auth_for_tenant(
+        &state,
+        &tenant_context,
+        crate::http::session_run_retry::PromptExecutionSurface::KnowledgeBase,
+        Some(&input.session_id),
+        Some(&provider_auth_run_id),
+        None,
+        distillation_future,
+    )
+    .await
+    .map_err(|e| {
+        tracing::warn!("Failed to distill session: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     let distillation_id = report.distillation_id.clone();
     let session_id = report.session_id.clone();
     let facts_extracted = report.facts_extracted;

@@ -270,3 +270,146 @@ fn full_document_evidence_supports_missing_private_contact_info() {
     assert!(answer.contains("does not contain real private phone numbers"));
     assert!(!answer.contains("not visible in snippet"));
 }
+
+#[tokio::test]
+#[serial_test::serial]
+async fn strict_kb_transport_isolates_hosted_codex_auth_from_local_and_other_tenants() {
+    use crate::http::session_run_retry::provider_auth_test_support::install_capturing_codex_provider;
+    use tandem_providers::ProviderAuthOverride;
+
+    let state = crate::test_support::test_state().await;
+    let tenant_a = TenantContext::explicit("kb-org-a", "kb-workspace-a", None);
+    let tenant_b = TenantContext::explicit("kb-org-b", "kb-workspace-b", None);
+    let tenant_missing = TenantContext::explicit("kb-org-missing", "kb-workspace-missing", None);
+    let response = serde_json::json!({
+        "kb_answer_support": "supported",
+        "supported_facts": ["The policy is in the evidence."],
+        "missing_facts": [],
+        "sources": ["Policy"],
+        "answer_text": "The policy is in the evidence."
+    })
+    .to_string();
+    let captured = install_capturing_codex_provider(
+        &state,
+        response,
+        &[(&tenant_a, "kb-token-a"), (&tenant_b, "kb-token-b")],
+    )
+    .await;
+    let model = ModelSpec {
+        provider_id: "openai-codex".to_string(),
+        model_id: "codex-test".to_string(),
+    };
+    let evidence = vec![KbEvidenceItem {
+        excerpt: "Source: Policy\nThe policy is in the evidence.".to_string(),
+        sources: vec!["Policy".to_string()],
+        full_document: true,
+    }];
+
+    for (index, tenant_context) in [&tenant_a, &tenant_b, &tenant_missing]
+        .into_iter()
+        .enumerate()
+    {
+        let run_id = format!("kb-run-{index}");
+        let session_id = format!("kb-session-{index}");
+        let output = synthesize_strict_kb_answer(
+            &state,
+            "What is the policy?",
+            &evidence,
+            Some(&model),
+            &run_id,
+            &session_id,
+            tenant_context,
+            None,
+        )
+        .await
+        .expect("KB synthesis dispatch");
+        assert!(output.is_some());
+    }
+
+    assert_eq!(
+        captured.lock().expect("provider auth capture").as_slice(),
+        [
+            ProviderAuthOverride::Bearer("kb-token-a".to_string()),
+            ProviderAuthOverride::Bearer("kb-token-b".to_string()),
+            ProviderAuthOverride::Suppress,
+        ]
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(data_boundary_env)]
+async fn strict_kb_completion_fallback_evaluates_the_exact_rebuilt_prompt() {
+    use crate::http::session_run_retry::provider_auth_test_support::install_capturing_codex_provider;
+    use tandem_providers::ProviderAuthOverride;
+
+    let previous_mode = std::env::var("TANDEM_DATA_BOUNDARY_MODE").ok();
+    std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "audit");
+    let state = crate::test_support::test_state().await;
+    let tenant = TenantContext::explicit("kb-fallback-org", "kb-fallback-workspace", None);
+    let response = serde_json::json!({
+        "kb_answer_support": "supported",
+        "supported_facts": ["Grounded fact"],
+        "missing_facts": [],
+        "sources": ["Policy"],
+        "answer_text": "Grounded fact"
+    })
+    .to_string();
+    let captured =
+        install_capturing_codex_provider(&state, response, &[(&tenant, "kb-fallback-token")]).await;
+    let mut events = state.event_bus.subscribe();
+    let messages = vec![
+        ChatMessage {
+            role: "system".to_string(),
+            content: "rules".to_string(),
+            attachments: Vec::new(),
+        },
+        ChatMessage {
+            role: "user".to_string(),
+            content: "evidence".to_string(),
+            attachments: Vec::new(),
+        },
+    ];
+
+    let output = retry_strict_kb_non_streaming_synthesis(
+        &state,
+        "openai-codex",
+        Some("codex-test"),
+        &messages,
+        "stream chunk error",
+        "kb-fallback-session",
+        "kb-fallback-run",
+        &tenant,
+        None,
+    )
+    .await
+    .expect("KB completion fallback dispatch");
+    assert!(output.is_some());
+
+    let boundary_event = loop {
+        let event = events.try_recv().expect("fallback boundary event");
+        if event.event_type.starts_with("data_boundary.") {
+            break event;
+        }
+    };
+    let fallback_prompt = "system:\nrules\n\nuser:\nevidence";
+    let evaluated_payload = format!("{fallback_prompt}\n");
+    assert_eq!(
+        boundary_event.properties["operation"]["operation_id"],
+        "kb-fallback-session:kb_synthesis:completion_fallback"
+    );
+    assert_eq!(
+        boundary_event.properties["payload_hash"],
+        tandem_data_boundary::payload_hash(evaluated_payload.as_bytes())
+    );
+    assert_eq!(
+        captured.lock().expect("provider auth capture").as_slice(),
+        [ProviderAuthOverride::Bearer(
+            "kb-fallback-token".to_string()
+        )]
+    );
+
+    match previous_mode {
+        Some(value) => std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", value),
+        None => std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE"),
+    }
+}

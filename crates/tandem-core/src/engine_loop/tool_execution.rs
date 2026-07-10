@@ -417,16 +417,25 @@ impl EngineLoop {
     pub(super) async fn generate_final_narrative_without_tools(
         &self,
         session_id: &str,
+        run_id: Option<&str>,
         active_agent: &AgentDefinition,
         provider_hint: Option<&str>,
         model_id: Option<&str>,
         sampling: SamplingParams,
         cancel: CancellationToken,
         tool_outputs: &[String],
-    ) -> Option<String> {
+    ) -> anyhow::Result<Option<String>> {
         if cancel.is_cancelled() {
-            return None;
+            return Ok(None);
         }
+        let route = match self
+            .providers
+            .resolve_provider_route(provider_hint, model_id)
+            .await
+        {
+            Ok(route) => route,
+            Err(_) => return Ok(None),
+        };
         let mut messages = load_chat_history(
             self.storage.clone(),
             session_id,
@@ -454,11 +463,103 @@ impl EngineLoop {
             content: build_post_tool_final_narrative_prompt(tool_outputs),
             attachments: Vec::new(),
         });
-        let stream = self
+        let session = self.storage.get_session(session_id).await;
+        let tenant = session
+            .as_ref()
+            .map(|session| &session.tenant_context)
+            .filter(|tenant| !tenant.is_local_implicit());
+        let operation_id = format!("{session_id}:post_tool_narrative");
+        let data_classes = [
+            tandem_data_boundary::SensitiveDataClass::CustomerData,
+            tandem_data_boundary::SensitiveDataClass::SourceCode,
+            tandem_data_boundary::SensitiveDataClass::ProprietaryBusinessData,
+            tandem_data_boundary::SensitiveDataClass::UnknownSensitive,
+        ];
+        let provider_egress_permit = match data_boundary_gate::evaluate_dispatch_boundary(
+            &data_boundary_gate::DataBoundaryDispatchContext {
+                session_id,
+                run_id,
+                message_id: &operation_id,
+                correlation_id: None,
+                provider_id: route.provider_id.as_str(),
+                model_id: route.model_id.as_deref(),
+                tool_schema_payload: None,
+                source_ref: "engine_loop.post_tool_synthesis",
+                data_classes: &data_classes,
+                authority_ref: session
+                    .as_ref()
+                    .and_then(|session| session.verified_tenant_context.as_ref())
+                    .map(|verified| verified.assertion_id.as_str()),
+                org_id: tenant.map(|tenant| tenant.org_id.as_str()),
+                workspace_id: tenant.map(|tenant| tenant.workspace_id.as_str()),
+                deployment_id: tenant.and_then(|tenant| tenant.deployment_id.as_deref()),
+            },
+            &messages,
+        ) {
+            data_boundary_gate::DataBoundaryDispatchOutcome::Off { permit } => permit,
+            data_boundary_gate::DataBoundaryDispatchOutcome::Proceed { event, permit } => {
+                self.event_bus.publish(event);
+                permit
+            }
+            data_boundary_gate::DataBoundaryDispatchOutcome::ProceedTransformed {
+                event,
+                messages: transformed,
+                permit,
+            } => {
+                self.event_bus.publish(event);
+                messages = transformed;
+                permit
+            }
+            data_boundary_gate::DataBoundaryDispatchOutcome::RequireApproval {
+                event,
+                evidence,
+                denial_reason,
+                approval,
+            } => {
+                self.event_bus.publish(event);
+                let pending = self.permissions.ask_for_session(
+                    Some(session_id),
+                    "data_boundary_egress",
+                    evidence,
+                );
+                let pending = pending.await;
+                let (reply, timed_out) = self
+                    .permissions
+                    .wait_for_reply_with_timeout(
+                        &pending.id,
+                        cancel.clone(),
+                        Some(Duration::from_millis(permission_wait_timeout_ms() as u64)),
+                    )
+                    .await;
+                if !matches!(
+                    reply.as_deref(),
+                    Some("once") | Some("always") | Some("allow")
+                ) {
+                    let detail = format!(
+                        "{denial_reason} ({})",
+                        if timed_out {
+                            "approval timed out"
+                        } else {
+                            "approval denied"
+                        }
+                    );
+                    self.mark_session_run_failed(session_id, &detail).await;
+                    anyhow::bail!(detail);
+                }
+                approval.approve(pending.id).map_err(anyhow::Error::msg)?
+            }
+            data_boundary_gate::DataBoundaryDispatchOutcome::Blocked { event, reason } => {
+                self.event_bus.publish(event);
+                self.mark_session_run_failed(session_id, &reason).await;
+                anyhow::bail!(reason);
+            }
+        };
+        let stream = match self
             .providers
-            .stream_for_provider(
-                provider_hint,
-                model_id,
+            .stream_with_egress_permit(
+                &provider_egress_permit,
+                Some(route.provider_id.as_str()),
+                route.model_id.as_deref(),
                 messages,
                 ToolMode::None,
                 None,
@@ -466,12 +567,15 @@ impl EngineLoop {
                 cancel.clone(),
             )
             .await
-            .ok()?;
+        {
+            Ok(stream) => stream,
+            Err(_) => return Ok(None),
+        };
         tokio::pin!(stream);
         let mut completion = String::new();
         while let Some(chunk) = stream.next().await {
             if cancel.is_cancelled() {
-                return None;
+                return Ok(None);
             }
             match chunk {
                 Ok(StreamChunk::TextDelta(delta)) => {
@@ -482,14 +586,14 @@ impl EngineLoop {
                 }
                 Ok(StreamChunk::Done { .. }) => break,
                 Ok(_) => {}
-                Err(_) => return None,
+                Err(_) => return Ok(None),
             }
         }
         let completion = truncate_text(&strip_model_control_markers(&completion), 16_000);
         if completion.trim().is_empty() {
-            None
+            Ok(None)
         } else {
-            Some(completion)
+            Ok(Some(completion))
         }
     }
 }

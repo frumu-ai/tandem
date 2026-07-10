@@ -53,6 +53,27 @@ pub fn evaluate_data_boundary(
     request: &DataBoundaryEvaluationRequest<'_>,
     policy: &DataBoundaryPolicy,
 ) -> DataBoundaryEvaluation {
+    evaluate_data_boundary_impl(request, policy, None).evaluation
+}
+
+pub(crate) struct StructuredDataBoundaryEvaluation {
+    pub(crate) evaluation: DataBoundaryEvaluation,
+    pub(crate) detector_findings: Vec<DataBoundaryDetectorFinding>,
+}
+
+pub(crate) fn evaluate_data_boundary_with_detector_findings(
+    request: &DataBoundaryEvaluationRequest<'_>,
+    policy: &DataBoundaryPolicy,
+    detector_findings: Vec<DataBoundaryDetectorFinding>,
+) -> StructuredDataBoundaryEvaluation {
+    evaluate_data_boundary_impl(request, policy, Some(detector_findings))
+}
+
+fn evaluate_data_boundary_impl(
+    request: &DataBoundaryEvaluationRequest<'_>,
+    policy: &DataBoundaryPolicy,
+    supplied_detector_findings: Option<Vec<DataBoundaryDetectorFinding>>,
+) -> StructuredDataBoundaryEvaluation {
     let input = request.input;
     let resolved_payload_hash = resolve_payload_hash(input, request.payload);
 
@@ -65,20 +86,25 @@ pub fn evaluate_data_boundary(
             vec!["mode_off".to_string()],
             &[],
         );
-        return DataBoundaryEvaluation {
-            decision,
-            findings: Vec::new(),
-            transformed_payload: None,
-            event_kind: DataBoundaryEventKind::Evaluated,
+        return StructuredDataBoundaryEvaluation {
+            evaluation: DataBoundaryEvaluation {
+                decision,
+                findings: Vec::new(),
+                transformed_payload: None,
+                event_kind: DataBoundaryEventKind::Evaluated,
+            },
+            detector_findings: Vec::new(),
         };
     }
 
     let default_config = DataBoundaryDetectorConfig::default();
     let detector_config = request.detector_config.unwrap_or(&default_config);
-    let detector_findings = request
-        .payload
-        .map(|payload| detect_sensitive_data_with_config(payload, detector_config))
-        .unwrap_or_default();
+    let detector_findings = supplied_detector_findings.unwrap_or_else(|| {
+        request
+            .payload
+            .map(|payload| detect_sensitive_data_with_config(payload, detector_config))
+            .unwrap_or_default()
+    });
 
     let findings = summarize_findings(&detector_findings);
     let detected_classes: BTreeSet<SensitiveDataClass> =
@@ -123,11 +149,14 @@ pub fn evaluate_data_boundary(
     );
     decision.finding_ids = findings.iter().map(|f| f.finding_id.clone()).collect();
 
-    DataBoundaryEvaluation {
-        decision,
-        findings,
-        transformed_payload,
-        event_kind: event_kind_for_action(action),
+    StructuredDataBoundaryEvaluation {
+        evaluation: DataBoundaryEvaluation {
+            decision,
+            findings,
+            transformed_payload,
+            event_kind: event_kind_for_action(action),
+        },
+        detector_findings,
     }
 }
 
@@ -223,16 +252,27 @@ fn candidate_enforce_action(
 
     if policy.strict_fail_closed {
         let tenant = &input.tenant;
-        if tenant.organization_id.is_none()
-            && tenant.workspace_id.is_none()
-            && tenant.deployment_id.is_none()
-        {
+        let has_organization = tenant
+            .organization_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
+        let has_workspace = tenant
+            .workspace_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
+        if !has_organization || !has_workspace {
             raise(
                 DataBoundaryAction::Block,
                 "missing_tenant_context".to_string(),
                 &mut action,
                 &mut reason_codes,
             );
+            if !has_organization {
+                reason_codes.push("missing_tenant_organization".to_string());
+            }
+            if !has_workspace {
+                reason_codes.push("missing_tenant_workspace".to_string());
+            }
         }
         if provider_class == ProviderBoundaryClass::Unknown {
             raise(

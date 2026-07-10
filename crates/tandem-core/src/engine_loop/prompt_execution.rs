@@ -7,6 +7,28 @@ impl EngineLoop {
         req: SendMessageRequest,
         correlation_id: Option<String>,
     ) -> anyhow::Result<()> {
+        self.run_prompt_async_with_execution_context(
+            session_id,
+            req,
+            correlation_id,
+            None,
+            Vec::new(),
+        )
+        .await
+    }
+
+    /// Runs a prompt with the verified execution authority and trusted
+    /// semantic classes supplied by the host surface. The legacy wrapper
+    /// remains available for callers that do not yet carry run authority;
+    /// strict boundary mode intentionally fails those calls closed.
+    pub async fn run_prompt_async_with_execution_context(
+        &self,
+        session_id: String,
+        req: SendMessageRequest,
+        correlation_id: Option<String>,
+        run_id: Option<String>,
+        trusted_data_classes: Vec<tandem_data_boundary::SensitiveDataClass>,
+    ) -> anyhow::Result<()> {
         let session_record = self.storage.get_session(&session_id).await;
         let session_model = session_record
             .as_ref()
@@ -28,6 +50,7 @@ impl EngineLoop {
             )
             })?;
         let correlation_ref = correlation_id.as_deref();
+        let run_ref = run_id.as_deref();
         let observability_tenant = session_record
             .as_ref()
             .map(|session| &session.tenant_context);
@@ -54,7 +77,7 @@ impl EngineLoop {
                 workspace_id: None,
                 correlation_id: correlation_ref,
                 session_id: Some(&session_id),
-                run_id: None,
+                run_id: run_ref,
                 message_id: None,
                 provider_id: Some(provider_id.as_str()),
                 model_id,
@@ -74,6 +97,7 @@ impl EngineLoop {
         let requested_prewrite_requirements = req.prewrite_requirements.clone().unwrap_or_default();
         let prewrite_repair_budget = prewrite_repair_retry_budget(&requested_prewrite_requirements);
         let prewrite_fail_closed = prewrite_gate_strict_mode(&requested_prewrite_requirements);
+        let request_tool_allowlist_is_explicit = req.tool_allowlist.is_some();
         let request_tool_allowlist = req
             .tool_allowlist
             .clone()
@@ -88,7 +112,7 @@ impl EngineLoop {
             mcp_source_wildcards_required_before_write(&request_tool_allowlist);
         // Propagate per-request tool allowlist to session-level enforcement so
         // that execution-time checks (and mcp_list scoping) also respect it.
-        if !request_tool_allowlist.is_empty() {
+        if request_tool_allowlist_is_explicit {
             self.set_session_allowed_tools(
                 &session_id,
                 request_tool_allowlist.iter().cloned().collect(),
@@ -505,7 +529,7 @@ impl EngineLoop {
                         }
                     }
                 }
-                if !request_tool_allowlist.is_empty() {
+                if request_tool_allowlist_is_explicit {
                     tool_schemas.retain(|schema| {
                         let tool = normalize_tool_name(&schema.name);
                         request_tool_allowlist
@@ -611,15 +635,13 @@ impl EngineLoop {
                     .get(&session_id)
                     .cloned()
                 {
-                    if !allowed_tools.is_empty() {
-                        tool_schemas.retain(|schema| {
-                            tool_allowed_by_session_policy(
-                                &schema.name,
-                                &allowed_tools,
-                                requested_write_required,
-                            )
-                        });
-                    }
+                    tool_schemas.retain(|schema| {
+                        tool_allowed_by_session_policy(
+                            &schema.name,
+                            &allowed_tools,
+                            requested_write_required,
+                        )
+                    });
                 }
                 let hidden_by_scope = if let Some(strict_context) = strict_tool_context.as_ref() {
                     let before_strict_projection = tool_schemas
@@ -681,7 +703,7 @@ impl EngineLoop {
                             workspace_id: None,
                             correlation_id: correlation_ref,
                             session_id: Some(&session_id),
-                            run_id: None,
+                            run_id: run_ref,
                             message_id: Some(&user_message_id),
                             provider_id: Some(provider_id.as_str()),
                             model_id,
@@ -753,13 +775,15 @@ impl EngineLoop {
                     }),
                 ));
                 let estimated_prompt_chars: usize = messages.iter().map(|m| m.content.len()).sum();
-                let tool_schema_chars = if tool_schemas.is_empty() {
-                    0usize
+                let serialized_tool_schemas = if tool_schemas.is_empty() {
+                    None
                 } else {
-                    serde_json::to_string(&tool_schemas)
-                        .map(|serialized| serialized.len())
-                        .unwrap_or(0)
+                    serde_json::to_string(&tool_schemas).ok()
                 };
+                let tool_schema_chars = serialized_tool_schemas
+                    .as_ref()
+                    .map(|serialized| serialized.len())
+                    .unwrap_or(0);
                 let estimated_total_chars = estimated_prompt_chars
                     .saturating_add(tool_schema_chars)
                     .saturating_add(attachment_chars);
@@ -834,13 +858,44 @@ impl EngineLoop {
                 // all, so strict policies can fail closed on it (TAN-400).
                 let boundary_tenant =
                     observability_tenant.filter(|tenant| !tenant.is_local_implicit());
-                match data_boundary_gate::evaluate_dispatch_boundary(
+                let mut dispatch_data_classes = trusted_data_classes.clone();
+                dispatch_data_classes.extend([
+                    tandem_data_boundary::SensitiveDataClass::CustomerData,
+                    tandem_data_boundary::SensitiveDataClass::SourceCode,
+                ]);
+                if iteration > 0 {
+                    dispatch_data_classes
+                        .push(tandem_data_boundary::SensitiveDataClass::UnknownSensitive);
+                }
+                if hook_stats.sources.iter().any(|(source, stats)| {
+                    stats.injected_count > 0 && matches!(source.as_str(), "docs" | "kbGrounding")
+                }) {
+                    dispatch_data_classes.push(tandem_data_boundary::SensitiveDataClass::Legal);
+                }
+                if hook_stats.sources.iter().any(|(source, stats)| {
+                    stats.injected_count > 0
+                        && matches!(source.as_str(), "globalMemory" | "memoryScope")
+                }) {
+                    dispatch_data_classes
+                        .push(tandem_data_boundary::SensitiveDataClass::ProprietaryBusinessData);
+                }
+                dispatch_data_classes.sort();
+                dispatch_data_classes.dedup();
+                let provider_egress_permit = match data_boundary_gate::evaluate_dispatch_boundary(
                     &data_boundary_gate::DataBoundaryDispatchContext {
                         session_id: &session_id,
+                        run_id: run_ref,
                         message_id: &user_message_id,
                         correlation_id: correlation_ref,
                         provider_id: provider_id.as_str(),
-                        model_id: model_id_value.as_str(),
+                        model_id: Some(model_id_value.as_str()),
+                        tool_schema_payload: serialized_tool_schemas.as_deref(),
+                        source_ref: "engine_loop.provider_dispatch",
+                        data_classes: &dispatch_data_classes,
+                        authority_ref: session_record
+                            .as_ref()
+                            .and_then(|session| session.verified_tenant_context.as_ref())
+                            .map(|verified| verified.assertion_id.as_str()),
                         org_id: boundary_tenant.map(|tenant| tenant.org_id.as_str()),
                         workspace_id: boundary_tenant.map(|tenant| tenant.workspace_id.as_str()),
                         deployment_id: boundary_tenant
@@ -848,21 +903,25 @@ impl EngineLoop {
                     },
                     &messages,
                 ) {
-                    data_boundary_gate::DataBoundaryDispatchOutcome::Off => {}
-                    data_boundary_gate::DataBoundaryDispatchOutcome::Proceed { event } => {
+                    data_boundary_gate::DataBoundaryDispatchOutcome::Off { permit } => permit,
+                    data_boundary_gate::DataBoundaryDispatchOutcome::Proceed { event, permit } => {
                         self.event_bus.publish(event);
+                        permit
                     }
                     data_boundary_gate::DataBoundaryDispatchOutcome::ProceedTransformed {
                         event,
                         messages: transformed,
+                        permit,
                     } => {
                         self.event_bus.publish(event);
                         messages = transformed;
+                        permit
                     }
                     data_boundary_gate::DataBoundaryDispatchOutcome::RequireApproval {
                         event,
                         evidence,
                         denial_reason,
+                        approval,
                     } => {
                         self.event_bus.publish(event);
                         let pending = self
@@ -896,13 +955,14 @@ impl EngineLoop {
                             self.mark_session_run_failed(&session_id, &detail).await;
                             anyhow::bail!("{detail}");
                         }
+                        approval.approve(pending.id).map_err(anyhow::Error::msg)?
                     }
                     data_boundary_gate::DataBoundaryDispatchOutcome::Blocked { event, reason } => {
                         self.event_bus.publish(event);
                         self.mark_session_run_failed(&session_id, &reason).await;
                         anyhow::bail!("{reason}");
                     }
-                }
+                };
                 if full_context_mode {
                     let soft_budget_chars = full_context_soft_budget_chars();
                     let hard_budget_chars = full_context_hard_budget_chars();
@@ -959,7 +1019,7 @@ impl EngineLoop {
                                     workspace_id: None,
                                     correlation_id: correlation_ref,
                                     session_id: Some(&session_id),
-                                    run_id: None,
+                                    run_id: run_ref,
                                     message_id: Some(&user_message_id),
                                     provider_id: Some(provider_id.as_str()),
                                     model_id,
@@ -989,7 +1049,8 @@ impl EngineLoop {
                     accepted_tool_calls_in_cycle = 0;
                     let stream_result = tokio::time::timeout(
                         provider_connect_timeout,
-                        self.providers.stream_for_provider(
+                        self.providers.stream_with_egress_permit(
+                            &provider_egress_permit,
                             Some(provider_id.as_str()),
                             Some(model_id_value.as_str()),
                             messages.clone(),
@@ -1054,7 +1115,7 @@ impl EngineLoop {
                                     workspace_id: None,
                                     correlation_id: correlation_ref,
                                     session_id: Some(&session_id),
-                                    run_id: None,
+                                    run_id: run_ref,
                                     message_id: Some(&user_message_id),
                                     provider_id: Some(provider_id.as_str()),
                                     model_id,
@@ -1181,7 +1242,7 @@ impl EngineLoop {
                                         workspace_id: None,
                                         correlation_id: correlation_ref,
                                         session_id: Some(&session_id),
-                                        run_id: None,
+                                        run_id: run_ref,
                                         message_id: Some(&user_message_id),
                                         provider_id: Some(provider_id.as_str()),
                                         model_id,
@@ -1224,7 +1285,7 @@ impl EngineLoop {
                                             workspace_id: None,
                                             correlation_id: correlation_ref,
                                             session_id: Some(&session_id),
-                                            run_id: None,
+                                            run_id: run_ref,
                                             message_id: Some(&user_message_id),
                                             provider_id: Some(provider_id.as_str()),
                                             model_id,
@@ -1442,7 +1503,7 @@ impl EngineLoop {
                         workspace_id: None,
                         correlation_id: correlation_ref,
                         session_id: Some(&session_id),
-                        run_id: None,
+                        run_id: run_ref,
                         message_id: Some(&user_message_id),
                         provider_id: Some(provider_id.as_str()),
                         model_id,
@@ -1538,6 +1599,7 @@ impl EngineLoop {
                 if let Some(narrative) = self
                     .generate_final_narrative_without_tools(
                         &session_id,
+                        run_ref,
                         &active_agent,
                         Some(provider_id.as_str()),
                         Some(model_id_value.as_str()),
@@ -1545,7 +1607,7 @@ impl EngineLoop {
                         cancel.clone(),
                         &last_tool_outputs,
                     )
-                    .await
+                    .await?
                 {
                     completion = narrative;
                 }
@@ -1606,7 +1668,7 @@ impl EngineLoop {
                 workspace_id: None,
                 correlation_id: correlation_ref,
                 session_id: Some(&session_id),
-                run_id: None,
+                run_id: run_ref,
                 message_id: Some(&user_message_id),
                 provider_id: Some(provider_id.as_str()),
                 model_id,

@@ -1,13 +1,21 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use base64::Engine;
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tandem_types::TenantContext;
 
 const PROVIDER_AUTH_SERVICE: &str = "ai.frumu.tandem";
+
+static PROVIDER_CREDENTIAL_MUTATION_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+fn provider_credential_mutation_lock() -> &'static tokio::sync::Mutex<()> {
+    PROVIDER_CREDENTIAL_MUTATION_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderAuthBackend {
@@ -55,6 +63,72 @@ fn provider_credentials_index_path() -> PathBuf {
 fn provider_credentials_fallback_path() -> PathBuf {
     provider_auth_security_dir().join("provider_credentials_fallback.json")
 }
+
+fn provider_credential_mutation_lock_path(security_dir: &Path) -> PathBuf {
+    security_dir.join("provider_credentials.lock")
+}
+
+struct ProviderCredentialMutationFileLock {
+    file: std::fs::File,
+}
+
+impl ProviderCredentialMutationFileLock {
+    fn acquire_blocking(security_dir: &Path) -> anyhow::Result<Self> {
+        std::fs::create_dir_all(security_dir)?;
+        let lock_path = provider_credential_mutation_lock_path(security_dir);
+        let file = {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .read(true)
+                    .write(true)
+                    .mode(0o600)
+                    .open(&lock_path)?
+            }
+            #[cfg(not(unix))]
+            {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .read(true)
+                    .write(true)
+                    .open(&lock_path)?
+            }
+        };
+        file.lock_exclusive()?;
+        Ok(Self { file })
+    }
+
+    async fn acquire(security_dir: &Path) -> anyhow::Result<Self> {
+        let security_dir = security_dir.to_path_buf();
+        tokio::task::spawn_blocking(move || Self::acquire_blocking(&security_dir))
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!("join provider credential lock acquisition: {error}")
+            })?
+    }
+}
+
+impl Drop for ProviderCredentialMutationFileLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.file);
+    }
+}
+
+#[cfg(test)]
+fn delay_provider_credential_rmw_for_test() {
+    let Some(delay_ms) = std::env::var("TANDEM_TEST_PROVIDER_CREDENTIAL_RMW_DELAY_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    else {
+        return;
+    };
+    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+}
+
+#[cfg(not(test))]
+fn delay_provider_credential_rmw_for_test() {}
 
 fn normalize_provider_id(id: &str) -> String {
     id.trim().to_ascii_lowercase()
@@ -210,6 +284,86 @@ fn strip_tenant_scoped_provider_id(
             .filter(|id| !id.is_empty()),
         None => (!normalized.starts_with(TENANT_SCOPED_PROVIDER_PREFIX)).then_some(normalized),
     }
+}
+
+fn decode_tenant_scope_component(encoded: &str) -> Option<String> {
+    if encoded.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = encoded
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let pair = std::str::from_utf8(pair).ok()?;
+            u8::from_str_radix(pair, 16).ok()
+        })
+        .collect::<Option<Vec<_>>>()?;
+    String::from_utf8(bytes).ok()
+}
+
+fn tenant_context_from_scoped_provider_id(
+    scoped_provider_id: &str,
+    provider_id: &str,
+) -> Option<TenantContext> {
+    let normalized = normalize_provider_id(scoped_provider_id);
+    let rest = normalized.strip_prefix(TENANT_SCOPED_PROVIDER_PREFIX)?;
+    let mut parts = rest.splitn(4, "::");
+    let org_id = decode_tenant_scope_component(parts.next()?)?;
+    let workspace_id = decode_tenant_scope_component(parts.next()?)?;
+    let deployment_id = decode_tenant_scope_component(parts.next()?)?;
+    let stored_provider_id = parts.next()?;
+    if org_id.is_empty()
+        || workspace_id.is_empty()
+        || normalize_provider_id(stored_provider_id) != normalize_provider_id(provider_id)
+    {
+        return None;
+    }
+
+    let mut tenant_context = TenantContext::explicit(org_id, workspace_id, None);
+    tenant_context.deployment_id = (!deployment_id.is_empty()).then_some(deployment_id);
+    Some(tenant_context)
+}
+
+fn provider_oauth_tenant_contexts_from_credentials(
+    credentials: HashMap<String, ProviderCredential>,
+    provider_id: &str,
+) -> Vec<TenantContext> {
+    let provider_id = normalize_provider_id(provider_id);
+    if provider_id.is_empty() {
+        return Vec::new();
+    }
+
+    let mut contexts = credentials
+        .into_iter()
+        .filter_map(|(stored_provider_id, credential)| {
+            matches!(credential, ProviderCredential::OAuth(_)).then_some(stored_provider_id)
+        })
+        .filter_map(|stored_provider_id| {
+            if normalize_provider_id(&stored_provider_id) == provider_id {
+                Some(TenantContext::local_implicit())
+            } else {
+                tenant_context_from_scoped_provider_id(&stored_provider_id, &provider_id)
+            }
+        })
+        .collect::<Vec<_>>();
+    contexts.sort_by(|left, right| {
+        (
+            left.org_id.as_str(),
+            left.workspace_id.as_str(),
+            left.deployment_id.as_deref().unwrap_or_default(),
+        )
+            .cmp(&(
+                right.org_id.as_str(),
+                right.workspace_id.as_str(),
+                right.deployment_id.as_deref().unwrap_or_default(),
+            ))
+    });
+    contexts.dedup_by(|left, right| {
+        left.org_id == right.org_id
+            && left.workspace_id == right.workspace_id
+            && left.deployment_id == right.deployment_id
+    });
+    contexts
 }
 
 fn credential_with_provider_id(
@@ -806,6 +960,10 @@ pub fn load_openai_codex_cli_oauth_credential() -> Option<OAuthProviderCredentia
     load_codex_cli_oauth_credential_at(&resolve_codex_cli_auth_path())
 }
 
+pub fn load_openai_codex_cli_auth_json() -> Option<Value> {
+    read_json(&resolve_codex_cli_auth_path()).ok()
+}
+
 pub fn oauth_credential_from_codex_auth_json(auth_json: &Value) -> Option<OAuthProviderCredential> {
     let auth = serde_json::from_value::<CodexCliAuthFile>(auth_json.clone()).ok()?;
     oauth_credential_from_codex_auth_file(auth)
@@ -815,6 +973,18 @@ pub fn write_openai_codex_cli_auth_json(auth_json: &Value) -> anyhow::Result<Pat
     let path = resolve_codex_cli_auth_path();
     write_codex_cli_auth_json_at(&path, auth_json)?;
     Ok(path)
+}
+
+pub fn restore_openai_codex_cli_auth_json(auth_json: Option<&Value>) -> anyhow::Result<()> {
+    let path = resolve_codex_cli_auth_path();
+    if let Some(auth_json) = auth_json {
+        return write_codex_cli_auth_json_at(&path, auth_json);
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn load_credential_fallback_map() -> HashMap<String, ProviderCredential> {
@@ -1186,15 +1356,50 @@ pub fn load_provider_credentials_for_tenant_in_dir(
     known
         .into_iter()
         .filter_map(|provider_id| {
-            let credential = fallback.get(&provider_id)?;
+            let credential = fallback.get(&provider_id).cloned().or_else(|| {
+                credential_keyring_entry(&provider_id)
+                    .and_then(|entry| entry.get_password().ok())
+                    .and_then(|secret| serde_json::from_str::<ProviderCredential>(&secret).ok())
+                    .and_then(|credential| normalize_provider_credential(credential).ok())
+            })?;
             strip_tenant_scoped_provider_id(tenant_context, &provider_id).map(|stripped| {
                 (
                     stripped.clone(),
-                    credential_with_provider_id(credential.clone(), stripped),
+                    credential_with_provider_id(credential, stripped),
                 )
             })
         })
         .collect()
+}
+
+/// Discover the tenant scopes that own a persisted OAuth credential for one
+/// provider. Hosted scopes are reconstructed from the encoded credential keys;
+/// actor identity is intentionally absent because credentials are owned by the
+/// tenant/deployment boundary rather than an individual actor.
+pub fn list_provider_oauth_tenant_contexts(provider_id: &str) -> Vec<TenantContext> {
+    provider_oauth_tenant_contexts_from_credentials(load_provider_credentials(), provider_id)
+}
+
+pub fn list_provider_oauth_tenant_contexts_in_dir(
+    security_dir: &Path,
+    provider_id: &str,
+) -> Vec<TenantContext> {
+    let fallback = load_credential_fallback_map_from_dir(security_dir);
+    let mut known = load_provider_credentials_index_from_dir(security_dir);
+    known.extend(fallback.keys().cloned());
+    let credentials = known
+        .into_iter()
+        .filter_map(|provider_id| {
+            let credential = fallback.get(&provider_id).cloned().or_else(|| {
+                credential_keyring_entry(&provider_id)
+                    .and_then(|entry| entry.get_password().ok())
+                    .and_then(|secret| serde_json::from_str::<ProviderCredential>(&secret).ok())
+                    .and_then(|credential| normalize_provider_credential(credential).ok())
+            })?;
+            Some((provider_id, credential))
+        })
+        .collect();
+    provider_oauth_tenant_contexts_from_credentials(credentials, provider_id)
 }
 
 pub fn load_provider_oauth_credential(provider_id: &str) -> Option<OAuthProviderCredential> {
@@ -1241,7 +1446,7 @@ pub fn load_provider_oauth_credential_for_tenant_in_dir(
     }
 }
 
-pub fn set_provider_credential(
+fn set_provider_credential_unlocked(
     credential: ProviderCredential,
 ) -> anyhow::Result<ProviderAuthBackend> {
     let normalized = normalize_provider_credential(credential)?;
@@ -1262,10 +1467,19 @@ pub fn set_provider_credential(
     }
 
     let mut fallback = load_credential_fallback_map();
+    delay_provider_credential_rmw_for_test();
     fallback.insert(provider_id.clone(), normalized);
     save_credential_fallback_map(&fallback)?;
     save_provider_credentials_index(&known)?;
     Ok(ProviderAuthBackend::File)
+}
+
+pub fn set_provider_credential(
+    credential: ProviderCredential,
+) -> anyhow::Result<ProviderAuthBackend> {
+    let _file_guard =
+        ProviderCredentialMutationFileLock::acquire_blocking(&provider_auth_security_dir())?;
+    set_provider_credential_unlocked(credential)
 }
 
 pub fn set_provider_credential_for_tenant(
@@ -1286,7 +1500,7 @@ pub fn set_provider_oauth_credential(
     set_provider_credential(ProviderCredential::OAuth(credential))
 }
 
-pub fn set_provider_oauth_credential_in_dir(
+fn set_provider_oauth_credential_in_dir_unlocked(
     security_dir: &Path,
     provider_id: &str,
     credential: OAuthProviderCredential,
@@ -1296,12 +1510,22 @@ pub fn set_provider_oauth_credential_in_dir(
     let normalized = normalize_provider_credential(ProviderCredential::OAuth(credential))?;
     let provider_id = normalized.provider_id().to_string();
     let mut fallback = load_credential_fallback_map_from_dir(security_dir);
+    delay_provider_credential_rmw_for_test();
     fallback.insert(provider_id.clone(), normalized);
     save_credential_fallback_map_to_dir(security_dir, &fallback)?;
     let mut known = load_provider_credentials_index_from_dir(security_dir);
     known.insert(provider_id);
     save_provider_credentials_index_to_dir(security_dir, &known)?;
     Ok(ProviderAuthBackend::File)
+}
+
+pub fn set_provider_oauth_credential_in_dir(
+    security_dir: &Path,
+    provider_id: &str,
+    credential: OAuthProviderCredential,
+) -> anyhow::Result<ProviderAuthBackend> {
+    let _file_guard = ProviderCredentialMutationFileLock::acquire_blocking(security_dir)?;
+    set_provider_oauth_credential_in_dir_unlocked(security_dir, provider_id, credential)
 }
 
 pub fn set_provider_oauth_credential_for_tenant(
@@ -1314,7 +1538,22 @@ pub fn set_provider_oauth_credential_for_tenant(
     set_provider_credential_for_tenant(tenant_context, ProviderCredential::OAuth(credential))
 }
 
-pub fn set_provider_oauth_credential_for_tenant_in_dir(
+pub async fn set_provider_oauth_credential_for_tenant_serialized(
+    tenant_context: &TenantContext,
+    provider_id: &str,
+    credential: OAuthProviderCredential,
+) -> anyhow::Result<ProviderAuthBackend> {
+    let _guard = provider_credential_mutation_lock().lock().await;
+    let _file_guard =
+        ProviderCredentialMutationFileLock::acquire(&provider_auth_security_dir()).await?;
+    let mut credential = credential;
+    credential.provider_id = normalize_provider_id(provider_id);
+    let normalized = normalize_provider_credential(ProviderCredential::OAuth(credential))?;
+    let scoped_provider_id = tenant_scoped_provider_id(tenant_context, normalized.provider_id());
+    set_provider_credential_unlocked(credential_with_provider_id(normalized, scoped_provider_id))
+}
+
+fn set_provider_oauth_credential_for_tenant_in_dir_unlocked(
     security_dir: &Path,
     tenant_context: &TenantContext,
     provider_id: &str,
@@ -1326,6 +1565,7 @@ pub fn set_provider_oauth_credential_for_tenant_in_dir(
     let scoped_provider_id = tenant_scoped_provider_id(tenant_context, normalized.provider_id());
     let normalized = credential_with_provider_id(normalized, scoped_provider_id.clone());
     let mut fallback = load_credential_fallback_map_from_dir(security_dir);
+    delay_provider_credential_rmw_for_test();
     fallback.insert(normalize_provider_id(&scoped_provider_id), normalized);
     save_credential_fallback_map_to_dir(security_dir, &fallback)?;
     let mut known = load_provider_credentials_index_from_dir(security_dir);
@@ -1334,7 +1574,145 @@ pub fn set_provider_oauth_credential_for_tenant_in_dir(
     Ok(ProviderAuthBackend::File)
 }
 
-pub fn delete_provider_credential(provider_id: &str) -> anyhow::Result<bool> {
+pub fn set_provider_oauth_credential_for_tenant_in_dir(
+    security_dir: &Path,
+    tenant_context: &TenantContext,
+    provider_id: &str,
+    credential: OAuthProviderCredential,
+) -> anyhow::Result<ProviderAuthBackend> {
+    let _file_guard = ProviderCredentialMutationFileLock::acquire_blocking(security_dir)?;
+    set_provider_oauth_credential_for_tenant_in_dir_unlocked(
+        security_dir,
+        tenant_context,
+        provider_id,
+        credential,
+    )
+}
+
+pub async fn set_provider_oauth_credential_for_tenant_in_dir_serialized(
+    security_dir: &Path,
+    tenant_context: &TenantContext,
+    provider_id: &str,
+    credential: OAuthProviderCredential,
+) -> anyhow::Result<ProviderAuthBackend> {
+    let _guard = provider_credential_mutation_lock().lock().await;
+    let _file_guard = ProviderCredentialMutationFileLock::acquire(security_dir).await?;
+    set_provider_oauth_credential_for_tenant_in_dir_unlocked(
+        security_dir,
+        tenant_context,
+        provider_id,
+        credential,
+    )
+}
+
+fn compare_and_set_provider_oauth_credential_for_tenant_in_dir_unlocked(
+    security_dir: &Path,
+    tenant_context: &TenantContext,
+    provider_id: &str,
+    expected: Option<&OAuthProviderCredential>,
+    replacement: Option<OAuthProviderCredential>,
+) -> anyhow::Result<bool> {
+    let provider_id = normalize_provider_id(provider_id);
+    if provider_id.is_empty() {
+        anyhow::bail!("provider id cannot be empty");
+    }
+    let scoped_provider_id = tenant_scoped_provider_id(tenant_context, &provider_id);
+    let mut fallback = load_credential_fallback_map_from_dir(security_dir);
+    let current = fallback
+        .get(&scoped_provider_id)
+        .cloned()
+        .map(|credential| credential_with_provider_id(credential, provider_id.clone()));
+    let expected = expected
+        .cloned()
+        .map(|mut expected| {
+            expected.provider_id = provider_id.clone();
+            normalize_provider_credential(ProviderCredential::OAuth(expected))
+        })
+        .transpose()?;
+    if current != expected {
+        return Ok(false);
+    }
+
+    match replacement {
+        Some(mut replacement) => {
+            replacement.provider_id = provider_id;
+            let replacement =
+                normalize_provider_credential(ProviderCredential::OAuth(replacement))?;
+            fallback.insert(
+                scoped_provider_id.clone(),
+                credential_with_provider_id(replacement, scoped_provider_id.clone()),
+            );
+        }
+        None => {
+            fallback.remove(&scoped_provider_id);
+        }
+    }
+    save_credential_fallback_map_to_dir(security_dir, &fallback)?;
+
+    let mut known = load_provider_credentials_index_from_dir(security_dir);
+    if fallback.contains_key(&scoped_provider_id) {
+        known.insert(scoped_provider_id);
+    } else {
+        known.remove(&scoped_provider_id);
+    }
+    save_provider_credentials_index_to_dir(security_dir, &known)?;
+    Ok(true)
+}
+
+pub fn compare_and_set_provider_oauth_credential_for_tenant_in_dir(
+    security_dir: &Path,
+    tenant_context: &TenantContext,
+    provider_id: &str,
+    expected: &OAuthProviderCredential,
+    replacement: Option<OAuthProviderCredential>,
+) -> anyhow::Result<bool> {
+    let _file_guard = ProviderCredentialMutationFileLock::acquire_blocking(security_dir)?;
+    compare_and_set_provider_oauth_credential_for_tenant_in_dir_unlocked(
+        security_dir,
+        tenant_context,
+        provider_id,
+        Some(expected),
+        replacement,
+    )
+}
+
+pub async fn compare_and_set_provider_oauth_credential_for_tenant_in_dir_serialized(
+    security_dir: &Path,
+    tenant_context: &TenantContext,
+    provider_id: &str,
+    expected: &OAuthProviderCredential,
+    replacement: Option<OAuthProviderCredential>,
+) -> anyhow::Result<bool> {
+    let _guard = provider_credential_mutation_lock().lock().await;
+    let _file_guard = ProviderCredentialMutationFileLock::acquire(security_dir).await?;
+    compare_and_set_provider_oauth_credential_for_tenant_in_dir_unlocked(
+        security_dir,
+        tenant_context,
+        provider_id,
+        Some(expected),
+        replacement,
+    )
+}
+
+pub async fn compare_and_set_optional_provider_oauth_credential_for_tenant_in_dir_serialized(
+    security_dir: &Path,
+    tenant_context: &TenantContext,
+    provider_id: &str,
+    expected: Option<&OAuthProviderCredential>,
+    replacement: Option<OAuthProviderCredential>,
+) -> anyhow::Result<bool> {
+    let _guard = provider_credential_mutation_lock().lock().await;
+    let _file_guard = ProviderCredentialMutationFileLock::acquire(security_dir).await?;
+    compare_and_set_provider_oauth_credential_for_tenant_in_dir_unlocked(
+        security_dir,
+        tenant_context,
+        provider_id,
+        expected,
+        replacement,
+    )
+}
+
+fn delete_provider_credential_unlocked(provider_id: &str) -> anyhow::Result<bool> {
     let id = normalize_provider_id(provider_id);
     if id.is_empty() {
         return Ok(false);
@@ -1349,6 +1727,7 @@ pub fn delete_provider_credential(provider_id: &str) -> anyhow::Result<bool> {
     }
 
     let mut fallback = load_credential_fallback_map();
+    delay_provider_credential_rmw_for_test();
     if fallback.remove(&id).is_some() {
         removed = true;
     }
@@ -1363,6 +1742,12 @@ pub fn delete_provider_credential(provider_id: &str) -> anyhow::Result<bool> {
     Ok(removed)
 }
 
+pub fn delete_provider_credential(provider_id: &str) -> anyhow::Result<bool> {
+    let _file_guard =
+        ProviderCredentialMutationFileLock::acquire_blocking(&provider_auth_security_dir())?;
+    delete_provider_credential_unlocked(provider_id)
+}
+
 pub fn delete_provider_credential_for_tenant(
     tenant_context: &TenantContext,
     provider_id: &str,
@@ -1371,7 +1756,7 @@ pub fn delete_provider_credential_for_tenant(
     delete_provider_credential(&scoped_provider_id)
 }
 
-pub fn delete_provider_credential_for_tenant_in_dir(
+fn delete_provider_credential_for_tenant_in_dir_unlocked(
     security_dir: &Path,
     tenant_context: &TenantContext,
     provider_id: &str,
@@ -1383,6 +1768,7 @@ pub fn delete_provider_credential_for_tenant_in_dir(
     }
     let mut removed = false;
     let mut fallback = load_credential_fallback_map_from_dir(security_dir);
+    delay_provider_credential_rmw_for_test();
     if fallback.remove(&scoped_provider_id).is_some() {
         removed = true;
     }
@@ -1393,6 +1779,25 @@ pub fn delete_provider_credential_for_tenant_in_dir(
     }
     save_provider_credentials_index_to_dir(security_dir, &known)?;
     Ok(removed)
+}
+
+pub fn delete_provider_credential_for_tenant_in_dir(
+    security_dir: &Path,
+    tenant_context: &TenantContext,
+    provider_id: &str,
+) -> anyhow::Result<bool> {
+    let _file_guard = ProviderCredentialMutationFileLock::acquire_blocking(security_dir)?;
+    delete_provider_credential_for_tenant_in_dir_unlocked(security_dir, tenant_context, provider_id)
+}
+
+pub async fn delete_provider_credential_for_tenant_in_dir_serialized(
+    security_dir: &Path,
+    tenant_context: &TenantContext,
+    provider_id: &str,
+) -> anyhow::Result<bool> {
+    let _guard = provider_credential_mutation_lock().lock().await;
+    let _file_guard = ProviderCredentialMutationFileLock::acquire(security_dir).await?;
+    delete_provider_credential_for_tenant_in_dir_unlocked(security_dir, tenant_context, provider_id)
 }
 
 #[cfg(test)]

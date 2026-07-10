@@ -35,6 +35,7 @@ pub struct ObservabilityMetricsSnapshot {
 #[derive(Debug, Default)]
 struct MetricsState {
     snapshot: ObservabilityMetricsSnapshot,
+    provider_oauth_refresh_total: BTreeMap<String, u64>,
     pending_runs: BTreeMap<String, u64>,
     pending_gates: BTreeMap<String, u64>,
 }
@@ -137,6 +138,22 @@ pub fn record_provider_error(provider_id: &str, error_code: &str) {
     *state.snapshot.provider_errors_total.entry(key).or_default() += 1;
 }
 
+pub fn record_provider_oauth_refresh(outcome: &str) {
+    let outcome = safe_label(outcome);
+    metrics::counter!(
+        "tandem_provider_oauth_refresh_total",
+        "outcome" => outcome.clone()
+    )
+    .increment(1);
+    let mut state = metrics_state()
+        .lock()
+        .expect("observability metrics mutex poisoned");
+    *state
+        .provider_oauth_refresh_total
+        .entry(outcome)
+        .or_default() += 1;
+}
+
 pub fn record_engine_event_metrics(event_type: &str, properties: &Value) {
     match event_type {
         "session.run.started" => {
@@ -219,12 +236,24 @@ pub fn record_engine_event_metrics(event_type: &str, properties: &Value) {
                     .unwrap_or(event_type);
             record_provider_error(provider_id, error_code);
         }
+        "provider.oauth.refresh.succeeded" => record_provider_oauth_refresh("succeeded"),
+        "provider.oauth.refresh.failed" => record_provider_oauth_refresh("failed"),
+        "provider.oauth.refresh.coalesced" => record_provider_oauth_refresh("coalesced"),
+        "provider.oauth.reauth_required" => record_provider_oauth_refresh("reauth_required"),
         _ => {}
     }
 }
 
 pub fn render_observability_metrics_prometheus() -> String {
-    let snapshot = observability_metrics_snapshot();
+    let (snapshot, provider_oauth_refresh_total) = {
+        let state = metrics_state()
+            .lock()
+            .expect("observability metrics mutex poisoned");
+        (
+            state.snapshot.clone(),
+            state.provider_oauth_refresh_total.clone(),
+        )
+    };
     let mut out = String::new();
     render_summary(
         &mut out,
@@ -277,6 +306,14 @@ pub fn render_observability_metrics_prometheus() -> String {
                 ("provider_id", labels.provider_id.as_str()),
                 ("error_code", labels.error_code.as_str()),
             ],
+            count,
+        );
+    }
+    for (outcome, count) in provider_oauth_refresh_total {
+        render_metric_line(
+            &mut out,
+            "tandem_provider_oauth_refresh_total",
+            &[("outcome", outcome.as_str())],
             count,
         );
     }

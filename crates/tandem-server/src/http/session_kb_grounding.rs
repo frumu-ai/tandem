@@ -228,6 +228,10 @@ pub(super) async fn render_strict_kb_direct_answer(
     output: &str,
     policy: &tandem_core::KnowledgebaseGroundingPolicy,
     model_override: Option<&ModelSpec>,
+    run_id: &str,
+    session_id: &str,
+    tenant_context: &TenantContext,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
 ) -> Option<(String, StrictKbGroundingOutcome)> {
     if !tool_matches_kb_policy(tool_name, policy) {
         return None;
@@ -278,8 +282,17 @@ pub(super) async fn render_strict_kb_direct_answer(
                     && label == "supported"
                     && !answer_is_already_sufficiently_rich(&answer)
                 {
-                    match synthesize_strict_kb_answer(state, question, &evidence, model_override)
-                        .await
+                    match synthesize_strict_kb_answer(
+                        state,
+                        question,
+                        &evidence,
+                        model_override,
+                        run_id,
+                        session_id,
+                        tenant_context,
+                        verified_tenant_context,
+                    )
+                    .await
                     {
                         Ok(Some(response)) => {
                             let response_support =
@@ -303,8 +316,17 @@ pub(super) async fn render_strict_kb_direct_answer(
                 .filter(|answer| strict_kb_answer_is_evidence_safe(answer, &evidence))
             {
                 if strict_kb_grounded_synthesis_enabled() {
-                    match synthesize_strict_kb_answer(state, question, &evidence, model_override)
-                        .await
+                    match synthesize_strict_kb_answer(
+                        state,
+                        question,
+                        &evidence,
+                        model_override,
+                        run_id,
+                        session_id,
+                        tenant_context,
+                        verified_tenant_context,
+                    )
+                    .await
                     {
                         Ok(Some(response)) => {
                             let response_support =
@@ -1043,6 +1065,10 @@ async fn synthesize_strict_kb_answer(
     question: &str,
     evidence: &[KbEvidenceItem],
     model_override: Option<&ModelSpec>,
+    run_id: &str,
+    session_id: &str,
+    tenant_context: &TenantContext,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
 ) -> Result<Option<StrictKbSynthesisResponse>, String> {
     let evidence_block = evidence
         .iter()
@@ -1087,6 +1113,27 @@ async fn synthesize_strict_kb_answer(
     let model_id = model_override
         .map(|model| model.model_id.as_str())
         .filter(|value| !value.trim().is_empty());
+    let route = state
+        .providers
+        .resolve_provider_route(provider_id, model_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let operation_id = format!("{session_id}:kb_synthesis");
+    let prepared = crate::provider_egress::prepare_chat_messages(
+        state,
+        Some(tenant_context),
+        verified_tenant_context,
+        Some(run_id),
+        session_id,
+        &operation_id,
+        "server.session_kb_grounding",
+        crate::provider_egress::ServerProviderEgressKind::KnowledgeBase,
+        route.provider_id.as_str(),
+        route.model_id.as_deref(),
+        &messages,
+    )
+    .await?;
+    let messages = prepared.messages;
     let cancel = CancellationToken::new();
     state.event_bus.publish(tandem_types::EngineEvent::new(
         "context.budget.bypassed",
@@ -1095,22 +1142,30 @@ async fn synthesize_strict_kb_answer(
             "reason": "direct provider send outside engine-loop context budget accounting",
             "promptMessageCount": messages.len(),
             "promptChars": messages.iter().map(|m| m.content.len()).sum::<usize>(),
-            "providerID": provider_id,
-            "modelID": model_id,
+            "providerID": &route.provider_id,
+            "modelID": &route.model_id,
         }),
     ));
-    let stream = match state
-        .providers
-        .stream_for_provider(
-            provider_id,
-            model_id,
-            messages.clone(),
-            ToolMode::None,
-            None,
-            tandem_types::SamplingParams::default(),
-            cancel,
-        )
-        .await
+    let stream_dispatch = state.providers.stream_with_egress_permit(
+        &prepared.permit,
+        Some(route.provider_id.as_str()),
+        route.model_id.as_deref(),
+        messages.clone(),
+        ToolMode::None,
+        None,
+        tandem_types::SamplingParams::default(),
+        cancel,
+    );
+    let stream = match crate::http::session_run_retry::scope_provider_auth_for_tenant(
+        state,
+        tenant_context,
+        crate::http::session_run_retry::PromptExecutionSurface::KnowledgeBase,
+        Some(session_id),
+        Some(run_id),
+        Some(route.provider_id.as_str()),
+        stream_dispatch,
+    )
+    .await
     {
         Ok(stream) => stream,
         Err(error) => {
@@ -1118,10 +1173,14 @@ async fn synthesize_strict_kb_answer(
             if should_retry_strict_kb_completion_fallback(&error_text) {
                 return retry_strict_kb_non_streaming_synthesis(
                     state,
-                    provider_id,
-                    model_id,
+                    route.provider_id.as_str(),
+                    route.model_id.as_deref(),
                     &messages,
                     &error_text,
+                    session_id,
+                    run_id,
+                    tenant_context,
+                    verified_tenant_context,
                 )
                 .await;
             }
@@ -1145,10 +1204,14 @@ async fn synthesize_strict_kb_answer(
                 if should_retry_strict_kb_completion_fallback(&error_text) {
                     return retry_strict_kb_non_streaming_synthesis(
                         state,
-                        provider_id,
-                        model_id,
+                        route.provider_id.as_str(),
+                        route.model_id.as_deref(),
                         &messages,
                         &error_text,
+                        session_id,
+                        run_id,
+                        tenant_context,
+                        verified_tenant_context,
                     )
                     .await;
                 }
@@ -1161,10 +1224,14 @@ async fn synthesize_strict_kb_answer(
 
 async fn retry_strict_kb_non_streaming_synthesis(
     state: &AppState,
-    provider_id: Option<&str>,
+    provider_id: &str,
     model_id: Option<&str>,
     messages: &[ChatMessage],
     stream_error: &str,
+    session_id: &str,
+    run_id: &str,
+    tenant_context: &TenantContext,
+    verified_tenant_context: Option<&VerifiedTenantContext>,
 ) -> Result<Option<StrictKbSynthesisResponse>, String> {
     tracing::warn!(
         error = %stream_error,
@@ -1175,12 +1242,49 @@ async fn retry_strict_kb_non_streaming_synthesis(
         .map(|message| format!("{}:\n{}", message.role, message.content))
         .collect::<Vec<_>>()
         .join("\n\n");
-    state
-        .providers
-        .complete_for_provider(provider_id, &prompt, model_id)
-        .await
-        .map_err(|error| error.to_string())
-        .map(|completion| parse_strict_synthesis_response(&completion))
+    let fallback_messages = [ChatMessage {
+        role: String::new(),
+        content: prompt,
+        attachments: Vec::new(),
+    }];
+    let operation_id = format!("{session_id}:kb_synthesis:completion_fallback");
+    let prepared = crate::provider_egress::prepare_chat_messages(
+        state,
+        Some(tenant_context),
+        verified_tenant_context,
+        Some(run_id),
+        session_id,
+        &operation_id,
+        "server.session_kb_grounding.completion_fallback",
+        crate::provider_egress::ServerProviderEgressKind::KnowledgeBase,
+        provider_id,
+        model_id,
+        &fallback_messages,
+    )
+    .await?;
+    let prompt = prepared
+        .messages
+        .first()
+        .map(|message| message.content.as_str())
+        .unwrap_or_default();
+    let dispatch = state.providers.complete_with_egress_permit(
+        &prepared.permit,
+        Some(provider_id),
+        prompt,
+        model_id,
+    );
+    crate::http::session_run_retry::scope_provider_auth_for_tenant(
+        state,
+        tenant_context,
+        crate::http::session_run_retry::PromptExecutionSurface::KnowledgeBase,
+        Some(session_id),
+        Some(run_id),
+        Some(provider_id),
+        dispatch,
+    )
+    .await
+    .map_err(|error| error.to_string())
+    .map(|completion| parse_strict_synthesis_response(&completion))
 }
 
 fn should_retry_strict_kb_completion_fallback(error: &str) -> bool {

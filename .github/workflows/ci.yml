@@ -133,6 +133,16 @@ jobs:
           node scripts/check-rust-panic-surface.mjs --self-test
           node scripts/check-rust-panic-surface.mjs
 
+      - name: Verify provider egress boundary guard
+        run: |
+          node scripts/verify-provider-egress-boundary.mjs --self-test
+          node scripts/verify-provider-egress-boundary.mjs
+
+      - name: Verify protected audit results are handled
+        run: |
+          node scripts/verify-protected-audit-results.mjs --self-test
+          node scripts/verify-protected-audit-results.mjs
+
       - name: Check tandem-server panic lints
         run: cargo clippy -p tandem-server --lib --no-deps -- -A warnings
 

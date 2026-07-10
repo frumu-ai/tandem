@@ -144,7 +144,7 @@ pub(crate) async fn evaluate_egress_preflight_tool_policy(
     } else {
         "egress.preflight.approval_required"
     };
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event_best_effort(
         state,
         event_type,
         &tenant_context,
@@ -374,11 +374,7 @@ fn inspect_value_for_egress(
             if rows.len() > EGRESS_ARRAY_INSPECTION_LIMIT {
                 *inspection_truncated = true;
             }
-            for (index, child) in rows
-                .iter()
-                .enumerate()
-                .take(EGRESS_ARRAY_INSPECTION_LIMIT)
-            {
+            for (index, child) in rows.iter().enumerate().take(EGRESS_ARRAY_INSPECTION_LIMIT) {
                 let child_path = format!("{path}[{index}]");
                 inspect_value_for_egress(
                     child,
@@ -555,7 +551,10 @@ fn build_egress_preview(
     preview.push_str(&format!("- Tool: `{}`\n", sanitize_preview_inline(tool)));
     preview.push_str(&format!("- Risk tier: `{}`\n", risk_tier.as_str()));
     if let Some(target) = target {
-        preview.push_str(&format!("- Target: `{}`\n", sanitize_preview_inline(target)));
+        preview.push_str(&format!(
+            "- Target: `{}`\n",
+            sanitize_preview_inline(target)
+        ));
     }
     if !data_classes.is_empty() {
         let classes = data_classes
@@ -726,7 +725,10 @@ fn truncate_for_preview(value: &str, limit: usize) -> String {
     if value.chars().count() <= limit {
         value.to_string()
     } else {
-        let mut out = value.chars().take(limit.saturating_sub(3)).collect::<String>();
+        let mut out = value
+            .chars()
+            .take(limit.saturating_sub(3))
+            .collect::<String>();
         out.push_str("...");
         out
     }

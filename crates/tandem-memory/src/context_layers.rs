@@ -1,4 +1,8 @@
 use crate::types::{LayerType, MemoryError, MemoryResult};
+use crate::{
+    provider_egress::{complete_memory_prompt, MemoryProviderEgressKind},
+    MemoryProviderEgressContext,
+};
 use std::sync::Arc;
 use tandem_providers::ProviderRegistry;
 
@@ -27,11 +31,20 @@ Input text:
 
 pub struct ContextLayerGenerator {
     providers: Arc<ProviderRegistry>,
+    provider_egress: Option<MemoryProviderEgressContext>,
 }
 
 impl ContextLayerGenerator {
     pub fn new(providers: Arc<ProviderRegistry>) -> Self {
-        Self { providers }
+        Self {
+            providers,
+            provider_egress: None,
+        }
+    }
+
+    pub fn with_provider_egress(mut self, provider_egress: MemoryProviderEgressContext) -> Self {
+        self.provider_egress = Some(provider_egress);
+        self
     }
 
     pub async fn generate_l0(&self, content: &str) -> MemoryResult<String> {
@@ -50,8 +63,19 @@ impl ContextLayerGenerator {
         Ok((l0, l1))
     }
 
-    async fn call_llm(&self, prompt: &str, _model_hint: &str) -> MemoryResult<String> {
-        match self.providers.complete_cheapest(prompt, None, None).await {
+    async fn call_llm(&self, prompt: &str, model_hint: &str) -> MemoryResult<String> {
+        match complete_memory_prompt(
+            &self.providers,
+            prompt,
+            None,
+            None,
+            self.provider_egress.as_ref(),
+            MemoryProviderEgressKind::ContextLayer,
+            model_hint,
+            "memory.context_layer",
+        )
+        .await
+        {
             Ok(response) => Ok(response),
             Err(e) => {
                 tracing::warn!("LLM call failed for layer generation: {}", e);

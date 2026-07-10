@@ -1122,6 +1122,8 @@ async fn automations_create_and_run_now_roundtrip() {
     );
 }
 
+include!("routines_tenant_isolation.rs");
+
 #[tokio::test]
 async fn tenant_a_cannot_access_tenant_b_automation_v2_routes() {
     let state = test_state().await;

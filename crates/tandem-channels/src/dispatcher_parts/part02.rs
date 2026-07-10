@@ -1515,7 +1515,7 @@ fn channel_security_profile(
 // Session management helpers
 // ---------------------------------------------------------------------------
 
-fn build_channel_session_permissions(
+pub fn build_channel_session_permissions(
     security_profile: ChannelSecurityProfile,
 ) -> Vec<serde_json::Value> {
     match security_profile {

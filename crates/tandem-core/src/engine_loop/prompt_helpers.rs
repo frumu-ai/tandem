@@ -273,7 +273,7 @@ pub(super) fn tool_allowed_by_session_policy(
     requested_write_required: bool,
 ) -> bool {
     if allowed_tools.is_empty() {
-        return true;
+        return false;
     }
     let normalized = normalize_tool_name(tool_name);
     any_policy_matches(allowed_tools, &normalized)

@@ -894,6 +894,7 @@ pub(super) async fn routines_create(
         routine_id: input
             .routine_id
             .unwrap_or_else(|| Uuid::new_v4().to_string()),
+        tenant_context: tenant_context.clone(),
         name: input.name,
         status: RoutineStatus::Active,
         schedule: input.schedule,
@@ -916,15 +917,7 @@ pub(super) async fn routines_create(
         .put_routine(routine)
         .await
         .map_err(routine_error_response)?;
-    state.event_bus.publish(EngineEvent::new(
-        "routine.created",
-        json!({
-            "routineID": stored.routine_id,
-            "name": stored.name,
-            "entrypoint": stored.entrypoint,
-        }),
-    ));
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event(
         &state,
         "routine.created",
         &tenant_context,
@@ -936,14 +929,29 @@ pub(super) async fn routines_create(
             "actor": actor.clone(),
         }),
     )
-    .await;
+    .await
+    .map_err(super::protected_audit_error_response)?;
+    state
+        .event_bus
+        .publish(crate::routines::types::tenant_scoped_engine_event(
+            "routine.created",
+            &stored.tenant_context,
+            json!({
+                "routineID": stored.routine_id,
+                "name": stored.name,
+                "entrypoint": stored.entrypoint,
+            }),
+        ));
     Ok(Json(json!({
         "routine": stored,
     })))
 }
 
-pub(super) async fn routines_list(State(state): State<AppState>) -> Json<Value> {
-    let routines = state.list_routines().await;
+pub(super) async fn routines_list(
+    State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+) -> Json<Value> {
+    let routines = state.list_routines_for_tenant(&tenant_context).await;
     Json(json!({
         "routines": routines,
         "count": routines.len(),
@@ -952,68 +960,72 @@ pub(super) async fn routines_list(State(state): State<AppState>) -> Json<Value> 
 
 pub(super) async fn routines_patch(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(id): Path<String>,
     Json(input): Json<RoutinePatchInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let mut routine = state.get_routine(&id).await.ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(json!({
-                "error": "Routine not found",
-                "code": "ROUTINE_NOT_FOUND",
-                "routineID": id,
-            })),
-        )
-    })?;
-    if let Some(name) = input.name {
-        routine.name = name;
-    }
-    if let Some(status) = input.status {
-        routine.status = status;
-    }
-    if let Some(schedule) = input.schedule {
-        routine.schedule = schedule;
-    }
-    if let Some(timezone) = input.timezone {
-        routine.timezone = timezone;
-    }
-    if let Some(misfire_policy) = input.misfire_policy {
-        routine.misfire_policy = misfire_policy;
-    }
-    if let Some(entrypoint) = input.entrypoint {
-        routine.entrypoint = entrypoint;
-    }
-    if let Some(args) = input.args {
-        routine.args = args;
-    }
-    if let Some(allowed_tools) = input.allowed_tools {
-        routine.allowed_tools = allowed_tools;
-    }
-    if let Some(output_targets) = input.output_targets {
-        routine.output_targets = output_targets;
-    }
-    if let Some(requires_approval) = input.requires_approval {
-        routine.requires_approval = requires_approval;
-    }
-    if let Some(external_integrations_allowed) = input.external_integrations_allowed {
-        routine.external_integrations_allowed = external_integrations_allowed;
-    }
-    if let Some(next_fire_at_ms) = input.next_fire_at_ms {
-        routine.next_fire_at_ms = Some(next_fire_at_ms);
-    }
-
     let stored = state
-        .put_routine(routine)
+        .update_routine_for_tenant(&id, &tenant_context, move |routine| {
+            if let Some(name) = input.name {
+                routine.name = name;
+            }
+            if let Some(status) = input.status {
+                routine.status = status;
+            }
+            if let Some(schedule) = input.schedule {
+                routine.schedule = schedule;
+            }
+            if let Some(timezone) = input.timezone {
+                routine.timezone = timezone;
+            }
+            if let Some(misfire_policy) = input.misfire_policy {
+                routine.misfire_policy = misfire_policy;
+            }
+            if let Some(entrypoint) = input.entrypoint {
+                routine.entrypoint = entrypoint;
+            }
+            if let Some(args) = input.args {
+                routine.args = args;
+            }
+            if let Some(allowed_tools) = input.allowed_tools {
+                routine.allowed_tools = allowed_tools;
+            }
+            if let Some(output_targets) = input.output_targets {
+                routine.output_targets = output_targets;
+            }
+            if let Some(requires_approval) = input.requires_approval {
+                routine.requires_approval = requires_approval;
+            }
+            if let Some(external_integrations_allowed) = input.external_integrations_allowed {
+                routine.external_integrations_allowed = external_integrations_allowed;
+            }
+            if let Some(next_fire_at_ms) = input.next_fire_at_ms {
+                routine.next_fire_at_ms = Some(next_fire_at_ms);
+            }
+        })
         .await
-        .map_err(routine_error_response)?;
-    state.event_bus.publish(EngineEvent::new(
-        "routine.updated",
-        json!({
-            "routineID": stored.routine_id,
-            "status": stored.status,
-            "nextFireAtMs": stored.next_fire_at_ms,
-        }),
-    ));
+        .map_err(routine_error_response)?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error": "Routine not found",
+                    "code": "ROUTINE_NOT_FOUND",
+                    "routineID": id,
+                })),
+            )
+        })?;
+    state
+        .event_bus
+        .publish(crate::routines::types::tenant_scoped_engine_event(
+            "routine.updated",
+            &stored.tenant_context,
+            json!({
+                "routineID": stored.routine_id,
+                "status": stored.status,
+                "nextFireAtMs": stored.next_fire_at_ms,
+            }),
+        ));
     Ok(Json(json!({
         "routine": stored,
     })))
@@ -1021,19 +1033,23 @@ pub(super) async fn routines_patch(
 
 pub(super) async fn routines_delete(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let deleted = state
-        .delete_routine(&id)
+        .delete_routine_for_tenant(&id, &tenant_context)
         .await
         .map_err(routine_error_response)?;
     if let Some(routine) = deleted {
-        state.event_bus.publish(EngineEvent::new(
-            "routine.deleted",
-            json!({
-                "routineID": routine.routine_id,
-            }),
-        ));
+        state
+            .event_bus
+            .publish(crate::routines::types::tenant_scoped_engine_event(
+                "routine.deleted",
+                &routine.tenant_context,
+                json!({
+                    "routineID": routine.routine_id,
+                }),
+            ));
         Ok(Json(json!({
             "deleted": true,
             "routineID": id,
@@ -1060,22 +1076,27 @@ pub(super) async fn routines_run_now(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let _actor =
         ensure_routine_human_actor(&headers, &tenant_context, &request_principal, "execution")?;
-    let routine = state.get_routine(&id).await.ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(json!({
-                "error": "Routine not found",
-                "code": "ROUTINE_NOT_FOUND",
-                "routineID": id,
-            })),
-        )
-    })?;
+    let routine = state
+        .get_routine_for_tenant(&id, &tenant_context)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error": "Routine not found",
+                    "code": "ROUTINE_NOT_FOUND",
+                    "routineID": id,
+                })),
+            )
+        })?;
     let run_count = input.run_count.unwrap_or(1).clamp(1, 20);
     let now = crate::now_ms();
     let trigger_type = "manual";
     match evaluate_routine_execution_policy(&routine, trigger_type) {
         RoutineExecutionDecision::Allowed => {
-            let _ = state.mark_routine_fired(&routine.routine_id, now).await;
+            let _ = state
+                .mark_routine_fired_for_tenant(&routine.routine_id, &tenant_context, now)
+                .await;
             let run = state
                 .create_routine_run(
                     &routine,
@@ -1088,6 +1109,7 @@ pub(super) async fn routines_run_now(
             state
                 .append_routine_history(RoutineHistoryEvent {
                     routine_id: routine.routine_id.clone(),
+                    tenant_context: routine.tenant_context.clone(),
                     trigger_type: trigger_type.to_string(),
                     run_count,
                     fired_at_ms: now,
@@ -1095,22 +1117,28 @@ pub(super) async fn routines_run_now(
                     detail: input.reason,
                 })
                 .await;
-            state.event_bus.publish(EngineEvent::new(
-                "routine.fired",
-                json!({
-                    "routineID": routine.routine_id,
-                    "runID": run.run_id,
-                    "runCount": run_count,
-                    "triggerType": trigger_type,
-                    "firedAtMs": now,
-                }),
-            ));
-            state.event_bus.publish(EngineEvent::new(
-                "routine.run.created",
-                json!({
-                    "run": run,
-                }),
-            ));
+            state
+                .event_bus
+                .publish(crate::routines::types::tenant_scoped_engine_event(
+                    "routine.fired",
+                    &routine.tenant_context,
+                    json!({
+                        "routineID": routine.routine_id,
+                        "runID": run.run_id,
+                        "runCount": run_count,
+                        "triggerType": trigger_type,
+                        "firedAtMs": now,
+                    }),
+                ));
+            state
+                .event_bus
+                .publish(crate::routines::types::tenant_scoped_engine_event(
+                    "routine.run.created",
+                    &routine.tenant_context,
+                    json!({
+                        "run": run,
+                    }),
+                ));
             let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &run)
                 .await
                 .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run.run_id));
@@ -1138,6 +1166,7 @@ pub(super) async fn routines_run_now(
             state
                 .append_routine_history(RoutineHistoryEvent {
                     routine_id: routine.routine_id.clone(),
+                    tenant_context: routine.tenant_context.clone(),
                     trigger_type: trigger_type.to_string(),
                     run_count,
                     fired_at_ms: now,
@@ -1145,22 +1174,28 @@ pub(super) async fn routines_run_now(
                     detail: Some(reason.clone()),
                 })
                 .await;
-            state.event_bus.publish(EngineEvent::new(
-                "routine.approval_required",
-                json!({
-                    "routineID": routine.routine_id,
-                    "runID": run.run_id,
-                    "runCount": run_count,
-                    "triggerType": trigger_type,
-                    "reason": reason,
-                }),
-            ));
-            state.event_bus.publish(EngineEvent::new(
-                "routine.run.created",
-                json!({
-                    "run": run,
-                }),
-            ));
+            state
+                .event_bus
+                .publish(crate::routines::types::tenant_scoped_engine_event(
+                    "routine.approval_required",
+                    &routine.tenant_context,
+                    json!({
+                        "routineID": routine.routine_id,
+                        "runID": run.run_id,
+                        "runCount": run_count,
+                        "triggerType": trigger_type,
+                        "reason": reason,
+                    }),
+                ));
+            state
+                .event_bus
+                .publish(crate::routines::types::tenant_scoped_engine_event(
+                    "routine.run.created",
+                    &routine.tenant_context,
+                    json!({
+                        "run": run,
+                    }),
+                ));
             let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &run)
                 .await
                 .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run.run_id));
@@ -1187,6 +1222,7 @@ pub(super) async fn routines_run_now(
             state
                 .append_routine_history(RoutineHistoryEvent {
                     routine_id: routine.routine_id.clone(),
+                    tenant_context: routine.tenant_context.clone(),
                     trigger_type: trigger_type.to_string(),
                     run_count,
                     fired_at_ms: now,
@@ -1194,22 +1230,28 @@ pub(super) async fn routines_run_now(
                     detail: Some(reason.clone()),
                 })
                 .await;
-            state.event_bus.publish(EngineEvent::new(
-                "routine.blocked",
-                json!({
-                    "routineID": routine.routine_id,
-                    "runID": run.run_id,
-                    "runCount": run_count,
-                    "triggerType": trigger_type,
-                    "reason": reason,
-                }),
-            ));
-            state.event_bus.publish(EngineEvent::new(
-                "routine.run.created",
-                json!({
-                    "run": run,
-                }),
-            ));
+            state
+                .event_bus
+                .publish(crate::routines::types::tenant_scoped_engine_event(
+                    "routine.blocked",
+                    &routine.tenant_context,
+                    json!({
+                        "routineID": routine.routine_id,
+                        "runID": run.run_id,
+                        "runCount": run_count,
+                        "triggerType": trigger_type,
+                        "reason": reason,
+                    }),
+                ));
+            state
+                .event_bus
+                .publish(crate::routines::types::tenant_scoped_engine_event(
+                    "routine.run.created",
+                    &routine.tenant_context,
+                    json!({
+                        "run": run,
+                    }),
+                ));
             let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &run)
                 .await
                 .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run.run_id));
@@ -1231,42 +1273,67 @@ pub(super) async fn routines_run_now(
 
 pub(super) async fn routines_history(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(id): Path<String>,
     Query(query): Query<RoutineHistoryQuery>,
-) -> Json<Value> {
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if routine_for_tenant(&state, &id, &tenant_context)
+        .await
+        .is_none()
+    {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"Routine not found","code":"ROUTINE_NOT_FOUND","routineID":id})),
+        ));
+    }
     let limit = query.limit.unwrap_or(50).clamp(1, 500);
-    let events = state.list_routine_history(&id, limit).await;
-    Json(json!({
+    let events = state
+        .list_routine_history_for_tenant(&id, &tenant_context, limit)
+        .await;
+    Ok(Json(json!({
         "routineID": id,
         "events": events,
         "count": events.len(),
-    }))
+    })))
 }
 
 pub(super) async fn routines_runs(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(id): Path<String>,
     Query(query): Query<RoutineRunsQuery>,
-) -> Json<Value> {
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if routine_for_tenant(&state, &id, &tenant_context)
+        .await
+        .is_none()
+    {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"Routine not found","code":"ROUTINE_NOT_FOUND","routineID":id})),
+        ));
+    }
     let limit = query.limit.unwrap_or(50).clamp(1, 500);
-    let runs = state.list_routine_runs(Some(&id), limit).await;
+    let runs = state
+        .list_routine_runs_for_tenant(Some(&id), &tenant_context, limit)
+        .await;
     for run in &runs {
         let _ = super::context_runs::sync_routine_run_blackboard(&state, run).await;
     }
-    Json(json!({
+    Ok(Json(json!({
         "routineID": id,
         "runs": runs.iter().map(routine_run_with_context_links).collect::<Vec<_>>(),
         "count": runs.len(),
-    }))
+    })))
 }
 
 pub(super) async fn routines_runs_all(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Query(query): Query<RoutineRunsQuery>,
 ) -> Json<Value> {
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let runs = state
-        .list_routine_runs(query.routine_id.as_deref(), limit)
+        .list_routine_runs_for_tenant(query.routine_id.as_deref(), &tenant_context, limit)
         .await;
     for run in &runs {
         let _ = super::context_runs::sync_routine_run_blackboard(&state, run).await;
@@ -1279,9 +1346,10 @@ pub(super) async fn routines_runs_all(
 
 pub(super) async fn routines_run_get(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(run_id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let Some(run) = state.get_routine_run(&run_id).await else {
+    let Some(run) = routine_run_for_tenant(&state, &run_id, &tenant_context).await else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(json!({
@@ -1324,7 +1392,7 @@ pub(super) async fn routines_run_approve(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let actor =
         ensure_routine_human_actor(&headers, &tenant_context, &request_principal, "approval")?;
-    let Some(current) = state.get_routine_run(&run_id).await else {
+    let Some(current) = routine_run_for_tenant(&state, &run_id, &tenant_context).await else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(json!({
@@ -1346,7 +1414,12 @@ pub(super) async fn routines_run_approve(
     }
     let reason = reason_or_default(input.reason, "approved by operator");
     let updated = state
-        .update_routine_run_status(&run_id, RoutineRunStatus::Queued, Some(reason.clone()))
+        .update_routine_run_status_for_tenant(
+            &run_id,
+            &tenant_context,
+            RoutineRunStatus::Queued,
+            Some(reason.clone()),
+        )
         .await
         .ok_or_else(|| {
             (
@@ -1358,15 +1431,7 @@ pub(super) async fn routines_run_approve(
                 })),
             )
         })?;
-    state.event_bus.publish(EngineEvent::new(
-        "routine.run.approved",
-        json!({
-            "runID": run_id,
-            "routineID": updated.routine_id,
-            "reason": reason,
-        }),
-    ));
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event(
         &state,
         "routine.run.approved",
         &tenant_context,
@@ -1378,7 +1443,19 @@ pub(super) async fn routines_run_approve(
             "actor": actor.clone(),
         }),
     )
-    .await;
+    .await
+    .map_err(super::protected_audit_error_response)?;
+    state
+        .event_bus
+        .publish(crate::routines::types::tenant_scoped_engine_event(
+            "routine.run.approved",
+            &updated.tenant_context,
+            json!({
+                "runID": run_id,
+                "routineID": updated.routine_id,
+                "reason": reason,
+            }),
+        ));
     let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &updated)
         .await
         .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run_id));
@@ -1400,7 +1477,7 @@ pub(super) async fn routines_run_deny(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let actor =
         ensure_routine_human_actor(&headers, &tenant_context, &request_principal, "denial")?;
-    let Some(current) = state.get_routine_run(&run_id).await else {
+    let Some(current) = routine_run_for_tenant(&state, &run_id, &tenant_context).await else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(json!({
@@ -1422,7 +1499,12 @@ pub(super) async fn routines_run_deny(
     }
     let reason = reason_or_default(input.reason, "denied by operator");
     let updated = state
-        .update_routine_run_status(&run_id, RoutineRunStatus::Denied, Some(reason.clone()))
+        .update_routine_run_status_for_tenant(
+            &run_id,
+            &tenant_context,
+            RoutineRunStatus::Denied,
+            Some(reason.clone()),
+        )
         .await
         .ok_or_else(|| {
             (
@@ -1434,15 +1516,7 @@ pub(super) async fn routines_run_deny(
                 })),
             )
         })?;
-    state.event_bus.publish(EngineEvent::new(
-        "routine.run.denied",
-        json!({
-            "runID": run_id,
-            "routineID": updated.routine_id,
-            "reason": reason,
-        }),
-    ));
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event(
         &state,
         "routine.run.denied",
         &tenant_context,
@@ -1454,7 +1528,19 @@ pub(super) async fn routines_run_deny(
             "actor": actor.clone(),
         }),
     )
-    .await;
+    .await
+    .map_err(super::protected_audit_error_response)?;
+    state
+        .event_bus
+        .publish(crate::routines::types::tenant_scoped_engine_event(
+            "routine.run.denied",
+            &updated.tenant_context,
+            json!({
+                "runID": run_id,
+                "routineID": updated.routine_id,
+                "reason": reason,
+            }),
+        ));
     let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &updated)
         .await
         .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run_id));
@@ -1474,9 +1560,8 @@ pub(super) async fn routines_run_pause(
     Path(run_id): Path<String>,
     Json(input): Json<RoutineRunDecisionInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let actor =
-        ensure_routine_human_actor(&headers, &tenant_context, &request_principal, "pause")?;
-    let Some(current) = state.get_routine_run(&run_id).await else {
+    let actor = ensure_routine_human_actor(&headers, &tenant_context, &request_principal, "pause")?;
+    let Some(current) = routine_run_for_tenant(&state, &run_id, &tenant_context).await else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(json!({
@@ -1510,7 +1595,12 @@ pub(super) async fn routines_run_pause(
         }
     }
     let updated = state
-        .update_routine_run_status(&run_id, RoutineRunStatus::Paused, Some(reason.clone()))
+        .update_routine_run_status_for_tenant(
+            &run_id,
+            &tenant_context,
+            RoutineRunStatus::Paused,
+            Some(reason.clone()),
+        )
         .await
         .ok_or_else(|| {
             (
@@ -1522,16 +1612,7 @@ pub(super) async fn routines_run_pause(
                 })),
             )
         })?;
-    state.event_bus.publish(EngineEvent::new(
-        "routine.run.paused",
-        json!({
-            "runID": run_id,
-            "routineID": updated.routine_id,
-            "reason": reason,
-            "cancelledSessionIDs": cancelled_sessions,
-        }),
-    ));
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event(
         &state,
         "routine.run.paused",
         &tenant_context,
@@ -1544,7 +1625,20 @@ pub(super) async fn routines_run_pause(
             "actor": actor.clone(),
         }),
     )
-    .await;
+    .await
+    .map_err(super::protected_audit_error_response)?;
+    state
+        .event_bus
+        .publish(crate::routines::types::tenant_scoped_engine_event(
+            "routine.run.paused",
+            &updated.tenant_context,
+            json!({
+                "runID": run_id,
+                "routineID": updated.routine_id,
+                "reason": reason,
+                "cancelledSessionIDs": cancelled_sessions,
+            }),
+        ));
     let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &updated)
         .await
         .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run_id));
@@ -1567,7 +1661,7 @@ pub(super) async fn routines_run_resume(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let actor =
         ensure_routine_human_actor(&headers, &tenant_context, &request_principal, "resume")?;
-    let Some(current) = state.get_routine_run(&run_id).await else {
+    let Some(current) = routine_run_for_tenant(&state, &run_id, &tenant_context).await else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(json!({
@@ -1589,7 +1683,12 @@ pub(super) async fn routines_run_resume(
     }
     let reason = reason_or_default(input.reason, "resumed by operator");
     let updated = state
-        .update_routine_run_status(&run_id, RoutineRunStatus::Queued, Some(reason.clone()))
+        .update_routine_run_status_for_tenant(
+            &run_id,
+            &tenant_context,
+            RoutineRunStatus::Queued,
+            Some(reason.clone()),
+        )
         .await
         .ok_or_else(|| {
             (
@@ -1601,15 +1700,7 @@ pub(super) async fn routines_run_resume(
                 })),
             )
         })?;
-    state.event_bus.publish(EngineEvent::new(
-        "routine.run.resumed",
-        json!({
-            "runID": run_id,
-            "routineID": updated.routine_id,
-            "reason": reason,
-        }),
-    ));
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event(
         &state,
         "routine.run.resumed",
         &tenant_context,
@@ -1621,356 +1712,26 @@ pub(super) async fn routines_run_resume(
             "actor": actor.clone(),
         }),
     )
-    .await;
-    let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &updated)
-        .await
-        .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run_id));
-    Ok(Json(json!({
-        "ok": true,
-        "run": routine_run_with_context_links(&updated),
-        "contextRunID": context_run_id,
-        "linked_context_run_id": context_run_id,
-    })))
-}
-
-pub(super) async fn routines_run_artifacts(
-    State(state): State<AppState>,
-    Path(run_id): Path<String>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let Some(run) = state.get_routine_run(&run_id).await else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({
-                "error": "Routine run not found",
-                "code": "ROUTINE_RUN_NOT_FOUND",
+    .await
+    .map_err(super::protected_audit_error_response)?;
+    state
+        .event_bus
+        .publish(crate::routines::types::tenant_scoped_engine_event(
+            "routine.run.resumed",
+            &updated.tenant_context,
+            json!({
                 "runID": run_id,
-            })),
+                "routineID": updated.routine_id,
+                "reason": reason,
+            }),
         ));
-    };
-    let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &run)
-        .await
-        .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run_id));
-    Ok(Json(json!({
-        "runID": run_id,
-        "artifacts": run.artifacts,
-        "count": run.artifacts.len(),
-        "contextRunID": context_run_id,
-        "linked_context_run_id": context_run_id,
-    })))
-}
-
-pub(super) async fn routines_run_artifact_add(
-    State(state): State<AppState>,
-    Path(run_id): Path<String>,
-    Json(input): Json<RoutineRunArtifactInput>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    if input.uri.trim().is_empty() || input.kind.trim().is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error":"Artifact requires uri and kind",
-                "code":"ROUTINE_ARTIFACT_INVALID",
-            })),
-        ));
-    }
-    let artifact = RoutineRunArtifact {
-        artifact_id: format!("artifact-{}", Uuid::new_v4()),
-        uri: input.uri.trim().to_string(),
-        kind: input.kind.trim().to_string(),
-        label: input
-            .label
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty()),
-        created_at_ms: crate::now_ms(),
-        metadata: input.metadata,
-    };
-    let updated = state
-        .append_routine_run_artifact(&run_id, artifact.clone())
-        .await
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(json!({
-                    "error":"Routine run not found",
-                    "code":"ROUTINE_RUN_NOT_FOUND",
-                    "runID": run_id,
-                })),
-            )
-        })?;
-    state.event_bus.publish(EngineEvent::new(
-        "routine.run.artifact_added",
-        json!({
-            "runID": run_id,
-            "routineID": updated.routine_id,
-            "artifact": artifact,
-        }),
-    ));
     let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &updated)
         .await
         .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run_id));
     Ok(Json(json!({
         "ok": true,
         "run": routine_run_with_context_links(&updated),
-        "artifact": artifact,
         "contextRunID": context_run_id,
         "linked_context_run_id": context_run_id,
     })))
-}
-
-fn routines_sse_stream(
-    state: AppState,
-    routine_id: Option<String>,
-) -> impl Stream<Item = Result<Event, std::convert::Infallible>> {
-    let ready = tokio_stream::once(Ok(Event::default().data(
-        serde_json::to_string(&json!({
-            "status": "ready",
-            "stream": "routines",
-            "timestamp_ms": crate::now_ms(),
-        }))
-        .unwrap_or_default(),
-    )));
-    let rx = state.event_bus.subscribe();
-    let live = BroadcastStream::new(rx).filter_map(move |msg| match msg {
-        Ok(event) => {
-            if !event.event_type.starts_with("routine.") {
-                return None;
-            }
-            if let Some(routine_id) = routine_id.as_deref() {
-                let event_routine_id = event
-                    .properties
-                    .get("routineID")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                if event_routine_id != routine_id {
-                    return None;
-                }
-            }
-            let payload = serde_json::to_string(&event).unwrap_or_default();
-            Some(Ok(Event::default().data(payload)))
-        }
-        Err(_) => None,
-    });
-    ready.chain(live)
-}
-
-pub(super) async fn routines_events(
-    State(state): State<AppState>,
-    Query(query): Query<RoutineEventsQuery>,
-) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
-    Sse::new(routines_sse_stream(state, query.routine_id))
-        .keep_alive(KeepAlive::new().interval(Duration::from_secs(10)))
-}
-
-pub(super) fn objective_from_args(args: &Value, routine_id: &str, entrypoint: &str) -> String {
-    args.get("prompt")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(ToString::to_string)
-        .unwrap_or_else(|| {
-            format!("Execute automation '{routine_id}' with entrypoint '{entrypoint}'.")
-        })
-}
-
-pub(super) fn success_criteria_from_args(args: &Value) -> Vec<String> {
-    args.get("success_criteria")
-        .and_then(|v| v.as_array())
-        .map(|rows| {
-            rows.iter()
-                .filter_map(|row| row.as_str())
-                .map(str::trim)
-                .filter(|row| !row.is_empty())
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default()
-}
-
-pub(super) fn mode_from_args(args: &Value) -> String {
-    args.get("mode")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .unwrap_or("standalone")
-        .to_string()
-}
-
-pub(super) fn normalize_automation_mode(raw: Option<&str>) -> Result<String, String> {
-    let value = raw.unwrap_or("standalone").trim();
-    if value.is_empty() {
-        return Ok("standalone".to_string());
-    }
-    if value.eq_ignore_ascii_case("standalone") {
-        return Ok("standalone".to_string());
-    }
-    if value.eq_ignore_ascii_case("orchestrated") {
-        return Ok("orchestrated".to_string());
-    }
-    Err("mode must be one of standalone|orchestrated".to_string())
-}
-
-pub(super) fn validate_model_spec_object(value: &Value, path: &str) -> Result<(), String> {
-    let obj = value
-        .as_object()
-        .ok_or_else(|| format!("{path} must be an object"))?;
-    let provider_id = obj
-        .get("provider_id")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| format!("{path}.provider_id is required"))?;
-    let model_id = obj
-        .get("model_id")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| format!("{path}.model_id is required"))?;
-    if provider_id.is_empty() || model_id.is_empty() {
-        return Err(format!(
-            "{path}.provider_id and {path}.model_id are required"
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_model_policy(value: &Value) -> Result<(), String> {
-    let obj = value
-        .as_object()
-        .ok_or_else(|| "model_policy must be an object".to_string())?;
-    if let Some(default_model) = obj.get("default_model") {
-        validate_model_spec_object(default_model, "model_policy.default_model")?;
-    }
-    if let Some(role_models) = obj.get("role_models") {
-        let role_obj = role_models
-            .as_object()
-            .ok_or_else(|| "model_policy.role_models must be an object".to_string())?;
-        for (role, spec) in role_obj {
-            validate_model_spec_object(spec, &format!("model_policy.role_models.{role}"))?;
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn routine_to_automation_wire(routine: RoutineSpec) -> Value {
-    json!({
-        "automation_id": routine.routine_id,
-        "name": routine.name,
-        "status": routine.status,
-        "schedule": routine.schedule,
-        "timezone": routine.timezone,
-        "misfire_policy": routine.misfire_policy,
-        "mode": mode_from_args(&routine.args),
-        "mission": {
-            "objective": objective_from_args(&routine.args, &routine.routine_id, &routine.entrypoint),
-            "success_criteria": success_criteria_from_args(&routine.args),
-            "briefing": routine.args.get("briefing").cloned(),
-            "entrypoint_compat": routine.entrypoint,
-        },
-        "policy": {
-            "tool": {
-                "run_allowlist": routine.allowed_tools,
-                "external_integrations_allowed": routine.external_integrations_allowed,
-                "orchestrator_only_tool_calls": routine
-                    .args
-                    .get("orchestrator_only_tool_calls")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false),
-            },
-            "approval": {
-                "requires_approval": routine.requires_approval
-            }
-        },
-        "model_policy": routine.args.get("model_policy").cloned(),
-        "output_targets": routine.output_targets,
-        "creator_type": routine.creator_type,
-        "creator_id": routine.creator_id,
-        "next_fire_at_ms": routine.next_fire_at_ms,
-        "last_fired_at_ms": routine.last_fired_at_ms
-    })
-}
-
-pub(super) fn routine_run_to_automation_wire(run: RoutineRunRecord) -> Value {
-    let context_run_id = super::context_runs::routine_context_run_id(&run.run_id);
-    let latest_session_id = run
-        .latest_session_id
-        .clone()
-        .or_else(|| run.active_session_ids.last().cloned());
-    let attach_event_stream = latest_session_id
-        .as_ref()
-        .map(|session_id| format!("/event?sessionID={session_id}&runID={}", run.run_id));
-    json!({
-        "run_id": run.run_id,
-        "automation_id": run.routine_id,
-        "trigger_type": run.trigger_type,
-        "run_count": run.run_count,
-        "status": run.status,
-        "created_at_ms": run.created_at_ms,
-        "updated_at_ms": run.updated_at_ms,
-        "fired_at_ms": run.fired_at_ms,
-        "started_at_ms": run.started_at_ms,
-        "finished_at_ms": run.finished_at_ms,
-        "mode": mode_from_args(&run.args),
-        "mission_snapshot": {
-            "objective": objective_from_args(&run.args, &run.routine_id, &run.entrypoint),
-            "success_criteria": success_criteria_from_args(&run.args),
-            "entrypoint_compat": run.entrypoint,
-        },
-        "policy_snapshot": {
-            "tool": {
-                "run_allowlist": run.allowed_tools,
-            },
-            "approval": {
-                "requires_approval": run.requires_approval
-            }
-        },
-        "model_policy": run.args.get("model_policy").cloned(),
-        "requires_approval": run.requires_approval,
-        "approval_reason": run.approval_reason,
-        "denial_reason": run.denial_reason,
-        "paused_reason": run.paused_reason,
-        "detail": run.detail,
-        "output_targets": run.output_targets,
-        "artifacts": run.artifacts,
-        "correlation_id": run.run_id,
-        "contextRunID": context_run_id,
-        "linked_context_run_id": context_run_id,
-        "active_session_ids": run.active_session_ids,
-        "latest_session_id": latest_session_id,
-        "attach_event_stream": attach_event_stream,
-    })
-}
-
-pub(super) fn routine_event_to_run_event(event: &EngineEvent) -> Option<EngineEvent> {
-    let mut props = event.properties.clone();
-    let event_type = match event.event_type.as_str() {
-        "routine.run.created" => "run.started",
-        "routine.run.started" => "run.step",
-        "routine.run.completed" => "run.completed",
-        "routine.run.failed" => "run.failed",
-        "routine.approval_required" => "approval.required",
-        "routine.run.artifact_added" => "run.step",
-        "routine.run.model_selected" => "run.step",
-        "routine.blocked" => "run.failed",
-        _ => return None,
-    };
-    if let Some(routine_id) = props
-        .get("routineID")
-        .and_then(|v| v.as_str())
-        .map(ToString::to_string)
-    {
-        props
-            .as_object_mut()
-            .expect("object")
-            .insert("automationID".to_string(), Value::String(routine_id));
-    }
-    if event.event_type == "routine.run.started"
-        || event.event_type == "routine.run.artifact_added"
-        || event.event_type == "routine.run.model_selected"
-    {
-        props
-            .as_object_mut()
-            .expect("object")
-            .insert("phase".to_string(), Value::String("do".to_string()));
-    }
-    Some(EngineEvent::new(event_type, props))
 }

@@ -143,7 +143,7 @@ async fn attach_enterprise_request_context_for_mode(
                 denial.reason.as_str()
             );
             denial
-                .append_protected_audit_event(state, mode, headers)
+                .append_protected_audit_event_best_effort(state, mode, headers)
                 .await;
             return false;
         }
@@ -534,13 +534,13 @@ impl TenantContextIngressDenial {
         }
     }
 
-    async fn append_protected_audit_event(
+    async fn append_protected_audit_event_best_effort(
         &self,
         state: &AppState,
         mode: RuntimeAuthMode,
         headers: &HeaderMap,
     ) {
-        let _ = crate::audit::append_protected_audit_event(
+        crate::audit::append_protected_audit_event_best_effort(
             state,
             self.event_type(),
             &self.tenant_context,
@@ -581,7 +581,7 @@ async fn append_authorization_denial_audit_event(
     state: &AppState,
     resolved: &ResolvedEnterpriseRequestContext,
 ) {
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event_best_effort(
         state,
         "authority.cross_tenant_denied",
         &resolved.tenant_context,

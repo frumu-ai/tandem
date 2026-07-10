@@ -13,6 +13,7 @@ async-trait = "0.1"
 base64 = "0.22"
 dirs = "6"
 futures = "0.3"
+fs2 = "0.4"
 keyring = "2"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 serde = { version = "1", features = ["derive"] }
@@ -20,6 +21,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 tracing = "0.1"
+tandem-data-boundary = { path = "../tandem-data-boundary", version = "0.6.8" }
 tandem-types = { path = "../tandem-types", version = "0.6.8" }
 
 [dev-dependencies]

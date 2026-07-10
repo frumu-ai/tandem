@@ -3,7 +3,6 @@ use std::panic::AssertUnwindSafe;
 use std::time::Duration;
 
 use futures::FutureExt;
-use tandem_types::EngineEvent;
 use tokio::task::JoinSet;
 
 use crate::app::state::automation::{record_automation_lifecycle_event, QueueReason};
@@ -78,18 +77,21 @@ async fn process_stateful_wait_scheduler_tick(state: &AppState) {
         process_due_stateful_waits(&paths, crate::util::time::now_ms(), Default::default()).await;
     for outcome in &tick.outcomes {
         let _ = state.apply_stateful_wait_scheduler_outcome(outcome).await;
-        state.event_bus.publish(EngineEvent::new(
-            outcome.event_type.clone(),
-            serde_json::json!({
-                "runID": &outcome.run_id,
-                "waitID": &outcome.wait_id,
-                "tenantContext": &outcome.tenant_context,
-                "eventSeq": outcome.event_seq,
-                "waitStatus": &outcome.wait_status,
-                "runStatus": &outcome.run_status,
-                "lagMs": outcome.lag_ms,
-            }),
-        ));
+        state
+            .event_bus
+            .publish(crate::routines::types::tenant_scoped_engine_event(
+                outcome.event_type.clone(),
+                &outcome.tenant_context,
+                serde_json::json!({
+                    "runID": &outcome.run_id,
+                    "waitID": &outcome.wait_id,
+                    "tenantContext": &outcome.tenant_context,
+                    "eventSeq": outcome.event_seq,
+                    "waitStatus": &outcome.wait_status,
+                    "runStatus": &outcome.run_status,
+                    "lagMs": outcome.lag_ms,
+                }),
+            ));
     }
     for error in &tick.errors {
         tracing::warn!(error = %error, "stateful wait scheduler tick failed for a wait");

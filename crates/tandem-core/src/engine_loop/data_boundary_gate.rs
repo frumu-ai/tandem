@@ -1,21 +1,20 @@
-//! Audit-only data-boundary evaluation at the provider-dispatch seam
-//! (TAN-389/TAN-390). Configured entirely through `TANDEM_DATA_BOUNDARY_*`
-//! env vars following the engine-tunable convention in `loop_tuning.rs`;
-//! tandem-server validates the same vars at startup so bad values fail boot
-//! instead of silently weakening the policy.
-//!
-//! This gate observes and reports — it never blocks, transforms, or reroutes
-//! the provider call. Enforcement is a later cycle (TAN-394); until a
-//! provider classifier exists (TAN-393) every provider is classified
-//! `Unknown`.
+//! Structured-chat adapter for the canonical `tandem-data-boundary` provider
+//! egress evaluator. Detection runs once in the lower-level crate; this module
+//! maps transformed fields back onto provider messages and preserves the
+//! engine's approval and runtime-event contracts.
 
 use serde_json::{json, Value};
+use std::borrow::Cow;
 use std::time::Instant;
 use tandem_data_boundary::{
-    evaluate_data_boundary, payload_hash, DataBoundaryEvaluationRequest, DataBoundaryEvent,
-    DataBoundaryInput, DataBoundaryMode, DataBoundaryOperationKind, DataBoundaryOperationRef,
-    DataBoundaryPolicy, DataBoundaryProviderRef, DataBoundaryTenantRef, ProviderBoundaryClass,
-    SensitiveDataClass,
+    classify_provider_from_env, evaluate_data_boundary, evaluate_provider_egress, payload_hash,
+    provider_egress_mode_from_env, provider_egress_policy_from_env, DataBoundaryAction,
+    DataBoundaryDetectorConfig, DataBoundaryEvaluationRequest, DataBoundaryEvent,
+    DataBoundaryEventKind, DataBoundaryInput, DataBoundaryMode, DataBoundaryOperationKind,
+    DataBoundaryOperationRef, DataBoundaryPolicy, DataBoundaryProviderRef, DataBoundaryTenantRef,
+    ProviderBoundaryClass, ProviderEgressApproval, ProviderEgressAuditEvent,
+    ProviderEgressAuthority, ProviderEgressDisposition, ProviderEgressField, ProviderEgressPermit,
+    ProviderEgressRequest, SensitiveDataClass,
 };
 use tandem_providers::ChatMessage;
 use tandem_types::{EngineEvent, TenantContext};
@@ -30,90 +29,24 @@ fn data_url_scan_prefix_len(url: &str) -> Option<usize> {
 }
 
 pub(super) fn data_boundary_mode() -> DataBoundaryMode {
-    std::env::var("TANDEM_DATA_BOUNDARY_MODE")
-        .ok()
-        .and_then(|raw| DataBoundaryMode::parse(&raw))
-        .unwrap_or_default()
-}
-
-fn sensitive_class_list(var: &str) -> Vec<SensitiveDataClass> {
-    std::env::var(var)
-        .ok()
-        .map(|raw| {
-            raw.split(',')
-                .filter(|item| !item.trim().is_empty())
-                .filter_map(SensitiveDataClass::parse)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// How raw sensitive data headed for an unapproved external provider is
-/// treated (`TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY`). Maps onto the
-/// policy's class lists; `block` is the crate's built-in default (nothing to
-/// add), so it and unset behave identically.
-fn apply_external_raw_policy(policy: &mut DataBoundaryPolicy) {
-    let Ok(raw) = std::env::var("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY") else {
-        return;
-    };
-    let all = SensitiveDataClass::ALL.to_vec();
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "allow" | "audit" => policy.allow_raw_external_classes = all,
-        "redact" => policy.redact_classes = all,
-        "approval" => policy.approval_required_classes = all,
-        "require_local" | "required_local" => policy.require_local_classes = all,
-        // `block` is the built-in behavior; unrecognized values are rejected
-        // by tandem-server startup validation before this code runs.
-        _ => {}
-    }
+    provider_egress_mode_from_env()
 }
 
 pub(super) fn data_boundary_policy_from_env(mode: DataBoundaryMode) -> DataBoundaryPolicy {
-    let mut policy = DataBoundaryPolicy {
-        policy_id: "env".to_string(),
-        mode,
-        policy_fingerprint: String::new(),
-        approved_provider_classes: Vec::new(),
-        approved_provider_ids: Vec::new(),
-        prohibited_provider_ids: Vec::new(),
-        redact_classes: sensitive_class_list("TANDEM_DATA_BOUNDARY_REDACT_CLASSES"),
-        tokenize_classes: Vec::new(),
-        approval_required_classes: sensitive_class_list("TANDEM_DATA_BOUNDARY_APPROVAL_CLASSES"),
-        block_classes: sensitive_class_list("TANDEM_DATA_BOUNDARY_BLOCK_CLASSES"),
-        require_local_classes: Vec::new(),
-        allow_raw_external_classes: Vec::new(),
-        // Strict enterprise posture: missing tenant context or an Unknown
-        // provider classification fails closed in enforce mode (TAN-393).
-        strict_fail_closed: std::env::var("TANDEM_DATA_BOUNDARY_STRICT")
-            .ok()
-            .map(|raw| {
-                matches!(
-                    raw.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                )
-            })
-            .unwrap_or(false),
-        max_payload_bytes: std::env::var("TANDEM_DATA_BOUNDARY_MAX_PAYLOAD_BYTES")
-            .ok()
-            .and_then(|raw| raw.trim().parse::<u64>().ok())
-            .filter(|value| *value > 0),
-        action_tags: Vec::new(),
-    };
-    apply_external_raw_policy(&mut policy);
-    policy.policy_fingerprint = payload_hash(
-        serde_json::to_string(&policy)
-            .unwrap_or_default()
-            .as_bytes(),
-    );
-    policy
+    provider_egress_policy_from_env(mode)
 }
 
-pub(super) struct DataBoundaryDispatchContext<'a> {
+pub struct DataBoundaryDispatchContext<'a> {
     pub session_id: &'a str,
+    pub run_id: Option<&'a str>,
     pub message_id: &'a str,
     pub correlation_id: Option<&'a str>,
     pub provider_id: &'a str,
-    pub model_id: &'a str,
+    pub model_id: Option<&'a str>,
+    pub tool_schema_payload: Option<&'a str>,
+    pub source_ref: &'a str,
+    pub data_classes: &'a [SensitiveDataClass],
+    pub authority_ref: Option<&'a str>,
     pub org_id: Option<&'a str>,
     pub workspace_id: Option<&'a str>,
     pub deployment_id: Option<&'a str>,
@@ -129,32 +62,24 @@ pub(super) struct DataBoundaryDispatchContext<'a> {
 /// external; strict policies fail closed). Endpoint-verified classification
 /// is a routing-contract TODO (provider-declared boundary_class).
 pub(super) fn classify_provider(provider_id: &str) -> (ProviderBoundaryClass, &'static str) {
-    if let Ok(raw) = std::env::var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES") {
-        for entry in raw.split(',') {
-            let Some((id, class)) = entry.split_once('=') else {
-                continue;
-            };
-            if id.trim() == provider_id {
-                if let Some(class) = ProviderBoundaryClass::parse(class) {
-                    return (class, "env_mapping");
-                }
-            }
-        }
-    }
-    (ProviderBoundaryClass::Unknown, "unclassified")
+    classify_provider_from_env(provider_id)
 }
 
 /// What the dispatch call site must do with the provider request.
-pub(super) enum DataBoundaryDispatchOutcome {
+pub enum DataBoundaryDispatchOutcome {
     /// Boundary off: no evaluation ran.
-    Off,
+    Off { permit: ProviderEgressPermit },
     /// Dispatch proceeds unchanged; publish the evidence event.
-    Proceed { event: EngineEvent },
+    Proceed {
+        event: EngineEvent,
+        permit: ProviderEgressPermit,
+    },
     /// Enforce mode: dispatch proceeds with the transformed messages instead
     /// of the originals.
     ProceedTransformed {
         event: EngineEvent,
         messages: Vec<ChatMessage>,
+        permit: ProviderEgressPermit,
     },
     /// Enforce mode: human approval is required before dispatch. The call
     /// site raises the approval ask with `evidence` (classes/counts/hashes
@@ -163,6 +88,7 @@ pub(super) enum DataBoundaryDispatchOutcome {
         event: EngineEvent,
         evidence: Value,
         denial_reason: String,
+        approval: ProviderEgressApproval,
     },
     /// Enforce mode: the dispatch must not happen.
     Blocked { event: EngineEvent, reason: String },
@@ -171,279 +97,230 @@ pub(super) enum DataBoundaryDispatchOutcome {
 /// Audit-safe one-line explanation for blocked dispatches: class labels and
 /// reason codes only — this string is persisted into the session as the
 /// user-visible error.
-fn blocked_reason(prefix: &str, decision: &tandem_data_boundary::DataBoundaryDecision) -> String {
-    let classes = decision
-        .finding_summary
-        .by_class
-        .keys()
-        .map(|class| class.placeholder_label())
-        .collect::<Vec<_>>()
-        .join(",");
-    format!(
-        "{prefix}: provider={} classes=[{}] reason_codes=[{}]",
-        decision.provider.provider_id,
-        classes,
-        decision.reason_codes.join(",")
-    )
-}
-
-/// Per-message transform for enforce-mode Redact/Tokenize decisions. The
-/// crate's flat `transformed_payload` cannot be spliced back into discrete
-/// messages, so detection and transformation re-run per message content.
-/// Attachment URLs cannot be safely rewritten, so a scannable attachment URL
-/// carrying findings fails closed instead of dispatching raw.
-fn transform_messages_for_dispatch(
-    messages: &[ChatMessage],
-    action: tandem_data_boundary::DataBoundaryAction,
-) -> Result<(Vec<ChatMessage>, usize), &'static str> {
-    let mut transformed = Vec::with_capacity(messages.len());
-    let mut transformed_spans = 0usize;
-    for message in messages {
-        for attachment in &message.attachments {
+fn chat_fields<'a>(
+    messages: &'a [ChatMessage],
+    tool_schema_payload: Option<&'a str>,
+) -> (Vec<ProviderEgressField<'a>>, Vec<(usize, usize)>) {
+    let mut fields = Vec::new();
+    let mut message_content_fields = Vec::with_capacity(messages.len());
+    for (message_index, message) in messages.iter().enumerate() {
+        // An empty role represents a prompt-only completion request. Only the
+        // prompt content crosses that provider boundary.
+        if !message.role.is_empty() {
+            fields.push(ProviderEgressField::untransformable(
+                Cow::Owned(format!("message.{message_index}.role")),
+                Cow::Borrowed(message.role.as_str()),
+            ));
+        }
+        let field_index = fields.len();
+        fields.push(ProviderEgressField::transformable(
+            Cow::Owned(format!("message.{message_index}.content")),
+            Cow::Borrowed(message.content.as_str()),
+        ));
+        message_content_fields.push((message_index, field_index));
+        for (attachment_index, attachment) in message.attachments.iter().enumerate() {
             let tandem_providers::ChatAttachment::ImageUrl { url } = attachment;
-            // Scan exactly what the dispatch evaluator scans: the full URL
-            // for remote refs, the metadata prefix (through the comma) for
-            // data: URLs — credentials can hide in data-URL parameters too.
-            // A URL cannot be safely rewritten, so findings fail closed.
-            let scan_target = match data_url_scan_prefix_len(url) {
-                Some(prefix_len) => &url[..prefix_len],
-                None => url.as_str(),
-            };
-            if !tandem_data_boundary::detect_sensitive_data(scan_target).is_empty() {
-                return Err("attachment_untransformable");
+            let label = Cow::Owned(format!(
+                "message.{message_index}.attachment.{attachment_index}.url"
+            ));
+            if let Some(prefix_len) = data_url_scan_prefix_len(url) {
+                fields.push(ProviderEgressField::untransformable_with_binding(
+                    label,
+                    Cow::Borrowed(&url[..prefix_len]),
+                    Cow::Borrowed(url.as_str()),
+                ));
+            } else {
+                fields.push(ProviderEgressField::untransformable(
+                    label,
+                    Cow::Borrowed(url.as_str()),
+                ));
             }
         }
-        let findings = tandem_data_boundary::detect_sensitive_data(&message.content);
-        if findings.is_empty() {
-            transformed.push(message.clone());
-            continue;
-        }
-        transformed_spans += findings.len();
-        let content = if action == tandem_data_boundary::DataBoundaryAction::Tokenize {
-            tandem_data_boundary::tokenize_sensitive_data(&message.content, &findings).tokenized
-        } else {
-            tandem_data_boundary::redact_sensitive_data(&message.content, &findings).redacted
-        };
-        transformed.push(ChatMessage {
-            role: message.role.clone(),
-            content,
-            attachments: message.attachments.clone(),
-        });
     }
-    Ok((transformed, transformed_spans))
+    if let Some(tool_schema_payload) = tool_schema_payload {
+        match serde_json::from_str::<Value>(tool_schema_payload) {
+            Ok(value) => append_tool_schema_strings(&value, &mut fields),
+            Err(_) => fields.push(ProviderEgressField::untransformable(
+                Cow::Borrowed("tool_schema.invalid_json"),
+                Cow::Borrowed(tool_schema_payload),
+            )),
+        }
+    }
+    (fields, message_content_fields)
+}
+
+/// Tool schemas are structured metadata. Scan the values that actually leave
+/// the process, but not JSON property names: common schema keys such as
+/// `secret`, `token`, and `password` are vocabulary rather than credentials.
+/// Schema strings remain untransformable because rewriting a name,
+/// description, or enum would change the provider/tool contract. The generic
+/// high-entropy heuristic is disabled for schema identifiers; strong
+/// credential, key, PII, and marker detectors remain enabled.
+fn append_tool_schema_strings<'a>(value: &Value, fields: &mut Vec<ProviderEgressField<'a>>) {
+    match value {
+        Value::String(value) => {
+            let index = fields.len();
+            fields.push(ProviderEgressField::untransformable_with_detector_config(
+                Cow::Owned(format!("tool_schema.value.{index}")),
+                Cow::Owned(value.clone()),
+                DataBoundaryDetectorConfig {
+                    detect_high_entropy: false,
+                    ..DataBoundaryDetectorConfig::default()
+                },
+            ));
+        }
+        Value::Array(values) => {
+            for value in values {
+                append_tool_schema_strings(value, fields);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values() {
+                append_tool_schema_strings(value, fields);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+fn to_engine_event(
+    event: ProviderEgressAuditEvent,
+    message_id: &str,
+    correlation_id: Option<&str>,
+) -> EngineEvent {
+    let event_name = event.boundary.event_name.clone();
+    let mut properties = serde_json::to_value(event).unwrap_or_else(|_| json!({}));
+    if let Value::Object(ref mut map) = properties {
+        map.insert("messageID".to_string(), json!(message_id));
+        map.insert("correlationID".to_string(), json!(correlation_id));
+    }
+    EngineEvent::new(event_name, properties)
 }
 
 /// Evaluates the fully assembled provider request. In audit mode the outcome
 /// is always `Proceed` (evidence only); in enforce mode the outcome carries
 /// the action the call site must honor. `Off` when the boundary is disabled.
-pub(super) fn evaluate_dispatch_boundary(
+pub fn evaluate_dispatch_boundary(
     ctx: &DataBoundaryDispatchContext<'_>,
     messages: &[ChatMessage],
 ) -> DataBoundaryDispatchOutcome {
     let mode = data_boundary_mode();
-    if mode == DataBoundaryMode::Off {
-        return DataBoundaryDispatchOutcome::Off;
-    }
-    let started = Instant::now();
     let policy = data_boundary_policy_from_env(mode);
-
-    // The assembled request text, rebuilt transiently for detection only —
-    // never stored, logged, or attached to the emitted event. Attachment URLs
-    // are dispatched to providers too (as image_url/input_image), so they are
-    // part of what crosses the boundary and must be scanned: signed URLs and
-    // query tokens are exactly where credentials leak.
-    let mut payload_text = String::new();
-    for message in messages {
-        payload_text.push_str(&message.role);
-        payload_text.push_str(": ");
-        payload_text.push_str(&message.content);
-        payload_text.push('\n');
-        for attachment in &message.attachments {
-            let tandem_providers::ChatAttachment::ImageUrl { url } = attachment;
-            payload_text.push_str("attachment: ");
-            if let Some(prefix_len) = data_url_scan_prefix_len(url) {
-                // Inline data: URLs embed base64 image bytes; scanning the
-                // body would flood findings with high-entropy false positives
-                // on every image prompt. Record scheme/mediatype only.
-                payload_text.push_str(&url[..prefix_len]);
-                payload_text.push_str("<data elided>");
-            } else {
-                payload_text.push_str(url);
-            }
-            payload_text.push('\n');
-        }
-    }
-
-    let (boundary_class, classification_source) = classify_provider(ctx.provider_id);
-    let input = DataBoundaryInput {
-        input_id: format!("dbi_{}", ctx.message_id),
+    let (boundary_class, _) = classify_provider(ctx.provider_id);
+    let must_block_uninspected_media = mode == DataBoundaryMode::Enforce
+        && policy.strict_fail_closed
+        && !boundary_class.is_internal()
+        && messages
+            .iter()
+            .any(|message| !message.attachments.is_empty());
+    let authority = ProviderEgressAuthority {
         tenant: DataBoundaryTenantRef {
             organization_id: ctx.org_id.map(str::to_string),
             workspace_id: ctx.workspace_id.map(str::to_string),
             deployment_id: ctx.deployment_id.map(str::to_string),
         },
-        provider: DataBoundaryProviderRef {
-            provider_id: ctx.provider_id.to_string(),
-            model_id: Some(ctx.model_id.to_string()),
-            boundary_class,
-        },
-        operation: DataBoundaryOperationRef {
-            operation_id: ctx.message_id.to_string(),
-            kind: DataBoundaryOperationKind::ProviderRequest,
-            tool_name: None,
-            source_ref: Some("engine_loop.provider_dispatch".to_string()),
-        },
-        payload_hash: payload_hash(payload_text.as_bytes()),
-        payload_bytes: payload_text.len() as u64,
-        source_refs: Vec::new(),
-        data_classes: Vec::new(),
-        action_tags: Vec::new(),
+        run_id: ctx.run_id.map(str::to_string),
+        session_id: Some(ctx.session_id.to_string()),
+        authority_ref: ctx.authority_ref.map(str::to_string),
     };
-
-    let mut evaluation = evaluate_data_boundary(
-        &DataBoundaryEvaluationRequest {
-            input: &input,
-            payload: Some(&payload_text),
-            detector_config: None,
-        },
-        &policy,
-    );
-    drop(payload_text);
-
-    // The crate's flat transformed payload cannot be mapped back onto
-    // discrete messages; enforce-mode transforms re-run per message below.
-    let decided_event_kind = evaluation.event_kind;
-    drop(evaluation.transformed_payload.take());
-
-    let build_event = |kind: tandem_data_boundary::DataBoundaryEventKind,
-                       decision: &tandem_data_boundary::DataBoundaryDecision,
-                       enforced: bool,
-                       extra: &[(&str, Value)]| {
-        let boundary_event = DataBoundaryEvent::from_decision(
-            format!("dbe_{}", decision.decision_id.trim_start_matches("dbd_")),
-            kind,
-            chrono::Utc::now().timestamp_millis().max(0) as u64,
-            started.elapsed().as_millis() as u64,
-            decision,
-            Vec::new(),
-        );
-        let mut properties = serde_json::to_value(&boundary_event).unwrap_or_else(|_| json!({}));
-        if let Value::Object(ref mut map) = properties {
-            // Envelope keys so the bus derives session scoping (see
-            // RuntimeEventEnvelope::derive), plus the dispatch correlation
-            // ids the rest of the provider-call event family carries.
-            map.insert("sessionID".to_string(), json!(ctx.session_id));
-            map.insert("messageID".to_string(), json!(ctx.message_id));
-            map.insert("correlationID".to_string(), json!(ctx.correlation_id));
-            map.insert("providerID".to_string(), json!(ctx.provider_id));
-            map.insert("modelID".to_string(), json!(ctx.model_id));
-            map.insert("mode".to_string(), json!(mode.as_str()));
-            map.insert(
-                "classificationSource".to_string(),
-                json!(classification_source),
-            );
-            map.insert("auditOnly".to_string(), json!(!enforced));
-            map.insert("enforced".to_string(), json!(enforced));
-            map.insert(
-                "decidedEventKind".to_string(),
-                json!(decided_event_kind.event_name()),
-            );
-            for (key, value) in extra {
-                map.insert((*key).to_string(), value.clone());
-            }
-        }
-        EngineEvent::new(boundary_event.event_name.clone(), properties)
+    let (fields, message_content_fields) = chat_fields(messages, ctx.tool_schema_payload);
+    let request = ProviderEgressRequest {
+        authority: &authority,
+        operation_id: ctx.message_id,
+        source_ref: ctx.source_ref,
+        provider_id: ctx.provider_id,
+        model_id: ctx.model_id,
+        fields: &fields,
+        data_classes: ctx.data_classes,
+        action_tags: &[],
     };
-
-    // Audit mode never alters dispatch: every decision emits as `.evaluated`
-    // with the decided action carried as evidence (never claiming an outcome
-    // that did not happen to the dispatched payload).
-    if mode == DataBoundaryMode::Audit {
-        let event = build_event(
-            tandem_data_boundary::DataBoundaryEventKind::Evaluated,
-            &evaluation.decision,
-            false,
-            &[],
-        );
-        return DataBoundaryDispatchOutcome::Proceed { event };
+    let mut evaluation = evaluate_provider_egress(&request);
+    if evaluation.disposition == ProviderEgressDisposition::Off {
+        return DataBoundaryDispatchOutcome::Off {
+            permit: evaluation
+                .take_dispatch_permit()
+                .expect("off boundary evaluation authorizes the dispatch route"),
+        };
     }
-
-    use tandem_data_boundary::DataBoundaryAction as Action;
-    use tandem_data_boundary::DataBoundaryEventKind as Kind;
-    match evaluation.decision.action {
-        Action::Allow | Action::AllowWithAudit => {
-            let event = build_event(Kind::Evaluated, &evaluation.decision, true, &[]);
-            DataBoundaryDispatchOutcome::Proceed { event }
+    let mut audit_event = evaluation
+        .event
+        .take()
+        .expect("enabled boundary emits an event");
+    if must_block_uninspected_media {
+        const REASON_CODE: &str = "uninspected_media_external_provider";
+        audit_event.boundary.event_name = DataBoundaryEventKind::Blocked.event_name().to_string();
+        audit_event.boundary.event_kind = DataBoundaryEventKind::Blocked;
+        audit_event.boundary.action = DataBoundaryAction::Block;
+        if !audit_event
+            .boundary
+            .reason_codes
+            .iter()
+            .any(|code| code == REASON_CODE)
+        {
+            audit_event
+                .boundary
+                .reason_codes
+                .push(REASON_CODE.to_string());
         }
-        Action::Redact | Action::Tokenize => {
-            match transform_messages_for_dispatch(messages, evaluation.decision.action) {
-                Ok((transformed, transformed_spans)) => {
-                    let kind = if evaluation.decision.action == Action::Tokenize {
-                        Kind::Tokenized
-                    } else {
-                        Kind::Redacted
-                    };
-                    let event = build_event(
-                        kind,
-                        &evaluation.decision,
-                        true,
-                        &[("transformedSpans", json!(transformed_spans))],
-                    );
-                    DataBoundaryDispatchOutcome::ProceedTransformed {
-                        event,
-                        messages: transformed,
-                    }
+        audit_event.decided_event_kind = DataBoundaryEventKind::Blocked.event_name().to_string();
+        evaluation.disposition = ProviderEgressDisposition::Blocked;
+        evaluation.blocked_reason = Some(format!(
+            "DATA_BOUNDARY_BLOCKED: provider={} reason_codes=[{REASON_CODE}]",
+            ctx.provider_id
+        ));
+    }
+    let evidence = json!({
+        "kind": "data_boundary_egress",
+        "providerID": ctx.provider_id,
+        "modelID": ctx.model_id,
+        "decisionID": &audit_event.boundary.decision_id,
+        "payloadHash": &audit_event.boundary.payload_hash,
+        "policyFingerprint": &audit_event.boundary.policy_fingerprint,
+        "findingSummary": &audit_event.boundary.finding_summary,
+        "semanticDataClasses": &audit_event.semantic_data_classes,
+        "reasonCodes": &audit_event.boundary.reason_codes,
+    });
+    let event = to_engine_event(audit_event, ctx.message_id, ctx.correlation_id);
+    match evaluation.disposition {
+        ProviderEgressDisposition::Off => unreachable!("off disposition returned above"),
+        ProviderEgressDisposition::Proceed => {
+            let permit = evaluation
+                .take_dispatch_permit()
+                .expect("proceed boundary evaluation authorizes the dispatch route");
+            if let Some(transformed_fields) = evaluation.transformed_fields {
+                let mut transformed = messages.to_vec();
+                for (message_index, field_index) in message_content_fields {
+                    transformed[message_index].content = transformed_fields[field_index].clone();
                 }
-                Err(reason_code) => {
-                    let mut decision = evaluation.decision.clone();
-                    decision.reason_codes.push(reason_code.to_string());
-                    let reason = blocked_reason("DATA_BOUNDARY_BLOCKED", &decision);
-                    let event = build_event(Kind::Blocked, &decision, true, &[]);
-                    DataBoundaryDispatchOutcome::Blocked { event, reason }
+                DataBoundaryDispatchOutcome::ProceedTransformed {
+                    event,
+                    messages: transformed,
+                    permit,
                 }
+            } else {
+                DataBoundaryDispatchOutcome::Proceed { event, permit }
             }
         }
-        Action::RequireApproval => {
-            let event = build_event(Kind::ApprovalRequired, &evaluation.decision, true, &[]);
-            // The approval ask carries class/count evidence only — never
-            // payload content. The original raw payload dispatches only on an
-            // explicit approval; deny/timeout/cancel all fail closed.
-            let evidence = json!({
-                "kind": "data_boundary_egress",
-                "providerID": ctx.provider_id,
-                "modelID": ctx.model_id,
-                "decisionID": evaluation.decision.decision_id,
-                "payloadHash": evaluation.decision.payload_hash,
-                "policyFingerprint": evaluation.decision.policy_fingerprint,
-                "findingSummary": serde_json::to_value(&evaluation.decision.finding_summary)
-                    .unwrap_or_else(|_| json!({})),
-                "reasonCodes": evaluation.decision.reason_codes,
+        ProviderEgressDisposition::RequireApproval => {
+            let approval = evaluation
+                .take_approval()
+                .expect("approval disposition carries a pending permit");
+            let denial_reason = evaluation.blocked_reason.unwrap_or_else(|| {
+                "DATA_BOUNDARY_APPROVAL_REQUIRED: missing decision reason".to_string()
             });
-            let denial_reason =
-                blocked_reason("DATA_BOUNDARY_APPROVAL_REQUIRED", &evaluation.decision);
             DataBoundaryDispatchOutcome::RequireApproval {
                 event,
                 evidence,
                 denial_reason,
+                approval,
             }
         }
-        Action::RouteToLocal => {
-            // Routing contract (docs/DATA_BOUNDARY_ROUTING_CONTRACT.md): no
-            // routing capability exists yet, so RouteToLocal fails closed
-            // rather than silently continuing to the external provider.
-            let mut decision = evaluation.decision.clone();
-            decision
-                .reason_codes
-                .push("route_to_local_unavailable".to_string());
-            let reason = blocked_reason("DATA_BOUNDARY_BLOCKED", &decision);
-            let event = build_event(Kind::RoutedLocal, &decision, true, &[]);
-            DataBoundaryDispatchOutcome::Blocked { event, reason }
-        }
-        Action::Block => {
-            let reason = blocked_reason("DATA_BOUNDARY_BLOCKED", &evaluation.decision);
-            let event = build_event(Kind::Blocked, &evaluation.decision, true, &[]);
-            DataBoundaryDispatchOutcome::Blocked { event, reason }
-        }
+        ProviderEgressDisposition::Blocked => DataBoundaryDispatchOutcome::Blocked {
+            event,
+            reason: evaluation
+                .blocked_reason
+                .unwrap_or_else(|| "DATA_BOUNDARY_BLOCKED: missing decision reason".to_string()),
+        },
     }
 }
 
@@ -567,10 +444,11 @@ pub fn evaluate_context_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tandem_data_boundary::SensitiveDataClass;
 
     fn expect_proceed_event(outcome: DataBoundaryDispatchOutcome) -> EngineEvent {
         match outcome {
-            DataBoundaryDispatchOutcome::Proceed { event } => event,
+            DataBoundaryDispatchOutcome::Proceed { event, .. } => event,
             _ => panic!("expected Proceed outcome"),
         }
     }
@@ -586,10 +464,15 @@ mod tests {
     fn ctx<'a>() -> DataBoundaryDispatchContext<'a> {
         DataBoundaryDispatchContext {
             session_id: "ses_db_1",
+            run_id: Some("run_db_1"),
             message_id: "msg_db_1",
             correlation_id: None,
             provider_id: "openai",
-            model_id: "gpt-test",
+            model_id: Some("gpt-test"),
+            tool_schema_payload: None,
+            source_ref: "engine_loop.provider_dispatch",
+            data_classes: &[],
+            authority_ref: None,
             org_id: Some("local"),
             workspace_id: Some("local"),
             deployment_id: None,
@@ -603,7 +486,7 @@ mod tests {
         let messages = vec![chat("user", "api_key=sk-live-abcdef1234567890")];
         assert!(matches!(
             evaluate_dispatch_boundary(&ctx(), &messages),
-            DataBoundaryDispatchOutcome::Off
+            DataBoundaryDispatchOutcome::Off { .. }
         ));
     }
 
@@ -710,6 +593,72 @@ mod tests {
 
     #[test]
     #[serial_test::serial(data_boundary_env)]
+    fn strict_enforce_blocks_uninspected_media_for_external_providers() {
+        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
+        std::env::set_var("TANDEM_DATA_BOUNDARY_STRICT", "1");
+        std::env::set_var(
+            "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
+            "openai=approved_external",
+        );
+
+        for url in [
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg",
+            "https://cdn.example.com/clean-image.png",
+        ] {
+            let message = ChatMessage {
+                role: "user".to_string(),
+                content: "see attached".to_string(),
+                attachments: vec![tandem_providers::ChatAttachment::ImageUrl {
+                    url: url.to_string(),
+                }],
+            };
+            match evaluate_dispatch_boundary(&ctx(), &[message]) {
+                DataBoundaryDispatchOutcome::Blocked { event, reason } => {
+                    assert_eq!(event.event_type, "data_boundary.blocked");
+                    assert_eq!(event.properties["action"], "block");
+                    assert_eq!(event.properties["enforced"], true);
+                    assert!(reason.contains("uninspected_media_external_provider"));
+                    assert!(event.properties["reason_codes"]
+                        .as_array()
+                        .is_some_and(|codes| codes
+                            .iter()
+                            .any(|code| code == "uninspected_media_external_provider")));
+                }
+                _ => panic!("strict external dispatch must block uninspected media"),
+            }
+        }
+
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_STRICT");
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES");
+    }
+
+    #[test]
+    #[serial_test::serial(data_boundary_env)]
+    fn strict_enforce_allows_media_for_internal_providers() {
+        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
+        std::env::set_var("TANDEM_DATA_BOUNDARY_STRICT", "1");
+        std::env::set_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES", "openai=local");
+        let message = ChatMessage {
+            role: "user".to_string(),
+            content: "see attached".to_string(),
+            attachments: vec![tandem_providers::ChatAttachment::ImageUrl {
+                url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg".to_string(),
+            }],
+        };
+        let outcome = evaluate_dispatch_boundary(&ctx(), &[message]);
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_STRICT");
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES");
+
+        assert!(matches!(
+            outcome,
+            DataBoundaryDispatchOutcome::Proceed { .. }
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial(data_boundary_env)]
     fn classifier_uses_env_mapping_then_builtin_then_unknown() {
         std::env::set_var(
             "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
@@ -760,6 +709,59 @@ mod tests {
 
     #[test]
     #[serial_test::serial(data_boundary_env)]
+    fn semantic_source_code_is_blocked_without_regex_findings() {
+        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
+        std::env::set_var(
+            "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
+            "openai=approved_external",
+        );
+        std::env::set_var("TANDEM_DATA_BOUNDARY_BLOCK_CLASSES", "source_code");
+        let classes = [SensitiveDataClass::SourceCode];
+        let mut context = ctx();
+        context.data_classes = &classes;
+        let outcome = evaluate_dispatch_boundary(&context, &[chat("user", "ordinary text")]);
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES");
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_BLOCK_CLASSES");
+
+        match outcome {
+            DataBoundaryDispatchOutcome::Blocked { event, reason } => {
+                assert!(reason.contains("SOURCE_CODE"));
+                assert_eq!(event.properties["finding_summary"]["total_findings"], 0);
+                assert_eq!(event.properties["semanticDataClasses"][0], "source_code");
+            }
+            _ => panic!("semantic source code must be governed"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(data_boundary_env)]
+    fn strict_mode_requires_run_and_session_authority() {
+        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
+        std::env::set_var("TANDEM_DATA_BOUNDARY_STRICT", "1");
+        std::env::set_var(
+            "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
+            "openai=approved_external",
+        );
+        let mut context = ctx();
+        context.run_id = None;
+        context.session_id = " ";
+        let outcome = evaluate_dispatch_boundary(&context, &[chat("user", "ordinary text")]);
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_STRICT");
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES");
+
+        match outcome {
+            DataBoundaryDispatchOutcome::Blocked { reason, .. } => {
+                assert!(reason.contains("missing_run_authority"));
+                assert!(reason.contains("missing_session_authority"));
+            }
+            _ => panic!("strict mode must require both execution identifiers"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(data_boundary_env)]
     fn enforce_redact_policy_transforms_dispatched_messages() {
         std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
         std::env::set_var(
@@ -778,7 +780,9 @@ mod tests {
         std::env::remove_var("TANDEM_DATA_BOUNDARY_REDACT_CLASSES");
 
         match outcome {
-            DataBoundaryDispatchOutcome::ProceedTransformed { event, messages } => {
+            DataBoundaryDispatchOutcome::ProceedTransformed {
+                event, messages, ..
+            } => {
                 assert_eq!(event.event_type, "data_boundary.redacted");
                 assert_eq!(event.properties["enforced"], true);
                 assert!(event.properties["transformedSpans"].as_u64().unwrap_or(0) > 0);
@@ -803,6 +807,59 @@ mod tests {
 
     #[test]
     #[serial_test::serial(data_boundary_env)]
+    fn tool_schema_keys_do_not_block_message_redaction() {
+        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
+        std::env::set_var(
+            "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
+            "openai=approved_external",
+        );
+        std::env::set_var("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY", "redact");
+        let mut context = ctx();
+        context.tool_schema_payload = Some(
+            r#"[{"name":"configure_auth","description":"Configure secret credentials and API tokens.","parameters":{"type":"object","properties":{"secret":{"type":"string"},"password":{"type":"string"},"token":{"type":"string"}}}}]"#,
+        );
+        let messages = vec![chat("user", "api_key=sk-live-abcdef1234567890")];
+        let outcome = evaluate_dispatch_boundary(&context, &messages);
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES");
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY");
+
+        match outcome {
+            DataBoundaryDispatchOutcome::ProceedTransformed { messages, .. } => {
+                assert!(!messages[0].content.contains("sk-live-abcdef1234567890"));
+            }
+            _ => panic!("schema vocabulary must not block message redaction"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(data_boundary_env)]
+    fn credential_in_tool_schema_value_fails_closed() {
+        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
+        std::env::set_var(
+            "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
+            "openai=approved_external",
+        );
+        std::env::set_var("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY", "redact");
+        let mut context = ctx();
+        context.tool_schema_payload =
+            Some(r#"[{"description":"api_key=sk-live-abcdef1234567890"}]"#);
+        let outcome = evaluate_dispatch_boundary(&context, &[chat("user", "hello")]);
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES");
+        std::env::remove_var("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY");
+
+        match outcome {
+            DataBoundaryDispatchOutcome::Blocked { reason, .. } => {
+                assert!(reason.contains("untransformable_sensitive_field"));
+                assert!(!reason.contains("sk-live-abcdef1234567890"));
+            }
+            _ => panic!("credential-bearing schema value must fail closed"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(data_boundary_env)]
     fn enforce_approval_classes_require_approval_with_safe_evidence() {
         std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
         std::env::set_var(
@@ -822,6 +879,7 @@ mod tests {
                 event,
                 evidence,
                 denial_reason,
+                ..
             } => {
                 assert_eq!(event.event_type, "data_boundary.approval_required");
                 let serialized = serde_json::to_string(&evidence).expect("evidence json");
@@ -929,7 +987,7 @@ mod tests {
         std::env::remove_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES");
 
         match outcome {
-            DataBoundaryDispatchOutcome::Proceed { event } => {
+            DataBoundaryDispatchOutcome::Proceed { event, .. } => {
                 assert_eq!(event.event_type, "data_boundary.evaluated");
                 assert_eq!(event.properties["action"], "allow_with_audit");
                 assert_eq!(event.properties["classificationSource"], "env_mapping");
@@ -969,7 +1027,10 @@ mod tests {
 
         match outcome {
             DataBoundaryDispatchOutcome::Blocked { reason, .. } => {
-                assert!(reason.contains("attachment_untransformable"), "{reason}");
+                assert!(
+                    reason.contains("untransformable_sensitive_field"),
+                    "{reason}"
+                );
                 assert!(!reason.contains("sk-live-abcdef1234567890"));
             }
             _ => panic!("expected Blocked outcome for untransformable data URL"),

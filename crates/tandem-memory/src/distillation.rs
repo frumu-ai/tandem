@@ -1,4 +1,8 @@
 use crate::types::{DistillationReport, DistilledFact, FactCategory, MemoryResult};
+use crate::{
+    provider_egress::{complete_memory_prompt, MemoryProviderEgressKind},
+    MemoryProviderEgressContext,
+};
 use async_trait::async_trait;
 use chrono::Utc;
 use std::sync::Arc;
@@ -26,6 +30,7 @@ Only include information that would be valuable for future sessions.
 pub struct SessionDistiller {
     providers: Arc<ProviderRegistry>,
     importance_threshold: f64,
+    provider_egress: Option<MemoryProviderEgressContext>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -77,6 +82,7 @@ impl SessionDistiller {
         Self {
             providers,
             importance_threshold: 0.5,
+            provider_egress: None,
         }
     }
 
@@ -84,7 +90,13 @@ impl SessionDistiller {
         Self {
             providers,
             importance_threshold,
+            provider_egress: None,
         }
+    }
+
+    pub fn with_provider_egress(mut self, provider_egress: MemoryProviderEgressContext) -> Self {
+        self.provider_egress = Some(provider_egress);
+        self
     }
 
     pub async fn distill(
@@ -211,7 +223,18 @@ impl SessionDistiller {
     ) -> MemoryResult<Vec<DistilledFact>> {
         let prompt = DISTILLATION_PROMPT.replace("{conversation}", conversation);
 
-        let response = match self.providers.complete_cheapest(&prompt, None, None).await {
+        let response = match complete_memory_prompt(
+            &self.providers,
+            &prompt,
+            None,
+            None,
+            self.provider_egress.as_ref(),
+            MemoryProviderEgressKind::Distillation,
+            distillation_id,
+            "memory.session_distillation",
+        )
+        .await
+        {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!("Distillation LLM failed: {}", e);

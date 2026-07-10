@@ -144,3 +144,51 @@ test("enterprise installer rejects unsupported platforms", () => {
     /Unsupported platform for @frumu\/tandem-enterprise: linux-arm64/
   );
 });
+
+test("enterprise installer only accepts the exact package release asset", () => {
+  const artifactName = "tandem-engine-enterprise-linux-x64.tar.gz";
+  const wrongRelease = {
+    tag_name: "v0.6.7",
+    assets: [{ name: artifactName, browser_download_url: "https://example.invalid/old" }],
+  };
+  const exactRelease = {
+    tag_name: "v0.6.8",
+    assets: [{ name: artifactName, browser_download_url: "https://example.invalid/exact" }],
+  };
+
+  assert.deepEqual(
+    enterpriseInstaller.requireReleaseAsset([wrongRelease, exactRelease], "0.6.8", artifactName),
+    {
+      release: exactRelease,
+      asset: exactRelease.assets[0],
+    }
+  );
+  assert.throws(
+    () => enterpriseInstaller.requireReleaseAsset([wrongRelease], "0.6.8", artifactName),
+    /Release v0\.6\.8 was not found; refusing to install an asset from another release/
+  );
+  assert.throws(
+    () => enterpriseInstaller.requireReleaseAsset([{ tag_name: "v0.6.8", assets: [] }], "0.6.8", artifactName),
+    /Release v0\.6\.8 does not contain tandem-engine-enterprise-linux-x64\.tar\.gz/
+  );
+});
+
+test("enterprise installer verifies the extracted binary version", () => {
+  const binaryPath = "/tmp/tandem-engine";
+  let checkedPath = "";
+  const readVersion = (candidate) => {
+    checkedPath = candidate;
+    return "0.6.8";
+  };
+
+  assert.equal(enterpriseInstaller.verifyInstalledBinary(binaryPath, "0.6.8", readVersion), "0.6.8");
+  assert.equal(checkedPath, binaryPath);
+  assert.throws(
+    () => enterpriseInstaller.verifyInstalledBinary(binaryPath, "0.6.8", () => "0.6.7"),
+    /Installed binary version 0\.6\.7 does not match package version 0\.6\.8/
+  );
+  assert.throws(
+    () => enterpriseInstaller.verifyInstalledBinary(binaryPath, "0.6.8", () => ""),
+    /failed --version verification/
+  );
+});

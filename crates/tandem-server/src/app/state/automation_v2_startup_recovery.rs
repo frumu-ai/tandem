@@ -10,7 +10,7 @@ impl AppState {
         detail: Option<String>,
         metadata: Value,
     ) {
-        let _ = crate::audit::append_protected_audit_event(
+        crate::audit::append_protected_audit_event_best_effort(
             self,
             event_type,
             &run.tenant_context,

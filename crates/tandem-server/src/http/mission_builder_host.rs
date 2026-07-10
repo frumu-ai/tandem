@@ -25,6 +25,8 @@ pub(crate) async fn generate_mission_draft(
     intent: &str,
     workspace_root: &str,
     archetype_id: Option<&str>,
+    tenant_context: &tandem_types::TenantContext,
+    verified_tenant_context: Option<&tandem_types::VerifiedTenantContext>,
 ) -> Result<MissionDraftGenerationOutput, String> {
     if let Some(payload) = super::workflow_planner_policy::planner_test_override_payload(
         "TANDEM_MISSION_BUILDER_TEST_GENERATE_RESPONSE",
@@ -38,8 +40,17 @@ pub(crate) async fn generate_mission_draft(
     })?;
     let prompt = build_mission_generation_prompt(intent, workspace_root, archetype_id);
     let session_id = format!("mission-builder-{}", uuid::Uuid::new_v4());
-    let output =
-        invoke_mission_builder_provider(state, &session_id, &model, prompt.clone()).await?;
+    let run_id = format!("mission-builder-run-{}", uuid::Uuid::new_v4());
+    let output = invoke_mission_builder_provider(
+        state,
+        &session_id,
+        &run_id,
+        &model,
+        prompt.clone(),
+        tenant_context,
+        verified_tenant_context,
+    )
+    .await?;
 
     if let Some(value) = extract_generation_json_value(&output) {
         return decode_generation_output(value, workspace_root);
@@ -49,8 +60,16 @@ pub(crate) async fn generate_mission_draft(
         "mission builder returned non-JSON text; requesting a JSON-only repair response"
     );
     let repair_prompt = build_generation_json_repair_prompt(&prompt, &output);
-    let repair_output =
-        invoke_mission_builder_provider(state, &session_id, &model, repair_prompt).await?;
+    let repair_output = invoke_mission_builder_provider(
+        state,
+        &session_id,
+        &run_id,
+        &model,
+        repair_prompt,
+        tenant_context,
+        verified_tenant_context,
+    )
+    .await?;
     let repaired = extract_generation_json_value(&repair_output).ok_or_else(|| {
         "Mission builder returned text without valid JSON, including after a repair retry."
             .to_string()
@@ -174,8 +193,11 @@ fn build_generation_json_repair_prompt(original_prompt: &str, invalid_output: &s
 async fn invoke_mission_builder_provider(
     state: &AppState,
     session_id: &str,
+    run_id: &str,
     model: &ModelSpec,
     prompt: String,
+    tenant_context: &tandem_types::TenantContext,
+    verified_tenant_context: Option<&tandem_types::VerifiedTenantContext>,
 ) -> Result<String, String> {
     let cancel = CancellationToken::new();
     emit_event(
@@ -188,7 +210,7 @@ async fn invoke_mission_builder_provider(
             workspace_id: None,
             correlation_id: None,
             session_id: Some(session_id),
-            run_id: None,
+            run_id: Some(run_id),
             message_id: None,
             provider_id: Some(model.provider_id.as_str()),
             model_id: Some(model.model_id.as_str()),
@@ -205,6 +227,22 @@ async fn invoke_mission_builder_provider(
             content: prompt,
             attachments: Vec::new(),
         }];
+        let operation_id = format!("{session_id}:mission_builder");
+        let prepared = crate::provider_egress::prepare_chat_messages(
+            state,
+            Some(tenant_context),
+            verified_tenant_context,
+            Some(run_id),
+            session_id,
+            &operation_id,
+            "server.mission_builder",
+            crate::provider_egress::ServerProviderEgressKind::MissionBuilder,
+            model.provider_id.as_str(),
+            Some(model.model_id.as_str()),
+            &messages,
+        )
+        .await?;
+        let messages = prepared.messages;
         state.event_bus.publish(tandem_types::EngineEvent::new(
             "context.budget.bypassed",
             json!({
@@ -219,7 +257,8 @@ async fn invoke_mission_builder_provider(
         ));
         let stream = state
             .providers
-            .stream_for_provider(
+            .stream_with_egress_permit(
+                &prepared.permit,
                 Some(model.provider_id.as_str()),
                 Some(model.model_id.as_str()),
                 messages,
@@ -248,7 +287,7 @@ async fn invoke_mission_builder_provider(
                                 workspace_id: None,
                                 correlation_id: None,
                                 session_id: Some(session_id),
-                                run_id: None,
+                                run_id: Some(run_id),
                                 message_id: None,
                                 provider_id: Some(model.provider_id.as_str()),
                                 model_id: Some(model.model_id.as_str()),
@@ -284,7 +323,7 @@ async fn invoke_mission_builder_provider(
                             workspace_id: None,
                             correlation_id: None,
                             session_id: Some(session_id),
-                            run_id: None,
+                            run_id: Some(run_id),
                             message_id: None,
                             provider_id: Some(model.provider_id.as_str()),
                             model_id: Some(model.model_id.as_str()),
@@ -304,6 +343,15 @@ async fn invoke_mission_builder_provider(
         Ok::<String, String>(output)
     };
 
+    let builder_future = crate::http::session_run_retry::scope_provider_auth_for_tenant(
+        state,
+        tenant_context,
+        crate::http::session_run_retry::PromptExecutionSurface::MissionBuilder,
+        Some(session_id),
+        Some(run_id),
+        Some(model.provider_id.as_str()),
+        builder_future,
+    );
     match tokio::time::timeout(
         std::time::Duration::from_millis(
             super::workflow_planner_policy::planner_build_timeout_ms(),
@@ -325,7 +373,7 @@ async fn invoke_mission_builder_provider(
                     workspace_id: None,
                     correlation_id: None,
                     session_id: Some(session_id),
-                    run_id: None,
+                    run_id: Some(run_id),
                     message_id: None,
                     provider_id: Some(model.provider_id.as_str()),
                     model_id: Some(model.model_id.as_str()),
@@ -354,5 +402,63 @@ fn truncate_text(input: &str, max_len: usize) -> String {
         format!("{}...", truncated.trim_end())
     } else {
         truncated
+    }
+}
+
+#[cfg(test)]
+mod provider_auth_scope_tests {
+    use super::*;
+    use crate::http::session_run_retry::provider_auth_test_support::install_capturing_codex_provider;
+    use tandem_providers::ProviderAuthOverride;
+    use tandem_types::TenantContext;
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn mission_builder_isolates_hosted_codex_auth_from_local_and_other_tenants() {
+        let state = crate::test_support::test_state().await;
+        let tenant_a = TenantContext::explicit("mission-org-a", "mission-workspace-a", None);
+        let tenant_b = TenantContext::explicit("mission-org-b", "mission-workspace-b", None);
+        let tenant_missing =
+            TenantContext::explicit("mission-org-missing", "mission-workspace-missing", None);
+        let captured = install_capturing_codex_provider(
+            &state,
+            "mission-ok",
+            &[
+                (&tenant_a, "mission-token-a"),
+                (&tenant_b, "mission-token-b"),
+            ],
+        )
+        .await;
+        let model = ModelSpec {
+            provider_id: "openai-codex".to_string(),
+            model_id: "codex-test".to_string(),
+        };
+
+        for (index, tenant_context) in [&tenant_a, &tenant_b, &tenant_missing]
+            .into_iter()
+            .enumerate()
+        {
+            let output = invoke_mission_builder_provider(
+                &state,
+                &format!("mission-session-{index}"),
+                &format!("mission-run-{index}"),
+                &model,
+                "build a mission".to_string(),
+                tenant_context,
+                None,
+            )
+            .await
+            .expect("mission builder dispatch");
+            assert_eq!(output, "mission-ok");
+        }
+
+        assert_eq!(
+            captured.lock().expect("provider auth capture").as_slice(),
+            [
+                ProviderAuthOverride::Bearer("mission-token-a".to_string()),
+                ProviderAuthOverride::Bearer("mission-token-b".to_string()),
+                ProviderAuthOverride::Suppress,
+            ]
+        );
     }
 }

@@ -92,6 +92,7 @@ pub mod pack_manager;
 pub mod preset_composer;
 pub mod preset_registry;
 pub mod preset_summary;
+pub(crate) mod provider_egress;
 pub mod routines;
 pub mod runtime;
 pub mod runtime_event_log;

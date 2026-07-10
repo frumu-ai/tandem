@@ -40,7 +40,10 @@ fn every_profile_resolves_to_a_seeded_unit() {
         // The requester principal is the resolved channel actor.
         assert_eq!(
             profile.principal.id,
-            format!("channel:slack:{}", profile.slack_user_id),
+            format!(
+                "channel:slack:{DEMO_SLACK_TEAM_ID}:{DEMO_SLACK_APP_ID}:{}",
+                profile.slack_user_id
+            ),
         );
         // A seeded unit + membership exists for the profile.
         assert!(

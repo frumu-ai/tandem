@@ -1,7 +1,70 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tandem_types::{EngineEvent, TenantContext};
 
 pub use tandem_automation::RoutineMisfirePolicy;
+
+const TENANT_SCOPED_ROUTINE_PREFIX: &str = "__tenant_routine__::";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct RoutineIdentity {
+    pub org_id: String,
+    pub workspace_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment_id: Option<String>,
+    pub routine_id: String,
+}
+
+impl RoutineIdentity {
+    pub fn new(routine_id: impl Into<String>, tenant_context: &TenantContext) -> Self {
+        Self {
+            org_id: tenant_context.org_id.clone(),
+            workspace_id: tenant_context.workspace_id.clone(),
+            deployment_id: tenant_context.deployment_id.clone(),
+            routine_id: routine_id.into(),
+        }
+    }
+
+    pub fn matches_tenant(&self, tenant_context: &TenantContext) -> bool {
+        self.org_id == tenant_context.org_id
+            && self.workspace_id == tenant_context.workspace_id
+            && self.deployment_id == tenant_context.deployment_id
+    }
+
+    pub(crate) fn storage_key(&self) -> String {
+        if self.org_id == "local" && self.workspace_id == "local" && self.deployment_id.is_none() {
+            return self.routine_id.clone();
+        }
+        let component = |value: &str| {
+            value
+                .as_bytes()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        format!(
+            "{TENANT_SCOPED_ROUTINE_PREFIX}{}::{}::{}::{}",
+            component(&self.org_id),
+            component(&self.workspace_id),
+            component(self.deployment_id.as_deref().unwrap_or("")),
+            self.routine_id,
+        )
+    }
+}
+
+pub(crate) fn tenant_scoped_engine_event(
+    event_type: impl Into<String>,
+    tenant_context: &TenantContext,
+    mut properties: Value,
+) -> EngineEvent {
+    if let Some(properties) = properties.as_object_mut() {
+        properties.insert(
+            "tenantContext".to_string(),
+            serde_json::to_value(tenant_context).unwrap_or(Value::Null),
+        );
+    }
+    EngineEvent::new(event_type, properties)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -20,6 +83,8 @@ pub enum RoutineStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutineSpec {
     pub routine_id: String,
+    #[serde(default, skip_serializing_if = "TenantContext::is_local_implicit")]
+    pub tenant_context: TenantContext,
     pub name: String,
     pub status: RoutineStatus,
     pub schedule: RoutineSchedule,
@@ -45,6 +110,8 @@ pub struct RoutineSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutineHistoryEvent {
     pub routine_id: String,
+    #[serde(default, skip_serializing_if = "TenantContext::is_local_implicit")]
+    pub tenant_context: TenantContext,
     pub trigger_type: String,
     pub run_count: u32,
     pub fired_at_ms: u64,
@@ -116,6 +183,8 @@ pub struct ExternalActionRecord {
 pub struct RoutineRunRecord {
     pub run_id: String,
     pub routine_id: String,
+    #[serde(default, skip_serializing_if = "TenantContext::is_local_implicit")]
+    pub tenant_context: TenantContext,
     pub trigger_type: String,
     pub run_count: u32,
     pub status: RoutineRunStatus,
@@ -164,12 +233,14 @@ pub struct RoutineSessionPolicy {
     pub session_id: String,
     pub run_id: String,
     pub routine_id: String,
+    pub tenant_context: TenantContext,
     pub allowed_tools: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RoutineTriggerPlan {
-    pub routine_id: String,
+    pub identity: RoutineIdentity,
+    pub tenant_context: TenantContext,
     pub run_count: u32,
     pub scheduled_at_ms: u64,
     pub next_fire_at_ms: u64,

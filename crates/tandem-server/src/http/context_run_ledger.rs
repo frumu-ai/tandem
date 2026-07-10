@@ -106,7 +106,7 @@ pub(super) async fn context_run_governance_evidence_export(
             automation_run.as_ref(),
             crate::now_ms(),
         ) {
-            let _ = crate::audit::append_protected_audit_event(
+            crate::audit::append_protected_audit_event_best_effort(
                 &state,
                 "audit.export.denied",
                 &tenant_context,

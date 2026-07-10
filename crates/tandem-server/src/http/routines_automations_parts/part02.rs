@@ -330,49 +330,16 @@ fn apply_automation_v2_share_metadata(
 
 pub(super) async fn automations_patch(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(id): Path<String>,
     Json(input): Json<AutomationPatchInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let mut routine = state.get_routine(&id).await.ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(json!({
-                "error":"Automation not found",
-                "code":"AUTOMATION_NOT_FOUND",
-                "automationID": id,
-            })),
-        )
-    })?;
-    if let Some(name) = input.name.as_ref() {
-        routine.name = name.clone();
-    }
-    if let Some(status) = input.status.as_ref() {
-        routine.status = status.clone();
-    }
-    if let Some(schedule) = input.schedule.as_ref() {
-        routine.schedule = schedule.clone();
-    }
-    if let Some(timezone) = input.timezone.as_ref() {
-        routine.timezone = timezone.clone();
-    }
-    if let Some(misfire_policy) = input.misfire_policy.as_ref() {
-        routine.misfire_policy = misfire_policy.clone();
-    }
-    if let Some(next_fire_at_ms) = input.next_fire_at_ms {
-        routine.next_fire_at_ms = Some(next_fire_at_ms);
-    }
-    if let Some(output_targets) = input.output_targets.as_ref() {
-        routine.output_targets = output_targets.clone();
-    }
     if let Some(model_policy) = input.model_policy.as_ref() {
-        let mut args = routine.args.as_object().cloned().unwrap_or_default();
-        if model_policy
+        let clears_policy = model_policy
             .as_object()
             .map(|obj| obj.is_empty())
-            .unwrap_or(false)
-        {
-            args.remove("model_policy");
-        } else if model_policy.is_object() {
+            .unwrap_or(false);
+        if !clears_policy && model_policy.is_object() {
             validate_model_policy(model_policy).map_err(|detail| {
                 (
                     StatusCode::BAD_REQUEST,
@@ -383,8 +350,7 @@ pub(super) async fn automations_patch(
                     })),
                 )
             })?;
-            args.insert("model_policy".to_string(), model_policy.clone());
-        } else {
+        } else if !clears_policy {
             return Err((
                 StatusCode::BAD_REQUEST,
                 Json(json!({
@@ -394,29 +360,13 @@ pub(super) async fn automations_patch(
                 })),
             ));
         }
-        routine.args = Value::Object(args);
     }
-    if let Some(policy) = input.policy.as_ref() {
-        if let Some(allowed) = policy.tool.run_allowlist.as_ref() {
-            routine.allowed_tools = allowed.clone();
-        }
-        if let Some(external_allowed) = policy.tool.external_integrations_allowed {
-            routine.external_integrations_allowed = external_allowed;
-        }
-        if let Some(requires_approval) = policy.approval.requires_approval {
-            routine.requires_approval = requires_approval;
-        }
-        if let Some(orchestrator_only) = policy.tool.orchestrator_only_tool_calls {
-            let mut args = routine.args.as_object().cloned().unwrap_or_default();
-            args.insert(
-                "orchestrator_only_tool_calls".to_string(),
-                Value::Bool(orchestrator_only),
-            );
-            routine.args = Value::Object(args);
-        }
-    }
-    if let Some(mode) = input.mode.as_ref() {
-        let normalized_mode = normalize_automation_mode(Some(mode.as_str())).map_err(|detail| {
+    let normalized_mode = input
+        .mode
+        .as_deref()
+        .map(|mode| normalize_automation_mode(Some(mode)))
+        .transpose()
+        .map_err(|detail| {
             (
                 StatusCode::BAD_REQUEST,
                 Json(json!({
@@ -426,30 +376,91 @@ pub(super) async fn automations_patch(
                 })),
             )
         })?;
-        let mut args = routine.args.as_object().cloned().unwrap_or_default();
-        args.insert("mode".to_string(), Value::String(normalized_mode));
-        routine.args = Value::Object(args);
-    }
-    if let Some(mission) = input.mission.as_ref() {
-        let mut args = routine.args.as_object().cloned().unwrap_or_default();
-        if let Some(objective) = mission.objective.as_ref() {
-            args.insert("prompt".to_string(), Value::String(objective.clone()));
-        }
-        if let Some(success_criteria) = mission.success_criteria.as_ref() {
-            args.insert("success_criteria".to_string(), json!(success_criteria));
-        }
-        if let Some(briefing) = mission.briefing.as_ref() {
-            args.insert("briefing".to_string(), Value::String(briefing.clone()));
-        }
-        if let Some(entrypoint) = mission.entrypoint_compat.as_ref() {
-            routine.entrypoint = entrypoint.clone();
-        }
-        routine.args = Value::Object(args);
-    }
     let updated = state
-        .put_routine(routine)
+        .update_routine_for_tenant(&id, &tenant_context, move |routine| {
+            if let Some(name) = input.name {
+                routine.name = name;
+            }
+            if let Some(status) = input.status {
+                routine.status = status;
+            }
+            if let Some(schedule) = input.schedule {
+                routine.schedule = schedule;
+            }
+            if let Some(timezone) = input.timezone {
+                routine.timezone = timezone;
+            }
+            if let Some(misfire_policy) = input.misfire_policy {
+                routine.misfire_policy = misfire_policy;
+            }
+            if let Some(next_fire_at_ms) = input.next_fire_at_ms {
+                routine.next_fire_at_ms = Some(next_fire_at_ms);
+            }
+            if let Some(output_targets) = input.output_targets {
+                routine.output_targets = output_targets;
+            }
+            if let Some(model_policy) = input.model_policy {
+                let mut args = routine.args.as_object().cloned().unwrap_or_default();
+                if model_policy.as_object().is_some_and(|obj| obj.is_empty()) {
+                    args.remove("model_policy");
+                } else {
+                    args.insert("model_policy".to_string(), model_policy);
+                }
+                routine.args = Value::Object(args);
+            }
+            if let Some(policy) = input.policy {
+                if let Some(allowed) = policy.tool.run_allowlist {
+                    routine.allowed_tools = allowed;
+                }
+                if let Some(external_allowed) = policy.tool.external_integrations_allowed {
+                    routine.external_integrations_allowed = external_allowed;
+                }
+                if let Some(requires_approval) = policy.approval.requires_approval {
+                    routine.requires_approval = requires_approval;
+                }
+                if let Some(orchestrator_only) = policy.tool.orchestrator_only_tool_calls {
+                    let mut args = routine.args.as_object().cloned().unwrap_or_default();
+                    args.insert(
+                        "orchestrator_only_tool_calls".to_string(),
+                        Value::Bool(orchestrator_only),
+                    );
+                    routine.args = Value::Object(args);
+                }
+            }
+            if let Some(normalized_mode) = normalized_mode {
+                let mut args = routine.args.as_object().cloned().unwrap_or_default();
+                args.insert("mode".to_string(), Value::String(normalized_mode));
+                routine.args = Value::Object(args);
+            }
+            if let Some(mission) = input.mission {
+                let mut args = routine.args.as_object().cloned().unwrap_or_default();
+                if let Some(objective) = mission.objective {
+                    args.insert("prompt".to_string(), Value::String(objective));
+                }
+                if let Some(success_criteria) = mission.success_criteria {
+                    args.insert("success_criteria".to_string(), json!(success_criteria));
+                }
+                if let Some(briefing) = mission.briefing {
+                    args.insert("briefing".to_string(), Value::String(briefing));
+                }
+                if let Some(entrypoint) = mission.entrypoint_compat {
+                    routine.entrypoint = entrypoint;
+                }
+                routine.args = Value::Object(args);
+            }
+        })
         .await
-        .map_err(routine_error_response)?;
+        .map_err(routine_error_response)?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error":"Automation not found",
+                    "code":"AUTOMATION_NOT_FOUND",
+                    "automationID": id,
+                })),
+            )
+        })?;
     Ok(Json(json!({
         "automation": routine_to_automation_wire(updated)
     })))
@@ -457,10 +468,11 @@ pub(super) async fn automations_patch(
 
 pub(super) async fn automations_delete(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let deleted = state
-        .delete_routine(&id)
+        .delete_routine_for_tenant(&id, &tenant_context)
         .await
         .map_err(routine_error_response)?
         .ok_or_else(|| {
@@ -489,7 +501,7 @@ pub(super) async fn automations_run_now(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let response = routines_run_now(
         State(state.clone()),
-        Extension(tenant_context),
+        Extension(tenant_context.clone()),
         Extension(request_principal),
         headers,
         Path(id),
@@ -506,12 +518,16 @@ pub(super) async fn automations_run_now(
                 Json(json!({"error": "Run ID missing", "code": "AUTOMATION_RUN_MAPPING_FAILED"})),
             )
         })?;
-    let run = state.get_routine_run(run_id).await.ok_or_else(|| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "Run lookup failed", "code": "AUTOMATION_RUN_MAPPING_FAILED"})),
-        )
-    })?;
+    let run = routine_run_for_tenant(&state, run_id, &tenant_context)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    json!({"error": "Run lookup failed", "code": "AUTOMATION_RUN_MAPPING_FAILED"}),
+                ),
+            )
+        })?;
     let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &run)
         .await
         .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run.run_id));
@@ -526,25 +542,49 @@ pub(super) async fn automations_run_now(
 
 pub(super) async fn automations_history(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(id): Path<String>,
     Query(query): Query<RoutineHistoryQuery>,
-) -> Json<Value> {
-    let response = routines_history(State(state), Path(id.clone()), Query(query)).await;
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let response = routines_history(
+        State(state),
+        Extension(tenant_context),
+        Path(id.clone()),
+        Query(query),
+    )
+    .await?;
     let mut payload = response.0;
     if let Some(object) = payload.as_object_mut() {
         object.insert("automationID".to_string(), Value::String(id));
         object.remove("routineID");
     }
-    Json(payload)
+    Ok(Json(payload))
 }
 
 pub(super) async fn automations_runs(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(id): Path<String>,
     Query(query): Query<RoutineRunsQuery>,
-) -> Json<Value> {
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if routine_for_tenant(&state, &id, &tenant_context)
+        .await
+        .is_none()
+    {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(
+                json!({"error":"Automation not found","code":"AUTOMATION_NOT_FOUND","automationID":id}),
+            ),
+        ));
+    }
     let limit = query.limit.unwrap_or(25).clamp(1, 200);
-    let runs = state.list_routine_runs(Some(&id), limit).await;
+    let runs = state
+        .list_routine_runs(Some(&id), limit)
+        .await
+        .into_iter()
+        .filter(|run| run.tenant_context == tenant_context)
+        .collect::<Vec<_>>();
     for run in &runs {
         let _ = super::context_runs::sync_routine_run_blackboard(&state, run).await;
     }
@@ -552,19 +592,20 @@ pub(super) async fn automations_runs(
         .into_iter()
         .map(routine_run_to_automation_wire)
         .collect::<Vec<_>>();
-    Json(json!({
+    Ok(Json(json!({
         "runs": rows,
         "count": rows.len(),
-    }))
+    })))
 }
 
 pub(super) async fn automations_runs_all(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Query(query): Query<RoutineRunsQuery>,
 ) -> Json<Value> {
     let limit = query.limit.unwrap_or(25).clamp(1, 200);
     let runs = state
-        .list_routine_runs(query.routine_id.as_deref(), limit)
+        .list_routine_runs_for_tenant(query.routine_id.as_deref(), &tenant_context, limit)
         .await;
     for run in &runs {
         let _ = super::context_runs::sync_routine_run_blackboard(&state, run).await;
@@ -581,18 +622,21 @@ pub(super) async fn automations_runs_all(
 
 pub(super) async fn automations_run_get(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(run_id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let run = state.get_routine_run(&run_id).await.ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(json!({
-                "error":"Automation run not found",
-                "code":"AUTOMATION_RUN_NOT_FOUND",
-                "runID": run_id,
-            })),
-        )
-    })?;
+    let run = routine_run_for_tenant(&state, &run_id, &tenant_context)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error":"Automation run not found",
+                    "code":"AUTOMATION_RUN_NOT_FOUND",
+                    "runID": run_id,
+                })),
+            )
+        })?;
     let context_run_id = super::context_runs::sync_routine_run_blackboard(&state, &run)
         .await
         .unwrap_or_else(|_| super::context_runs::routine_context_run_id(&run.run_id));
@@ -777,9 +821,15 @@ pub(super) async fn automations_run_resume(
 
 pub(super) async fn automations_run_artifacts(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(run_id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let response = routines_run_artifacts(State(state), Path(run_id.clone())).await?;
+    let response = routines_run_artifacts(
+        State(state),
+        Extension(tenant_context),
+        Path(run_id.clone()),
+    )
+    .await?;
     let mut payload = response.0;
     if let Some(object) = payload.as_object_mut() {
         object.insert("automationRunID".to_string(), Value::String(run_id));
@@ -790,10 +840,17 @@ pub(super) async fn automations_run_artifacts(
 
 pub(super) async fn automations_run_artifact_add(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Path(run_id): Path<String>,
     Json(input): Json<RoutineRunArtifactInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let response = routines_run_artifact_add(State(state), Path(run_id), Json(input)).await?;
+    let response = routines_run_artifact_add(
+        State(state),
+        Extension(tenant_context),
+        Path(run_id),
+        Json(input),
+    )
+    .await?;
     let run = response
         .0
         .get("run")
@@ -830,6 +887,7 @@ fn automations_sse_stream(
     state: AppState,
     automation_id: Option<String>,
     run_id: Option<String>,
+    tenant_context: TenantContext,
 ) -> impl Stream<Item = Result<Event, std::convert::Infallible>> {
     let ready = tokio_stream::once(Ok(Event::default().data(
         serde_json::to_string(&json!({
@@ -842,23 +900,26 @@ fn automations_sse_stream(
     let rx = state.event_bus.subscribe();
     let live = BroadcastStream::new(rx).filter_map(move |msg| match msg {
         Ok(event) => {
+            if !super::global::event_visible_to_tenant(&event, &tenant_context) {
+                return None;
+            }
             let mapped = routine_event_to_run_event(&event)?;
+            let event_automation_id = mapped
+                .properties
+                .get("automationID")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let event_run_id = mapped
+                .properties
+                .get("runID")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
             if let Some(automation_id) = automation_id.as_deref() {
-                let event_automation_id = mapped
-                    .properties
-                    .get("automationID")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
                 if event_automation_id != automation_id {
                     return None;
                 }
             }
             if let Some(run_id) = run_id.as_deref() {
-                let event_run_id = mapped
-                    .properties
-                    .get("runID")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
                 if event_run_id != run_id {
                     return None;
                 }
@@ -873,12 +934,14 @@ fn automations_sse_stream(
 
 pub(super) async fn automations_events(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Query(query): Query<AutomationEventsQuery>,
 ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
     Sse::new(automations_sse_stream(
         state,
         query.automation_id,
         query.run_id,
+        tenant_context,
     ))
     .keep_alive(KeepAlive::new().interval(Duration::from_secs(10)))
 }
@@ -1151,7 +1214,7 @@ pub(super) async fn automations_v2_create(
     let _ = state
         .set_automation_governance_provenance(&stored.automation_id, provenance.clone())
         .await;
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event(
         &state,
         "automation.governance.created",
         &tenant_context,
@@ -1165,7 +1228,8 @@ pub(super) async fn automations_v2_create(
             "provenance": provenance.clone(),
         }),
     )
-    .await;
+    .await
+    .map_err(super::protected_audit_error_response)?;
     Ok(Json(json!({ "automation": stored })))
 }
 
@@ -1340,7 +1404,7 @@ pub(super) async fn automations_v2_patch(
     let dependency_revocation_evidence = input_agents
         .as_ref()
         .and_then(|_| mcp_policy_dependency_revocation_details(&before.agents, &stored.agents));
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event(
         &state,
         "automation.governance.updated",
         &tenant_context,
@@ -1351,7 +1415,8 @@ pub(super) async fn automations_v2_patch(
             "after": stored.clone(),
         }),
     )
-    .await;
+    .await
+    .map_err(super::protected_audit_error_response)?;
     if let Some(evidence) = dependency_revocation_evidence {
         if let Err(error) = state
             .pause_automation_for_dependency_revocation(
@@ -1365,7 +1430,7 @@ pub(super) async fn automations_v2_patch(
                 .to_string()
                 .contains("premium governance dependency revocation is not available in this build")
             {
-                let _ = crate::audit::append_protected_audit_event(
+                crate::audit::append_protected_audit_event_best_effort(
                     &state,
                     "automation.governance.dependency_revocation_pause_skipped",
                     &tenant_context,
@@ -1438,7 +1503,7 @@ pub(super) async fn automations_v2_share(
             })),
         )
     })?;
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event(
         &state,
         "automation.governance.shared",
         &tenant_context,
@@ -1449,7 +1514,8 @@ pub(super) async fn automations_v2_share(
             "actor": actor.clone(),
         }),
     )
-    .await;
+    .await
+    .map_err(super::protected_audit_error_response)?;
     Ok(Json(json!({ "automation": stored })))
 }
 
@@ -1494,7 +1560,7 @@ pub(super) async fn automations_v2_delete(
                 })),
             )
         })?;
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event(
         &state,
         "automation.governance.deleted",
         &tenant_context,
@@ -1507,7 +1573,8 @@ pub(super) async fn automations_v2_delete(
             "automation": deleted,
         }),
     )
-    .await;
+    .await
+    .map_err(super::protected_audit_error_response)?;
     Ok(Json(
         json!({ "ok": true, "deleted": true, "automationID": id }),
     ))
@@ -1601,7 +1668,7 @@ pub(super) async fn automations_v2_run_now(
         .await
         .unwrap_or(run);
     let _ = super::context_runs::sync_automation_v2_run_blackboard(&state, &automation, &run).await;
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event(
         &state,
         "automation.governance.run_requested",
         &tenant_context,
@@ -1618,19 +1685,23 @@ pub(super) async fn automations_v2_run_now(
             "effectiveExecutionProfile": run.effective_execution_profile.as_str(),
         }),
     )
-    .await;
+    .await
+    .map_err(super::protected_audit_error_response)?;
     let context_run_id = super::context_runs::automation_v2_context_run_id(&run.run_id);
-    state.event_bus.publish(crate::EngineEvent::new(
-        "automation.v2.run.created",
-        json!({
-            "automationID": id,
-            "runID": run.run_id,
-            "run": run.clone(),
-            "tenantContext": tenant_context,
-            "triggerType": "manual",
-            "dryRun": dry_run,
-        }),
-    ));
+    state
+        .event_bus
+        .publish(crate::routines::types::tenant_scoped_engine_event(
+            "automation.v2.run.created",
+            &tenant_context,
+            json!({
+                "automationID": id,
+                "runID": run.run_id,
+                "run": run.clone(),
+                "tenantContext": tenant_context,
+                "triggerType": "manual",
+                "dryRun": dry_run,
+            }),
+        ));
     Ok(Json(json!({
         "ok": true,
         "dry_run": dry_run,

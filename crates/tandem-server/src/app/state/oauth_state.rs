@@ -6,19 +6,49 @@
 //! locks, take provider sessions before MCP sessions.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex, Weak};
 
 use crate::http::{config_providers::ProviderOAuthSessionRecord, mcp::McpOAuthSessionRecord};
-use tokio::sync::RwLock;
+use tandem_types::TenantContext;
+use tokio::sync::{Mutex, OwnedMutexGuard, RwLock};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 type ProviderOAuthSessions = HashMap<String, ProviderOAuthSessionRecord>;
 type McpOAuthSessions = HashMap<String, McpOAuthSessionRecord>;
+
+#[derive(Default)]
+struct ProviderCredentialMutationState {
+    generation: u64,
+}
+
+pub(crate) struct ProviderCredentialMutationGuard(OwnedMutexGuard<ProviderCredentialMutationState>);
+
+impl ProviderCredentialMutationGuard {
+    pub(crate) fn generation(&self) -> u64 {
+        self.0.generation
+    }
+
+    pub(crate) fn advance_generation(&mut self) -> u64 {
+        self.0.generation = self.0.generation.wrapping_add(1);
+        self.0.generation
+    }
+}
+
+struct ProviderRefreshTask {
+    cancel: CancellationToken,
+    handle: JoinHandle<()>,
+}
 
 /// Pending OAuth callback sessions for runtime-managed provider and MCP flows.
 #[derive(Clone)]
 pub struct OAuthState {
     provider_sessions: Arc<RwLock<ProviderOAuthSessions>>,
     mcp_sessions: Arc<RwLock<McpOAuthSessions>>,
+    provider_credential_locks:
+        Arc<Mutex<HashMap<String, Weak<Mutex<ProviderCredentialMutationState>>>>>,
+    provider_credential_persistence_lock: Arc<Mutex<()>>,
+    provider_refresh_task: Arc<StdMutex<Option<ProviderRefreshTask>>>,
 }
 
 impl OAuthState {
@@ -26,7 +56,94 @@ impl OAuthState {
         Self {
             provider_sessions: Arc::new(RwLock::new(HashMap::new())),
             mcp_sessions: Arc::new(RwLock::new(HashMap::new())),
+            provider_credential_locks: Arc::new(Mutex::new(HashMap::new())),
+            provider_credential_persistence_lock: Arc::new(Mutex::new(())),
+            provider_refresh_task: Arc::new(StdMutex::new(None)),
         }
+    }
+
+    pub(crate) fn spawn_provider_refresh_task<Spawn>(&self, spawn: Spawn) -> bool
+    where
+        Spawn: FnOnce(CancellationToken) -> JoinHandle<()>,
+    {
+        let mut task = self
+            .provider_refresh_task
+            .lock()
+            .expect("provider OAuth refresh task lock poisoned");
+        if task
+            .as_ref()
+            .is_some_and(|active| !active.handle.is_finished())
+        {
+            return false;
+        }
+        if let Some(finished) = task.take() {
+            finished.cancel.cancel();
+        }
+        let cancel = CancellationToken::new();
+        let handle = spawn(cancel.clone());
+        *task = Some(ProviderRefreshTask { cancel, handle });
+        true
+    }
+
+    pub(crate) async fn stop_provider_refresh_task(&self) {
+        let task = self
+            .provider_refresh_task
+            .lock()
+            .expect("provider OAuth refresh task lock poisoned")
+            .take();
+        let Some(mut task) = task else {
+            return;
+        };
+        task.cancel.cancel();
+        if tokio::time::timeout(std::time::Duration::from_secs(5), &mut task.handle)
+            .await
+            .is_err()
+        {
+            task.handle.abort();
+            let _ = task.handle.await;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn provider_refresh_task_is_running(&self) -> bool {
+        self.provider_refresh_task
+            .lock()
+            .expect("provider OAuth refresh task lock poisoned")
+            .as_ref()
+            .is_some_and(|task| !task.handle.is_finished())
+    }
+
+    pub(crate) async fn provider_credential_guard(
+        &self,
+        tenant_context: &TenantContext,
+        provider_id: &str,
+    ) -> ProviderCredentialMutationGuard {
+        let key = serde_json::to_string(&(
+            tenant_context.org_id.as_str(),
+            tenant_context.workspace_id.as_str(),
+            tenant_context.deployment_id.as_deref(),
+            provider_id.trim().to_ascii_lowercase(),
+        ))
+        .expect("provider refresh lock key is serializable");
+        let lock = {
+            let mut locks = self.provider_credential_locks.lock().await;
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+                lock
+            } else {
+                let lock = Arc::new(Mutex::new(ProviderCredentialMutationState::default()));
+                locks.insert(key, Arc::downgrade(&lock));
+                lock
+            }
+        };
+        ProviderCredentialMutationGuard(lock.lock_owned().await)
+    }
+
+    pub(crate) async fn provider_credential_persistence_guard(&self) -> OwnedMutexGuard<()> {
+        self.provider_credential_persistence_lock
+            .clone()
+            .lock_owned()
+            .await
     }
 
     pub(crate) fn provider_sessions(&self) -> &Arc<RwLock<ProviderOAuthSessions>> {

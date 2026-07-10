@@ -4,7 +4,6 @@ use tandem_types::ModelSpec;
 use crate::app::state::{default_model_spec_from_effective_config, AppState};
 use crate::routines::types::{RoutineRunArtifact, RoutineRunRecord};
 use crate::util::time::now_ms;
-use crate::EngineEvent;
 
 pub async fn build_routine_prompt(state: &AppState, run: &RoutineRunRecord) -> String {
     let normalized_entrypoint = run.entrypoint.trim();
@@ -142,16 +141,23 @@ pub async fn append_configured_output_artifacts(state: &AppState, run: &RoutineR
             })),
         };
         let _ = state
-            .append_routine_run_artifact(&run.run_id, artifact.clone())
+            .append_routine_run_artifact_for_tenant(
+                &run.run_id,
+                &run.tenant_context,
+                artifact.clone(),
+            )
             .await;
-        state.event_bus.publish(EngineEvent::new(
-            "routine.run.artifact_added",
-            serde_json::json!({
-                "runID": run.run_id,
-                "routineID": run.routine_id,
-                "artifact": artifact,
-            }),
-        ));
+        state
+            .event_bus
+            .publish(crate::routines::types::tenant_scoped_engine_event(
+                "routine.run.artifact_added",
+                &run.tenant_context,
+                serde_json::json!({
+                    "runID": run.run_id,
+                    "routineID": run.routine_id,
+                    "artifact": artifact,
+                }),
+            ));
     }
 }
 

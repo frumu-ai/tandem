@@ -62,19 +62,17 @@ pub(crate) fn collect_automation_external_action_receipts(
         else {
             continue;
         };
-        let idempotency_key =
-            automation_external_action_pre_send_idempotency_key(result.as_ref()).unwrap_or_else(
-                || {
-                    automation_external_action_idempotency_key(
-                        automation,
-                        run_id,
-                        node,
-                        tool,
-                        args,
-                        &call_index.to_string(),
-                    )
-                },
-            );
+        let idempotency_key = automation_external_action_pre_send_idempotency_key(result.as_ref())
+            .unwrap_or_else(|| {
+                automation_external_action_idempotency_key(
+                    automation,
+                    run_id,
+                    node,
+                    tool,
+                    args,
+                    &call_index.to_string(),
+                )
+            });
         if !seen.insert(idempotency_key.clone()) {
             continue;
         }
@@ -1037,16 +1035,16 @@ fn build_connector_preflight_blocked_output(
 
 pub(crate) fn automation_node_max_attempts(node: &AutomationFlowNode) -> u32 {
     let validator_kind = automation_output_validator_kind(node);
-    let default_max_attempts = if validator_kind == crate::AutomationOutputValidatorKind::StandupUpdate
-    {
-        3
-    } else if validator_kind == crate::AutomationOutputValidatorKind::ResearchBrief
-        || !automation_node_required_tools(node).is_empty()
-    {
-        5
-    } else {
-        3
-    };
+    let default_max_attempts =
+        if validator_kind == crate::AutomationOutputValidatorKind::StandupUpdate {
+            3
+        } else if validator_kind == crate::AutomationOutputValidatorKind::ResearchBrief
+            || !automation_node_required_tools(node).is_empty()
+        {
+            5
+        } else {
+            3
+        };
     tandem_automation::RetryPolicy::from_node_retry_policy(
         node.retry_policy.as_ref(),
         default_max_attempts,
@@ -1765,6 +1763,7 @@ pub(crate) async fn execute_automation_v2_node(
     } else {
         None
     };
+    let tenant_context = automation.tenant_context();
     let mut session = Session::new(
         Some(format!(
             "Automation {} / {}",
@@ -1776,6 +1775,7 @@ pub(crate) async fn execute_automation_v2_node(
     let project_id = automation_workspace_project_id(&workspace_root);
     session.project_id = Some(project_id.clone());
     session.workspace_root = Some(workspace_root.clone());
+    session.tenant_context = tenant_context.clone();
     state.storage.save_session(session).await?;
 
     state
@@ -1786,7 +1786,6 @@ pub(crate) async fn execute_automation_v2_node(
     if let Some(mcp_tools) = agent.mcp_policy.allowed_tools.as_ref() {
         allowlist.extend(mcp_tools.clone());
     }
-    let tenant_context = automation.tenant_context();
     let mcp_preflight_scope =
         node_runtime_impl::automation_node_mcp_preflight_scope(node, agent, &allowlist);
     let mcp_tool_diagnostics = sync_automation_allowed_mcp_servers(
@@ -2402,10 +2401,14 @@ pub(crate) async fn execute_automation_v2_node(
         &session_id,
         run_id,
         node,
-        state.engine_loop.run_prompt_async_with_context(
-            session_id.clone(),
+        crate::http::session_run_retry::run_prompt_with_auth_recovery(
+            state,
+            &session_id,
+            run_id,
+            crate::http::session_run_retry::PromptExecutionSurface::Automation,
             req,
             Some(format!("automation-v2:{run_id}")),
+            &tenant_context,
         ),
     )
     .await;

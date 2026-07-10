@@ -98,9 +98,11 @@ pub fn verify_slack_signature(
     let timestamp: i64 = timestamp_str
         .parse()
         .map_err(|_| SigningError::MalformedTimestamp)?;
-    let age = (now_unix_seconds - timestamp).abs();
-    if age > SLACK_REPLAY_WINDOW_SECONDS {
-        return Err(SigningError::StaleTimestamp { age_seconds: age });
+    let age = now_unix_seconds.abs_diff(timestamp);
+    if age > SLACK_REPLAY_WINDOW_SECONDS as u64 {
+        return Err(SigningError::StaleTimestamp {
+            age_seconds: i64::try_from(age).unwrap_or(i64::MAX),
+        });
     }
 
     let signature_hex = signature
@@ -396,6 +398,42 @@ mod tests {
             TEST_TIMESTAMP,
         );
         assert!(matches!(result, Err(SigningError::StaleTimestamp { .. })));
+    }
+
+    #[test]
+    fn slack_rejects_i64_min_timestamp_without_overflow() {
+        let sig = sign_slack(TEST_SECRET, i64::MIN, TEST_BODY);
+        let result = verify_slack_signature(
+            TEST_BODY.as_bytes(),
+            Some(&sig),
+            Some(&i64::MIN.to_string()),
+            TEST_SECRET,
+            i64::MAX,
+        );
+        assert_eq!(
+            result,
+            Err(SigningError::StaleTimestamp {
+                age_seconds: i64::MAX,
+            })
+        );
+    }
+
+    #[test]
+    fn slack_rejects_i64_max_timestamp_without_overflow() {
+        let sig = sign_slack(TEST_SECRET, i64::MAX, TEST_BODY);
+        let result = verify_slack_signature(
+            TEST_BODY.as_bytes(),
+            Some(&sig),
+            Some(&i64::MAX.to_string()),
+            TEST_SECRET,
+            i64::MIN,
+        );
+        assert_eq!(
+            result,
+            Err(SigningError::StaleTimestamp {
+                age_seconds: i64::MAX,
+            })
+        );
     }
 
     #[test]

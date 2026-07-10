@@ -1,6 +1,7 @@
-use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::path::{Path, PathBuf};
 
+use anyhow::Context;
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -93,55 +94,97 @@ pub(crate) fn compute_audit_envelope_hash(envelope: &ProtectedAuditEnvelope) -> 
     format!("{:x}", Sha256::digest(json.as_bytes()))
 }
 
-/// Cached tail of the ledger for a given path, guarded by the per-path append
-/// lock. Lets `append_protected_audit_event` derive the next `seq`/`prev_hash`
-/// without re-reading and re-parsing the whole file on every append (which made
-/// appends O(n) and ledger growth O(n²)). `None` means "not yet seeded this
-/// process"; the first append for a path seeds it by reading the file once.
-#[derive(Clone)]
-struct LastAuditRecord {
-    seq: u64,
-    record_hash: String,
+fn protected_audit_chain_lock_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "protected-audit".to_string());
+    path.with_file_name(format!("{file_name}.chain.lock"))
 }
 
-async fn protected_audit_lock_for(
-    path: &std::path::Path,
-) -> Arc<tokio::sync::Mutex<Option<LastAuditRecord>>> {
-    static LOCKS: OnceLock<
-        tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<Option<LastAuditRecord>>>>>,
-    > = OnceLock::new();
-    let map = LOCKS.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
-    let mut guard = map.lock().await;
-    guard
-        .entry(path.to_string_lossy().to_string())
-        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(None)))
-        .clone()
+struct ProtectedAuditChainLock {
+    file: std::fs::File,
 }
 
-fn parse_protected_audit_records(content: &str) -> anyhow::Result<Vec<ProtectedAuditEnvelope>> {
+impl ProtectedAuditChainLock {
+    async fn acquire(path: &Path) -> anyhow::Result<Self> {
+        let lock_path = protected_audit_chain_lock_path(path);
+        tokio::task::spawn_blocking(move || {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .open(&lock_path)
+                .with_context(|| {
+                    format!("open protected audit chain lock {}", lock_path.display())
+                })?;
+            file.lock_exclusive().with_context(|| {
+                format!("acquire protected audit chain lock {}", lock_path.display())
+            })?;
+            Ok(Self { file })
+        })
+        .await
+        .context("join protected audit chain-lock acquisition")?
+    }
+}
+
+impl Drop for ProtectedAuditChainLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.file);
+    }
+}
+
+#[cfg(test)]
+pub(crate) async fn reset_protected_audit_tail_for_test(_path: &std::path::Path) {}
+
+fn parse_protected_audit_records(
+    lines: impl IntoIterator<Item = impl AsRef<str>>,
+) -> anyhow::Result<Vec<ProtectedAuditEnvelope>> {
     let mut records = Vec::new();
-    for line in content.lines() {
-        let Some(plaintext) = crate::encrypted_file_store::decrypt_jsonl_line(line)? else {
+    for line in lines {
+        let line = line.as_ref().trim();
+        if line.is_empty() {
             continue;
-        };
-        if let Ok(record) = serde_json::from_str::<ProtectedAuditEnvelope>(plaintext.trim()) {
-            records.push(record);
         }
+        let record = serde_json::from_str::<ProtectedAuditEnvelope>(line)
+            .context("parse protected audit record")?;
+        records.push(record);
     }
     Ok(records)
+}
+
+async fn read_protected_audit_records(
+    path: &std::path::Path,
+) -> anyhow::Result<Vec<ProtectedAuditEnvelope>> {
+    let lines = crate::encrypted_file_store::read_jsonl_records_file(
+        path,
+        &crate::governance_store::GovernanceStoreFile::ProtectedAudit.storage_context(),
+    )
+    .await?;
+    parse_protected_audit_records(lines)
 }
 
 async fn read_last_protected_audit_record(
     path: &std::path::Path,
 ) -> anyhow::Result<Option<ProtectedAuditEnvelope>> {
-    let content = match fs::read_to_string(path).await {
-        Ok(content) => content,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err.into()),
+    let records = match read_protected_audit_records(path).await {
+        Ok(records) => records,
+        Err(err)
+            if err
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            return Ok(None)
+        }
+        Err(err) => return Err(err),
     };
-    Ok(parse_protected_audit_records(&content)?
-        .into_iter()
-        .max_by_key(|e| e.seq))
+    let verification = verify_protected_audit_records(&records);
+    anyhow::ensure!(
+        verification.valid,
+        "protected audit ledger failed hash-chain verification: {:?}",
+        verification.violation
+    );
+    Ok(records.into_iter().last())
 }
 
 pub fn protected_audit_event_matches_tenant(
@@ -154,37 +197,50 @@ pub fn protected_audit_event_matches_tenant(
             && event.tenant_context.deployment_id == tenant_context.deployment_id)
 }
 
-pub async fn load_protected_audit_events_for_tenant(
+pub async fn try_load_protected_audit_events_for_tenant(
     state: &AppState,
     tenant_context: &TenantContext,
-) -> Vec<ProtectedAuditEnvelope> {
-    let content = match crate::governance_store::for_state(state)
-        .read_text(crate::governance_store::GovernanceStoreFile::ProtectedAudit)
+) -> anyhow::Result<Vec<ProtectedAuditEnvelope>> {
+    let lines = match crate::governance_store::for_state(state)
+        .read_jsonl_lines(crate::governance_store::GovernanceStoreFile::ProtectedAudit)
         .await
     {
-        Ok(Some(content)) => content,
-        Ok(None) | Err(_) => return Vec::new(),
+        Ok(Some(lines)) => lines,
+        Ok(None) => return Ok(Vec::new()),
+        Err(error) => return Err(error).context("load protected audit ledger"),
     };
-    let mut rows = match parse_protected_audit_records(&content) {
-        Ok(records) => records,
-        Err(error) => {
-            tracing::warn!(
-                path = %state.protected_audit_path.display(),
-                error = ?error,
-                "failed to decrypt protected audit ledger"
-            );
-            return Vec::new();
-        }
-    }
-    .into_iter()
-    .filter(|event| protected_audit_event_matches_tenant(event, tenant_context))
-    .collect::<Vec<_>>();
+    let mut rows =
+        parse_protected_audit_records(lines).context("parse decrypted protected audit ledger")?;
+    let verification = verify_protected_audit_records(&rows);
+    anyhow::ensure!(
+        verification.valid,
+        "protected audit ledger failed hash-chain verification: {:?}",
+        verification.violation
+    );
+    rows.retain(|event| protected_audit_event_matches_tenant(event, tenant_context));
     rows.sort_by(|a, b| {
         a.created_at_ms
             .cmp(&b.created_at_ms)
             .then(a.event_id.cmp(&b.event_id))
     });
-    rows
+    Ok(rows)
+}
+
+pub async fn load_protected_audit_events_for_tenant(
+    state: &AppState,
+    tenant_context: &TenantContext,
+) -> Vec<ProtectedAuditEnvelope> {
+    match try_load_protected_audit_events_for_tenant(state, tenant_context).await {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::error!(
+                path = %state.protected_audit_path.display(),
+                error = ?error,
+                "best-effort protected audit load failed"
+            );
+            Vec::new()
+        }
+    }
 }
 
 pub async fn append_protected_audit_event(
@@ -199,31 +255,21 @@ pub async fn append_protected_audit_event(
         fs::create_dir_all(parent).await?;
     }
 
-    let audit_lock = protected_audit_lock_for(&path).await;
-    let mut tail = audit_lock.lock().await;
-
-    // Seed the cached tail from disk once per process (cold cache); thereafter
-    // the last seq/hash is carried in memory under this same lock, so appends
-    // do not re-read the whole ledger.
-    if tail.is_none() {
-        *tail = Some(match read_last_protected_audit_record(&path).await? {
-            Some(e) => LastAuditRecord {
-                seq: e.seq,
-                record_hash: e.record_hash,
-            },
-            None => LastAuditRecord {
-                seq: 0,
-                record_hash: String::new(),
-            },
-        });
-    }
-    let last = tail.as_ref().expect("audit tail seeded above");
-    let next_seq = last.seq.saturating_add(1);
-    let prev_hash = if last.record_hash.is_empty() {
-        None
-    } else {
-        Some(last.record_hash.clone())
-    };
+    // This lock is distinct from the protected-store integrity lock. Every
+    // audit writer takes it first and holds it through the append, so separate
+    // Tandem processes cannot both select the same chain tail. The store lock
+    // is then acquired in one consistent order, avoiding nested re-acquisition.
+    let _chain_guard = ProtectedAuditChainLock::acquire(&path).await?;
+    let last = read_last_protected_audit_record(&path).await?;
+    let next_seq = last
+        .as_ref()
+        .map(|record| record.seq)
+        .unwrap_or(0)
+        .saturating_add(1);
+    let prev_hash = last
+        .as_ref()
+        .map(|record| record.record_hash.clone())
+        .filter(|hash| !hash.is_empty());
     let requester_context = requester_context_from_payload(&payload);
 
     let mut row = ProtectedAuditEnvelope {
@@ -249,28 +295,54 @@ pub async fn append_protected_audit_event(
         .append_jsonl_line(
             crate::governance_store::GovernanceStoreFile::ProtectedAudit,
             &serialized,
+            &row.tenant_context,
+            None,
+            &row.event_id,
             matches!(row.durability, AuditDurability::DurableRequired),
         )
         .await;
 
     match write_result {
-        Ok(()) => {
-            // Success: advance the cached tail so the next append chains from
-            // this record without re-reading the file.
-            *tail = Some(LastAuditRecord {
-                seq: row.seq,
-                record_hash: row.record_hash.clone(),
-            });
-            Ok(())
-        }
+        Ok(()) => Ok(()),
         Err(err) => {
-            // A partial write or a failed fsync may have made this row (or part
-            // of it) visible in the file while the cached tail still points at
-            // the previous record. Invalidate the cache so the next append
-            // re-seeds seq/prev_hash from disk and cannot reuse this sequence.
-            *tail = None;
+            tracing::error!(
+                path = %path.display(),
+                tenant_org_id = %row.tenant_context.org_id,
+                tenant_workspace_id = %row.tenant_context.workspace_id,
+                event_id = %row.event_id,
+                error = ?err,
+                "protected audit persistence failed"
+            );
             Err(err)
         }
+    }
+}
+
+/// Append protected audit evidence without failing the caller.
+///
+/// This is reserved for denial evidence, telemetry, and other paths where the
+/// primary operation cannot report an audit persistence error to its caller.
+/// Consequential mutation and success paths must call
+/// [`append_protected_audit_event`] directly and propagate its result.
+pub async fn append_protected_audit_event_best_effort(
+    state: &AppState,
+    event_type: impl Into<String>,
+    tenant_context: &TenantContext,
+    actor: Option<String>,
+    payload: Value,
+) {
+    let event_type = event_type.into();
+    if let Err(error) =
+        append_protected_audit_event(state, event_type.clone(), tenant_context, actor, payload)
+            .await
+    {
+        tracing::error!(
+            event_type,
+            tenant_org_id = %tenant_context.org_id,
+            tenant_workspace_id = %tenant_context.workspace_id,
+            error = ?error,
+            "best-effort protected audit event was not persisted"
+        );
     }
 }
 
@@ -310,21 +382,7 @@ pub struct AuditLedgerVerificationResult {
 pub async fn verify_protected_audit_ledger(
     path: &std::path::Path,
 ) -> AuditLedgerVerificationResult {
-    let content = match fs::read_to_string(path).await {
-        Ok(c) => c,
-        Err(_) => {
-            return AuditLedgerVerificationResult {
-                valid: false,
-                record_count: 0,
-                hashed_record_count: 0,
-                root_hash: None,
-                schema_version: 0,
-                violation: None,
-            }
-        }
-    };
-
-    let mut records: Vec<ProtectedAuditEnvelope> = match parse_protected_audit_records(&content) {
+    let records = match read_protected_audit_records(path).await {
         Ok(records) => records,
         Err(_) => {
             return AuditLedgerVerificationResult {
@@ -337,8 +395,12 @@ pub async fn verify_protected_audit_ledger(
             }
         }
     };
-    records.sort_by_key(|e| e.seq);
+    verify_protected_audit_records(&records)
+}
 
+fn verify_protected_audit_records(
+    records: &[ProtectedAuditEnvelope],
+) -> AuditLedgerVerificationResult {
     let record_count = records.len() as u64;
     let schema_version = records
         .iter()
@@ -385,16 +447,13 @@ pub async fn verify_protected_audit_ledger(
         }
     }
 
-    let hashed: Vec<_> = records
-        .iter()
-        .filter(|e| !e.record_hash.is_empty())
-        .collect();
+    let hashed: Vec<_> = records.iter().filter(|e| e.seq > 0).collect();
     let hashed_record_count = hashed.len() as u64;
     let mut prev_hash: Option<String> = None;
 
     for record in &hashed {
         let expected_hash = compute_audit_envelope_hash(record);
-        if expected_hash != record.record_hash {
+        if record.record_hash.is_empty() || expected_hash != record.record_hash {
             return AuditLedgerVerificationResult {
                 valid: false,
                 record_count,
@@ -409,8 +468,23 @@ pub async fn verify_protected_audit_ledger(
                 }),
             };
         }
-        if let Some(ref expected) = prev_hash {
-            if record.prev_hash.as_deref() != Some(expected.as_str()) {
+        match prev_hash.as_ref() {
+            None if record.prev_hash.is_some() => {
+                return AuditLedgerVerificationResult {
+                    valid: false,
+                    record_count,
+                    hashed_record_count,
+                    root_hash: None,
+                    schema_version,
+                    violation: Some(AuditChainViolation {
+                        seq: record.seq,
+                        kind: AuditChainViolationKind::ChainBreak {
+                            expected_prev: String::new(),
+                        },
+                    }),
+                };
+            }
+            Some(expected) if record.prev_hash.as_deref() != Some(expected.as_str()) => {
                 return AuditLedgerVerificationResult {
                     valid: false,
                     record_count,
@@ -425,6 +499,7 @@ pub async fn verify_protected_audit_ledger(
                     }),
                 };
             }
+            _ => {}
         }
         prev_hash = Some(record.record_hash.clone());
     }
@@ -437,6 +512,29 @@ pub async fn verify_protected_audit_ledger(
         schema_version,
         violation: None,
     }
+}
+
+pub(crate) async fn validate_protected_audit_ledger_if_present(
+    path: &std::path::Path,
+) -> anyhow::Result<()> {
+    let records = match read_protected_audit_records(path).await {
+        Ok(records) => records,
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io_error| io_error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            return Ok(())
+        }
+        Err(error) => return Err(error),
+    };
+    let verification = verify_protected_audit_records(&records);
+    anyhow::ensure!(
+        verification.valid,
+        "protected audit ledger failed hash-chain verification: {:?}",
+        verification.violation
+    );
+    Ok(())
 }
 
 // ── Export manifest ───────────────────────────────────────────────────────────
@@ -454,13 +552,16 @@ pub struct AuditLedgerManifest {
 pub async fn generate_audit_ledger_manifest(
     path: &std::path::Path,
 ) -> anyhow::Result<AuditLedgerManifest> {
-    let result = verify_protected_audit_ledger(path).await;
-    let last_seq = read_last_protected_audit_record(path)
+    let records = read_protected_audit_records(path)
         .await
-        .ok()
-        .flatten()
-        .map(|e| e.seq)
-        .unwrap_or(0);
+        .context("read protected audit ledger for manifest")?;
+    let result = verify_protected_audit_records(&records);
+    anyhow::ensure!(
+        result.valid,
+        "protected audit ledger failed hash-chain verification: {:?}",
+        result.violation
+    );
+    let last_seq = records.last().map(|event| event.seq).unwrap_or(0);
     Ok(AuditLedgerManifest {
         ledger_path: path.to_string_lossy().into_owned(),
         schema_version: result.schema_version,
@@ -469,4 +570,139 @@ pub async fn generate_audit_ledger_manifest(
         root_hash: result.root_hash,
         generated_at_ms: now_ms(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn audit_row(seq: u64, prev_hash: Option<String>) -> ProtectedAuditEnvelope {
+        let mut row = ProtectedAuditEnvelope {
+            event_id: format!("event-{seq}"),
+            durability: AuditDurability::DurableRequired,
+            event_type: "governance.test".to_string(),
+            tenant_context: TenantContext::local_implicit(),
+            requester_context: None,
+            actor: Some("tester".to_string()),
+            payload: serde_json::json!({"seq": seq}),
+            created_at_ms: seq,
+            seq,
+            prev_hash,
+            record_hash: String::new(),
+        };
+        row.record_hash = compute_audit_envelope_hash(&row);
+        row
+    }
+
+    fn chained_rows() -> Vec<ProtectedAuditEnvelope> {
+        let first = audit_row(1, None);
+        let second = audit_row(2, Some(first.record_hash.clone()));
+        let third = audit_row(3, Some(second.record_hash.clone()));
+        vec![first, second, third]
+    }
+
+    #[test]
+    fn normal_audit_chain_verification_rejects_deletion_reorder_replay_and_edit() {
+        let rows = chained_rows();
+        assert!(verify_protected_audit_records(&rows).valid);
+
+        let deleted = vec![rows[0].clone(), rows[2].clone()];
+        assert!(!verify_protected_audit_records(&deleted).valid);
+
+        let reordered = vec![rows[1].clone(), rows[0].clone(), rows[2].clone()];
+        assert!(!verify_protected_audit_records(&reordered).valid);
+
+        let replayed = vec![rows[0].clone(), rows[1].clone(), rows[1].clone()];
+        assert!(!verify_protected_audit_records(&replayed).valid);
+
+        let mut edited = rows;
+        edited[1].payload = serde_json::json!({"seq": 2, "edited": true});
+        assert!(!verify_protected_audit_records(&edited).valid);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_independent_owners_append_distinct_audit_sequences() {
+        let state = crate::test_support::test_state().await;
+        let first_owner = state.clone();
+        let second_owner = state.clone();
+        let tenant = TenantContext::local_implicit();
+        let first_tenant = tenant.clone();
+        let second_tenant = tenant.clone();
+        let start = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        let first_start = start.clone();
+
+        let first = tokio::spawn(async move {
+            first_start.wait().await;
+            append_protected_audit_event(
+                &first_owner,
+                "governance.concurrent.first",
+                &first_tenant,
+                Some("owner-one".to_string()),
+                serde_json::json!({"owner": 1}),
+            )
+            .await
+        });
+        let second = tokio::spawn(async move {
+            start.wait().await;
+            append_protected_audit_event(
+                &second_owner,
+                "governance.concurrent.second",
+                &second_tenant,
+                Some("owner-two".to_string()),
+                serde_json::json!({"owner": 2}),
+            )
+            .await
+        });
+
+        first
+            .await
+            .expect("first owner task")
+            .expect("first append");
+        second
+            .await
+            .expect("second owner task")
+            .expect("second append");
+
+        let rows = read_protected_audit_records(&state.protected_audit_path)
+            .await
+            .expect("read concurrent audit rows");
+        assert_eq!(
+            rows.iter().map(|row| row.seq).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert!(verify_protected_audit_records(&rows).valid);
+    }
+
+    #[tokio::test]
+    async fn strict_tenant_loader_rejects_corrupt_ledger_instead_of_returning_empty() {
+        let state = crate::test_support::test_state().await;
+        let tenant = TenantContext::local_implicit();
+        append_protected_audit_event(
+            &state,
+            "governance.test",
+            &tenant,
+            Some("tester".to_string()),
+            serde_json::json!({"result":"persisted"}),
+        )
+        .await
+        .expect("append protected audit event");
+
+        use tokio::io::AsyncWriteExt;
+        let mut file = tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(&state.protected_audit_path)
+            .await
+            .expect("open protected audit ledger");
+        file.write_all(b"corrupt-trailer\n")
+            .await
+            .expect("corrupt protected audit ledger");
+        file.sync_all().await.expect("sync corruption");
+
+        assert!(try_load_protected_audit_events_for_tenant(&state, &tenant)
+            .await
+            .is_err());
+        assert!(generate_audit_ledger_manifest(&state.protected_audit_path)
+            .await
+            .is_err());
+    }
 }

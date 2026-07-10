@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::{Future, IntoFuture};
 use std::net::SocketAddr;
 use std::path::Path as FsPath;
 use std::path::PathBuf;
@@ -81,7 +82,7 @@ mod mcp_connection_inventory;
 pub(crate) mod mcp_discovery;
 pub(crate) mod mcp_inventory;
 pub(crate) mod mcp_run_as;
-mod memory_audit_store;
+pub(crate) mod memory_audit_store;
 mod middleware;
 mod mission_builder;
 mod mission_builder_host;
@@ -129,7 +130,7 @@ mod routes_workflows;
 pub(crate) mod routines_automations;
 mod runtime_events;
 mod session_kb_grounding;
-mod session_run_retry;
+pub(crate) mod session_run_retry;
 mod session_source;
 mod sessions;
 mod sessions_actor_scope;
@@ -176,6 +177,31 @@ pub(crate) use context_runs::sync_workflow_run_blackboard;
 #[cfg(test)]
 pub(crate) use context_runs::workflow_context_run_id;
 pub(crate) use workflow_planner_runtime::compile_plan_to_automation_v2;
+
+pub(crate) fn protected_audit_error_response(error: anyhow::Error) -> (StatusCode, Json<Value>) {
+    tracing::error!(error = ?error, "request failed because protected audit persistence failed");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({
+            "error": "The operation was applied, but its required audit record could not be persisted",
+            "code": "PROTECTED_AUDIT_PERSISTENCE_FAILED",
+            "retryable": true,
+        })),
+    )
+}
+
+pub(crate) fn protected_audit_error_envelope(
+    error: anyhow::Error,
+) -> (StatusCode, Json<ErrorEnvelope>) {
+    tracing::error!(error = ?error, "request failed because protected audit persistence failed");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorEnvelope::new(
+            "The operation was applied, but its required audit record could not be persisted",
+            ErrorCode::PersistenceFailed,
+        )),
+    )
+}
 
 #[derive(Debug, Deserialize)]
 struct ListSessionsQuery {
@@ -292,6 +318,75 @@ pub type ServerRouter = Router<AppState>;
 pub type RouteRegistrar = fn(ServerRouter) -> ServerRouter;
 type HttpError = (StatusCode, Json<ErrorEnvelope>);
 
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShutdownSignal {
+    CtrlC,
+    Terminate,
+}
+
+#[cfg(unix)]
+async fn select_shutdown_signal<C, T>(ctrl_c: C, terminate: T) -> ShutdownSignal
+where
+    C: Future<Output = ()>,
+    T: Future<Output = ()>,
+{
+    tokio::select! {
+        _ = ctrl_c => ShutdownSignal::CtrlC,
+        _ = terminate => ShutdownSignal::Terminate,
+    }
+}
+
+#[cfg(unix)]
+async fn wait_for_shutdown_signal() {
+    let mut terminate =
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(signal) => Some(signal),
+            Err(error) => {
+                tracing::warn!(%error, "failed to install SIGTERM handler");
+                None
+            }
+        };
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::warn!(%error, "failed to install Ctrl+C handler");
+            futures::future::pending::<()>().await;
+        }
+    };
+    let sigterm = async move {
+        match terminate.as_mut() {
+            Some(signal) => {
+                if signal.recv().await.is_none() {
+                    futures::future::pending::<()>().await;
+                }
+            }
+            None => futures::future::pending::<()>().await,
+        }
+    };
+
+    let signal = select_shutdown_signal(ctrl_c, sigterm).await;
+    tracing::info!(?signal, "received shutdown signal");
+}
+
+#[cfg(not(unix))]
+async fn wait_for_shutdown_signal() {
+    if let Err(error) = tokio::signal::ctrl_c().await {
+        tracing::warn!(%error, "failed to install Ctrl+C handler");
+        futures::future::pending::<()>().await;
+    }
+}
+
+async fn after_http_server_stops<S, D, DF>(server: S, drain: D) -> S::Output
+where
+    S: IntoFuture,
+    D: FnOnce() -> DF,
+    DF: Future<Output = ()>,
+{
+    let result = server.into_future().await;
+    drain().await;
+    result
+}
+
 fn http_error(status: StatusCode, error: impl Into<String>, code: ErrorCode) -> HttpError {
     (status, Json(ErrorEnvelope::new(error.into(), code)))
 }
@@ -359,6 +454,7 @@ pub async fn serve_with_route_extensions(
     route_extensions: &[RouteRegistrar],
 ) -> anyhow::Result<()> {
     apply_strict_tenant_enforcement_defaults()?;
+    slack_interactions::start_slack_event_recovery_worker(&state).await?;
     let reaper_state = state.clone();
     let session_part_persister_state = state.clone();
     let session_context_run_journaler_state = state.clone();
@@ -628,14 +724,17 @@ pub async fn serve_with_route_extensions(
     // (`initialize_runtime()` in `engine/src/main.rs`) so `serve()` only owns
     // the HTTP server lifecycle.
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    let result = axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            if tokio::signal::ctrl_c().await.is_err() {
-                futures::future::pending::<()>().await;
-            }
+    let result = after_http_server_stops(
+        axum::serve(listener, app).with_graceful_shutdown(wait_for_shutdown_signal()),
+        || async move {
             approval_outbound_cancel_for_shutdown.store(true, Ordering::Relaxed);
+            shutdown_state.stop_provider_oauth_refresh().await;
             shutdown_state.set_automation_scheduler_stopping(true);
-            tokio::time::sleep(Duration::from_secs(shutdown_timeout_secs)).await;
+            let shutdown_grace = Duration::from_secs(shutdown_timeout_secs);
+            tokio::join!(
+                tokio::time::sleep(shutdown_grace),
+                shutdown_state.slack_event_tasks.shutdown(shutdown_grace)
+            );
             let interrupted = shutdown_state
                 .interrupt_running_automation_runs_for_shutdown()
                 .await;
@@ -645,40 +744,41 @@ pub async fn serve_with_route_extensions(
                     "automation runs interrupted by shutdown; kept resumable for restart"
                 );
             }
-        })
-        .await;
-    reaper.abort();
-    session_part_persister.abort();
-    session_context_run_journaler.abort();
-    runtime_event_log_persister.abort();
-    data_boundary_audit_bridge.abort();
-    automation_webhook_retention_reaper.abort();
-    status_indexer.abort();
-    routine_scheduler.abort();
-    routine_executor.abort();
-    usage_aggregator.abort();
-    automation_v2_scheduler.abort();
-    automation_v2_executor.abort();
-    optimization_scheduler.abort();
-    workflow_dispatcher.abort();
-    agent_team_supervisor.abort();
-    incident_monitor.abort();
-    incident_monitor_reassessment_scheduler.abort();
-    incident_monitor_log_watcher.abort();
-    incident_monitor_recovery_sweep.abort();
-    global_memory_ingestor.abort();
-    approval_outbound_cancel.store(true, Ordering::Relaxed);
-    let approval_outbound_shutdown_timeout =
-        crate::app::approval_outbound::DEFAULT_POLL_INTERVAL + Duration::from_secs(1);
-    if tokio::time::timeout(approval_outbound_shutdown_timeout, &mut approval_outbound)
-        .await
-        .is_err()
-    {
-        approval_outbound.abort();
-    }
-    hygiene_task.abort();
-    coder_candidate_gc_task.abort();
-    automation_governance_health_checker.abort();
+            reaper.abort();
+            session_part_persister.abort();
+            session_context_run_journaler.abort();
+            runtime_event_log_persister.abort();
+            data_boundary_audit_bridge.abort();
+            automation_webhook_retention_reaper.abort();
+            status_indexer.abort();
+            routine_scheduler.abort();
+            routine_executor.abort();
+            usage_aggregator.abort();
+            automation_v2_scheduler.abort();
+            automation_v2_executor.abort();
+            optimization_scheduler.abort();
+            workflow_dispatcher.abort();
+            agent_team_supervisor.abort();
+            incident_monitor.abort();
+            incident_monitor_reassessment_scheduler.abort();
+            incident_monitor_log_watcher.abort();
+            incident_monitor_recovery_sweep.abort();
+            global_memory_ingestor.abort();
+            approval_outbound_cancel.store(true, Ordering::Relaxed);
+            let approval_outbound_shutdown_timeout =
+                crate::app::approval_outbound::DEFAULT_POLL_INTERVAL + Duration::from_secs(1);
+            if tokio::time::timeout(approval_outbound_shutdown_timeout, &mut approval_outbound)
+                .await
+                .is_err()
+            {
+                approval_outbound.abort();
+            }
+            hygiene_task.abort();
+            coder_candidate_gc_task.abort();
+            automation_governance_health_checker.abort();
+        },
+    )
+    .await;
     result?;
     Ok(())
 }
@@ -933,3 +1033,55 @@ pub(super) fn truncate_for_stream(input: &str, max_len: usize) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, unix))]
+mod shutdown_signal_tests {
+    use super::{after_http_server_stops, select_shutdown_signal, ShutdownSignal};
+    use std::future::{pending, ready};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn shutdown_signal_selects_ctrl_c() {
+        assert_eq!(
+            select_shutdown_signal(ready(()), pending()).await,
+            ShutdownSignal::CtrlC
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_signal_selects_sigterm() {
+        assert_eq!(
+            select_shutdown_signal(pending(), ready(())).await,
+            ShutdownSignal::Terminate
+        );
+    }
+
+    #[tokio::test]
+    async fn background_drain_waits_until_http_server_stops() {
+        let (signal_tx, signal_rx) = tokio::sync::oneshot::channel::<()>();
+        let (signal_observed_tx, signal_observed_rx) = tokio::sync::oneshot::channel::<()>();
+        let (server_stopped_tx, server_stopped_rx) = tokio::sync::oneshot::channel::<()>();
+        let drain_started = Arc::new(AtomicBool::new(false));
+        let drain_started_for_task = drain_started.clone();
+
+        let shutdown = tokio::spawn(after_http_server_stops(
+            async move {
+                signal_rx.await.unwrap();
+                signal_observed_tx.send(()).unwrap();
+                server_stopped_rx.await.unwrap();
+            },
+            move || async move {
+                drain_started_for_task.store(true, Ordering::SeqCst);
+            },
+        ));
+
+        signal_tx.send(()).unwrap();
+        signal_observed_rx.await.unwrap();
+        assert!(!drain_started.load(Ordering::SeqCst));
+
+        server_stopped_tx.send(()).unwrap();
+        shutdown.await.unwrap();
+        assert!(drain_started.load(Ordering::SeqCst));
+    }
+}

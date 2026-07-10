@@ -275,7 +275,7 @@ pub(super) async fn config_providers(State(state): State<AppState>) -> Json<Valu
     }))
 }
 
-fn provider_auth_security_dir_for_state(state: &AppState) -> std::path::PathBuf {
+pub(crate) fn provider_auth_security_dir_for_state(state: &AppState) -> std::path::PathBuf {
     state
         .memory_db_path
         .parent()
@@ -1102,8 +1102,16 @@ pub(super) async fn provider_oauth_callback_post(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(input): Json<ProviderOAuthCallbackInput>,
-) -> Json<Value> {
-    Json(finish_provider_oauth_callback(state, id, input).await)
+) -> Response {
+    let payload = finish_provider_oauth_callback(state, id, input).await;
+    let status = if payload.get("code").and_then(Value::as_str)
+        == Some("PROTECTED_AUDIT_PERSISTENCE_FAILED")
+    {
+        StatusCode::INTERNAL_SERVER_ERROR
+    } else {
+        StatusCode::OK
+    };
+    (status, Json(payload)).into_response()
 }
 
 async fn openai_codex_local_callback_get(
@@ -1123,7 +1131,7 @@ async fn openai_codex_local_callback_get(
 async fn openai_codex_local_callback_post(
     State(state): State<AppState>,
     Json(input): Json<ProviderOAuthCallbackInput>,
-) -> Json<Value> {
+) -> Response {
     let response = provider_oauth_callback_post(
         State(state),
         Path(OPENAI_CODEX_PROVIDER_ID.to_string()),
@@ -1139,22 +1147,33 @@ pub(super) async fn provider_oauth_disconnect(
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
     Path(id): Path<String>,
-) -> Json<Value> {
+) -> Response {
     let provider_id = canonical_provider_id(&id);
     if provider_id != OPENAI_CODEX_PROVIDER_ID {
         return Json(json!({
             "ok": false,
             "error": format!("oauth is not supported for provider `{provider_id}`"),
-        }));
+        }))
+        .into_response();
     }
 
-    let provider_auth_security_dir = provider_auth_security_dir_for_state(&state);
-    let persisted_removed = tandem_core::delete_provider_credential_for_tenant_in_dir(
-        &provider_auth_security_dir,
-        &tenant_context,
-        OPENAI_CODEX_PROVIDER_ID,
-    )
-    .unwrap_or(false);
+    let mut credential_guard = state
+        .oauth
+        .provider_credential_guard(&tenant_context, OPENAI_CODEX_PROVIDER_ID)
+        .await;
+    let snapshot = snapshot_openai_codex_oauth_mutation(&state, &tenant_context).await;
+    credential_guard.advance_generation();
+    let persisted_removed =
+        match delete_openai_codex_oauth_credential(&state, &tenant_context).await {
+            Ok(removed) => removed,
+            Err(error) => {
+                return Json(json!({ "ok": false, "error": error.to_string() })).into_response();
+            }
+        };
+    state
+        .providers
+        .clear_tenant_provider_bearer_token(&tenant_context, OPENAI_CODEX_PROVIDER_ID)
+        .await;
     let mut runtime_removed = false;
     if tenant_context.is_local_implicit() {
         runtime_removed = state
@@ -1167,7 +1186,7 @@ pub(super) async fn provider_oauth_disconnect(
     }
 
     if persisted_removed || runtime_removed {
-        let _ = crate::audit::append_protected_audit_event(
+        if let Err(error) = crate::audit::append_protected_audit_event(
             &state,
             "provider.oauth.deleted",
             &tenant_context,
@@ -1178,7 +1197,18 @@ pub(super) async fn provider_oauth_disconnect(
                 "persistedRemoved": persisted_removed,
             }),
         )
-        .await;
+        .await
+        {
+            if let Err(rollback_error) =
+                restore_openai_codex_oauth_mutation(&state, &tenant_context, &snapshot).await
+            {
+                tracing::error!(
+                    error = ?rollback_error,
+                    "failed to restore provider OAuth state after protected audit failure"
+                );
+            }
+            return super::protected_audit_error_response(error).into_response();
+        }
         ensure_openai_codex_runtime_provider(&state).await;
         state
             .providers
@@ -1189,6 +1219,7 @@ pub(super) async fn provider_oauth_disconnect(
     Json(json!({
         "ok": persisted_removed || runtime_removed,
     }))
+    .into_response()
 }
 
 pub(super) async fn provider_oauth_local_session(
@@ -1196,48 +1227,61 @@ pub(super) async fn provider_oauth_local_session(
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
     Path(id): Path<String>,
-) -> Json<Value> {
+) -> Response {
+    if !tenant_context.is_local_implicit() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "ok": false,
+                "code": "LOCAL_PROVIDER_SESSION_REQUIRES_LOCAL_IMPLICIT_TENANT",
+                "error": "Local provider sessions are available only to the local implicit tenant.",
+            })),
+        )
+            .into_response();
+    }
+
     let provider_id = canonical_provider_id(&id);
     if provider_id != OPENAI_CODEX_PROVIDER_ID {
         return Json(json!({
             "ok": false,
             "error": format!("oauth is not supported for provider `{provider_id}`"),
-        }));
+        }))
+        .into_response();
     }
 
+    let mut credential_guard = state
+        .oauth
+        .provider_credential_guard(&tenant_context, OPENAI_CODEX_PROVIDER_ID)
+        .await;
     let Some(credential) = tandem_core::load_openai_codex_cli_oauth_credential() else {
         return Json(json!({
             "ok": false,
             "error": "No local Codex CLI session was found. Sign in with the Codex CLI on this machine first.",
-        }));
+        }))
+        .into_response();
     };
 
-    let provider_auth_security_dir = provider_auth_security_dir_for_state(&state);
-    let backend = match tandem_core::set_provider_oauth_credential_for_tenant_in_dir(
-        &provider_auth_security_dir,
-        &tenant_context,
-        OPENAI_CODEX_PROVIDER_ID,
-        credential.clone(),
-    ) {
-        Ok(tandem_core::ProviderAuthBackend::Keychain) => "keychain",
-        Ok(tandem_core::ProviderAuthBackend::File) => "file",
-        Err(error) => {
-            return Json(json!({
-                "ok": false,
-                "error": error.to_string(),
-            }));
-        }
-    };
+    let snapshot = snapshot_openai_codex_oauth_mutation(&state, &tenant_context).await;
+    credential_guard.advance_generation();
+    let backend =
+        match persist_openai_codex_oauth_credential(&state, &tenant_context, credential.clone())
+            .await
+        {
+            Ok(tandem_core::ProviderAuthBackend::Keychain) => "keychain",
+            Ok(tandem_core::ProviderAuthBackend::File) => "file",
+            Err(error) => {
+                let _ =
+                    restore_openai_codex_oauth_mutation(&state, &tenant_context, &snapshot).await;
+                return Json(json!({
+                    "ok": false,
+                    "error": error.to_string(),
+                }))
+                .into_response();
+            }
+        };
+    apply_openai_codex_runtime_credential(&state, &tenant_context, Some(&credential), true).await;
 
-    if tenant_context.is_local_implicit() {
-        ensure_openai_codex_runtime_provider(&state).await;
-        state
-            .providers
-            .reload(state.config.get().await.into())
-            .await;
-    }
-
-    let _ = crate::audit::append_protected_audit_event(
+    if let Err(error) = crate::audit::append_protected_audit_event(
         &state,
         "provider.oauth.updated",
         &tenant_context,
@@ -1249,7 +1293,18 @@ pub(super) async fn provider_oauth_local_session(
             "email": credential.email,
         }),
     )
-    .await;
+    .await
+    {
+        if let Err(rollback_error) =
+            restore_openai_codex_oauth_mutation(&state, &tenant_context, &snapshot).await
+        {
+            tracing::error!(
+                error = ?rollback_error,
+                "failed to restore provider OAuth state after protected audit failure"
+            );
+        }
+        return super::protected_audit_error_response(error).into_response();
+    }
 
     Json(json!({
         "ok": true,
@@ -1260,6 +1315,7 @@ pub(super) async fn provider_oauth_local_session(
         "display_name": credential.display_name,
         "expires_at_ms": credential.expires_at_ms,
     }))
+    .into_response()
 }
 
 pub(super) async fn provider_oauth_session_import(
@@ -1268,13 +1324,14 @@ pub(super) async fn provider_oauth_session_import(
     Extension(request_principal): Extension<RequestPrincipal>,
     Path(id): Path<String>,
     Json(input): Json<ProviderOAuthSessionImportInput>,
-) -> Json<Value> {
+) -> Response {
     let provider_id = canonical_provider_id(&id);
     if provider_id != OPENAI_CODEX_PROVIDER_ID {
         return Json(json!({
             "ok": false,
             "error": format!("oauth is not supported for provider `{provider_id}`"),
-        }));
+        }))
+        .into_response();
     }
 
     let raw_auth_json = input.auth_json.unwrap_or_default();
@@ -1283,7 +1340,8 @@ pub(super) async fn provider_oauth_session_import(
         return Json(json!({
             "ok": false,
             "error": "Codex auth.json content cannot be empty.",
-        }));
+        }))
+        .into_response();
     }
 
     let auth_json: Value = match serde_json::from_str(trimmed_auth_json) {
@@ -1292,54 +1350,63 @@ pub(super) async fn provider_oauth_session_import(
             return Json(json!({
                 "ok": false,
                 "error": format!("Codex auth.json is not valid JSON: {error}"),
-            }));
+            }))
+            .into_response();
         }
     };
-
-    if tenant_context.is_local_implicit() {
-        if let Err(error) = tandem_core::write_openai_codex_cli_auth_json(&auth_json) {
-            return Json(json!({
-                "ok": false,
-                "error": format!("failed to persist Codex auth.json: {error}"),
-            }));
-        }
-    }
 
     let Some(mut credential) = tandem_core::oauth_credential_from_codex_auth_json(&auth_json)
     else {
         return Json(json!({
             "ok": false,
             "error": "The imported Codex auth.json could not be parsed into a credential.",
-        }));
+        }))
+        .into_response();
     };
     credential.managed_by = "codex-upload".to_string();
 
-    let provider_auth_security_dir = provider_auth_security_dir_for_state(&state);
-    let backend = match tandem_core::set_provider_oauth_credential_for_tenant_in_dir(
-        &provider_auth_security_dir,
-        &tenant_context,
-        OPENAI_CODEX_PROVIDER_ID,
-        credential.clone(),
-    ) {
-        Ok(tandem_core::ProviderAuthBackend::Keychain) => "keychain",
-        Ok(tandem_core::ProviderAuthBackend::File) => "file",
-        Err(error) => {
+    let mut credential_guard = state
+        .oauth
+        .provider_credential_guard(&tenant_context, OPENAI_CODEX_PROVIDER_ID)
+        .await;
+    let snapshot = snapshot_openai_codex_oauth_mutation(&state, &tenant_context).await;
+    let cli_auth_snapshot = tenant_context
+        .is_local_implicit()
+        .then(tandem_core::load_openai_codex_cli_auth_json)
+        .flatten();
+    credential_guard.advance_generation();
+    if tenant_context.is_local_implicit() {
+        if let Err(error) = tandem_core::write_openai_codex_cli_auth_json(&auth_json) {
             return Json(json!({
                 "ok": false,
-                "error": error.to_string(),
-            }));
+                "error": format!("failed to persist Codex auth.json: {error}"),
+            }))
+            .into_response();
         }
-    };
-
-    if tenant_context.is_local_implicit() {
-        ensure_openai_codex_runtime_provider(&state).await;
-        state
-            .providers
-            .reload(state.config.get().await.into())
-            .await;
     }
+    let backend =
+        match persist_openai_codex_oauth_credential(&state, &tenant_context, credential.clone())
+            .await
+        {
+            Ok(tandem_core::ProviderAuthBackend::Keychain) => "keychain",
+            Ok(tandem_core::ProviderAuthBackend::File) => "file",
+            Err(error) => {
+                let _ =
+                    restore_openai_codex_oauth_mutation(&state, &tenant_context, &snapshot).await;
+                if tenant_context.is_local_implicit() {
+                    let _ =
+                        tandem_core::restore_openai_codex_cli_auth_json(cli_auth_snapshot.as_ref());
+                }
+                return Json(json!({
+                    "ok": false,
+                    "error": error.to_string(),
+                }))
+                .into_response();
+            }
+        };
+    apply_openai_codex_runtime_credential(&state, &tenant_context, Some(&credential), true).await;
 
-    let _ = crate::audit::append_protected_audit_event(
+    if let Err(error) = crate::audit::append_protected_audit_event(
         &state,
         "provider.oauth.updated",
         &tenant_context,
@@ -1351,7 +1418,28 @@ pub(super) async fn provider_oauth_session_import(
             "email": credential.email,
         }),
     )
-    .await;
+    .await
+    {
+        if let Err(rollback_error) =
+            restore_openai_codex_oauth_mutation(&state, &tenant_context, &snapshot).await
+        {
+            tracing::error!(
+                error = ?rollback_error,
+                "failed to restore provider OAuth state after protected audit failure"
+            );
+        }
+        if tenant_context.is_local_implicit() {
+            if let Err(rollback_error) =
+                tandem_core::restore_openai_codex_cli_auth_json(cli_auth_snapshot.as_ref())
+            {
+                tracing::error!(
+                    error = ?rollback_error,
+                    "failed to restore Codex CLI auth after protected audit failure"
+                );
+            }
+        }
+        return super::protected_audit_error_response(error).into_response();
+    }
 
     Json(json!({
         "ok": true,
@@ -1362,6 +1450,7 @@ pub(super) async fn provider_oauth_session_import(
         "display_name": credential.display_name,
         "expires_at_ms": credential.expires_at_ms,
     }))
+    .into_response()
 }
 
 pub(super) async fn set_auth(
@@ -1370,17 +1459,30 @@ pub(super) async fn set_auth(
     Extension(request_principal): Extension<RequestPrincipal>,
     Path(id): Path<String>,
     Json(input): Json<AuthInput>,
-) -> Json<Value> {
+) -> Response {
     let normalized_id = id.trim().to_ascii_lowercase();
     if normalized_id.is_empty() {
-        return Json(json!({"ok": false, "error": "provider id cannot be empty"}));
+        return Json(json!({"ok": false, "error": "provider id cannot be empty"})).into_response();
     }
     let token = input.token.unwrap_or_default().trim().to_string();
     if token.is_empty() {
-        return Json(json!({"ok": false, "error": "token cannot be empty"}));
+        return Json(json!({"ok": false, "error": "token cannot be empty"})).into_response();
     }
 
+    let mut credential_guard = state
+        .oauth
+        .provider_credential_guard(&tenant_context, &normalized_id)
+        .await;
+    let _persistence_guard = state.oauth.provider_credential_persistence_guard().await;
     let provider_auth_security_dir = provider_auth_security_dir_for_state(&state);
+    let snapshot = snapshot_api_key_mutation(
+        &state,
+        &provider_auth_security_dir,
+        &tenant_context,
+        &normalized_id,
+    )
+    .await;
+    credential_guard.advance_generation();
     let backend = match tandem_core::set_provider_auth_for_tenant_in_dir(
         &provider_auth_security_dir,
         &tenant_context,
@@ -1390,54 +1492,82 @@ pub(super) async fn set_auth(
         Ok(tandem_core::ProviderAuthBackend::Keychain) => "keychain",
         Ok(tandem_core::ProviderAuthBackend::File) => "file",
         Err(err) => {
-            return Json(json!({
-                "ok": false,
-                "id": normalized_id,
-                "error": format!("failed to persist provider auth: {err}")
-            }));
+            rollback_api_key_mutation(
+                &state,
+                &provider_auth_security_dir,
+                &tenant_context,
+                &normalized_id,
+                &snapshot,
+                "provider API-key persistence failure",
+            )
+            .await;
+            return provider_auth_mutation_error_response(
+                &normalized_id,
+                "PROVIDER_AUTH_PERSISTENCE_FAILED",
+                format!("failed to persist provider auth: {err}"),
+            );
         }
     };
 
-    let ok = if tenant_context.is_local_implicit() {
-        // Keep legacy in-memory auth map for compatibility while runtime config
-        // becomes the canonical provider-key source.
+    if tenant_context.is_local_implicit() {
+        let patch = json!({
+            "providers": {
+                normalized_id.clone(): {
+                    "api_key": token.clone()
+                }
+            }
+        });
+        if let Err(error) = state.config.patch_runtime(patch).await {
+            rollback_api_key_mutation(
+                &state,
+                &provider_auth_security_dir,
+                &tenant_context,
+                &normalized_id,
+                &snapshot,
+                "provider API-key runtime patch failure",
+            )
+            .await;
+            return provider_auth_mutation_error_response(
+                &normalized_id,
+                "PROVIDER_AUTH_RUNTIME_PATCH_FAILED",
+                format!("failed to update provider runtime auth: {error}"),
+            );
+        }
+        // Keep the legacy in-memory map in sync with the runtime config.
         state
             .auth
             .write()
             .await
-            .insert(normalized_id.clone(), token.clone());
-
-        let patch = json!({
-            "providers": {
-                normalized_id.clone(): {
-                    "api_key": token
-                }
-            }
-        });
-        state.config.patch_runtime(patch).await.is_ok()
-    } else {
-        true
-    };
-    if ok {
-        if tenant_context.is_local_implicit() {
-            state
-                .providers
-                .reload(state.config.get().await.into())
-                .await;
-        }
-        let _ = crate::audit::append_protected_audit_event(
+            .insert(normalized_id.clone(), token);
+        state
+            .providers
+            .reload(state.config.get().await.into())
+            .await;
+    }
+    if let Err(error) = crate::audit::append_protected_audit_event(
+        &state,
+        "provider.secret.updated",
+        &tenant_context,
+        request_actor(&request_principal, &tenant_context),
+        json!({
+            "providerID": normalized_id,
+            "backend": backend,
+        }),
+    )
+    .await
+    {
+        rollback_api_key_mutation(
             &state,
-            "provider.secret.updated",
+            &provider_auth_security_dir,
             &tenant_context,
-            request_actor(&request_principal, &tenant_context),
-            json!({
-                "providerID": normalized_id,
-                "backend": backend,
-            }),
+            &normalized_id,
+            &snapshot,
+            "provider API-key audit failure",
         )
         .await;
+        return super::protected_audit_error_response(error).into_response();
     }
-    Json(json!({"ok": ok, "id": normalized_id, "backend": backend}))
+    Json(json!({"ok": true, "id": normalized_id, "backend": backend})).into_response()
 }
 
 pub(super) async fn delete_auth(
@@ -1445,31 +1575,77 @@ pub(super) async fn delete_auth(
     Extension(tenant_context): Extension<TenantContext>,
     Extension(request_principal): Extension<RequestPrincipal>,
     Path(id): Path<String>,
-) -> Json<Value> {
+) -> Response {
     let normalized_id = id.trim().to_ascii_lowercase();
     if normalized_id.is_empty() {
-        return Json(json!({"ok": false, "error": "provider id cannot be empty"}));
+        return Json(json!({"ok": false, "error": "provider id cannot be empty"})).into_response();
     }
-    let mut removed = false;
+
+    let mut credential_guard = state
+        .oauth
+        .provider_credential_guard(&tenant_context, &normalized_id)
+        .await;
+    let _persistence_guard = state.oauth.provider_credential_persistence_guard().await;
     let provider_auth_security_dir = provider_auth_security_dir_for_state(&state);
-    let persisted_removed = tandem_core::delete_provider_auth_for_tenant_in_dir(
+    let snapshot = snapshot_api_key_mutation(
+        &state,
         &provider_auth_security_dir,
         &tenant_context,
         &normalized_id,
     )
-    .map(|ok| ok)
-    .unwrap_or(false);
-    let mut runtime_removed = false;
+    .await;
+    credential_guard.advance_generation();
+    let persisted_removed = match tandem_core::delete_provider_auth_for_tenant_in_dir(
+        &provider_auth_security_dir,
+        &tenant_context,
+        &normalized_id,
+    ) {
+        Ok(removed) => removed,
+        Err(error) => {
+            rollback_api_key_mutation(
+                &state,
+                &provider_auth_security_dir,
+                &tenant_context,
+                &normalized_id,
+                &snapshot,
+                "provider API-key delete persistence failure",
+            )
+            .await;
+            return provider_auth_mutation_error_response(
+                &normalized_id,
+                "PROVIDER_AUTH_PERSISTENCE_FAILED",
+                format!("failed to delete persisted provider auth: {error}"),
+            );
+        }
+    };
+
+    let runtime_removed = tenant_context.is_local_implicit()
+        && (snapshot.local_auth.is_some() || snapshot.runtime_api_key.is_some());
     if tenant_context.is_local_implicit() {
-        removed = state.auth.write().await.remove(&normalized_id).is_some();
-        runtime_removed = state
+        if let Err(error) = state
             .config
             .delete_runtime_provider_key(&normalized_id)
             .await
-            .is_ok();
+        {
+            rollback_api_key_mutation(
+                &state,
+                &provider_auth_security_dir,
+                &tenant_context,
+                &normalized_id,
+                &snapshot,
+                "provider API-key runtime delete failure",
+            )
+            .await;
+            return provider_auth_mutation_error_response(
+                &normalized_id,
+                "PROVIDER_AUTH_RUNTIME_PATCH_FAILED",
+                format!("failed to delete provider runtime auth: {error}"),
+            );
+        }
+        state.auth.write().await.remove(&normalized_id);
     }
-    if runtime_removed || persisted_removed || removed {
-        let _ = crate::audit::append_protected_audit_event(
+    if runtime_removed || persisted_removed {
+        if let Err(error) = crate::audit::append_protected_audit_event(
             &state,
             "provider.secret.deleted",
             &tenant_context,
@@ -1480,7 +1656,19 @@ pub(super) async fn delete_auth(
                 "persistedRemoved": persisted_removed,
             }),
         )
-        .await;
+        .await
+        {
+            rollback_api_key_mutation(
+                &state,
+                &provider_auth_security_dir,
+                &tenant_context,
+                &normalized_id,
+                &snapshot,
+                "provider API-key delete audit failure",
+            )
+            .await;
+            return super::protected_audit_error_response(error).into_response();
+        }
     }
     if runtime_removed {
         state
@@ -1488,7 +1676,154 @@ pub(super) async fn delete_auth(
             .reload(state.config.get().await.into())
             .await;
     }
-    Json(json!({"ok": removed || runtime_removed || persisted_removed}))
+    Json(json!({"ok": runtime_removed || persisted_removed})).into_response()
+}
+
+struct ApiKeyMutationSnapshot {
+    persisted: Option<String>,
+    local_auth: Option<String>,
+    runtime_api_key: Option<String>,
+}
+
+async fn snapshot_api_key_mutation(
+    state: &AppState,
+    security_dir: &std::path::Path,
+    tenant_context: &TenantContext,
+    provider_id: &str,
+) -> ApiKeyMutationSnapshot {
+    let persisted = tandem_core::load_provider_auth_for_tenant_in_dir(security_dir, tenant_context)
+        .remove(provider_id);
+    if !tenant_context.is_local_implicit() {
+        return ApiKeyMutationSnapshot {
+            persisted,
+            local_auth: None,
+            runtime_api_key: None,
+        };
+    }
+
+    let local_auth = state.auth.read().await.get(provider_id).cloned();
+    let layers = state.config.get_layers_value().await;
+    let runtime_api_key = layers
+        .get("runtime")
+        .and_then(|runtime| runtime.get("providers"))
+        .and_then(Value::as_object)
+        .and_then(|providers| {
+            providers
+                .get(provider_id)
+                .or_else(|| {
+                    providers
+                        .iter()
+                        .find(|(id, _)| id.eq_ignore_ascii_case(provider_id))
+                        .map(|(_, value)| value)
+                })
+                .and_then(Value::as_object)
+        })
+        .and_then(|provider| provider.get("api_key").or_else(|| provider.get("apiKey")))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    ApiKeyMutationSnapshot {
+        persisted,
+        local_auth,
+        runtime_api_key,
+    }
+}
+
+async fn restore_api_key_mutation(
+    state: &AppState,
+    security_dir: &std::path::Path,
+    tenant_context: &TenantContext,
+    provider_id: &str,
+    snapshot: &ApiKeyMutationSnapshot,
+) -> anyhow::Result<()> {
+    let persistence_result = if let Some(token) = snapshot.persisted.as_deref() {
+        tandem_core::set_provider_auth_for_tenant_in_dir(
+            security_dir,
+            tenant_context,
+            provider_id,
+            token,
+        )
+        .map(|_| ())
+    } else {
+        tandem_core::delete_provider_auth_for_tenant_in_dir(
+            security_dir,
+            tenant_context,
+            provider_id,
+        )
+        .map(|_| ())
+    };
+
+    let runtime_result = if tenant_context.is_local_implicit() {
+        let result = async {
+            state
+                .config
+                .delete_runtime_provider_key(provider_id)
+                .await?;
+            if let Some(token) = snapshot.runtime_api_key.as_deref() {
+                state
+                    .config
+                    .patch_runtime(json!({
+                        "providers": {
+                            provider_id.to_string(): { "api_key": token }
+                        }
+                    }))
+                    .await?;
+            }
+            let mut auth = state.auth.write().await;
+            match snapshot.local_auth.as_ref() {
+                Some(token) => {
+                    auth.insert(provider_id.to_string(), token.clone());
+                }
+                None => {
+                    auth.remove(provider_id);
+                }
+            }
+            drop(auth);
+            state
+                .providers
+                .reload(state.config.get().await.into())
+                .await;
+            Ok(())
+        }
+        .await;
+        result
+    } else {
+        Ok(())
+    };
+
+    persistence_result?;
+    runtime_result
+}
+
+async fn rollback_api_key_mutation(
+    state: &AppState,
+    security_dir: &std::path::Path,
+    tenant_context: &TenantContext,
+    provider_id: &str,
+    snapshot: &ApiKeyMutationSnapshot,
+    context: &'static str,
+) {
+    if let Err(error) =
+        restore_api_key_mutation(state, security_dir, tenant_context, provider_id, snapshot).await
+    {
+        tracing::error!(error = ?error, provider_id, context, "failed to restore provider API-key mutation");
+    }
+}
+
+fn provider_auth_mutation_error_response(
+    provider_id: &str,
+    code: &'static str,
+    error: String,
+) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({
+            "ok": false,
+            "id": provider_id,
+            "code": code,
+            "error": error,
+        })),
+    )
+        .into_response()
 }
 
 pub(super) async fn set_api_token(
@@ -1601,393 +1936,4 @@ enum ProviderCatalogFetchResult {
     Error {
         message: String,
     },
-}
-
-fn ensure_provider_entry<'a>(
-    wire: &'a mut WireProviderCatalog,
-    provider_id: &str,
-    provider_name: Option<&str>,
-) -> &'a mut WireProviderEntry {
-    if let Some(idx) = wire.all.iter().position(|entry| entry.id == provider_id) {
-        return &mut wire.all[idx];
-    }
-
-    wire.all.push(WireProviderEntry {
-        id: provider_id.to_string(),
-        name: provider_name.map(|s| s.to_string()),
-        models: HashMap::new(),
-        catalog_source: None,
-        catalog_status: None,
-        catalog_message: None,
-    });
-    wire.all.last_mut().expect("provider entry just inserted")
-}
-
-fn canonical_provider_id(provider_id: &str) -> String {
-    match provider_id.trim().to_ascii_lowercase().as_str() {
-        "llama.cpp" => "llama_cpp".to_string(),
-        other => other.to_string(),
-    }
-}
-
-fn provider_id_aliases(provider_id: &str) -> &'static [&'static str] {
-    match canonical_provider_id(provider_id).as_str() {
-        "llama_cpp" => &["llama_cpp", "llama.cpp"],
-        _ => &[],
-    }
-}
-
-fn known_provider_name(provider_id: &str) -> Option<&'static str> {
-    match canonical_provider_id(provider_id).as_str() {
-        "openrouter" => Some("OpenRouter"),
-        "openai" => Some("OpenAI"),
-        "openai-codex" => Some("OpenAI Codex"),
-        "anthropic" => Some("Anthropic"),
-        "ollama" => Some("Ollama"),
-        "llama_cpp" => Some("llama.cpp"),
-        "groq" => Some("Groq"),
-        "mistral" => Some("Mistral"),
-        "together" => Some("Together"),
-        "cohere" => Some("Cohere"),
-        "azure" => Some("Azure OpenAI-Compatible"),
-        "bedrock" => Some("Bedrock-Compatible"),
-        "vertex" => Some("Vertex-Compatible"),
-        "copilot" => Some("GitHub Copilot-Compatible"),
-        _ => None,
-    }
-}
-
-fn ensure_known_provider_entries(wire: &mut WireProviderCatalog) {
-    for provider_id in [
-        "openrouter",
-        "openai",
-        "openai-codex",
-        "anthropic",
-        "ollama",
-        "llama_cpp",
-        "groq",
-        "mistral",
-        "together",
-        "cohere",
-        "azure",
-        "bedrock",
-        "vertex",
-        "copilot",
-    ] {
-        ensure_provider_entry(wire, provider_id, known_provider_name(provider_id));
-    }
-}
-
-fn merge_provider_model_map(
-    wire: &mut WireProviderCatalog,
-    provider_id: &str,
-    provider_name: Option<&str>,
-    models: HashMap<String, WireProviderModel>,
-) {
-    let entry = ensure_provider_entry(wire, provider_id, provider_name);
-    for (model_id, model) in models {
-        entry.models.insert(model_id, model);
-    }
-}
-
-fn config_provider_root<'a>(cfg: &'a Value) -> Option<&'a serde_json::Map<String, Value>> {
-    cfg.get("providers")
-        .and_then(Value::as_object)
-        .or_else(|| cfg.get("provider").and_then(Value::as_object))
-}
-
-fn provider_config_value<'a>(cfg: &'a Value, provider_id: &str) -> Option<&'a Value> {
-    let root = config_provider_root(cfg)?;
-    root.get(provider_id).or_else(|| {
-        provider_id_aliases(provider_id)
-            .iter()
-            .find_map(|alias| root.get(*alias))
-    })
-}
-
-fn merge_provider_models_from_config(wire: &mut WireProviderCatalog, cfg: &Value) -> Vec<String> {
-    let Some(provider_root) = config_provider_root(cfg) else {
-        return Vec::new();
-    };
-
-    let mut merged = Vec::new();
-    for (provider_id, provider_value) in provider_root {
-        let provider_id = canonical_provider_id(provider_id);
-        let provider_name = provider_value
-            .get("name")
-            .and_then(|v| v.as_str())
-            .or(known_provider_name(&provider_id))
-            .or(Some(provider_id.as_str()));
-
-        let mut model_map: HashMap<String, WireProviderModel> = HashMap::new();
-        if let Some(models_obj) = provider_value.get("models").and_then(|v| v.as_object()) {
-            for (model_id, model_value) in models_obj {
-                let display_name = model_value
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .or_else(|| Some(model_id.to_string()));
-                let context = model_value
-                    .get("limit")
-                    .and_then(|v| v.get("context"))
-                    .and_then(|v| v.as_u64())
-                    .or_else(|| model_value.get("context_length").and_then(|v| v.as_u64()))
-                    .map(|v| v as u32);
-
-                model_map.insert(
-                    model_id.to_string(),
-                    WireProviderModel {
-                        name: display_name,
-                        limit: context.map(|ctx| WireProviderModelLimit { context: Some(ctx) }),
-                    },
-                );
-            }
-        }
-
-        if !model_map.is_empty() {
-            merge_provider_model_map(wire, &provider_id, provider_name, model_map);
-            merged.push(provider_id);
-        }
-    }
-
-    merged
-}
-
-fn provider_default_url(provider_id: &str) -> Option<&'static str> {
-    match canonical_provider_id(provider_id).as_str() {
-        "openrouter" => Some("https://openrouter.ai/api/v1"),
-        "openai" => Some("https://api.openai.com/v1"),
-        "openai-codex" => Some(OPENAI_CODEX_API_BASE_URL),
-        "llama_cpp" => Some("http://127.0.0.1:8080/v1"),
-        "groq" => Some("https://api.groq.com/openai/v1"),
-        "mistral" => Some("https://api.mistral.ai/v1"),
-        "together" => Some("https://api.together.xyz/v1"),
-        _ => None,
-    }
-}
-
-fn codex_starter_models() -> HashMap<String, WireProviderModel> {
-    openai_codex_supported_model_rows()
-        .iter()
-        .map(|(id, name)| {
-            (
-                id.to_string(),
-                WireProviderModel {
-                    name: Some(name.to_string()),
-                    limit: Some(WireProviderModelLimit {
-                        context: Some(272_000),
-                    }),
-                },
-            )
-        })
-        .collect()
-}
-
-fn provider_env_candidates(provider_id: &str) -> Vec<String> {
-    let normalized = provider_id
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect::<String>()
-        .to_ascii_uppercase();
-
-    let mut out = vec![format!("{}_API_KEY", normalized)];
-    match provider_id.to_ascii_lowercase().as_str() {
-        "openai" => out.push("OPENAI_API_KEY".to_string()),
-        "openrouter" => out.push("OPENROUTER_API_KEY".to_string()),
-        "anthropic" => out.push("ANTHROPIC_API_KEY".to_string()),
-        "groq" => out.push("GROQ_API_KEY".to_string()),
-        "mistral" => out.push("MISTRAL_API_KEY".to_string()),
-        "together" => out.push("TOGETHER_API_KEY".to_string()),
-        "azure" => out.push("AZURE_OPENAI_API_KEY".to_string()),
-        "vertex" => out.push("VERTEX_API_KEY".to_string()),
-        "bedrock" => out.push("BEDROCK_API_KEY".to_string()),
-        "copilot" => out.push("GITHUB_TOKEN".to_string()),
-        "cohere" => out.push("COHERE_API_KEY".to_string()),
-        _ => {}
-    }
-    out.sort();
-    out.dedup();
-    out
-}
-
-fn provider_has_env_secret(provider_id: &str) -> bool {
-    provider_env_candidates(provider_id).into_iter().any(|key| {
-        std::env::var(&key)
-            .map(|value| !value.trim().is_empty())
-            .unwrap_or(false)
-    })
-}
-
-fn hosted_managed_from_config(cfg: &Value) -> bool {
-    cfg.get("hosted")
-        .and_then(Value::as_object)
-        .and_then(|hosted| hosted.get("managed"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-}
-
-fn hosted_public_url_from_config(cfg: &Value) -> Option<String> {
-    cfg.get("hosted")
-        .and_then(Value::as_object)
-        .and_then(|hosted| hosted.get("public_url"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn provider_oauth_public_base_url_from_env() -> Option<String> {
-    [
-        "TANDEM_CONTROL_PANEL_PUBLIC_URL",
-        "HOSTED_CONTROL_PANEL_PUBLIC_URL",
-        "HOSTED_PUBLIC_URL",
-    ]
-    .into_iter()
-    .find_map(|key| {
-        std::env::var(key)
-            .ok()
-            .and_then(|value| normalize_provider_oauth_base_url(&value))
-    })
-}
-
-fn provider_oauth_public_base_url_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
-    for name in ["origin", "referer"] {
-        if let Some(base) = headers
-            .get(name)
-            .and_then(|value| value.to_str().ok())
-            .and_then(normalize_provider_oauth_base_url)
-        {
-            return Some(base);
-        }
-    }
-
-    let host = headers
-        .get("x-forwarded-host")
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.split(',').next().unwrap_or(value).trim())
-        .filter(|value| !value.is_empty())?;
-    let proto = headers
-        .get("x-forwarded-proto")
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.split(',').next().unwrap_or(value).trim())
-        .filter(|value| !value.is_empty())
-        .unwrap_or("https");
-    normalize_provider_oauth_base_url(&format!("{proto}://{host}"))
-}
-
-fn provider_oauth_public_panel_base_url(
-    cfg: &Value,
-    headers: &axum::http::HeaderMap,
-) -> Option<String> {
-    hosted_public_url_from_config(cfg)
-        .and_then(|value| normalize_provider_oauth_base_url(&value))
-        .or_else(provider_oauth_public_base_url_from_env)
-        .or_else(|| provider_oauth_public_base_url_from_headers(headers))
-        .filter(|value| !provider_oauth_base_url_is_loopback(value))
-}
-
-fn provider_oauth_engine_base_url(state: &AppState) -> String {
-    let server_base_url = state.server_base_url();
-    normalize_provider_oauth_base_url(&server_base_url)
-        .unwrap_or_else(|| "http://127.0.0.1:39731".to_string())
-}
-
-fn normalize_provider_oauth_base_url(raw: &str) -> Option<String> {
-    let trimmed = raw.trim().trim_end_matches('/');
-    if trimmed.is_empty() {
-        return None;
-    }
-    let parsed = reqwest::Url::parse(trimmed).ok()?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return None;
-    }
-    let host = parsed.host_str()?;
-    let mut out = format!("{}://{}", parsed.scheme(), host);
-    if let Some(port) = parsed.port() {
-        out.push(':');
-        out.push_str(&port.to_string());
-    }
-    Some(out)
-}
-
-fn provider_oauth_base_url_is_loopback(base_url: &str) -> bool {
-    let Ok(parsed) = reqwest::Url::parse(base_url.trim()) else {
-        return false;
-    };
-    let Some(host) = parsed.host_str() else {
-        return false;
-    };
-    if host.eq_ignore_ascii_case("localhost") {
-        return true;
-    }
-    host.parse::<IpAddr>()
-        .map(|ip| ip.is_loopback())
-        .unwrap_or(false)
-}
-
-fn provider_requires_api_key(provider_id: &str) -> bool {
-    !matches!(
-        canonical_provider_id(provider_id).as_str(),
-        "local" | "ollama" | "llama_cpp"
-    )
-}
-
-fn provider_oauth_redirect_uri_for_base(base_url: &str, provider_id: &str) -> String {
-    let base = base_url.trim().trim_end_matches('/').to_string();
-    if canonical_provider_id(provider_id) == OPENAI_CODEX_PROVIDER_ID {
-        return format!("{base}/provider/{provider_id}/oauth/callback");
-    }
-    format!("{base}/provider/{provider_id}/oauth/callback")
-}
-
-fn provider_oauth_redirect_uri_for_control_panel_base(base_url: &str, provider_id: &str) -> String {
-    let base = base_url.trim().trim_end_matches('/').to_string();
-    format!("{base}/api/engine/provider/{provider_id}/oauth/callback")
-}
-
-fn generate_oauth_state() -> String {
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!(
-        "{}:{}",
-        Uuid::new_v4(),
-        Uuid::new_v4()
-    ))
-}
-
-fn generate_pkce_pair() -> (String, String) {
-    let verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!(
-        "{}:{}",
-        Uuid::new_v4(),
-        Uuid::new_v4()
-    ));
-    let digest = sha2::Sha256::digest(verifier.as_bytes());
-    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest);
-    (verifier, challenge)
-}
-
-fn build_openai_codex_authorization_url(
-    redirect_uri: &str,
-    code_challenge: &str,
-    state: &str,
-) -> String {
-    let query = vec![
-        ("response_type", "code".to_string()),
-        ("client_id", OPENAI_CODEX_OAUTH_CLIENT_ID.to_string()),
-        ("redirect_uri", redirect_uri.to_string()),
-        ("scope", "openid profile email offline_access".to_string()),
-        ("code_challenge", code_challenge.to_string()),
-        ("code_challenge_method", "S256".to_string()),
-        ("id_token_add_organizations", "true".to_string()),
-        ("codex_cli_simplified_flow", "true".to_string()),
-        ("state", state.to_string()),
-    ]
-    .into_iter()
-    .map(|(key, value)| format!("{key}={}", urlencoding::encode(&value)))
-    .collect::<Vec<_>>()
-    .join("&");
-    format!("{OPENAI_CODEX_OAUTH_ISSUER}/oauth/authorize?{query}")
-}
-
-fn openai_codex_local_callback_shutdown_slot() -> &'static Mutex<Option<oneshot::Sender<()>>> {
-    static SLOT: OnceLock<Mutex<Option<oneshot::Sender<()>>>> = OnceLock::new();
-    SLOT.get_or_init(|| Mutex::new(None))
 }

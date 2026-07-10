@@ -21,7 +21,7 @@ use tandem_browser::{
 };
 use tandem_core::{resolve_shared_paths, BrowserConfig};
 use tandem_tools::{Tool, ToolRegistry};
-use tandem_types::{EngineEvent, ToolResult, ToolSchema};
+use tandem_types::{ToolResult, ToolSchema};
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
@@ -1159,7 +1159,7 @@ impl BrowserTool {
             return true;
         };
         state
-            .get_routine(&policy.routine_id)
+            .get_routine_for_tenant(&policy.routine_id, &policy.tenant_context)
             .await
             .map(|routine| routine.external_integrations_allowed)
             .unwrap_or(true)
@@ -1264,16 +1264,23 @@ impl BrowserTool {
             metadata: artifact.metadata.clone(),
         };
         let _ = state
-            .append_routine_run_artifact(&policy.run_id, run_artifact.clone())
+            .append_routine_run_artifact_for_tenant(
+                &policy.run_id,
+                &policy.tenant_context,
+                run_artifact.clone(),
+            )
             .await;
-        state.event_bus.publish(EngineEvent::new(
-            "routine.run.artifact_added",
-            json!({
-                "runID": policy.run_id,
-                "routineID": policy.routine_id,
-                "browserSessionID": browser_session_id,
-                "artifact": run_artifact,
-            }),
-        ));
+        state
+            .event_bus
+            .publish(crate::routines::types::tenant_scoped_engine_event(
+                "routine.run.artifact_added",
+                &policy.tenant_context,
+                json!({
+                    "runID": policy.run_id,
+                    "routineID": policy.routine_id,
+                    "browserSessionID": browser_session_id,
+                    "artifact": run_artifact,
+                }),
+            ));
     }
 }

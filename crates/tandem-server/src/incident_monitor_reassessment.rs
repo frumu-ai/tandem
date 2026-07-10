@@ -290,7 +290,7 @@ pub async fn compute_incident_monitor_reassessment(
         .await
         .remove(&scope_key);
 
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event_best_effort(
         state,
         "incident_monitor.reassessment.completed",
         tenant_context,
@@ -342,7 +342,7 @@ pub async fn note_incident_monitor_reassessment_trigger(
             },
         );
 
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event_best_effort(
         state,
         "incident_monitor.reassessment.triggered",
         tenant_context,

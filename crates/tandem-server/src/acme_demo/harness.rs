@@ -17,7 +17,7 @@ use super::{
     DEMO_TAXONOMY_ID, DEMO_WORKSPACE_ID,
 };
 
-pub const DEMO_SLACK_TEAM_ID: &str = "T_ACME_HQ";
+pub use super::{DEMO_SLACK_APP_ID, DEMO_SLACK_TEAM_ID};
 pub const DEMO_SLACK_WORKSPACE_NAME: &str = "acme-hq";
 pub const DEMO_SLACK_CHANNEL_ID: &str = "C_ACME_DEMO";
 pub const DEMO_SLACK_CHANNEL_NAME: &str = "acme-governance-demo";
@@ -42,6 +42,7 @@ pub fn run_acme_slack_demo_harness() -> Value {
         "reset_mode": "pure_seeded_fixture",
         "slack": {
             "workspace_id": DEMO_SLACK_TEAM_ID,
+            "app_id": DEMO_SLACK_APP_ID,
             "workspace_name": DEMO_SLACK_WORKSPACE_NAME,
             "channel_id": DEMO_SLACK_CHANNEL_ID,
             "channel_name": DEMO_SLACK_CHANNEL_NAME,
@@ -110,6 +111,7 @@ pub fn acme_slack_demo_receipt_for_profile(
         },
         "slack_request": {
             "workspace_id": DEMO_SLACK_TEAM_ID,
+            "api_app_id": DEMO_SLACK_APP_ID,
             "workspace_name": DEMO_SLACK_WORKSPACE_NAME,
             "channel_id": DEMO_SLACK_CHANNEL_ID,
             "channel_name": DEMO_SLACK_CHANNEL_NAME,
@@ -488,6 +490,7 @@ fn protected_audit_rows(
             "created_at_ms": DEMO_BASE_NOW_MS,
             "payload": {
                 "slack_workspace_id": DEMO_SLACK_TEAM_ID,
+                "slack_app_id": DEMO_SLACK_APP_ID,
                 "slack_channel_id": DEMO_SLACK_CHANNEL_ID,
                 "slack_user_id": profile.slack_user_id,
                 "prompt_sha256": crate::sha256_hex(&[DEMO_PROMPT]),

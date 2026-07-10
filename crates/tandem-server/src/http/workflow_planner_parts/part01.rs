@@ -876,6 +876,8 @@ fn retag_workflow_plan_draft(
 
 pub(super) async fn workflow_plan_preview(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<WorkflowPlanPreviewRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let prompt = input.prompt.trim();
@@ -907,6 +909,8 @@ pub(super) async fn workflow_plan_preview(
         input.allowed_mcp_servers,
         input.workspace_root.as_deref(),
         input.operator_preferences,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
     )
     .await
     .map_err(|error| {
@@ -938,7 +942,11 @@ pub(super) async fn workflow_plan_preview(
     let plan_package_validation = compiler_api::validate_plan_package(&plan_package);
     let overlap_analysis = compile_preview_plan_overlap(&state, &plan_package).await;
     let plan_package_bundle = compiler_api::export_plan_package_bundle(&plan_package);
-    let host = workflow_planner_host::WorkflowPlannerHost { state: &state };
+    let host = workflow_planner_host::WorkflowPlannerHost::new(
+        &state,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+    );
     compiler_api::store_preview_draft::<
         crate::routines::types::RoutineMisfirePolicy,
         crate::AutomationFlowInputRef,
@@ -973,6 +981,8 @@ pub(super) async fn workflow_plan_preview(
 
 pub(super) async fn workflow_plan_chat_start(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<WorkflowPlanChatStartRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let prompt = input.prompt.trim();
@@ -1004,6 +1014,8 @@ pub(super) async fn workflow_plan_chat_start(
         input.allowed_mcp_servers,
         input.workspace_root.as_deref(),
         input.operator_preferences,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
     )
     .await
     .map_err(|error| {
@@ -1016,7 +1028,11 @@ pub(super) async fn workflow_plan_chat_start(
         )
     })?;
     let plan = build.plan;
-    let host = workflow_planner_host::WorkflowPlannerHost { state: &state };
+    let host = workflow_planner_host::WorkflowPlannerHost::new(
+        &state,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+    );
     let draft = compiler_api::store_chat_start_draft::<
         crate::routines::types::RoutineMisfirePolicy,
         crate::AutomationFlowInputRef,
@@ -1077,7 +1093,7 @@ pub(super) async fn workflow_plan_get(
     State(state): State<AppState>,
     axum::extract::Path(plan_id): axum::extract::Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let host = workflow_planner_host::WorkflowPlannerHost { state: &state };
+    let host = workflow_planner_host::WorkflowPlannerHost::local(&state);
     let draft = compiler_api::load_workflow_plan_draft::<
         crate::routines::types::RoutineMisfirePolicy,
         crate::AutomationFlowInputRef,
@@ -1148,6 +1164,8 @@ pub(super) async fn workflow_plan_get(
 
 pub(super) async fn workflow_plan_chat_message(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<WorkflowPlanChatMessageRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let plan_id = input.plan_id.trim();
@@ -1161,7 +1179,11 @@ pub(super) async fn workflow_plan_chat_message(
             })),
         ));
     }
-    let host = workflow_planner_host::WorkflowPlannerHost { state: &state };
+    let host = workflow_planner_host::WorkflowPlannerHost::new(
+        &state,
+        &tenant_context,
+        verified_tenant_context.as_deref(),
+    );
     let mut revision = compiler_api::revise_workflow_plan_draft::<
         crate::routines::types::RoutineMisfirePolicy,
         crate::AutomationFlowInputRef,
@@ -1262,7 +1284,7 @@ pub(super) async fn workflow_plan_chat_reset(
             })),
         ));
     }
-    let host = workflow_planner_host::WorkflowPlannerHost { state: &state };
+    let host = workflow_planner_host::WorkflowPlannerHost::local(&state);
     let draft = compiler_api::reset_workflow_plan_draft::<
         crate::routines::types::RoutineMisfirePolicy,
         crate::AutomationFlowInputRef,

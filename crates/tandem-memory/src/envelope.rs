@@ -1,9 +1,11 @@
 use crate::types::{MemoryError, MemoryResult, MemoryTenantScope};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use tandem_enterprise_contract::DataClass;
 
 pub const MEMORY_ENVELOPE_METADATA_KEY: &str = "memory_envelope";
+pub const MEMORY_ENVELOPE_ALGORITHM: &str = "AES-256-GCM";
 const HOSTED_ENCRYPTION_REQUIRED_ENV: &str = "TANDEM_MEMORY_ENCRYPTION_REQUIRED";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,6 +134,48 @@ impl MemoryKeyScope {
     }
 }
 
+/// Caller-supplied authority that a hosted decrypt is expected to satisfy.
+///
+/// This value must come from trusted request/store context, never from the
+/// untrusted envelope being decrypted. It binds tenant, department, data class,
+/// source, policy decision, and audit evidence into one exact authorization
+/// contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryEnvelopeAuthority {
+    pub key_scope: MemoryKeyScope,
+    pub policy_decision_id: String,
+    pub audit_id: String,
+}
+
+impl MemoryEnvelopeAuthority {
+    pub fn new(
+        key_scope: MemoryKeyScope,
+        policy_decision_id: impl Into<String>,
+        audit_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            key_scope,
+            policy_decision_id: policy_decision_id.into(),
+            audit_id: audit_id.into(),
+        }
+    }
+
+    pub fn validate(&self) -> MemoryResult<()> {
+        self.key_scope.validate_for_envelope()?;
+        for (field, value) in [
+            ("policy_decision_id", self.policy_decision_id.as_str()),
+            ("audit_id", self.audit_id.as_str()),
+        ] {
+            if is_wildcard_scope(value) {
+                return Err(MemoryError::InvalidConfig(format!(
+                    "memory envelope authority must use an explicit `{field}`"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryEnvelopeMetadata {
     pub key_scope: MemoryKeyScope,
@@ -172,6 +216,70 @@ impl MemoryEnvelopeMetadata {
         Ok(Value::Object(object))
     }
 
+    /// Validate persisted envelope metadata before a caller attempts a scoped
+    /// decrypt. File-backed stores persist this structure outside the ciphertext,
+    /// so malformed or wildcard scope metadata must fail before reaching KMS.
+    pub fn validate_for_storage(&self) -> MemoryResult<()> {
+        self.validate_required_fields()?;
+        self.key_scope.validate_partitioned()
+    }
+
+    pub fn authority(&self) -> MemoryEnvelopeAuthority {
+        MemoryEnvelopeAuthority::new(
+            self.key_scope.clone(),
+            self.policy_decision_id.clone(),
+            self.audit_id.clone(),
+        )
+    }
+
+    /// Validate every persisted authority anchor against trusted caller context
+    /// and against the KMS AAD hash. This must run before consulting the DEK
+    /// cache, otherwise edited metadata could reuse a cached key.
+    pub fn validate_cryptographic_binding(
+        &self,
+        expected: &MemoryEnvelopeAuthority,
+    ) -> MemoryResult<()> {
+        self.validate_for_storage()?;
+        expected.validate()?;
+        if self.key_scope != expected.key_scope {
+            return Err(MemoryError::InvalidConfig(
+                "memory envelope key scope does not match trusted expected scope".to_string(),
+            ));
+        }
+        if self.policy_decision_id != expected.policy_decision_id {
+            return Err(MemoryError::InvalidConfig(
+                "memory envelope policy decision does not match trusted authority".to_string(),
+            ));
+        }
+        if self.audit_id != expected.audit_id {
+            return Err(MemoryError::InvalidConfig(
+                "memory envelope audit id does not match trusted authority".to_string(),
+            ));
+        }
+        if self.algorithm != MEMORY_ENVELOPE_ALGORITHM {
+            return Err(MemoryError::InvalidConfig(format!(
+                "unsupported memory envelope algorithm `{}`",
+                self.algorithm
+            )));
+        }
+        let expected_hash = memory_encryption_context_hash(
+            &self.key_scope,
+            &self.kek_id,
+            &self.kek_version,
+            &self.algorithm,
+            self.rotation_epoch,
+            &self.policy_decision_id,
+            &self.audit_id,
+        )?;
+        if self.encryption_context_hash != expected_hash {
+            return Err(MemoryError::InvalidConfig(
+                "memory envelope authority context hash does not match persisted metadata"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     fn validate_required_fields(&self) -> MemoryResult<()> {
         let required = [
             ("kek_id", self.kek_id.as_str()),
@@ -194,6 +302,34 @@ impl MemoryEnvelopeMetadata {
         }
         Ok(())
     }
+}
+
+/// Canonical KMS additional-authenticated-data hash for every authority-bearing
+/// envelope field. Length-prefixing avoids delimiter ambiguity.
+pub fn memory_encryption_context_hash(
+    key_scope: &MemoryKeyScope,
+    kek_id: &str,
+    kek_version: &str,
+    algorithm: &str,
+    rotation_epoch: u64,
+    policy_decision_id: &str,
+    audit_id: &str,
+) -> MemoryResult<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"tandem-memory-envelope-authority-v2");
+    update_hash_field(&mut hasher, &serde_json::to_vec(key_scope)?);
+    update_hash_field(&mut hasher, kek_id.as_bytes());
+    update_hash_field(&mut hasher, kek_version.as_bytes());
+    update_hash_field(&mut hasher, algorithm.as_bytes());
+    update_hash_field(&mut hasher, &rotation_epoch.to_le_bytes());
+    update_hash_field(&mut hasher, policy_decision_id.as_bytes());
+    update_hash_field(&mut hasher, audit_id.as_bytes());
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn update_hash_field(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update((value.len() as u64).to_le_bytes());
+    hasher.update(value);
 }
 
 pub fn hosted_memory_encryption_required() -> bool {
@@ -228,8 +364,7 @@ pub fn validate_memory_envelope_for_required_write(
         return Ok(());
     };
 
-    envelope.validate_required_fields()?;
-    envelope.key_scope.validate_partitioned()?;
+    envelope.validate_for_storage()?;
     if !envelope.key_scope.validates_against_tenant(tenant_scope) {
         return Err(MemoryError::InvalidConfig(
             "memory envelope key scope does not match tenant scope".to_string(),

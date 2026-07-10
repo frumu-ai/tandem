@@ -184,7 +184,7 @@ async fn call_mcp_tool_for_tenant_with_trusted_context(
         phase_preflight.as_ref(),
         &result,
     )
-    .await;
+    .await?;
     record_mcp_tool_effect_receipt(
         state,
         server_name,
@@ -257,7 +257,7 @@ async fn append_mcp_secret_tenant_mismatch_audit_event(
         phase_preflight,
     )
     .await;
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event_best_effort(
         state,
         "mcp.secret_tenant_mismatch",
         &denial.tenant_context,
@@ -1186,7 +1186,7 @@ async fn append_mcp_context_assertion_denial_audit_event(
         .and_then(|context| context.principal.tenant_actor_id.clone())
         .or_else(|| tenant_context.actor_id.clone())
         .or_else(|| strict_context.map(|context| context.principal.id.clone()));
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event_best_effort(
         state,
         "mcp.context_assertion_denied",
         tenant_context,
@@ -1213,7 +1213,7 @@ async fn append_mcp_phase_tool_authority_denial_audit_event(
     resource: &ResourceRef,
     preflight: &McpPhaseToolAuthorityPreflight,
 ) {
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event_best_effort(
         state,
         "mcp.phase_tool.denied",
         tenant_context,
@@ -1249,7 +1249,7 @@ async fn append_mcp_run_as_denial_audit_event(
     expected_connection_id: Option<&str>,
     reason: &str,
 ) {
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event_best_effort(
         state,
         "mcp.run_as_denied",
         effective_tenant_context,
@@ -1276,8 +1276,8 @@ async fn append_mcp_tool_execution_audit_event(
     context_preflight: Option<&McpContextAssertionPreflight>,
     phase_preflight: Option<&McpPhaseToolAuthorityPreflight>,
     result: &Result<ToolResult, String>,
-) {
-    let _ = crate::audit::append_protected_audit_event(
+) -> Result<(), String> {
+    crate::audit::append_protected_audit_event(
         state,
         "mcp.tool.execution",
         &run_as.effective_tenant_context,
@@ -1298,7 +1298,8 @@ async fn append_mcp_tool_execution_audit_event(
             "error": result.as_ref().err().map(|error| error.as_str()),
         }),
     )
-    .await;
+    .await
+    .map_err(|error| format!("required protected audit persistence failed: {error:#}"))
 }
 
 async fn record_mcp_tool_effect_receipt(

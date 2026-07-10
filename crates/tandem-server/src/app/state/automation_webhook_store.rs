@@ -1875,19 +1875,21 @@ impl AppState {
         let _ =
             crate::http::context_runs::sync_automation_v2_run_blackboard(self, &automation, &run)
                 .await;
-        self.event_bus.publish(crate::EngineEvent::new(
-            "automation.v2.run.created",
-            json!({
-                "automationID": run.automation_id,
-                "runID": run.run_id,
-                "run": run.clone(),
-                "tenantContext": run.tenant_context,
-                "triggerType": "webhook",
-                "deliveryID": delivery.delivery_id,
-                "triggerID": trigger.trigger_id,
-                "provider": trigger.provider,
-            }),
-        ));
+        self.event_bus
+            .publish(crate::routines::types::tenant_scoped_engine_event(
+                "automation.v2.run.created",
+                &run.tenant_context,
+                json!({
+                    "automationID": run.automation_id,
+                    "runID": run.run_id,
+                    "run": run.clone(),
+                    "tenantContext": run.tenant_context,
+                    "triggerType": "webhook",
+                    "deliveryID": delivery.delivery_id,
+                    "triggerID": trigger.trigger_id,
+                    "provider": trigger.provider,
+                }),
+            ));
         Ok(AutomationWebhookQueueResult::Accepted { delivery, run })
     }
 

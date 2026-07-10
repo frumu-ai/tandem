@@ -7,7 +7,8 @@
 //! unwrapped DEK. This module is that cache.
 //!
 //! **The cache key identifies a single envelope's DEK, not a scope.** It is
-//! `(canonical_id, kek_version, rotation_epoch, wrapped_dek_fingerprint)`. Sealing
+//! `(canonical_id, kek_version, rotation_epoch, wrapped_dek_fingerprint,
+//! encryption_context_hash)`. Sealing
 //! generates a fresh DEK per field, so two rows in the same scope and KEK version
 //! carry *different* `wrapped_dek`s; keying by scope alone would let a later row's
 //! DEK clobber an earlier row's cache entry and return the wrong key (AES-GCM
@@ -82,6 +83,7 @@ pub struct MemoryDekCacheKey {
     pub kek_version: String,
     pub rotation_epoch: u64,
     pub wrapped_dek_fingerprint: String,
+    pub encryption_context_hash: String,
 }
 
 impl MemoryDekCacheKey {
@@ -90,12 +92,14 @@ impl MemoryDekCacheKey {
         kek_version: impl Into<String>,
         rotation_epoch: u64,
         wrapped_dek_fingerprint: impl Into<String>,
+        encryption_context_hash: impl Into<String>,
     ) -> Self {
         Self {
             canonical_id: canonical_id.into(),
             kek_version: kek_version.into(),
             rotation_epoch,
             wrapped_dek_fingerprint: wrapped_dek_fingerprint.into(),
+            encryption_context_hash: encryption_context_hash.into(),
         }
     }
 }
@@ -241,7 +245,7 @@ mod tests {
     }
 
     fn key(scope: &str, version: &str, epoch: u64, fingerprint: &str) -> MemoryDekCacheKey {
-        MemoryDekCacheKey::new(scope, version, epoch, fingerprint)
+        MemoryDekCacheKey::new(scope, version, epoch, fingerprint, "context-hash")
     }
 
     #[test]

@@ -54,6 +54,7 @@ async fn routine_put_persists_and_loads() {
 
     let routine = RoutineSpec {
         routine_id: "routine-1".to_string(),
+        tenant_context: tandem_types::TenantContext::local_implicit(),
         name: "Digest".to_string(),
         status: RoutineStatus::Active,
         schedule: RoutineSchedule::IntervalSeconds { seconds: 60 },
@@ -91,6 +92,7 @@ async fn persist_routines_does_not_clobber_existing_store_with_empty_state() {
     writer
         .put_routine(RoutineSpec {
             routine_id: "automation-guarded".to_string(),
+            tenant_context: tandem_types::TenantContext::local_implicit(),
             name: "Guarded Automation".to_string(),
             status: RoutineStatus::Active,
             schedule: RoutineSchedule::IntervalSeconds { seconds: 300 },
@@ -183,6 +185,7 @@ async fn evaluate_routine_misfires_respects_skip_run_once_and_catch_up() {
 
     let base = |id: &str, policy: RoutineMisfirePolicy| RoutineSpec {
         routine_id: id.to_string(),
+        tenant_context: tandem_types::TenantContext::local_implicit(),
         name: id.to_string(),
         status: RoutineStatus::Active,
         schedule: RoutineSchedule::IntervalSeconds { seconds: 1 },
@@ -217,9 +220,15 @@ async fn evaluate_routine_misfires_respects_skip_run_once_and_catch_up() {
         .expect("put catch");
 
     let plans = state.evaluate_routine_misfires(10_500).await;
-    let plan_skip = plans.iter().find(|p| p.routine_id == "routine-skip");
-    let plan_once = plans.iter().find(|p| p.routine_id == "routine-once");
-    let plan_catch = plans.iter().find(|p| p.routine_id == "routine-catch");
+    let plan_skip = plans
+        .iter()
+        .find(|p| p.identity.routine_id == "routine-skip");
+    let plan_once = plans
+        .iter()
+        .find(|p| p.identity.routine_id == "routine-once");
+    let plan_catch = plans
+        .iter()
+        .find(|p| p.identity.routine_id == "routine-catch");
 
     assert!(plan_skip.is_none());
     assert_eq!(plan_once.map(|p| p.run_count), Some(1));
@@ -240,6 +249,7 @@ async fn evaluate_routine_misfires_respects_skip_run_once_and_catch_up() {
 fn routine_policy_blocks_external_side_effects_by_default() {
     let routine = RoutineSpec {
         routine_id: "routine-policy-1".to_string(),
+        tenant_context: tandem_types::TenantContext::local_implicit(),
         name: "Connector routine".to_string(),
         status: RoutineStatus::Active,
         schedule: RoutineSchedule::IntervalSeconds { seconds: 60 },
@@ -265,6 +275,7 @@ fn routine_policy_blocks_external_side_effects_by_default() {
 fn routine_policy_requires_approval_for_external_side_effects_when_enabled() {
     let routine = RoutineSpec {
         routine_id: "routine-policy-2".to_string(),
+        tenant_context: tandem_types::TenantContext::local_implicit(),
         name: "Connector routine".to_string(),
         status: RoutineStatus::Active,
         schedule: RoutineSchedule::IntervalSeconds { seconds: 60 },
@@ -293,6 +304,7 @@ fn routine_policy_requires_approval_for_external_side_effects_when_enabled() {
 fn routine_policy_allows_non_external_entrypoints() {
     let routine = RoutineSpec {
         routine_id: "routine-policy-3".to_string(),
+        tenant_context: tandem_types::TenantContext::local_implicit(),
         name: "Internal mission routine".to_string(),
         status: RoutineStatus::Active,
         schedule: RoutineSchedule::IntervalSeconds { seconds: 60 },
@@ -320,6 +332,7 @@ async fn record_external_action_appends_routine_receipt_artifact() {
     let run = RoutineRunRecord {
         run_id: "run-1".to_string(),
         routine_id: "routine-1".to_string(),
+        tenant_context: tandem_types::TenantContext::local_implicit(),
         trigger_type: "manual".to_string(),
         run_count: 1,
         status: RoutineRunStatus::Completed,
@@ -429,6 +442,7 @@ async fn record_external_action_without_idempotency_key_keeps_current_behavior()
     let run = RoutineRunRecord {
         run_id: "run-2".to_string(),
         routine_id: "routine-2".to_string(),
+        tenant_context: tandem_types::TenantContext::local_implicit(),
         trigger_type: "manual".to_string(),
         run_count: 1,
         status: RoutineRunStatus::Completed,
@@ -516,6 +530,7 @@ async fn record_external_action_dedupes_by_idempotency_key() {
     let run = RoutineRunRecord {
         run_id: "run-1".to_string(),
         routine_id: "routine-1".to_string(),
+        tenant_context: tandem_types::TenantContext::local_implicit(),
         trigger_type: "manual".to_string(),
         run_count: 1,
         status: RoutineRunStatus::Completed,
@@ -741,6 +756,7 @@ async fn record_external_action_without_idempotency_key_preserves_existing_behav
     let run = RoutineRunRecord {
         run_id: "run-1".to_string(),
         routine_id: "routine-1".to_string(),
+        tenant_context: tandem_types::TenantContext::local_implicit(),
         trigger_type: "manual".to_string(),
         run_count: 1,
         status: RoutineRunStatus::Completed,
@@ -828,6 +844,7 @@ async fn record_external_action_dedupes_under_concurrent_retries() {
     let run = RoutineRunRecord {
         run_id: "run-1".to_string(),
         routine_id: "routine-1".to_string(),
+        tenant_context: tandem_types::TenantContext::local_implicit(),
         trigger_type: "manual".to_string(),
         run_count: 1,
         status: RoutineRunStatus::Completed,
@@ -906,6 +923,7 @@ async fn record_external_action_dedupes_under_retry_storm() {
     let run = RoutineRunRecord {
         run_id: "run-1".to_string(),
         routine_id: "routine-1".to_string(),
+        tenant_context: tandem_types::TenantContext::local_implicit(),
         trigger_type: "manual".to_string(),
         run_count: 1,
         status: RoutineRunStatus::Completed,
@@ -986,6 +1004,7 @@ async fn claim_next_queued_routine_run_marks_oldest_running() {
     let mk = |run_id: &str, created_at_ms: u64| RoutineRunRecord {
         run_id: run_id.to_string(),
         routine_id: "routine-claim".to_string(),
+        tenant_context: tandem_types::TenantContext::local_implicit(),
         trigger_type: "manual".to_string(),
         run_count: 1,
         status: RoutineRunStatus::Queued,
@@ -1036,6 +1055,7 @@ async fn routine_session_policy_roundtrip_normalizes_tools() {
             "session-routine-1".to_string(),
             "run-1".to_string(),
             "routine-1".to_string(),
+            tandem_types::TenantContext::local_implicit(),
             vec![
                 "read".to_string(),
                 " mcp.arcade.search ".to_string(),
@@ -1060,6 +1080,7 @@ async fn routine_run_preserves_latest_session_id_after_session_clears() {
     let state = AppState::new_starting("routine-latest-session".to_string(), true);
     let routine = RoutineSpec {
         routine_id: "routine-session-link".to_string(),
+        tenant_context: tandem_types::TenantContext::local_implicit(),
         name: "Routine Session Link".to_string(),
         status: RoutineStatus::Active,
         schedule: RoutineSchedule::IntervalSeconds { seconds: 300 },
@@ -1097,11 +1118,113 @@ async fn routine_run_preserves_latest_session_id_after_session_clears() {
     assert_eq!(updated.latest_session_id.as_deref(), Some("session-123"));
 }
 
+#[tokio::test]
+#[serial_test::serial]
+async fn hosted_scheduled_routine_preserves_tenant_in_spec_run_and_session() {
+    use crate::http::session_run_retry::provider_auth_test_support::install_capturing_codex_provider;
+    use tandem_providers::ProviderAuthOverride;
+
+    let mut state = ready_test_state().await;
+    state.routines_path = tmp_routines_file("hosted-scheduled-routine");
+    state.routine_runs_path = tmp_routines_file("hosted-scheduled-runs");
+    state.routine_history_path = tmp_routines_file("hosted-scheduled-history");
+    let mut hosted = tandem_types::TenantContext::explicit(
+        "org-hosted-a",
+        "workspace-hosted-a",
+        Some("actor-hosted-a".to_string()),
+    );
+    hosted.deployment_id = Some("deployment-hosted-a".to_string());
+    let routine = RoutineSpec {
+        routine_id: "hosted-scheduled".to_string(),
+        tenant_context: hosted.clone(),
+        name: "Hosted Scheduled".to_string(),
+        status: RoutineStatus::Active,
+        schedule: RoutineSchedule::IntervalSeconds { seconds: 300 },
+        timezone: "UTC".to_string(),
+        misfire_policy: RoutineMisfirePolicy::RunOnce,
+        entrypoint: "mission.default".to_string(),
+        args: serde_json::json!({"prompt": "hosted work"}),
+        allowed_tools: Vec::new(),
+        output_targets: Vec::new(),
+        creator_type: "user".to_string(),
+        creator_id: "hosted-user".to_string(),
+        requires_approval: false,
+        external_integrations_allowed: false,
+        next_fire_at_ms: None,
+        last_fired_at_ms: None,
+    };
+    let stored = state.put_routine(routine).await.expect("store routine");
+    assert_eq!(stored.tenant_context, hosted);
+
+    let run = state
+        .create_routine_run(&stored, "scheduled", 1, RoutineRunStatus::Queued, None)
+        .await;
+    assert_eq!(run.tenant_context, hosted);
+
+    let session = crate::app::tasks::routine_execution_session(&run, "/hosted/workspace".into());
+    assert_eq!(session.tenant_context, hosted);
+    assert_eq!(session.workspace_root.as_deref(), Some("/hosted/workspace"));
+
+    let captured = install_capturing_codex_provider(
+        &state,
+        "scheduled execution completed",
+        &[(&hosted, "hosted-scheduled-token")],
+    )
+    .await;
+    let session_id = session.id.clone();
+    state
+        .storage
+        .save_session(session)
+        .await
+        .expect("save hosted scheduled session");
+    crate::http::session_run_retry::run_prompt_with_auth_recovery(
+        &state,
+        &session_id,
+        &run.run_id,
+        crate::http::session_run_retry::PromptExecutionSurface::Scheduled,
+        tandem_types::SendMessageRequest {
+            parts: vec![tandem_types::MessagePartInput::Text {
+                text: "perform hosted scheduled work".to_string(),
+            }],
+            model: Some(tandem_types::ModelSpec {
+                provider_id: "openai-codex".to_string(),
+                model_id: "codex-test".to_string(),
+            }),
+            agent: None,
+            tool_mode: None,
+            tool_allowlist: None,
+            strict_kb_grounding: None,
+            context_mode: None,
+            write_required: None,
+            prewrite_requirements: None,
+            sampling: Default::default(),
+        },
+        Some(format!("routine:{}", run.run_id)),
+        &hosted,
+    )
+    .await
+    .expect("execute hosted scheduled run");
+
+    assert_eq!(
+        captured.lock().expect("provider auth capture").as_slice(),
+        [ProviderAuthOverride::Bearer(
+            "hosted-scheduled-token".to_string()
+        )]
+    );
+    let persisted_session = state
+        .storage
+        .get_session(&session_id)
+        .await
+        .expect("hosted scheduled session");
+    assert_eq!(persisted_session.tenant_context, hosted);
+}
+
 #[test]
 fn routine_mission_prompt_includes_orchestrated_contract() {
     let run = RoutineRunRecord {
         run_id: "run-orchestrated-1".to_string(),
         routine_id: "automation-orchestrated".to_string(),
+        tenant_context: tandem_types::TenantContext::local_implicit(),
         trigger_type: "manual".to_string(),
         run_count: 1,
         status: RoutineRunStatus::Queued,
@@ -1148,6 +1271,7 @@ fn routine_mission_prompt_includes_standalone_defaults() {
     let run = RoutineRunRecord {
         run_id: "run-standalone-1".to_string(),
         routine_id: "automation-standalone".to_string(),
+        tenant_context: tandem_types::TenantContext::local_implicit(),
         trigger_type: "manual".to_string(),
         run_count: 1,
         status: RoutineRunStatus::Queued,

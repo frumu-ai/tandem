@@ -112,6 +112,7 @@ mod oauth_state;
 mod prompt_context_blocks;
 mod prompt_context_hook;
 mod prompt_memory_context;
+mod slack_event_runtime;
 mod tool_dispatch_outbox;
 
 pub(crate) use automation_v2_run_store::*;
@@ -127,6 +128,7 @@ pub use enterprise_state::EnterpriseState;
 pub(crate) use idempotency::*;
 pub use oauth_state::OAuthState;
 use prompt_context_hook::*;
+pub(crate) use slack_event_runtime::SlackEventTaskRuntime;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -150,6 +152,7 @@ pub struct AppState {
     pub shared_resources: Arc<RwLock<std::collections::HashMap<String, SharedResourceRecord>>>,
     pub shared_resources_path: PathBuf,
     pub routines: Arc<RwLock<std::collections::HashMap<String, RoutineSpec>>>,
+    pub(crate) routine_persistence: Arc<tokio::sync::Mutex<()>>,
     pub routine_history: Arc<RwLock<std::collections::HashMap<String, Vec<RoutineHistoryEvent>>>>,
     pub routine_runs: Arc<RwLock<std::collections::HashMap<String, RoutineRunRecord>>>,
     pub automations_v2: Arc<RwLock<std::collections::HashMap<String, AutomationV2Spec>>>,
@@ -297,6 +300,7 @@ pub struct AppState {
     pub(crate) trust_test_tenant_headers: Arc<AtomicBool>,
     pub(crate) allow_unsigned_dev_webhooks: Arc<AtomicBool>,
     pub channels_runtime: Arc<tokio::sync::Mutex<ChannelRuntime>>,
+    pub(crate) slack_event_tasks: SlackEventTaskRuntime,
     pub host_runtime_context: HostRuntimeContext,
     pub pack_manager: Arc<PackManager>,
     pub capability_resolver: Arc<CapabilityResolver>,
@@ -370,10 +374,13 @@ pub struct StatusIndexUpdate {
 }
 
 include!("app_state_impl_parts/part01.rs");
+include!("app_state_impl_parts/part17.rs");
 include!("app_state_impl_parts/part11.rs");
 include!("app_state_impl_parts/part12.rs");
 include!("app_state_impl_parts/part14.rs");
 include!("app_state_impl_parts/part13.rs");
+include!("app_state_impl_parts/part15.rs");
+include!("app_state_impl_parts/part16.rs");
 include!("app_state_impl_parts/part02.rs");
 include!("app_state_impl_parts/part10.rs");
 include!("app_state_impl_parts/part03.rs");
@@ -513,20 +520,32 @@ async fn build_channels_config(
             security_profile: cfg.security_profile,
         })
     });
-    let slack = channels.slack.clone().and_then(|cfg| {
-        let bot_token = cfg.bot_token.trim().to_string();
-        let channel_id = cfg.channel_id.trim().to_string();
-        if bot_token.is_empty() || channel_id.is_empty() {
-            return None;
-        }
-        Some(SlackConfig {
-            bot_token,
-            channel_id,
-            allowed_users: config::channels::normalize_allowed_users_or_wildcard(cfg.allowed_users),
-            mention_only: cfg.mention_only,
-            security_profile: cfg.security_profile,
-        })
+    let slack_events_ingress_enabled = channels.slack.as_ref().is_some_and(|config| {
+        config.events_enabled
+            && config
+                .signing_secret
+                .as_deref()
+                .is_some_and(|secret| !secret.trim().is_empty())
     });
+    let slack = (!slack_events_ingress_enabled)
+        .then(|| channels.slack.clone())
+        .flatten()
+        .and_then(|cfg| {
+            let bot_token = cfg.bot_token.trim().to_string();
+            let channel_id = cfg.channel_id.trim().to_string();
+            if bot_token.is_empty() || channel_id.is_empty() {
+                return None;
+            }
+            Some(SlackConfig {
+                bot_token,
+                channel_id,
+                allowed_users: config::channels::normalize_allowed_users_or_wildcard(
+                    cfg.allowed_users,
+                ),
+                mention_only: cfg.mention_only,
+                security_profile: cfg.security_profile,
+            })
+        });
     if telegram.is_none() && discord.is_none() && slack.is_none() {
         return None;
     }

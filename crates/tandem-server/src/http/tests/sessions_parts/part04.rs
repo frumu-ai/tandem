@@ -234,7 +234,8 @@ async fn data_boundary_bridge_writes_protected_audit_without_raw_content() {
 
     let recorded =
         crate::data_boundary_bridge::record_data_boundary_protected_audit(&state, boundary_event)
-            .await;
+            .await
+            .expect("record protected audit");
     assert!(recorded, "allow_with_audit decisions belong in protected audit");
 
     let ledger = tokio::fs::read_to_string(&state.protected_audit_path)
@@ -255,6 +256,7 @@ async fn data_boundary_bridge_writes_protected_audit_without_raw_content() {
     assert!(
         !crate::data_boundary_bridge::record_data_boundary_protected_audit(&state, &allow_event)
             .await
+            .expect("plain allow audit decision")
     );
 }
 
@@ -390,7 +392,11 @@ async fn data_boundary_enforce_redacts_dispatched_payload_for_approved_provider(
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     let events = collect_events_until_run_finished(&mut rx).await;
-    assert_ne!(run_finished_status(&events), "error");
+    assert_ne!(
+        run_finished_status(&events),
+        "error",
+        "boundary redaction run failed: {events:#?}"
+    );
     assert!(events
         .iter()
         .any(|event| event.event_type == "data_boundary.redacted"));

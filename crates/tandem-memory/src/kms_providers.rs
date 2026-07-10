@@ -1,6 +1,8 @@
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -17,10 +19,13 @@ pub const GOOGLE_CLOUD_KMS_PROVIDER_ID: &str = "google_cloud_kms";
 const GOOGLE_KMS_DECRYPT_COMMAND_ENV: &str = "TANDEM_MEMORY_GOOGLE_KMS_DECRYPT_COMMAND";
 const GOOGLE_KMS_ENCRYPT_COMMAND_ENV: &str = "TANDEM_MEMORY_GOOGLE_KMS_ENCRYPT_COMMAND";
 const MEMORY_DEK_LEN: usize = 32;
+const GOOGLE_KMS_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+const GOOGLE_KMS_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GoogleCloudKmsDecryptRequest {
     pub crypto_key_id: String,
+    pub kek_version: String,
     pub ciphertext: Vec<u8>,
     pub additional_authenticated_data: Vec<u8>,
     pub runtime_principal_id: String,
@@ -33,6 +38,8 @@ pub struct GoogleCloudKmsDecryptRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct GoogleCloudKmsCommandRequest {
     crypto_key_id: String,
+    kek_version: String,
+    crypto_key_version_id: String,
     ciphertext_base64: String,
     additional_authenticated_data_base64: String,
     runtime_principal_id: String,
@@ -93,14 +100,11 @@ where
             ));
         }
         validate_google_cloud_kms_key_id(&ticket.kek_id)?;
-        if is_wildcard_or_blank(&ticket.kek_version) {
-            return Err(MemoryError::InvalidConfig(
-                "google cloud kms ticket requires an explicit key version".to_string(),
-            ));
-        }
+        validate_google_cloud_kms_version(&ticket.kek_id, &ticket.kek_version)?;
         let ciphertext = decode_wrapped_dek(&ticket.wrapped_dek)?;
         let plaintext = self.client.decrypt(&GoogleCloudKmsDecryptRequest {
             crypto_key_id: ticket.kek_id.clone(),
+            kek_version: ticket.kek_version.clone(),
             ciphertext,
             additional_authenticated_data: ticket.encryption_context_hash.as_bytes().to_vec(),
             runtime_principal_id: ticket.runtime_principal_id.clone(),
@@ -122,6 +126,7 @@ where
 #[derive(Debug, Clone)]
 pub struct GoogleCloudKmsExternalCommandClient {
     command_path: PathBuf,
+    timeout: Duration,
 }
 
 impl GoogleCloudKmsExternalCommandClient {
@@ -132,7 +137,10 @@ impl GoogleCloudKmsExternalCommandClient {
                 "google cloud kms decrypt command path is required".to_string(),
             ));
         }
-        Ok(Self { command_path })
+        Ok(Self {
+            command_path,
+            timeout: GOOGLE_KMS_COMMAND_TIMEOUT,
+        })
     }
 
     pub fn from_env() -> MemoryResult<Option<Self>> {
@@ -153,8 +161,12 @@ impl GoogleCloudKmsExternalCommandClient {
 
 impl GoogleCloudKmsDecryptClient for GoogleCloudKmsExternalCommandClient {
     fn decrypt(&self, request: &GoogleCloudKmsDecryptRequest) -> MemoryResult<Vec<u8>> {
+        let crypto_key_version_id =
+            validate_google_cloud_kms_version(&request.crypto_key_id, &request.kek_version)?;
         let command_request = GoogleCloudKmsCommandRequest {
             crypto_key_id: request.crypto_key_id.clone(),
+            kek_version: request.kek_version.clone(),
+            crypto_key_version_id,
             ciphertext_base64: base64::engine::general_purpose::STANDARD
                 .encode(&request.ciphertext),
             additional_authenticated_data_base64: base64::engine::general_purpose::STANDARD
@@ -166,7 +178,7 @@ impl GoogleCloudKmsDecryptClient for GoogleCloudKmsExternalCommandClient {
             audit_id: request.audit_id.clone(),
         };
         let input = serde_json::to_vec(&command_request)?;
-        let mut child = Command::new(&self.command_path)
+        let child = Command::new(&self.command_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -177,29 +189,14 @@ impl GoogleCloudKmsDecryptClient for GoogleCloudKmsExternalCommandClient {
                     self.command_path.display()
                 ))
             })?;
-        let mut stdin = child.stdin.take().ok_or_else(|| {
-            MemoryError::InvalidConfig(
-                "google cloud kms decrypt command did not expose stdin".to_string(),
-            )
-        })?;
-        stdin.write_all(&input).map_err(|err| {
-            MemoryError::InvalidConfig(format!(
-                "failed to write google cloud kms decrypt request: {err}"
-            ))
-        })?;
-        drop(stdin);
-        let output = child.wait_with_output().map_err(|err| {
-            MemoryError::InvalidConfig(format!(
-                "failed to wait for google cloud kms decrypt command: {err}"
-            ))
-        })?;
+        let output = wait_for_kms_command(child, input, "decrypt", self.timeout)?;
         if !output.status.success() {
             return Err(MemoryError::InvalidConfig(format!(
                 "google cloud kms decrypt command exited with status {}",
                 output.status
             )));
         }
-        decode_plaintext_dek_output(&output.stdout)
+        decode_plaintext_dek_output(&output.stdout, &request.crypto_key_id, &request.kek_version)
     }
 }
 
@@ -252,6 +249,7 @@ pub fn memory_dek_unwrap_provider_from_config(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GoogleCloudKmsEncryptRequest {
     pub crypto_key_id: String,
+    pub kek_version: String,
     pub plaintext: Vec<u8>,
     pub additional_authenticated_data: Vec<u8>,
     pub runtime_principal_id: String,
@@ -262,6 +260,8 @@ pub struct GoogleCloudKmsEncryptRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct GoogleCloudKmsCommandEncryptRequest {
     crypto_key_id: String,
+    kek_version: String,
+    crypto_key_version_id: String,
     plaintext_base64: String,
     additional_authenticated_data_base64: String,
     runtime_principal_id: String,
@@ -320,11 +320,7 @@ where
             ));
         }
         validate_google_cloud_kms_key_id(&request.kek_id)?;
-        if is_wildcard_or_blank(&request.kek_version) {
-            return Err(MemoryError::InvalidConfig(
-                "google cloud kms wrap requires an explicit key version".to_string(),
-            ));
-        }
+        validate_google_cloud_kms_version(&request.kek_id, &request.kek_version)?;
         if request.plaintext_dek.len() != MEMORY_DEK_LEN {
             return Err(MemoryError::InvalidConfig(format!(
                 "memory DEK to wrap must be {MEMORY_DEK_LEN} bytes; got {}",
@@ -333,6 +329,7 @@ where
         }
         self.client.encrypt(&GoogleCloudKmsEncryptRequest {
             crypto_key_id: request.kek_id.clone(),
+            kek_version: request.kek_version.clone(),
             plaintext: request.plaintext_dek.clone(),
             additional_authenticated_data: request.encryption_context_hash.as_bytes().to_vec(),
             runtime_principal_id: request.runtime_principal_id.clone(),
@@ -345,6 +342,7 @@ where
 #[derive(Debug, Clone)]
 pub struct GoogleCloudKmsExternalEncryptCommandClient {
     command_path: PathBuf,
+    timeout: Duration,
 }
 
 impl GoogleCloudKmsExternalEncryptCommandClient {
@@ -355,7 +353,10 @@ impl GoogleCloudKmsExternalEncryptCommandClient {
                 "google cloud kms encrypt command path is required".to_string(),
             ));
         }
-        Ok(Self { command_path })
+        Ok(Self {
+            command_path,
+            timeout: GOOGLE_KMS_COMMAND_TIMEOUT,
+        })
     }
 
     pub fn from_env() -> MemoryResult<Option<Self>> {
@@ -376,8 +377,12 @@ impl GoogleCloudKmsExternalEncryptCommandClient {
 
 impl GoogleCloudKmsEncryptClient for GoogleCloudKmsExternalEncryptCommandClient {
     fn encrypt(&self, request: &GoogleCloudKmsEncryptRequest) -> MemoryResult<Vec<u8>> {
+        let crypto_key_version_id =
+            validate_google_cloud_kms_version(&request.crypto_key_id, &request.kek_version)?;
         let command_request = GoogleCloudKmsCommandEncryptRequest {
             crypto_key_id: request.crypto_key_id.clone(),
+            kek_version: request.kek_version.clone(),
+            crypto_key_version_id,
             plaintext_base64: base64::engine::general_purpose::STANDARD.encode(&request.plaintext),
             additional_authenticated_data_base64: base64::engine::general_purpose::STANDARD
                 .encode(&request.additional_authenticated_data),
@@ -386,7 +391,7 @@ impl GoogleCloudKmsEncryptClient for GoogleCloudKmsExternalEncryptCommandClient 
             audit_id: request.audit_id.clone(),
         };
         let input = serde_json::to_vec(&command_request)?;
-        let mut child = Command::new(&self.command_path)
+        let child = Command::new(&self.command_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -397,29 +402,14 @@ impl GoogleCloudKmsEncryptClient for GoogleCloudKmsExternalEncryptCommandClient 
                     self.command_path.display()
                 ))
             })?;
-        let mut stdin = child.stdin.take().ok_or_else(|| {
-            MemoryError::InvalidConfig(
-                "google cloud kms encrypt command did not expose stdin".to_string(),
-            )
-        })?;
-        stdin.write_all(&input).map_err(|err| {
-            MemoryError::InvalidConfig(format!(
-                "failed to write google cloud kms encrypt request: {err}"
-            ))
-        })?;
-        drop(stdin);
-        let output = child.wait_with_output().map_err(|err| {
-            MemoryError::InvalidConfig(format!(
-                "failed to wait for google cloud kms encrypt command: {err}"
-            ))
-        })?;
+        let output = wait_for_kms_command(child, input, "encrypt", self.timeout)?;
         if !output.status.success() {
             return Err(MemoryError::InvalidConfig(format!(
                 "google cloud kms encrypt command exited with status {}",
                 output.status
             )));
         }
-        decode_wrapped_dek_output(&output.stdout)
+        decode_wrapped_dek_output(&output.stdout, &request.crypto_key_id, &request.kek_version)
     }
 }
 
@@ -460,49 +450,217 @@ pub fn memory_dek_wrap_provider_from_config(
     )))
 }
 
-fn decode_wrapped_dek_output(output: &[u8]) -> MemoryResult<Vec<u8>> {
+struct KmsCommandOutput {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+}
+
+fn wait_for_kms_command(
+    mut child: Child,
+    input: Vec<u8>,
+    operation: &str,
+    timeout: Duration,
+) -> MemoryResult<KmsCommandOutput> {
+    let mut stdin = child.stdin.take().ok_or_else(|| {
+        MemoryError::InvalidConfig(format!(
+            "google cloud kms {operation} command did not expose stdin"
+        ))
+    })?;
+    let mut stdout = child.stdout.take().ok_or_else(|| {
+        MemoryError::InvalidConfig(format!(
+            "google cloud kms {operation} command did not expose stdout"
+        ))
+    })?;
+    let mut stderr = child.stderr.take().ok_or_else(|| {
+        MemoryError::InvalidConfig(format!(
+            "google cloud kms {operation} command did not expose stderr"
+        ))
+    })?;
+
+    let stdin_writer = thread::spawn(move || {
+        stdin.write_all(&input)?;
+        drop(stdin);
+        std::io::Result::Ok(())
+    });
+    let stdout_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes)?;
+        std::io::Result::Ok(bytes)
+    });
+    let stderr_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes)?;
+        std::io::Result::Ok(bytes)
+    });
+
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(|err| {
+            MemoryError::InvalidConfig(format!(
+                "failed to wait for google cloud kms {operation} command: {err}"
+            ))
+        })? {
+            break status;
+        }
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
+            let termination_error = match child.kill() {
+                Ok(()) => child.wait().err().map(|err| err.to_string()),
+                Err(kill_error) => match child.try_wait() {
+                    Ok(Some(_)) => None,
+                    Ok(None) => Some(format!("failed to terminate child: {kill_error}")),
+                    Err(wait_error) => Some(format!(
+                        "failed to terminate child: {kill_error}; failed to inspect child: {wait_error}"
+                    )),
+                },
+            };
+            let suffix = termination_error
+                .map(|error| format!("; {error}"))
+                .unwrap_or_default();
+            return Err(MemoryError::InvalidConfig(format!(
+                "google cloud kms {operation} command timed out after {}ms and was terminated{suffix}",
+                timeout.as_millis()
+            )));
+        }
+        thread::sleep(GOOGLE_KMS_COMMAND_POLL_INTERVAL.min(timeout.saturating_sub(elapsed)));
+    };
+
+    while !stdin_writer.is_finished()
+        || !stdout_reader.is_finished()
+        || !stderr_reader.is_finished()
+    {
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
+            return Err(MemoryError::InvalidConfig(format!(
+                "google cloud kms {operation} command I/O timed out after {}ms",
+                timeout.as_millis()
+            )));
+        }
+        thread::sleep(GOOGLE_KMS_COMMAND_POLL_INTERVAL.min(timeout.saturating_sub(elapsed)));
+    }
+
+    join_kms_io(stdin_writer, operation, "write stdin")?;
+    let stdout = join_kms_io(stdout_reader, operation, "read stdout")?;
+    let _stderr = join_kms_io(stderr_reader, operation, "read stderr")?;
+    Ok(KmsCommandOutput { status, stdout })
+}
+
+fn join_kms_io<T>(
+    handle: thread::JoinHandle<std::io::Result<T>>,
+    operation: &str,
+    action: &str,
+) -> MemoryResult<T> {
+    handle
+        .join()
+        .map_err(|_| {
+            MemoryError::InvalidConfig(format!(
+                "google cloud kms {operation} command I/O worker panicked while attempting to {action}"
+            ))
+        })?
+        .map_err(|err| {
+            MemoryError::InvalidConfig(format!(
+                "failed to {action} for google cloud kms {operation} command: {err}"
+            ))
+        })
+}
+
+fn decode_wrapped_dek_output(
+    output: &[u8],
+    crypto_key_id: &str,
+    kek_version: &str,
+) -> MemoryResult<Vec<u8>> {
     let trimmed = String::from_utf8_lossy(output).trim().to_string();
     if trimmed.is_empty() {
         return Err(MemoryError::InvalidConfig(
             "google cloud kms encrypt command returned empty output".to_string(),
         ));
     }
-    if let Ok(value) = serde_json::from_str::<Value>(&trimmed) {
-        for key in [
-            "wrapped_dek",
-            "wrapped_dek_base64",
-            "ciphertext",
-            "ciphertext_base64",
-        ] {
-            if let Some(encoded) = value.get(key).and_then(Value::as_str) {
-                return decode_dek_bytes(encoded);
-            }
+    let value = serde_json::from_str::<Value>(&trimmed).map_err(|_| {
+        MemoryError::InvalidConfig(
+            "google cloud kms encrypt command must return version-attested JSON".to_string(),
+        )
+    })?;
+    validate_attested_kek_version(&value, crypto_key_id, kek_version, "encrypt")?;
+    for key in [
+        "wrapped_dek",
+        "wrapped_dek_base64",
+        "ciphertext",
+        "ciphertext_base64",
+    ] {
+        if let Some(encoded) = value.get(key).and_then(Value::as_str) {
+            return decode_dek_bytes(encoded);
         }
-        return Err(MemoryError::InvalidConfig(
-            "google cloud kms encrypt command JSON must include wrapped_dek_base64".to_string(),
-        ));
     }
-    decode_dek_bytes(&trimmed)
+    Err(MemoryError::InvalidConfig(
+        "google cloud kms encrypt command JSON must include wrapped_dek_base64".to_string(),
+    ))
 }
 
-fn decode_plaintext_dek_output(output: &[u8]) -> MemoryResult<Vec<u8>> {
+fn decode_plaintext_dek_output(
+    output: &[u8],
+    crypto_key_id: &str,
+    kek_version: &str,
+) -> MemoryResult<Vec<u8>> {
     let trimmed = String::from_utf8_lossy(output).trim().to_string();
     if trimmed.is_empty() {
         return Err(MemoryError::InvalidConfig(
             "google cloud kms decrypt command returned empty output".to_string(),
         ));
     }
-    if let Ok(value) = serde_json::from_str::<Value>(&trimmed) {
-        for key in ["plaintext", "plaintext_base64", "dek", "dek_base64"] {
-            if let Some(encoded) = value.get(key).and_then(Value::as_str) {
-                return decode_dek_bytes(encoded);
-            }
+    let value = serde_json::from_str::<Value>(&trimmed).map_err(|_| {
+        MemoryError::InvalidConfig(
+            "google cloud kms decrypt command must return version-attested JSON".to_string(),
+        )
+    })?;
+    validate_attested_kek_version(&value, crypto_key_id, kek_version, "decrypt")?;
+    for key in ["plaintext", "plaintext_base64", "dek", "dek_base64"] {
+        if let Some(encoded) = value.get(key).and_then(Value::as_str) {
+            return decode_dek_bytes(encoded);
         }
-        return Err(MemoryError::InvalidConfig(
-            "google cloud kms decrypt command JSON must include plaintext_base64".to_string(),
-        ));
     }
-    decode_dek_bytes(&trimmed)
+    Err(MemoryError::InvalidConfig(
+        "google cloud kms decrypt command JSON must include plaintext_base64".to_string(),
+    ))
+}
+
+fn validate_attested_kek_version(
+    value: &Value,
+    crypto_key_id: &str,
+    configured_version: &str,
+    operation: &str,
+) -> MemoryResult<()> {
+    let versioned_resource = validate_google_cloud_kms_version(crypto_key_id, configured_version)?;
+    let version = versioned_resource
+        .rsplit('/')
+        .next()
+        .expect("validated version resource has a final segment");
+    let attestations = [
+        "kek_version",
+        "crypto_key_version",
+        "crypto_key_version_id",
+        "key_version",
+    ]
+    .into_iter()
+    .filter_map(|key| value.get(key).and_then(Value::as_str))
+    .collect::<Vec<_>>();
+    if attestations.is_empty() {
+        return Err(MemoryError::InvalidConfig(format!(
+            "google cloud kms {operation} command JSON must attest kek_version"
+        )));
+    }
+    for attested in attestations {
+        let attested = attested.trim();
+        if attested != configured_version.trim()
+            && attested != version
+            && attested != versioned_resource
+        {
+            return Err(MemoryError::InvalidConfig(format!(
+                "google cloud kms {operation} command attested key version `{attested}` but configured version is `{}`",
+                configured_version.trim()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn decode_wrapped_dek(raw: &str) -> MemoryResult<Vec<u8>> {
@@ -547,6 +705,35 @@ fn validate_google_cloud_kms_key_id(kek_id: &str) -> MemoryResult<()> {
     Ok(())
 }
 
+fn validate_google_cloud_kms_version(
+    kek_id: &str,
+    configured_version: &str,
+) -> MemoryResult<String> {
+    validate_google_cloud_kms_key_id(kek_id)?;
+    let value = configured_version.trim();
+    if is_wildcard_or_blank(value) {
+        return Err(MemoryError::InvalidConfig(
+            "google cloud kms requires an explicit key version".to_string(),
+        ));
+    }
+    let prefix = format!("{}/cryptoKeyVersions/", kek_id.trim());
+    if value.contains('/') {
+        let Some(version) = value.strip_prefix(&prefix) else {
+            return Err(MemoryError::InvalidConfig(
+                "google cloud kms key version resource must belong to the configured key"
+                    .to_string(),
+            ));
+        };
+        if is_wildcard_or_blank(version) || version.contains('/') {
+            return Err(MemoryError::InvalidConfig(
+                "google cloud kms key version resource must be explicit".to_string(),
+            ));
+        }
+        return Ok(value.to_string());
+    }
+    Ok(format!("{prefix}{value}"))
+}
+
 fn provider_is_local(provider: &str) -> bool {
     let normalized = normalize_provider_id(provider);
     normalized.is_empty() || normalized == "disabled" || normalized.starts_with("local")
@@ -584,6 +771,8 @@ fn decode_hex(raw: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::decrypt_broker::MemoryDekUnwrapTicket;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     #[derive(Debug, Clone)]
     struct FixtureGoogleKmsClient;
@@ -594,6 +783,7 @@ mod tests {
                 request.crypto_key_id,
                 "projects/acme/locations/global/keyRings/memory/cryptoKeys/finance"
             );
+            assert_eq!(request.kek_version, "1");
             assert_eq!(request.runtime_principal_id, "runtime-memory-decryptor");
             assert_eq!(
                 request.key_scope_id,
@@ -730,19 +920,195 @@ mod tests {
     #[test]
     fn command_output_accepts_json_plaintext_base64() {
         let encoded = base64::engine::general_purpose::STANDARD.encode([9u8; MEMORY_DEK_LEN]);
-        let out = format!(r#"{{"plaintext_base64":"{encoded}"}}"#);
+        let out = format!(r#"{{"plaintext_base64":"{encoded}","kek_version":"1"}}"#);
         assert_eq!(
-            decode_plaintext_dek_output(out.as_bytes()).unwrap(),
+            decode_plaintext_dek_output(
+                out.as_bytes(),
+                "projects/acme/locations/global/keyRings/memory/cryptoKeys/finance",
+                "1",
+            )
+            .unwrap(),
             vec![9u8; MEMORY_DEK_LEN]
         );
     }
 
     #[test]
     fn command_output_decodes_ambiguous_hex_plaintext_as_hex() {
-        let out = "aa".repeat(MEMORY_DEK_LEN);
+        let encoded = "aa".repeat(MEMORY_DEK_LEN);
+        let out = format!(
+            r#"{{"plaintext":"{encoded}","crypto_key_version_id":"projects/acme/locations/global/keyRings/memory/cryptoKeys/finance/cryptoKeyVersions/1"}}"#
+        );
         assert_eq!(
-            decode_plaintext_dek_output(out.as_bytes()).unwrap(),
+            decode_plaintext_dek_output(
+                out.as_bytes(),
+                "projects/acme/locations/global/keyRings/memory/cryptoKeys/finance",
+                "1",
+            )
+            .unwrap(),
             vec![0xaau8; MEMORY_DEK_LEN]
         );
+    }
+
+    #[test]
+    fn command_output_rejects_unattested_legacy_bytes() {
+        let out = "aa".repeat(MEMORY_DEK_LEN);
+        let error = decode_plaintext_dek_output(
+            out.as_bytes(),
+            "projects/acme/locations/global/keyRings/memory/cryptoKeys/finance",
+            "1",
+        )
+        .expect_err("unattested output must fail closed");
+        assert!(error.to_string().contains("version-attested JSON"));
+    }
+
+    #[cfg(unix)]
+    fn write_executable_script(path: &Path, body: &str) {
+        std::fs::write(path, body).expect("write KMS fixture");
+        let mut permissions = std::fs::metadata(path)
+            .expect("fixture metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(path, permissions).expect("make fixture executable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_decrypt_rejects_rotation_mismatch_and_passes_configured_version() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script_path = dir.path().join("decrypt-kms.sh");
+        let request_path = dir.path().join("decrypt-request.json");
+        let plaintext = base64::engine::general_purpose::STANDARD.encode([7u8; MEMORY_DEK_LEN]);
+        write_executable_script(
+            &script_path,
+            &format!(
+                "#!/bin/sh\ncat > '{}'\nprintf '%s\\n' '{}'\n",
+                request_path.display(),
+                format!(r#"{{"plaintext_base64":"{plaintext}","kek_version":"2"}}"#)
+            ),
+        );
+        let client = GoogleCloudKmsExternalCommandClient::new(&script_path).expect("client");
+        let request = GoogleCloudKmsDecryptRequest {
+            crypto_key_id: "projects/acme/locations/global/keyRings/memory/cryptoKeys/finance"
+                .to_string(),
+            kek_version: "1".to_string(),
+            ciphertext: vec![1u8; MEMORY_DEK_LEN],
+            additional_authenticated_data: b"ctx-hash".to_vec(),
+            runtime_principal_id: "runtime-memory-decryptor".to_string(),
+            principal_id: "kb-mcp-retrieval-gateway".to_string(),
+            purpose: MemoryDecryptPurpose::RetrievalGateway,
+            key_scope_id: "tandem/memory/acme/finance/prod/internal".to_string(),
+            audit_id: "audit-rotation".to_string(),
+        };
+
+        let error = client
+            .decrypt(&request)
+            .expect_err("rotated decrypt version must not be accepted");
+        assert!(error.to_string().contains("attested key version `2`"));
+        let command_request: Value = serde_json::from_slice(
+            &std::fs::read(&request_path).expect("captured decrypt request"),
+        )
+        .expect("decrypt request JSON");
+        assert_eq!(command_request["kek_version"], "1");
+        assert_eq!(
+            command_request["crypto_key_version_id"],
+            "projects/acme/locations/global/keyRings/memory/cryptoKeys/finance/cryptoKeyVersions/1"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_encrypt_rejects_rotation_mismatch_and_passes_configured_version() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script_path = dir.path().join("encrypt-kms.sh");
+        let request_path = dir.path().join("encrypt-request.json");
+        let wrapped = base64::engine::general_purpose::STANDARD.encode([8u8; MEMORY_DEK_LEN]);
+        write_executable_script(
+            &script_path,
+            &format!(
+                "#!/bin/sh\ncat > '{}'\nprintf '%s\\n' '{}'\n",
+                request_path.display(),
+                format!(r#"{{"wrapped_dek_base64":"{wrapped}","kek_version":"2"}}"#)
+            ),
+        );
+        let client = GoogleCloudKmsExternalEncryptCommandClient::new(&script_path).expect("client");
+        let request = GoogleCloudKmsEncryptRequest {
+            crypto_key_id: "projects/acme/locations/global/keyRings/memory/cryptoKeys/finance"
+                .to_string(),
+            kek_version: "1".to_string(),
+            plaintext: vec![1u8; MEMORY_DEK_LEN],
+            additional_authenticated_data: b"ctx-hash".to_vec(),
+            runtime_principal_id: "runtime-memory-encryptor".to_string(),
+            key_scope_id: "tandem/memory/acme/finance/prod/internal".to_string(),
+            audit_id: "audit-rotation".to_string(),
+        };
+
+        let error = client
+            .encrypt(&request)
+            .expect_err("rotated encrypt version must not be accepted");
+        assert!(error.to_string().contains("attested key version `2`"));
+        let command_request: Value = serde_json::from_slice(
+            &std::fs::read(&request_path).expect("captured encrypt request"),
+        )
+        .expect("encrypt request JSON");
+        assert_eq!(command_request["kek_version"], "1");
+        assert_eq!(
+            command_request["crypto_key_version_id"],
+            "projects/acme/locations/global/keyRings/memory/cryptoKeys/finance/cryptoKeyVersions/1"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_kms_command_times_out_and_terminates_child() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script_path = dir.path().join("slow-kms.sh");
+        let pid_path = dir.path().join("slow-kms.pid");
+        std::fs::write(
+            &script_path,
+            format!(
+                "#!/bin/sh\necho $$ > '{}'\nexec sleep 30\n",
+                pid_path.display()
+            ),
+        )
+        .expect("write KMS fixture");
+        let mut permissions = std::fs::metadata(&script_path)
+            .expect("fixture metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&script_path, permissions).expect("make fixture executable");
+
+        let client = GoogleCloudKmsExternalCommandClient {
+            command_path: script_path,
+            timeout: Duration::from_millis(100),
+        };
+        let request = GoogleCloudKmsDecryptRequest {
+            crypto_key_id: "projects/acme/locations/global/keyRings/memory/cryptoKeys/finance"
+                .to_string(),
+            kek_version: "1".to_string(),
+            ciphertext: vec![1u8; MEMORY_DEK_LEN],
+            additional_authenticated_data: b"ctx-hash".to_vec(),
+            runtime_principal_id: "runtime-memory-decryptor".to_string(),
+            principal_id: "kb-mcp-retrieval-gateway".to_string(),
+            purpose: MemoryDecryptPurpose::RetrievalGateway,
+            key_scope_id: "tandem/memory/acme/finance/prod/internal".to_string(),
+            audit_id: "audit-timeout".to_string(),
+        };
+
+        let started = Instant::now();
+        let error = client.decrypt(&request).expect_err("command must time out");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "timeout was not bounded"
+        );
+        assert!(error.to_string().contains("timed out after 100ms"));
+
+        let pid = std::fs::read_to_string(&pid_path).expect("fixture pid");
+        let still_running = Command::new("kill")
+            .args(["-0", pid.trim()])
+            .stderr(Stdio::null())
+            .status()
+            .expect("inspect fixture process")
+            .success();
+        assert!(!still_running, "timed-out KMS child was not terminated");
     }
 }

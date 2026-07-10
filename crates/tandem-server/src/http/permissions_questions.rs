@@ -62,7 +62,9 @@ pub(super) async fn reply_permission(
             )),
         ));
     };
-    append_permission_decision_audit(&state, &tenant_context, &request_principal, &outcome).await;
+    append_permission_decision_audit(&state, &tenant_context, &request_principal, &outcome)
+        .await
+        .map_err(super::protected_audit_error_envelope)?;
     Ok(Json(json!({
         "ok": true,
         "requestID": id,
@@ -97,8 +99,10 @@ pub(super) async fn approve_tool_by_call(
             )),
         ));
     };
-    append_permission_decision_audit(&state, &tenant_context, &request_principal, &outcome).await;
-    let _ = crate::audit::append_protected_audit_event(
+    append_permission_decision_audit(&state, &tenant_context, &request_principal, &outcome)
+        .await
+        .map_err(super::protected_audit_error_envelope)?;
+    crate::audit::append_protected_audit_event(
         &state,
         "approval.granted",
         &tandem_types::TenantContext::local_implicit(),
@@ -109,7 +113,8 @@ pub(super) async fn approve_tool_by_call(
             "decision": "allow",
         }),
     )
-    .await;
+    .await
+    .map_err(super::protected_audit_error_envelope)?;
     Ok(Json(json!({"ok": true})))
 }
 
@@ -137,8 +142,10 @@ pub(super) async fn deny_tool_by_call(
             )),
         ));
     };
-    append_permission_decision_audit(&state, &tenant_context, &request_principal, &outcome).await;
-    let _ = crate::audit::append_protected_audit_event(
+    append_permission_decision_audit(&state, &tenant_context, &request_principal, &outcome)
+        .await
+        .map_err(super::protected_audit_error_envelope)?;
+    crate::audit::append_protected_audit_event(
         &state,
         "approval.denied",
         &tandem_types::TenantContext::local_implicit(),
@@ -149,7 +156,8 @@ pub(super) async fn deny_tool_by_call(
             "decision": "deny",
         }),
     )
-    .await;
+    .await
+    .map_err(super::protected_audit_error_envelope)?;
     Ok(Json(json!({"ok": true})))
 }
 
@@ -165,8 +173,8 @@ async fn append_permission_decision_audit(
     tenant_context: &TenantContext,
     request_principal: &RequestPrincipal,
     outcome: &tandem_core::PermissionReplyOutcome,
-) {
-    let _ = crate::audit::append_protected_audit_event(
+) -> anyhow::Result<()> {
+    crate::audit::append_protected_audit_event(
         state,
         "permission.decision",
         tenant_context,
@@ -199,7 +207,7 @@ async fn append_permission_decision_audit(
             })),
         }),
     )
-    .await;
+    .await
 }
 
 pub(super) async fn list_questions(State(state): State<AppState>) -> Json<Value> {
@@ -208,6 +216,8 @@ pub(super) async fn list_questions(State(state): State<AppState>) -> Json<Value>
 
 pub(super) async fn reply_question(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
     Path(id): Path<String>,
     Json(_input): Json<QuestionReplyInput>,
 ) -> Result<Json<Value>, StatusCode> {
@@ -217,6 +227,15 @@ pub(super) async fn reply_question(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if ok {
+        crate::audit::append_protected_audit_event(
+            &state,
+            "question.replied",
+            &tenant_context,
+            permission_actor(&request_principal),
+            json!({"questionID": id, "decision": "answered"}),
+        )
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         state.event_bus.publish(EngineEvent::new(
             "question.replied",
             json!({"id": id, "ok": true}),
@@ -227,6 +246,8 @@ pub(super) async fn reply_question(
 
 pub(super) async fn reject_question(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
     let ok = state
@@ -235,6 +256,15 @@ pub(super) async fn reject_question(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if ok {
+        crate::audit::append_protected_audit_event(
+            &state,
+            "question.rejected",
+            &tenant_context,
+            permission_actor(&request_principal),
+            json!({"questionID": id, "decision": "rejected"}),
+        )
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         state.event_bus.publish(EngineEvent::new(
             "question.replied",
             json!({"id": id, "ok": false}),
@@ -245,6 +275,8 @@ pub(super) async fn reject_question(
 
 pub(super) async fn answer_question(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+    Extension(request_principal): Extension<RequestPrincipal>,
     Path((_session_id, question_id)): Path<(String, String)>,
     Json(input): Json<QuestionAnswerInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<ErrorEnvelope>)> {
@@ -270,11 +302,22 @@ pub(super) async fn answer_question(
             )),
         ));
     }
-    if ok {
-        state.event_bus.publish(EngineEvent::new(
-            "question.replied",
-            json!({"id": question_id, "ok": true, "answer": input.answer}),
-        ));
-    }
+    crate::audit::append_protected_audit_event(
+        &state,
+        "question.answered",
+        &tenant_context,
+        permission_actor(&request_principal),
+        json!({
+            "questionID": question_id,
+            "decision": "answered",
+            "answerProvided": input.answer.is_some(),
+        }),
+    )
+    .await
+    .map_err(super::protected_audit_error_envelope)?;
+    state.event_bus.publish(EngineEvent::new(
+        "question.replied",
+        json!({"id": question_id, "ok": true, "answer": input.answer}),
+    ));
     Ok(Json(json!({"ok": true})))
 }

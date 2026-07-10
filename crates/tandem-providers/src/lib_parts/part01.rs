@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::{pin::Pin, str};
 
@@ -12,7 +13,15 @@ use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration};
 use tokio_util::sync::CancellationToken;
 
-use tandem_types::{ModelInfo, ProviderInfo, SamplingParams, ToolMode, ToolSchema};
+use tandem_types::{ModelInfo, ProviderInfo, SamplingParams, TenantContext, ToolMode, ToolSchema};
+
+tokio::task_local! {
+    static PROVIDER_TENANT_CONTEXT: TenantContext;
+}
+
+tokio::task_local! {
+    static PROVIDER_AUTH_RECOVERY: ProviderAuthRecovery;
+}
 
 fn provider_max_tokens_for(provider_id: &str) -> u32 {
     if provider_id.eq_ignore_ascii_case("openai-codex") {
@@ -129,11 +138,7 @@ fn apply_openai_responses_sampling(
 /// Apply generic sampling parameters onto an Anthropic Messages request body.
 /// Anthropic always requires `max_tokens`, so an unset value leaves the
 /// existing default in place; a set value overrides it.
-fn apply_anthropic_sampling(
-    body: &mut serde_json::Value,
-    model: &str,
-    sampling: SamplingParams,
-) {
+fn apply_anthropic_sampling(body: &mut serde_json::Value, model: &str, sampling: SamplingParams) {
     if let Some(temperature) = sampling.temperature {
         if let Some(resolved) = resolve_temperature("anthropic", model, temperature) {
             body["temperature"] = json!(resolved);
@@ -169,6 +174,18 @@ fn format_openai_error_response(status: reqwest::StatusCode, text: &str) -> Stri
                 truncate_for_error(text, 500)
             )
         })
+}
+
+fn openai_response_error(status: reqwest::StatusCode, text: &str) -> anyhow::Error {
+    let detail = format_openai_error_response(status, text);
+    if matches!(
+        status,
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+    ) {
+        ProviderAuthenticationError::new(status.as_u16(), detail).into()
+    } else {
+        anyhow::anyhow!(detail)
+    }
 }
 
 fn openrouter_affordability_retry_max_tokens(
@@ -659,6 +676,17 @@ pub struct TokenUsage {
 pub trait Provider: Send + Sync {
     fn info(&self) -> ProviderInfo;
     async fn complete(&self, prompt: &str, model_override: Option<&str>) -> anyhow::Result<String>;
+    async fn complete_with_auth_override(
+        &self,
+        prompt: &str,
+        model_override: Option<&str>,
+        auth_override: ProviderAuthOverride,
+    ) -> anyhow::Result<String> {
+        if !matches!(auth_override, ProviderAuthOverride::Inherit) {
+            anyhow::bail!("provider does not support tenant-scoped authentication")
+        }
+        self.complete(prompt, model_override).await
+    }
     async fn stream(
         &self,
         messages: Vec<ChatMessage>,
@@ -683,12 +711,127 @@ pub trait Provider: Send + Sync {
         ]);
         Ok(Box::pin(stream))
     }
+
+    async fn stream_with_auth_override(
+        &self,
+        messages: Vec<ChatMessage>,
+        model_override: Option<&str>,
+        tool_mode: ToolMode,
+        tools: Option<Vec<ToolSchema>>,
+        sampling: SamplingParams,
+        cancel: CancellationToken,
+        auth_override: ProviderAuthOverride,
+    ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
+        if !matches!(auth_override, ProviderAuthOverride::Inherit) {
+            anyhow::bail!("provider does not support tenant-scoped authentication")
+        }
+        self.stream(messages, model_override, tool_mode, tools, sampling, cancel)
+            .await
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum ProviderAuthOverride {
+    Inherit,
+    Suppress,
+    Bearer(String),
+}
+
+/// Typed provider-dispatch failure used to constrain OAuth recovery to the
+/// request boundary. Callers must not infer retry safety from a later engine
+/// error string because the engine may already have executed tools.
+#[derive(Debug)]
+pub struct ProviderAuthenticationError {
+    status: u16,
+    detail: String,
+}
+
+impl ProviderAuthenticationError {
+    pub fn new(status: u16, detail: impl Into<String>) -> Self {
+        Self {
+            status,
+            detail: detail.into(),
+        }
+    }
+
+    pub fn status(&self) -> u16 {
+        self.status
+    }
+}
+
+impl std::fmt::Display for ProviderAuthenticationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for ProviderAuthenticationError {}
+
+type ProviderAuthRecoveryFuture =
+    Pin<Box<dyn std::future::Future<Output = anyhow::Result<bool>> + Send + 'static>>;
+
+/// One-shot, task-scoped callback installed by the server around a tenant's
+/// provider execution. The shared attempt flag enforces one refresh across all
+/// provider dispatches in that execution scope.
+#[derive(Clone)]
+pub struct ProviderAuthRecovery {
+    handler: Arc<dyn Fn(String) -> ProviderAuthRecoveryFuture + Send + Sync>,
+    attempted: Arc<AtomicBool>,
+}
+
+impl ProviderAuthRecovery {
+    pub fn new<Handler, HandlerFuture>(handler: Handler) -> Self
+    where
+        Handler: Fn(String) -> HandlerFuture + Send + Sync + 'static,
+        HandlerFuture: std::future::Future<Output = anyhow::Result<bool>> + Send + 'static,
+    {
+        Self {
+            handler: Arc::new(move |provider_id| Box::pin(handler(provider_id))),
+            attempted: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    async fn attempt(&self, provider_id: &str) -> anyhow::Result<bool> {
+        if self.attempted.swap(true, Ordering::AcqRel) {
+            return Ok(false);
+        }
+        (self.handler)(provider_id.to_string()).await
+    }
+}
+
+impl std::fmt::Debug for ProviderAuthRecovery {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProviderAuthRecovery")
+            .field("attempted", &self.attempted.load(Ordering::Acquire))
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for ProviderAuthOverride {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Inherit => formatter.write_str("Inherit"),
+            Self::Suppress => formatter.write_str("Suppress"),
+            Self::Bearer(_) => formatter.write_str("Bearer(<redacted>)"),
+        }
+    }
 }
 
 #[derive(Clone)]
 pub struct ProviderRegistry {
     providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     default_provider: Arc<RwLock<Option<String>>>,
+    tenant_bearer_tokens: Arc<RwLock<HashMap<String, String>>>,
+}
+
+/// Provider/model route resolved before a guarded egress evaluation. Callers
+/// evaluate this exact route and then dispatch with its explicit provider id,
+/// preventing default-provider changes from invalidating classification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedProviderRoute {
+    pub provider_id: String,
+    pub model_id: Option<String>,
 }
 
 impl ProviderRegistry {
@@ -697,6 +840,121 @@ impl ProviderRegistry {
         Self {
             providers: Arc::new(RwLock::new(providers)),
             default_provider: Arc::new(RwLock::new(config.default_provider)),
+            tenant_bearer_tokens: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    pub async fn scope_tenant_provider_auth<F>(
+        &self,
+        tenant_context: TenantContext,
+        future: F,
+    ) -> F::Output
+    where
+        F: std::future::Future,
+    {
+        PROVIDER_TENANT_CONTEXT.scope(tenant_context, future).await
+    }
+
+    pub async fn scope_tenant_provider_auth_with_recovery<F>(
+        &self,
+        tenant_context: TenantContext,
+        recovery: ProviderAuthRecovery,
+        future: F,
+    ) -> F::Output
+    where
+        F: std::future::Future,
+    {
+        PROVIDER_TENANT_CONTEXT
+            .scope(
+                tenant_context,
+                PROVIDER_AUTH_RECOVERY.scope(recovery, future),
+            )
+            .await
+    }
+
+    pub async fn set_tenant_provider_bearer_token(
+        &self,
+        tenant_context: &TenantContext,
+        provider_id: &str,
+        bearer_token: String,
+    ) {
+        let token = bearer_token.trim().to_string();
+        if token.is_empty() {
+            self.clear_tenant_provider_bearer_token(tenant_context, provider_id)
+                .await;
+            return;
+        }
+        self.tenant_bearer_tokens
+            .write()
+            .await
+            .insert(tenant_provider_auth_key(tenant_context, provider_id), token);
+    }
+
+    pub async fn clear_tenant_provider_bearer_token(
+        &self,
+        tenant_context: &TenantContext,
+        provider_id: &str,
+    ) {
+        self.tenant_bearer_tokens
+            .write()
+            .await
+            .remove(&tenant_provider_auth_key(tenant_context, provider_id));
+    }
+
+    pub async fn tenant_provider_auth_is_loaded(
+        &self,
+        tenant_context: &TenantContext,
+        provider_id: &str,
+    ) -> bool {
+        self.tenant_bearer_tokens
+            .read()
+            .await
+            .contains_key(&tenant_provider_auth_key(tenant_context, provider_id))
+    }
+
+    async fn auth_override_for_provider(&self, provider_id: &str) -> ProviderAuthOverride {
+        if !provider_id.eq_ignore_ascii_case("openai-codex") {
+            return ProviderAuthOverride::Inherit;
+        }
+        let Some(tenant_context) = PROVIDER_TENANT_CONTEXT.try_with(Clone::clone).ok() else {
+            return ProviderAuthOverride::Inherit;
+        };
+        if let Some(token) = self
+            .tenant_bearer_tokens
+            .read()
+            .await
+            .get(&tenant_provider_auth_key(&tenant_context, provider_id))
+            .cloned()
+        {
+            ProviderAuthOverride::Bearer(token)
+        } else if tenant_context.is_local_implicit() {
+            ProviderAuthOverride::Inherit
+        } else {
+            // An explicit tenant must never inherit a local/global Codex token.
+            ProviderAuthOverride::Suppress
+        }
+    }
+
+    async fn recover_typed_auth_failure(&self, provider_id: &str, error: &anyhow::Error) -> bool {
+        if !provider_id.eq_ignore_ascii_case("openai-codex")
+            || error
+                .downcast_ref::<ProviderAuthenticationError>()
+                .is_none()
+        {
+            return false;
+        }
+        let Ok(recovery) = PROVIDER_AUTH_RECOVERY.try_with(Clone::clone) else {
+            return false;
+        };
+        match recovery.attempt(provider_id).await {
+            Ok(recovered) => recovered,
+            Err(_) => {
+                tracing::warn!(
+                    provider_id,
+                    "provider authentication recovery callback failed"
+                );
+                false
+            }
         }
     }
 
@@ -716,8 +974,7 @@ impl ProviderRegistry {
     }
 
     pub async fn default_complete(&self, prompt: &str) -> anyhow::Result<String> {
-        let provider = self.select_provider(None).await?;
-        provider.complete(prompt, None).await
+        self.complete_for_provider(None, prompt, None).await
     }
 
     pub async fn complete_for_provider(
@@ -727,7 +984,29 @@ impl ProviderRegistry {
         model_id: Option<&str>,
     ) -> anyhow::Result<String> {
         let provider = self.select_provider(provider_id).await?;
-        provider.complete(prompt, model_id).await
+        let resolved_provider_id = provider.info().id;
+        let auth_override = self
+            .auth_override_for_provider(resolved_provider_id.as_str())
+            .await;
+        match provider
+            .complete_with_auth_override(prompt, model_id, auth_override)
+            .await
+        {
+            Ok(output) => Ok(output),
+            Err(error)
+                if self
+                    .recover_typed_auth_failure(resolved_provider_id.as_str(), &error)
+                    .await =>
+            {
+                let auth_override = self
+                    .auth_override_for_provider(resolved_provider_id.as_str())
+                    .await;
+                provider
+                    .complete_with_auth_override(prompt, model_id, auth_override)
+                    .await
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Complete a prompt using the cheapest available configured provider.
@@ -744,31 +1023,49 @@ impl ProviderRegistry {
         provider_override: Option<&str>,
         model_override: Option<&str>,
     ) -> anyhow::Result<String> {
-        // If the user has explicitly pinned a provider, use it directly.
-        if let Some(pid) = provider_override {
+        let route = self
+            .resolve_cheapest_completion_route(provider_override, model_override)
+            .await?;
+        self.complete_for_provider(
+            Some(route.provider_id.as_str()),
+            prompt,
+            route.model_id.as_deref(),
+        )
+        .await
+    }
+
+    /// Resolve the concrete provider selected by an optional provider id.
+    pub async fn resolve_provider_route(
+        &self,
+        provider_id: Option<&str>,
+        model_id: Option<&str>,
+    ) -> anyhow::Result<ResolvedProviderRoute> {
+        let provider = self.select_provider(provider_id).await?;
+        Ok(ResolvedProviderRoute {
+            provider_id: provider.info().id,
+            model_id: model_id.map(str::to_string),
+        })
+    }
+
+    /// Resolve the exact route used by `complete_cheapest`, including the
+    /// OpenRouter free-model default.
+    pub async fn resolve_cheapest_completion_route(
+        &self,
+        provider_override: Option<&str>,
+        model_override: Option<&str>,
+    ) -> anyhow::Result<ResolvedProviderRoute> {
+        if provider_override.is_some() {
             return self
-                .complete_for_provider(Some(pid), prompt, model_override)
+                .resolve_provider_route(provider_override, model_override)
                 .await;
         }
-
         let best_provider = self.select_cheapest_provider_id().await;
-        let openrouter_free_model = "meta-llama/llama-3.3-70b-instruct:free";
-
-        match best_provider {
-            Some(pid @ "openrouter") if model_override.is_none() => {
-                self.complete_for_provider(Some(pid), prompt, Some(openrouter_free_model))
-                    .await
-            }
-            Some(pid) => {
-                self.complete_for_provider(Some(pid), prompt, model_override)
-                    .await
-            }
-            None => {
-                // No known cheap provider configured — fall back to default.
-                self.complete_for_provider(None, prompt, model_override)
-                    .await
-            }
-        }
+        let model_id = if best_provider == Some("openrouter") && model_override.is_none() {
+            Some("meta-llama/llama-3.3-70b-instruct:free")
+        } else {
+            model_override
+        };
+        self.resolve_provider_route(best_provider, model_id).await
     }
 
     /// Returns the string ID of the cheapest available configured provider.
@@ -826,9 +1123,48 @@ impl ProviderRegistry {
         cancel: CancellationToken,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
         let provider = self.select_provider(provider_id).await?;
-        provider
-            .stream(messages, model_id, tool_mode, tools, sampling, cancel)
+        let resolved_provider_id = provider.info().id;
+        let auth_override = self
+            .auth_override_for_provider(resolved_provider_id.as_str())
+            .await;
+        let retry_messages = messages.clone();
+        let retry_tools = tools.clone();
+        let retry_cancel = cancel.clone();
+        match provider
+            .stream_with_auth_override(
+                messages,
+                model_id,
+                tool_mode.clone(),
+                tools,
+                sampling,
+                cancel,
+                auth_override,
+            )
             .await
+        {
+            Ok(stream) => Ok(stream),
+            Err(error)
+                if self
+                    .recover_typed_auth_failure(resolved_provider_id.as_str(), &error)
+                    .await =>
+            {
+                let auth_override = self
+                    .auth_override_for_provider(resolved_provider_id.as_str())
+                    .await;
+                provider
+                    .stream_with_auth_override(
+                        retry_messages,
+                        model_id,
+                        tool_mode,
+                        retry_tools,
+                        sampling,
+                        retry_cancel,
+                        auth_override,
+                    )
+                    .await
+            }
+            Err(error) => Err(error),
+        }
     }
 
     async fn select_provider(
@@ -870,6 +1206,16 @@ impl ProviderRegistry {
         *self.providers.write().await = providers;
         *self.default_provider.write().await = default_provider;
     }
+}
+
+fn tenant_provider_auth_key(tenant_context: &TenantContext, provider_id: &str) -> String {
+    serde_json::to_string(&(
+        tenant_context.org_id.as_str(),
+        tenant_context.workspace_id.as_str(),
+        tenant_context.deployment_id.as_deref(),
+        provider_id.trim().to_ascii_lowercase(),
+    ))
+    .expect("tenant provider auth key is serializable")
 }
 
 fn build_providers(config: &AppConfig) -> Vec<Arc<dyn Provider>> {

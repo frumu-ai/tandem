@@ -1,6 +1,10 @@
 use super::*;
 
 use tempfile::tempdir;
+use tokio::sync::Barrier;
+
+const CROSS_PROCESS_WORKER_TEST: &str =
+    "provider_auth_store::provider_auth_store_tests::cross_process_credential_mutation_worker";
 
 #[test]
 fn provider_auth_for_tenant_is_isolated_per_tenant_and_from_local() {
@@ -66,6 +70,300 @@ fn provider_auth_isolates_deployments_within_same_org_workspace() {
         load_provider_auth_for_tenant_in_dir(dir.path(), &deployment_two).is_empty(),
         "a different deployment in the same org/workspace must not read the credential"
     );
+}
+
+fn oauth_credential(label: &str) -> OAuthProviderCredential {
+    OAuthProviderCredential {
+        provider_id: "openai-codex".to_string(),
+        access_token: format!("access-{label}"),
+        refresh_token: format!("refresh-{label}"),
+        expires_at_ms: 2_000_000_000_000,
+        account_id: Some(format!("account-{label}")),
+        email: None,
+        display_name: None,
+        managed_by: "tandem".to_string(),
+        api_key: Some(format!("api-{label}")),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_serialized_provider_credential_mutations_preserve_every_tenant() {
+    const MUTATION_COUNT: usize = 32;
+
+    let dir = tempdir().expect("tempdir");
+    let security_dir = dir.path().to_path_buf();
+    for index in (1..MUTATION_COUNT).step_by(2) {
+        let tenant =
+            TenantContext::explicit(format!("org-{index}"), format!("workspace-{index}"), None);
+        set_provider_oauth_credential_for_tenant_in_dir_serialized(
+            &security_dir,
+            &tenant,
+            "openai-codex",
+            oauth_credential(&format!("stale-{index}")),
+        )
+        .await
+        .expect("seed credential to delete");
+    }
+
+    let barrier = std::sync::Arc::new(Barrier::new(MUTATION_COUNT));
+    let mut tasks = Vec::with_capacity(MUTATION_COUNT);
+
+    for index in 0..MUTATION_COUNT {
+        let security_dir = security_dir.clone();
+        let barrier = barrier.clone();
+        tasks.push(tokio::spawn(async move {
+            let tenant =
+                TenantContext::explicit(format!("org-{index}"), format!("workspace-{index}"), None);
+            barrier.wait().await;
+            if index % 2 == 0 {
+                set_provider_oauth_credential_for_tenant_in_dir_serialized(
+                    &security_dir,
+                    &tenant,
+                    "openai-codex",
+                    oauth_credential(&index.to_string()),
+                )
+                .await
+                .expect("store concurrent credential");
+            } else {
+                assert!(delete_provider_credential_for_tenant_in_dir_serialized(
+                    &security_dir,
+                    &tenant,
+                    "openai-codex",
+                )
+                .await
+                .expect("delete concurrent credential"));
+            }
+        }));
+    }
+
+    for task in tasks {
+        task.await.expect("credential mutation task");
+    }
+
+    for index in 0..MUTATION_COUNT {
+        let tenant =
+            TenantContext::explicit(format!("org-{index}"), format!("workspace-{index}"), None);
+        let stored = load_provider_oauth_credential_for_tenant_in_dir(
+            &security_dir,
+            &tenant,
+            "openai-codex",
+        );
+        if index % 2 == 0 {
+            assert_eq!(
+                stored
+                    .unwrap_or_else(|| panic!("credential for tenant {index}"))
+                    .access_token,
+                format!("access-{index}")
+            );
+        } else {
+            assert!(stored.is_none(), "deleted credential for tenant {index}");
+        }
+    }
+}
+
+#[test]
+fn cross_process_credential_mutation_worker() {
+    let Ok(action) = std::env::var("TANDEM_TEST_PROVIDER_CREDENTIAL_WORKER") else {
+        return;
+    };
+    let security_dir = PathBuf::from(
+        std::env::var_os("TANDEM_TEST_PROVIDER_CREDENTIAL_DIR")
+            .expect("worker credential directory"),
+    );
+    let label =
+        std::env::var("TANDEM_TEST_PROVIDER_CREDENTIAL_LABEL").expect("worker credential label");
+    let tenant = TenantContext::explicit(format!("org-{label}"), "workspace", None);
+
+    match action.as_str() {
+        "set" => {
+            set_provider_oauth_credential_for_tenant_in_dir(
+                &security_dir,
+                &tenant,
+                "openai-codex",
+                oauth_credential(&label),
+            )
+            .expect("worker stores credential");
+        }
+        "stale-refresh" => {
+            let expected = load_provider_oauth_credential_for_tenant_in_dir(
+                &security_dir,
+                &tenant,
+                "openai-codex",
+            )
+            .expect("worker loads original credential");
+            let ready_path = PathBuf::from(
+                std::env::var_os("TANDEM_TEST_PROVIDER_CREDENTIAL_READY")
+                    .expect("worker ready path"),
+            );
+            let release_path = PathBuf::from(
+                std::env::var_os("TANDEM_TEST_PROVIDER_CREDENTIAL_RELEASE")
+                    .expect("worker release path"),
+            );
+            let result_path = PathBuf::from(
+                std::env::var_os("TANDEM_TEST_PROVIDER_CREDENTIAL_RESULT")
+                    .expect("worker result path"),
+            );
+            std::fs::write(&ready_path, b"ready").expect("signal stale refresh read");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !release_path.exists() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting to release stale refresh"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let swapped = compare_and_set_provider_oauth_credential_for_tenant_in_dir(
+                &security_dir,
+                &tenant,
+                "openai-codex",
+                &expected,
+                Some(oauth_credential("stale-replacement")),
+            )
+            .expect("worker compare-and-set");
+            std::fs::write(result_path, if swapped { "swapped" } else { "stale" })
+                .expect("write stale refresh result");
+        }
+        other => panic!("unknown credential worker action {other}"),
+    }
+}
+
+fn credential_worker_command(
+    security_dir: &Path,
+    action: &str,
+    label: &str,
+) -> std::process::Command {
+    let mut command =
+        std::process::Command::new(std::env::current_exe().expect("current test exe"));
+    command
+        .arg("--exact")
+        .arg(CROSS_PROCESS_WORKER_TEST)
+        .arg("--nocapture")
+        .env("TANDEM_TEST_PROVIDER_CREDENTIAL_WORKER", action)
+        .env("TANDEM_TEST_PROVIDER_CREDENTIAL_DIR", security_dir)
+        .env("TANDEM_TEST_PROVIDER_CREDENTIAL_LABEL", label);
+    command
+}
+
+#[test]
+fn cross_process_tenant_writes_preserve_the_whole_credential_map() {
+    const PROCESS_COUNT: usize = 12;
+
+    let dir = tempdir().expect("tempdir");
+    let mut children = Vec::with_capacity(PROCESS_COUNT);
+    for index in 0..PROCESS_COUNT {
+        let child = credential_worker_command(dir.path(), "set", &index.to_string())
+            .env("TANDEM_TEST_PROVIDER_CREDENTIAL_RMW_DELAY_MS", "50")
+            .spawn()
+            .expect("spawn credential writer");
+        children.push(child);
+    }
+    for mut child in children {
+        assert!(child.wait().expect("wait for credential writer").success());
+    }
+
+    for index in 0..PROCESS_COUNT {
+        let tenant = TenantContext::explicit(format!("org-{index}"), "workspace", None);
+        let stored =
+            load_provider_oauth_credential_for_tenant_in_dir(dir.path(), &tenant, "openai-codex")
+                .unwrap_or_else(|| panic!("credential for process {index}"));
+        assert_eq!(stored.access_token, format!("access-{index}"));
+    }
+}
+
+#[test]
+fn cross_process_disconnect_cannot_be_resurrected_by_stale_refresh() {
+    let dir = tempdir().expect("tempdir");
+    let tenant = TenantContext::explicit("org-race", "workspace", None);
+    set_provider_oauth_credential_for_tenant_in_dir(
+        dir.path(),
+        &tenant,
+        "openai-codex",
+        oauth_credential("original"),
+    )
+    .expect("seed original credential");
+
+    let ready_path = dir.path().join("refresh.ready");
+    let release_path = dir.path().join("refresh.release");
+    let result_path = dir.path().join("refresh.result");
+    let mut child = credential_worker_command(dir.path(), "stale-refresh", "race")
+        .env("TANDEM_TEST_PROVIDER_CREDENTIAL_READY", &ready_path)
+        .env("TANDEM_TEST_PROVIDER_CREDENTIAL_RELEASE", &release_path)
+        .env("TANDEM_TEST_PROVIDER_CREDENTIAL_RESULT", &result_path)
+        .spawn()
+        .expect("spawn stale refresh worker");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !ready_path.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for stale refresh read"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        delete_provider_credential_for_tenant_in_dir(dir.path(), &tenant, "openai-codex",)
+            .expect("disconnect credential")
+    );
+    std::fs::write(&release_path, b"release").expect("release stale refresh");
+    assert!(child.wait().expect("wait for stale refresh").success());
+    assert_eq!(
+        std::fs::read_to_string(result_path).expect("stale refresh result"),
+        "stale"
+    );
+    assert!(
+        load_provider_oauth_credential_for_tenant_in_dir(dir.path(), &tenant, "openai-codex",)
+            .is_none(),
+        "the stale refresh must not recreate the disconnected credential"
+    );
+}
+
+#[test]
+fn oauth_tenant_enumeration_recovers_local_and_hosted_scopes_without_crossing_tenants() {
+    let dir = tempdir().expect("tempdir");
+    let local = TenantContext::local_implicit();
+    let tenant_a = TenantContext::explicit("org-a", "workspace-a", Some("actor-a".to_string()));
+    let mut tenant_b = TenantContext::explicit("org-b", "workspace-b", None);
+    tenant_b.deployment_id = Some("deployment-b".to_string());
+
+    for (tenant, label) in [(&local, "local"), (&tenant_a, "a"), (&tenant_b, "b")] {
+        set_provider_oauth_credential_for_tenant_in_dir(
+            dir.path(),
+            tenant,
+            "openai-codex",
+            oauth_credential(label),
+        )
+        .expect("store scoped OAuth credential");
+    }
+    set_provider_oauth_credential_for_tenant_in_dir(
+        dir.path(),
+        &tenant_a,
+        "another-provider",
+        OAuthProviderCredential {
+            provider_id: "another-provider".to_string(),
+            ..oauth_credential("other")
+        },
+    )
+    .expect("store unrelated OAuth credential");
+
+    let contexts = list_provider_oauth_tenant_contexts_in_dir(dir.path(), "openai-codex");
+    assert_eq!(contexts.len(), 3);
+    assert!(contexts.iter().any(TenantContext::is_local_implicit));
+    let enumerated_a = contexts
+        .iter()
+        .find(|tenant| tenant.org_id == "org-a")
+        .expect("tenant A");
+    assert_eq!(enumerated_a.workspace_id, "workspace-a");
+    assert_eq!(enumerated_a.deployment_id, None);
+    assert_eq!(enumerated_a.actor_id, None);
+    let enumerated_b = contexts
+        .iter()
+        .find(|tenant| tenant.org_id == "org-b")
+        .expect("tenant B");
+    assert_eq!(enumerated_b.workspace_id, "workspace-b");
+    assert_eq!(enumerated_b.deployment_id.as_deref(), Some("deployment-b"));
+    assert_eq!(enumerated_b.actor_id, None);
+
+    assert!(list_provider_oauth_tenant_contexts_in_dir(dir.path(), "missing").is_empty());
 }
 
 fn make_jwt(payload: serde_json::Value) -> String {

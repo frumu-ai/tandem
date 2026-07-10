@@ -1,3 +1,4 @@
+mod guarded_dispatch;
 pub mod provider_auth_store;
 
 pub use provider_auth_store::*;

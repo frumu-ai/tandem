@@ -30,7 +30,7 @@ use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 
 use crate::decrypt_broker::{MemoryCryptoMode, MemoryDecryptBrokerConfig, MemoryDecryptPrincipal};
-use crate::envelope::{MemoryEnvelopeMetadata, MemoryKeyScope};
+use crate::envelope::{MemoryEnvelopeAuthority, MemoryEnvelopeMetadata, MemoryKeyScope};
 use crate::envelope_crypto::HostedMemoryEnvelopeCrypto;
 use crate::key_lifecycle::MemoryKeyLifecyclePolicy;
 use crate::types::{MemoryError, MemoryResult};
@@ -171,6 +171,14 @@ impl MemoryCryptoProvider {
         matches!(self.inner, CryptoInner::Hosted(_))
     }
 
+    /// Clear cached hosted DEKs so an operational readiness check can exercise
+    /// the configured KMS unwrap path. This is a no-op outside hosted mode.
+    pub fn clear_hosted_dek_cache(&self) {
+        if let CryptoInner::Hosted(hosted) = &self.inner {
+            hosted.cache().clear();
+        }
+    }
+
     /// Encrypt a memory text field for storage. Plaintext mode returns the input
     /// unchanged; hosted modes fail closed because sealing requires a key scope
     /// (use [`encrypt_field_scoped`](Self::encrypt_field_scoped)).
@@ -279,6 +287,43 @@ impl MemoryCryptoProvider {
                     )
                 })?;
                 hosted.unseal(envelope, stored, principal, key_lifecycle_policy)
+            }
+            CryptoInner::HostedPending => self.decrypt_field(stored),
+        }
+    }
+
+    /// Hosted decrypt with an exact authority contract supplied independently of
+    /// the persisted envelope. Security-sensitive file/governance callers must
+    /// use this method so an envelope cannot grant itself a tenant, department,
+    /// policy, or audit identity.
+    pub fn decrypt_field_scoped_authorized(
+        &self,
+        stored: &str,
+        envelope: Option<&MemoryEnvelopeMetadata>,
+        principal: Option<&MemoryDecryptPrincipal>,
+        expected_authority: &MemoryEnvelopeAuthority,
+        key_lifecycle_policy: Option<MemoryKeyLifecyclePolicy>,
+    ) -> MemoryResult<String> {
+        match &self.inner {
+            CryptoInner::Plaintext | CryptoInner::LocalKey(_) => self.decrypt_field(stored),
+            CryptoInner::Hosted(hosted) => {
+                let envelope = envelope.ok_or_else(|| {
+                    MemoryError::InvalidConfig(
+                        "hosted memory decryption requires the row envelope".to_string(),
+                    )
+                })?;
+                let principal = principal.ok_or_else(|| {
+                    MemoryError::InvalidConfig(
+                        "hosted memory decryption requires a decrypt principal".to_string(),
+                    )
+                })?;
+                hosted.unseal_authorized(
+                    envelope,
+                    stored,
+                    principal,
+                    expected_authority,
+                    key_lifecycle_policy,
+                )
             }
             CryptoInner::HostedPending => self.decrypt_field(stored),
         }

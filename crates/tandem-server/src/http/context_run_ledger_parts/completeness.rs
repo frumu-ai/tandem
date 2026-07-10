@@ -48,7 +48,7 @@ async fn emit_completeness_health_event(
                 .collect::<BTreeSet<_>>()
         })
         .unwrap_or_default();
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event_best_effort(
         state,
         "audit.health.completeness_incomplete",
         tenant_context,
@@ -87,7 +87,10 @@ fn decision_is_protected_action(decision: &PolicyDecisionRecord) -> bool {
         PolicyDecisionEffect::ApprovalRequired => true,
         PolicyDecisionEffect::Allow => {
             decision.approval_id.is_some()
-                || decision.reason_code.to_ascii_lowercase().contains("approval")
+                || decision
+                    .reason_code
+                    .to_ascii_lowercase()
+                    .contains("approval")
         }
         PolicyDecisionEffect::Deny => false,
     }
@@ -107,8 +110,7 @@ fn decision_evidences_approval(
         .as_deref()
         .map(|node_id| {
             gate_history.iter().any(|gate| {
-                gate.node_id == node_id
-                    && gate.decision.to_ascii_lowercase().starts_with("approv")
+                gate.node_id == node_id && gate.decision.to_ascii_lowercase().starts_with("approv")
             })
         })
         .unwrap_or(false)

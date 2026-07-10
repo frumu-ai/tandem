@@ -501,6 +501,17 @@ fn session_policy_keeps_artifact_write_tool_for_write_required_connector_nodes()
 }
 
 #[test]
+fn explicitly_empty_session_tool_scope_denies_every_tool() {
+    assert!(!tool_allowed_by_session_policy("read", &[], false));
+    assert!(!tool_allowed_by_session_policy("write", &[], true));
+    assert!(!tool_allowed_by_session_policy(
+        "mcp.github.list_repository_issues",
+        &[],
+        false
+    ));
+}
+
+#[test]
 fn provider_tool_mode_downgrades_required_when_no_tools_are_selected() {
     assert_eq!(
         provider_tool_mode_for_selected_tools(&ToolMode::Required, 0),

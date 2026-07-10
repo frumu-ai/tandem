@@ -446,14 +446,28 @@ async fn evaluate_fintech_strict_tool_policy(
                     "approval": approval,
                 },
             });
-            let _ = crate::audit::append_protected_audit_event(
+            if let Err(error) = crate::audit::append_protected_audit_event(
                 state,
                 "fintech.protected_action.approved",
                 &run.tenant_context,
                 run.tenant_context.actor_id.clone(),
                 audit_payload,
             )
-            .await;
+            .await
+            {
+                tracing::error!(
+                    error = ?error,
+                    "fintech protected action denied because allow audit persistence failed"
+                );
+                return Some(ToolPolicyDecision {
+                    allowed: false,
+                    reason: Some(
+                        "tool denied by runtime policy: required allow audit could not be persisted"
+                            .to_string(),
+                    ),
+                    policy_decision_id: None,
+                });
+            }
             if state.is_ready() {
                 state.event_bus.publish(EngineEvent::new(
                     "fintech.protected_action.approved",
@@ -551,7 +565,7 @@ async fn evaluate_fintech_strict_tool_policy(
             "reason": "call-site protected-action approval/policy verification is not implemented"
         },
     });
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event_best_effort(
         state,
         "fintech.protected_action.denied",
         &run.tenant_context,
@@ -916,7 +930,7 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                                 "timestampMs": crate::now_ms(),
                             }),
                         ));
-                        let _ = crate::audit::append_protected_audit_event(
+                        crate::audit::append_protected_audit_event_best_effort(
                             &state,
                             "tool.execution.denied",
                             &strict.tenant_context,
@@ -954,18 +968,21 @@ impl ToolPolicyHook for ServerToolPolicyHook {
                         "tool `{}` is not allowed for routine `{}` (run `{}`)",
                         tool, policy.routine_id, policy.run_id
                     );
-                    state.event_bus.publish(EngineEvent::new(
-                        "routine.tool.denied",
-                        json!({
-                            "sessionID": ctx.session_id,
-                            "messageID": ctx.message_id,
-                            "runID": policy.run_id,
-                            "routineID": policy.routine_id,
-                            "tool": tool,
-                            "reason": reason,
-                            "timestampMs": crate::now_ms(),
-                        }),
-                    ));
+                    state
+                        .event_bus
+                        .publish(crate::routines::types::tenant_scoped_engine_event(
+                            "routine.tool.denied",
+                            &policy.tenant_context,
+                            json!({
+                                "sessionID": ctx.session_id,
+                                "messageID": ctx.message_id,
+                                "runID": policy.run_id,
+                                "routineID": policy.routine_id,
+                                "tool": tool,
+                                "reason": reason,
+                                "timestampMs": crate::now_ms(),
+                            }),
+                        ));
                     return Ok(ToolPolicyDecision {
                         allowed: false,
                         reason: Some(reason),

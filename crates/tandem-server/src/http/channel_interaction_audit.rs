@@ -12,7 +12,7 @@ pub(crate) async fn append_cross_tenant_denial(
     run_tenant: &TenantContext,
 ) {
     let actor = format!("channel:{channel}:{user_id}");
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event_best_effort(
         state,
         "channel.interaction.cross_tenant_denied",
         &channel_tenant,

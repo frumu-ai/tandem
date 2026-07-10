@@ -216,9 +216,11 @@ async fn backfill_workflow_learning_source_memory_scope(
     if tandem_memory::metadata_has_knowledge_scope(source.metadata.as_ref()) {
         return Ok(());
     }
-    let metadata =
-        tandem_memory::metadata_with_knowledge_scope(source.metadata.clone(), knowledge_scope_policy)
-            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let metadata = tandem_memory::metadata_with_knowledge_scope(
+        source.metadata.clone(),
+        knowledge_scope_policy,
+    )
+    .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
     db.update_global_memory_context_for_tenant(
         &source.id,
         &tenant_context.org_id,
@@ -550,9 +552,8 @@ fn enforce_memory_record_ownership_for_mutation(
     if crate::memory::subject::local_memory_subjects_are_unrestricted(tenant_context, verified) {
         return Ok(());
     }
-    let resolution =
-        crate::memory::subject::request_memory_subject(tenant_context, verified, None)
-            .map_err(|_| StatusCode::FORBIDDEN)?;
+    let resolution = crate::memory::subject::request_memory_subject(tenant_context, verified, None)
+        .map_err(|_| StatusCode::FORBIDDEN)?;
     if record_user_id != resolution.subject {
         return Err(StatusCode::FORBIDDEN);
     }
@@ -603,19 +604,6 @@ pub(super) async fn memory_delete(
         emit_missing_memory_delete_audit(&state, &tenant_context, &id, "memory not found").await?;
         return Err(StatusCode::NOT_FOUND);
     }
-    let deleted = db
-        .delete_global_memory_for_tenant(
-            &id,
-            &tenant_context.org_id,
-            &tenant_context.workspace_id,
-            tenant_context.deployment_id.as_deref(),
-        )
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if !deleted {
-        emit_missing_memory_delete_audit(&state, &tenant_context, &id, "memory not found").await?;
-        return Err(StatusCode::NOT_FOUND);
-    }
     let now = crate::now_ms();
     let audit_id = Uuid::new_v4().to_string();
     let run_id = record.run_id.clone();
@@ -659,6 +647,18 @@ pub(super) async fn memory_delete(
         },
     )
     .await?;
+    let deleted = db
+        .delete_global_memory_for_tenant(
+            &id,
+            &tenant_context.org_id,
+            &tenant_context.workspace_id,
+            tenant_context.deployment_id.as_deref(),
+        )
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !deleted {
+        return Err(StatusCode::NOT_FOUND);
+    }
     publish_tenant_event(
         &state,
         &tenant_context,

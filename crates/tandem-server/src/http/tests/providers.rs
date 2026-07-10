@@ -12,6 +12,48 @@ fn make_jwt(payload: Value) -> String {
     format!("{header}.{payload}.signature")
 }
 
+fn test_codex_oauth(label: &str) -> tandem_core::OAuthProviderCredential {
+    tandem_core::OAuthProviderCredential {
+        provider_id: "openai-codex".to_string(),
+        access_token: format!("access-{label}"),
+        refresh_token: format!("refresh-{label}"),
+        expires_at_ms: 2_000_000_000_000,
+        account_id: Some(format!("account-{label}")),
+        email: Some(format!("{label}@example.com")),
+        display_name: None,
+        managed_by: "tandem".to_string(),
+        api_key: Some(format!("api-{label}")),
+    }
+}
+
+fn provider_auth_security_dir(state: &AppState) -> std::path::PathBuf {
+    state
+        .memory_db_path
+        .parent()
+        .expect("memory db parent")
+        .join("security")
+}
+
+async fn make_protected_audit_unwritable(state: &AppState) {
+    tokio::fs::create_dir_all(&state.protected_audit_path)
+        .await
+        .expect("make protected audit path unwritable as a file");
+    crate::audit::reset_protected_audit_tail_for_test(&state.protected_audit_path).await;
+}
+
+async fn runtime_provider_api_key(state: &AppState, provider_id: &str) -> Option<String> {
+    state
+        .config
+        .get_layers_value()
+        .await
+        .get("runtime")
+        .and_then(|runtime| runtime.get("providers"))
+        .and_then(|providers| providers.get(provider_id))
+        .and_then(|provider| provider.get("api_key"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
 fn tenant_request(
     method: &str,
     uri: &str,
@@ -241,6 +283,143 @@ async fn provider_auth_set_writes_protected_audit_record() {
         .expect("protected audit file");
     assert!(audit.contains("\"event_type\":\"provider.secret.updated\""));
     assert!(audit.contains("\"providerID\":\"openai\""));
+}
+
+#[tokio::test]
+async fn provider_auth_set_reports_required_audit_persistence_failure() {
+    let state = test_state().await;
+    let tenant = tandem_types::TenantContext::local_implicit();
+    tandem_core::set_provider_auth_for_tenant_in_dir(
+        &provider_auth_security_dir(&state),
+        &tenant,
+        "openai",
+        "sk-before-audit-failure",
+    )
+    .expect("seed persisted provider auth");
+    state
+        .auth
+        .write()
+        .await
+        .insert("openai".to_string(), "sk-before-audit-failure".to_string());
+    state
+        .config
+        .patch_runtime(json!({
+            "providers": {
+                "openai": { "api_key": "sk-before-audit-failure" }
+            }
+        }))
+        .await
+        .expect("seed runtime provider auth");
+    make_protected_audit_unwritable(&state).await;
+
+    let app = app_router(state.clone());
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/auth/openai")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({"token": "sk-after-audit-failure"}).to_string(),
+        ))
+        .expect("request");
+    let resp = app.oneshot(req).await.expect("response");
+
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let payload = json_body(resp).await;
+    assert_eq!(
+        payload.get("code").and_then(Value::as_str),
+        Some("PROTECTED_AUDIT_PERSISTENCE_FAILED")
+    );
+    assert_ne!(payload.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        tandem_core::load_provider_auth_for_tenant_in_dir(
+            &provider_auth_security_dir(&state),
+            &tenant,
+        )
+        .get("openai")
+        .map(String::as_str),
+        Some("sk-before-audit-failure")
+    );
+    assert_eq!(
+        state.auth.read().await.get("openai").map(String::as_str),
+        Some("sk-before-audit-failure")
+    );
+    assert_eq!(
+        runtime_provider_api_key(&state, "openai").await.as_deref(),
+        Some("sk-before-audit-failure")
+    );
+}
+
+#[tokio::test]
+async fn provider_auth_delete_persistence_failure_keeps_durable_and_runtime_key() {
+    let state = test_state().await;
+    let tenant = tandem_types::TenantContext::local_implicit();
+    tandem_core::set_provider_auth_for_tenant_in_dir(
+        &provider_auth_security_dir(&state),
+        &tenant,
+        "openai",
+        "sk-delete-must-rollback",
+    )
+    .expect("seed persisted provider auth");
+    state
+        .auth
+        .write()
+        .await
+        .insert("openai".to_string(), "sk-delete-must-rollback".to_string());
+    state
+        .config
+        .patch_runtime(json!({
+            "providers": {
+                "openai": { "api_key": "sk-delete-must-rollback" }
+            }
+        }))
+        .await
+        .expect("seed runtime provider auth");
+
+    let index_path = provider_auth_security_dir(&state).join("provider_auth_index.json");
+    tokio::fs::remove_file(&index_path)
+        .await
+        .expect("remove provider auth index");
+    tokio::fs::create_dir(&index_path)
+        .await
+        .expect("replace provider auth index with a directory");
+
+    let response = app_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/auth/openai")
+                .body(Body::empty())
+                .expect("delete request"),
+        )
+        .await
+        .expect("delete response");
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let payload = json_body(response).await;
+    assert_eq!(payload.get("ok").and_then(Value::as_bool), Some(false));
+    assert_eq!(
+        payload.get("code").and_then(Value::as_str),
+        Some("PROVIDER_AUTH_PERSISTENCE_FAILED")
+    );
+    assert_eq!(
+        tandem_core::load_provider_auth_for_tenant_in_dir(
+            &provider_auth_security_dir(&state),
+            &tenant,
+        )
+        .get("openai")
+        .map(String::as_str),
+        Some("sk-delete-must-rollback")
+    );
+    assert_eq!(
+        state.auth.read().await.get("openai").map(String::as_str),
+        Some("sk-delete-must-rollback")
+    );
+    assert_eq!(
+        runtime_provider_api_key(&state, "openai").await.as_deref(),
+        Some("sk-delete-must-rollback")
+    );
+    if let Ok(audit) = tokio::fs::read_to_string(&state.protected_audit_path).await {
+        assert!(!audit.contains("provider.secret.deleted"));
+    }
 }
 
 #[tokio::test]
@@ -500,6 +679,255 @@ async fn provider_oauth_session_import_persists_codex_auth_and_reports_connected
             .get("local_session_available")
             .and_then(Value::as_bool),
         Some(true)
+    );
+}
+
+#[tokio::test]
+async fn hosted_tenant_cannot_import_local_codex_session() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let req = tenant_request(
+        "POST",
+        "/provider/openai-codex/oauth/session/local",
+        "hosted-org",
+        "hosted-workspace",
+        "hosted-user",
+        None,
+    );
+
+    let resp = app.oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let payload = json_body(resp).await;
+    assert_eq!(payload.get("ok").and_then(Value::as_bool), Some(false));
+    assert_eq!(
+        payload.get("code").and_then(Value::as_str),
+        Some("LOCAL_PROVIDER_SESSION_REQUIRES_LOCAL_IMPLICIT_TENANT")
+    );
+
+    let tenant = tandem_types::TenantContext::explicit(
+        "hosted-org",
+        "hosted-workspace",
+        Some("hosted-user".to_string()),
+    );
+    let provider_auth_security_dir = state
+        .memory_db_path
+        .parent()
+        .expect("memory db parent")
+        .join("security");
+    assert!(
+        tandem_core::load_provider_oauth_credential_for_tenant_in_dir(
+            &provider_auth_security_dir,
+            &tenant,
+            "openai-codex",
+        )
+        .is_none()
+    );
+}
+
+#[tokio::test]
+async fn oauth_upload_audit_failure_restores_persisted_and_runtime_credential() {
+    let state = test_state().await;
+    let tenant = tandem_types::TenantContext::explicit(
+        "org-audit-upload",
+        "workspace-audit-upload",
+        Some("user-audit-upload".to_string()),
+    );
+    let prior = test_codex_oauth("prior-upload");
+    tandem_core::set_provider_oauth_credential_for_tenant_in_dir(
+        &provider_auth_security_dir(&state),
+        &tenant,
+        "openai-codex",
+        prior.clone(),
+    )
+    .expect("seed prior OAuth credential");
+    crate::http::config_providers::load_openai_codex_oauth_into_runtime(&state, &tenant)
+        .await
+        .expect("load prior runtime credential");
+    make_protected_audit_unwritable(&state).await;
+
+    let uploaded_access = make_jwt(json!({
+        "exp": 2_000_000_000u64,
+        "email": "uploaded@example.com"
+    }));
+    let app = app_router(state.clone());
+    let response = app
+        .oneshot(tenant_request(
+            "POST",
+            "/provider/openai-codex/oauth/session/import",
+            "org-audit-upload",
+            "workspace-audit-upload",
+            "user-audit-upload",
+            Some(json!({
+                "auth_json": json!({
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "access_token": uploaded_access,
+                        "refresh_token": "refresh-uploaded",
+                        "account_id": "account-uploaded"
+                    }
+                }).to_string()
+            })),
+        ))
+        .await
+        .expect("upload response");
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        json_body(response)
+            .await
+            .get("code")
+            .and_then(Value::as_str),
+        Some("PROTECTED_AUDIT_PERSISTENCE_FAILED")
+    );
+    assert_eq!(
+        tandem_core::load_provider_oauth_credential_for_tenant_in_dir(
+            &provider_auth_security_dir(&state),
+            &tenant,
+            "openai-codex",
+        ),
+        Some(prior)
+    );
+    assert!(
+        state
+            .providers
+            .tenant_provider_auth_is_loaded(&tenant, "openai-codex")
+            .await,
+        "the prior runtime credential must be restored"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn oauth_local_import_audit_failure_restores_persisted_and_runtime_credential() {
+    struct CodexHomeGuard(Option<std::ffi::OsString>);
+    impl Drop for CodexHomeGuard {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(previous) => std::env::set_var("CODEX_HOME", previous),
+                None => std::env::remove_var("CODEX_HOME"),
+            }
+        }
+    }
+
+    let codex_home = std::env::temp_dir().join(format!("tandem-codex-home-{}", Uuid::new_v4()));
+    let _codex_home_guard = CodexHomeGuard(std::env::var_os("CODEX_HOME"));
+    std::env::set_var("CODEX_HOME", &codex_home);
+    let incoming_access = make_jwt(json!({
+        "exp": 2_000_000_000u64,
+        "email": "incoming-local@example.com"
+    }));
+    tandem_core::write_openai_codex_cli_auth_json(&json!({
+        "auth_mode": "chatgpt",
+        "tokens": {
+            "access_token": incoming_access,
+            "refresh_token": "refresh-incoming-local",
+            "account_id": "account-incoming-local"
+        }
+    }))
+    .expect("write local Codex CLI credential");
+
+    let state = test_state().await;
+    let tenant = tandem_types::TenantContext::local_implicit();
+    let prior = test_codex_oauth("prior-local-import");
+    tandem_core::set_provider_oauth_credential_for_tenant_in_dir(
+        &provider_auth_security_dir(&state),
+        &tenant,
+        "openai-codex",
+        prior.clone(),
+    )
+    .expect("seed prior OAuth credential");
+    state.auth.write().await.insert(
+        "openai-codex".to_string(),
+        "api-prior-local-import".to_string(),
+    );
+    crate::http::config_providers::load_openai_codex_oauth_into_runtime(&state, &tenant)
+        .await
+        .expect("load prior runtime credential");
+    make_protected_audit_unwritable(&state).await;
+
+    let response = app_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/provider/openai-codex/oauth/session/local")
+                .body(Body::empty())
+                .expect("local import request"),
+        )
+        .await
+        .expect("local import response");
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        tandem_core::load_provider_oauth_credential_for_tenant_in_dir(
+            &provider_auth_security_dir(&state),
+            &tenant,
+            "openai-codex",
+        ),
+        Some(prior)
+    );
+    assert_eq!(
+        state
+            .auth
+            .read()
+            .await
+            .get("openai-codex")
+            .map(String::as_str),
+        Some("api-prior-local-import")
+    );
+    assert!(
+        state
+            .providers
+            .tenant_provider_auth_is_loaded(&tenant, "openai-codex")
+            .await,
+        "the prior local runtime credential must be restored"
+    );
+}
+
+#[tokio::test]
+async fn oauth_disconnect_audit_failure_restores_persisted_and_runtime_credential() {
+    let state = test_state().await;
+    let tenant = tandem_types::TenantContext::explicit(
+        "org-audit-disconnect",
+        "workspace-audit-disconnect",
+        Some("user-audit-disconnect".to_string()),
+    );
+    let prior = test_codex_oauth("prior-disconnect");
+    tandem_core::set_provider_oauth_credential_for_tenant_in_dir(
+        &provider_auth_security_dir(&state),
+        &tenant,
+        "openai-codex",
+        prior.clone(),
+    )
+    .expect("seed prior OAuth credential");
+    crate::http::config_providers::load_openai_codex_oauth_into_runtime(&state, &tenant)
+        .await
+        .expect("load prior runtime credential");
+    make_protected_audit_unwritable(&state).await;
+
+    let response = app_router(state.clone())
+        .oneshot(tenant_request(
+            "DELETE",
+            "/provider/openai-codex/oauth/session",
+            "org-audit-disconnect",
+            "workspace-audit-disconnect",
+            "user-audit-disconnect",
+            None,
+        ))
+        .await
+        .expect("disconnect response");
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        tandem_core::load_provider_oauth_credential_for_tenant_in_dir(
+            &provider_auth_security_dir(&state),
+            &tenant,
+            "openai-codex",
+        ),
+        Some(prior)
+    );
+    assert!(
+        state
+            .providers
+            .tenant_provider_auth_is_loaded(&tenant, "openai-codex")
+            .await,
+        "the disconnected runtime credential must be restored"
     );
 }
 

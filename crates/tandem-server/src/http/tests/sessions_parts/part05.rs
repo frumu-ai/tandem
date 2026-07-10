@@ -157,7 +157,9 @@ async fn strict_denied_decision_leaves_only_safe_evidence_in_protected_audit() {
     // The bridge task is spawned by the serve loop, not by test_state, so
     // route the event through the bridge directly — same code path.
     assert!(
-        crate::data_boundary_bridge::record_data_boundary_protected_audit(&state, blocked).await,
+        crate::data_boundary_bridge::record_data_boundary_protected_audit(&state, blocked)
+            .await
+            .expect("record blocked protected audit"),
         "blocked decisions must be appended to the protected ledger"
     );
 

@@ -99,7 +99,8 @@ async fn prune_incident_monitor_evidence_dir(dir: &std::path::Path, cutoff_ms: u
                 continue;
             };
             if let Ok(elapsed) = modified.duration_since(std::time::UNIX_EPOCH) {
-                if (elapsed.as_millis() as u64) < cutoff_ms && fs::remove_file(&path).await.is_ok() {
+                if (elapsed.as_millis() as u64) < cutoff_ms && fs::remove_file(&path).await.is_ok()
+                {
                     removed += 1;
                 }
             }
@@ -273,7 +274,9 @@ fn authority_decision_from_policy_record(
 ) -> AuthorityDecision {
     decision.effect = match record.decision {
         PolicyDecisionEffect::Allow => AuthorityEffect::Allow,
-        PolicyDecisionEffect::Deny | PolicyDecisionEffect::ApprovalRequired => AuthorityEffect::Deny,
+        PolicyDecisionEffect::Deny | PolicyDecisionEffect::ApprovalRequired => {
+            AuthorityEffect::Deny
+        }
     };
     decision.reason_code = record.reason_code.clone();
     decision.reason = record.reason.clone();
@@ -306,6 +309,32 @@ fn gate_outcome_from_policy_record(
         }
     }
     outcome
+}
+
+fn authority_persistence_failure_decision() -> AuthorityDecision {
+    AuthorityDecision {
+        effect: AuthorityEffect::Deny,
+        reason_code: "authority_persistence_failed".to_string(),
+        reason: "access denied because durable authority evidence could not be persisted"
+            .to_string(),
+        grant_id: None,
+        source_principal: None,
+    }
+}
+
+fn gate_persistence_failure_outcome() -> GateOutcome {
+    GateOutcome {
+        effect: PolicyDecisionEffect::Deny,
+        reviewer_eligibility: tandem_types::ReviewerEligibility::None,
+        approval_ttl_ms: 0,
+        reason_code: "authority_persistence_failed".to_string(),
+        reason: "action denied because durable policy evidence could not be persisted".to_string(),
+    }
+}
+
+fn policy_decision_persistence_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 fn runtime_policy_rule_for_decision(decision: &PolicyDecisionRecord) -> EnterprisePolicyRule {
@@ -404,10 +433,9 @@ impl AppState {
     }
 
     pub async fn load_incident_monitor_config(&self) -> anyhow::Result<()> {
-        let Some((path, is_legacy)) = resolve_incident_monitor_state_read_path(
-            &self.incident_monitor_config_path,
-            "config",
-        ) else {
+        let Some((path, is_legacy)) =
+            resolve_incident_monitor_state_read_path(&self.incident_monitor_config_path, "config")
+        else {
             return Ok(());
         };
         check_file_permissions(&path);
@@ -677,10 +705,9 @@ impl AppState {
     }
 
     pub async fn load_incident_monitor_drafts(&self) -> anyhow::Result<()> {
-        let Some((path, is_legacy)) = resolve_incident_monitor_state_read_path(
-            &self.incident_monitor_drafts_path,
-            "drafts",
-        ) else {
+        let Some((path, is_legacy)) =
+            resolve_incident_monitor_state_read_path(&self.incident_monitor_drafts_path, "drafts")
+        else {
             return Ok(());
         };
         let raw = fs::read_to_string(&path).await?;
@@ -755,10 +782,9 @@ impl AppState {
     }
 
     pub async fn load_incident_monitor_posts(&self) -> anyhow::Result<()> {
-        let Some((path, is_legacy)) = resolve_incident_monitor_state_read_path(
-            &self.incident_monitor_posts_path,
-            "posts",
-        ) else {
+        let Some((path, is_legacy)) =
+            resolve_incident_monitor_state_read_path(&self.incident_monitor_posts_path, "posts")
+        else {
             return Ok(());
         };
         let raw = fs::read_to_string(&path).await?;
@@ -853,8 +879,8 @@ impl AppState {
         if retention_days == 0 {
             return Ok((0, 0, 0));
         }
-        let cutoff = crate::now_ms()
-            .saturating_sub(retention_days.saturating_mul(24 * 60 * 60 * 1_000));
+        let cutoff =
+            crate::now_ms().saturating_sub(retention_days.saturating_mul(24 * 60 * 60 * 1_000));
 
         let removed_posts = {
             let mut guard = self.incident_monitor_posts.write().await;
@@ -906,20 +932,30 @@ impl AppState {
         };
         let parsed =
             serde_json::from_str::<std::collections::HashMap<String, PolicyDecisionRecord>>(&raw)
-                .unwrap_or_default();
+                .context("parse protected policy decision store")?;
         *self.policy_decisions.write().await = parsed;
         Ok(())
     }
 
     pub async fn persist_policy_decisions(&self) -> anyhow::Result<()> {
-        let payload = {
+        let records = {
             let guard = self.policy_decisions.read().await;
-            serde_json::to_string_pretty(&*guard)?
+            guard
+                .iter()
+                .map(|(decision_id, decision)| {
+                    crate::governance_store::GovernanceStoreFile::PolicyDecisions.json_record(
+                        decision_id,
+                        decision,
+                        &decision.tenant_context,
+                        None,
+                    )
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?
         };
         crate::governance_store::for_state(self)
-            .write_text(
+            .write_json_records(
                 crate::governance_store::GovernanceStoreFile::PolicyDecisions,
-                &payload,
+                &records,
             )
             .await?;
         Ok(())
@@ -1270,17 +1306,36 @@ impl AppState {
         &self,
         decision: PolicyDecisionRecord,
     ) -> anyhow::Result<PolicyDecisionRecord> {
+        let _persistence_guard = policy_decision_persistence_lock().lock().await;
         let decision = if decision.effective_policy_snapshot().is_some() {
             decision
         } else {
-            let snapshot = self.resolve_effective_policy_snapshot(&decision).await;
+            let snapshot = self.resolve_effective_policy_snapshot(&decision).await?;
             decision.apply_effective_policy_snapshot(snapshot)
         };
-        {
+        let previous = {
             let mut guard = self.policy_decisions.write().await;
-            guard.insert(decision.decision_id.clone(), decision.clone());
+            guard.insert(decision.decision_id.clone(), decision.clone())
+        };
+        if let Err(error) = self.persist_policy_decisions().await {
+            let mut guard = self.policy_decisions.write().await;
+            match previous {
+                Some(previous) => {
+                    guard.insert(decision.decision_id.clone(), previous);
+                }
+                None => {
+                    guard.remove(&decision.decision_id);
+                }
+            }
+            tracing::error!(
+                decision_id = %decision.decision_id,
+                tenant_org_id = %decision.tenant_context.org_id,
+                tenant_workspace_id = %decision.tenant_context.workspace_id,
+                error = ?error,
+                "policy decision persistence failed"
+            );
+            return Err(error);
         }
-        self.persist_policy_decisions().await?;
         if self.is_ready() {
             self.event_bus.publish(EngineEvent::new(
                 "policy.decision.recorded",
@@ -1304,8 +1359,13 @@ impl AppState {
     async fn resolve_effective_policy_snapshot(
         &self,
         decision: &PolicyDecisionRecord,
-    ) -> tandem_enterprise_contract::EffectivePolicySnapshot {
+    ) -> anyhow::Result<tandem_enterprise_contract::EffectivePolicySnapshot> {
         if let Err(error) = self.load_enterprise_policy_rules_if_needed().await {
+            if tandem_memory::envelope::hosted_memory_encryption_required() {
+                return Err(error).context(
+                    "load hosted enterprise policy rules before recording policy decision",
+                );
+            }
             tracing::warn!("failed to load enterprise policy rules for resolver: {error:?}");
         }
         let mut rules = self
@@ -1322,12 +1382,14 @@ impl AppState {
             .iter()
             .map(|input| resolver.resolve(input, decision.created_at_ms))
             .collect::<Vec<_>>();
-        select_effective_policy_snapshot(snapshots).unwrap_or_else(|| {
-            resolver.resolve(
-                &policy_decision_input_base(decision),
-                decision.created_at_ms,
-            )
-        })
+        Ok(
+            select_effective_policy_snapshot(snapshots).unwrap_or_else(|| {
+                resolver.resolve(
+                    &policy_decision_input_base(decision),
+                    decision.created_at_ms,
+                )
+            }),
+        )
     }
 
     async fn load_enterprise_policy_rules_if_needed(&self) -> anyhow::Result<()> {
@@ -1422,14 +1484,23 @@ impl AppState {
             .build_intra_tenant_authority_graph(tenant_context, direct_grants)
             .await;
         let decision = graph.evaluate(request, now_ms);
-        let recorded = self
+        let recorded = match self
             .record_intra_tenant_authority_decision(tenant_context, request, &decision, now_ms)
-            .await;
-        let resolved_decision = recorded
-            .as_ref()
-            .map(|record| authority_decision_from_policy_record(decision.clone(), record))
-            .unwrap_or(decision);
-        let decision_id = recorded.map(|record| record.decision_id);
+            .await
+        {
+            Ok(recorded) => recorded,
+            Err(error) => {
+                tracing::error!(
+                    tenant_org_id = %tenant_context.org_id,
+                    tenant_workspace_id = %tenant_context.workspace_id,
+                    error = ?error,
+                    "intra-tenant authority evidence persistence failed; denying access"
+                );
+                return (authority_persistence_failure_decision(), None);
+            }
+        };
+        let resolved_decision = authority_decision_from_policy_record(decision, &recorded);
+        let decision_id = Some(recorded.decision_id);
         (resolved_decision, decision_id)
     }
 
@@ -1439,7 +1510,7 @@ impl AppState {
         request: &AuthorityAccessRequest,
         decision: &AuthorityDecision,
         now_ms: u64,
-    ) -> Option<PolicyDecisionRecord> {
+    ) -> anyhow::Result<PolicyDecisionRecord> {
         let effect = match decision.effect {
             AuthorityEffect::Allow => PolicyDecisionEffect::Allow,
             AuthorityEffect::Deny => PolicyDecisionEffect::Deny,
@@ -1482,26 +1553,20 @@ impl AppState {
             created_at_ms: now_ms,
             metadata,
         };
-        let recorded = match self.record_policy_decision(record).await {
-            Ok(record) => Some(record),
-            Err(error) => {
-                tracing::warn!("failed to record intra-tenant authority decision: {error:?}");
-                None
-            }
-        };
-        let audit_decision = recorded
-            .as_ref()
-            .map(|record| authority_decision_from_policy_record(decision.clone(), record))
-            .unwrap_or_else(|| decision.clone());
+        let recorded = self
+            .record_policy_decision(record)
+            .await
+            .context("persist intra-tenant authority decision")?;
+        let audit_decision = authority_decision_from_policy_record(decision.clone(), &recorded);
 
         if audit_decision.is_deny() {
-            if let Err(error) = crate::audit::append_protected_audit_event(
+            crate::audit::append_protected_audit_event(
                 self,
                 "authority.access.denied",
                 tenant_context,
                 actor_id,
                 serde_json::json!({
-                    "decision_id": recorded.as_ref().map(|record| record.decision_id.as_str()),
+                    "decision_id": recorded.decision_id.as_str(),
                     "principal": request.principal,
                     "resource": request.resource,
                     "permission": request.permission,
@@ -1512,12 +1577,10 @@ impl AppState {
                 }),
             )
             .await
-            {
-                tracing::warn!("failed to append intra-tenant authority audit: {error:?}");
-            }
+            .context("persist intra-tenant authority denial audit")?;
         }
 
-        recorded
+        Ok(recorded)
     }
 
     /// Resolve an action against the strict approval gate matrix (CT-20 /
@@ -1538,14 +1601,23 @@ impl AppState {
         now_ms: u64,
     ) -> (GateOutcome, Option<String>) {
         let outcome = ApprovalGateMatrix::strict_default().resolve(request);
-        let recorded = self
+        let recorded = match self
             .record_action_gate_decision(tenant_context, request, &outcome, tool, actor_id, now_ms)
-            .await;
-        let resolved_outcome = recorded
-            .as_ref()
-            .map(|record| gate_outcome_from_policy_record(outcome.clone(), record))
-            .unwrap_or(outcome);
-        let decision_id = recorded.map(|record| record.decision_id);
+            .await
+        {
+            Ok(recorded) => recorded,
+            Err(error) => {
+                tracing::error!(
+                    tenant_org_id = %tenant_context.org_id,
+                    tenant_workspace_id = %tenant_context.workspace_id,
+                    error = ?error,
+                    "action-gate evidence persistence failed; denying action"
+                );
+                return (gate_persistence_failure_outcome(), None);
+            }
+        };
+        let resolved_outcome = gate_outcome_from_policy_record(outcome, &recorded);
+        let decision_id = Some(recorded.decision_id);
         (resolved_outcome, decision_id)
     }
 
@@ -1557,7 +1629,7 @@ impl AppState {
         tool: Option<String>,
         actor_id: Option<String>,
         now_ms: u64,
-    ) -> Option<PolicyDecisionRecord> {
+    ) -> anyhow::Result<PolicyDecisionRecord> {
         let decision_id = format!("policy_decision_{}", uuid::Uuid::new_v4().simple());
         let data_classes = request
             .data_class
@@ -1594,17 +1666,11 @@ impl AppState {
             created_at_ms: now_ms,
             metadata,
         };
-        let recorded = match self.record_policy_decision(record).await {
-            Ok(record) => Some(record),
-            Err(error) => {
-                tracing::warn!("failed to record approval gate decision: {error:?}");
-                None
-            }
-        };
-        let audit_outcome = recorded
-            .as_ref()
-            .map(|record| gate_outcome_from_policy_record(outcome.clone(), record))
-            .unwrap_or_else(|| outcome.clone());
+        let recorded = self
+            .record_policy_decision(record)
+            .await
+            .context("persist approval-gate policy decision")?;
+        let audit_outcome = gate_outcome_from_policy_record(outcome.clone(), &recorded);
 
         // Approval-required and deny outcomes are consequential gate events and
         // must leave durable, tenant-attributed audit evidence.
@@ -1614,13 +1680,13 @@ impl AppState {
             } else {
                 "approval.gate.approval_required"
             };
-            if let Err(error) = crate::audit::append_protected_audit_event(
+            crate::audit::append_protected_audit_event(
                 self,
                 event_type,
                 tenant_context,
                 actor_id,
                 serde_json::json!({
-                    "decision_id": recorded.as_ref().map(|record| record.decision_id.as_str()),
+                    "decision_id": recorded.decision_id.as_str(),
                     "risk_tier": request.risk_tier.map(|tier| tier.as_str()),
                     "data_class": request.data_class,
                     "external_customer_facing": request.external_customer_facing,
@@ -1631,12 +1697,10 @@ impl AppState {
                 }),
             )
             .await
-            {
-                tracing::warn!("failed to append approval gate audit: {error:?}");
-            }
+            .context("persist approval-gate denial or approval-required audit")?;
         }
 
-        recorded
+        Ok(recorded)
     }
 
     pub async fn get_external_action_by_idempotency_key(
@@ -1722,17 +1786,28 @@ impl AppState {
                     "target": action.target,
                 })),
             };
-            let _ = self
-                .append_routine_run_artifact(run_id, artifact.clone())
-                .await;
-            if let Some(runtime) = self.runtime.get() {
-                runtime.event_bus.publish(EngineEvent::new(
-                    "routine.run.artifact_added",
-                    json!({
-                        "runID": run_id,
-                        "artifact": artifact,
-                    }),
-                ));
+            let updated = if let Some(run) = self.get_routine_run(run_id).await {
+                self.append_routine_run_artifact_for_tenant(
+                    run_id,
+                    &run.tenant_context,
+                    artifact.clone(),
+                )
+                .await
+            } else {
+                None
+            };
+            if let (Some(runtime), Some(updated)) = (self.runtime.get(), updated) {
+                runtime
+                    .event_bus
+                    .publish(crate::routines::types::tenant_scoped_engine_event(
+                        "routine.run.artifact_added",
+                        &updated.tenant_context,
+                        json!({
+                            "runID": run_id,
+                            "routineID": updated.routine_id,
+                            "artifact": artifact,
+                        }),
+                    ));
             }
         }
         if let Some(context_run_id) = action.context_run_id.as_deref() {

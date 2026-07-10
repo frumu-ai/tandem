@@ -200,7 +200,7 @@ pub(crate) async fn enforce_mutation_or_audit<T>(
     match result {
         Ok(value) => Ok(value),
         Err(error) => {
-            let _ = crate::audit::append_protected_audit_event(
+            crate::audit::append_protected_audit_event_best_effort(
                 state,
                 "automation.governance.denied",
                 tenant_context,

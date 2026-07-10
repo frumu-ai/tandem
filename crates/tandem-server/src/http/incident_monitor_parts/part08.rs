@@ -76,7 +76,7 @@ async fn emit_incident_monitor_admin_audit_event(
     state
         .event_bus
         .publish(tandem_types::EngineEvent::new(event_type, payload.clone()));
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event_best_effort(
         state,
         event_type,
         &tandem_types::TenantContext::local_implicit(),

@@ -882,6 +882,15 @@ pub(super) async fn execute_run(
     let strict_kb_model_override = req.model.clone();
     let mut direct_kb_outcome = None;
     let session = state.storage.get_session(&session_id).await;
+    let execution_surface = if session
+        .as_ref()
+        .and_then(|session| session.source_kind.as_deref())
+        == Some("channel")
+    {
+        super::session_run_retry::PromptExecutionSurface::Channel
+    } else {
+        super::session_run_retry::PromptExecutionSurface::Session
+    };
     let verified_tenant_context = session.and_then(|session| session.verified_tenant_context);
     if let Some(policy) = kb_grounding_policy.as_ref() {
         let kb_tool_allowlist = tool_allowlist_for_kb_grounding(&policy);
@@ -952,6 +961,10 @@ pub(super) async fn execute_run(
                                 &output,
                                 policy,
                                 strict_kb_model_override.as_ref(),
+                                &run_id,
+                                &session_id,
+                                &tenant_context,
+                                verified_tenant_context.as_ref(),
                             )
                             .await
                             {
@@ -1009,14 +1022,13 @@ pub(super) async fn execute_run(
     let (status, error_msg): (&str, Option<String>) = if direct_kb_outcome.is_some() {
         ("completed", None)
     } else {
-        // Wrap the run so an expired provider token (AUTHENTICATION_ERROR) is
-        // refreshed and retried once transparently before surfacing (TAN-595).
-        // The timeout/ticker below poll this future, so the retry shares the
-        // same run budget and keeps emitting heartbeats.
-        let mut run_fut = Box::pin(super::session_run_retry::run_prompt_with_auth_retry(
+        // OAuth recovery is scoped inside provider dispatch, so this engine
+        // future is never replayed after a tool or other side effect.
+        let mut run_fut = Box::pin(super::session_run_retry::run_prompt_with_auth_recovery(
             &state,
             &session_id,
             &run_id,
+            execution_surface,
             req,
             correlation_id.clone(),
             &tenant_context,
@@ -1673,7 +1685,7 @@ pub(super) async fn abort_session(
     let cancelled = state.cancellations.cancel(&id).await;
     let cancelled_run = state.run_registry.finish_active(&id).await;
     let closed_browser_sessions = state.close_browser_sessions_for_owner(&id).await;
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event(
         &state,
         "session.aborted",
         &tenant_context,
@@ -1686,7 +1698,8 @@ pub(super) async fn abort_session(
             "actor": actor.clone(),
         }),
     )
-    .await;
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if let Some(run) = cancelled_run.as_ref() {
         if let Some(session) = state.storage.get_session(&id).await {
             publish_tenant_event(
@@ -1734,7 +1747,7 @@ pub(super) async fn cancel_run_by_id(
             let _cancelled = state.cancellations.cancel(&id).await;
             let _ = state.run_registry.finish_if_match(&id, &run_id).await;
             let closed_browser_sessions = state.close_browser_sessions_for_owner(&id).await;
-            let _ = crate::audit::append_protected_audit_event(
+            crate::audit::append_protected_audit_event(
                 &state,
                 "session.run.cancelled",
                 &tenant_context,
@@ -1746,7 +1759,8 @@ pub(super) async fn cancel_run_by_id(
                     "actor": actor.clone(),
                 }),
             )
-            .await;
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             if let Some(session) = state.storage.get_session(&id).await {
                 publish_tenant_event(
                     &state,

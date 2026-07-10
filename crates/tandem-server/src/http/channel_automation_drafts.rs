@@ -382,7 +382,7 @@ pub(super) async fn channel_automation_drafts_confirm(
     let _ = state
         .set_automation_governance_provenance(&stored.automation_id, provenance.clone())
         .await;
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event(
         &state,
         "automation.governance.created",
         &tenant_context,
@@ -397,7 +397,8 @@ pub(super) async fn channel_automation_drafts_confirm(
             "origin": "channel_draft",
         }),
     )
-    .await;
+    .await
+    .map_err(super::protected_audit_error_response)?;
     draft.status = ChannelAutomationDraftStatus::Applied;
     draft.automation_id = Some(stored.automation_id.clone());
     draft.question = None;

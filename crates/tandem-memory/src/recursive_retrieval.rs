@@ -1,8 +1,10 @@
 use crate::context_uri::ContextUri;
+use crate::provider_egress::{complete_memory_prompt, MemoryProviderEgressKind};
 use crate::types::{
     LayerType, MemoryError, MemoryResult, NodeType, NodeVisit, RetrievalResult, RetrievalStep,
     RetrievalTrajectory,
 };
+use crate::MemoryProviderEgressContext;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -19,6 +21,7 @@ pub struct RecursiveRetrieval {
     providers: Arc<ProviderRegistry>,
     max_depth: usize,
     top_k: usize,
+    provider_egress: Option<MemoryProviderEgressContext>,
 }
 
 impl RecursiveRetrieval {
@@ -27,6 +30,7 @@ impl RecursiveRetrieval {
             providers,
             max_depth: 5,
             top_k: 5,
+            provider_egress: None,
         }
     }
 
@@ -35,7 +39,13 @@ impl RecursiveRetrieval {
             providers,
             max_depth,
             top_k,
+            provider_egress: None,
         }
+    }
+
+    pub fn with_provider_egress(mut self, provider_egress: MemoryProviderEgressContext) -> Self {
+        self.provider_egress = Some(provider_egress);
+        self
     }
 
     pub async fn retrieve(
@@ -116,7 +126,18 @@ impl RecursiveRetrieval {
     async fn analyze_intent(&self, query: &str) -> MemoryResult<Vec<SearchCondition>> {
         let prompt = format!("{}{}", INTENT_ANALYSIS_PROMPT, query);
 
-        let response = match self.providers.complete_cheapest(&prompt, None, None).await {
+        let response = match complete_memory_prompt(
+            &self.providers,
+            &prompt,
+            None,
+            None,
+            self.provider_egress.as_ref(),
+            MemoryProviderEgressKind::RecursiveRetrieval,
+            "recursive-retrieval-intent",
+            "memory.recursive_retrieval",
+        )
+        .await
+        {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!("Intent analysis LLM failed, using keyword fallback: {}", e);

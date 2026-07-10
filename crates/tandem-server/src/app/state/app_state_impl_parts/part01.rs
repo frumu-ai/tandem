@@ -245,6 +245,7 @@ impl AppState {
             shared_resources: Arc::new(RwLock::new(std::collections::HashMap::new())),
             shared_resources_path: config::paths::resolve_shared_resources_path(),
             routines: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            routine_persistence: Arc::new(tokio::sync::Mutex::new(())),
             routine_history: Arc::new(RwLock::new(std::collections::HashMap::new())),
             routine_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             automations_v2: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -364,6 +365,7 @@ impl AppState {
                 config::env::resolve_allow_unsigned_dev_webhooks(),
             )),
             channels_runtime: Arc::new(tokio::sync::Mutex::new(ChannelRuntime::default())),
+            slack_event_tasks: SlackEventTaskRuntime::default(),
             host_runtime_context: detect_host_runtime_context(),
             token_cost_per_1k_usd: config::env::resolve_token_cost_per_1k_usd(),
             pack_manager: Arc::new(PackManager::new(PackManager::default_root())),
@@ -383,6 +385,10 @@ impl AppState {
 
     pub fn is_ready(&self) -> bool {
         self.runtime.get().is_some()
+            && self
+                .startup
+                .try_read()
+                .is_ok_and(|startup| matches!(startup.status, StartupStatus::Ready))
     }
 
     pub async fn wait_until_ready_or_failed(&self, attempts: usize, sleep_ms: u64) -> bool {
@@ -492,6 +498,10 @@ impl AppState {
 
     pub async fn mark_ready(&self, runtime: RuntimeState) -> anyhow::Result<()> {
         self.acquire_stateful_engine_lock()?;
+        let hosted_governance_required = Self::hosted_governance_readiness_required()?;
+        if hosted_governance_required {
+            self.validate_hosted_governance_readiness().await?;
+        }
         runtime
             .engine_loop
             .set_tool_dispatch_ledger(Arc::new(AppStateToolDispatchLedger {
@@ -546,11 +556,14 @@ impl AppState {
             )))
             .await;
         let _ = self.load_shared_resources().await;
-        let _ = self.load_enterprise_org_units().await;
-        let _ = self.load_enterprise_org_unit_memberships().await;
-        let _ = self.load_enterprise_org_unit_access_grants().await;
-        let _ = self.load_enterprise_cross_tenant_grants().await;
-        let _ = self.load_enterprise_source_bindings().await;
+        if !hosted_governance_required {
+            let _ = self.load_enterprise_org_units().await;
+            let _ = self.load_enterprise_org_unit_memberships().await;
+            let _ = self.load_enterprise_org_unit_access_grants().await;
+            let _ = self.load_enterprise_cross_tenant_grants().await;
+            let _ = self.load_enterprise_source_bindings().await;
+            let _ = self.load_policy_decisions().await;
+        }
         let _ = self.load_enterprise_connectors().await;
         let _ = self.load_enterprise_ingestion_jobs().await;
         let _ = self.load_enterprise_ingestion_quarantines().await;
@@ -575,7 +588,6 @@ impl AppState {
         let _ = self.load_incident_monitor_log_watcher_state().await;
         let _ = self.load_incident_monitor_intake_keys().await;
         let _ = self.load_external_actions().await;
-        let _ = self.load_policy_decisions().await;
         let _ = self.load_workflow_planner_sessions().await;
         let _ = self.load_workflow_learning_candidates().await;
         let _ = self.load_context_packs().await;
@@ -592,6 +604,7 @@ impl AppState {
         startup.phase = "ready".to_string();
         startup.last_error = None;
         drop(startup);
+        self.spawn_provider_oauth_refresh();
         #[cfg(feature = "browser")]
         {
             let state = self.clone();
@@ -1045,515 +1058,6 @@ impl AppState {
         Ok(removed)
     }
 
-    pub async fn load_routines(&self) -> anyhow::Result<()> {
-        let Some(raw) = read_state_file_with_legacy(&self.routines_path, "routines.json").await?
-        else {
-            return Ok(());
-        };
-        match serde_json::from_str::<std::collections::HashMap<String, RoutineSpec>>(&raw) {
-            Ok(parsed) => {
-                let mut guard = self.routines.write().await;
-                *guard = parsed;
-                Ok(())
-            }
-            Err(primary_err) => {
-                let backup_path = config::paths::sibling_backup_path(&self.routines_path);
-                if backup_path.exists() {
-                    let backup_raw = fs::read_to_string(&backup_path).await?;
-                    if let Ok(parsed_backup) = serde_json::from_str::<
-                        std::collections::HashMap<String, RoutineSpec>,
-                    >(&backup_raw)
-                    {
-                        let mut guard = self.routines.write().await;
-                        *guard = parsed_backup;
-                        return Ok(());
-                    }
-                }
-                Err(anyhow::anyhow!(
-                    "failed to parse routines store {}: {primary_err}",
-                    self.routines_path.display()
-                ))
-            }
-        }
-    }
-
-    pub async fn load_routine_history(&self) -> anyhow::Result<()> {
-        if !self.routine_history_path.exists() {
-            return Ok(());
-        }
-        let raw = fs::read_to_string(&self.routine_history_path).await?;
-        let parsed = serde_json::from_str::<
-            std::collections::HashMap<String, Vec<RoutineHistoryEvent>>,
-        >(&raw)
-        .unwrap_or_default();
-        let mut guard = self.routine_history.write().await;
-        *guard = parsed;
-        Ok(())
-    }
-
-    pub async fn load_routine_runs(&self) -> anyhow::Result<()> {
-        let Some(raw) =
-            read_state_file_with_legacy(&self.routine_runs_path, "routine_runs.json").await?
-        else {
-            return Ok(());
-        };
-        let parsed =
-            serde_json::from_str::<std::collections::HashMap<String, RoutineRunRecord>>(&raw)
-                .unwrap_or_default();
-        let mut guard = self.routine_runs.write().await;
-        *guard = parsed;
-        Ok(())
-    }
-
-    async fn persist_routines_inner(&self, allow_empty_overwrite: bool) -> anyhow::Result<()> {
-        if let Some(parent) = self.routines_path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
-        let (payload, is_empty) = {
-            let guard = self.routines.read().await;
-            (serde_json::to_string_pretty(&*guard)?, guard.is_empty())
-        };
-        if is_empty && !allow_empty_overwrite && self.routines_path.exists() {
-            let existing_raw = fs::read_to_string(&self.routines_path)
-                .await
-                .unwrap_or_default();
-            let existing_has_rows = serde_json::from_str::<
-                std::collections::HashMap<String, RoutineSpec>,
-            >(&existing_raw)
-            .map(|rows| !rows.is_empty())
-            .unwrap_or(true);
-            if existing_has_rows {
-                return Err(anyhow::anyhow!(
-                    "refusing to overwrite non-empty routines store {} with empty in-memory state",
-                    self.routines_path.display()
-                ));
-            }
-        }
-        let backup_path = config::paths::sibling_backup_path(&self.routines_path);
-        if self.routines_path.exists() {
-            let _ = fs::copy(&self.routines_path, &backup_path).await;
-        }
-        let tmp_path = config::paths::sibling_tmp_path(&self.routines_path);
-        fs::write(&tmp_path, payload).await?;
-        fs::rename(&tmp_path, &self.routines_path).await?;
-        Ok(())
-    }
-
-    pub async fn persist_routines(&self) -> anyhow::Result<()> {
-        self.persist_routines_inner(false).await
-    }
-
-    pub async fn persist_routine_history(&self) -> anyhow::Result<()> {
-        if let Some(parent) = self.routine_history_path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
-        let payload = {
-            let guard = self.routine_history.read().await;
-            serde_json::to_string_pretty(&*guard)?
-        };
-        fs::write(&self.routine_history_path, payload).await?;
-        Ok(())
-    }
-
-    pub async fn persist_routine_runs(&self) -> anyhow::Result<()> {
-        if let Some(parent) = self.routine_runs_path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
-        let payload = {
-            let guard = self.routine_runs.read().await;
-            serde_json::to_string_pretty(&*guard)?
-        };
-        fs::write(&self.routine_runs_path, payload).await?;
-        Ok(())
-    }
-
-    pub async fn put_routine(
-        &self,
-        mut routine: RoutineSpec,
-    ) -> Result<RoutineSpec, RoutineStoreError> {
-        if routine.routine_id.trim().is_empty() {
-            return Err(RoutineStoreError::InvalidRoutineId {
-                routine_id: routine.routine_id,
-            });
-        }
-
-        routine.allowed_tools = config::channels::normalize_allowed_tools(routine.allowed_tools);
-        routine.output_targets = normalize_non_empty_list(routine.output_targets);
-
-        let now = now_ms();
-        let next_schedule_fire =
-            compute_next_schedule_fire_at_ms(&routine.schedule, &routine.timezone, now)
-                .ok_or_else(|| RoutineStoreError::InvalidSchedule {
-                    detail: "invalid schedule or timezone".to_string(),
-                })?;
-        match routine.schedule {
-            RoutineSchedule::IntervalSeconds { seconds } => {
-                if seconds == 0 {
-                    return Err(RoutineStoreError::InvalidSchedule {
-                        detail: "interval_seconds must be > 0".to_string(),
-                    });
-                }
-                let _ = seconds;
-            }
-            RoutineSchedule::Cron { .. } => {}
-        }
-        if routine.next_fire_at_ms.is_none() {
-            routine.next_fire_at_ms = Some(next_schedule_fire);
-        }
-
-        let mut guard = self.routines.write().await;
-        let previous = guard.insert(routine.routine_id.clone(), routine.clone());
-        drop(guard);
-
-        if let Err(error) = self.persist_routines().await {
-            let mut rollback = self.routines.write().await;
-            if let Some(previous) = previous {
-                rollback.insert(previous.routine_id.clone(), previous);
-            } else {
-                rollback.remove(&routine.routine_id);
-            }
-            return Err(RoutineStoreError::PersistFailed {
-                message: error.to_string(),
-            });
-        }
-
-        Ok(routine)
-    }
-
-    pub async fn list_routines(&self) -> Vec<RoutineSpec> {
-        let mut rows = self
-            .routines
-            .read()
-            .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        rows.sort_by(|a, b| a.routine_id.cmp(&b.routine_id));
-        rows
-    }
-
-    pub async fn get_routine(&self, routine_id: &str) -> Option<RoutineSpec> {
-        self.routines.read().await.get(routine_id).cloned()
-    }
-
-    pub async fn delete_routine(
-        &self,
-        routine_id: &str,
-    ) -> Result<Option<RoutineSpec>, RoutineStoreError> {
-        let mut guard = self.routines.write().await;
-        let removed = guard.remove(routine_id);
-        drop(guard);
-
-        let allow_empty_overwrite = self.routines.read().await.is_empty();
-        if let Err(error) = self.persist_routines_inner(allow_empty_overwrite).await {
-            if let Some(removed) = removed.clone() {
-                self.routines
-                    .write()
-                    .await
-                    .insert(removed.routine_id.clone(), removed);
-            }
-            return Err(RoutineStoreError::PersistFailed {
-                message: error.to_string(),
-            });
-        }
-        Ok(removed)
-    }
-
-    pub async fn evaluate_routine_misfires(&self, now_ms: u64) -> Vec<RoutineTriggerPlan> {
-        let mut plans = Vec::new();
-        let mut guard = self.routines.write().await;
-        for routine in guard.values_mut() {
-            if routine.status != RoutineStatus::Active {
-                continue;
-            }
-            let Some(next_fire_at_ms) = routine.next_fire_at_ms else {
-                continue;
-            };
-            if now_ms < next_fire_at_ms {
-                continue;
-            }
-            let (run_count, next_fire_at_ms) = compute_misfire_plan_for_schedule(
-                now_ms,
-                next_fire_at_ms,
-                &routine.schedule,
-                &routine.timezone,
-                &routine.misfire_policy,
-            );
-            routine.next_fire_at_ms = Some(next_fire_at_ms);
-            if run_count == 0 {
-                continue;
-            }
-            plans.push(RoutineTriggerPlan {
-                routine_id: routine.routine_id.clone(),
-                run_count,
-                scheduled_at_ms: now_ms,
-                next_fire_at_ms,
-            });
-        }
-        drop(guard);
-        let _ = self.persist_routines().await;
-        plans
-    }
-
-    pub async fn mark_routine_fired(
-        &self,
-        routine_id: &str,
-        fired_at_ms: u64,
-    ) -> Option<RoutineSpec> {
-        let mut guard = self.routines.write().await;
-        let routine = guard.get_mut(routine_id)?;
-        routine.last_fired_at_ms = Some(fired_at_ms);
-        let updated = routine.clone();
-        drop(guard);
-        let _ = self.persist_routines().await;
-        Some(updated)
-    }
-
-    pub async fn append_routine_history(&self, event: RoutineHistoryEvent) {
-        let mut history = self.routine_history.write().await;
-        history
-            .entry(event.routine_id.clone())
-            .or_default()
-            .push(event);
-        drop(history);
-        let _ = self.persist_routine_history().await;
-    }
-
-    pub async fn list_routine_history(
-        &self,
-        routine_id: &str,
-        limit: usize,
-    ) -> Vec<RoutineHistoryEvent> {
-        let limit = limit.clamp(1, 500);
-        let mut rows = self
-            .routine_history
-            .read()
-            .await
-            .get(routine_id)
-            .cloned()
-            .unwrap_or_default();
-        rows.sort_by(|a, b| b.fired_at_ms.cmp(&a.fired_at_ms));
-        rows.truncate(limit);
-        rows
-    }
-
-    pub async fn create_routine_run(
-        &self,
-        routine: &RoutineSpec,
-        trigger_type: &str,
-        run_count: u32,
-        status: RoutineRunStatus,
-        detail: Option<String>,
-    ) -> RoutineRunRecord {
-        let now = now_ms();
-        let record = RoutineRunRecord {
-            run_id: format!("routine-run-{}", uuid::Uuid::new_v4()),
-            routine_id: routine.routine_id.clone(),
-            trigger_type: trigger_type.to_string(),
-            run_count,
-            status,
-            created_at_ms: now,
-            updated_at_ms: now,
-            fired_at_ms: Some(now),
-            started_at_ms: None,
-            finished_at_ms: None,
-            requires_approval: routine.requires_approval,
-            approval_reason: None,
-            denial_reason: None,
-            paused_reason: None,
-            detail,
-            entrypoint: routine.entrypoint.clone(),
-            args: routine.args.clone(),
-            allowed_tools: routine.allowed_tools.clone(),
-            output_targets: routine.output_targets.clone(),
-            artifacts: Vec::new(),
-            active_session_ids: Vec::new(),
-            latest_session_id: None,
-            prompt_tokens: 0,
-            completion_tokens: 0,
-            total_tokens: 0,
-            estimated_cost_usd: 0.0,
-        };
-        self.routine_runs
-            .write()
-            .await
-            .insert(record.run_id.clone(), record.clone());
-        let _ = self.persist_routine_runs().await;
-        record
-    }
-
-    pub async fn get_routine_run(&self, run_id: &str) -> Option<RoutineRunRecord> {
-        self.routine_runs.read().await.get(run_id).cloned()
-    }
-
-    pub async fn list_routine_runs(
-        &self,
-        routine_id: Option<&str>,
-        limit: usize,
-    ) -> Vec<RoutineRunRecord> {
-        let mut rows = self
-            .routine_runs
-            .read()
-            .await
-            .values()
-            .filter(|row| {
-                if let Some(id) = routine_id {
-                    row.routine_id == id
-                } else {
-                    true
-                }
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        rows.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
-        rows.truncate(limit.clamp(1, 500));
-        rows
-    }
-
-    pub async fn claim_next_queued_routine_run(&self) -> Option<RoutineRunRecord> {
-        let mut guard = self.routine_runs.write().await;
-        let next_run_id = guard
-            .values()
-            .filter(|row| row.status == RoutineRunStatus::Queued)
-            .min_by(|a, b| {
-                a.created_at_ms
-                    .cmp(&b.created_at_ms)
-                    .then_with(|| a.run_id.cmp(&b.run_id))
-            })
-            .map(|row| row.run_id.clone())?;
-        let now = now_ms();
-        let row = guard.get_mut(&next_run_id)?;
-        row.status = RoutineRunStatus::Running;
-        row.updated_at_ms = now;
-        row.started_at_ms = Some(now);
-        let claimed = row.clone();
-        drop(guard);
-        let _ = self.persist_routine_runs().await;
-        Some(claimed)
-    }
-
-    pub async fn set_routine_session_policy(
-        &self,
-        session_id: String,
-        run_id: String,
-        routine_id: String,
-        allowed_tools: Vec<String>,
-    ) {
-        let policy = RoutineSessionPolicy {
-            session_id: session_id.clone(),
-            run_id,
-            routine_id,
-            allowed_tools: config::channels::normalize_allowed_tools(allowed_tools),
-        };
-        self.routine_session_policies
-            .write()
-            .await
-            .insert(session_id, policy);
-    }
-
-    pub async fn routine_session_policy(&self, session_id: &str) -> Option<RoutineSessionPolicy> {
-        self.routine_session_policies
-            .read()
-            .await
-            .get(session_id)
-            .cloned()
-    }
-
-    pub async fn clear_routine_session_policy(&self, session_id: &str) {
-        self.routine_session_policies
-            .write()
-            .await
-            .remove(session_id);
-    }
-
-    pub async fn update_routine_run_status(
-        &self,
-        run_id: &str,
-        status: RoutineRunStatus,
-        reason: Option<String>,
-    ) -> Option<RoutineRunRecord> {
-        let mut guard = self.routine_runs.write().await;
-        let row = guard.get_mut(run_id)?;
-        row.status = status.clone();
-        row.updated_at_ms = now_ms();
-        match status {
-            RoutineRunStatus::PendingApproval => row.approval_reason = reason,
-            RoutineRunStatus::Running => {
-                row.started_at_ms.get_or_insert_with(now_ms);
-                if let Some(detail) = reason {
-                    row.detail = Some(detail);
-                }
-            }
-            RoutineRunStatus::Denied => row.denial_reason = reason,
-            RoutineRunStatus::Paused => row.paused_reason = reason,
-            RoutineRunStatus::Completed
-            | RoutineRunStatus::Failed
-            | RoutineRunStatus::Cancelled => {
-                row.finished_at_ms = Some(now_ms());
-                if let Some(detail) = reason {
-                    row.detail = Some(detail);
-                }
-            }
-            _ => {
-                if let Some(detail) = reason {
-                    row.detail = Some(detail);
-                }
-            }
-        }
-        let updated = row.clone();
-        drop(guard);
-        let _ = self.persist_routine_runs().await;
-        Some(updated)
-    }
-
-    pub async fn append_routine_run_artifact(
-        &self,
-        run_id: &str,
-        artifact: RoutineRunArtifact,
-    ) -> Option<RoutineRunRecord> {
-        let mut guard = self.routine_runs.write().await;
-        let row = guard.get_mut(run_id)?;
-        row.updated_at_ms = now_ms();
-        row.artifacts.push(artifact);
-        let updated = row.clone();
-        drop(guard);
-        let _ = self.persist_routine_runs().await;
-        Some(updated)
-    }
-
-    pub async fn add_active_session_id(
-        &self,
-        run_id: &str,
-        session_id: String,
-    ) -> Option<RoutineRunRecord> {
-        let mut guard = self.routine_runs.write().await;
-        let row = guard.get_mut(run_id)?;
-        if !row.active_session_ids.iter().any(|id| id == &session_id) {
-            row.active_session_ids.push(session_id);
-        }
-        row.latest_session_id = row.active_session_ids.last().cloned();
-        row.updated_at_ms = now_ms();
-        let updated = row.clone();
-        drop(guard);
-        let _ = self.persist_routine_runs().await;
-        Some(updated)
-    }
-
-    pub async fn clear_active_session_id(
-        &self,
-        run_id: &str,
-        session_id: &str,
-    ) -> Option<RoutineRunRecord> {
-        let mut guard = self.routine_runs.write().await;
-        let row = guard.get_mut(run_id)?;
-        row.active_session_ids.retain(|id| id != session_id);
-        row.updated_at_ms = now_ms();
-        let updated = row.clone();
-        drop(guard);
-        let _ = self.persist_routine_runs().await;
-        Some(updated)
-    }
-
     pub async fn load_automations_v2(&self) -> anyhow::Result<()> {
         let mut merged = std::collections::HashMap::<String, AutomationV2Spec>::new();
         let mut loaded_from_alternate = false;
@@ -1845,50 +1349,6 @@ impl AppState {
             "moved stale automation v2 runs to history shards"
         );
         Ok(archived_count)
-    }
-
-    pub async fn load_optimization_campaigns(&self) -> anyhow::Result<()> {
-        if !self.optimization_campaigns_path.exists() {
-            return Ok(());
-        }
-        let raw = fs::read_to_string(&self.optimization_campaigns_path).await?;
-        let parsed = parse_optimization_campaigns_file(&raw);
-        *self.optimization_campaigns.write().await = parsed;
-        Ok(())
-    }
-
-    pub async fn persist_optimization_campaigns(&self) -> anyhow::Result<()> {
-        let payload = {
-            let guard = self.optimization_campaigns.read().await;
-            serde_json::to_string_pretty(&*guard)?
-        };
-        if let Some(parent) = self.optimization_campaigns_path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
-        fs::write(&self.optimization_campaigns_path, payload).await?;
-        Ok(())
-    }
-
-    pub async fn load_optimization_experiments(&self) -> anyhow::Result<()> {
-        if !self.optimization_experiments_path.exists() {
-            return Ok(());
-        }
-        let raw = fs::read_to_string(&self.optimization_experiments_path).await?;
-        let parsed = parse_optimization_experiments_file(&raw);
-        *self.optimization_experiments.write().await = parsed;
-        Ok(())
-    }
-
-    pub async fn persist_optimization_experiments(&self) -> anyhow::Result<()> {
-        let payload = {
-            let guard = self.optimization_experiments.read().await;
-            serde_json::to_string_pretty(&*guard)?
-        };
-        if let Some(parent) = self.optimization_experiments_path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
-        fs::write(&self.optimization_experiments_path, payload).await?;
-        Ok(())
     }
 
     async fn verify_automation_v2_persisted_locked(

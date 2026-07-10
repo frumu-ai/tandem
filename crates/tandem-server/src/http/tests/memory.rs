@@ -6,3 +6,4 @@ include!("memory_parts/part05.rs");
 include!("memory_parts/part06.rs");
 include!("memory_parts/part07.rs");
 include!("memory_parts/part08.rs");
+include!("memory_parts/part09.rs");

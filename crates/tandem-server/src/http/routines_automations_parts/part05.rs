@@ -1,6 +1,5 @@
 // Continuation split from part01.rs for the file-size gate (same module via include!).
 
-
 pub(super) fn automation_create_to_routine(
     input: AutomationCreateInput,
 ) -> Result<RoutineSpec, String> {
@@ -48,6 +47,7 @@ pub(super) fn automation_create_to_routine(
         routine_id: input
             .automation_id
             .unwrap_or_else(|| format!("automation-{}", uuid::Uuid::new_v4().simple())),
+        tenant_context: TenantContext::local_implicit(),
         name: input.name,
         status: RoutineStatus::Active,
         schedule: input.schedule,
@@ -73,9 +73,10 @@ pub(super) fn automation_create_to_routine(
 
 pub(super) async fn automations_create(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
     Json(input): Json<AutomationCreateInput>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let routine = automation_create_to_routine(input).map_err(|detail| {
+    let mut routine = automation_create_to_routine(input).map_err(|detail| {
         (
             StatusCode::BAD_REQUEST,
             Json(json!({
@@ -85,24 +86,31 @@ pub(super) async fn automations_create(
             })),
         )
     })?;
+    routine.tenant_context = tenant_context;
     let saved = state
         .put_routine(routine)
         .await
         .map_err(routine_error_response)?;
-    state.event_bus.publish(EngineEvent::new(
-        "automation.updated",
-        json!({
-            "automationID": saved.routine_id,
-        }),
-    ));
+    state
+        .event_bus
+        .publish(crate::routines::types::tenant_scoped_engine_event(
+            "automation.updated",
+            &saved.tenant_context,
+            json!({
+                "automationID": saved.routine_id,
+            }),
+        ));
     Ok(Json(json!({
         "automation": routine_to_automation_wire(saved)
     })))
 }
 
-pub(super) async fn automations_list(State(state): State<AppState>) -> Json<Value> {
+pub(super) async fn automations_list(
+    State(state): State<AppState>,
+    Extension(tenant_context): Extension<TenantContext>,
+) -> Json<Value> {
     let rows = state
-        .list_routines()
+        .list_routines_for_tenant(&tenant_context)
         .await
         .into_iter()
         .map(routine_to_automation_wire)

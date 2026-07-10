@@ -7,6 +7,9 @@ use crate::context_uri::ContextUri;
 use crate::db::MemoryDatabase;
 use crate::embeddings::EmbeddingService;
 use crate::envelope::validate_memory_envelope_for_write;
+use crate::provider_egress::{
+    complete_memory_prompt, MemoryProviderEgressContext, MemoryProviderEgressKind,
+};
 use crate::types::{
     CleanupLogEntry, DirectoryListing, EmbeddingHealth, KnowledgeCoverageRecord,
     KnowledgeItemRecord, KnowledgePromotionRequest, KnowledgePromotionResult, KnowledgeSpaceRecord,
@@ -1397,13 +1400,27 @@ impl MemoryManager {
         providers: &ProviderRegistry,
         tenant_scope: &MemoryTenantScope,
     ) -> MemoryResult<()> {
+        self.generate_layers_for_node_with_egress(node_id, providers, tenant_scope, None)
+            .await
+    }
+
+    pub async fn generate_layers_for_node_with_egress(
+        &self,
+        node_id: &str,
+        providers: &ProviderRegistry,
+        tenant_scope: &MemoryTenantScope,
+        provider_egress: Option<&MemoryProviderEgressContext>,
+    ) -> MemoryResult<()> {
         let l2_layer = self.db.get_layer(node_id, LayerType::L2, tenant_scope).await?;
         let l2_content = match l2_layer {
             Some(layer) => layer.content,
             None => return Ok(()),
         };
 
-        let generator = ContextLayerGenerator::new(Arc::new(providers.clone()));
+        let mut generator = ContextLayerGenerator::new(Arc::new(providers.clone()));
+        if let Some(provider_egress) = provider_egress {
+            generator = generator.with_provider_egress(provider_egress.clone());
+        }
 
         let (l0_content, l1_content) = generator.generate_layers(&l2_content).await?;
 
@@ -1599,6 +1616,24 @@ impl MemoryManager {
         providers: &ProviderRegistry,
         config: &MemoryConsolidationConfig,
     ) -> MemoryResult<Option<String>> {
+        self.consolidate_session_with_egress(
+            session_id,
+            project_id,
+            providers,
+            config,
+            None,
+        )
+        .await
+    }
+
+    pub async fn consolidate_session_with_egress(
+        &self,
+        session_id: &str,
+        project_id: Option<&str>,
+        providers: &ProviderRegistry,
+        config: &MemoryConsolidationConfig,
+        provider_egress: Option<&MemoryProviderEgressContext>,
+    ) -> MemoryResult<Option<String>> {
         if !config.enabled {
             return Ok(None);
         }
@@ -1628,9 +1663,18 @@ impl MemoryManager {
         let provider_override = config.provider.as_deref().filter(|s| !s.is_empty());
         let model_override = config.model.as_deref().filter(|s| !s.is_empty());
 
-        let summary_text = match providers
-            .complete_cheapest(&prompt, provider_override, model_override)
-            .await
+        let operation_id = format!("{session_id}:memory_consolidation");
+        let summary_text = match complete_memory_prompt(
+            providers,
+            &prompt,
+            provider_override,
+            model_override,
+            provider_egress,
+            MemoryProviderEgressKind::Consolidation,
+            &operation_id,
+            "memory.session_consolidation",
+        )
+        .await
         {
             Ok(s) => s,
             Err(e) => {

@@ -15,6 +15,30 @@ use compiler_api::{
 
 pub(crate) struct WorkflowPlannerHost<'a> {
     pub(crate) state: &'a AppState,
+    pub(crate) tenant_context: tandem_types::TenantContext,
+    pub(crate) verified_tenant_context: Option<tandem_types::VerifiedTenantContext>,
+}
+
+impl<'a> WorkflowPlannerHost<'a> {
+    pub(crate) fn new(
+        state: &'a AppState,
+        tenant_context: &tandem_types::TenantContext,
+        verified_tenant_context: Option<&tandem_types::VerifiedTenantContext>,
+    ) -> Self {
+        Self {
+            state,
+            tenant_context: tenant_context.clone(),
+            verified_tenant_context: verified_tenant_context.cloned(),
+        }
+    }
+
+    pub(crate) fn local(state: &'a AppState) -> Self {
+        Self {
+            state,
+            tenant_context: tandem_types::TenantContext::local_implicit(),
+            verified_tenant_context: None,
+        }
+    }
 }
 
 pub(crate) async fn resolve_workspace_root(
@@ -354,6 +378,8 @@ pub(crate) async fn build_workflow_plan(
     allowed_mcp_servers: Vec<String>,
     workspace_root: Option<&str>,
     operator_preferences: Option<Value>,
+    tenant_context: &tandem_types::TenantContext,
+    verified_tenant_context: Option<&tandem_types::VerifiedTenantContext>,
 ) -> Result<
     PlannerBuildResult<
         crate::routines::types::RoutineMisfirePolicy,
@@ -365,7 +391,7 @@ pub(crate) async fn build_workflow_plan(
     let plan_id = format!("wfplan-{}", uuid::Uuid::new_v4());
     let planner_version = "v1".to_string();
 
-    let host = WorkflowPlannerHost { state };
+    let host = WorkflowPlannerHost::new(state, tenant_context, verified_tenant_context);
     let request = prepare_build_request(
         plan_id,
         planner_version,
@@ -467,6 +493,8 @@ impl<'a> PlannerLlmInvoker for WorkflowPlannerHost<'a> {
             invocation.run_key,
             invocation.timeout_ms,
             &invocation.override_env,
+            &self.tenant_context,
+            self.verified_tenant_context.as_ref(),
         )
         .await
     }
@@ -501,6 +529,8 @@ impl<'a> PlannerSessionStore for WorkflowPlannerHost<'a> {
         let mut session = Session::new(Some(title.to_string()), Some(workspace_root.to_string()));
         let session_id = session.id.clone();
         session.workspace_root = Some(workspace_root.to_string());
+        session.tenant_context = self.tenant_context.clone();
+        session.verified_tenant_context = self.verified_tenant_context.clone();
         self.state
             .storage
             .save_session(session)
@@ -556,16 +586,18 @@ async fn invoke_planner_llm(
     workspace_root: &str,
     model: tandem_types::ModelSpec,
     prompt: String,
-    _run_key: String,
+    run_key: String,
     timeout_ms: u64,
     override_env: &str,
+    tenant_context: &tandem_types::TenantContext,
+    verified_tenant_context: Option<&tandem_types::VerifiedTenantContext>,
 ) -> Result<Value, PlannerInvocationFailure> {
     if let Some(payload) =
         super::workflow_planner_policy::planner_test_override_payload(override_env, true)
     {
         return Ok(payload);
     }
-    let host = WorkflowPlannerHost { state };
+    let host = WorkflowPlannerHost::new(state, tenant_context, verified_tenant_context);
     let original_prompt = prompt.clone();
     let workspace_root = resolve_workspace_root(state, Some(workspace_root))
         .await
@@ -581,6 +613,8 @@ async fn invoke_planner_llm(
         &model,
         prompt,
         timeout_ms,
+        &run_key,
+        tenant_context,
     )
     .await?;
 
@@ -616,6 +650,8 @@ async fn invoke_planner_llm(
         &model,
         repair_prompt,
         timeout_ms,
+        &run_key,
+        tenant_context,
     )
     .await?;
     compiler_api::finish_planner_session(&host, &session_id, &repair_output).await?;

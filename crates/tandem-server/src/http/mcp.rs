@@ -425,7 +425,7 @@ pub(super) async fn add_mcp(
     State(state): State<AppState>,
     axum::extract::Extension(tenant_context): axum::extract::Extension<TenantContext>,
     Json(input): Json<McpAddInput>,
-) -> Json<Value> {
+) -> Response {
     let name = input.name.unwrap_or_else(|| "default".to_string());
     let transport = input.transport.unwrap_or_else(|| "stdio".to_string());
     if transport.trim_start().starts_with("stdio:") {
@@ -434,7 +434,8 @@ pub(super) async fn add_mcp(
             "error": "stdio MCP transports cannot be registered through the HTTP API",
             "code": ErrorCode::McpStdioTransportDenied,
             "retryable": false
-        }));
+        }))
+        .into_response();
     }
     let auth_kind = normalize_mcp_auth_kind(input.auth_kind.as_deref().unwrap_or_default());
     let audit_transport = transport.clone();
@@ -464,13 +465,7 @@ pub(super) async fn add_mcp(
     if !auth_kind.is_empty() {
         let _ = state.mcp.set_auth_kind(&name, auth_kind.clone()).await;
     }
-    state.event_bus.publish(EngineEvent::new(
-        "mcp.server.updated",
-        json!({
-            "name": name,
-        }),
-    ));
-    let _ = crate::audit::append_protected_audit_event(
+    if let Err(error) = crate::audit::append_protected_audit_event(
         &state,
         "mcp.server.updated",
         &tenant_context,
@@ -485,8 +480,17 @@ pub(super) async fn add_mcp(
             "grounding_required": input.grounding_required,
         }),
     )
-    .await;
-    Json(json!({"ok": true}))
+    .await
+    {
+        return super::protected_audit_error_response(error).into_response();
+    }
+    state.event_bus.publish(EngineEvent::new(
+        "mcp.server.updated",
+        json!({
+            "name": name,
+        }),
+    ));
+    Json(json!({"ok": true})).into_response()
 }
 
 fn normalize_mcp_auth_kind(raw: &str) -> String {
@@ -1015,7 +1019,7 @@ async fn publish_mcp_oauth_event(
         .event_bus
         .publish(EngineEvent::new(event, payload.clone()));
     let actor_id = session.tenant_context.actor_id.clone();
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event_best_effort(
         state,
         event,
         &session.tenant_context,
@@ -1555,19 +1559,12 @@ pub(super) async fn disconnect_mcp(
 pub(super) async fn delete_mcp(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> Json<Value> {
+) -> Response {
     let prefix = format!("mcp.{}.", mcp_namespace_segment(&name));
     let removed_tool_count = state.tools.unregister_by_prefix(&prefix).await;
     let ok = state.mcp.remove(&name).await;
     if ok {
-        state.event_bus.publish(EngineEvent::new(
-            "mcp.server.deleted",
-            json!({
-                "name": name,
-                "removedToolCount": removed_tool_count,
-            }),
-        ));
-        let _ = crate::audit::append_protected_audit_event(
+        if let Err(error) = crate::audit::append_protected_audit_event(
             &state,
             "mcp.server.deleted",
             &tandem_types::TenantContext::local_implicit(),
@@ -1577,16 +1574,26 @@ pub(super) async fn delete_mcp(
                 "removedToolCount": removed_tool_count,
             }),
         )
-        .await;
+        .await
+        {
+            return super::protected_audit_error_response(error).into_response();
+        }
+        state.event_bus.publish(EngineEvent::new(
+            "mcp.server.deleted",
+            json!({
+                "name": name,
+                "removedToolCount": removed_tool_count,
+            }),
+        ));
     }
-    Json(json!({ "ok": ok, "removedToolCount": removed_tool_count }))
+    Json(json!({ "ok": ok, "removedToolCount": removed_tool_count })).into_response()
 }
 
 pub(super) async fn patch_mcp(
     State(state): State<AppState>,
     Path(name): Path<String>,
     Json(input): Json<McpPatchInput>,
-) -> Json<Value> {
+) -> Response {
     let mut changed = false;
     let mut should_resync = false;
     if input.clear_allowed_tools.unwrap_or(false) || input.allowed_tools.is_some() {
@@ -1614,14 +1621,7 @@ pub(super) async fn patch_mcp(
                 let prefix = format!("mcp.{}.", mcp_namespace_segment(&name));
                 let _ = state.tools.unregister_by_prefix(&prefix).await;
             }
-            state.event_bus.publish(EngineEvent::new(
-                "mcp.server.updated",
-                json!({
-                    "name": name,
-                    "enabled": enabled,
-                }),
-            ));
-            let _ = crate::audit::append_protected_audit_event(
+            if let Err(error) = crate::audit::append_protected_audit_event(
                 &state,
                 "mcp.server.updated",
                 &tandem_types::TenantContext::local_implicit(),
@@ -1631,7 +1631,17 @@ pub(super) async fn patch_mcp(
                     "enabled": enabled,
                 }),
             )
-            .await;
+            .await
+            {
+                return super::protected_audit_error_response(error).into_response();
+            }
+            state.event_bus.publish(EngineEvent::new(
+                "mcp.server.updated",
+                json!({
+                    "name": name,
+                    "enabled": enabled,
+                }),
+            ));
             if enabled {
                 should_resync = true;
             }
@@ -1653,7 +1663,7 @@ pub(super) async fn patch_mcp(
             ));
         }
     }
-    Json(json!({"ok": changed}))
+    Json(json!({"ok": changed})).into_response()
 }
 
 pub(super) async fn refresh_mcp(

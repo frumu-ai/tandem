@@ -45,6 +45,8 @@ pub(super) async fn mission_builder_preview(
 
 pub(super) async fn mission_builder_generate_draft(
     State(state): State<AppState>,
+    Extension(tenant_context): Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<MissionBuilderGenerateDraftRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let intent = input.intent.trim();
@@ -72,6 +74,8 @@ pub(super) async fn mission_builder_generate_draft(
         intent,
         &workspace_root,
         input.archetype_id.as_deref(),
+        &tenant_context,
+        verified_tenant_context.as_deref(),
     )
     .await
     .map_err(|error| {

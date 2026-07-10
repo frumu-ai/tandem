@@ -32,8 +32,10 @@ getrandom = "0.2"
 dirs = "5.0"
 once_cell = "1.20"
 tandem-providers = { path = "../tandem-providers", version = "0.6.8" }
+tandem-data-boundary = { path = "../tandem-data-boundary", version = "0.6.8" }
 tandem-orchestrator = { path = "../tandem-orchestrator", version = "0.6.8" }
 tandem-enterprise-contract = { path = "../tandem-enterprise-contract", version = "0.6.8" }
 
 [dev-dependencies]
+tandem-types = { path = "../tandem-types", version = "0.6.8" }
 tempfile = "3"

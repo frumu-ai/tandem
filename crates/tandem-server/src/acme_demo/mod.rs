@@ -65,6 +65,10 @@ pub const DEMO_TAXONOMY_ID: &str = "department";
 /// Baseline "now" for the dataset, in epoch milliseconds. Memberships and grants
 /// are active at this instant, so evaluations are deterministic.
 pub const DEMO_BASE_NOW_MS: u64 = 1_700_000_000_000;
+/// Slack workspace/team ID used by the live ACME demo installation.
+pub const DEMO_SLACK_TEAM_ID: &str = "T_ACME_HQ";
+/// Slack API app ID used by the live ACME demo installation.
+pub const DEMO_SLACK_APP_ID: &str = "A_ACME_TANDEM";
 
 /// The demo prompt every profile asks. Reachability — not the model's answer — is
 /// what the demo governs, so the prompt is fixed and the divergence comes from
@@ -76,7 +80,7 @@ pub const DEMO_PROMPT: &str = "@tandem what changed with customer ACME this week
 pub struct DemoProfile {
     /// Slack user id, e.g. `U_SALES`.
     pub slack_user_id: &'static str,
-    /// Server-resolved channel actor id, e.g. `channel:slack:U_SALES`.
+    /// Server-resolved installation-scoped channel actor id.
     pub actor_id: String,
     /// Org-unit id, e.g. `sales`.
     pub unit_id: &'static str,
@@ -84,7 +88,7 @@ pub struct DemoProfile {
     pub display_name: &'static str,
     /// The unit's kind (department / executive_group / contractor_group).
     pub kind: OrganizationUnitKind,
-    /// The requester principal (`channel:slack:{user}` human actor).
+    /// The requester principal (`channel:slack:{team}:{app}:{user}` human actor).
     pub principal: PrincipalRef,
     /// The canonical org-unit principal (`department/{unit_id}`).
     pub unit_principal: PrincipalRef,
@@ -210,7 +214,8 @@ fn profile(
     display_name: &'static str,
     kind: OrganizationUnitKind,
 ) -> DemoProfile {
-    let actor_id = format!("channel:slack:{slack_user_id}");
+    let actor_id =
+        format!("channel:slack:{DEMO_SLACK_TEAM_ID}:{DEMO_SLACK_APP_ID}:{slack_user_id}");
     DemoProfile {
         slack_user_id,
         actor_id: actor_id.clone(),

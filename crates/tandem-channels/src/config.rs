@@ -120,7 +120,6 @@ impl ChannelsConfig {
             .or_else(|| std::env::var("TANDEM_CONTEXT_ASSERTION").ok())
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
-
         let tool_policy = match std::env::var("TANDEM_CHANNEL_TOOL_POLICY").as_deref() {
             Ok("allow_all") => ChannelToolPolicy::AllowAll,
             Ok("deny_all") => ChannelToolPolicy::DenyAll,

@@ -9,9 +9,10 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 mod metrics;
 pub use metrics::{
     observability_metrics_snapshot, record_engine_event_metrics, record_gate_wait_ms,
-    record_provider_error, record_run_duration_ms, record_scheduler_clock_regression_ms,
-    record_scheduler_tick_latency_ms, record_tool_call_decision,
-    render_observability_metrics_prometheus, MetricSummary, ObservabilityMetricsSnapshot,
+    record_provider_error, record_provider_oauth_refresh, record_run_duration_ms,
+    record_scheduler_clock_regression_ms, record_scheduler_tick_latency_ms,
+    record_tool_call_decision, render_observability_metrics_prometheus, MetricSummary,
+    ObservabilityMetricsSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -492,6 +493,18 @@ mod tests {
                 "errorCode": "STREAM_IDLE_TIMEOUT",
             }),
         );
+        record_engine_event_metrics(
+            "provider.oauth.refresh.succeeded",
+            &serde_json::json!({"providerID": "openai-codex"}),
+        );
+        record_engine_event_metrics(
+            "provider.oauth.refresh.failed",
+            &serde_json::json!({"providerID": "openai-codex"}),
+        );
+        record_engine_event_metrics(
+            "provider.oauth.reauth_required",
+            &serde_json::json!({"providerID": "openai-codex"}),
+        );
 
         let rendered = render_observability_metrics_prometheus();
         assert!(rendered.contains("tandem_scheduler_tick_latency_ms_count 1"));
@@ -507,5 +520,10 @@ mod tests {
         assert!(rendered.contains(
             "tandem_provider_errors_total{provider_id=\"openai\",error_code=\"STREAM_IDLE_TIMEOUT\"} 1"
         ));
+        assert!(rendered.contains("tandem_provider_oauth_refresh_total{outcome=\"succeeded\"} 1"));
+        assert!(rendered.contains("tandem_provider_oauth_refresh_total{outcome=\"failed\"} 1"));
+        assert!(
+            rendered.contains("tandem_provider_oauth_refresh_total{outcome=\"reauth_required\"} 1")
+        );
     }
 }

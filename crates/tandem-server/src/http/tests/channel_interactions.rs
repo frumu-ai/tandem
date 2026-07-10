@@ -13,6 +13,9 @@ const TENANT_A_WORKSPACE: &str = "workspace-a";
 const TENANT_B_ORG: &str = "org-b";
 const TENANT_B_WORKSPACE: &str = "workspace-b";
 const SLACK_USER: &str = "U-tenant-a";
+const SLACK_TEAM: &str = "T-tenant-a";
+const SLACK_APP: &str = "A-tenant-a";
+const SLACK_CHANNEL: &str = "C-tenant-a";
 const DISCORD_USER: &str = "discord-tenant-a";
 const TELEGRAM_USER: &str = "1001";
 
@@ -86,6 +89,9 @@ async fn configure_bound_channels(state: &AppState, discord_public_key: &str) {
             "channels": {
                 "slack": {
                     "signing_secret": "ct05-slack-secret",
+                    "team_id": SLACK_TEAM,
+                    "app_id": SLACK_APP,
+                    "channel_id": SLACK_CHANNEL,
                     "allowed_users": [SLACK_USER],
                     "tenant": {
                         "org_id": TENANT_A_ORG,
@@ -114,9 +120,12 @@ async fn configure_bound_channels(state: &AppState, discord_public_key: &str) {
         .expect("patch channel config");
 
     for (channel, user) in [
-        ("slack", SLACK_USER),
-        ("discord", DISCORD_USER),
-        ("telegram", TELEGRAM_USER),
+        (
+            "slack",
+            format!("channel:slack:{SLACK_TEAM}:{SLACK_APP}:{SLACK_USER}"),
+        ),
+        ("discord", DISCORD_USER.to_string()),
+        ("telegram", TELEGRAM_USER.to_string()),
     ] {
         let code = state
             .issue_channel_enrollment_code(
@@ -186,6 +195,10 @@ fn slack_request(run_id: &str) -> Request<Body> {
     let timestamp = chrono::Utc::now().timestamp();
     let payload = json!({
         "type": "block_actions",
+        "api_app_id": SLACK_APP,
+        "team": {"id": SLACK_TEAM},
+        "channel": {"id": SLACK_CHANNEL},
+        "container": {"channel_id": SLACK_CHANNEL},
         "user": {"id": SLACK_USER},
         "actions": [{
             "action_id": "approve",

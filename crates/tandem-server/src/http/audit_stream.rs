@@ -42,8 +42,23 @@ pub(crate) async fn protected_audit_events(
             .into_response();
     }
 
-    let mut rows = crate::audit::load_protected_audit_events_for_tenant(&state, &tenant_context)
-        .await
+    let mut rows =
+        match crate::audit::try_load_protected_audit_events_for_tenant(&state, &tenant_context)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::error!(%error, "protected audit API load failed");
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    axum::Json(json!({
+                        "error": "Protected audit ledger is unavailable or invalid",
+                        "code": "AUDIT_LEDGER_UNAVAILABLE"
+                    })),
+                )
+                    .into_response();
+            }
+        }
         .into_iter()
         .filter(|event| {
             query
@@ -346,7 +361,22 @@ pub(crate) async fn audit_ledger_export(
     }
 
     let mut records =
-        crate::audit::load_protected_audit_events_for_tenant(&state, &tenant_context).await;
+        match crate::audit::try_load_protected_audit_events_for_tenant(&state, &tenant_context)
+            .await
+        {
+            Ok(records) => records,
+            Err(error) => {
+                tracing::error!(%error, "protected audit export load failed");
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    axum::Json(json!({
+                        "error": "Protected audit ledger is unavailable or invalid",
+                        "code": "AUDIT_LEDGER_UNAVAILABLE"
+                    })),
+                )
+                    .into_response();
+            }
+        };
 
     // Sort by seq for stable chain ordering in the export.
     records.sort_by_key(|e| e.seq);

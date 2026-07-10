@@ -350,6 +350,12 @@ pub(crate) async fn ready_test_state() -> AppState {
     // Same construction lock as `test_support::test_state`: the env mutation
     // below is process-wide, so concurrent constructions must not interleave.
     let _env_guard = crate::test_support::TEST_STATE_ENV_LOCK.lock().await;
+    let (state, runtime) = starting_test_state_and_runtime().await;
+    state.mark_ready(runtime).await.expect("runtime ready");
+    state
+}
+
+async fn starting_test_state_and_runtime() -> (AppState, crate::RuntimeState) {
     let root = std::env::temp_dir().join(format!("tandem-state-test-{}", uuid::Uuid::new_v4()));
     let global = root.join("global-config.json");
     let tandem_home = root.join("tandem-home");
@@ -419,32 +425,37 @@ pub(crate) async fn ready_test_state() -> AppState {
         .join("runtime")
         .join("idempotency_keys.json");
     state.memory_db_path = tandem_home.join("memory.sqlite");
-    state
-        .mark_ready(crate::RuntimeState {
-            storage,
-            config,
-            event_bus,
-            providers,
-            plugins,
-            agents,
-            tool_dispatcher: GovernedToolDispatcher::new(tools.clone()),
-            tools,
-            permissions,
-            mcp,
-            pty,
-            lsp,
-            auth,
-            logs,
-            workspace_index,
-            cancellations,
-            engine_loop,
-            host_runtime_context,
-            #[cfg(feature = "browser")]
-            browser,
-        })
-        .await
-        .expect("runtime ready");
-    state
+    let runtime = crate::RuntimeState {
+        storage,
+        config,
+        event_bus,
+        providers,
+        plugins,
+        agents,
+        tool_dispatcher: GovernedToolDispatcher::new(tools.clone()),
+        tools,
+        permissions,
+        mcp,
+        pty,
+        lsp,
+        auth,
+        logs,
+        workspace_index,
+        cancellations,
+        engine_loop,
+        host_runtime_context,
+        #[cfg(feature = "browser")]
+        browser,
+    };
+    (state, runtime)
+}
+
+#[tokio::test]
+async fn successful_readiness_starts_provider_oauth_refresh_worker() {
+    let state = ready_test_state().await;
+    assert!(state.oauth.provider_refresh_task_is_running());
+    state.stop_provider_oauth_refresh().await;
+    assert!(!state.oauth.provider_refresh_task_is_running());
 }
 
 pub(crate) fn tmp_resource_file(name: &str) -> PathBuf {

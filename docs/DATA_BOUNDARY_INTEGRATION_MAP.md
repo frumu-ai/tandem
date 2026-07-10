@@ -1,65 +1,84 @@
 # Data Boundary Integration Map
 
-Status: research deliverable for TAN-380 (Tandem Secure Data Boundary,
-Cycle 1). Maps every path where assembled payloads leave the runtime toward an
-LLM provider, the audit/event surfaces a `data_boundary.*` family plugs into,
-and the recommended first audit-only integration point for Cycle 2 (TAN-390).
-Line numbers are anchors as of this trace, not guarantees — anchor work to the
-named functions.
+Status: implemented inventory for TAN-674. Maps every production path where an
+assembled payload leaves the runtime toward an LLM provider and the centralized
+boundary adapter each path uses. Anchor reviews to named functions and the CI
+inventory guard; incidental line references below are only navigation aids.
 
-The crate itself (`crates/tandem-data-boundary`, including the
-`evaluate_data_boundary` engine) is implemented and tested but has no
-dependency edge from any other crate yet; integration is wiring, not design.
+`tandem-data-boundary::evaluate_provider_egress` is the canonical evaluation
+API. `tandem-core` maps structured chat fields and runtime events, while
+`tandem-memory` maps single-prompt completions. Both use private detector spans
+from one evaluation, preserve transformed payloads, and carry an opaque
+provider/model-bound permit into `ProviderRegistry`.
 
 ## 1. Provider dispatch choke points
 
-All provider egress converges on `ProviderRegistry`
+All provider egress converges on the guarded `ProviderRegistry` methods
 (`crates/tandem-providers/src/lib_parts/part01.rs`):
 
-* `stream_for_provider(provider_id, model_id, messages, tool_mode, tools, sampling, cancel)`
-  — part01.rs:818, the streaming choke point (`default_stream` delegates here).
-* `complete_for_provider(provider_id, prompt, model_id)` — part01.rs:723.
-* `complete_cheapest(prompt, provider_override, model_override)` — part01.rs:741.
+* `stream_with_egress_permit(permit, provider_id, model_id, messages, ...)`.
+* `complete_with_egress_permit(permit, provider_id, prompt, model_id)`.
+
+Both validate that the opaque permit matches the concrete provider/model route
+before delegating to the compatibility transport API. The permit cannot be
+constructed outside `tandem-data-boundary`; transport retries may borrow it
+only for the same already-prepared payload.
 
 Actual network dispatch happens inside each provider impl's
-`stream()`/`complete()` (`req.send().await` in `lib_parts/part02.rs`: OpenAI
-chat/completions :113, OpenAI responses :557, Anthropic :1293, Cohere :1385).
-No egress bypasses `ProviderRegistry` — grep for provider hostnames outside
-`tandem-providers` hits only config listings.
+`stream()`/`complete()` in `lib_parts/part02.rs`. No production LLM egress
+bypasses `ProviderRegistry`; the CI source guard rejects every production use
+of an unguarded registry method outside `tandem-providers`.
 
-**The registry layer has no tenant context** (only provider id, model id,
-messages, tools). The narrowest choke point that has *both* the fully
-assembled request *and* tenant context is the engine loop:
-`run_prompt_async_with_context` in
-`crates/tandem-core/src/engine_loop/prompt_execution.rs`. At :706–844 the
-request is complete (`messages`, `tool_schemas`, `provider_id`,
-`model_id_value`), `context.budget.final` fires (:726), the full-context
-hard-budget guard can fail closed (:817–842), and the provider stream
-dispatches at :861 via `self.providers.stream_for_provider(...)`.
+The registry layer intentionally has no tenant context. Callers therefore
+resolve the concrete route and evaluate the fully assembled payload while the
+request/session authority is still available, then invoke the registry with
+the exact prepared route and payload. This avoids mutable global authority and
+keeps tenant attribution bound to each operation.
 
 ### Complete egress call-site enumeration
 
-| Path | Location | Notes |
+| Path | Guard | Notes |
 |---|---|---|
-| Main engine loop send | `tandem-core/src/engine_loop/prompt_execution.rs:861` | has tenant context + budget events |
-| Post-tool narrative synthesis | `tandem-core/src/engine_loop/tool_execution.rs:459` | second in-loop send; **not** covered by `context.budget.final` |
-| Legacy `run_prompt`/complete | `tandem-core/src/engine_loop.rs:385,394` | |
-| Strict-KB synthesis (direct) | `tandem-server/src/http/session_kb_grounding.rs:1104,1180` | emits `context.budget.bypassed` |
-| Workflow planner transport (direct) | `tandem-server/src/http/workflow_planner_transport.rs:53,81` | emits `context.budget.bypassed` |
-| Mission builder host (direct) | `tandem-server/src/http/mission_builder_host.rs:222` | emits `context.budget.bypassed` |
-| Memory consolidation/distillation | `tandem-memory/src/distillation.rs:214`, `context_layers.rs:54` | `complete_cheapest` sends **memory content** outside all budget/audit telemetry |
+| Main engine loop send | `evaluate_dispatch_boundary` | Tenant/session/assertion authority; approval continuation supported |
+| Post-tool narrative synthesis | `evaluate_dispatch_boundary` | Tool output is evaluated after final narrative assembly; denial fails the run |
+| One-shot completion | `evaluate_provider_egress` | No implicit authority; strict mode therefore fails closed |
+| Strict-KB synthesis and completion fallback | `prepare_chat_messages` | One prepared payload is reused across stream/fallback attempts |
+| Workflow planner stream and completion fallback | `prepare_chat_messages` | Planner sessions inherit request tenant/assertion authority |
+| Mission builder | `prepare_chat_messages` | One synthetic session and run identify initial and JSON-repair sends |
+| Memory distillation | `complete_memory_prompt` | Request run/session and tenant authority supplied by the HTTP handler |
+| Memory consolidation, context layers, recursive retrieval | `complete_memory_prompt` | Legacy callers without authority work only when enforcement is not strict |
 
-### Provider identity and the missing local/remote distinction
+`scripts/verify-provider-egress-boundary.mjs` is zero-tolerance for legacy
+registry sends outside `tandem-providers`. Its CI self-test replaces a guarded
+method with an unguarded one and proves that the bypass is rejected; test-only
+provider exercises are excluded from the production scan.
 
-Providers are plain `String` ids (`ProviderInfo`/`ModelInfo`,
-`crates/tandem-types/src/provider.rs:71/:63`). **No first-class local-vs-remote
-flag exists.** The only signals today: base-url convention (`ollama` →
-`http://127.0.0.1:11434/v1`, `llama_cpp` → `http://127.0.0.1:8080/v1`,
-part01.rs:883/:920) and the cost-ordered id list in
-`select_cheapest_provider_id` (part01.rs:780–790). `ProviderBoundaryClass` in
-`tandem-data-boundary` is the intended home for this classification, but a
-`provider_id → ProviderBoundaryClass` mapping table must be built (TAN-393);
-until then callers pass `Unknown` and strict policies fail closed.
+### Trusted semantic classifications
+
+The adapter owner, not payload text, supplies these classes:
+
+| Origin | Trusted classes |
+|---|---|
+| Main engine/session | CustomerData, SourceCode; UnknownSensitive after tool iterations |
+| Docs/KB hook content | Legal plus the session classes |
+| Global memory/context scope | ProprietaryBusinessData plus the session classes |
+| Post-tool synthesis | CustomerData, SourceCode, ProprietaryBusinessData, UnknownSensitive |
+| Mission builder/workflow planner | CustomerData, SourceCode, ProprietaryBusinessData |
+| Strict KB synthesis | CustomerData, Legal, ProprietaryBusinessData |
+| Memory distillation/consolidation | CustomerData, ProprietaryBusinessData |
+| Context layers/recursive retrieval | CustomerData, SourceCode, Legal, ProprietaryBusinessData |
+
+Semantic-only classes have no detector span. Policies can block, require
+approval, or require local routing for them; redact/tokenize policies fail
+closed rather than claiming a transformation that cannot be located.
+
+### Provider identity and local/remote classification
+
+Providers remain plain `String` ids (`ProviderInfo`/`ModelInfo`). The explicit
+`TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES=id=class,...` mapping is the only trusted
+classification source. Builtin ids such as `ollama` receive no implicit trust
+because their endpoint can be reconfigured; every unmapped provider is
+`Unknown`, and strict mode fails closed.
 
 (The `provider_is_local()` in `tandem-memory/src/decrypt_broker.rs:209` is
 about KMS crypto providers, not LLM providers.)
@@ -67,10 +86,11 @@ about KMS crypto providers, not LLM providers.)
 ## 2. Context assembly
 
 Authoritative doc: `docs/ENGINE_CONTEXT_ASSEMBLY_MAP.md`. Assembly owner:
-`run_prompt_async_with_context` (`prompt_execution.rs:4`). Per-iteration order
+`run_prompt_async_with_execution_context` (with the legacy
+`run_prompt_async_with_context` wrapper retained). Per-iteration order
 (:259–774): load history → attach images → runtime + agent system prompt →
-`followup_context` → server **prompt context hook** (:347–366) → tool schema
-selection → `context.budget.final` (:726) → full-context guard → send (:861).
+`followup_context` → server **prompt context hook** → tool schema selection →
+`context.budget.final` → boundary evaluation → full-context guard → send.
 
 * History and tool-result projection: `engine_loop/prompt_runtime.rs`
   (`summarize_tool_invocation_for_history` :257, `mcp_list` compaction :401).
@@ -125,10 +145,9 @@ a finer-grained hook later (TAN-397).
   (rows without them are dropped — event_bus.rs:26), and broadcasts. Engine
   loop emitters call `self.event_bus.publish(...)` inline
   (`context.budget.final` at prompt_execution.rs:726 is the sibling to copy).
-* **Closed vocabulary**: new canonical names must be added to the
-  `RuntimeEventType` macro table (`tandem-types/src/runtime_event.rs:29`) and
-  `docs/RUNTIME_EVENTS.md` in the same change. `data_boundary.*` is not in the
-  table yet.
+* **Closed vocabulary**: all six canonical `data_boundary.*` names are in the
+  `RuntimeEventType` macro table (`tandem-types/src/runtime_event.rs`) and
+  `docs/RUNTIME_EVENTS.md`.
 * **Durable event log**: `tandem-server/src/runtime_event_log.rs`, JSONL at
   `runtime/events.jsonl`, tenant-scoped via
   `RuntimeEventLogRow::visible_to_tenant` (:56), replay via
@@ -158,8 +177,8 @@ a finer-grained hook later (TAN-397).
 
 ## 7. Tenant context availability at the choke point
 
-`run_prompt_async_with_context` already derives everything the boundary input
-needs, in scope, with no new plumbing:
+`run_prompt_async_with_execution_context` receives the actual server run ID and
+trusted execution-surface classes, then derives the remaining boundary input:
 
 * `session_record.tenant_context` → org/workspace/deployment ids
   (prompt_execution.rs:31–36).
@@ -171,52 +190,47 @@ Types: `TenantContext` (`tandem-enterprise-contract/src/lib.rs:972`),
 `VerifiedTenantContext` (:1039), `RuntimeAuthMode` (:35). Clone the three ids
 up front to avoid borrow friction with the loop.
 
-The direct sends (§1 rows 4–6) and the memory `complete_cheapest` path carry
-tenant/session context in their own handlers but do not pass it to
-`ProviderRegistry`; each needs explicit wiring for full coverage later.
+Direct server and memory sends project complete organization/workspace tenancy,
+the actual or explicitly synthetic run and session IDs, and any verified
+assertion into `ProviderEgressAuthority` before dispatch. A local-implicit
+tenant remains unattributed, preserving strict mode's positive-establishment
+requirement. Strict mode requires every one of those org/workspace/run/session
+components.
 
-## Recommendation: smallest safe audit-only integration point (TAN-390)
+## Implemented dispatch contract
 
-**Emit `data_boundary.evaluated` in the engine loop immediately after the
-`context.budget.final` publish and before the full-context guard**
-(`prompt_execution.rs`, after :774 as of this trace — anchor to the publish
-call, not the line number).
+Every caller follows this order:
 
-Why there:
-
-1. Request fully assembled; provider/model/tenant ids all in scope — no
-   signature churn.
-2. Post-hook, so it observes exactly what will egress and structurally cannot
-   substitute for any upstream gate.
-3. Sits beside an existing `EventBus::publish` — purely additive, with no
-   early return, so audit mode can never block or alter the provider call
-   (unlike the adjacent budget guard's deliberate `bail!`, which must not be
-   mirrored in the audit-only PR).
-4. Payload uses only hashes/refs/counts from `tandem-data-boundary`,
-   satisfying the RUNTIME_EVENTS.md content-by-reference rule.
-
-First-PR shape: add `tandem-data-boundary` as a `tandem-core` dependency;
-`resolve_data_boundary_mode()` (default `off`) + registry rows; thread the
-mode into engine-loop construction; emit the event (mode only gates whether it
-fires — `enforce` is not honored yet); add `DataBoundaryEvaluated` to the
-`RuntimeEventType` table and `docs/RUNTIME_EVENTS.md` in the same commit.
-Defer protected-audit writes to the server side as a follow-up.
+1. Resolve the concrete provider/model route.
+2. Assemble all provider-visible fields and attach tenant/run/session authority.
+3. Evaluate once and publish only audit-safe evidence.
+4. Block, wait for an available approval continuation, or carry transformed
+   fields forward. Paths with no continuation fail closed explicitly.
+5. Activate/take the opaque permit and dispatch the exact evaluated route and
+   prepared payload. Retries of the same payload reuse that permit and
+   preparation rather than evaluating or transforming twice.
 
 ## Known coverage gaps and risks
 
-* **`provider_id → ProviderBoundaryClass` mapping is unbuilt** (TAN-393).
-  Until then integrations pass `Unknown`; strict policies fail closed on it.
-* **Uncovered egress**: the post-tool synthesis send
-  (`tool_execution.rs:459`), the three direct server sends, and memory
-  consolidation/distillation's `complete_cheapest` (which sends memory content
-  with zero telemetry today) are not covered by the engine-loop hook. Full
-  coverage needs a second registry-level hook or per-caller wiring — but the
-  registry layer lacks tenant context, so that requires design work first.
-* **Event persistence gating**: bus events without `run_id`/`session_id` are
-  broadcast but not persisted; the emission must carry canonical ids so audit
-  records stay tenant-scoped.
+* **Provider classification storage**: classification is an audited env mapping,
+  not yet a tenant-managed registry/UI. Unknown providers fail closed in strict
+  mode.
+* **Approval continuation**: engine, post-tool, mission builder, planner, KB,
+  and server-originated memory paths wait on the permission manager and bind
+  its approval record ID into the permit. One-shot and legacy memory calls with
+  no handler fail closed explicitly.
+* **Local routing**: `RouteToLocal` still fails closed until the routing
+  contract has a concrete alternate-route implementation.
+* **Non-LLM network egress**: this inventory governs `ProviderRegistry` LLM
+  calls. Connector HTTP, MCP, browser, and embedding transports retain their
+  own authority/egress controls and are outside this provider inventory.
+* **Event persistence**: canonical provider-egress events carry `runID` and/or
+  `sessionID`, so the runtime-event log can persist them. The protected-audit
+  bridge derives tenant scope from the event's audit-safe `tenant` object and
+  retains `authorityRef` in the protected payload.
 * **Line drift**: `prompt_execution.rs` is actively refactored; re-anchor to
   `context.budget.final` when implementing.
-* **Dependency direction**: verify `tandem-core → tandem-data-boundary` adds
-  no cycle during implementation (the crate depends only on serde + sha2, so
-  none is expected).
+* **Source guards are structural, not semantic**: the CI guard prevents legacy
+  registry dispatches and its mutation self-test proves bypass detection.
+  Focused tests separately prove strict authority, semantic-only governance,
+  approvals, and transformed PII/credential payloads.

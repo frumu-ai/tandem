@@ -860,15 +860,10 @@ async fn append_webhook_audit(
     tenant_context: &TenantContext,
     actor: Option<String>,
     details: Value,
-) {
-    let _ = crate::audit::append_protected_audit_event(
-        state,
-        event_type,
-        tenant_context,
-        actor,
-        details,
-    )
-    .await;
+) -> Result<(), (StatusCode, Json<Value>)> {
+    crate::audit::append_protected_audit_event(state, event_type, tenant_context, actor, details)
+        .await
+        .map_err(super::protected_audit_error_response)
 }
 
 async fn list_webhook_triggers(
@@ -981,7 +976,7 @@ async fn create_webhook_trigger(
             "signatureScheme": result.trigger.signature_scheme,
         }),
     )
-    .await;
+    .await?;
     // Notion and Linear are provider-owned-secret flows: the real signing secret
     // is Notion's later-POSTed verification token or Linear's UI-displayed
     // signing secret (imported by the operator), so we never reveal the
@@ -1085,7 +1080,7 @@ async fn update_webhook_trigger(
             "triggerID": trigger_id,
         }),
     )
-    .await;
+    .await?;
     Ok(Json(json!({
         "trigger": trigger_value(&updated, &deliveries, &headers),
     })))
@@ -1136,7 +1131,7 @@ async fn disable_webhook_trigger(
             "triggerID": trigger_id,
         }),
     )
-    .await;
+    .await?;
     Ok(Json(json!({
         "ok": true,
         "trigger": trigger_value(&updated, &deliveries, &headers),
@@ -1185,7 +1180,7 @@ async fn delete_webhook_trigger(
             "deleted": deleted,
         }),
     )
-    .await;
+    .await?;
     Ok(Json(json!({
         "ok": true,
         "deleted": deleted,
@@ -1251,7 +1246,7 @@ async fn rotate_webhook_secret(
             "secretVersion": rotated.trigger.secret.secret_version,
         }),
     )
-    .await;
+    .await?;
     Ok(Json(json!({
         "trigger": trigger_value(&rotated.trigger, &deliveries, &headers),
         "new_secret": rotated.secret,
@@ -1309,7 +1304,7 @@ async fn reveal_webhook_verification_token(
         audit_actor(&tenant_context, &request_principal, verified),
         json!({ "automationID": id, "triggerID": trigger_id }),
     )
-    .await;
+    .await?;
     let trigger = state
         .get_automation_webhook_trigger(&tenant_context, &trigger_id)
         .await;
@@ -1388,7 +1383,7 @@ async fn import_webhook_provider_secret(
             "secretVersion": trigger.secret.secret_version,
         }),
     )
-    .await;
+    .await?;
     Ok(Json(json!({
         "ok": true,
         "trigger": trigger_value(&trigger, &deliveries, &headers),

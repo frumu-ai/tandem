@@ -87,6 +87,39 @@ pub fn resolve_channel_user(
     ChannelIdentityResolution::Resolved(build_principal(kind, user_id))
 }
 
+/// Resolve a Slack user within one explicitly bound Slack installation.
+///
+/// Slack user IDs are workspace-scoped, and the same app can be installed in
+/// multiple workspaces. Including both the team and app IDs in the Tandem actor
+/// ID prevents two installations from collapsing onto one governed principal.
+/// The normal Slack allowlist remains the authorization source.
+pub fn resolve_slack_user_for_installation(
+    effective_config: &Value,
+    team_id: &str,
+    app_id: &str,
+    surface_user_id: &str,
+) -> ChannelIdentityResolution {
+    let team_id = team_id.trim();
+    let app_id = app_id.trim();
+    let user_id = surface_user_id.trim();
+    if team_id.is_empty() || app_id.is_empty() || user_id.is_empty() {
+        return ChannelIdentityResolution::Denied {
+            kind: ChannelKind::Slack,
+            user_id: user_id.to_string(),
+        };
+    }
+
+    match resolve_channel_user(effective_config, ChannelKind::Slack, user_id) {
+        ChannelIdentityResolution::Resolved(_) => {
+            ChannelIdentityResolution::Resolved(RequestPrincipal {
+                actor_id: Some(format!("channel:slack:{team_id}:{app_id}:{user_id}")),
+                source: "channel:slack".to_string(),
+            })
+        }
+        other => other,
+    }
+}
+
 /// GOV-B5a: a channel is "open" when its `allowed_users` admits everyone via the
 /// `*` wildcard. On such a channel, being allowed to *talk* must not imply approval
 /// authority — approval there requires an explicit per-identity capability grant.
@@ -294,6 +327,44 @@ mod tests {
         assert_ne!(slack_id, discord_id);
         assert!(slack_id.starts_with("channel:slack:"));
         assert!(discord_id.starts_with("channel:discord:"));
+    }
+
+    #[test]
+    fn slack_installation_identity_scopes_actor_by_team_and_app() {
+        let cfg = json!({
+            "channels": {
+                "slack": { "allowed_users": ["U12345"] }
+            }
+        });
+        let first = resolve_slack_user_for_installation(&cfg, "T1", "A1", "U12345");
+        let second = resolve_slack_user_for_installation(&cfg, "T2", "A1", "U12345");
+        let third = resolve_slack_user_for_installation(&cfg, "T1", "A2", "U12345");
+        let actor_id = |resolution| match resolution {
+            ChannelIdentityResolution::Resolved(principal) => principal.actor_id.unwrap(),
+            other => panic!("expected resolved Slack installation identity, got {other:?}"),
+        };
+
+        assert_eq!(actor_id(first), "channel:slack:T1:A1:U12345");
+        assert_eq!(actor_id(second), "channel:slack:T2:A1:U12345");
+        assert_eq!(actor_id(third), "channel:slack:T1:A2:U12345");
+    }
+
+    #[test]
+    fn slack_installation_identity_rejects_missing_dimensions() {
+        let cfg = json!({
+            "channels": {
+                "slack": { "allowed_users": ["U12345"] }
+            }
+        });
+
+        assert!(matches!(
+            resolve_slack_user_for_installation(&cfg, "", "A1", "U12345"),
+            ChannelIdentityResolution::Denied { .. }
+        ));
+        assert!(matches!(
+            resolve_slack_user_for_installation(&cfg, "T1", "", "U12345"),
+            ChannelIdentityResolution::Denied { .. }
+        ));
     }
 
     #[test]

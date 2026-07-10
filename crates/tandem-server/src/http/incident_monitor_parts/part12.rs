@@ -460,7 +460,9 @@ fn incident_monitor_assessment_report_findings_counts(findings: &[Value]) -> Val
     })
 }
 
-fn incident_monitor_assessment_report_incident_summary(incident: &IncidentMonitorIncidentRecord) -> Value {
+fn incident_monitor_assessment_report_incident_summary(
+    incident: &IncidentMonitorIncidentRecord,
+) -> Value {
     json!({
         "incident_id": incident.incident_id,
         "title": incident.title,
@@ -615,7 +617,9 @@ fn incident_monitor_assessment_report_context_coverage(
     })
 }
 
-fn incident_monitor_assessment_report_source_readiness_summary(monitored_sources: &[Value]) -> Value {
+fn incident_monitor_assessment_report_source_readiness_summary(
+    monitored_sources: &[Value],
+) -> Value {
     let ready_sources = monitored_sources
         .iter()
         .filter(|source| {
@@ -887,8 +891,14 @@ fn incident_monitor_assessment_report_markdown(
     ));
     lines.push(format!(
         "- Probe results: {} pass, {} fail, {} blocked",
-        probe_counts.get("pass").and_then(Value::as_u64).unwrap_or(0),
-        probe_counts.get("fail").and_then(Value::as_u64).unwrap_or(0),
+        probe_counts
+            .get("pass")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        probe_counts
+            .get("fail")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
         probe_counts
             .get("blocked")
             .and_then(Value::as_u64)
@@ -921,7 +931,9 @@ fn incident_monitor_assessment_report_markdown(
     lines.push(String::new());
     lines.push("## Recommended Mitigations".to_string());
     if recommendations.is_empty() {
-        lines.push("- No immediate mitigations were generated from the selected checks.".to_string());
+        lines.push(
+            "- No immediate mitigations were generated from the selected checks.".to_string(),
+        );
     } else {
         for recommendation in recommendations.iter().take(10) {
             if let Some(text) = recommendation.get("recommendation").and_then(Value::as_str) {
@@ -943,14 +955,18 @@ async fn incident_monitor_assessment_report_persist_evidence_pack(
         generated_at_ms,
         Uuid::new_v4().simple()
     );
-    let artifact_id = format!("incident-monitor-assessment-report-{}", Uuid::new_v4().simple());
+    let artifact_id = format!(
+        "incident-monitor-assessment-report-{}",
+        Uuid::new_v4().simple()
+    );
     super::context_runs::context_run_create_impl(
         state.clone(),
         tenant_context,
         ContextRunCreateInput {
             run_id: Some(run_id.clone()),
-            objective: "Generate Incident Monitor security gap assessment report and evidence pack."
-                .to_string(),
+            objective:
+                "Generate Incident Monitor security gap assessment report and evidence pack."
+                    .to_string(),
             run_type: Some("incident_monitor_assessment_report".to_string()),
             workspace: Some(ContextWorkspaceLease::default()),
             source_client: Some("incident_monitor".to_string()),
@@ -999,7 +1015,7 @@ async fn incident_monitor_assessment_report_emit_audit_event(
     state
         .event_bus
         .publish(tandem_types::EngineEvent::new(event_type, payload.clone()));
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event_best_effort(
         state,
         event_type,
         tenant_context,

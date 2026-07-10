@@ -74,7 +74,7 @@ pub(super) async fn automations_v2_pause(
                 .await;
         }
     }
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event(
         &state,
         "automation.governance.paused",
         &tenant_context,
@@ -88,7 +88,8 @@ pub(super) async fn automations_v2_pause(
             "automation": stored.clone(),
         }),
     )
-    .await;
+    .await
+    .map_err(super::protected_audit_error_response)?;
     Ok(Json(json!({ "ok": true, "automation": stored })))
 }
 
@@ -128,7 +129,7 @@ pub(super) async fn automations_v2_resume(
             Json(json!({"error": error.to_string(), "code":"AUTOMATION_V2_UPDATE_FAILED"})),
         )
     })?;
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event(
         &state,
         "automation.governance.resumed",
         &tenant_context,
@@ -141,7 +142,8 @@ pub(super) async fn automations_v2_resume(
             "automation": stored.clone(),
         }),
     )
-    .await;
+    .await
+    .map_err(super::protected_audit_error_response)?;
     Ok(Json(json!({ "ok": true, "automation": stored })))
 }
 
@@ -815,8 +817,15 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
             )
         })?;
     if let Some(denial) = transition_guard_denial {
-        record_transition_guard_policy_decision(&state, &automation, &updated, &gate, &decider, &denial)
-            .await;
+        record_transition_guard_policy_decision(
+            &state,
+            &automation,
+            &updated,
+            &gate,
+            &decider,
+            &denial,
+        )
+        .await;
         audit_gate_decision_denial(
             &state,
             &updated,
@@ -864,7 +873,7 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
         super::context_runs::sync_automation_v2_run_blackboard(&state, &automation, &updated).await;
     // GOV-B1/B8: every gate decision (allow path) writes tamper-evident audit
     // evidence attributing WHO decided.
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event(
         &state,
         "automation.governance.gate_decided",
         &current.tenant_context,
@@ -878,7 +887,8 @@ pub(crate) async fn automations_v2_run_gate_decide_inner(
             "decidedBy": decider.clone(),
         }),
     )
-    .await;
+    .await
+    .map_err(super::protected_audit_error_response)?;
     state.event_bus.publish(tandem_types::EngineEvent::new(
         "approval.decision.recorded",
         json!({
@@ -1208,7 +1218,7 @@ async fn audit_gate_decision_denial(
     code: &str,
     detail: &str,
 ) {
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event_best_effort(
         state,
         "automation.governance.gate_decision_denied",
         &run.tenant_context,

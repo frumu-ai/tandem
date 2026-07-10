@@ -125,29 +125,35 @@ function fetchJson(url, userAgent) {
   });
 }
 
-async function downloadReleaseAsset({ repo, artifactName, packageVersion, binDir, userAgent }) {
-  console.log(`Checking releases for ${repo}...`);
-  const releases = await fetchJson(`https://api.github.com/repos/${repo}/releases`, `${userAgent}-installer`);
+function requireReleaseAsset(releases, packageVersion, artifactName) {
   const targetTag = `v${packageVersion}`;
-
-  console.log(`Filtering releases for ${repo} (Target: ${targetTag})...`);
-  let release = releases.find((r) => r.tag_name === targetTag);
-
-  if (!release) {
-    console.warn(`Warning: No release found for tag ${targetTag}. Checking for latest compatible assets...`);
-    release = releases.find((r) => r.assets.some((a) => a.name === artifactName));
-  }
+  const release = Array.isArray(releases)
+    ? releases.find((candidate) => candidate.tag_name === targetTag)
+    : undefined;
 
   if (!release) {
-    console.error(`Status: No release found with asset ${artifactName}`);
-    console.error("Available assets in latest:", releases[0]?.assets?.map((a) => a.name));
-    process.exit(1);
+    throw new Error(`Release ${targetTag} was not found; refusing to install an asset from another release`);
   }
 
-  const asset = release.assets.find((a) => a.name === artifactName);
+  const asset = Array.isArray(release.assets)
+    ? release.assets.find((candidate) => candidate.name === artifactName)
+    : undefined;
   if (!asset) {
-    throw new Error(`Release ${release.tag_name} does not contain ${artifactName}`);
+    throw new Error(`Release ${targetTag} does not contain ${artifactName}`);
   }
+
+  return { release, asset };
+}
+
+async function downloadReleaseAsset({ repo, artifactName, packageVersion, binDir, userAgent }) {
+  const targetTag = `v${packageVersion}`;
+  console.log(`Checking ${repo} release ${targetTag}...`);
+  const release = await fetchJson(
+    `https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(targetTag)}`,
+    `${userAgent}-installer`
+  );
+
+  const { asset } = requireReleaseAsset([release], packageVersion, artifactName);
   console.log(`Downloading ${asset.name} from ${release.tag_name}...`);
 
   const archivePath = path.join(binDir, artifactName);
@@ -199,6 +205,19 @@ async function extractArchive({ archivePath, artifactName, binDir, destPath, isW
   process.exit(1);
 }
 
+function verifyInstalledBinary(binaryPath, packageVersion, readVersion = installedBinaryVersion) {
+  const installedVersion = readVersion(binaryPath);
+  if (!installedVersion) {
+    throw new Error(`Installed binary at ${binaryPath} failed --version verification`);
+  }
+  if (installedVersion !== packageVersion) {
+    throw new Error(
+      `Installed binary version ${installedVersion} does not match package version ${packageVersion}`
+    );
+  }
+  return installedVersion;
+}
+
 function warnAndExit(binaryBaseName, err) {
   const detail = err && err.message ? err.message : String(err);
   console.warn(`Warning: ${binaryBaseName} binary download skipped: ${detail}`);
@@ -238,12 +257,21 @@ async function installBinary(config = {}) {
     userAgent: config.userAgent || binaryBaseName,
   });
   await extractArchive({ archivePath, artifactName, binDir, destPath, isWindows });
+  try {
+    const installedVersion = verifyInstalledBinary(destPath, packageInfo.version);
+    console.log(`Verified installed binary version ${installedVersion}.`);
+  } catch (err) {
+    fs.rmSync(destPath, { force: true });
+    throw err;
+  }
 }
 
 module.exports = {
   installBinary,
   installedBinaryVersion,
   parseVersion,
+  requireReleaseAsset,
   resolveArtifactInfo,
   shouldDownloadBinary,
+  verifyInstalledBinary,
 };

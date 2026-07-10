@@ -39,6 +39,7 @@ pub(super) mod resources;
 pub(super) mod routines;
 pub(super) mod sessions;
 pub(super) mod setup_understanding;
+pub(super) mod slack_events;
 pub(super) mod stateful_runtime_hardening;
 pub(super) mod stateful_runtime_observability_contracts;
 pub(super) mod task_intake;

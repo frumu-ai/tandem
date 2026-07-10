@@ -1134,6 +1134,16 @@ impl PackBuilderTool {
             })
             .await?;
 
+        let routine_tenant_context = match session_id {
+            Some(session_id) => self
+                .state
+                .storage
+                .get_session(session_id)
+                .await
+                .map(|session| session.tenant_context)
+                .unwrap_or_else(tandem_types::TenantContext::local_implicit),
+            None => tandem_types::TenantContext::local_implicit(),
+        };
         let mut routines_registered = Vec::<String>::new();
         let mut automations_registered = Vec::<String>::new();
         for routine_id in &plan.routine_ids {
@@ -1146,6 +1156,7 @@ impl PackBuilderTool {
             let max_agents = input.max_agents.unwrap_or(4);
             let mut routine = RoutineSpec {
                 routine_id: routine_id.clone(),
+                tenant_context: routine_tenant_context.clone(),
                 name: plan.routine_template.name.clone(),
                 status: RoutineStatus::Active,
                 schedule: plan.routine_template.schedule.clone(),

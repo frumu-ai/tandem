@@ -261,47 +261,6 @@ async fn workflow_planner_session_store_operation_result(
     let _ = state.put_workflow_planner_session(session).await;
 }
 
-async fn workflow_planner_session_start_background(
-    state: AppState,
-    session_id: String,
-    input: WorkflowPlannerSessionStartRequest,
-    request_id: String,
-) {
-    let result =
-        workflow_planner_session_start(State(state.clone()), Path(session_id.clone()), Json(input))
-            .await;
-    workflow_planner_session_store_operation_result(
-        &state,
-        &session_id,
-        &request_id,
-        "start",
-        result,
-    )
-    .await;
-}
-
-async fn workflow_planner_session_message_background(
-    state: AppState,
-    session_id: String,
-    input: WorkflowPlannerSessionMessageRequest,
-    request_id: String,
-) {
-    let result = workflow_planner_session_message(
-        State(state.clone()),
-        Path(session_id.clone()),
-        Json(input),
-    )
-    .await;
-    workflow_planner_session_store_operation_result(
-        &state,
-        &session_id,
-        &request_id,
-        "message",
-        result,
-    )
-    .await;
-}
-
 async fn workflow_planner_session_response(
     state: &AppState,
     session: &WorkflowPlannerSessionRecord,
@@ -839,6 +798,8 @@ pub(super) async fn workflow_planner_session_duplicate(
 pub(super) async fn workflow_planner_session_start(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
+    Extension(tenant_context): Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<WorkflowPlannerSessionStartRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let Some(mut session) = state.get_workflow_planner_session(&session_id).await else {
@@ -869,7 +830,13 @@ pub(super) async fn workflow_planner_session_start(
             .operator_preferences
             .or(session.operator_preferences.clone()),
     };
-    let response = workflow_plan_chat_start(State(state.clone()), Json(chat_start)).await?;
+    let response = workflow_plan_chat_start(
+        State(state.clone()),
+        Extension(tenant_context),
+        verified_tenant_context,
+        Json(chat_start),
+    )
+    .await?;
     if let Some(plan) = response.0.get("plan").cloned() {
         if let Ok(plan) = serde_json::from_value::<crate::WorkflowPlan>(plan) {
             session.current_plan_id = Some(plan.plan_id.clone());
@@ -911,6 +878,8 @@ pub(super) async fn workflow_planner_session_start(
 pub(super) async fn workflow_planner_session_start_async(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
+    Extension(tenant_context): Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<WorkflowPlannerSessionStartRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let Some(mut session) = state.get_workflow_planner_session(&session_id).await else {
@@ -960,6 +929,8 @@ pub(super) async fn workflow_planner_session_start_async(
         session_id.clone(),
         input,
         request_id,
+        tenant_context,
+        verified_tenant_context.map(|Extension(verified)| verified),
     ));
     Ok(Json(json!({
         "ok": true,
@@ -970,6 +941,8 @@ pub(super) async fn workflow_planner_session_start_async(
 pub(super) async fn workflow_planner_session_message(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
+    Extension(tenant_context): Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<WorkflowPlannerSessionMessageRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let Some(mut session) = state.get_workflow_planner_session(&session_id).await else {
@@ -1005,6 +978,8 @@ pub(super) async fn workflow_planner_session_message(
     }
     let response = workflow_plan_chat_message(
         State(state.clone()),
+        Extension(tenant_context),
+        verified_tenant_context,
         Json(WorkflowPlanChatMessageRequest {
             plan_id: plan_id.clone(),
             message: input.message,
@@ -1028,6 +1003,8 @@ pub(super) async fn workflow_planner_session_message(
 pub(super) async fn workflow_planner_session_message_async(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
+    Extension(tenant_context): Extension<tandem_types::TenantContext>,
+    verified_tenant_context: Option<Extension<tandem_types::VerifiedTenantContext>>,
     Json(input): Json<WorkflowPlannerSessionMessageRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let Some(mut session) = state.get_workflow_planner_session(&session_id).await else {
@@ -1077,6 +1054,8 @@ pub(super) async fn workflow_planner_session_message_async(
         session_id.clone(),
         input,
         request_id,
+        tenant_context,
+        verified_tenant_context.map(|Extension(verified)| verified),
     ));
     Ok(Json(json!({
         "ok": true,

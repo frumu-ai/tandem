@@ -1,21 +1,27 @@
 # Tandem Secure Data Boundary Module
 
-Status: crate foundation (Cycle 1), audit-mode runtime integration (Cycle 2),
-and configured enforcement (Cycle 3) are implemented. Behind
-`TANDEM_DATA_BOUNDARY_MODE` (default `off`) the engine loop evaluates every
-assembled provider request, emits `data_boundary.*` runtime events, and
+Status: crate foundation, audit integration, configured enforcement, and
+centralized provider-egress coverage are implemented. Behind
+`TANDEM_DATA_BOUNDARY_MODE` (default `off`) every production LLM-provider
+dispatch evaluates its assembled payload, emits `data_boundary.*` evidence, and
 tandem-server bridges consequential decisions into the protected audit
-ledger. In `enforce` mode the dispatch gate blocks prohibited/unapproved raw
-egress, redacts/tokenizes configured classes per message before send,
+ledger. Coverage includes the main engine loop, post-tool synthesis, one-shot
+completion, memory distillation/consolidation/context layers/recursive
+retrieval, mission builder, workflow planner, and strict-KB grounding. In
+`enforce` mode the dispatch gate blocks prohibited/unapproved raw egress,
+redacts/tokenizes configured fields before send,
 requires human approval via the permission surface for approval classes, and
 fails closed on `RouteToLocal` (no routing capability yet — see
 `DATA_BOUNDARY_ROUTING_CONTRACT.md`). Providers classify solely via
 `TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES` (unmapped providers — including
 builtin loopback ids, whose base URLs can be reconfigured to remote
 endpoints — stay `unknown`); `TANDEM_DATA_BOUNDARY_STRICT` fails closed on
-unclassified providers or missing tenant context (a local-implicit tenant
-counts as missing — tenancy must be positively established). Audit-only guard hooks also scan tool/MCP results and
-prompt-context-hook injections as they enter context.
+unclassified providers, incomplete organization/workspace tenancy, or missing either run or session
+authority (a local-implicit tenant counts as missing — tenancy must be
+positively established). Audit-only guard hooks also scan tool/MCP results and
+prompt-context-hook injections as they enter context. CI runs
+`scripts/verify-provider-egress-boundary.mjs` to reject any production use of
+the legacy unguarded provider registry methods.
 
 > Naming note: this document describes the `tandem-data-boundary` crate — the
 > runtime boundary between assembled payloads and external LLM providers. It is
@@ -52,8 +58,8 @@ data and external model provider calls.
 
 ## What the first crate does
 
-`crates/tandem-data-boundary` is a pure, dependency-minimal crate (serde +
-sha2, `#![forbid(unsafe_code)]`) providing:
+`crates/tandem-data-boundary` is a dependency-minimal crate (serde +
+serde_json + sha2, `#![forbid(unsafe_code)]`) providing:
 
 * **Core contract types** — `DataBoundaryMode` (Off/Audit/Enforce),
   `ProviderBoundaryClass` (Local, CustomerHosted, ApprovedExternal,
@@ -74,6 +80,20 @@ sha2, `#![forbid(unsafe_code)]`) providing:
 * **Decision engine** — `evaluate_data_boundary(request, policy)` turns
   payload, provider class, tenant context, and policy into an enforceable
   `DataBoundaryDecision` (see "How decisions work").
+* **Canonical provider-egress adapter** — `evaluate_provider_egress` accepts
+  labeled payload fields plus tenant/run/session/assertion authority, resolves
+  policy and provider classification, and returns an enforceable disposition,
+  audit event, transformed fields, and an opaque route-bound dispatch permit.
+  Detector spans remain private, are mapped back to fields from the original
+  evaluation, and never require a second detection pass. The original public
+  `DataBoundaryEvaluation` and `DataBoundaryEvaluationRequest` struct surfaces
+  remain unchanged for patch-release compatibility.
+* **Trusted semantic origins** — provider adapters attach source-owned classes
+  even when deterministic detectors find no spans: source code and customer
+  data in engine sessions, proprietary workflow/tool/memory content, legal/KB
+  content, and typed memory/direct-server origins. These hints participate in
+  block, approval, locality, and raw-egress policy without pretending they can
+  be span-redacted.
 * **Audit-safe event shape** — `DataBoundaryEvent::from_decision` produces the
   `data_boundary.*` event family with tenant/provider/operation refs, action,
   finding summary (classes/counts/severities), policy fingerprint, payload
@@ -84,23 +104,23 @@ sha2, `#![forbid(unsafe_code)]`) providing:
 
 ## What it does not do yet
 
-* Enforcement covers the main engine-loop dispatch seam only. The direct
-  server sends, post-tool synthesis send, and memory-distillation egress
-  paths listed in `docs/DATA_BOUNDARY_INTEGRATION_MAP.md` remain uncovered.
-  Workflow-artifact prompt folding is guarded audit-only (TAN-600,
-  `sourceKind: workflow_artifact`) at the automation executor.
+* Workflow-artifact prompt folding remains guarded audit-only (TAN-600,
+  `sourceKind: workflow_artifact`) at the automation executor; the final LLM
+  dispatch is enforced separately by the provider-egress gate.
 * `RouteToLocal` has no routing capability: enforce mode fails closed with
   `route_to_local_unavailable` per the routing contract.
 * Approval asks reuse the generic permission surface; `always`-style standing
   rules are not consulted by the boundary gate (every sensitive dispatch asks
-  again), and a dedicated ask kind is future work.
+  again), and a dedicated ask kind is future work. Engine, post-tool, direct
+  server, and server-originated memory calls activate an opaque permit after a
+  positive continuation. Legacy memory and one-shot calls with no continuation
+  fail closed with `DATA_BOUNDARY_APPROVAL_UNAVAILABLE`.
 * No LLM-based classification; detection is deterministic only.
 * No raw sensitive value persistence, and no reversible tokenization vault —
   the tokenization map is placeholder-only. Future persistence should go
   through the existing secret resolver or encrypted memory layer.
-* No provider registry integration: callers must supply the
-  `ProviderBoundaryClass` until TAN-393 makes classification configurable and
-  auditable.
+* Provider classification remains environment-configured rather than stored in
+  a tenant policy service. Unmapped ids stay `Unknown`; strict mode blocks them.
 * No actual local/private routing; `RouteToLocal` is a decision the caller
   must honor (TAN-396 designs the routing contract).
 * No policy UI/API (planned in Cycle 4).
@@ -120,9 +140,13 @@ even when a stronger action wins:
 
 * **Off mode** allows without running detection (`mode_off`).
 * **Prohibited providers** (class or id) block (`prohibited_provider`).
-* **Strict fail-closed** (`strict_fail_closed`): missing tenant context or an
-  `Unknown` provider class blocks (`missing_tenant_context`,
-  `unknown_provider_boundary_class`).
+* **Strict fail-closed** (`strict_fail_closed`): both a nonblank organization
+  and workspace are required, and an `Unknown` provider class blocks
+  (`missing_tenant_context`, `missing_tenant_organization`,
+  `missing_tenant_workspace`, `unknown_provider_boundary_class`). The canonical
+  provider-egress adapter additionally requires both a nonblank run ID and
+  session ID (`missing_run_authority`, `missing_session_authority`,
+  `missing_execution_authority`).
 * **Payload cap** (`max_payload_bytes`): oversized payloads block
   (`payload_too_large`) to bound spend expansion.
 * **Class rules** for every sensitive class present (detected or declared via
@@ -139,13 +163,12 @@ even when a stronger action wins:
   CustomerHosted, and ApprovedExternal providers are intrinsically approved;
   UnapprovedExternal can be exempted via `approved_provider_ids` /
   `approved_provider_classes`.
-* **Audit mode never blocks**: decisions that would stop dispatch (Block,
+* **Audit mode never blocks or transforms provider payloads**: decisions that
+  would stop dispatch (Block,
   RequireApproval, RouteToLocal) downgrade, keeping their reason codes plus
-  `audit_mode_downgrade`. When the policy also configured a span-backed
-  redaction/tokenization for the payload, the downgrade falls back to that
-  transformation rather than dispatching the raw content; otherwise it becomes
-  `AllowWithAudit`. Redact/Tokenize themselves still apply in audit mode,
-  since transformation is non-blocking.
+  `audit_mode_downgrade`. The pure decision result may include a proposed
+  span-backed transformation, but `evaluate_provider_egress` records that
+  decision as `data_boundary.evaluated` and preserves the original dispatch.
 * Sensitive classes with no matching rule yield `AllowWithAudit`
   (`sensitive_classes_present`); a clean payload yields `Allow`
   (`no_findings`).

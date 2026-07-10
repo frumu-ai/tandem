@@ -6,8 +6,16 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 mod evaluate;
+mod provider_egress;
 
 pub use evaluate::{evaluate_data_boundary, DataBoundaryEvaluation, DataBoundaryEvaluationRequest};
+pub use provider_egress::{
+    classify_provider_from_env, evaluate_provider_egress, evaluate_provider_egress_with_policy,
+    provider_egress_mode_from_env, provider_egress_payload_hash, provider_egress_policy_from_env,
+    ProviderEgressApproval, ProviderEgressAuditEvent, ProviderEgressAuthority,
+    ProviderEgressDisposition, ProviderEgressEvaluation, ProviderEgressField, ProviderEgressPermit,
+    ProviderEgressRequest,
+};
 
 /// Stable content hash for boundary inputs and monitoring dedupe. The result
 /// is safe to log and never reveals payload content.

@@ -359,7 +359,7 @@ pub(super) async fn workflow_run_gate_decide(
     }
 
     // GOV-B8 parity: every gate decision leaves tamper-evident audit.
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event(
         &state,
         "workflow.governance.gate_decided",
         &tenant_context,
@@ -373,7 +373,8 @@ pub(super) async fn workflow_run_gate_decide(
             "decidedBy": decider,
         }),
     )
-    .await;
+    .await
+    .map_err(super::protected_audit_error_response)?;
     state.event_bus.publish(EngineEvent::new(
         "approval.decision.recorded",
         json!({

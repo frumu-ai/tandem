@@ -21,7 +21,7 @@ impl Provider for OpenAICompatibleProvider {
         let url = format!("{}/chat/completions", self.base_url);
         let mut response_opt = None;
         let mut last_send_err: Option<reqwest::Error> = None;
-        let mut last_error_detail: Option<String> = None;
+        let mut last_error: Option<anyhow::Error> = None;
         let mut max_tokens = provider_max_tokens_for(&self.id);
         for attempt in 0..3 {
             let mut req = self.client.post(url.clone()).json(&json!({
@@ -52,7 +52,7 @@ impl Provider for OpenAICompatibleProvider {
                                 continue;
                             }
                         }
-                        last_error_detail = Some(format_openai_error_response(status, &text));
+                        last_error = Some(openai_response_error(status, &text));
                         break;
                     }
                     response_opt = Some(resp);
@@ -73,8 +73,8 @@ impl Provider for OpenAICompatibleProvider {
 
         let response = if let Some(resp) = response_opt {
             resp
-        } else if let Some(detail) = last_error_detail {
-            anyhow::bail!(detail);
+        } else if let Some(error) = last_error {
+            return Err(error);
         } else {
             let err = last_send_err.expect("send error should be captured");
             let category = if err.is_connect() {
@@ -180,7 +180,7 @@ impl Provider for OpenAICompatibleProvider {
 
         let mut resp_opt = None;
         let mut last_send_err: Option<reqwest::Error> = None;
-        let mut last_error_detail: Option<String> = None;
+        let mut last_error: Option<anyhow::Error> = None;
         let mut downgraded_openrouter_tool_choice = false;
         for attempt in 0..3 {
             let mut req = self.client.post(url.clone()).json(&body);
@@ -217,7 +217,7 @@ impl Provider for OpenAICompatibleProvider {
                                 continue;
                             }
                         }
-                        last_error_detail = Some(format_openai_error_response(status, &text));
+                        last_error = Some(openai_response_error(status, &text));
                         break;
                     }
                     resp_opt = Some(resp);
@@ -238,8 +238,8 @@ impl Provider for OpenAICompatibleProvider {
 
         let resp = if let Some(resp) = resp_opt {
             resp
-        } else if let Some(detail) = last_error_detail {
-            anyhow::bail!(detail);
+        } else if let Some(error) = last_error {
+            return Err(error);
         } else {
             let err = last_send_err.expect("send error should be captured");
             let category = if err.is_connect() {
@@ -474,6 +474,32 @@ impl Provider for OpenAIResponsesProvider {
         }
     }
 
+    async fn complete_with_auth_override(
+        &self,
+        prompt: &str,
+        model_override: Option<&str>,
+        auth_override: ProviderAuthOverride,
+    ) -> anyhow::Result<String> {
+        if matches!(auth_override, ProviderAuthOverride::Inherit) {
+            return self.complete(prompt, model_override).await;
+        }
+        let api_key = match auth_override {
+            ProviderAuthOverride::Inherit => unreachable!("handled above"),
+            ProviderAuthOverride::Suppress => None,
+            ProviderAuthOverride::Bearer(token) => Some(token),
+        };
+        let scoped = Self {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            base_url: self.base_url.clone(),
+            api_key,
+            default_model: self.default_model.clone(),
+            models: self.models.clone(),
+            client: self.client.clone(),
+        };
+        scoped.complete(prompt, model_override).await
+    }
+
     async fn complete(&self, prompt: &str, model_override: Option<&str>) -> anyhow::Result<String> {
         let model = model_override
             .map(str::trim)
@@ -507,7 +533,7 @@ impl Provider for OpenAIResponsesProvider {
 
         let mut response_opt = None;
         let mut last_send_err: Option<reqwest::Error> = None;
-        let mut last_error_detail: Option<String> = None;
+        let mut last_error: Option<anyhow::Error> = None;
         for attempt in 0..3 {
             let mut req = self.client.post(url.clone()).json(&body);
             if let Some(api_key) = &self.api_key {
@@ -522,7 +548,7 @@ impl Provider for OpenAIResponsesProvider {
                         if text.contains("Stream must be set to true") {
                             return self.complete_via_streamed_responses(prompt, model).await;
                         }
-                        last_error_detail = Some(format_openai_error_response(status, &text));
+                        last_error = Some(openai_response_error(status, &text));
                         break;
                     }
                     response_opt = Some(resp);
@@ -543,8 +569,8 @@ impl Provider for OpenAIResponsesProvider {
 
         let response = if let Some(resp) = response_opt {
             resp
-        } else if let Some(detail) = last_error_detail {
-            anyhow::bail!(detail);
+        } else if let Some(error) = last_error {
+            return Err(error);
         } else {
             let err = last_send_err.expect("send error should be captured");
             let category = if err.is_connect() {
@@ -587,6 +613,28 @@ impl Provider for OpenAIResponsesProvider {
         tools: Option<Vec<ToolSchema>>,
         sampling: SamplingParams,
         cancel: CancellationToken,
+    ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
+        self.stream_with_auth_override(
+            messages,
+            model_override,
+            tool_mode,
+            tools,
+            sampling,
+            cancel,
+            ProviderAuthOverride::Inherit,
+        )
+        .await
+    }
+
+    async fn stream_with_auth_override(
+        &self,
+        messages: Vec<ChatMessage>,
+        model_override: Option<&str>,
+        tool_mode: ToolMode,
+        tools: Option<Vec<ToolSchema>>,
+        sampling: SamplingParams,
+        cancel: CancellationToken,
+        auth_override: ProviderAuthOverride,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
         let model = model_override
             .map(str::trim)
@@ -644,12 +692,18 @@ impl Provider for OpenAIResponsesProvider {
         }
         apply_openai_responses_sampling(&mut body, &self.id, model, sampling);
 
+        let runtime_bearer = match &auth_override {
+            ProviderAuthOverride::Inherit => self.api_key.as_deref(),
+            ProviderAuthOverride::Suppress => None,
+            ProviderAuthOverride::Bearer(token) => Some(token.as_str()),
+        };
+
         let mut resp_opt = None;
         let mut last_send_err: Option<reqwest::Error> = None;
-        let mut last_error_detail: Option<String> = None;
+        let mut last_error: Option<anyhow::Error> = None;
         for attempt in 0..3 {
             let mut req = self.client.post(url.clone()).json(&body);
-            if let Some(api_key) = &self.api_key {
+            if let Some(api_key) = runtime_bearer {
                 req = req.bearer_auth(api_key);
             }
 
@@ -658,7 +712,7 @@ impl Provider for OpenAIResponsesProvider {
                     let status = resp.status();
                     if !status.is_success() {
                         let text = resp.text().await.unwrap_or_default();
-                        last_error_detail = Some(format_openai_error_response(status, &text));
+                        last_error = Some(openai_response_error(status, &text));
                         break;
                     }
                     resp_opt = Some(resp);
@@ -679,8 +733,8 @@ impl Provider for OpenAIResponsesProvider {
 
         let resp = if let Some(resp) = resp_opt {
             resp
-        } else if let Some(detail) = last_error_detail {
-            anyhow::bail!(detail);
+        } else if let Some(error) = last_error {
+            return Err(error);
         } else {
             let err = last_send_err.expect("send error should be captured");
             let category = if err.is_connect() {
@@ -1206,7 +1260,7 @@ impl OpenAIResponsesProvider {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!(format_openai_error_response(status, &text));
+            return Err(openai_response_error(status, &text));
         }
         let sse_text = resp.text().await?;
         parse_openai_responses_sse_text(&sse_text)

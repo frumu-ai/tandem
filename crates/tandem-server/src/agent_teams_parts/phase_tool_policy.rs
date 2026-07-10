@@ -210,7 +210,7 @@ async fn record_automation_phase_tool_policy_decision(
         }
     };
 
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event_best_effort(
         state,
         "automation.phase_tool.denied",
         &run.tenant_context,

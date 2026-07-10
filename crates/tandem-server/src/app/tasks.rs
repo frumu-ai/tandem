@@ -11,7 +11,7 @@ use crate::http::context_runs::{
 };
 use crate::http::context_types::{ContextRunEventAppendInput, ContextRunStatus};
 use crate::incident_monitor::types::{IncidentMonitorConfig, IncidentMonitorIncidentRecord};
-use crate::routines::types::{RoutineHistoryEvent, RoutineRunStatus};
+use crate::routines::types::{RoutineHistoryEvent, RoutineRunRecord, RoutineRunStatus};
 use crate::runtime_event_log::{
     append_runtime_event_log_row, prune_runtime_event_log, RuntimeEventLogRow,
 };
@@ -1423,12 +1423,14 @@ pub async fn run_routine_scheduler(state: AppState) {
         let now = now_ms();
         let plans = state.evaluate_routine_misfires(now).await;
         for plan in plans {
-            let Some(routine) = state.get_routine(&plan.routine_id).await else {
+            let Some(routine) = state.get_routine_by_identity(&plan.identity).await else {
                 continue;
             };
             match crate::app::state::evaluate_routine_execution_policy(&routine, "scheduled") {
                 crate::app::state::RoutineExecutionDecision::Allowed => {
-                    let _ = state.mark_routine_fired(&plan.routine_id, now).await;
+                    let _ = state
+                        .mark_routine_fired_by_identity(&plan.identity, now)
+                        .await;
                     let run = state
                         .create_routine_run(
                             &routine,
@@ -1440,7 +1442,8 @@ pub async fn run_routine_scheduler(state: AppState) {
                         .await;
                     state
                         .append_routine_history(RoutineHistoryEvent {
-                            routine_id: plan.routine_id.clone(),
+                            routine_id: plan.identity.routine_id.clone(),
+                            tenant_context: plan.tenant_context.clone(),
                             trigger_type: "scheduled".to_string(),
                             run_count: plan.run_count,
                             fired_at_ms: now,
@@ -1448,22 +1451,28 @@ pub async fn run_routine_scheduler(state: AppState) {
                             detail: None,
                         })
                         .await;
-                    state.event_bus.publish(EngineEvent::new(
-                        "routine.fired",
-                        serde_json::json!({
-                            "routineID": plan.routine_id,
-                            "runID": run.run_id,
-                            "runCount": plan.run_count,
-                            "scheduledAtMs": plan.scheduled_at_ms,
-                            "nextFireAtMs": plan.next_fire_at_ms,
-                        }),
-                    ));
-                    state.event_bus.publish(EngineEvent::new(
-                        "routine.run.created",
-                        serde_json::json!({
-                            "run": run,
-                        }),
-                    ));
+                    state
+                        .event_bus
+                        .publish(crate::routines::types::tenant_scoped_engine_event(
+                            "routine.fired",
+                            &plan.tenant_context,
+                            serde_json::json!({
+                                "routineID": plan.identity.routine_id,
+                                "runID": run.run_id,
+                                "runCount": plan.run_count,
+                                "scheduledAtMs": plan.scheduled_at_ms,
+                                "nextFireAtMs": plan.next_fire_at_ms,
+                            }),
+                        ));
+                    state
+                        .event_bus
+                        .publish(crate::routines::types::tenant_scoped_engine_event(
+                            "routine.run.created",
+                            &plan.tenant_context,
+                            serde_json::json!({
+                                "run": run,
+                            }),
+                        ));
                 }
                 crate::app::state::RoutineExecutionDecision::RequiresApproval { reason } => {
                     let run = state
@@ -1477,7 +1486,8 @@ pub async fn run_routine_scheduler(state: AppState) {
                         .await;
                     state
                         .append_routine_history(RoutineHistoryEvent {
-                            routine_id: plan.routine_id.clone(),
+                            routine_id: plan.identity.routine_id.clone(),
+                            tenant_context: plan.tenant_context.clone(),
                             trigger_type: "scheduled".to_string(),
                             run_count: plan.run_count,
                             fired_at_ms: now,
@@ -1485,22 +1495,28 @@ pub async fn run_routine_scheduler(state: AppState) {
                             detail: Some(reason.clone()),
                         })
                         .await;
-                    state.event_bus.publish(EngineEvent::new(
-                        "routine.approval_required",
-                        serde_json::json!({
-                            "routineID": plan.routine_id,
-                            "runID": run.run_id,
-                            "runCount": plan.run_count,
-                            "triggerType": "scheduled",
-                            "reason": reason,
-                        }),
-                    ));
-                    state.event_bus.publish(EngineEvent::new(
-                        "routine.run.created",
-                        serde_json::json!({
-                            "run": run,
-                        }),
-                    ));
+                    state
+                        .event_bus
+                        .publish(crate::routines::types::tenant_scoped_engine_event(
+                            "routine.approval_required",
+                            &plan.tenant_context,
+                            serde_json::json!({
+                                "routineID": plan.identity.routine_id,
+                                "runID": run.run_id,
+                                "runCount": plan.run_count,
+                                "triggerType": "scheduled",
+                                "reason": reason,
+                            }),
+                        ));
+                    state
+                        .event_bus
+                        .publish(crate::routines::types::tenant_scoped_engine_event(
+                            "routine.run.created",
+                            &plan.tenant_context,
+                            serde_json::json!({
+                                "run": run,
+                            }),
+                        ));
                 }
                 crate::app::state::RoutineExecutionDecision::Blocked { reason } => {
                     let run = state
@@ -1514,7 +1530,8 @@ pub async fn run_routine_scheduler(state: AppState) {
                         .await;
                     state
                         .append_routine_history(RoutineHistoryEvent {
-                            routine_id: plan.routine_id.clone(),
+                            routine_id: plan.identity.routine_id.clone(),
+                            tenant_context: plan.tenant_context.clone(),
                             trigger_type: "scheduled".to_string(),
                             run_count: plan.run_count,
                             fired_at_ms: now,
@@ -1522,22 +1539,28 @@ pub async fn run_routine_scheduler(state: AppState) {
                             detail: Some(reason.clone()),
                         })
                         .await;
-                    state.event_bus.publish(EngineEvent::new(
-                        "routine.blocked",
-                        serde_json::json!({
-                            "routineID": plan.routine_id,
-                            "runID": run.run_id,
-                            "runCount": plan.run_count,
-                            "triggerType": "scheduled",
-                            "reason": reason,
-                        }),
-                    ));
-                    state.event_bus.publish(EngineEvent::new(
-                        "routine.run.created",
-                        serde_json::json!({
-                            "run": run,
-                        }),
-                    ));
+                    state
+                        .event_bus
+                        .publish(crate::routines::types::tenant_scoped_engine_event(
+                            "routine.blocked",
+                            &plan.tenant_context,
+                            serde_json::json!({
+                                "routineID": plan.identity.routine_id,
+                                "runID": run.run_id,
+                                "runCount": plan.run_count,
+                                "triggerType": "scheduled",
+                                "reason": reason,
+                            }),
+                        ));
+                    state
+                        .event_bus
+                        .publish(crate::routines::types::tenant_scoped_engine_event(
+                            "routine.run.created",
+                            &plan.tenant_context,
+                            serde_json::json!({
+                                "run": run,
+                            }),
+                        ));
                 }
             }
         }
@@ -1554,23 +1577,23 @@ pub async fn run_routine_executor(state: AppState) {
             continue;
         };
 
-        state.event_bus.publish(EngineEvent::new(
-            "routine.run.started",
-            serde_json::json!({
-                "runID": run.run_id,
-                "routineID": run.routine_id,
-                "triggerType": run.trigger_type,
-                "startedAtMs": now_ms(),
-            }),
-        ));
+        state
+            .event_bus
+            .publish(crate::routines::types::tenant_scoped_engine_event(
+                "routine.run.started",
+                &run.tenant_context,
+                serde_json::json!({
+                    "runID": run.run_id,
+                    "routineID": run.routine_id,
+                    "triggerType": run.trigger_type,
+                    "startedAtMs": now_ms(),
+                }),
+            ));
 
         let workspace_root = state.workspace_index.snapshot().await.root;
-        let mut session = Session::new(
-            Some(format!("Routine {}", run.routine_id)),
-            Some(workspace_root.clone()),
-        );
+        let session = routine_execution_session(&run, workspace_root);
         let session_id = session.id.clone();
-        session.workspace_root = Some(workspace_root);
+        let tenant_context = run.tenant_context.clone();
 
         if let Err(error) = state.storage.save_session(session).await {
             let detail = format!("failed to create routine session: {error}");
@@ -1581,14 +1604,17 @@ pub async fn run_routine_executor(state: AppState) {
                     Some(detail.clone()),
                 )
                 .await;
-            state.event_bus.publish(EngineEvent::new(
-                "routine.run.failed",
-                serde_json::json!({
-                    "runID": run.run_id,
-                    "routineID": run.routine_id,
-                    "reason": detail,
-                }),
-            ));
+            state
+                .event_bus
+                .publish(crate::routines::types::tenant_scoped_engine_event(
+                    "routine.run.failed",
+                    &run.tenant_context,
+                    serde_json::json!({
+                        "runID": run.run_id,
+                        "routineID": run.routine_id,
+                        "reason": detail,
+                    }),
+                ));
             continue;
         }
 
@@ -1597,6 +1623,7 @@ pub async fn run_routine_executor(state: AppState) {
                 session_id.clone(),
                 run.run_id.clone(),
                 run.routine_id.clone(),
+                run.tenant_context.clone(),
                 run.allowed_tools.clone(),
             )
             .await;
@@ -1615,16 +1642,19 @@ pub async fn run_routine_executor(state: AppState) {
         let (selected_model, model_source) =
             crate::app::routines::resolve_routine_model_spec_for_run(&state, &run).await;
         if let Some(spec) = selected_model.as_ref() {
-            state.event_bus.publish(EngineEvent::new(
-                "routine.run.model_selected",
-                serde_json::json!({
-                    "runID": run.run_id,
-                    "routineID": run.routine_id,
-                    "providerID": spec.provider_id,
-                    "modelID": spec.model_id,
-                    "source": model_source,
-                }),
-            ));
+            state
+                .event_bus
+                .publish(crate::routines::types::tenant_scoped_engine_event(
+                    "routine.run.model_selected",
+                    &run.tenant_context,
+                    serde_json::json!({
+                        "runID": run.run_id,
+                        "routineID": run.routine_id,
+                        "providerID": spec.provider_id,
+                        "modelID": spec.model_id,
+                        "source": model_source,
+                    }),
+                ));
         }
 
         let request = SendMessageRequest {
@@ -1642,14 +1672,21 @@ pub async fn run_routine_executor(state: AppState) {
             sampling: Default::default(),
         };
 
-        let run_result = state
-            .engine_loop
-            .run_prompt_async_with_context(
-                session_id.clone(),
-                request,
-                Some(format!("routine:{}", run.run_id)),
-            )
-            .await;
+        let execution_surface = if run.trigger_type == "scheduled" {
+            crate::http::session_run_retry::PromptExecutionSurface::Scheduled
+        } else {
+            crate::http::session_run_retry::PromptExecutionSurface::Routine
+        };
+        let run_result = crate::http::session_run_retry::run_prompt_with_auth_recovery(
+            &state,
+            &session_id,
+            &run.run_id,
+            execution_surface,
+            request,
+            Some(format!("routine:{}", run.run_id)),
+            &tenant_context,
+        )
+        .await;
 
         state.clear_routine_session_policy(&session_id).await;
         state
@@ -1674,28 +1711,34 @@ pub async fn run_routine_executor(state: AppState) {
                         Some("routine run completed".to_string()),
                     )
                     .await;
-                state.event_bus.publish(EngineEvent::new(
-                    "routine.run.completed",
-                    serde_json::json!({
-                        "runID": run.run_id,
-                        "routineID": run.routine_id,
-                        "sessionID": session_id,
-                        "finishedAtMs": now_ms(),
-                    }),
-                ));
+                state
+                    .event_bus
+                    .publish(crate::routines::types::tenant_scoped_engine_event(
+                        "routine.run.completed",
+                        &run.tenant_context,
+                        serde_json::json!({
+                            "runID": run.run_id,
+                            "routineID": run.routine_id,
+                            "sessionID": session_id,
+                            "finishedAtMs": now_ms(),
+                        }),
+                    ));
             }
             Err(error) => {
                 if let Some(latest) = state.get_routine_run(&run.run_id).await {
                     if latest.status == RoutineRunStatus::Paused {
-                        state.event_bus.publish(EngineEvent::new(
-                            "routine.run.paused",
-                            serde_json::json!({
-                                "runID": run.run_id,
-                                "routineID": run.routine_id,
-                                "sessionID": session_id,
-                                "finishedAtMs": now_ms(),
-                            }),
-                        ));
+                        state.event_bus.publish(
+                            crate::routines::types::tenant_scoped_engine_event(
+                                "routine.run.paused",
+                                &run.tenant_context,
+                                serde_json::json!({
+                                    "runID": run.run_id,
+                                    "routineID": run.routine_id,
+                                    "sessionID": session_id,
+                                    "finishedAtMs": now_ms(),
+                                }),
+                            ),
+                        );
                         continue;
                     }
                 }
@@ -1707,19 +1750,32 @@ pub async fn run_routine_executor(state: AppState) {
                         Some(detail.clone()),
                     )
                     .await;
-                state.event_bus.publish(EngineEvent::new(
-                    "routine.run.failed",
-                    serde_json::json!({
-                        "runID": run.run_id,
-                        "routineID": run.routine_id,
-                        "sessionID": session_id,
-                        "reason": detail,
-                        "finishedAtMs": now_ms(),
-                    }),
-                ));
+                state
+                    .event_bus
+                    .publish(crate::routines::types::tenant_scoped_engine_event(
+                        "routine.run.failed",
+                        &run.tenant_context,
+                        serde_json::json!({
+                            "runID": run.run_id,
+                            "routineID": run.routine_id,
+                            "sessionID": session_id,
+                            "reason": detail,
+                            "finishedAtMs": now_ms(),
+                        }),
+                    ));
             }
         }
     }
+}
+
+pub(crate) fn routine_execution_session(run: &RoutineRunRecord, workspace_root: String) -> Session {
+    let mut session = Session::new(
+        Some(format!("Routine {}", run.routine_id)),
+        Some(workspace_root.clone()),
+    );
+    session.workspace_root = Some(workspace_root);
+    session.tenant_context = run.tenant_context.clone();
+    session
 }
 
 pub async fn run_automation_v2_scheduler(state: AppState) {
@@ -1746,15 +1802,18 @@ pub async fn run_automation_v2_scheduler(state: AppState) {
                 .await
             {
                 let tenant_context = run.tenant_context.clone();
-                state.event_bus.publish(EngineEvent::new(
-                    "automation.v2.run.created",
-                    serde_json::json!({
-                        "automationID": automation_id,
-                        "run": run,
-                        "tenantContext": tenant_context,
-                        "triggerType": "scheduled",
-                    }),
-                ));
+                state
+                    .event_bus
+                    .publish(crate::routines::types::tenant_scoped_engine_event(
+                        "automation.v2.run.created",
+                        &tenant_context,
+                        serde_json::json!({
+                            "automationID": automation_id,
+                            "run": run,
+                            "tenantContext": tenant_context,
+                            "triggerType": "scheduled",
+                        }),
+                    ));
             }
         }
 
@@ -1817,16 +1876,19 @@ pub async fn run_automation_v2_scheduler(state: AppState) {
             {
                 Ok(run) => {
                     let tenant_context = run.tenant_context.clone();
-                    state.event_bus.publish(EngineEvent::new(
-                        "automation.v2.run.created",
-                        serde_json::json!({
-                            "automationID": automation_id,
-                            "run": run,
-                            "tenantContext": tenant_context,
-                            "triggerType": "watch_condition",
-                            "triggerReason": trigger_reason,
-                        }),
-                    ));
+                    state
+                        .event_bus
+                        .publish(crate::routines::types::tenant_scoped_engine_event(
+                            "automation.v2.run.created",
+                            &tenant_context,
+                            serde_json::json!({
+                                "automationID": automation_id,
+                                "run": run,
+                                "tenantContext": tenant_context,
+                                "triggerType": "watch_condition",
+                                "triggerReason": trigger_reason,
+                            }),
+                        ));
                 }
                 Err(err) => {
                     tracing::warn!(
@@ -1856,98 +1918,5 @@ pub async fn run_optimization_scheduler(state: AppState) {
 }
 
 #[cfg(test)]
-mod incident_monitor_candidate_tests {
-    use super::*;
-
-    #[test]
-    fn incident_monitor_candidate_detection_includes_terminal_failures() {
-        for event_type in [
-            "context.task.failed",
-            "context.task.blocked",
-            "context.run.failed",
-            "workflow.run.failed",
-            "workflow.validation.failed",
-            "routine.run.failed",
-            "session.error",
-            "automation.run.failed",
-            "automation_v2.run.failed",
-            "automation_v2.run.paused_stale_no_provider_activity",
-            "coder.run.failed",
-        ] {
-            assert!(
-                is_incident_monitor_candidate_event(&EngineEvent::new(
-                    event_type,
-                    serde_json::json!({})
-                )),
-                "{event_type} should be monitored"
-            );
-        }
-    }
-
-    #[test]
-    fn incident_monitor_candidate_detection_ignores_progress_and_monitor_events() {
-        for event_type in [
-            "context.task.started",
-            "context.task.requeued",
-            "workflow.action.completed",
-            "automation_v2.run.started",
-            "routine.run.completed",
-            "incident_monitor.incident.detected",
-        ] {
-            assert!(
-                !is_incident_monitor_candidate_event(&EngineEvent::new(
-                    event_type,
-                    serde_json::json!({})
-                )),
-                "{event_type} should not be monitored"
-            );
-        }
-    }
-
-    #[test]
-    fn incident_monitor_candidate_detection_ignores_automation_v2_context_mirror_failures() {
-        for event in [
-            EngineEvent::new(
-                "context.task.failed",
-                serde_json::json!({
-                    "source": "automation_v2",
-                    "automation_id": "automation-v2-123",
-                    "run_id": "automation-v2-run-123",
-                    "task_id": "node-downstream",
-                }),
-            ),
-            EngineEvent::new(
-                "context.task.blocked",
-                serde_json::json!({
-                    "automationID": "automation-v2-123",
-                    "runID": "automation-v2-run-123",
-                    "taskID": "node-downstream",
-                }),
-            ),
-            EngineEvent::new(
-                "context.run.failed",
-                serde_json::json!({
-                    "runID": "automation-v2-automation-v2-run-123",
-                }),
-            ),
-        ] {
-            assert!(
-                !is_incident_monitor_candidate_event(&event),
-                "{} from automation v2 context mirror should be grouped under automation_v2.run.failed",
-                event.event_type
-            );
-        }
-    }
-
-    #[test]
-    fn incident_monitor_candidate_detection_keeps_standalone_context_failures() {
-        assert!(is_incident_monitor_candidate_event(&EngineEvent::new(
-            "context.task.failed",
-            serde_json::json!({
-                "source": "context_run",
-                "run_id": "context-run-123",
-                "task_id": "inspect_failure",
-            }),
-        )));
-    }
-}
+#[path = "tasks_tests.rs"]
+mod incident_monitor_candidate_tests;

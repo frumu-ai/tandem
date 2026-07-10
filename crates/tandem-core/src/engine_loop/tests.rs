@@ -209,6 +209,53 @@ struct SamplingCaptureProvider {
     captured: Arc<std::sync::Mutex<Option<tandem_types::SamplingParams>>>,
 }
 
+struct PostToolCaptureProvider {
+    captured: Arc<std::sync::Mutex<Option<Vec<ChatMessage>>>>,
+}
+
+#[async_trait]
+impl Provider for PostToolCaptureProvider {
+    fn info(&self) -> tandem_types::ProviderInfo {
+        tandem_types::ProviderInfo {
+            id: "scripted-provider-stream".to_string(),
+            name: "Post-tool Capture".to_string(),
+            models: vec![tandem_types::ModelInfo {
+                id: "scripted-model".to_string(),
+                provider_id: "scripted-provider-stream".to_string(),
+                display_name: "Scripted Model".to_string(),
+                context_window: 8192,
+            }],
+        }
+    }
+
+    async fn complete(
+        &self,
+        _prompt: &str,
+        _model_override: Option<&str>,
+    ) -> anyhow::Result<String> {
+        Ok("complete fallback".to_string())
+    }
+
+    async fn stream(
+        &self,
+        messages: Vec<ChatMessage>,
+        _model_override: Option<&str>,
+        _tool_mode: ToolMode,
+        _tools: Option<Vec<ToolSchema>>,
+        _sampling: tandem_types::SamplingParams,
+        _cancel: CancellationToken,
+    ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
+        *self.captured.lock().expect("capture lock") = Some(messages);
+        Ok(Box::pin(stream::iter(vec![
+            Ok(StreamChunk::TextDelta("safe narrative".to_string())),
+            Ok(StreamChunk::Done {
+                finish_reason: "stop".to_string(),
+                usage: None,
+            }),
+        ])))
+    }
+}
+
 #[async_trait]
 impl Provider for SamplingCaptureProvider {
     fn info(&self) -> tandem_types::ProviderInfo {
@@ -249,6 +296,73 @@ impl Provider for SamplingCaptureProvider {
                 usage: None,
             }),
         ])))
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial(data_boundary_env)]
+async fn post_tool_narrative_redacts_secret_and_pii_before_provider_dispatch() {
+    let _guard = env_test_lock();
+    let previous = [
+        "TANDEM_DATA_BOUNDARY_MODE",
+        "TANDEM_DATA_BOUNDARY_STRICT",
+        "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
+        "TANDEM_DATA_BOUNDARY_REDACT_CLASSES",
+    ]
+    .map(|name| (name, std::env::var(name).ok()));
+    std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
+    std::env::set_var("TANDEM_DATA_BOUNDARY_STRICT", "1");
+    std::env::set_var(
+        "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
+        "scripted-provider-stream=approved_external",
+    );
+    std::env::set_var("TANDEM_DATA_BOUNDARY_REDACT_CLASSES", "pii,credential");
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let captured = Arc::new(std::sync::Mutex::new(None));
+    let provider: Arc<dyn Provider> = Arc::new(PostToolCaptureProvider {
+        captured: captured.clone(),
+    });
+    let (engine, _bus, storage) = engine_loop_with_scripted_provider(temp.path(), provider).await;
+    let mut session = Session::new(Some("post-tool".to_string()), None);
+    session.tenant_context =
+        TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "user-a");
+    let session_id = session.id.clone();
+    storage.save_session(session).await.expect("save session");
+    let active_agent = engine.agents.get(None).await;
+    let result = engine
+        .generate_final_narrative_without_tools(
+            &session_id,
+            Some("run-post-tool"),
+            &active_agent,
+            Some("scripted-provider-stream"),
+            Some("scripted-model"),
+            tandem_types::SamplingParams::default(),
+            CancellationToken::new(),
+            &["contact alice@example.com using api_key=sk-test-secret-123456".to_string()],
+        )
+        .await
+        .expect("boundary allows transformed dispatch");
+    assert_eq!(result.as_deref(), Some("safe narrative"));
+
+    let dispatched = captured
+        .lock()
+        .expect("capture lock")
+        .clone()
+        .expect("captured messages")
+        .into_iter()
+        .map(|message| message.content)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!dispatched.contains("alice@example.com"));
+    assert!(!dispatched.contains("sk-test-secret"));
+    assert!(dispatched.contains("[REDACTED:"));
+
+    for (name, value) in previous {
+        match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
     }
 }
 

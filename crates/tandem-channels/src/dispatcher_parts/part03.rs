@@ -226,7 +226,7 @@ fn encode_memory_subject_segment(segment: &str) -> String {
     encoded
 }
 
-pub(crate) fn channel_memory_subject_client_id(channel: &str, sender: &str) -> Option<String> {
+pub fn channel_memory_subject_client_id(channel: &str, sender: &str) -> Option<String> {
     let sender = sender.trim();
     if sender.is_empty() {
         return None;

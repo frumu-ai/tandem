@@ -393,6 +393,20 @@ async fn coder_run_transition(
         reason.as_deref(),
     )
     .await?;
+    crate::audit::append_protected_audit_event(
+        state,
+        event_type,
+        &run.tenant_context,
+        None,
+        json!({
+            "coderRunID": record.coder_run_id,
+            "linkedContextRunID": record.linked_context_run_id,
+            "status": audit_status,
+            "reason": reason,
+        }),
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     publish_coder_run_event(
         state,
         "coder.run.phase_changed",
@@ -405,19 +419,6 @@ async fn coder_run_transition(
             extra
         },
     );
-    let _ = crate::audit::append_protected_audit_event(
-        state,
-        event_type,
-        &run.tenant_context,
-        None,
-        json!({
-            "coderRunID": record.coder_run_id,
-            "linkedContextRunID": record.linked_context_run_id,
-            "status": audit_status,
-            "reason": reason,
-        }),
-    )
-    .await;
     Ok(json!({
         "ok": true,
         "event": outcome.event,

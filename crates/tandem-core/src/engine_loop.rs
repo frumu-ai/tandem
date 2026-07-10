@@ -20,7 +20,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::Level;
 
 mod data_boundary_gate;
-pub use data_boundary_gate::{evaluate_context_source, ContextSourceScope};
+pub use data_boundary_gate::{
+    evaluate_context_source, evaluate_dispatch_boundary, ContextSourceScope,
+    DataBoundaryDispatchContext, DataBoundaryDispatchOutcome,
+};
 mod loop_guards;
 mod loop_tuning;
 mod prewrite_gate;
@@ -408,7 +411,7 @@ impl EngineLoop {
     }
 
     pub async fn run_oneshot(&self, prompt: String) -> anyhow::Result<String> {
-        self.providers.default_complete(&prompt).await
+        self.run_oneshot_for_provider(prompt, None).await
     }
 
     pub async fn run_oneshot_for_provider(
@@ -416,8 +419,61 @@ impl EngineLoop {
         prompt: String,
         provider_id: Option<&str>,
     ) -> anyhow::Result<String> {
+        let route = self
+            .providers
+            .resolve_provider_route(provider_id, None)
+            .await?;
+        let authority = tandem_data_boundary::ProviderEgressAuthority::default();
+        let fields = [tandem_data_boundary::ProviderEgressField::transformable(
+            "prompt",
+            prompt.as_str(),
+        )];
+        let data_classes = [
+            tandem_data_boundary::SensitiveDataClass::CustomerData,
+            tandem_data_boundary::SensitiveDataClass::UnknownSensitive,
+        ];
+        let request = tandem_data_boundary::ProviderEgressRequest {
+            authority: &authority,
+            operation_id: "engine-oneshot",
+            source_ref: "engine_loop.oneshot",
+            provider_id: route.provider_id.as_str(),
+            model_id: route.model_id.as_deref(),
+            fields: &fields,
+            data_classes: &data_classes,
+            action_tags: &[],
+        };
+        let mut evaluation = tandem_data_boundary::evaluate_provider_egress(&request);
+        if let Some(event) = evaluation.event.take() {
+            let event_name = event.boundary.event_name.clone();
+            self.event_bus.publish(EngineEvent::new(
+                event_name,
+                serde_json::to_value(event).unwrap_or_else(|_| json!({})),
+            ));
+        }
+        if evaluation.disposition
+            == tandem_data_boundary::ProviderEgressDisposition::RequireApproval
+        {
+            anyhow::bail!("DATA_BOUNDARY_APPROVAL_UNAVAILABLE: one-shot provider dispatch has no approval continuation");
+        }
+        if evaluation.disposition == tandem_data_boundary::ProviderEgressDisposition::Blocked {
+            anyhow::bail!(evaluation
+                .blocked_reason
+                .unwrap_or_else(|| "DATA_BOUNDARY_BLOCKED".to_string()));
+        }
+        let permit = evaluation
+            .take_dispatch_permit()
+            .map_err(anyhow::Error::msg)?;
+        let prepared_prompt = evaluation
+            .transformed_fields
+            .and_then(|mut fields| fields.drain(..).next())
+            .unwrap_or(prompt);
         self.providers
-            .complete_for_provider(provider_id, &prompt, None)
+            .complete_with_egress_permit(
+                &permit,
+                Some(route.provider_id.as_str()),
+                &prepared_prompt,
+                route.model_id.as_deref(),
+            )
             .await
     }
 
@@ -664,7 +720,7 @@ impl EngineLoop {
             .get(session_id)
             .cloned()
         {
-            if !allowed_tools.is_empty() && !any_policy_matches(&allowed_tools, &tool) {
+            if !any_policy_matches(&allowed_tools, &tool) {
                 let reason = format!("Tool `{tool}` is not allowed for this run.");
                 let blocked_output = json!({
                     "status": "skipped",
@@ -1251,7 +1307,7 @@ impl EngineLoop {
                 };
 
                 // 1. Allowed-tools check.
-                if !allowed_tools.is_empty() && !any_policy_matches(&allowed_tools, &sub_tool) {
+                if !any_policy_matches(&allowed_tools, &sub_tool) {
                     // Strip this sub-call: replace it with an explanatory result.
                     if let Some(obj) = call.as_object_mut() {
                         obj.insert(

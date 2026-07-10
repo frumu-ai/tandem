@@ -926,7 +926,7 @@ async fn emit_publish_audit_event(
     state
         .event_bus
         .publish(EngineEvent::new(event_type, payload.clone()));
-    let _ = crate::audit::append_protected_audit_event(
+    crate::audit::append_protected_audit_event_best_effort(
         state,
         event_type,
         tenant_context,

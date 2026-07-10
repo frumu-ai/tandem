@@ -33,7 +33,10 @@ use crate::decrypt_broker::{
     MemoryDekUnwrapProviderBox, MemoryDekWrapProviderBox, MemoryDekWrapRequest,
 };
 use crate::dek_cache::{MemoryDekCache, MemoryDekCacheKey};
-use crate::envelope::{MemoryEnvelopeMetadata, MemoryKeyScope};
+use crate::envelope::{
+    memory_encryption_context_hash, MemoryEnvelopeAuthority, MemoryEnvelopeMetadata,
+    MemoryKeyScope, MEMORY_ENVELOPE_ALGORITHM,
+};
 use crate::key_lifecycle::MemoryKeyLifecyclePolicy;
 use crate::kms_providers::{
     GoogleCloudKmsExternalCommandClient, GoogleCloudKmsExternalEncryptCommandClient,
@@ -42,9 +45,6 @@ use crate::types::{MemoryError, MemoryResult};
 
 use base64::Engine;
 use sha2::{Digest, Sha256};
-
-/// AES-256-GCM is the memory field cipher (matches [`crate::crypto`]).
-const MEMORY_FIELD_ALGORITHM: &str = "AES-256-GCM";
 
 const KEK_ID_ENV: &str = "TANDEM_MEMORY_KEK_ID";
 const KEK_VERSION_ENV: &str = "TANDEM_MEMORY_KEK_VERSION";
@@ -196,7 +196,15 @@ impl HostedMemoryEnvelopeCrypto {
             ));
         }
         let canonical_id = scope.canonical_id();
-        let encryption_context_hash = self.encryption_context_hash(&canonical_id);
+        let encryption_context_hash = memory_encryption_context_hash(
+            scope,
+            &self.kek_id,
+            &self.kek_version,
+            MEMORY_ENVELOPE_ALGORITHM,
+            self.rotation_epoch,
+            policy_decision_id,
+            audit_id,
+        )?;
         let dek = random_dek()?;
         let wrapped = self.wrap_provider.wrap_dek(&MemoryDekWrapRequest {
             provider: self.provider_id.clone(),
@@ -218,7 +226,7 @@ impl HostedMemoryEnvelopeCrypto {
             kek_id: self.kek_id.clone(),
             kek_version: self.kek_version.clone(),
             wrapped_dek,
-            algorithm: MEMORY_FIELD_ALGORITHM.to_string(),
+            algorithm: MEMORY_ENVELOPE_ALGORITHM.to_string(),
             encryption_context_hash,
             rotation_epoch: self.rotation_epoch,
             policy_decision_id: policy_decision_id.to_string(),
@@ -234,6 +242,7 @@ impl HostedMemoryEnvelopeCrypto {
                 self.kek_version.clone(),
                 self.rotation_epoch,
                 wrapped_dek_fingerprint(&envelope.wrapped_dek),
+                envelope.encryption_context_hash.clone(),
             ),
             dek,
         );
@@ -251,6 +260,29 @@ impl HostedMemoryEnvelopeCrypto {
         principal: &MemoryDecryptPrincipal,
         key_lifecycle_policy: Option<MemoryKeyLifecyclePolicy>,
     ) -> MemoryResult<String> {
+        let expected_authority = envelope.authority();
+        self.unseal_authorized(
+            envelope,
+            stored_ciphertext,
+            principal,
+            &expected_authority,
+            key_lifecycle_policy,
+        )
+    }
+
+    /// Unseal only when the persisted envelope exactly matches authority supplied
+    /// by a trusted caller. Governance/file-store paths must use this entry point;
+    /// deriving authority from `envelope` would self-authorize attacker-edited
+    /// tenant or department metadata.
+    pub fn unseal_authorized(
+        &self,
+        envelope: &MemoryEnvelopeMetadata,
+        stored_ciphertext: &str,
+        principal: &MemoryDecryptPrincipal,
+        expected_authority: &MemoryEnvelopeAuthority,
+        key_lifecycle_policy: Option<MemoryKeyLifecyclePolicy>,
+    ) -> MemoryResult<String> {
+        envelope.validate_cryptographic_binding(expected_authority)?;
         let hex_blob = stored_ciphertext
             .strip_prefix(CIPHERTEXT_PREFIX)
             .ok_or_else(|| {
@@ -265,6 +297,7 @@ impl HostedMemoryEnvelopeCrypto {
             envelope.kek_version.clone(),
             envelope.rotation_epoch,
             wrapped_dek_fingerprint(&envelope.wrapped_dek),
+            envelope.encryption_context_hash.clone(),
         );
         // Authorization runs on EVERY unseal, independent of the DEK cache. The
         // caller presents its own tenant scope; the broker denies unless that
@@ -276,11 +309,8 @@ impl HostedMemoryEnvelopeCrypto {
             envelope: envelope.clone(),
             tenant_scope: principal.tenant_scope.clone(),
             principal: principal.clone(),
-            // The broker binds an unwrap to the envelope's own write-time
-            // policy/audit ids, so they are taken from the envelope, not the
-            // caller.
-            policy_decision_id: envelope.policy_decision_id.clone(),
-            audit_id: envelope.audit_id.clone(),
+            policy_decision_id: expected_authority.policy_decision_id.clone(),
+            audit_id: expected_authority.audit_id.clone(),
             break_glass_requested: false,
             key_lifecycle_policy,
         };
@@ -335,27 +365,6 @@ impl HostedMemoryEnvelopeCrypto {
     /// The shared DEK cache, for wiring one cache across multiple crypto handles.
     pub fn cache(&self) -> &MemoryDekCache {
         &self.cache
-    }
-
-    /// Deterministic context binding: ties an envelope to its scope + KEK so the
-    /// wrapped DEK can only be unwrapped under the same context (used as KMS AAD).
-    fn encryption_context_hash(&self, canonical_id: &str) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(b"tandem-memory-envelope-v1\n");
-        hasher.update(canonical_id.as_bytes());
-        hasher.update(b"\n");
-        hasher.update(self.kek_id.as_bytes());
-        hasher.update(b"\n");
-        hasher.update(self.kek_version.as_bytes());
-        hasher.update(b"\n");
-        hasher.update(self.rotation_epoch.to_le_bytes());
-        let digest = hasher.finalize();
-        let mut out = String::with_capacity(digest.len() * 2);
-        for byte in digest {
-            out.push(char::from_digit((byte >> 4) as u32, 16).unwrap());
-            out.push(char::from_digit((byte & 0x0f) as u32, 16).unwrap());
-        }
-        out
     }
 }
 
@@ -421,11 +430,9 @@ mod tests {
                 !request.additional_authenticated_data.is_empty(),
                 "wrap must bind the scope context as AAD"
             );
-            Ok(request
-                .plaintext
-                .iter()
-                .map(|byte| byte ^ self.fingerprint)
-                .collect())
+            let mut wrapped = Sha256::digest(&request.additional_authenticated_data).to_vec();
+            wrapped.extend(request.plaintext.iter().map(|byte| byte ^ self.fingerprint));
+            Ok(wrapped)
         }
     }
 
@@ -436,8 +443,19 @@ mod tests {
                 !request.additional_authenticated_data.is_empty(),
                 "unwrap must present the scope context as AAD"
             );
-            Ok(request
-                .ciphertext
+            let expected = Sha256::digest(&request.additional_authenticated_data);
+            if request.ciphertext.len() < expected.len() {
+                return Err(MemoryError::InvalidConfig(
+                    "fixture KMS ciphertext is truncated".to_string(),
+                ));
+            }
+            let (actual, ciphertext) = request.ciphertext.split_at(expected.len());
+            if actual != &expected[..] {
+                return Err(MemoryError::InvalidConfig(
+                    "fixture KMS additional authenticated data mismatch".to_string(),
+                ));
+            }
+            Ok(ciphertext
                 .iter()
                 .map(|byte| byte ^ self.fingerprint)
                 .collect())
@@ -504,7 +522,7 @@ mod tests {
         assert!(sealed.ciphertext.starts_with(CIPHERTEXT_PREFIX));
         assert!(!sealed.ciphertext.contains("120k"));
         assert!(!sealed.ciphertext.contains("Hooli"));
-        assert_eq!(sealed.envelope.algorithm, MEMORY_FIELD_ALGORITHM);
+        assert_eq!(sealed.envelope.algorithm, MEMORY_ENVELOPE_ALGORITHM);
         assert_eq!(sealed.envelope.kek_id, KEK_ID);
         assert!(!sealed.envelope.wrapped_dek.is_empty());
         assert!(!sealed.envelope.encryption_context_hash.is_empty());
@@ -526,6 +544,101 @@ mod tests {
             )
             .expect("unseal");
         assert_eq!(recovered, plaintext);
+    }
+
+    #[test]
+    fn authorized_unseal_rejects_scope_and_authority_anchor_substitution() {
+        let crypto = hosted();
+        let scope = finance_scope("acme");
+        let sealed = crypto
+            .seal(&scope, "authority-bound", "decision-1", "audit-1")
+            .expect("seal");
+        let who = principal("acme", vec![DataClass::FinancialRecord]);
+        let expected = MemoryEnvelopeAuthority::new(
+            scope.clone(),
+            "decision-1".to_string(),
+            "audit-1".to_string(),
+        );
+
+        let mut substituted_scope = scope.clone();
+        substituted_scope.org_unit = Some("department/engineering".to_string());
+        let scope_error = crypto
+            .unseal_authorized(
+                &sealed.envelope,
+                &sealed.ciphertext,
+                &who,
+                &MemoryEnvelopeAuthority::new(
+                    substituted_scope,
+                    "decision-1".to_string(),
+                    "audit-1".to_string(),
+                ),
+                None,
+            )
+            .expect_err("trusted expected scope must be exact");
+        assert!(
+            scope_error.to_string().contains("trusted expected scope"),
+            "unexpected error: {scope_error:?}"
+        );
+
+        let mut edited = sealed.envelope.clone();
+        edited.policy_decision_id = "decision-attacker".to_string();
+        let metadata_error = crypto
+            .unseal_authorized(&edited, &sealed.ciphertext, &who, &expected, None)
+            .expect_err("edited authority metadata must fail before cache use");
+        assert!(
+            metadata_error.to_string().contains("policy decision"),
+            "unexpected error: {metadata_error:?}"
+        );
+
+        edited.encryption_context_hash = memory_encryption_context_hash(
+            &edited.key_scope,
+            &edited.kek_id,
+            &edited.kek_version,
+            &edited.algorithm,
+            edited.rotation_epoch,
+            &edited.policy_decision_id,
+            &edited.audit_id,
+        )
+        .expect("recompute attacker metadata hash");
+        let attacker_authority = edited.authority();
+        let aad_error = crypto
+            .unseal_authorized(&edited, &sealed.ciphertext, &who, &attacker_authority, None)
+            .expect_err("KMS AAD must bind policy and audit anchors");
+        assert!(
+            aad_error
+                .to_string()
+                .contains("authenticated data mismatch"),
+            "unexpected error: {aad_error:?}"
+        );
+
+        let mut edited_audit = sealed.envelope.clone();
+        edited_audit.audit_id = "audit-attacker".to_string();
+        edited_audit.encryption_context_hash = memory_encryption_context_hash(
+            &edited_audit.key_scope,
+            &edited_audit.kek_id,
+            &edited_audit.kek_version,
+            &edited_audit.algorithm,
+            edited_audit.rotation_epoch,
+            &edited_audit.policy_decision_id,
+            &edited_audit.audit_id,
+        )
+        .expect("recompute attacker audit hash");
+        let audit_authority = edited_audit.authority();
+        let audit_error = crypto
+            .unseal_authorized(
+                &edited_audit,
+                &sealed.ciphertext,
+                &who,
+                &audit_authority,
+                None,
+            )
+            .expect_err("KMS AAD must bind the audit anchor");
+        assert!(
+            audit_error
+                .to_string()
+                .contains("authenticated data mismatch"),
+            "unexpected error: {audit_error:?}"
+        );
     }
 
     #[test]

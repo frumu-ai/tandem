@@ -703,14 +703,14 @@ const KNOWN_PREFIXES: &[&str] = &[
 
 const CONFIG_VARS: &[ConfigVar] = &[
     ConfigVar { name: "TANDEM_RUNTIME_AUTH_MODE", default: "local_single_tenant", notes: "Runtime trust mode: local_single_tenant, hosted_single_tenant, or enterprise_required." },
-    ConfigVar { name: "TANDEM_DATA_BOUNDARY_MODE", default: "off", notes: "Data boundary evaluation at provider dispatch: off, audit, or enforce. Audit-only in this release; enforce does not yet block." },
+    ConfigVar { name: "TANDEM_DATA_BOUNDARY_MODE", default: "off", notes: "Data boundary evaluation at every production LLM-provider dispatch: off, audit, or enforce. Enforce can block, transform, or require approval." },
     ConfigVar { name: "TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY", default: "block", notes: "Treatment of raw sensitive data headed to unapproved external providers: allow, audit, redact, approval, require_local, or block." },
-    ConfigVar { name: "TANDEM_DATA_BOUNDARY_MAX_PAYLOAD_BYTES", default: "unset", notes: "Optional payload byte cap recorded by data-boundary decisions (blocks only once enforce mode lands)." },
+    ConfigVar { name: "TANDEM_DATA_BOUNDARY_MAX_PAYLOAD_BYTES", default: "unset", notes: "Optional provider-payload byte cap; blocks oversized dispatches in enforce mode." },
     ConfigVar { name: "TANDEM_DATA_BOUNDARY_APPROVAL_CLASSES", default: "unset", notes: "Comma-separated sensitive data classes requiring approval (e.g. credential,customer_data)." },
     ConfigVar { name: "TANDEM_DATA_BOUNDARY_REDACT_CLASSES", default: "unset", notes: "Comma-separated sensitive data classes to redact before external dispatch." },
     ConfigVar { name: "TANDEM_DATA_BOUNDARY_BLOCK_CLASSES", default: "unset", notes: "Comma-separated sensitive data classes that must never leave for a provider." },
     ConfigVar { name: "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES", default: "unset", notes: "Comma-separated provider_id=boundary_class mappings (e.g. openai=approved_external, ollama=local). All unmapped providers classify as unknown - builtin loopback ids get no id-based trust because their base URLs can be reconfigured to remote endpoints." },
-    ConfigVar { name: "TANDEM_DATA_BOUNDARY_STRICT", default: "false", notes: "Strict enterprise posture: enforce mode fails closed on missing tenant context or unknown provider classification." },
+    ConfigVar { name: "TANDEM_DATA_BOUNDARY_STRICT", default: "false", notes: "Strict enterprise posture: enforce mode fails closed on missing tenant/run/session authority or unknown provider classification." },
     ConfigVar { name: "TANDEM_API_TOKEN", default: "unset", notes: "Explicit HTTP transport bearer token. Secret value is never printed by config check." },
     ConfigVar { name: "TANDEM_API_TOKEN_FILE", default: "unset", notes: "File containing the HTTP transport bearer token. Required in hosted/enterprise mode unless --api-token is supplied." },
     ConfigVar { name: "TANDEM_UNSAFE_NO_API_TOKEN", default: "false", notes: "Local loopback development only; rejected in hosted/enterprise mode." },
