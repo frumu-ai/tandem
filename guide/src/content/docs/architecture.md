@@ -98,4 +98,5 @@ If another agent is reading these docs through MCP, these are the best starting 
 - [How Tandem Works Under the Hood](./how-tandem-works/) for session/run/event/memory flow.
 - [Memory Internals](./memory-internals/) for memory storage and retrieval details.
 - [Creating And Running Workflows And Missions](./creating-and-running-workflows-and-missions/) for choosing workflow abstractions.
+- [Building Stateful Workflows in Tandem](../stateful-workflows/) for checkpoints, waits, webhook triggers, inspection, and recovery.
 - [MCP Capability Discovery And Request Flow](./mcp-capability-discovery-and-request-flow/) for connector/tool availability reasoning.

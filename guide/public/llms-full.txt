@@ -38,6 +38,7 @@
 ## Developer and automation
 
 - /mcp-automated-agents/ - Automated agent workflows and MCP integration.
+- /stateful-workflows/ - Stateful Automation V2 workflows with checkpoints, approvals, webhook triggers, inspection, and recovery.
 - /automation-examples-for-teams/ - End-to-end workflow examples, including the Linear repair-loop guard template for ACA-triggering issue webhooks.
 - /automation-v2-webhooks/ - Direct webhook trigger setup for Automation V2, including Notion verification tokens and Linear issue webhook setup.
 - /enterprise-client-onboarding-runbook/ - Agent-facing onboarding order for client pilots, go-live smoke tests, and enterprise hardening.
@@ -103,6 +104,7 @@
 - If it needs provider or model policy guidance, use `/choosing-providers-and-models-for-agents/`.
 - If it needs AI quality evals, eval datasets, or `cargo run -p tandem-server --bin eval-runner`, use `/eval-runner/`.
 - If it needs to generate a mission or workflow from human intent, use `/prompting-workflows-and-missions/`.
+- If it needs to build a stateful Automation V2 workflow or understand webhook-started steps, use `/stateful-workflows/`.
 - If it needs Linear issue webhooks or a repair-loop guard template, use `/automation-v2-webhooks/` and `/automation-examples-for-teams/`.
 - If it needs to choose the correct runtime path, use `/creating-and-running-workflows-and-missions/`.
 - If it needs engine auth or token handling, use `/engine-authentication-for-agents/`.

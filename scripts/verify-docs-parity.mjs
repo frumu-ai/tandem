@@ -57,6 +57,7 @@ const incidentMonitorRoutes = unique(
 const requiredAgentIndexRoutes = [
   "/automation-examples-for-teams/",
   "/automation-v2-webhooks/",
+  "/stateful-workflows/",
 ];
 
 const missing = [];

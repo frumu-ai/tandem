@@ -60,6 +60,8 @@ Primary surfaces:
 - `POST /automations/v2/{id}/run_now`
 - `GET /automations/v2/{id}/runs`
 
+For checkpoints, approval waits, webhook-triggered runs, state inspection, and recovery, use [Building Stateful Workflows in Tandem](../stateful-workflows/).
+
 If the automation will edit code, also use [Coding Tasks With Tandem](./coding-tasks-with-tandem/) so the run has an explicit workspace, worktree, diff, and verification contract.
 
 ### Use the mission builder when
@@ -410,3 +412,4 @@ That gives you:
 - [Engine Authentication For Agents](./engine-authentication-for-agents/)
 - [Automation Examples For Teams](./automation-examples-for-teams/) — Walkthrough and API examples for immediate workflow adoption.
 - [Build an Automation With the AI Assistant](./automation-composer-workflows/) — prompt-first authoring, clarification, preview, and run-now.
+- [Building Stateful Workflows in Tandem](../stateful-workflows/) — state, approval, webhook, inspection, and recovery patterns for Automation V2.

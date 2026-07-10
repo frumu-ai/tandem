@@ -35,7 +35,7 @@ export default defineConfig({
   integrations: [
     mermaid({
       autoTheme: true,
-      theme: "forest",
+      theme: "dark",
     }),
     starlight({
       title: "Tandem Engine",
@@ -68,6 +68,7 @@ export default defineConfig({
           label: "Developer Guide & SDKs",
           items: [
             "automation-composer-workflows",
+            "stateful-workflows",
             "automation-examples-for-teams",
             "automation-v2-webhooks",
             "sdk/typescript",

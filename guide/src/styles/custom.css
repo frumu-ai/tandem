@@ -1,63 +1,128 @@
-@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800;900&family=Geist+Mono:wght@400;500;600&display=swap");
 
 :root {
-  --sl-font: "IBM Plex Sans", "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  --tandem-background: #0a0f1e;
+  --tandem-surface: #0f1629;
+  --tandem-surface-elevated: #151e36;
+  --tandem-primary: #5b8cff;
+  --tandem-primary-hover: #3e70f7;
+  --tandem-primary-muted: #2450c7;
+  --tandem-primary-light: #90c5ff;
+  --tandem-text: #eef2fb;
+  --tandem-text-muted: #aab4c7;
+  --tandem-border: #94a3c729;
+  --tandem-border-subtle: #94a3c717;
+  --tandem-sky: #00a5ef;
+  --sl-font: "Geist", "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
   --sl-font-system: var(--sl-font);
-  --sl-font-system-mono: "IBM Plex Mono", "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --sl-font-system-mono: "Geist Mono", "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   --sl-text-5xl: 3.2rem;
   --sl-text-4xl: 2.6rem;
   --sl-text-3xl: 2rem;
   --sl-text-2xl: 1.6rem;
   --sl-text-xl: 1.32rem;
   --sl-content-width: 54rem;
-  --sl-color-accent-low: #102219;
-  --sl-color-accent: #2ad887;
-  --sl-color-accent-high: #97ffcf;
-  --sl-color-white: #ecf7f1;
-  --sl-color-gray-1: #d3e3dc;
-  --sl-color-gray-2: #a9b9b2;
-  --sl-color-gray-3: #73857e;
-  --sl-color-gray-4: #42564f;
-  --sl-color-gray-5: #233630;
-  --sl-color-gray-6: #121c19;
-  --sl-color-black: #0a100f;
+  --sl-color-accent-low: #14264f;
+  --sl-color-accent: var(--tandem-primary);
+  --sl-color-accent-high: var(--tandem-primary-light);
+  --sl-color-white: var(--tandem-text);
+  --sl-color-gray-1: #d2d9e8;
+  --sl-color-gray-2: var(--tandem-text-muted);
+  --sl-color-gray-3: #7d899f;
+  --sl-color-gray-4: #526078;
+  --sl-color-gray-5: #28334a;
+  --sl-color-gray-6: var(--tandem-surface-elevated);
+  --sl-color-black: var(--tandem-background);
+  --sl-color-bg-nav: color-mix(in srgb, var(--tandem-background) 88%, transparent);
+  --sl-color-bg-sidebar: var(--tandem-surface);
+  --sl-color-bg-inline-code: color-mix(in srgb, var(--tandem-primary-muted) 23%, var(--tandem-surface));
+  --sl-color-hairline-light: var(--tandem-border);
+  --sl-color-hairline: var(--tandem-border-subtle);
+  --sl-color-hairline-shade: var(--tandem-border-subtle);
+  --sl-shadow-md: 2px 2px 0 rgba(0, 0, 0, 0.32);
 }
 
 :root[data-theme="light"] {
-  --sl-color-accent-low: #dcf9ec;
-  --sl-color-accent: #087443;
-  --sl-color-accent-high: #03492a;
-  --sl-color-white: #1b2723;
-  --sl-color-gray-1: #34423d;
-  --sl-color-gray-2: #4d5d57;
-  --sl-color-gray-3: #6f7f79;
-  --sl-color-gray-4: #aebeb7;
-  --sl-color-gray-5: #d5e0dc;
-  --sl-color-gray-6: #eef4f1;
-  --sl-color-black: #fbfdfb;
+  --tandem-background: #fbfdff;
+  --tandem-surface: #f4f7fc;
+  --tandem-surface-elevated: #edf2fa;
+  --tandem-primary: #2450c7;
+  --tandem-primary-hover: #16388f;
+  --tandem-primary-muted: #d7e3ff;
+  --tandem-primary-light: #16388f;
+  --tandem-text: #111827;
+  --tandem-text-muted: #475569;
+  --tandem-border: #94a3b84d;
+  --tandem-border-subtle: #94a3b82e;
+  --tandem-sky: #007db8;
+  --sl-color-accent-low: #e6efff;
+  --sl-color-accent: var(--tandem-primary);
+  --sl-color-accent-high: var(--tandem-primary-light);
+  --sl-color-white: var(--tandem-text);
+  --sl-color-gray-1: #26344a;
+  --sl-color-gray-2: var(--tandem-text-muted);
+  --sl-color-gray-3: #64748b;
+  --sl-color-gray-4: #94a3b8;
+  --sl-color-gray-5: #d7dfec;
+  --sl-color-gray-6: var(--tandem-surface-elevated);
+  --sl-color-gray-7: #f6f9fe;
+  --sl-color-black: var(--tandem-background);
+  --sl-color-bg-nav: color-mix(in srgb, var(--tandem-background) 92%, transparent);
+  --sl-color-bg-sidebar: var(--tandem-surface);
+  --sl-color-bg-inline-code: #e8effd;
+  --sl-color-hairline-light: var(--tandem-border);
+  --sl-color-hairline: var(--tandem-border-subtle);
+  --sl-color-hairline-shade: var(--tandem-border-subtle);
+  --sl-shadow-md: 2px 2px 0 rgba(36, 80, 199, 0.1);
 }
 
 body {
   background:
-    radial-gradient(circle at 88% 12%, color-mix(in srgb, var(--sl-color-accent) 19%, transparent), transparent 38%),
-    radial-gradient(circle at 10% 2%, color-mix(in srgb, #33d6ff 14%, transparent), transparent 31%),
-    linear-gradient(180deg, color-mix(in srgb, var(--sl-color-black) 96%, #000) 0%, var(--sl-color-black) 100%);
-  letter-spacing: 0.01em;
+    radial-gradient(circle at 88% 8%, color-mix(in srgb, var(--tandem-primary) 17%, transparent), transparent 37%),
+    radial-gradient(circle at 8% 2%, color-mix(in srgb, var(--tandem-sky) 10%, transparent), transparent 30%),
+    linear-gradient(var(--tandem-border-subtle) 1px, transparent 1px),
+    linear-gradient(90deg, var(--tandem-border-subtle) 1px, transparent 1px),
+    linear-gradient(180deg, #0c1325 0%, var(--tandem-background) 42%, #080d1a 100%);
+  background-attachment: fixed;
+  background-size: auto, auto, 64px 64px, 64px 64px, auto;
+  letter-spacing: 0;
 }
 
 :root[data-theme="light"] body {
   background:
-    radial-gradient(circle at 88% 12%, color-mix(in srgb, var(--sl-color-accent) 10%, transparent), transparent 36%),
-    radial-gradient(circle at 8% 4%, color-mix(in srgb, #0ca2b7 10%, transparent), transparent 31%),
-    linear-gradient(180deg, #fbfdfb 0%, #f5faf7 100%);
+    radial-gradient(circle at 88% 8%, color-mix(in srgb, var(--tandem-primary) 10%, transparent), transparent 36%),
+    radial-gradient(circle at 8% 2%, color-mix(in srgb, var(--tandem-sky) 7%, transparent), transparent 30%),
+    linear-gradient(var(--tandem-border-subtle) 1px, transparent 1px),
+    linear-gradient(90deg, var(--tandem-border-subtle) 1px, transparent 1px),
+    linear-gradient(180deg, #fbfdff 0%, #f5f8fe 100%);
 }
 
 h1,
 h2,
 h3,
 h4 {
-  font-family: "Space Grotesk", var(--sl-font);
-  letter-spacing: 0.015em;
+  font-family: "Geist", var(--sl-font);
+  letter-spacing: -0.025em;
+}
+
+h1 {
+  font-weight: 800;
+  letter-spacing: -0.04em;
+}
+
+.site-title.site-title {
+  color: var(--sl-color-white);
+  font-family: "Geist Mono", var(--sl-font-system-mono);
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.page > header.header {
+  border-bottom-color: var(--tandem-border-subtle);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
 }
 
 .hero .tagline,
@@ -71,38 +136,75 @@ h4 {
 }
 
 .sl-markdown-content :not(pre) > code {
-  color: color-mix(in srgb, var(--sl-color-accent-high) 82%, white 18%);
-  background: color-mix(in srgb, var(--sl-color-accent-low) 75%, transparent);
-  border: 1px solid color-mix(in srgb, var(--sl-color-accent) 32%, transparent);
-  border-radius: 0.45rem;
+  color: var(--sl-color-accent-high);
+  background: var(--sl-color-bg-inline-code);
+  border: 1px solid color-mix(in srgb, var(--sl-color-accent) 28%, transparent);
+  border-radius: 0.125rem;
   padding: 0.12rem 0.36rem;
 }
 
 :root[data-theme="light"] .sl-markdown-content :not(pre) > code {
-  color: #064a2c;
-  background: #e9f7ef;
+  color: var(--tandem-primary-hover);
+  background: var(--sl-color-bg-inline-code);
 }
 
 .expressive-code,
 .astro-code {
-  border: 1px solid color-mix(in srgb, var(--sl-color-accent) 24%, var(--sl-color-gray-5));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--sl-color-accent) 12%, transparent), 0 12px 34px rgba(0, 0, 0, 0.32);
+  border: 1px solid color-mix(in srgb, var(--sl-color-accent) 20%, var(--tandem-border));
+  border-radius: 0.125rem;
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.32);
+}
+
+.mermaid {
+  overflow-x: auto;
+  border: 1px solid var(--tandem-border);
+  border-radius: 0;
+  padding: 1rem;
+  background: color-mix(in srgb, var(--tandem-surface) 92%, transparent);
+}
+
+.mermaid svg.flowchart {
+  font-family: "Geist Mono", var(--sl-font-system-mono) !important;
+}
+
+.mermaid svg.flowchart .node :is(rect, polygon, circle) {
+  fill: var(--sl-color-accent-low) !important;
+  stroke: var(--sl-color-accent) !important;
+}
+
+.mermaid svg.flowchart :is(.nodeLabel, .nodeLabel p, .label text) {
+  color: var(--sl-color-white) !important;
+  fill: var(--sl-color-white) !important;
+}
+
+.mermaid svg.flowchart :is(.flowchart-link, .edge-thickness-normal, .edge-thickness-thick) {
+  stroke: var(--sl-color-gray-3) !important;
+}
+
+.mermaid svg.flowchart .marker {
+  fill: var(--sl-color-gray-3) !important;
+  stroke: var(--sl-color-gray-3) !important;
+}
+
+.mermaid svg.flowchart :is(.edgeLabel, .edgeLabel p) {
+  color: var(--sl-color-gray-1) !important;
+  background: var(--tandem-surface) !important;
 }
 
 .sidebar-content {
-  background: color-mix(in srgb, var(--sl-color-black) 85%, var(--sl-color-accent-low));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--tandem-surface) 94%, var(--tandem-primary-muted)) 0%, var(--tandem-surface) 100%);
 }
 
 :root[data-theme="light"] .sidebar-content {
-  background: color-mix(in srgb, white 86%, var(--sl-color-accent-low));
+  background: linear-gradient(180deg, color-mix(in srgb, white 72%, var(--tandem-primary-muted)) 0%, var(--tandem-surface) 100%);
 }
 
 .sidebar-content a[aria-current="page"] {
-  background: color-mix(in srgb, var(--sl-color-accent-low) 70%, transparent);
+  background: color-mix(in srgb, var(--tandem-primary) 11%, transparent);
   border-left: 2px solid var(--sl-color-accent);
-  color: #6dffb6;
+  color: var(--tandem-primary-light);
   font-weight: 600;
-  text-shadow: 0 0 14px color-mix(in srgb, var(--sl-color-accent) 36%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tandem-primary) 11%, transparent);
 }
 
 .sidebar-content a[aria-current="page"] > span {
@@ -110,12 +212,12 @@ h4 {
 }
 
 :root[data-theme="light"] .sidebar-content a[aria-current="page"] {
-  color: #056c3d;
-  text-shadow: none;
+  color: var(--tandem-primary-hover);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tandem-primary) 10%, transparent);
 }
 
 .sl-markdown-content table th {
-  font-family: "Space Grotesk", var(--sl-font);
+  font-family: "Geist", var(--sl-font);
   font-weight: 600;
   color: var(--sl-color-accent-high);
 }
@@ -123,4 +225,24 @@ h4 {
 .sl-markdown-content blockquote {
   border-inline-start: 3px solid var(--sl-color-accent);
   background: color-mix(in srgb, var(--sl-color-accent-low) 42%, transparent);
+}
+
+site-search button[data-open-modal] {
+  border-radius: 0 !important;
+  background-color: color-mix(in srgb, var(--tandem-surface) 92%, transparent) !important;
+}
+
+site-search dialog,
+.pagination-links.pagination-links a,
+.card.card {
+  border-radius: 0 !important;
+}
+
+::selection {
+  color: var(--tandem-text);
+  background: var(--tandem-primary-muted);
+}
+
+:focus-visible {
+  outline-color: var(--tandem-primary);
 }

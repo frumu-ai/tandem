@@ -41,6 +41,7 @@
 
 - /tandem-wow-demo-playbook/ - How agents should turn Tandem docs and engine contracts into showcase workflow and automation payloads.
 - /self-operator-playbook/ - Self-operator guide for agent review, governance-aware gap analysis, automation authoring, and trigger-based workflows.
+- /stateful-workflows/ - Build and operate stateful Automation V2 workflows with checkpoints, approvals, webhook triggers, inspection, and recovery.
 - /automation-examples-for-teams/ - End-to-end workflow examples, including the Linear repair-loop guard template for ACA-triggering issue webhooks.
 - /automation-v2-webhooks/ - Direct webhook trigger setup for Automation V2, including Notion verification tokens and Linear issue webhook setup.
 - /mcp-automated-agents/ - Automated agent workflows and MCP patterns.
@@ -96,6 +97,7 @@
 - Need help picking providers or model policies? Use `/choosing-providers-and-models-for-agents/`.
 - Need AI quality evals or `cargo run -p tandem-server --bin eval-runner`? Use `/eval-runner/`.
 - Want to generate strong workflow or mission specs? Start with `/prompting-workflows-and-missions/`.
+- Want to build a stateful Automation V2 workflow or understand webhook-started steps? Use `/stateful-workflows/`.
 - Want Linear issue webhooks or a repair-loop guard template? Use `/automation-v2-webhooks/` and `/automation-examples-for-teams/`.
 - Want a ready-made showcase payload playbook? Start with `/tandem-wow-demo-playbook/`.
 - Want to know which engine path to call next? Use `/creating-and-running-workflows-and-missions/`.

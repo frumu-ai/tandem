@@ -14,6 +14,8 @@ If another LLM or agent is generating the workflow or mission definition itself,
 
 For the operational path after prompting, use [Creating And Running Workflows And Missions](./creating-and-running-workflows-and-missions/). For engine tokens and authenticated HTTP or SDK calls, use [Engine Authentication For Agents](./engine-authentication-for-agents/).
 
+For stateful Automation V2 workflows with checkpoints, approval waits, webhook triggers, inspection, and recovery, use [Building Stateful Workflows in Tandem](../stateful-workflows/).
+
 For a compact, agent-facing checklist that covers MCP discovery, clarifying questions, workflow import, apply, repair, and provenance, start with [Agent Workflow Operating Manual](./agent-workflow-operating-manual/).
 
 If the engine is not installed or authenticated yet, the same manual also covers first-time setup. That path points agents to the install, control panel, first-run, and engine-authentication docs before they try to compile or run workflows.
@@ -822,6 +824,7 @@ Use this checklist before shipping:
 - [WebMCP for Agents](./webmcp-for-agents/)
 - [Self-Operator Playbook](./self-operator-playbook/)
 - [MCP Capability Discovery And Request Flow](./mcp-capability-discovery-and-request-flow/)
+- [Building Stateful Workflows in Tandem](../stateful-workflows/)
 - [Automation Governance Lifecycle](./reference/governance-lifecycle/)
 - [Engine Commands](./reference/engine-commands/)
 - [Tools Reference](./reference/tools/)

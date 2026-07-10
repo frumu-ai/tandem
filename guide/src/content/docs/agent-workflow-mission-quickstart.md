@@ -41,6 +41,8 @@ If the user wants a polished demo payload that teaches Tandem's capabilities to 
 
 If you are not sure which path applies, use [Creating And Running Workflows And Missions](./creating-and-running-workflows-and-missions/).
 
+If a V2 automation must preserve run state, pause for approval, start from a webhook, or recover safely, use [Building Stateful Workflows in Tandem](../stateful-workflows/).
+
 ### 3. Prompt for structure, not vibes
 
 When authoring a workflow node or mission stage, always define:
@@ -130,3 +132,4 @@ If an agent is asked to “set this up for me,” the default safe sequence is:
 - [Scheduling Workflows And Automations](./sdk/scheduling-automations/)
 - [Control Panel (Web Admin)](./control-panel/)
 - [Build an Automation With the AI Assistant](./automation-composer-workflows/)
+- [Building Stateful Workflows in Tandem](../stateful-workflows/)
