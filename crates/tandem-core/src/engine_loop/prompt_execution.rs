@@ -220,6 +220,11 @@ impl EngineLoop {
             let mut tool_call_counts: HashMap<String, usize> = HashMap::new();
             let mut productive_tool_call_counts: HashMap<String, usize> = HashMap::new();
             let mut readonly_tool_cache: HashMap<String, String> = HashMap::new();
+            // Provider tool-call ids are unique per call. Seeing an id that
+            // already executed, with an identical signature, means the
+            // provider replayed a completed call instead of making progress;
+            // re-executing it would only burn the iteration budget.
+            let mut executed_provider_call_ids: HashMap<String, String> = HashMap::new();
             let mut readonly_signature_counts: HashMap<String, usize> = HashMap::new();
             let mut mutable_signature_counts: HashMap<String, usize> = HashMap::new();
             let mut shell_mismatch_signatures: HashSet<String> = HashSet::new();
@@ -1206,7 +1211,10 @@ impl EngineLoop {
                                 let error_text = err.to_string();
                                 let stream_error_text =
                                     format!("provider stream chunk error: {error_text}");
-                                if is_transient_provider_stream_error(&stream_error_text)
+                                // Classify the raw provider error, not the wrapped
+                                // text: the wrapper prefix must never make an
+                                // otherwise-terminal error look retryable.
+                                if is_transient_provider_stream_error(&error_text)
                                     && provider_stream_retry_count < provider_stream_retry_budget
                                 {
                                     provider_stream_retry_count =

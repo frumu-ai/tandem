@@ -338,14 +338,34 @@ pub fn evaluate_provider_egress(request: &ProviderEgressRequest<'_>) -> Provider
     evaluate_provider_egress_with_policy(request, &policy, boundary_class, classification_source)
 }
 
+/// Configuration source for the `TANDEM_DATA_BOUNDARY_*` readers. The `_with`
+/// variants let callers inject configuration (per-test, per-scope) instead of
+/// reading the process environment, which is shared mutable state across every
+/// concurrently running test in a process.
+pub type BoundaryEnvLookup<'a> = &'a dyn Fn(&str) -> Option<String>;
+
+fn process_env(name: &str) -> Option<String> {
+    std::env::var(name).ok()
+}
+
 pub fn provider_egress_mode_from_env() -> DataBoundaryMode {
-    std::env::var("TANDEM_DATA_BOUNDARY_MODE")
-        .ok()
+    provider_egress_mode_with(&process_env)
+}
+
+pub fn provider_egress_mode_with(lookup: BoundaryEnvLookup<'_>) -> DataBoundaryMode {
+    lookup("TANDEM_DATA_BOUNDARY_MODE")
         .and_then(|raw| DataBoundaryMode::parse(&raw))
         .unwrap_or_default()
 }
 
 pub fn provider_egress_policy_from_env(mode: DataBoundaryMode) -> DataBoundaryPolicy {
+    provider_egress_policy_with(mode, &process_env)
+}
+
+pub fn provider_egress_policy_with(
+    mode: DataBoundaryMode,
+    lookup: BoundaryEnvLookup<'_>,
+) -> DataBoundaryPolicy {
     let mut policy = DataBoundaryPolicy {
         policy_id: "env".to_string(),
         mode,
@@ -353,20 +373,22 @@ pub fn provider_egress_policy_from_env(mode: DataBoundaryMode) -> DataBoundaryPo
         approved_provider_classes: Vec::new(),
         approved_provider_ids: Vec::new(),
         prohibited_provider_ids: Vec::new(),
-        redact_classes: sensitive_class_list("TANDEM_DATA_BOUNDARY_REDACT_CLASSES"),
+        redact_classes: sensitive_class_list(lookup, "TANDEM_DATA_BOUNDARY_REDACT_CLASSES"),
         tokenize_classes: Vec::new(),
-        approval_required_classes: sensitive_class_list("TANDEM_DATA_BOUNDARY_APPROVAL_CLASSES"),
-        block_classes: sensitive_class_list("TANDEM_DATA_BOUNDARY_BLOCK_CLASSES"),
+        approval_required_classes: sensitive_class_list(
+            lookup,
+            "TANDEM_DATA_BOUNDARY_APPROVAL_CLASSES",
+        ),
+        block_classes: sensitive_class_list(lookup, "TANDEM_DATA_BOUNDARY_BLOCK_CLASSES"),
         require_local_classes: Vec::new(),
         allow_raw_external_classes: Vec::new(),
-        strict_fail_closed: env_bool("TANDEM_DATA_BOUNDARY_STRICT"),
-        max_payload_bytes: std::env::var("TANDEM_DATA_BOUNDARY_MAX_PAYLOAD_BYTES")
-            .ok()
+        strict_fail_closed: env_bool(lookup, "TANDEM_DATA_BOUNDARY_STRICT"),
+        max_payload_bytes: lookup("TANDEM_DATA_BOUNDARY_MAX_PAYLOAD_BYTES")
             .and_then(|raw| raw.trim().parse::<u64>().ok())
             .filter(|value| *value > 0),
         action_tags: Vec::new(),
     };
-    apply_external_raw_policy(&mut policy);
+    apply_external_raw_policy(&mut policy, lookup);
     policy.policy_fingerprint = payload_hash(
         serde_json::to_string(&policy)
             .unwrap_or_default()
@@ -375,9 +397,8 @@ pub fn provider_egress_policy_from_env(mode: DataBoundaryMode) -> DataBoundaryPo
     policy
 }
 
-fn env_bool(name: &str) -> bool {
-    std::env::var(name)
-        .ok()
+fn env_bool(lookup: BoundaryEnvLookup<'_>, name: &str) -> bool {
+    lookup(name)
         .map(|raw| {
             matches!(
                 raw.trim().to_ascii_lowercase().as_str(),
@@ -387,9 +408,8 @@ fn env_bool(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn sensitive_class_list(var: &str) -> Vec<SensitiveDataClass> {
-    std::env::var(var)
-        .ok()
+fn sensitive_class_list(lookup: BoundaryEnvLookup<'_>, var: &str) -> Vec<SensitiveDataClass> {
+    lookup(var)
         .map(|raw| {
             raw.split(',')
                 .filter(|item| !item.trim().is_empty())
@@ -399,8 +419,8 @@ fn sensitive_class_list(var: &str) -> Vec<SensitiveDataClass> {
         .unwrap_or_default()
 }
 
-fn apply_external_raw_policy(policy: &mut DataBoundaryPolicy) {
-    let Ok(raw) = std::env::var("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY") else {
+fn apply_external_raw_policy(policy: &mut DataBoundaryPolicy, lookup: BoundaryEnvLookup<'_>) {
+    let Some(raw) = lookup("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY") else {
         return;
     };
     let all = SensitiveDataClass::ALL.to_vec();
@@ -414,7 +434,14 @@ fn apply_external_raw_policy(policy: &mut DataBoundaryPolicy) {
 }
 
 pub fn classify_provider_from_env(provider_id: &str) -> (ProviderBoundaryClass, &'static str) {
-    if let Ok(raw) = std::env::var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES") {
+    classify_provider_with(provider_id, &process_env)
+}
+
+pub fn classify_provider_with(
+    provider_id: &str,
+    lookup: BoundaryEnvLookup<'_>,
+) -> (ProviderBoundaryClass, &'static str) {
+    if let Some(raw) = lookup("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES") {
         for entry in raw.split(',') {
             let Some((id, class)) = entry.split_once('=') else {
                 continue;

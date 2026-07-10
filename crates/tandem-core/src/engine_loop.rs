@@ -22,7 +22,7 @@ use tracing::Level;
 mod data_boundary_gate;
 pub use data_boundary_gate::{
     evaluate_context_source, evaluate_dispatch_boundary, ContextSourceScope,
-    DataBoundaryDispatchContext, DataBoundaryDispatchOutcome,
+    DataBoundaryDispatchContext, DataBoundaryDispatchOutcome, ScopedDataBoundaryConfigOverride,
 };
 mod loop_guards;
 mod loop_tuning;

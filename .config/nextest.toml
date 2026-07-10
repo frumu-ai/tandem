@@ -3,31 +3,21 @@
 # nextest runs each test in its own process, which also isolates the
 # in-process global-state pollution that made some suites flaky under
 # `cargo test` (e.g. config_store_rehydrates_channel_token_from_secure_store).
+#
+# Quarantine policy (TAN-684): the CI default-filter below must stay empty.
+# If a test ever has to be excluded again, each `test(=...)` entry requires a
+# comment on the same or preceding line carrying the open Linear issue, an
+# owner, and an expiry date, e.g.
+#   # TAN-999 owner=evan expires=2026-08-01
+#   | test(=path::to::flaky_test)
+# The `quarantine_policy` test in crates/tandem-server enforces this format
+# and fails CI on undocumented entries.
 
 [profile.default]
 # Surface slow tests instead of hanging CI: warn at 60s, kill at 5 min.
 slow-timeout = { period = "60s", terminate-after = 5 }
 
 [profile.ci]
-default-filter = """
-not (
-  test(=http::coder::issue_fix_handoff_tests::issue_fix_handoff_commits_and_pushes_worker_branch)
-  | test(=http::tests::coder::coder_issue_fix_worker_uses_managed_worktree_for_git_repo)
-  | test(=http::tests::global::browser_status_route_returns_browser_readiness_shape)
-  | test(=http::tests::global::expired_leases_are_pruned_and_cleanup_managed_worktrees)
-  | test(=http::tests::global::managed_worktree_create_rejects_external_path_override)
-  | test(=http::tests::global::managed_worktree_create_rejects_unknown_lease)
-  | test(=http::tests::global::managed_worktree_endpoints_are_idempotent_and_cleanup_branch)
-  | test(=http::tests::global::managed_worktree_mutations_require_matching_active_lease)
-  | test(=http::tests::global::releasing_lease_cleans_up_managed_worktrees)
-  | test(=http::tests::global::stale_worktree_cleanup_removes_untracked_managed_worktrees)
-  | test(=http::tests::memory::memory_import_can_use_default_local_manual_source_binding_projection)
-  | test(=http::tests::memory::memory_import_quarantines_review_required_source_binding)
-  | test(=http::tests::memory::memory_import_records_enterprise_ingestion_job_audit)
-  | test(=http::tests::sessions::prompt_async_stream_error_persists_error_message_and_finishes_run)
-  | test(=http::tests::sessions::prompt_async_streamed_write_preserves_provider_call_id_and_args_lineage)
-)
-"""
 # One retry absorbs residual environmental flakiness without hiding real
 # failures (retried tests are reported as FLAKY, not silently green).
 retries = 1

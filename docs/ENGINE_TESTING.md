@@ -64,11 +64,18 @@ cargo nextest run -p tandem-server
 ```
 
 Prefer the `just test-rust` (tandem-server) / `just test-rust-workspace`
-recipes, which reproduce the CI job: the `ci` nextest profile (skips the
-TAN-220 quarantine of environment-sensitive tests, no fail-fast), the same
-feature flags, a throwaway `TANDEM_HOME` (no test can touch your real data
-dir), and `RUST_MIN_STACK=16777216` — without the larger stack, debug builds
-of the deepest coder/task-runtime tests abort with a stack overflow.
+recipes, which reproduce the CI job: the `ci` nextest profile (no fail-fast,
+one FLAKY-reported retry), the same feature flags, a throwaway `TANDEM_HOME`
+(no test can touch your real data dir), and `RUST_MIN_STACK=16777216` —
+without the larger stack, debug builds of the deepest coder/task-runtime
+tests abort with a stack overflow.
+
+The TAN-220 quarantine (the CI `default-filter` exclusion list) was drained
+by TAN-684 and must stay empty. If a test ever has to be excluded again, the
+entry in `.config/nextest.toml` needs a same-or-preceding-line comment with
+the open Linear issue, an owner, and an expiry
+(`# TAN-999 owner=evan expires=2026-08-01`); the `quarantine_policy` test in
+`crates/tandem-server/tests/` fails CI on undocumented entries.
 
 Why it matters: many tandem-server tests mutate process-wide environment
 variables (`TANDEM_HOME`, `TANDEM_RUNTIME_AUTH_MODE`, `CODEX_HOME`, ...), and
@@ -84,6 +91,11 @@ Rules for new tests (these keep plain `cargo test` usable for filtered runs):
   `#[serial_test::serial]` and restore-on-drop of the previous value.
 - Prefer threading configuration through explicit state/config structs over
   reading ambient env in code under test.
+- Data-boundary tests must not touch `TANDEM_DATA_BOUNDARY_*` env vars at
+  all: use `tandem_core::ScopedDataBoundaryConfigOverride` keyed by the
+  test's own session/run id (TAN-684). A registered scope fully defines the
+  boundary configuration for that session only, so concurrently running
+  tests are unaffected.
 - `test_support::test_state()` / `ready_test_state()` serialize their env
   mutation + construction behind `TEST_STATE_ENV_LOCK`; every canonical path a
   test relies on should come from the `AppState` fields those helpers set, not

@@ -2,20 +2,23 @@
 // the boundary refuses to dispatch — before the provider is ever called —
 // when the strict posture cannot positively establish tenant context or
 // provider classification, and that denied decisions leave only audit-safe
-// evidence behind. Shares the env-guard + DEFAULT serial group discipline
-// documented at the top of part04.rs.
+// evidence behind. Shares the session-scoped override + DEFAULT serial group
+// discipline documented at the top of part04.rs.
 
 #[tokio::test]
 #[serial_test::serial]
 async fn strict_enforce_blocks_missing_tenant_context_even_for_classified_provider() {
-    let _mode = DataBoundaryEnvGuard::set("TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
-    let _strict = DataBoundaryEnvGuard::set("TANDEM_DATA_BOUNDARY_STRICT", Some("1"));
+    let state = test_state().await;
+    let (session_id, captured) = capturing_boundary_session(&state).await;
+    let _mode =
+        DataBoundaryEnvGuard::set(&session_id, "TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
+    let _strict =
+        DataBoundaryEnvGuard::set(&session_id, "TANDEM_DATA_BOUNDARY_STRICT", Some("1"));
     let _classes = DataBoundaryEnvGuard::set(
+        &session_id,
         "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
         Some("boundary-test=approved_external"),
     );
-    let state = test_state().await;
-    let (session_id, captured) = capturing_boundary_session(&state).await;
     let mut rx = state.event_bus.subscribe();
     let app = app_router(state);
 
@@ -60,12 +63,15 @@ async fn strict_enforce_blocks_missing_tenant_context_even_for_classified_provid
 #[tokio::test]
 #[serial_test::serial]
 async fn strict_enforce_blocks_unclassified_provider() {
-    let _mode = DataBoundaryEnvGuard::set("TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
-    let _strict = DataBoundaryEnvGuard::set("TANDEM_DATA_BOUNDARY_STRICT", Some("1"));
-    // No TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES: the provider stays Unknown.
-    let _classes = DataBoundaryEnvGuard::set("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES", None);
     let state = test_state().await;
     let (session_id, captured) = capturing_boundary_session(&state).await;
+    let _mode =
+        DataBoundaryEnvGuard::set(&session_id, "TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
+    let _strict =
+        DataBoundaryEnvGuard::set(&session_id, "TANDEM_DATA_BOUNDARY_STRICT", Some("1"));
+    // No TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES: the provider stays Unknown.
+    let _classes =
+        DataBoundaryEnvGuard::set(&session_id, "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES", None);
     let mut rx = state.event_bus.subscribe();
     let app = app_router(state);
 
@@ -96,13 +102,15 @@ async fn strict_enforce_blocks_unclassified_provider() {
 #[tokio::test]
 #[serial_test::serial]
 async fn enforce_blocks_prohibited_provider_before_dispatch() {
-    let _mode = DataBoundaryEnvGuard::set("TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
+    let state = test_state().await;
+    let (session_id, captured) = capturing_boundary_session(&state).await;
+    let _mode =
+        DataBoundaryEnvGuard::set(&session_id, "TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
     let _classes = DataBoundaryEnvGuard::set(
+        &session_id,
         "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
         Some("boundary-test=prohibited"),
     );
-    let state = test_state().await;
-    let (session_id, captured) = capturing_boundary_session(&state).await;
     let mut rx = state.event_bus.subscribe();
     let app = app_router(state);
 
@@ -132,13 +140,15 @@ async fn enforce_blocks_prohibited_provider_before_dispatch() {
 #[tokio::test]
 #[serial_test::serial]
 async fn strict_denied_decision_leaves_only_safe_evidence_in_protected_audit() {
-    let _mode = DataBoundaryEnvGuard::set("TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
+    let state = test_state().await;
+    let (session_id, _captured) = capturing_boundary_session(&state).await;
+    let _mode =
+        DataBoundaryEnvGuard::set(&session_id, "TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
     let _classes = DataBoundaryEnvGuard::set(
+        &session_id,
         "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
         Some("boundary-test=prohibited"),
     );
-    let state = test_state().await;
-    let (session_id, _captured) = capturing_boundary_session(&state).await;
     let mut rx = state.event_bus.subscribe();
     let app = app_router(state.clone());
 

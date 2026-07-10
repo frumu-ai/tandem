@@ -5,16 +5,18 @@
 
 use serde_json::{json, Value};
 use std::borrow::Cow;
+use std::collections::HashMap;
+use std::sync::{LazyLock, RwLock};
 use std::time::Instant;
 use tandem_data_boundary::{
-    classify_provider_from_env, evaluate_data_boundary, evaluate_provider_egress, payload_hash,
-    provider_egress_mode_from_env, provider_egress_policy_from_env, DataBoundaryAction,
-    DataBoundaryDetectorConfig, DataBoundaryEvaluationRequest, DataBoundaryEvent,
-    DataBoundaryEventKind, DataBoundaryInput, DataBoundaryMode, DataBoundaryOperationKind,
-    DataBoundaryOperationRef, DataBoundaryPolicy, DataBoundaryProviderRef, DataBoundaryTenantRef,
-    ProviderBoundaryClass, ProviderEgressApproval, ProviderEgressAuditEvent,
-    ProviderEgressAuthority, ProviderEgressDisposition, ProviderEgressField, ProviderEgressPermit,
-    ProviderEgressRequest, SensitiveDataClass,
+    classify_provider_with, evaluate_data_boundary, evaluate_provider_egress_with_policy,
+    payload_hash, provider_egress_mode_with, provider_egress_policy_with, DataBoundaryAction,
+    DataBoundaryDetectorConfig,
+    DataBoundaryEvaluationRequest, DataBoundaryEvent, DataBoundaryEventKind, DataBoundaryInput,
+    DataBoundaryMode, DataBoundaryOperationKind, DataBoundaryOperationRef, DataBoundaryPolicy,
+    DataBoundaryProviderRef, DataBoundaryTenantRef, ProviderBoundaryClass, ProviderEgressApproval,
+    ProviderEgressAuditEvent, ProviderEgressAuthority, ProviderEgressDisposition,
+    ProviderEgressField, ProviderEgressPermit, ProviderEgressRequest, SensitiveDataClass,
 };
 use tandem_providers::ChatMessage;
 use tandem_types::{EngineEvent, TenantContext};
@@ -28,12 +30,83 @@ fn data_url_scan_prefix_len(url: &str) -> Option<usize> {
     Some(url.find(',').map(|comma| comma + 1).unwrap_or(url.len()))
 }
 
-pub(super) fn data_boundary_mode() -> DataBoundaryMode {
-    provider_egress_mode_from_env()
+/// Test-support: per-scope-id (session or automation run) boundary
+/// configuration. A registered scope fully defines the `TANDEM_DATA_BOUNDARY_*`
+/// configuration for evaluations attributed to that scope — keys absent from
+/// the map read as unset, and the process environment is not consulted.
+/// Unregistered scopes (all of production) resolve from the environment.
+/// This exists so tests can exercise boundary modes without `std::env`
+/// mutation, which leaks into every concurrently running test in the process.
+static SCOPED_BOUNDARY_CONFIG: LazyLock<RwLock<HashMap<String, HashMap<String, Option<String>>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// RAII override for one boundary configuration key, scoped to one session or
+/// automation-run id. Dropping the guard removes the key (and the scope once
+/// its last key is gone).
+pub struct ScopedDataBoundaryConfigOverride {
+    scope_id: String,
+    key: String,
+    previous: Option<Option<String>>,
 }
 
-pub(super) fn data_boundary_policy_from_env(mode: DataBoundaryMode) -> DataBoundaryPolicy {
-    provider_egress_policy_from_env(mode)
+impl ScopedDataBoundaryConfigOverride {
+    pub fn set(scope_id: &str, key: &str, value: Option<&str>) -> Self {
+        let mut scopes = SCOPED_BOUNDARY_CONFIG
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = scopes
+            .entry(scope_id.to_string())
+            .or_default()
+            .insert(key.to_string(), value.map(str::to_string));
+        Self {
+            scope_id: scope_id.to_string(),
+            key: key.to_string(),
+            previous,
+        }
+    }
+}
+
+impl Drop for ScopedDataBoundaryConfigOverride {
+    fn drop(&mut self) {
+        let mut scopes = SCOPED_BOUNDARY_CONFIG
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(map) = scopes.get_mut(&self.scope_id) {
+            match self.previous.take() {
+                Some(previous) => {
+                    map.insert(self.key.clone(), previous);
+                }
+                None => {
+                    map.remove(&self.key);
+                }
+            }
+            if map.is_empty() {
+                scopes.remove(&self.scope_id);
+            }
+        }
+    }
+}
+
+/// Boundary configuration lookup for one scope id: a registered scope is the
+/// complete configuration; otherwise the process environment applies.
+fn scoped_boundary_lookup(scope_id: &str) -> impl Fn(&str) -> Option<String> + '_ {
+    move |name: &str| {
+        let scopes = SCOPED_BOUNDARY_CONFIG
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match scopes.get(scope_id) {
+            Some(map) => map.get(name).cloned().flatten(),
+            None => std::env::var(name).ok(),
+        }
+    }
+}
+
+fn data_boundary_mode_for(scope_id: &str) -> DataBoundaryMode {
+    provider_egress_mode_with(&scoped_boundary_lookup(scope_id))
+}
+
+fn data_boundary_policy_for(scope_id: &str, mode: DataBoundaryMode) -> DataBoundaryPolicy {
+    provider_egress_policy_with(mode, &scoped_boundary_lookup(scope_id))
 }
 
 pub struct DataBoundaryDispatchContext<'a> {
@@ -61,8 +134,11 @@ pub struct DataBoundaryDispatchContext<'a> {
 /// unmapped stays `Unknown` (permissive policies treat it as unapproved
 /// external; strict policies fail closed). Endpoint-verified classification
 /// is a routing-contract TODO (provider-declared boundary_class).
-pub(super) fn classify_provider(provider_id: &str) -> (ProviderBoundaryClass, &'static str) {
-    classify_provider_from_env(provider_id)
+pub(super) fn classify_provider(
+    scope_id: &str,
+    provider_id: &str,
+) -> (ProviderBoundaryClass, &'static str) {
+    classify_provider_with(provider_id, &scoped_boundary_lookup(scope_id))
 }
 
 /// What the dispatch call site must do with the provider request.
@@ -204,9 +280,9 @@ pub fn evaluate_dispatch_boundary(
     ctx: &DataBoundaryDispatchContext<'_>,
     messages: &[ChatMessage],
 ) -> DataBoundaryDispatchOutcome {
-    let mode = data_boundary_mode();
-    let policy = data_boundary_policy_from_env(mode);
-    let (boundary_class, _) = classify_provider(ctx.provider_id);
+    let mode = data_boundary_mode_for(ctx.session_id);
+    let policy = data_boundary_policy_for(ctx.session_id, mode);
+    let (boundary_class, classification_source) = classify_provider(ctx.session_id, ctx.provider_id);
     let must_block_uninspected_media = mode == DataBoundaryMode::Enforce
         && policy.strict_fail_closed
         && !boundary_class.is_internal()
@@ -234,7 +310,12 @@ pub fn evaluate_dispatch_boundary(
         data_classes: ctx.data_classes,
         action_tags: &[],
     };
-    let mut evaluation = evaluate_provider_egress(&request);
+    let mut evaluation = evaluate_provider_egress_with_policy(
+        &request,
+        &policy,
+        boundary_class,
+        classification_source,
+    );
     if evaluation.disposition == ProviderEgressDisposition::Off {
         return DataBoundaryDispatchOutcome::Off {
             permit: evaluation
@@ -366,13 +447,14 @@ pub fn evaluate_context_source(
     tenant_context: Option<&TenantContext>,
 ) -> Option<EngineEvent> {
     let scope_id = scope.id();
-    if data_boundary_mode() == DataBoundaryMode::Off {
+    let mode = data_boundary_mode_for(scope_id);
+    if mode == DataBoundaryMode::Off {
         return None;
     }
     let started = Instant::now();
     // Sources are scanned before a provider is chosen; enforcement decisions
     // are meaningless here, so the policy is pinned to audit mode.
-    let policy = data_boundary_policy_from_env(DataBoundaryMode::Audit);
+    let policy = data_boundary_policy_for(scope_id, DataBoundaryMode::Audit);
     // Carry the session's tenant so the audit bridge attributes the record
     // to the right tenant; a local-implicit tenant stays unattributed (the
     // same "never positively established" rule as the dispatch gate).
@@ -430,7 +512,7 @@ pub fn evaluate_context_source(
     if let Value::Object(ref mut map) = properties {
         map.insert(scope.property_key().to_string(), json!(scope_id));
         map.insert("sourceKind".to_string(), json!(source_kind));
-        map.insert("mode".to_string(), json!(data_boundary_mode().as_str()));
+        map.insert("mode".to_string(), json!(mode.as_str()));
         map.insert("toolName".to_string(), json!(tool_name));
         map.insert("auditOnly".to_string(), json!(true));
         map.insert("enforced".to_string(), json!(false));
@@ -444,7 +526,11 @@ pub fn evaluate_context_source(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tandem_data_boundary::SensitiveDataClass;
+    use tandem_data_boundary::{provider_egress_policy_with, SensitiveDataClass};
+
+    // Scope id used by ctx(): overrides registered here are visible only to
+    // evaluations attributed to this scope.
+    const GATE_TEST_SCOPE: &str = "ses_db_1";
 
     fn expect_proceed_event(outcome: DataBoundaryDispatchOutcome) -> EngineEvent {
         match outcome {
@@ -482,7 +568,7 @@ mod tests {
     #[test]
     #[serial_test::serial(data_boundary_env)]
     fn off_mode_emits_nothing() {
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
+        let _ovr_mode = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_MODE", None);
         let messages = vec![chat("user", "api_key=sk-live-abcdef1234567890")];
         assert!(matches!(
             evaluate_dispatch_boundary(&ctx(), &messages),
@@ -493,14 +579,13 @@ mod tests {
     #[test]
     #[serial_test::serial(data_boundary_env)]
     fn audit_mode_emits_safe_event_with_findings() {
-        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "audit");
+        let _ovr1 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_MODE", Some("audit"));
         let secret = "sk-live-abcdef1234567890";
         let messages = vec![
             chat("system", "you are helpful"),
             chat("user", &format!("use api_key={secret} please")),
         ];
         let event = expect_proceed_event(evaluate_dispatch_boundary(&ctx(), &messages));
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
 
         assert_eq!(event.event_type, "data_boundary.evaluated");
         let serialized = serde_json::to_string(&event.properties).expect("json");
@@ -530,12 +615,10 @@ mod tests {
         // messages, so a redact decision must not emit
         // `data_boundary.redacted` — that would claim a transformation that
         // never reached the provider.
-        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "audit");
-        std::env::set_var("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY", "redact");
+        let _ovr2 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_MODE", Some("audit"));
+        let _ovr3 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY", Some("redact"));
         let messages = vec![chat("user", "use api_key=sk-live-abcdef1234567890")];
         let event = expect_proceed_event(evaluate_dispatch_boundary(&ctx(), &messages));
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY");
 
         assert_eq!(event.event_type, "data_boundary.evaluated");
         assert_eq!(event.properties["action"], "redact");
@@ -553,7 +636,7 @@ mod tests {
         // signed URL carrying a credential must produce findings — while an
         // inline data: URL's base64 image body must not flood findings with
         // high-entropy false positives.
-        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "audit");
+        let _ovr4 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_MODE", Some("audit"));
         let signed = ChatMessage {
             role: "user".to_string(),
             content: "see attached".to_string(),
@@ -581,7 +664,6 @@ mod tests {
             }],
         };
         let event = expect_proceed_event(evaluate_dispatch_boundary(&ctx(), &[inline]));
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
         assert_eq!(
             event.properties["finding_summary"]["total_findings"]
                 .as_u64()
@@ -594,12 +676,9 @@ mod tests {
     #[test]
     #[serial_test::serial(data_boundary_env)]
     fn strict_enforce_blocks_uninspected_media_for_external_providers() {
-        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
-        std::env::set_var("TANDEM_DATA_BOUNDARY_STRICT", "1");
-        std::env::set_var(
-            "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
-            "openai=approved_external",
-        );
+        let _ovr5 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
+        let _ovr6 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_STRICT", Some("1"));
+        let _ovr7 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES", Some("openai=approved_external"));
 
         for url in [
             "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg",
@@ -628,17 +707,14 @@ mod tests {
             }
         }
 
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_STRICT");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES");
     }
 
     #[test]
     #[serial_test::serial(data_boundary_env)]
     fn strict_enforce_allows_media_for_internal_providers() {
-        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
-        std::env::set_var("TANDEM_DATA_BOUNDARY_STRICT", "1");
-        std::env::set_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES", "openai=local");
+        let _ovr8 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
+        let _ovr9 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_STRICT", Some("1"));
+        let _ovr10 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES", Some("openai=local"));
         let message = ChatMessage {
             role: "user".to_string(),
             content: "see attached".to_string(),
@@ -647,9 +723,6 @@ mod tests {
             }],
         };
         let outcome = evaluate_dispatch_boundary(&ctx(), &[message]);
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_STRICT");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES");
 
         assert!(matches!(
             outcome,
@@ -660,27 +733,27 @@ mod tests {
     #[test]
     #[serial_test::serial(data_boundary_env)]
     fn classifier_uses_env_mapping_then_builtin_then_unknown() {
-        std::env::set_var(
+        let mapping_override = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, 
             "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
-            "openai=approved_external, azure=customer_hosted",
+            Some("openai=approved_external, azure=customer_hosted"),
         );
         assert_eq!(
-            classify_provider("openai"),
+            classify_provider(GATE_TEST_SCOPE, "openai"),
             (ProviderBoundaryClass::ApprovedExternal, "env_mapping")
         );
         assert_eq!(
-            classify_provider("azure"),
+            classify_provider(GATE_TEST_SCOPE, "azure"),
             (ProviderBoundaryClass::CustomerHosted, "env_mapping")
         );
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES");
+        drop(mapping_override);
         // Builtin loopback ids get no id-based trust: their base URLs can be
         // reconfigured to remote endpoints, so unmapped ids stay Unknown.
         assert_eq!(
-            classify_provider("ollama"),
+            classify_provider(GATE_TEST_SCOPE, "ollama"),
             (ProviderBoundaryClass::Unknown, "unclassified")
         );
         assert_eq!(
-            classify_provider("openai"),
+            classify_provider(GATE_TEST_SCOPE, "openai"),
             (ProviderBoundaryClass::Unknown, "unclassified")
         );
     }
@@ -688,11 +761,10 @@ mod tests {
     #[test]
     #[serial_test::serial(data_boundary_env)]
     fn enforce_blocks_raw_sensitive_to_unclassified_provider() {
-        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
+        let _ovr12 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
         let secret = "sk-live-abcdef1234567890";
         let messages = vec![chat("user", &format!("api_key={secret}"))];
         let outcome = evaluate_dispatch_boundary(&ctx(), &messages);
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
 
         match outcome {
             DataBoundaryDispatchOutcome::Blocked { event, reason } => {
@@ -710,19 +782,13 @@ mod tests {
     #[test]
     #[serial_test::serial(data_boundary_env)]
     fn semantic_source_code_is_blocked_without_regex_findings() {
-        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
-        std::env::set_var(
-            "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
-            "openai=approved_external",
-        );
-        std::env::set_var("TANDEM_DATA_BOUNDARY_BLOCK_CLASSES", "source_code");
+        let _ovr13 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
+        let _ovr14 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES", Some("openai=approved_external"));
+        let _ovr15 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_BLOCK_CLASSES", Some("source_code"));
         let classes = [SensitiveDataClass::SourceCode];
         let mut context = ctx();
         context.data_classes = &classes;
         let outcome = evaluate_dispatch_boundary(&context, &[chat("user", "ordinary text")]);
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_BLOCK_CLASSES");
 
         match outcome {
             DataBoundaryDispatchOutcome::Blocked { event, reason } => {
@@ -737,19 +803,21 @@ mod tests {
     #[test]
     #[serial_test::serial(data_boundary_env)]
     fn strict_mode_requires_run_and_session_authority() {
-        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
-        std::env::set_var("TANDEM_DATA_BOUNDARY_STRICT", "1");
-        std::env::set_var(
+        // The blanked session id below is also the config scope the gate
+        // resolves against, so the overrides register under that scope.
+        let _ovr16 =
+            ScopedDataBoundaryConfigOverride::set(" ", "TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
+        let _ovr17 =
+            ScopedDataBoundaryConfigOverride::set(" ", "TANDEM_DATA_BOUNDARY_STRICT", Some("1"));
+        let _ovr18 = ScopedDataBoundaryConfigOverride::set(
+            " ",
             "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
-            "openai=approved_external",
+            Some("openai=approved_external"),
         );
         let mut context = ctx();
         context.run_id = None;
         context.session_id = " ";
         let outcome = evaluate_dispatch_boundary(&context, &[chat("user", "ordinary text")]);
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_STRICT");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES");
 
         match outcome {
             DataBoundaryDispatchOutcome::Blocked { reason, .. } => {
@@ -763,21 +831,15 @@ mod tests {
     #[test]
     #[serial_test::serial(data_boundary_env)]
     fn enforce_redact_policy_transforms_dispatched_messages() {
-        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
-        std::env::set_var(
-            "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
-            "openai=approved_external",
-        );
-        std::env::set_var("TANDEM_DATA_BOUNDARY_REDACT_CLASSES", "credential,pii");
+        let _ovr19 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
+        let _ovr20 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES", Some("openai=approved_external"));
+        let _ovr21 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_REDACT_CLASSES", Some("credential,pii"));
         let secret = "sk-live-abcdef1234567890";
         let messages = vec![
             chat("system", "you are helpful"),
             chat("user", &format!("use api_key={secret} please")),
         ];
         let outcome = evaluate_dispatch_boundary(&ctx(), &messages);
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_REDACT_CLASSES");
 
         match outcome {
             DataBoundaryDispatchOutcome::ProceedTransformed {
@@ -808,21 +870,15 @@ mod tests {
     #[test]
     #[serial_test::serial(data_boundary_env)]
     fn tool_schema_keys_do_not_block_message_redaction() {
-        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
-        std::env::set_var(
-            "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
-            "openai=approved_external",
-        );
-        std::env::set_var("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY", "redact");
+        let _ovr22 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
+        let _ovr23 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES", Some("openai=approved_external"));
+        let _ovr24 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY", Some("redact"));
         let mut context = ctx();
         context.tool_schema_payload = Some(
             r#"[{"name":"configure_auth","description":"Configure secret credentials and API tokens.","parameters":{"type":"object","properties":{"secret":{"type":"string"},"password":{"type":"string"},"token":{"type":"string"}}}}]"#,
         );
         let messages = vec![chat("user", "api_key=sk-live-abcdef1234567890")];
         let outcome = evaluate_dispatch_boundary(&context, &messages);
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY");
 
         match outcome {
             DataBoundaryDispatchOutcome::ProceedTransformed { messages, .. } => {
@@ -835,19 +891,13 @@ mod tests {
     #[test]
     #[serial_test::serial(data_boundary_env)]
     fn credential_in_tool_schema_value_fails_closed() {
-        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
-        std::env::set_var(
-            "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
-            "openai=approved_external",
-        );
-        std::env::set_var("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY", "redact");
+        let _ovr25 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
+        let _ovr26 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES", Some("openai=approved_external"));
+        let _ovr27 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY", Some("redact"));
         let mut context = ctx();
         context.tool_schema_payload =
             Some(r#"[{"description":"api_key=sk-live-abcdef1234567890"}]"#);
         let outcome = evaluate_dispatch_boundary(&context, &[chat("user", "hello")]);
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY");
 
         match outcome {
             DataBoundaryDispatchOutcome::Blocked { reason, .. } => {
@@ -861,18 +911,12 @@ mod tests {
     #[test]
     #[serial_test::serial(data_boundary_env)]
     fn enforce_approval_classes_require_approval_with_safe_evidence() {
-        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
-        std::env::set_var(
-            "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
-            "openai=approved_external",
-        );
-        std::env::set_var("TANDEM_DATA_BOUNDARY_APPROVAL_CLASSES", "credential");
+        let _ovr28 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
+        let _ovr29 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES", Some("openai=approved_external"));
+        let _ovr30 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_APPROVAL_CLASSES", Some("credential"));
         let secret = "sk-live-abcdef1234567890";
         let messages = vec![chat("user", &format!("api_key={secret}"))];
         let outcome = evaluate_dispatch_boundary(&ctx(), &messages);
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_APPROVAL_CLASSES");
 
         match outcome {
             DataBoundaryDispatchOutcome::RequireApproval {
@@ -894,17 +938,11 @@ mod tests {
     #[test]
     #[serial_test::serial(data_boundary_env)]
     fn enforce_require_local_fails_closed_without_routing() {
-        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
-        std::env::set_var(
-            "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
-            "openai=approved_external",
-        );
-        std::env::set_var("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY", "require_local");
+        let _ovr31 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
+        let _ovr32 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES", Some("openai=approved_external"));
+        let _ovr33 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY", Some("require_local"));
         let messages = vec![chat("user", "api_key=sk-live-abcdef1234567890")];
         let outcome = evaluate_dispatch_boundary(&ctx(), &messages);
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY");
 
         match outcome {
             DataBoundaryDispatchOutcome::Blocked { event, reason } => {
@@ -918,12 +956,10 @@ mod tests {
     #[test]
     #[serial_test::serial(data_boundary_env)]
     fn enforce_strict_fails_closed_on_unclassified_provider_even_when_clean() {
-        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
-        std::env::set_var("TANDEM_DATA_BOUNDARY_STRICT", "1");
+        let _ovr34 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
+        let _ovr35 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_STRICT", Some("1"));
         let messages = vec![chat("user", "hello there")];
         let outcome = evaluate_dispatch_boundary(&ctx(), &messages);
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_STRICT");
 
         match outcome {
             DataBoundaryDispatchOutcome::Blocked { reason, .. } => {
@@ -939,7 +975,8 @@ mod tests {
         // Codex P2 (PR #1788): source-guard events must carry the session's
         // tenant so the audit bridge files them under the right tenant and
         // the tenant-scoped monitoring read model can see them.
-        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "audit");
+        let _ovr36 =
+            ScopedDataBoundaryConfigOverride::set("session-1", "TANDEM_DATA_BOUNDARY_MODE", Some("audit"));
         let mut tenant = TenantContext::local_implicit();
         tenant.org_id = "org-src".to_string();
         tenant.workspace_id = "workspace-src".to_string();
@@ -965,7 +1002,6 @@ mod tests {
             Some(&TenantContext::local_implicit()),
         )
         .expect("findings must produce an event");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
         assert!(
             implicit.properties["tenant"]
                 .get("organization_id")
@@ -977,14 +1013,12 @@ mod tests {
     #[test]
     #[serial_test::serial(data_boundary_env)]
     fn enforce_allows_env_classified_local_provider_with_sensitive_payload() {
-        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
-        std::env::set_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES", "ollama=local");
+        let _ovr37 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
+        let _ovr38 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES", Some("ollama=local"));
         let mut context = ctx();
         context.provider_id = "ollama";
         let messages = vec![chat("user", "api_key=sk-live-abcdef1234567890")];
         let outcome = evaluate_dispatch_boundary(&context, &messages);
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES");
 
         match outcome {
             DataBoundaryDispatchOutcome::Proceed { event, .. } => {
@@ -1004,12 +1038,9 @@ mod tests {
         // parameters (before the comma) is detected by the evaluator, so the
         // transform path must fail closed on it too — the attachment cannot
         // be rewritten and must not dispatch raw under a transform policy.
-        std::env::set_var("TANDEM_DATA_BOUNDARY_MODE", "enforce");
-        std::env::set_var(
-            "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
-            "openai=approved_external",
-        );
-        std::env::set_var("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY", "redact");
+        let _ovr39 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
+        let _ovr40 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES", Some("openai=approved_external"));
+        let _ovr41 = ScopedDataBoundaryConfigOverride::set(GATE_TEST_SCOPE, "TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY", Some("redact"));
         let message = ChatMessage {
             role: "user".to_string(),
             content: "see attached".to_string(),
@@ -1021,9 +1052,6 @@ mod tests {
             }],
         };
         let outcome = evaluate_dispatch_boundary(&ctx(), &[message]);
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_MODE");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY");
 
         match outcome {
             DataBoundaryDispatchOutcome::Blocked { reason, .. } => {
@@ -1040,13 +1068,15 @@ mod tests {
     #[test]
     #[serial_test::serial(data_boundary_env)]
     fn policy_from_env_maps_external_raw_policy_and_classes() {
-        std::env::set_var("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY", "redact");
-        std::env::set_var("TANDEM_DATA_BOUNDARY_BLOCK_CLASSES", "phi, credential");
-        std::env::set_var("TANDEM_DATA_BOUNDARY_MAX_PAYLOAD_BYTES", "1024");
-        let policy = data_boundary_policy_from_env(DataBoundaryMode::Audit);
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_BLOCK_CLASSES");
-        std::env::remove_var("TANDEM_DATA_BOUNDARY_MAX_PAYLOAD_BYTES");
+        let lookup = |name: &str| -> Option<String> {
+            match name {
+                "TANDEM_DATA_BOUNDARY_EXTERNAL_RAW_POLICY" => Some("redact".to_string()),
+                "TANDEM_DATA_BOUNDARY_BLOCK_CLASSES" => Some("phi, credential".to_string()),
+                "TANDEM_DATA_BOUNDARY_MAX_PAYLOAD_BYTES" => Some("1024".to_string()),
+                _ => None,
+            }
+        };
+        let policy = provider_egress_policy_with(DataBoundaryMode::Audit, &lookup);
 
         assert_eq!(policy.redact_classes.len(), SensitiveDataClass::ALL.len());
         assert_eq!(

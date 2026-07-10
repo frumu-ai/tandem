@@ -190,7 +190,22 @@ impl AppState {
     }
 
     pub async fn browser_status(&self) -> serde_json::Value {
-        serde_json::json!({ "enabled": false, "sidecar": { "found": false }, "browser": { "found": false } })
+        // Mirrors the serialized `tandem_browser::BrowserStatus` readiness
+        // contract so /browser/status keeps a stable shape in builds compiled
+        // without the `browser` feature.
+        serde_json::json!({
+            "enabled": false,
+            "runnable": false,
+            "headless_default": true,
+            "sidecar": { "found": false },
+            "browser": { "found": false },
+            "blocking_issues": [{
+                "code": "browser_feature_disabled",
+                "message": "this server build was compiled without the `browser` feature",
+            }],
+            "recommendations": [],
+            "install_hints": [],
+        })
     }
 
     pub async fn browser_smoke_test(

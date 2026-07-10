@@ -1,33 +1,10 @@
 // TAN-392: audit-mode data-boundary integration tests. The engine loop reads
-// TANDEM_DATA_BOUNDARY_* at dispatch time and EngineConfigReport::from_env
-// validates the same vars, so these tests guard the env with an RAII restore
-// and share the DEFAULT serial group with the config::engine tests — a named
-// group would let the two families race on the same process environment.
-
-struct DataBoundaryEnvGuard {
-    name: &'static str,
-    previous: Option<String>,
-}
-
-impl DataBoundaryEnvGuard {
-    fn set(name: &'static str, value: Option<&str>) -> Self {
-        let previous = std::env::var(name).ok();
-        match value {
-            Some(value) => std::env::set_var(name, value),
-            None => std::env::remove_var(name),
-        }
-        Self { name, previous }
-    }
-}
-
-impl Drop for DataBoundaryEnvGuard {
-    fn drop(&mut self) {
-        match self.previous.take() {
-            Some(previous) => std::env::set_var(self.name, previous),
-            None => std::env::remove_var(self.name),
-        }
-    }
-}
+// TANDEM_DATA_BOUNDARY_* at dispatch time, so these tests scope configuration
+// through the in-crate override (TAN-684) instead of mutating the process
+// environment — env mutation leaked boundary modes into every unannotated
+// test running concurrently in the same process. They stay in the DEFAULT
+// serial group because the override itself is process-global per key.
+use tandem_core::ScopedDataBoundaryConfigOverride as DataBoundaryEnvGuard;
 
 struct BoundaryTextTestProvider;
 
@@ -131,9 +108,10 @@ async fn collect_events_until_run_finished(
 #[tokio::test]
 #[serial_test::serial]
 async fn data_boundary_audit_mode_records_findings_and_allows_provider_call() {
-    let _mode = DataBoundaryEnvGuard::set("TANDEM_DATA_BOUNDARY_MODE", Some("audit"));
     let state = test_state().await;
     let session_id = boundary_test_session(&state).await;
+    let _mode =
+        DataBoundaryEnvGuard::set(&session_id, "TANDEM_DATA_BOUNDARY_MODE", Some("audit"));
     let mut rx = state.event_bus.subscribe();
     let app = app_router(state);
 
@@ -184,9 +162,9 @@ async fn data_boundary_audit_mode_records_findings_and_allows_provider_call() {
 #[tokio::test]
 #[serial_test::serial]
 async fn data_boundary_off_mode_emits_no_boundary_events() {
-    let _mode = DataBoundaryEnvGuard::set("TANDEM_DATA_BOUNDARY_MODE", None);
     let state = test_state().await;
     let session_id = boundary_test_session(&state).await;
+    let _mode = DataBoundaryEnvGuard::set(&session_id, "TANDEM_DATA_BOUNDARY_MODE", None);
     let mut rx = state.event_bus.subscribe();
     let app = app_router(state);
 
@@ -214,9 +192,10 @@ async fn data_boundary_off_mode_emits_no_boundary_events() {
 #[tokio::test]
 #[serial_test::serial]
 async fn data_boundary_bridge_writes_protected_audit_without_raw_content() {
-    let _mode = DataBoundaryEnvGuard::set("TANDEM_DATA_BOUNDARY_MODE", Some("audit"));
     let state = test_state().await;
     let session_id = boundary_test_session(&state).await;
+    let _mode =
+        DataBoundaryEnvGuard::set(&session_id, "TANDEM_DATA_BOUNDARY_MODE", Some("audit"));
     let mut rx = state.event_bus.subscribe();
     let app = app_router(state.clone());
 
@@ -341,9 +320,10 @@ fn run_finished_status(events: &[EngineEvent]) -> String {
 #[tokio::test]
 #[serial_test::serial]
 async fn data_boundary_enforce_blocks_sensitive_dispatch_to_unclassified_provider() {
-    let _mode = DataBoundaryEnvGuard::set("TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
     let state = test_state().await;
     let (session_id, captured) = capturing_boundary_session(&state).await;
+    let _mode =
+        DataBoundaryEnvGuard::set(&session_id, "TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
     let mut rx = state.event_bus.subscribe();
     let app = app_router(state);
 
@@ -371,17 +351,20 @@ async fn data_boundary_enforce_blocks_sensitive_dispatch_to_unclassified_provide
 #[tokio::test]
 #[serial_test::serial]
 async fn data_boundary_enforce_redacts_dispatched_payload_for_approved_provider() {
-    let _mode = DataBoundaryEnvGuard::set("TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
+    let state = test_state().await;
+    let (session_id, captured) = capturing_boundary_session(&state).await;
+    let _mode =
+        DataBoundaryEnvGuard::set(&session_id, "TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
     let _classes = DataBoundaryEnvGuard::set(
+        &session_id,
         "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
         Some("boundary-test=approved_external"),
     );
     let _redact = DataBoundaryEnvGuard::set(
+        &session_id,
         "TANDEM_DATA_BOUNDARY_REDACT_CLASSES",
         Some("credential,pii,secret"),
     );
-    let state = test_state().await;
-    let (session_id, captured) = capturing_boundary_session(&state).await;
     let mut rx = state.event_bus.subscribe();
     let app = app_router(state);
 
@@ -421,17 +404,20 @@ async fn data_boundary_enforce_redacts_dispatched_payload_for_approved_provider(
 #[tokio::test]
 #[serial_test::serial]
 async fn data_boundary_approval_denied_blocks_dispatch() {
-    let _mode = DataBoundaryEnvGuard::set("TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
+    let state = test_state().await;
+    let (session_id, captured) = capturing_boundary_session(&state).await;
+    let _mode =
+        DataBoundaryEnvGuard::set(&session_id, "TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
     let _classes = DataBoundaryEnvGuard::set(
+        &session_id,
         "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
         Some("boundary-test=approved_external"),
     );
     let _approval = DataBoundaryEnvGuard::set(
+        &session_id,
         "TANDEM_DATA_BOUNDARY_APPROVAL_CLASSES",
         Some("credential"),
     );
-    let state = test_state().await;
-    let (session_id, captured) = capturing_boundary_session(&state).await;
     let mut rx = state.event_bus.subscribe();
     let app = app_router(state.clone());
 
@@ -475,17 +461,20 @@ async fn data_boundary_approval_denied_blocks_dispatch() {
 #[tokio::test]
 #[serial_test::serial]
 async fn data_boundary_approval_granted_dispatches_original_payload() {
-    let _mode = DataBoundaryEnvGuard::set("TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
+    let state = test_state().await;
+    let (session_id, captured) = capturing_boundary_session(&state).await;
+    let _mode =
+        DataBoundaryEnvGuard::set(&session_id, "TANDEM_DATA_BOUNDARY_MODE", Some("enforce"));
     let _classes = DataBoundaryEnvGuard::set(
+        &session_id,
         "TANDEM_DATA_BOUNDARY_PROVIDER_CLASSES",
         Some("boundary-test=approved_external"),
     );
     let _approval = DataBoundaryEnvGuard::set(
+        &session_id,
         "TANDEM_DATA_BOUNDARY_APPROVAL_CLASSES",
         Some("credential"),
     );
-    let state = test_state().await;
-    let (session_id, captured) = capturing_boundary_session(&state).await;
     let mut rx = state.event_bus.subscribe();
     let app = app_router(state.clone());
 
