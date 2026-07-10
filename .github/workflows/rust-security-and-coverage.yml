@@ -65,17 +65,21 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
+      # Pinned: the @cargo-deny ref installs latest, and 0.20 broke CI by
+      # moving `check --config` to the root command. Bump deliberately.
       - name: Install cargo-deny
-        uses: taiki-e/install-action@cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
 
       - name: Check licenses and bans
         run: |
           echo "Using cargo-deny policy from .config/deny.toml"
-          cargo deny check --config .config/deny.toml licenses bans sources
+          cargo deny --config .config/deny.toml check licenses bans sources
 
       - name: Check advisories
         continue-on-error: ${{ github.event_name == 'pull_request' }}
-        run: cargo deny check --config .config/deny.toml advisories
+        run: cargo deny --config .config/deny.toml check advisories
 
   coverage:
     name: Governance Coverage
