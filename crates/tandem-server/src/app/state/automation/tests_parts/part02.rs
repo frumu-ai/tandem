@@ -151,6 +151,7 @@ fn automation_wide_read_only_rules_filter_later_node_write_targets() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let mut write_node = bare_node();

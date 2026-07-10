@@ -79,6 +79,7 @@ fn marketing_template_automation_migrates_to_split_research_flow() {
                     max_tool_calls: None,
                     stage_kind: None,
                     gate: None,
+                    wait: None,
                     metadata: Some(json!({
                         "builder": {
                             "title": "Research Brief",
@@ -115,6 +116,7 @@ fn marketing_template_automation_migrates_to_split_research_flow() {
                     max_tool_calls: None,
                     stage_kind: None,
                     gate: None,
+                    wait: None,
                     metadata: None,
                 },
             ],
@@ -294,6 +296,7 @@ fn research_finalize_validation_accepts_upstream_read_evidence() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -449,6 +452,7 @@ fn generic_artifact_validation_blocks_weak_report_markdown() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "report.md"
@@ -551,6 +555,7 @@ fn connector_action_receipt_bypasses_editorial_markdown_shape_block() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "update-notion-row.md"
@@ -646,6 +651,7 @@ fn notion_database_row_update_blocks_when_only_page_content_was_replaced() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "update-notion-row.md"
@@ -727,6 +733,7 @@ fn publish_node_blocks_when_upstream_editorial_validation_failed() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "role": "publisher"
@@ -784,6 +791,7 @@ fn report_markdown_blocks_when_rich_upstream_evidence_is_reduced_to_generic_summ
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "report.md"
@@ -909,6 +917,7 @@ fn report_markdown_accepts_structured_synthesis_without_inline_citations_when_up
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "analyze-findings.md"
@@ -1027,6 +1036,7 @@ fn report_markdown_legacy_metadata_is_forced_to_strict_without_emergency_rollbac
             max_tool_calls: None,
             stage_kind: None,
             gate: None,
+            wait: None,
             metadata: Some(json!({
                 "quality_mode": "legacy",
                 "builder": {
@@ -1161,6 +1171,7 @@ fn report_markdown_legacy_quality_mode_allows_generic_synthesis_with_emergency_r
             max_tool_calls: None,
             stage_kind: None,
             gate: None,
+            wait: None,
             metadata: Some(json!({
                 "quality_mode": "legacy",
                 "builder": {
@@ -1294,6 +1305,7 @@ fn report_markdown_rejects_generic_synthesis_without_evidence_anchors_when_upstr
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "generate-report.md"

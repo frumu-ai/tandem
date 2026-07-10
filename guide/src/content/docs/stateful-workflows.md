@@ -81,11 +81,96 @@ flowchart TD
 | Outbox effects, dead letters, compensation, and resume plans | Runtime-managed and operator-reviewable | Stateful reliability and resume-plan surfaces                                                                                                                        |
 | Webhook targeting an arbitrary node ID                       | Not publicly authorable                 | Start at DAG roots and route through a guard node instead                                                                                                            |
 | Webhook preview as a node input                              | Not publicly authorable                 | Tandem stores sanitized webhook metadata on the run snapshot for inspection, but current public authoring does not inject it into a root node prompt or `input_refs` |
-| Declaring a correlated webhook wait inside a V2 node         | Not publicly authorable                 | The runtime can wake an existing registered wait, but no public Automation V2, HTTP, SDK, or MCP authoring surface creates it                                        |
-| Declaring timer or external-condition wait nodes             | Not publicly authorable                 | Use supported scheduling, approval, or a separate webhook-started run                                                                                                |
+| Timer, approval, correlated webhook, and external waits      | Publicly authorable                     | Set a typed `wait` on an Automation V2 node; TypeScript, Python, HTTP, and raw MCP automation authoring use the same wire contract                                    |
 
 There is no `stateful: true` flag. Automation V2 runs are projected into the
 stateful runtime automatically.
+
+## Author durable wait nodes
+
+A wait node is a non-agent node. It cannot also declare a legacy `gate`, tool or
+MCP policy, retry policy, node timeout, or tool-call budget. When the node
+becomes eligible, Tandem checkpoints the run, registers the wait, and pauses the
+same run. A successful wake completes that node with a bounded
+`stateful_wait` output and queues the same run so its downstream nodes can
+continue.
+
+Use one of these `wait` objects on an Automation V2 flow node:
+
+```json
+{
+  "node_id": "wait_for_window",
+  "agent_id": "system",
+  "objective": "Wait for the publishing window",
+  "depends_on": ["prepare_draft"],
+  "wait": { "kind": "timer", "delay_ms": 86400000 }
+}
+```
+
+```json
+{
+  "node_id": "wait_for_approval",
+  "agent_id": "system",
+  "objective": "Wait for a publish decision",
+  "depends_on": ["prepare_draft"],
+  "wait": {
+    "kind": "approval",
+    "decisions": ["approve", "deny"],
+    "timeout": { "expires_after_ms": 604800000, "on_timeout": "cancel" }
+  }
+}
+```
+
+```json
+{
+  "node_id": "wait_for_callback",
+  "agent_id": "system",
+  "objective": "Wait for the correlated provider callback",
+  "depends_on": ["create_external_job"],
+  "wait": {
+    "kind": "webhook",
+    "trigger_id": "trigger_123",
+    "provider": "custom",
+    "provider_event_kind": "job.completed",
+    "correlation": {
+      "field": "provider_event_id",
+      "value": {
+        "source": "node_output",
+        "node_id": "create_external_job",
+        "json_pointer": "/content/provider_event_id"
+      }
+    },
+    "timeout": { "expires_after_ms": 604800000, "on_timeout": "escalate", "escalate_to": "operations" }
+  }
+}
+```
+
+```json
+{
+  "node_id": "wait_for_legal_hold",
+  "agent_id": "system",
+  "objective": "Wait for the external condition resolver",
+  "depends_on": ["prepare_draft"],
+  "wait": {
+    "kind": "external_condition",
+    "condition_key": { "source": "literal", "value": "legal-hold-42" },
+    "timeout": { "expires_after_ms": 2592000000, "on_timeout": "cancel" },
+    "payload_schema": {
+      "type": "object",
+      "required": ["released"],
+      "properties": { "released": { "type": "boolean" } }
+    }
+  }
+}
+```
+
+Bindings with `source: "node_output"` must point to a declared upstream
+dependency. `json_pointer` uses JSON Pointer syntax and must start with `/`.
+Timer nodes require exactly one of `delay_ms` or `wake_at`. Every webhook and
+external-condition wait requires an explicit timeout policy. Public resolution
+endpoints for externally resolved conditions are covered by the stateful runtime
+API work; until that endpoint is enabled in your build, only the internal
+governed resolver can wake that wait kind.
 
 ## Build a webhook review and publish workflow
 
@@ -110,10 +195,10 @@ agent and the node must have the narrow policy required for their step.
 
 ### 2. Create the Automation V2 definition
 
-The engine's raw Automation V2 JSON uses snake_case. The current TypeScript
-client's public node type does not enumerate every raw gate, metadata, and
-output-contract field, so the example deliberately casts the source-backed raw
-payload at the SDK boundary.
+The engine's raw Automation V2 JSON uses snake_case. The TypeScript and Python
+clients expose the typed `wait` contract; the example still casts the complete
+source-backed raw payload at the SDK boundary because it also uses low-level
+gate, metadata, and output-contract fields.
 
 ```ts
 import { TandemClient } from "@frumu/tandem-client";
@@ -463,7 +548,7 @@ Read the newest delivery's `status`, `delivery_id`, and `queued_run_id`. Follow
 | Duplicate event or body                    | Does not create a second run                            | Inspect `duplicate_of_delivery_id`, `duplicate_of_run_id`, and dedupe reason                            |
 | Same event ID with changed body            | Rejects as an idempotency conflict                      | Do not reuse an event ID for different content                                                          |
 | Notion verification handshake              | Stores/reveals the verification token; no workflow run  | Finish Notion subscription verification first                                                           |
-| Matching runtime-registered webhook wait   | Requeues the waiting run and records woken run/wait IDs | Runtime capability only; no public Automation V2/API/SDK/MCP authoring surface declares this wait today |
+| Matching registered webhook wait           | Requeues the waiting run and records woken run/wait IDs | Declare a typed webhook `wait` node; the correlation and dependencies select the continuation             |
 
 Duplicate redelivery is suppressed before it can create another run. Tandem
 uses trigger-scoped provider event IDs when available and always tracks the body
@@ -633,7 +718,7 @@ When an MCP-connected agent is asked to build or repair a stateful workflow:
 | Recreating the automation after one node fails                | Repair the affected run or task from its checkpoint                                                                  |
 | Retrying an uncertain external effect blindly                 | Inspect outbox, effect, and receipt records first                                                                    |
 | Treating artifacts or replay data as promoted memory          | Promote reviewed project knowledge explicitly                                                                        |
-| Documenting correlated webhook waits as a public node feature | State the current authoring limitation clearly                                                                       |
+| Omitting a correlation value from a webhook wait             | Bind a stable provider event ID, idempotency key, or body digest from a literal or declared upstream output          |
 
 ## Related
 

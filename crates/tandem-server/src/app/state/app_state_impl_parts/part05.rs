@@ -1,5 +1,20 @@
 const DEFAULT_STALE_AUTO_RESUME_WINDOW_MS: u64 = 20 * 60 * 1000;
 const DEFAULT_STALE_AUTO_RESUME_MAX_ATTEMPTS: usize = 2;
+const MAX_AUTOMATION_WAIT_OUTPUT_METADATA_BYTES: usize = 16 * 1024;
+
+fn bounded_automation_wait_output_metadata(metadata: Value) -> Value {
+    if serde_json::to_vec(&metadata)
+        .map(|encoded| encoded.len() <= MAX_AUTOMATION_WAIT_OUTPUT_METADATA_BYTES)
+        .unwrap_or(false)
+    {
+        metadata
+    } else {
+        json!({
+            "truncated": true,
+            "reason": "wait wake metadata exceeded output limit",
+        })
+    }
+}
 
 fn approval_gate_stale_after_ms() -> u64 {
     std::env::var("TANDEM_APPROVAL_GATE_STALE_AFTER_MS")
@@ -190,6 +205,9 @@ fn approval_gate_timeout_policy(
         }
         crate::AutomationGateExpiryAction::Remind => {
             crate::stateful_runtime::StatefulWaitTimeoutAction::Remind
+        }
+        crate::AutomationGateExpiryAction::Resume => {
+            crate::stateful_runtime::StatefulWaitTimeoutAction::Resume
         }
     };
     Some(crate::stateful_runtime::StatefulWaitTimeoutPolicy {
@@ -536,6 +554,14 @@ impl AppState {
                             actions += 1;
                         }
                     }
+                    crate::AutomationGateExpiryAction::Resume => {
+                        if self
+                            .resume_awaiting_approval_gate(&run, &gate, &policy, expires_at_ms)
+                            .await
+                        {
+                            actions += 1;
+                        }
+                    }
                 }
             } else if gate_policy_reminder_due(&gate, &policy, now, expires_at_ms)
                 && self
@@ -610,6 +636,61 @@ impl AppState {
                     "tenantContext": updated_run.tenant_context,
                 }),
             ));
+        }
+        true
+    }
+
+    async fn resume_awaiting_approval_gate(
+        &self,
+        run: &AutomationV2RunRecord,
+        gate: &crate::AutomationPendingGate,
+        policy: &crate::AutomationGateExpiryPolicy,
+        expires_at_ms: u64,
+    ) -> bool {
+        let automation = match run.automation_snapshot.clone() {
+            Some(automation) => Some(automation),
+            None => self.get_automation_v2(&run.automation_id).await,
+        };
+        let Some(automation) = automation else {
+            return false;
+        };
+        let reason = format!(
+            "approval gate `{}` timed out and resumed by policy",
+            gate.node_id
+        );
+        let mut applied = false;
+        let updated = self
+            .update_automation_v2_run(&run.run_id, |row| {
+                match automation::apply_automation_gate_timeout_resume(
+                    row,
+                    &automation,
+                    gate,
+                    Some(reason.clone()),
+                    expires_at_ms,
+                    policy,
+                ) {
+                    automation::AutomationGateDecisionOutcome::Applied => applied = true,
+                    automation::AutomationGateDecisionOutcome::AlreadyDecided(_) => {}
+                }
+            })
+            .await;
+        if !applied {
+            return false;
+        }
+        if let Some(updated_run) = updated {
+            self.append_internal_sweep_protected_audit_event(
+                "automation_v2.internal_sweep.approval_gate_timeout_resumed",
+                &updated_run,
+                "process_awaiting_approval_gate_policies",
+                "timeout_resumed",
+                Some(reason),
+                json!({
+                    "node_id": gate.node_id,
+                    "expires_at_ms": expires_at_ms,
+                    "expiry_policy": policy,
+                }),
+            )
+            .await;
         }
         true
     }
@@ -1290,6 +1371,28 @@ impl AppState {
         detail: String,
         metadata: Value,
     ) -> Option<AutomationV2RunRecord> {
+        let current = self.get_automation_v2_run(run_id).await?;
+        let paths = crate::stateful_runtime::StatefulRuntimeStoragePaths::from_runtime_events_path(
+            &self.runtime_events_path,
+        );
+        let wait_record = crate::stateful_runtime::list_stateful_waits(
+            &paths.waits_path,
+            &current.tenant_context,
+            crate::stateful_runtime::StatefulWaitQuery {
+                run_id: Some(run_id),
+                wait_kind: None,
+                status: None,
+                limit: None,
+            },
+        )
+        .into_iter()
+        .find(|wait| wait.wait_id == wait_id);
+        let wait_node_id = wait_record
+            .as_ref()
+            .and_then(automation_wait_node_id_from_record)
+            .map(ToOwned::to_owned);
+        let wait_kind = wait_record.as_ref().map(|wait| wait.wait_kind.clone());
+        let output_metadata = bounded_automation_wait_output_metadata(metadata.clone());
         let mut applied = false;
         let updated = self
             .update_automation_v2_run(run_id, |row| {
@@ -1300,6 +1403,29 @@ impl AppState {
                     )
                 {
                     return;
+                }
+                if let Some(node_id) = wait_node_id.as_ref() {
+                    row.checkpoint.pending_nodes.retain(|id| id != node_id);
+                    if !row.checkpoint.completed_nodes.iter().any(|id| id == node_id) {
+                        row.checkpoint.completed_nodes.push(node_id.clone());
+                    }
+                    row.checkpoint.node_outputs.insert(
+                        node_id.clone(),
+                        json!({
+                            "contract_kind": "stateful_wait",
+                            "status": "completed",
+                            "summary": format!("Wait node `{node_id}` completed."),
+                            "content": {
+                                "wait_id": wait_id,
+                                "wait_kind": &wait_kind,
+                                "event_type": event_type,
+                                "event_seq": event_seq,
+                                "wake": &output_metadata,
+                            },
+                            "created_at_ms": now_ms(),
+                            "node_id": node_id,
+                        }),
+                    );
                 }
                 row.status = AutomationRunStatus::Queued;
                 row.detail = Some(detail.clone());
@@ -1320,6 +1446,7 @@ impl AppState {
                         "event_type": event_type,
                         "event_seq": event_seq,
                         "wake": &metadata,
+                        "node_id": &wait_node_id,
                     })),
                 );
                 applied = true;
@@ -1338,21 +1465,8 @@ impl AppState {
     ) -> Option<AutomationV2RunRecord> {
         match outcome.run_status {
             crate::stateful_runtime::StatefulWorkflowRunStatus::Running => {
-                self.requeue_automation_v2_run_from_stateful_wait_wake(
-                    &outcome.run_id,
-                    &outcome.wait_id,
-                    &outcome.event_type,
-                    outcome.event_seq,
-                    format!(
-                        "stateful wait `{}` completed; run queued for resume",
-                        outcome.wait_id
-                    ),
-                    json!({
-                        "wait_status": &outcome.wait_status,
-                        "lag_ms": outcome.lag_ms,
-                    }),
-                )
-                .await
+                self.apply_automation_v2_running_wait_scheduler_outcome(outcome)
+                    .await
             }
             crate::stateful_runtime::StatefulWorkflowRunStatus::Cancelled => {
                 let mut applied = false;

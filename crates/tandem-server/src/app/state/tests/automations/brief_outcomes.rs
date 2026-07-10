@@ -30,6 +30,7 @@ fn research_brief_passes_local_only_when_websearch_is_not_offered() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -123,6 +124,7 @@ fn research_brief_passes_when_source_audit_uses_markdown_tables() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",

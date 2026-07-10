@@ -329,6 +329,41 @@ pub async fn claim_matching_stateful_webhook_wait(
     Ok(Some(claimed))
 }
 
+pub async fn claim_stateful_wait_for_resolution(
+    path: &Path,
+    tenant: &TenantContext,
+    wait_id: &str,
+    expected_kind: StatefulWaitKind,
+    claimant_id: &str,
+    now_ms: u64,
+    lease_ms: u64,
+) -> anyhow::Result<Option<StatefulWaitRecord>> {
+    let _guard = STATEFUL_WAIT_STORE_LOCK.lock().await;
+    let mut waits = try_load_stateful_waits(path)?;
+    let Some(wait) = waits.iter_mut().find(|wait| {
+        wait.wait_id == wait_id && wait.wait_kind == expected_kind && wait.visible_to_tenant(tenant)
+    }) else {
+        return Ok(None);
+    };
+    if wait.status != StatefulWaitStatus::Waiting
+        && !(wait.status == StatefulWaitStatus::Claimed && !wait.claim_is_active_at(now_ms))
+    {
+        return Ok(None);
+    }
+
+    wait.status = StatefulWaitStatus::Claimed;
+    wait.claimed_by = Some(claimant_id.to_string());
+    wait.claimed_at_ms = Some(now_ms);
+    wait.claim_expires_at_ms = Some(now_ms.saturating_add(lease_ms.max(1)));
+    wait.wake_idempotency_key = None;
+    wait.event_seq = None;
+    wait.completed_at_ms = None;
+    wait.updated_at_ms = now_ms;
+    let claimed = wait.clone();
+    write_stateful_waits_unlocked(path, &waits).await?;
+    Ok(Some(claimed))
+}
+
 pub async fn release_claimed_stateful_wait(
     path: &Path,
     tenant: &TenantContext,

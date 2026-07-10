@@ -31,6 +31,7 @@ fn report_markdown_accepts_rich_html_synthesis_when_upstream_is_rich() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "generate-report.md"
@@ -167,6 +168,7 @@ fn report_markdown_rejects_generic_html_synthesis_without_evidence_anchors_when_
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "generate-report.md"
@@ -294,6 +296,7 @@ fn execution_policy_reports_workflow_class() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md"
@@ -321,6 +324,7 @@ fn execution_policy_reports_workflow_class() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "task_kind": "code_change",
@@ -513,6 +517,7 @@ fn code_workflow_verification_failure_sets_verify_failed_status() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "task_kind": "code_change",
@@ -569,6 +574,7 @@ fn code_workflow_without_verification_run_is_blocked() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "task_kind": "code_change",
@@ -653,6 +659,7 @@ fn collect_automation_external_action_receipts_records_bound_publisher_tools() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "role": "publisher"
@@ -793,6 +800,7 @@ fn collect_automation_external_action_receipts_ignores_non_outbound_nodes() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "role": "writer"
@@ -890,6 +898,7 @@ fn collect_automation_external_action_receipts_stabilize_identity_across_retries
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "role": "publisher"
@@ -974,6 +983,7 @@ fn code_workflow_with_full_verification_plan_reports_done() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "task_kind": "code_change",
@@ -1075,6 +1085,7 @@ fn verification_command_matching_requires_normalized_command_prefix() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "task_kind": "code_change",
@@ -1180,6 +1191,7 @@ fn code_workflow_with_partial_verification_is_blocked() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "task_kind": "code_change",
@@ -1269,6 +1281,7 @@ fn email_delivery_nodes_block_without_email_tool_execution() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "delivery": {
                 "method": "email",
@@ -1333,6 +1346,7 @@ fn email_delivery_nodes_request_repair_when_email_tools_were_offered_but_unused(
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "delivery": {
                 "method": "email",

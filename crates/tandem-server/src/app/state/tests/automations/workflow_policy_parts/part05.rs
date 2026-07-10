@@ -21,6 +21,7 @@ fn missing_required_output_requests_repair_before_attempt_budget_is_exhausted() 
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "outputs/generate-report.md"
@@ -165,6 +166,7 @@ fn required_tool_mode_write_unsatisfied_requests_repair_without_artifact_validat
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "outputs/generate-report.md"
@@ -215,6 +217,7 @@ fn generic_artifact_semantic_block_requests_repair_before_attempt_budget_is_exha
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "report.md"
@@ -270,6 +273,7 @@ fn code_workflow_missing_verification_requests_repair() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "task_kind": "code_change",
@@ -326,6 +330,7 @@ fn code_workflow_without_structural_completion_signal_requests_repair() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "task_kind": "code_change"
@@ -380,6 +385,7 @@ fn malformed_review_tool_result_requests_repair_instead_of_terminal_block() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let session_text = r#"{
@@ -449,6 +455,7 @@ fn review_decision_accepts_extended_json_status_payload() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let session_text = r#"{
@@ -510,6 +517,7 @@ fn artifact_workflow_with_materialized_output_without_status_or_validation_reque
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "outputs/generate-report.md"
@@ -567,6 +575,7 @@ fn standup_synthesis_accepts_inline_completed_status_without_verified_output() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "workflow_template": "agent_standup",
@@ -617,6 +626,7 @@ fn code_workflow_accepts_status_json_when_it_appears_at_end_of_long_response() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "task_kind": "code_change"
@@ -671,6 +681,7 @@ fn code_workflow_accepts_fenced_status_json_after_markdown_summary() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "task_kind": "code_change"
@@ -759,6 +770,7 @@ fn report_markdown_validation_accepts_updated_verified_output_without_session_wr
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "generate-report.md"
@@ -916,6 +928,7 @@ fn report_markdown_validation_rejects_bare_relative_artifact_hrefs() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "generate-report.md"
@@ -1039,6 +1052,7 @@ fn research_validation_removes_blocked_handoff_artifact_without_preexisting_outp
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -1125,6 +1139,7 @@ fn research_validation_restores_preexisting_output_without_accepting_blocked_han
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -1216,6 +1231,7 @@ fn artifact_validation_prefers_structurally_stronger_candidate_without_phrase_ma
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -1319,6 +1335,7 @@ fn completed_brief_without_read_is_blocked_even_if_it_looks_confident() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",

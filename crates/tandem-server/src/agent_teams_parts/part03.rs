@@ -1249,6 +1249,7 @@ mod fintech_policy_tests {
             max_tool_calls: None,
             stage_kind: Some(crate::AutomationNodeStageKind::Workstream),
             gate: None,
+            wait: None,
             metadata: Some(json!({ "phase": "research" })),
         };
         crate::AutomationV2Spec {

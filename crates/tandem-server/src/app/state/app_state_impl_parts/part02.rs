@@ -897,6 +897,12 @@ impl AppState {
                 policy.allowed_tools = policy.allowed_tools.take().map(normalize_allowed_tools);
             }
         }
+        let wait_issues = tandem_automation::validate_automation_wait_nodes(&automation);
+        if !wait_issues.is_empty() {
+            let detail = serde_json::to_string(&wait_issues)
+                .unwrap_or_else(|_| "invalid Automation V2 wait node".to_string());
+            anyhow::bail!("invalid Automation V2 wait node: {detail}");
+        }
         let now = now_ms();
         if automation.created_at_ms == 0 {
             automation.created_at_ms = now;

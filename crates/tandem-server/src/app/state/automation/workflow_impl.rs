@@ -1075,6 +1075,7 @@ pub(crate) fn migrate_bundled_studio_research_split_automation(
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: split_research_stage_metadata(
             config.discover_title,
             "watcher",
@@ -1128,6 +1129,7 @@ pub(crate) fn migrate_bundled_studio_research_split_automation(
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: split_research_stage_metadata(
             config.local_title,
             "watcher",
@@ -1191,6 +1193,7 @@ pub(crate) fn migrate_bundled_studio_research_split_automation(
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: split_research_stage_metadata(
             config.external_title,
             "watcher",

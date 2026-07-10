@@ -21,6 +21,7 @@ fn structured_handoff_workspace_bootstrap_nodes_treat_reads_as_optional() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: None,
     };
 
@@ -75,6 +76,7 @@ fn bootstrap_workspace_output_nodes_require_inspection_but_not_concrete_reads() 
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "daily-recaps/2026-04-07-job-search-recap.md"
@@ -121,6 +123,7 @@ fn bootstrap_required_files_are_inferred_from_objective_paths_without_filename_h
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "daily-recaps/2026-04-08-recap.md"
@@ -249,6 +252,7 @@ fn research_nodes_default_to_five_attempts() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
 

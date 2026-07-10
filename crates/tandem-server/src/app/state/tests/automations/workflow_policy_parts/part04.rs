@@ -21,6 +21,7 @@ fn empty_node_output_without_artifact_requests_repair() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
 
@@ -58,6 +59,7 @@ fn empty_node_output_without_artifact_blocks_when_repair_exhausted() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
 
@@ -121,6 +123,7 @@ fn synthesis_upstream_read_evidence_satisfies_required_read_gate() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let tool_telemetry = json!({
@@ -183,6 +186,7 @@ fn required_read_gate_still_repairs_without_upstream_evidence() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let tool_telemetry = json!({
@@ -234,6 +238,7 @@ fn artifact_materialized_without_status_or_validation_requests_repair() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let verified_output = (
@@ -282,6 +287,7 @@ fn artifact_materialized_without_status_completes_when_validation_passed() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let verified_output = (
@@ -335,6 +341,7 @@ fn email_delivery_nodes_without_email_tools_report_tool_unavailable_with_diagnos
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "delivery": {
                 "method": "email",
@@ -452,6 +459,7 @@ fn email_delivery_nodes_complete_after_email_tool_execution() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "delivery": {
                 "method": "email",
@@ -511,6 +519,7 @@ fn email_delivery_success_overrides_late_write_policy_block() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "delivery": {
                 "method": "email",
@@ -793,6 +802,7 @@ fn code_workflow_rejects_unsafe_raw_source_rewrites() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "task_kind": "code_change",
@@ -936,6 +946,7 @@ fn research_finalize_prompt_includes_upstream_coverage_summary() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "title": "Research Brief",
@@ -1071,6 +1082,7 @@ fn data_json_rewrite_is_not_treated_as_unsafe_source_rewrite() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "task_kind": "code_change",
@@ -1174,6 +1186,7 @@ fn artifact_validation_restores_substantive_session_write_over_short_completion_
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -1332,6 +1345,7 @@ fn artifact_validation_blocks_session_text_recovery_until_prewrite_is_satisfied(
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -1428,6 +1442,7 @@ fn research_validation_does_not_accept_preexisting_output_without_current_attemp
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -1525,6 +1540,7 @@ fn generic_artifact_validation_rejects_stale_preexisting_output_without_current_
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "report.md"

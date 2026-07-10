@@ -1002,6 +1002,7 @@ pub(super) async fn compose_standup(
             max_tool_calls: None,
             stage_kind: Some(crate::AutomationNodeStageKind::Workstream),
             gate: None,
+            wait: None,
             metadata: None,
         });
         participant_node_ids.push(node_id);
@@ -1057,6 +1058,7 @@ pub(super) async fn compose_standup(
         max_tool_calls: None,
         stage_kind: Some(crate::AutomationNodeStageKind::Orchestrator),
         gate: None,
+        wait: None,
         metadata: None,
     });
 
@@ -1196,6 +1198,7 @@ pub(super) async fn compose_monitor(
         gate: None,
         // triage_gate: true signals the executor to skip downstream nodes when
         // the output contains has_work: false.
+        wait: None,
         metadata: Some(json!({ "triage_gate": true })),
     };
 
@@ -1247,6 +1250,7 @@ pub(super) async fn compose_monitor(
         max_tool_calls: None,
         stage_kind: Some(crate::AutomationNodeStageKind::Orchestrator),
         gate: None,
+        wait: None,
         metadata: None,
     };
 

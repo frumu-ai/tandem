@@ -115,6 +115,7 @@ interface WorkflowNodeEditDraft {
   mcpAllowedConnections: Array<Record<string, any>>;
   approvalOverride: WorkflowApprovalOverride;
   approvalCondition: string;
+  wait: any | null;
 }
 
 function toArray(input: any, key: string) {
@@ -813,6 +814,10 @@ function workflowAutomationToEditDraft(automation: any): WorkflowEditDraft | nul
           ).trim(),
           approvalOverride,
           approvalCondition,
+          wait:
+            node?.wait && typeof node.wait === "object"
+              ? cloneJsonValue(node.wait)
+              : null,
           ...workflowNodeToolAccessDraft(node),
           ...(() => {
             const agent = agentsById.get(String(node?.agent_id || node?.agentId || "").trim()) as

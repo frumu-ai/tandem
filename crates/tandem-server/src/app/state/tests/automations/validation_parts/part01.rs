@@ -14,6 +14,7 @@ fn bare_node() -> AutomationFlowNode {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     }
 }
@@ -136,6 +137,7 @@ fn structured_json_write_matrix_node(output_files: &[&str]) -> AutomationFlowNod
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": builder
         })),
@@ -272,6 +274,7 @@ fn research_brief_matrix_node(
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": output_path,
@@ -321,6 +324,7 @@ fn research_citations_matrix_node(
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": builder
         })),
@@ -472,6 +476,7 @@ fn research_retry_matrix_node() -> AutomationFlowNode {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -565,6 +570,7 @@ fn report_markdown_synthesis_matrix_node(node_id: &str, output_path: &str) -> Au
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": output_path
@@ -681,6 +687,7 @@ fn code_verification_matrix_node(verification_command: Option<&str>) -> Automati
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": builder
         })),
@@ -733,6 +740,7 @@ fn email_delivery_matrix_node() -> AutomationFlowNode {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "delivery": {
                 "method": "email",
@@ -806,6 +814,7 @@ fn upstream_shape_matrix_node(quality_mode: Option<&str>) -> AutomationFlowNode 
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(metadata),
     }
 }
@@ -940,6 +949,7 @@ fn output_validator_defaults_follow_existing_runtime_heuristics() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "task_kind": "code_change",
@@ -968,6 +978,7 @@ fn output_validator_defaults_follow_existing_runtime_heuristics() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: None,
     };
     let review = AutomationFlowNode {
@@ -991,6 +1002,7 @@ fn output_validator_defaults_follow_existing_runtime_heuristics() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Review),
         gate: None,
+        wait: None,
         metadata: None,
     };
 
@@ -1031,6 +1043,7 @@ fn output_validator_explicit_override_wins() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: None,
     };
 
@@ -1063,6 +1076,7 @@ fn enrich_automation_node_output_overwrites_stale_validator_metadata() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: None,
     };
     let output = json!({
@@ -1152,6 +1166,7 @@ fn artifact_validation_rejection_blocks_node_status() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -1213,6 +1228,7 @@ fn research_workflow_failure_kind_is_typed_from_unmet_requirements() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -1312,6 +1328,7 @@ fn compare_results_retry_without_current_artifact_surfaces_write_and_synthesis_a
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/compare-results.md"
@@ -1507,6 +1524,7 @@ fn analyze_findings_retry_without_artifact_or_required_workspace_file_surfaces_d
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/analyze-findings.json",
@@ -1663,6 +1681,7 @@ fn required_workspace_files_missing_reports_exact_paths() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "extract.json",
@@ -1777,6 +1796,7 @@ fn validation_detects_and_reverts_read_only_source_of_truth_mutations() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({"builder": {"output_path": "analyze-findings.json"}})),
     };
     let automation = AutomationSpecBuilder::new("auto-read-only")

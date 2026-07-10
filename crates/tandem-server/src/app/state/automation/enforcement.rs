@@ -1279,6 +1279,7 @@ mod tests {
             max_tool_calls: None,
             stage_kind: None,
             gate: None,
+            wait: None,
             metadata: Some(serde_json::json!({
                 "incident_monitor": {
                     "artifact_type": artifact_type,
@@ -1403,6 +1404,7 @@ mod tests {
             max_tool_calls: None,
             stage_kind: None,
             gate: None,
+            wait: None,
             metadata: Some(serde_json::json!({
                 "builder": {
                     "task_class": "brief_writing",

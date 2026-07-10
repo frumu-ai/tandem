@@ -215,6 +215,223 @@ pub enum WaitTimeoutAction {
     Resume,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutomationWaitValidationIssue {
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+}
+
+/// Validate the public wait-node contract on an Automation V2 definition.
+/// Existing approval gates remain valid and are projected at runtime through
+/// `AutomationFlowNode::effective_wait`; only explicit `wait` fields are
+/// subject to the non-agent node restrictions here.
+pub fn validate_automation_wait_nodes(
+    automation: &crate::types::AutomationV2Spec,
+) -> Vec<AutomationWaitValidationIssue> {
+    let node_ids = automation
+        .flow
+        .nodes
+        .iter()
+        .map(|node| node.node_id.as_str())
+        .collect::<HashSet<_>>();
+    let mut issues = Vec::new();
+    for node in &automation.flow.nodes {
+        let Some(wait) = node.wait.as_ref() else {
+            continue;
+        };
+        let mut push = |code: &str, message: &str| {
+            issues.push(AutomationWaitValidationIssue {
+                code: code.to_string(),
+                message: message.to_string(),
+                node_id: Some(node.node_id.clone()),
+            });
+        };
+        if node.gate.is_some() {
+            push(
+                "wait_gate_conflict",
+                "a node cannot define both wait and legacy gate",
+            );
+        }
+        if node.tool_policy.is_some()
+            || node.mcp_policy.is_some()
+            || node.retry_policy.is_some()
+            || node.timeout_ms.is_some()
+            || node.max_tool_calls.is_some()
+        {
+            push(
+                "wait_node_has_execution_policy",
+                "wait nodes cannot define model, retry, timeout, tool, or MCP execution policy",
+            );
+        }
+        for (code, message) in wait_spec_issues(wait) {
+            push(code, message);
+        }
+        for binding in wait_bindings(wait) {
+            let OrchestrationValueBinding::NodeOutput {
+                node_id: source_node_id,
+                json_pointer,
+            } = binding
+            else {
+                continue;
+            };
+            if !node_ids.contains(source_node_id.as_str()) {
+                push(
+                    "wait_binding_unknown_node",
+                    "wait binding references an unknown Automation V2 node",
+                );
+            } else if !node.depends_on.iter().any(|id| id == source_node_id) {
+                push(
+                    "wait_binding_not_dependency",
+                    "wait binding must reference a declared upstream dependency",
+                );
+            }
+            if json_pointer
+                .as_deref()
+                .is_some_and(|pointer| !pointer.is_empty() && !pointer.starts_with('/'))
+            {
+                push(
+                    "wait_binding_invalid_json_pointer",
+                    "wait binding json_pointer must be empty or start with '/'",
+                );
+            }
+        }
+    }
+    issues
+}
+
+pub fn validate_automation_wait_spec(
+    wait: &AutomationWaitSpec,
+) -> Vec<AutomationWaitValidationIssue> {
+    wait_spec_issues(wait)
+        .into_iter()
+        .map(|(code, message)| AutomationWaitValidationIssue {
+            code: code.to_string(),
+            message: message.to_string(),
+            node_id: None,
+        })
+        .collect()
+}
+
+fn wait_bindings(wait: &AutomationWaitSpec) -> Vec<&OrchestrationValueBinding> {
+    match wait {
+        AutomationWaitSpec::Timer { wake_at, .. } => wake_at.iter().collect(),
+        AutomationWaitSpec::Approval { .. } => Vec::new(),
+        AutomationWaitSpec::Webhook { correlation, .. } => vec![&correlation.value],
+        AutomationWaitSpec::ExternalCondition { condition_key, .. } => vec![condition_key],
+    }
+}
+
+fn wait_spec_issues(wait: &AutomationWaitSpec) -> Vec<(&'static str, &'static str)> {
+    let mut issues = Vec::new();
+    match wait {
+        AutomationWaitSpec::Timer {
+            delay_ms,
+            wake_at,
+            timeout,
+        } => {
+            let sources = usize::from(delay_ms.is_some()) + usize::from(wake_at.is_some());
+            if sources != 1 {
+                issues.push((
+                    "timer_wake_conflict",
+                    "timer waits require exactly one of delay_ms or wake_at",
+                ));
+            }
+            if *delay_ms == Some(0) {
+                issues.push((
+                    "timer_delay_invalid",
+                    "timer delay_ms must be greater than zero",
+                ));
+            }
+            if let Some(OrchestrationValueBinding::Literal { value }) = wake_at {
+                if value.as_u64().is_none_or(|value| value == 0) {
+                    issues.push((
+                        "timer_wake_at_invalid",
+                        "literal timer wake_at must be a positive millisecond timestamp",
+                    ));
+                }
+            }
+            if timeout.as_ref().is_some_and(invalid_timeout) {
+                issues.push(("wait_timeout_invalid", "wait timeout policy is invalid"));
+            }
+        }
+        AutomationWaitSpec::Approval {
+            decisions,
+            expires_after_ms,
+            timeout,
+        } => {
+            let normalized = decisions
+                .iter()
+                .map(|decision| decision.trim().to_ascii_lowercase())
+                .collect::<Vec<_>>();
+            let unique = normalized.iter().collect::<HashSet<_>>();
+            if normalized.is_empty()
+                || normalized.iter().any(String::is_empty)
+                || unique.len() != normalized.len()
+            {
+                issues.push((
+                    "approval_decisions_invalid",
+                    "approval waits require unique, non-empty decisions",
+                ));
+            }
+            if *expires_after_ms == Some(0) {
+                issues.push((
+                    "approval_expiry_invalid",
+                    "approval expires_after_ms must be greater than zero",
+                ));
+            }
+            if expires_after_ms.is_some() && timeout.is_some() {
+                issues.push((
+                    "approval_timeout_conflict",
+                    "approval waits cannot define both expires_after_ms and timeout",
+                ));
+            }
+            if timeout.as_ref().is_some_and(invalid_timeout) {
+                issues.push(("wait_timeout_invalid", "wait timeout policy is invalid"));
+            }
+        }
+        AutomationWaitSpec::Webhook {
+            trigger_id,
+            correlation,
+            timeout,
+            ..
+        } => {
+            if trigger_id.trim().is_empty() {
+                issues.push((
+                    "webhook_trigger_invalid",
+                    "webhook waits require a non-empty trigger_id",
+                ));
+            }
+            if invalid_binding(&correlation.value) {
+                issues.push((
+                    "webhook_correlation_invalid",
+                    "webhook waits require a typed correlation constraint",
+                ));
+            }
+            if invalid_timeout(timeout) {
+                issues.push(("wait_timeout_invalid", "wait timeout policy is invalid"));
+            }
+        }
+        AutomationWaitSpec::ExternalCondition {
+            condition_key,
+            timeout,
+            ..
+        } => {
+            if invalid_binding(condition_key) {
+                issues.push((
+                    "external_condition_invalid",
+                    "external-condition waits require a typed condition key",
+                ));
+            }
+            if invalid_timeout(timeout) {
+                issues.push(("wait_timeout_invalid", "wait timeout policy is invalid"));
+            }
+        }
+    }
+    issues
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GoalPolicy {
     #[serde(default = "default_max_hops")]
@@ -761,42 +978,7 @@ fn validate_wait_node(
     let OrchestrationNodeKind::Wait { wait } = &node.node else {
         return;
     };
-    let invalid = match wait {
-        AutomationWaitSpec::Timer {
-            delay_ms,
-            wake_at,
-            timeout,
-        } => {
-            let sources = usize::from(delay_ms.is_some()) + usize::from(wake_at.is_some());
-            sources != 1 || delay_ms == &Some(0) || timeout.as_ref().is_some_and(invalid_timeout)
-        }
-        AutomationWaitSpec::Approval {
-            decisions,
-            expires_after_ms,
-            timeout,
-        } => {
-            decisions.is_empty()
-                || decisions.iter().any(|decision| decision.trim().is_empty())
-                || expires_after_ms == &Some(0)
-                || timeout.as_ref().is_some_and(invalid_timeout)
-        }
-        AutomationWaitSpec::Webhook {
-            trigger_id,
-            correlation,
-            timeout,
-            ..
-        } => {
-            trigger_id.trim().is_empty()
-                || invalid_binding(&correlation.value)
-                || invalid_timeout(timeout)
-        }
-        AutomationWaitSpec::ExternalCondition {
-            condition_key,
-            timeout,
-            ..
-        } => invalid_binding(condition_key) || invalid_timeout(timeout),
-    };
-    if invalid {
+    if !wait_spec_issues(wait).is_empty() {
         push_issue(
             issues,
             "invalid_wait",

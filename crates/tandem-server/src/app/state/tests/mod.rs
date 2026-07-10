@@ -71,6 +71,7 @@ impl AutomationNodeBuilder {
                 max_tool_calls: None,
                 stage_kind: None,
                 gate: None,
+                wait: None,
                 metadata: None,
             },
         }
@@ -103,6 +104,11 @@ impl AutomationNodeBuilder {
 
     pub(crate) fn metadata(mut self, metadata: Value) -> Self {
         self.node.metadata = Some(metadata);
+        self
+    }
+
+    pub(crate) fn wait(mut self, wait: tandem_automation::AutomationWaitSpec) -> Self {
+        self.node.wait = Some(wait);
         self
     }
 

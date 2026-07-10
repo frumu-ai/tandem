@@ -29,6 +29,7 @@ fn structured_json_artifact_node(
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": output_path,
@@ -62,6 +63,7 @@ fn report_markdown_node(node_id: &str, output_path: &str) -> AutomationFlowNode 
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": output_path

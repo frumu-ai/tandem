@@ -2336,6 +2336,67 @@ export interface AutomationV2AgentProfile {
   approvalPolicy?: string;
 }
 
+export type AutomationWaitTimeoutAction = "cancel" | "escalate" | "remind" | "resume";
+
+export interface AutomationWaitTimeoutPolicy {
+  expires_after_ms: number;
+  expiresAfterMs?: number;
+  on_timeout: AutomationWaitTimeoutAction;
+  onTimeout?: AutomationWaitTimeoutAction;
+  escalate_to?: string;
+  escalateTo?: string;
+  remind_every_ms?: number;
+  remindEveryMs?: number;
+}
+
+export type AutomationWaitValueBinding =
+  | { source: "literal"; value: JsonValue }
+  | {
+      source: "node_output";
+      node_id: string;
+      nodeId?: string;
+      json_pointer?: string;
+      jsonPointer?: string;
+    };
+
+export type AutomationWaitSpec =
+  | {
+      kind: "timer";
+      delay_ms?: number;
+      delayMs?: number;
+      wake_at?: AutomationWaitValueBinding;
+      wakeAt?: AutomationWaitValueBinding;
+      timeout?: AutomationWaitTimeoutPolicy;
+    }
+  | {
+      kind: "approval";
+      decisions: string[];
+      expires_after_ms?: number;
+      expiresAfterMs?: number;
+      timeout?: AutomationWaitTimeoutPolicy;
+    }
+  | {
+      kind: "webhook";
+      trigger_id: string;
+      triggerId?: string;
+      provider?: string;
+      provider_event_kind?: string;
+      providerEventKind?: string;
+      correlation: {
+        field: "provider_event_id" | "idempotency_key" | "body_digest";
+        value: AutomationWaitValueBinding;
+      };
+      timeout: AutomationWaitTimeoutPolicy;
+    }
+  | {
+      kind: "external_condition";
+      condition_key: AutomationWaitValueBinding;
+      conditionKey?: AutomationWaitValueBinding;
+      timeout: AutomationWaitTimeoutPolicy;
+      payload_schema?: JsonObject;
+      payloadSchema?: JsonObject;
+    };
+
 export interface AutomationV2FlowNode {
   nodeId: string;
   agentId: string;
@@ -2346,6 +2407,7 @@ export interface AutomationV2FlowNode {
   output_contract?: { kind: string };
   retryPolicy?: JsonObject;
   timeoutMs?: number;
+  wait?: AutomationWaitSpec;
 }
 
 export type KnowledgeScope = "run" | "project" | "global";

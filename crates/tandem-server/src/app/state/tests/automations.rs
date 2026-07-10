@@ -29,6 +29,7 @@ mod telemetry;
 mod tool_discovery;
 mod validation;
 mod validation_recovery;
+mod wait_nodes;
 mod workflow_policy;
 
 include!("automations_parts/part01.rs");

@@ -527,6 +527,7 @@ fn report_markdown_completed_status_does_not_trigger_blocked_handoff_cleanup() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "report.md",
@@ -741,6 +742,7 @@ fn runnable_write_scope_filter_skips_overlapping_code_nodes() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "task_kind": "code_change",
@@ -763,6 +765,7 @@ fn runnable_write_scope_filter_skips_overlapping_code_nodes() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "task_kind": "code_change",
@@ -785,6 +788,7 @@ fn runnable_write_scope_filter_skips_overlapping_code_nodes() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "task_kind": "code_change",
@@ -822,6 +826,7 @@ fn runnable_write_scope_filter_allows_non_code_nodes_to_run_in_parallel() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "task_kind": "code_change",
@@ -867,6 +872,7 @@ fn runnable_write_scope_filter_allows_non_code_nodes_to_run_in_parallel() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md"
@@ -902,6 +908,7 @@ fn runnable_filter_serializes_nodes_targeting_same_mcp_tool() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: None,
     };
     let reddit_b = AutomationFlowNode {
@@ -961,6 +968,7 @@ fn connector_backed_reddit_objective_requests_reddit_mcp_wildcard() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: None,
     };
 
@@ -1000,6 +1008,7 @@ fn generic_required_tools_prewrite_requirements_enable_repair() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "notes.md",
@@ -1072,6 +1081,7 @@ fn research_finalize_prewrite_requirements_skip_same_node_reads_and_websearch() 
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -1127,6 +1137,7 @@ fn explicit_input_files_skip_workspace_inspection_but_still_require_concrete_rea
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "reports/final.md",
@@ -1173,6 +1184,7 @@ fn legacy_quality_mode_keeps_waive_and_write_repair_behavior() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "quality_mode": "legacy",
             "builder": {
@@ -1220,6 +1232,7 @@ fn generic_required_tools_validation_needs_repair_when_read_unused() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "notes.md",
@@ -1338,6 +1351,7 @@ fn generic_required_tools_nodes_default_to_five_attempts() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "notes.md",
@@ -1407,6 +1421,7 @@ fn first_attempt_required_tools_prompt_requires_completed_status() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "notes.md",
@@ -1527,6 +1542,7 @@ fn first_attempt_required_tools_prompt_without_output_path_requires_handoff() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "research_stage": "research_discover",
@@ -1634,6 +1650,7 @@ fn prompt_includes_inline_metadata_inputs_and_temp_file_warning() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "inputs": {
                 "topic": "autonomous AI agentic workflows",
@@ -1739,6 +1756,7 @@ fn collect_inputs_prompt_requires_reading_before_writing() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "collect-inputs.json"

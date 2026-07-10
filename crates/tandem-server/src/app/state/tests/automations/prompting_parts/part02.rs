@@ -56,6 +56,7 @@ fn first_attempt_research_prompt_requires_completed_status() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -170,6 +171,7 @@ fn code_patch_prompt_includes_code_agent_contract_instructions() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "task_kind": "code_change",
@@ -252,6 +254,7 @@ fn automation_node_required_tools_reads_builder_metadata() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "notes.md",
@@ -313,6 +316,7 @@ fn wildcard_automation_allowlist_expands_to_minimal_research_tools() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/research-sources.json"
@@ -356,6 +360,7 @@ fn wildcard_automation_allowlist_does_not_infer_mcp_email_delivery_by_name() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "delivery": {
                 "method": "email",
@@ -417,6 +422,7 @@ fn wildcard_automation_allowlist_does_not_infer_outlook_mcp_email_tools_by_name(
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "delivery": {
                 "method": "email",
@@ -512,6 +518,7 @@ fn structured_json_prompt_requires_json_only_without_follow_up_questions() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "title": "External Research",
@@ -624,6 +631,7 @@ fn handoff_only_structured_json_prompt_strips_internal_context_writes() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "title": "Assess",
@@ -741,6 +749,7 @@ fn assess_prompt_surfaces_concrete_source_coverage_for_named_workspace_files() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "title": "Assess",
@@ -852,6 +861,7 @@ fn json_output_artifact_prompt_requires_response_body_backup_copy() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/research-sources.json"
@@ -952,6 +962,7 @@ fn external_research_prompt_handles_missing_websearch_tool() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "title": "External Research",
@@ -1091,6 +1102,7 @@ fn render_prompt_normalizes_upstream_research_paths_from_sources_root() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "title": "Read Local Sources",

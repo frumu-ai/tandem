@@ -65,7 +65,10 @@ pub(crate) fn automation_gate_rejects_late_human_decision(
     let Some(policy) = effective_automation_gate_expiry_policy(gate) else {
         return false;
     };
-    if policy.on_expiry != Some(AutomationGateExpiryAction::Cancel) {
+    if !matches!(
+        policy.on_expiry,
+        Some(AutomationGateExpiryAction::Cancel | AutomationGateExpiryAction::Resume)
+    ) {
         return false;
     }
     let Some(expires_at_ms) = gate
@@ -102,6 +105,7 @@ fn default_approval_gate_expiry_action() -> AutomationGateExpiryAction {
             "cancel" => Some(AutomationGateExpiryAction::Cancel),
             "escalate" => Some(AutomationGateExpiryAction::Escalate),
             "remind" => Some(AutomationGateExpiryAction::Remind),
+            "resume" => Some(AutomationGateExpiryAction::Resume),
             _ => None,
         })
         .unwrap_or(AutomationGateExpiryAction::Cancel)
@@ -283,6 +287,65 @@ pub(crate) fn apply_automation_gate_expiry(
     AutomationGateDecisionOutcome::Applied
 }
 
+pub(crate) fn apply_automation_gate_timeout_resume(
+    run: &mut AutomationV2RunRecord,
+    automation: &AutomationV2Spec,
+    gate: &AutomationPendingGate,
+    reason: Option<String>,
+    expires_at_ms: u64,
+    policy: &AutomationGateExpiryPolicy,
+) -> AutomationGateDecisionOutcome {
+    if let Some(winner) = settled_gate_decision(run, &gate.node_id) {
+        return AutomationGateDecisionOutcome::AlreadyDecided(Some(winner.clone()));
+    }
+    if !gate_is_still_pending(run, gate) {
+        return AutomationGateDecisionOutcome::AlreadyDecided(
+            run.checkpoint.gate_history.last().cloned(),
+        );
+    }
+
+    let resumed_at_ms = crate::now_ms();
+    let approval_wait =
+        ApprovalWaitRef::for_gate(ApprovalSourceKind::AutomationV2, &run.run_id, &gate.node_id);
+    run.checkpoint
+        .gate_history
+        .push(AutomationGateDecisionRecord {
+            node_id: gate.node_id.clone(),
+            decision: "timeout_resume".to_string(),
+            reason: reason.clone(),
+            decided_at_ms: resumed_at_ms,
+            decided_by: Some(
+                crate::automation_v2::governance::GovernanceActorRef::system(
+                    "automation_gate_timeout_resume",
+                ),
+            ),
+            metadata: Some(json!({
+                "approval_wait": approval_wait.clone(),
+                "transition_guard": transition_guard_metadata(&approval_wait, Some(run)),
+                "expiry_policy": policy,
+                "expires_at_ms": expires_at_ms,
+                "resumed_at_ms": resumed_at_ms,
+                "gate_metadata": gate.metadata.clone(),
+            })),
+        });
+    run.checkpoint.awaiting_gate = None;
+    apply_gate_approval(run, gate, reason.clone());
+    if let Some(output) = run.checkpoint.node_outputs.get_mut(&gate.node_id) {
+        output["summary"] = json!(format!(
+            "Gate `{}` resumed automatically after timeout.",
+            gate.node_id
+        ));
+        output["content"]["decision"] = json!("timeout_resume");
+    }
+    run.resume_reason = Some(format!(
+        "approval wait `{}` resumed automatically after timeout",
+        gate.node_id
+    ));
+    clear_automation_run_execution_handles(run);
+    crate::refresh_automation_runtime_state(automation, run);
+    AutomationGateDecisionOutcome::Applied
+}
+
 pub(crate) fn recover_settled_automation_gate_decision(
     run: &mut AutomationV2RunRecord,
     automation: &AutomationV2Spec,
@@ -299,7 +362,7 @@ pub(crate) fn recover_settled_automation_gate_decision(
 
     run.checkpoint.awaiting_gate = None;
     match record.decision.as_str() {
-        "approve" => {
+        "approve" | "timeout_resume" => {
             apply_gate_approval(run, &gate, record.reason.clone());
             run.resume_reason = Some(format!(
                 "recovered settled gate `{}` approval after restart",

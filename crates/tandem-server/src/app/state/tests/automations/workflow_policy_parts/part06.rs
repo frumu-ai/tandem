@@ -21,6 +21,7 @@ fn brief_with_timed_out_websearch_is_blocked_when_web_research_is_required() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -161,6 +162,7 @@ fn brief_prewrite_requirements_follow_external_research_defaults() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -231,6 +233,7 @@ fn research_synthesis_prewrite_requirements_enable_repair_without_explicit_tools
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md"
@@ -296,6 +299,7 @@ fn brief_with_unreviewed_discovered_files_is_blocked_with_structured_metadata() 
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -411,6 +415,7 @@ fn research_brief_without_source_coverage_flag_gets_semantic_block_reason_and_ne
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -531,6 +536,7 @@ fn research_brief_full_pipeline_overrides_llm_blocked_to_needs_repair_without_so
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -650,6 +656,7 @@ fn research_brief_passes_when_websearch_is_auth_blocked_but_local_evidence_is_co
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -769,6 +776,7 @@ fn research_brief_passes_local_only_when_websearch_is_not_offered() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -862,6 +870,7 @@ fn research_brief_passes_when_source_audit_uses_markdown_tables() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -997,6 +1006,7 @@ fn structured_handoff_nodes_fail_when_only_fallback_tool_summary_is_returned() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: None,
     };
     let mut session = Session::new(
@@ -1078,6 +1088,7 @@ fn structured_handoff_missing_is_repairable_even_without_enforcement_metadata() 
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: None,
     };
     let mut session = Session::new(
@@ -1206,6 +1217,7 @@ fn structured_handoff_nodes_require_concrete_reads_without_output_path() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: None,
     };
     let session = Session::new(
@@ -1279,6 +1291,7 @@ fn wrap_automation_node_output_includes_parsed_structured_handoff() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: None,
     };
     let mut session = Session::new(Some("structured-handoff-wrap".to_string()), None);

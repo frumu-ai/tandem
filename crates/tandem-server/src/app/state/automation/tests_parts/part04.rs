@@ -235,6 +235,7 @@ async fn reconcile_verified_output_path_waits_for_late_file_visibility() {
             max_tool_calls: None,
             stage_kind: None,
             gate: None,
+            wait: None,
             metadata: Some(json!({
                 "builder": {
                     "output_path": output_path
@@ -290,6 +291,7 @@ async fn reconcile_verified_output_path_times_out_when_file_never_appears() {
             max_tool_calls: None,
             stage_kind: None,
             gate: None,
+            wait: None,
             metadata: Some(json!({
                 "builder": {
                     "output_path": output_path
@@ -331,6 +333,7 @@ fn automation_node_prompt_timeout_error_matches_same_node_timeout_only() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
 
@@ -391,6 +394,7 @@ async fn reconcile_verified_output_path_marks_stale_existing_run_output_as_not_c
             max_tool_calls: None,
             stage_kind: None,
             gate: None,
+            wait: None,
             metadata: Some(json!({
                 "builder": {
                     "output_path": output_path
@@ -454,6 +458,7 @@ async fn reconcile_verified_output_path_recovers_json_artifact_from_session_text
             max_tool_calls: None,
             stage_kind: None,
             gate: None,
+            wait: None,
             metadata: Some(json!({
                 "builder": {
                     "output_path": output_path
@@ -562,6 +567,7 @@ async fn reconcile_verified_output_path_recovers_schema_matching_remote_artifact
             max_tool_calls: None,
             stage_kind: None,
             gate: None,
+            wait: None,
             metadata: Some(json!({
                 "builder": {
                     "output_path": output_path

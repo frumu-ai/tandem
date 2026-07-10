@@ -205,6 +205,9 @@ impl AppState {
                 _ => {}
             }
         }
+        recovered += self
+            .recover_missing_automation_v2_wait_registrations()
+            .await;
         recovered += self.recover_lost_stateful_wait_wakes().await;
         // TAN-564: re-drive any dead letters whose retry was requested before a
         // crash so the failed effect actually re-executes on restart.

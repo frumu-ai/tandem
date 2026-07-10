@@ -1360,6 +1360,13 @@ pub async fn run_automation_v2_run(
             break;
         }
 
+        if state
+            .park_first_runnable_automation_v2_wait(&latest, &runnable)
+            .await
+        {
+            break;
+        }
+
         let executable = runnable
             .iter()
             .filter(|node| !crate::app::state::is_automation_approval_node(node))

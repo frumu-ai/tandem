@@ -875,6 +875,7 @@ mod connector_capture_tests {
             max_tool_calls: None,
             stage_kind: None,
             gate: None,
+            wait: None,
             metadata: None,
         }
     }

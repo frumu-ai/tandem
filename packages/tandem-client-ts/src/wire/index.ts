@@ -1828,6 +1828,54 @@ export interface AutomationV2AgentProfile {
   approval_policy?: string;
 }
 
+export type AutomationWaitTimeoutAction = "cancel" | "escalate" | "remind" | "resume";
+
+export interface AutomationWaitTimeoutPolicy {
+  expires_after_ms: number;
+  on_timeout: AutomationWaitTimeoutAction;
+  escalate_to?: string;
+  remind_every_ms?: number;
+}
+
+export type AutomationWaitValueBinding =
+  | { source: "literal"; value: JsonValue }
+  | {
+      source: "node_output";
+      node_id: string;
+      json_pointer?: string;
+    };
+
+export type AutomationWaitSpec =
+  | {
+      kind: "timer";
+      delay_ms?: number;
+      wake_at?: AutomationWaitValueBinding;
+      timeout?: AutomationWaitTimeoutPolicy;
+    }
+  | {
+      kind: "approval";
+      decisions: string[];
+      expires_after_ms?: number;
+      timeout?: AutomationWaitTimeoutPolicy;
+    }
+  | {
+      kind: "webhook";
+      trigger_id: string;
+      provider?: string;
+      provider_event_kind?: string;
+      correlation: {
+        field: "provider_event_id" | "idempotency_key" | "body_digest";
+        value: AutomationWaitValueBinding;
+      };
+      timeout: AutomationWaitTimeoutPolicy;
+    }
+  | {
+      kind: "external_condition";
+      condition_key: AutomationWaitValueBinding;
+      timeout: AutomationWaitTimeoutPolicy;
+      payload_schema?: JsonObject;
+    };
+
 export interface AutomationV2FlowNode {
   node_id: string;
   agent_id: string;
@@ -1837,6 +1885,7 @@ export interface AutomationV2FlowNode {
   output_contract?: { kind: string };
   retry_policy?: JsonObject;
   timeout_ms?: number;
+  wait?: AutomationWaitSpec;
 }
 
 export type KnowledgeScope = "run" | "project" | "global";

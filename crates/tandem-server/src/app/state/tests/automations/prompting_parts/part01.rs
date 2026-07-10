@@ -50,6 +50,7 @@ fn knowledge_context_is_injected_into_automation_prompt() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let agent = AutomationAgentProfile {
@@ -155,6 +156,7 @@ fn connector_backed_automation_prompt_surfaces_mcp_discovery_guidance() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let agent = AutomationAgentProfile {
@@ -255,6 +257,7 @@ fn review_decision_prompt_suppresses_mcp_discovery_guidance() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let agent = AutomationAgentProfile {
@@ -370,6 +373,7 @@ fn compare_results_prompt_prioritizes_mcp_discovery_and_artifact_delivery() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "title": "Compare Results",
@@ -496,6 +500,7 @@ fn prompt_separates_read_only_source_of_truth_files_from_write_targets() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "title": "Assess",
@@ -605,6 +610,7 @@ fn automation_prompt_clarifies_file_paths_are_not_directories() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let agent = AutomationAgentProfile {
@@ -702,6 +708,7 @@ fn bootstrap_prompt_allows_required_workspace_writes_beyond_run_artifact() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/collect-inputs.json"
@@ -812,6 +819,7 @@ fn bootstrap_prompt_keeps_source_of_truth_reads_visible_with_optional_workspace_
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/collect-inputs.json",
@@ -933,6 +941,7 @@ fn generated_prompt_variation_suite_preserves_contract_inference() {
                 max_tool_calls: None,
                 stage_kind: None,
                 gate: None,
+                wait: None,
                 metadata: Some(json!({
                     "builder": {
                         "output_path": ".tandem/artifacts/collect-inputs.json",
@@ -977,6 +986,7 @@ fn generated_prompt_variation_suite_preserves_contract_inference() {
                 max_tool_calls: None,
                 stage_kind: None,
                 gate: None,
+                wait: None,
                 metadata: Some(json!({
                     "builder": {
                         "output_path": ".tandem/artifacts/web-brief.md",
@@ -1023,6 +1033,7 @@ fn generated_prompt_variation_suite_preserves_contract_inference() {
                 max_tool_calls: None,
                 stage_kind: None,
                 gate: None,
+                wait: None,
                 metadata: Some(json!({
                     "builder": {
                         "output_path": ".tandem/artifacts/research-sources.json",
@@ -1076,6 +1087,7 @@ fn generated_prompt_variation_suite_preserves_contract_inference() {
                 max_tool_calls: None,
                 stage_kind: None,
                 gate: None,
+                wait: None,
                 metadata: Some(json!({
                     "builder": {
                         "task_kind": "code_change",
@@ -1195,6 +1207,7 @@ fn later_nodes_inherit_automation_wide_read_only_source_truth_guidance() {
                 max_tool_calls: None,
                 stage_kind: None,
                 gate: None,
+                wait: None,
                 metadata: None,
             }],
         },
@@ -1241,6 +1254,7 @@ fn later_nodes_inherit_automation_wide_read_only_source_truth_guidance() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_files": ["daily_results_2026-04-15.md"]
@@ -1348,6 +1362,7 @@ fn prompt_resolves_reserved_runtime_placeholders_for_run() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "prompt": "Also preserve opportunities/raw/{current_date}/{current_time}-findings.json."
@@ -1467,6 +1482,7 @@ fn final_prompt_surfaces_automation_output_targets_as_required_workspace_writes(
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     let agent = AutomationAgentProfile {
@@ -1575,6 +1591,7 @@ fn structured_json_prompt_surfaces_explicit_output_files_for_analyze_findings() 
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/analyze-findings.json",

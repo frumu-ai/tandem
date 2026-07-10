@@ -193,6 +193,7 @@ async fn automation_node_prompt_timeout_cancels_the_session() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
 
@@ -269,6 +270,7 @@ fn automation_node_absolute_timeout_exceeds_idle_budget() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
 
@@ -301,6 +303,7 @@ fn execute_goal_structured_json_default_timeout_uses_long_workflow_budget() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
     assert_eq!(
@@ -652,6 +655,7 @@ fn first_attempt_structured_json_prompt_without_output_path_requires_handoff_eve
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "prompt": "Enumerate the workspace and identify source files."
@@ -721,6 +725,7 @@ fn report_generation_objective_does_not_imply_email_delivery_execution() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/generate-report.html"
@@ -754,6 +759,7 @@ fn execute_goal_objective_with_gmail_draft_or_send_requires_email_delivery() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
 
@@ -783,6 +789,7 @@ fn email_delivery_status_uses_recipient_from_objective_when_metadata_missing() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: None,
     };
 
@@ -846,6 +853,7 @@ fn research_workflow_failure_kind_detects_missing_citations() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -902,6 +910,7 @@ fn research_workflow_defaults_to_warning_without_strict_source_coverage() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -986,6 +995,7 @@ fn artifact_validation_uses_structured_repair_exhaustion_state_from_session_text
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -1080,6 +1090,7 @@ fn research_artifact_validation_requires_citations_and_web_sources_reviewed() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -1205,6 +1216,7 @@ fn research_citations_validation_accepts_external_research_without_files_reviewe
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/research-sources.json",

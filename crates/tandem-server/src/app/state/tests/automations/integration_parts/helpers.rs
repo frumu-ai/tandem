@@ -236,6 +236,7 @@ fn brief_research_node(
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": output_path,
@@ -268,6 +269,7 @@ fn citations_research_node(node_id: &str, output_path: &str) -> AutomationFlowNo
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": output_path,
@@ -309,6 +311,7 @@ fn analyze_findings_node(
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": output_path,
@@ -349,6 +352,7 @@ fn compare_results_node(node_id: &str, output_path: &str) -> AutomationFlowNode 
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": output_path,
@@ -386,6 +390,7 @@ fn delivery_node(node_id: &str, recipient: &str) -> AutomationFlowNode {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "delivery": {
                 "method": "email",
@@ -424,6 +429,7 @@ fn code_loop_node(node_id: &str, output_path: &str) -> AutomationFlowNode {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "task_kind": "code_change",

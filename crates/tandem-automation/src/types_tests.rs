@@ -38,6 +38,110 @@ fn empty_spec() -> AutomationV2Spec {
 }
 
 #[test]
+fn automation_v2_wait_node_round_trips_without_changing_legacy_nodes() {
+    let mut spec = empty_spec();
+    spec.flow.nodes.push(
+        serde_json::from_value(json!({
+            "node_id": "wait-for-window",
+            "agent_id": "",
+            "objective": "Wait for the release window",
+            "depends_on": [],
+            "wait": {
+                "kind": "timer",
+                "delay_ms": 60000,
+                "timeout": {
+                    "expires_after_ms": 120000,
+                    "on_timeout": "resume"
+                }
+            }
+        }))
+        .expect("typed wait node"),
+    );
+
+    assert!(crate::validate_automation_wait_nodes(&spec).is_empty());
+    let encoded = serde_json::to_value(&spec).expect("serialize automation");
+    assert_eq!(
+        encoded.pointer("/flow/nodes/0/wait/kind"),
+        Some(&json!("timer"))
+    );
+    let decoded: AutomationV2Spec = serde_json::from_value(encoded).expect("round trip");
+    assert!(matches!(
+        decoded.flow.nodes[0].wait,
+        Some(crate::AutomationWaitSpec::Timer {
+            delay_ms: Some(60_000),
+            ..
+        })
+    ));
+
+    let legacy = serde_json::to_value(empty_spec()).expect("serialize legacy automation");
+    assert!(legacy.pointer("/flow/nodes/0/wait").is_none());
+}
+
+#[test]
+fn automation_v2_wait_validation_rejects_execution_policy_and_unbounded_correlation() {
+    let mut spec = empty_spec();
+    spec.flow.nodes.push(
+        serde_json::from_value(json!({
+            "node_id": "wait-for-hook",
+            "agent_id": "agent-a",
+            "objective": "Wait for a callback",
+            "tool_policy": {"allowlist": ["mcp.github.*"], "denylist": []},
+            "wait": {
+                "kind": "webhook",
+                "trigger_id": "",
+                "correlation": {
+                    "field": "provider_event_id",
+                    "value": {"source": "literal", "value": null}
+                },
+                "timeout": {"expires_after_ms": 0, "on_timeout": "resume"}
+            }
+        }))
+        .expect("invalid wait node still deserializes"),
+    );
+
+    let issues = crate::validate_automation_wait_nodes(&spec);
+    assert!(issues
+        .iter()
+        .any(|issue| issue.code == "wait_node_has_execution_policy"));
+    assert!(issues
+        .iter()
+        .any(|issue| issue.code == "webhook_trigger_invalid"));
+    assert!(issues
+        .iter()
+        .any(|issue| issue.code == "webhook_correlation_invalid"));
+    assert!(issues
+        .iter()
+        .any(|issue| issue.code == "wait_timeout_invalid"));
+}
+
+#[test]
+fn legacy_approval_gate_projects_to_unified_wait_contract() {
+    let node: AutomationFlowNode = serde_json::from_value(json!({
+        "node_id": "approve",
+        "agent_id": "",
+        "objective": "Approve publication",
+        "stage_kind": "approval",
+        "gate": {
+            "required": true,
+            "instructions": "Review the draft",
+            "decisions": ["approve", "deny"],
+            "rework_targets": [],
+            "expiry_policy": {
+                "expires_after_ms": 30000,
+                "on_expiry": "cancel"
+            }
+        }
+    }))
+    .expect("legacy approval node");
+
+    assert!(matches!(
+        node.effective_wait(),
+        Some(crate::AutomationWaitSpec::Approval { decisions, timeout: Some(crate::WaitTimeoutPolicy { expires_after_ms: 30_000, .. }), .. })
+            if decisions == vec!["approve", "deny"]
+    ));
+}
+
+#[test]
 fn resolver_with_tenant_default_uses_run_override_first() {
     use crate::execution_profile::ExecutionProfile;
     let mut spec = empty_spec();

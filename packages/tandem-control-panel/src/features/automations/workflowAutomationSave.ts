@@ -185,9 +185,22 @@ export async function updateWorkflowAutomationDraft({
               ...node,
               objective: String(draftNode.objective || "").trim(),
               metadata: nextMetadata,
-              ...(draftNode.approvalOverride === "skip" ? { gate: null } : {}),
+              wait: draftNode.wait ? cloneJsonValue(draftNode.wait) : undefined,
+              ...(draftNode.wait
+                ? {
+                    gate: undefined,
+                    retry_policy: undefined,
+                    retryPolicy: undefined,
+                    timeout_ms: undefined,
+                    timeoutMs: undefined,
+                    max_tool_calls: undefined,
+                    maxToolCalls: undefined,
+                  }
+                : draftNode.approvalOverride === "skip"
+                  ? { gate: null }
+                  : {}),
               tool_policy:
-                draftNode.toolAccessMode === "custom"
+                !draftNode.wait && draftNode.toolAccessMode === "custom"
                   ? {
                       allowlist: [
                         ...(draftNode.toolAllowlist || []),
@@ -213,7 +226,7 @@ export async function updateWorkflowAutomationDraft({
                   : undefined,
               toolPolicy: undefined,
               mcp_policy:
-                draftNode.toolAccessMode === "custom"
+                !draftNode.wait && draftNode.toolAccessMode === "custom"
                   ? {
                       ...(node?.mcp_policy || {}),
                       allowed_servers: (draftNode.mcpAllowedServers || [])

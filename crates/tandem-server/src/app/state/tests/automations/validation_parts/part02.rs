@@ -423,6 +423,7 @@ fn structured_json_node_passes_when_declared_workspace_files_are_written() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "extract.json",
@@ -523,6 +524,7 @@ fn explicit_output_files_override_legacy_must_write_files() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "extract.json",
@@ -918,6 +920,7 @@ fn report_with_blocked_content_and_completed_status_is_not_blocked() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "outputs/generate-report.md"
@@ -969,6 +972,7 @@ fn report_describing_test_failures_with_completed_status_passes() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "outputs/generate-report.md"
@@ -1020,6 +1024,7 @@ fn artifact_prose_about_prior_test_failures_does_not_create_verify_failed_status
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "outputs/generate-report.md"
@@ -1078,6 +1083,7 @@ fn explicit_blocked_status_still_detected() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "outputs/generate-report.md"
@@ -1130,6 +1136,7 @@ fn render_automation_repair_brief_summarizes_previous_research_miss() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -1210,6 +1217,7 @@ fn render_automation_repair_brief_includes_exact_missing_required_source_reads()
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -1286,6 +1294,7 @@ fn render_automation_repair_brief_includes_upstream_paths_for_synthesis_repairs(
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "generate-report.md"
@@ -1358,6 +1367,7 @@ fn code_patch_repair_brief_mentions_patch_apply_test_loop() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "src/lib.rs",
@@ -1420,6 +1430,7 @@ fn render_automation_repair_brief_adds_final_attempt_escalation() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/marketing-brief.md"
@@ -1472,6 +1483,7 @@ fn repair_brief_detects_activity_despite_empty_telemetry() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/analyze-findings.json"
@@ -1541,6 +1553,7 @@ fn analyze_findings_final_attempt_repair_brief_stays_run_scoped() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": ".tandem/artifacts/analyze-findings.json"
@@ -1627,6 +1640,7 @@ fn repair_attempt_with_concrete_read_and_changed_output_is_accepted() {
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -1743,6 +1757,7 @@ fn automation_output_enforcement_prefers_contract_over_legacy_builder_metadata()
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -1784,6 +1799,7 @@ fn automation_output_enforcement_backfills_research_contract_from_legacy_builder
         max_tool_calls: None,
         stage_kind: None,
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "marketing-brief.md",
@@ -1860,6 +1876,7 @@ fn upstream_evidence_can_satisfy_exact_required_source_read_paths() {
         max_tool_calls: None,
         stage_kind: Some(AutomationNodeStageKind::Workstream),
         gate: None,
+        wait: None,
         metadata: Some(json!({
             "builder": {
                 "output_path": "execute-goal.md"

@@ -1635,6 +1635,87 @@ AutomationV2RunStatus = Literal[
     "cancelled",
 ]
 
+AutomationWaitTimeoutAction = Literal["cancel", "escalate", "remind", "resume"]
+AutomationWaitKind = Literal["timer", "approval", "webhook", "external_condition"]
+AutomationWaitCorrelationField = Literal[
+    "provider_event_id", "idempotency_key", "body_digest"
+]
+
+
+class AutomationWaitTimeoutPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    expires_after_ms: int = Field(
+        validation_alias=AliasChoices("expiresAfterMs", "expires_after_ms")
+    )
+    on_timeout: AutomationWaitTimeoutAction = Field(
+        validation_alias=AliasChoices("onTimeout", "on_timeout")
+    )
+    escalate_to: Optional[str] = Field(
+        None, validation_alias=AliasChoices("escalateTo", "escalate_to")
+    )
+    remind_every_ms: Optional[int] = Field(
+        None, validation_alias=AliasChoices("remindEveryMs", "remind_every_ms")
+    )
+
+
+class AutomationWaitValueBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    source: Literal["literal", "node_output"]
+    value: Optional[JsonValue] = None
+    node_id: Optional[str] = Field(
+        None, validation_alias=AliasChoices("nodeId", "node_id")
+    )
+    json_pointer: Optional[str] = Field(
+        None, validation_alias=AliasChoices("jsonPointer", "json_pointer")
+    )
+
+
+class AutomationWaitCorrelationBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    field: AutomationWaitCorrelationField
+    value: AutomationWaitValueBinding
+
+
+class AutomationWaitSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    kind: AutomationWaitKind
+    delay_ms: Optional[int] = Field(
+        None, validation_alias=AliasChoices("delayMs", "delay_ms")
+    )
+    wake_at: Optional[AutomationWaitValueBinding] = Field(
+        None, validation_alias=AliasChoices("wakeAt", "wake_at")
+    )
+    decisions: list[str] = Field(default_factory=list)
+    expires_after_ms: Optional[int] = Field(
+        None, validation_alias=AliasChoices("expiresAfterMs", "expires_after_ms")
+    )
+    trigger_id: Optional[str] = Field(
+        None, validation_alias=AliasChoices("triggerId", "trigger_id")
+    )
+    provider: Optional[str] = None
+    provider_event_kind: Optional[str] = Field(
+        None, validation_alias=AliasChoices("providerEventKind", "provider_event_kind")
+    )
+    correlation: Optional[AutomationWaitCorrelationBinding] = None
+    condition_key: Optional[AutomationWaitValueBinding] = Field(
+        None, validation_alias=AliasChoices("conditionKey", "condition_key")
+    )
+    timeout: Optional[AutomationWaitTimeoutPolicy] = None
+    payload_schema: Optional[dict[str, Any]] = Field(
+        None, validation_alias=AliasChoices("payloadSchema", "payload_schema")
+    )
+
+
+class AutomationV2FlowNode(BaseModel):
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+    node_id: str = Field(validation_alias=AliasChoices("nodeId", "node_id"))
+    agent_id: str = Field("", validation_alias=AliasChoices("agentId", "agent_id"))
+    objective: str
+    depends_on: list[str] = Field(
+        default_factory=list, validation_alias=AliasChoices("dependsOn", "depends_on")
+    )
+    wait: Optional[AutomationWaitSpec] = None
+
 
 class AutomationV2Record(BaseModel):
     model_config = ConfigDict(extra="allow")

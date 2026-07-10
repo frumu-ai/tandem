@@ -412,6 +412,7 @@ fn sample_authority_inventory_automation(workspace_root: String) -> crate::Autom
                     instructions: Some("Human approval required before publish".to_string()),
                     expiry_policy: None,
                 }),
+                wait: None,
                 metadata: Some(json!({
                     "private_prompt": "metadata-must-not-leak",
                     "owner": "security"
