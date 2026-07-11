@@ -64,6 +64,11 @@ impl AppState {
         let orchestration = store
             .get_orchestration(&goal.orchestration_id, goal.orchestration_version)?
             .context("published orchestration version not found")?;
+        if let Some(replayed) =
+            store.replay_existing_governed_transition(&orchestration, &goal, request, authority)?
+        {
+            return Ok(replayed);
+        }
         let source_run_id = goal
             .active_run_id
             .as_deref()
@@ -414,6 +419,115 @@ mod tests {
     use super::*;
     use crate::app::state::tests::AutomationRunBuilder;
 
+    fn transition_authority() -> OrchestrationTransitionAuthority {
+        OrchestrationTransitionAuthority {
+            actor: PrincipalRef::new(PrincipalKind::HumanUser, "operator"),
+            can_emit: true,
+            can_approve: false,
+        }
+    }
+
+    fn transition_request() -> GovernedTransitionRequest {
+        GovernedTransitionRequest {
+            transition_key: "continue".to_string(),
+            idempotency_key: "goal-1:plan:continue:1".to_string(),
+            artifact: tandem_automation::OrchestrationArtifactRef {
+                artifact_type: "plan".to_string(),
+                content_path: None,
+                content_digest: None,
+                value: Some(serde_json::json!({"steps": ["ship"]})),
+            },
+            now_ms: 20,
+        }
+    }
+
+    fn transition_orchestration(
+        executor: &AutomationV2Spec,
+    ) -> tandem_automation::OrchestrationSpec {
+        let executor_hash = crate::stateful_runtime::automation_definition_snapshot_hash(executor);
+        serde_json::from_value(serde_json::json!({
+            "orchestration_id": "orch-1",
+            "name": "Plan and execute",
+            "status": "published",
+            "version": 1,
+            "root_node_id": "plan",
+            "nodes": [
+                {
+                    "node_id": "plan",
+                    "name": "Plan",
+                    "kind": "workflow",
+                    "automation_id": "planner",
+                    "pinned_definition_hash": "sha256:planner",
+                    "allowed_transition_keys": ["continue"],
+                    "emits_artifact_types": ["plan"]
+                },
+                {
+                    "node_id": "execute",
+                    "name": "Execute",
+                    "kind": "workflow",
+                    "automation_id": "executor",
+                    "pinned_definition_hash": executor_hash,
+                    "accepts_artifact_types": ["plan"],
+                    "allowed_transition_keys": ["complete"]
+                },
+                {
+                    "node_id": "complete",
+                    "name": "Complete",
+                    "kind": "terminal",
+                    "outcome": "complete"
+                }
+            ],
+            "edges": [
+                {
+                    "edge_id": "plan-execute",
+                    "from_node_id": "plan",
+                    "to_node_id": "execute",
+                    "transition_key": "continue",
+                    "artifact_contract": {"artifact_type": "plan", "required": true}
+                },
+                {
+                    "edge_id": "execute-complete",
+                    "from_node_id": "execute",
+                    "to_node_id": "complete",
+                    "transition_key": "complete"
+                }
+            ],
+            "goal_policy": {"max_hops": 5},
+            "tenant_context": {
+                "org_id": "local",
+                "workspace_id": "local",
+                "source": "local_implicit"
+            },
+            "created_at_ms": 1,
+            "updated_at_ms": 1,
+            "published_at_ms": 1
+        }))
+        .unwrap()
+    }
+
+    fn transition_goal(tenant: TenantContext) -> LongRunningGoal {
+        LongRunningGoal {
+            schema_version: 1,
+            goal_id: "goal-1".to_string(),
+            orchestration_id: "orch-1".to_string(),
+            orchestration_version: 1,
+            objective: "Plan then execute".to_string(),
+            status: LongRunningGoalStatus::Active,
+            tenant_context: tenant,
+            policy: GoalPolicy::default(),
+            active_run_id: Some("run-plan".to_string()),
+            current_node_id: Some("plan".to_string()),
+            hop_count: 0,
+            total_tokens: 0,
+            total_cost_usd: 0.0,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            finished_at_ms: None,
+            final_artifact: None,
+            metadata: None,
+        }
+    }
+
     #[tokio::test]
     async fn cancellation_signals_live_sessions_after_the_durable_goal_transition() {
         let directory = tempfile::tempdir().unwrap();
@@ -476,5 +590,60 @@ mod tests {
         assert_eq!(persisted.status, AutomationRunStatus::Cancelled);
         assert!(persisted.active_session_ids.is_empty());
         assert!(persisted.active_instance_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn transition_retry_replays_before_reading_the_advanced_goal_edge() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut state = crate::test_support::test_state().await;
+        state.automation_v2_runs_path = directory.path().join("automation_v2_runs.json");
+        let executor = state
+            .put_automation_v2(
+                crate::app::state::tests::AutomationSpecBuilder::new("executor").build(),
+            )
+            .await
+            .unwrap();
+        let mut source_run = AutomationRunBuilder::new("run-plan", "planner")
+            .status(AutomationRunStatus::Completed)
+            .build();
+        source_run.total_tokens = 10;
+        state
+            .automation_v2_runs
+            .write()
+            .await
+            .insert(source_run.run_id.clone(), source_run);
+        let store =
+            OrchestrationStateStore::from_automation_runs_path(&state.automation_v2_runs_path)
+                .unwrap();
+        let orchestration = transition_orchestration(&executor);
+        store.put_orchestration(&orchestration).unwrap();
+        store
+            .put_goal(&transition_goal(TenantContext::local_implicit()))
+            .unwrap();
+        let request = transition_request();
+        let authority = transition_authority();
+
+        let first = state
+            .emit_orchestration_transition("goal-1", &request, &authority)
+            .await
+            .unwrap();
+        assert!(matches!(
+            first,
+            GovernedTransitionResult::Committed {
+                commit: crate::stateful_runtime::AtomicHandoffCommit::Committed,
+                ..
+            }
+        ));
+        let second = state
+            .emit_orchestration_transition("goal-1", &request, &authority)
+            .await
+            .unwrap();
+        assert!(matches!(
+            second,
+            GovernedTransitionResult::Committed {
+                commit: crate::stateful_runtime::AtomicHandoffCommit::AlreadyCommitted,
+                ..
+            }
+        ));
     }
 }

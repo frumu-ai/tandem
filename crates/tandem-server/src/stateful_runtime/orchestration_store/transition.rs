@@ -61,6 +61,48 @@ pub enum WorkflowCompletionResult {
 }
 
 impl OrchestrationStateStore {
+    /// Returns the canonical result for a previously accepted idempotency key
+    /// before callers derive a new source or target from a goal that may have
+    /// advanced since the original request.
+    pub fn replay_existing_governed_transition(
+        &self,
+        orchestration: &OrchestrationSpec,
+        goal: &LongRunningGoal,
+        request: &GovernedTransitionRequest,
+        authority: &OrchestrationTransitionAuthority,
+    ) -> anyhow::Result<Option<GovernedTransitionResult>> {
+        if !authority.can_emit {
+            bail!("actor is not authorized to emit orchestration transitions");
+        }
+        let Some(existing) =
+            self.handoff_for_idempotency_key(&goal.goal_id, &request.idempotency_key)?
+        else {
+            return Ok(None);
+        };
+        validate_replayed_handoff(orchestration, goal, request, &existing)?;
+        match existing.status {
+            WorkflowHandoffStatus::Consumed => {
+                self.replay_committed_transition(&existing).map(Some)
+            }
+            WorkflowHandoffStatus::PendingApproval => {
+                let waiting_goal = self
+                    .get_goal(&goal.goal_id)?
+                    .context("pending handoff is missing its goal")?;
+                Ok(Some(GovernedTransitionResult::PendingApproval {
+                    handoff: existing,
+                    goal: waiting_goal,
+                }))
+            }
+            WorkflowHandoffStatus::Rejected | WorkflowHandoffStatus::DeadLettered => {
+                bail!("handoff is no longer eligible for consumption")
+            }
+            WorkflowHandoffStatus::Claimed => {
+                bail!("handoff is being claimed by another worker")
+            }
+            WorkflowHandoffStatus::Approved => Ok(None),
+        }
+    }
+
     pub fn settle_workflow_completion(
         &self,
         orchestration: &OrchestrationSpec,
@@ -165,8 +207,10 @@ impl OrchestrationStateStore {
         request: &GovernedTransitionRequest,
         authority: &OrchestrationTransitionAuthority,
     ) -> anyhow::Result<GovernedTransitionResult> {
-        if !authority.can_emit {
-            bail!("actor is not authorized to emit orchestration transitions");
+        if let Some(replayed) =
+            self.replay_existing_governed_transition(orchestration, goal, request, authority)?
+        {
+            return Ok(replayed);
         }
         let existing_handoff =
             self.handoff_for_idempotency_key(&goal.goal_id, &request.idempotency_key)?;
