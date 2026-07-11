@@ -12,6 +12,7 @@ SQLite remains the default for local and desktop installs.
 | `TANDEM_MEMORY_EMBEDDING_DIMENSION` | pgvector dimension. Defaults to 384 and must match the existing schema. |
 | `TANDEM_MEMORY_POSTGRES_DISTANCE` | `cosine` (default), `euclidean`, or `inner_product`. |
 | `TANDEM_MEMORY_POSTGRES_POOL_SIZE` | Connection pool size, default 16. |
+| `TANDEM_MEMORY_POSTGRES_POOL_WAIT_TIMEOUT_MS` | Maximum connection-pool wait, default 5000 ms (range 10-120000). Exhaustion returns a retryable unavailable error. |
 | `TANDEM_MEMORY_SEARCH_SURFACE_MODE` | `plaintext_pgvector`, `encrypted_rerank`, or `disabled`. Hosted encryption defaults to `encrypted_rerank`. |
 | `TANDEM_MEMORY_POSTGRES_RERANK_CANDIDATES` | Maximum scoped ciphertext candidates decrypted per query, default 1000. |
 

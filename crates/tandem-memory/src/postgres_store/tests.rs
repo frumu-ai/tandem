@@ -1,6 +1,18 @@
 use super::*;
 use crate::types::{GlobalMemoryRecord, MemoryChunk, MemoryTenantScope, MemoryTier};
 
+fn config(url: String, max_pool_size: usize) -> PostgresMemoryStoreConfig {
+    PostgresMemoryStoreConfig {
+        url,
+        embedding_dimension: 3,
+        distance_metric: PostgresDistanceMetric::Cosine,
+        max_pool_size,
+        pool_wait_timeout: std::time::Duration::from_millis(100),
+        search_surface_mode: PostgresSearchSurfaceMode::PlaintextPgvector,
+        rerank_candidate_limit: 100,
+    }
+}
+
 fn test_url() -> Option<String> {
     std::env::var("TANDEM_TEST_POSTGRES_URL").ok()
 }
@@ -83,16 +95,9 @@ async fn postgres_scopes_candidates_before_vector_top_k() {
     let Some(url) = test_url() else {
         return;
     };
-    let store = PostgresMemoryStore::connect(PostgresMemoryStoreConfig {
-        url,
-        embedding_dimension: 3,
-        distance_metric: PostgresDistanceMetric::Cosine,
-        max_pool_size: 4,
-        search_surface_mode: PostgresSearchSurfaceMode::PlaintextPgvector,
-        rerank_candidate_limit: 100,
-    })
-    .await
-    .expect("open PostgreSQL test store");
+    let store = PostgresMemoryStore::connect(config(url, 4))
+        .await
+        .expect("open PostgreSQL test store");
     store
         .recover_backend(MemoryBackendRecoveryRequest {
             action: MemoryBackendRecoveryAction::ResetAllData,
@@ -143,16 +148,9 @@ async fn postgres_atomic_batch_rolls_back_on_primary_key_failure() {
     let Some(url) = test_url() else {
         return;
     };
-    let store = PostgresMemoryStore::connect(PostgresMemoryStoreConfig {
-        url,
-        embedding_dimension: 3,
-        distance_metric: PostgresDistanceMetric::Cosine,
-        max_pool_size: 4,
-        search_surface_mode: PostgresSearchSurfaceMode::PlaintextPgvector,
-        rerank_candidate_limit: 100,
-    })
-    .await
-    .expect("open PostgreSQL test store");
+    let store = PostgresMemoryStore::connect(config(url, 4))
+        .await
+        .expect("open PostgreSQL test store");
     store
         .recover_backend(MemoryBackendRecoveryRequest {
             action: MemoryBackendRecoveryAction::ResetAllData,
@@ -207,16 +205,11 @@ async fn postgres_encrypted_mode_seals_payloads_and_reranks_in_scope() {
         "TANDEM_MEMORY_DECRYPT_PRINCIPAL_ID",
         "postgres-test-runtime",
     );
-    let store = PostgresMemoryStore::connect(PostgresMemoryStoreConfig {
-        url,
-        embedding_dimension: 3,
-        distance_metric: PostgresDistanceMetric::Cosine,
-        max_pool_size: 4,
-        search_surface_mode: PostgresSearchSurfaceMode::EncryptedRerank,
-        rerank_candidate_limit: 100,
-    })
-    .await
-    .expect("open encrypted PostgreSQL test store");
+    let mut encrypted_config = config(url, 4);
+    encrypted_config.search_surface_mode = PostgresSearchSurfaceMode::EncryptedRerank;
+    let store = PostgresMemoryStore::connect(encrypted_config)
+        .await
+        .expect("open encrypted PostgreSQL test store");
     store
         .recover_backend(MemoryBackendRecoveryRequest {
             action: MemoryBackendRecoveryAction::ResetAllData,
@@ -311,16 +304,9 @@ async fn postgres_consolidation_is_exactly_scoped_and_atomic() {
     let Some(url) = test_url() else {
         return;
     };
-    let store = PostgresMemoryStore::connect(PostgresMemoryStoreConfig {
-        url,
-        embedding_dimension: 3,
-        distance_metric: PostgresDistanceMetric::Cosine,
-        max_pool_size: 4,
-        search_surface_mode: PostgresSearchSurfaceMode::PlaintextPgvector,
-        rerank_candidate_limit: 100,
-    })
-    .await
-    .expect("open PostgreSQL test store");
+    let store = PostgresMemoryStore::connect(config(url, 4))
+        .await
+        .expect("open PostgreSQL test store");
     store
         .recover_backend(MemoryBackendRecoveryRequest {
             action: MemoryBackendRecoveryAction::ResetAllData,
@@ -435,4 +421,121 @@ async fn postgres_consolidation_is_exactly_scoped_and_atomic() {
         panic!("expected chunks");
     };
     assert!(sources.iter().any(|chunk| chunk.id == "rollback-own"));
+}
+
+#[tokio::test]
+async fn postgres_denies_cross_department_and_cross_subject_reads() {
+    let Some(url) = test_url() else {
+        return;
+    };
+    let store = PostgresMemoryStore::connect(config(url, 4))
+        .await
+        .expect("open PostgreSQL test store");
+    store
+        .recover_backend(MemoryBackendRecoveryRequest {
+            action: MemoryBackendRecoveryAction::ResetAllData,
+            confirm_data_loss: true,
+        })
+        .await
+        .expect("reset PostgreSQL fixtures");
+    let tenant = tenant("ownership");
+    let alice_write = MemoryWriteScope {
+        tenant: tenant.clone(),
+        org_unit: Some("finance".to_string()),
+        subject: Some("alice".to_string()),
+    };
+    store
+        .write(MemoryStoreWriteRequest::Chunk {
+            scope: alice_write,
+            chunk: owned_chunk(
+                "alice-finance",
+                MemoryTier::Project,
+                tenant.clone(),
+                "alice",
+            ),
+            embedding: vec![1.0, 0.0, 0.0],
+        })
+        .await
+        .expect("write owned PostgreSQL chunk");
+
+    for (department, subject) in [("finance", "bob"), ("legal", "alice")] {
+        let result = store
+            .query(MemoryStoreQueryRequest::SimilarChunks {
+                scope: MemoryReadScope {
+                    tenant: tenant.clone(),
+                    org_unit: Some(department.to_string()),
+                    subject: Some(subject.to_string()),
+                    access: MemoryReadAccess::Scoped,
+                },
+                selector: MemoryChunkSelector::project("project"),
+                query_embedding: vec![1.0, 0.0, 0.0],
+                limit: 10,
+            })
+            .await
+            .expect("query unauthorized PostgreSQL scope");
+        let MemoryStoreQueryResult::SimilarChunks(hits) = result else {
+            panic!("expected vector results");
+        };
+        assert!(
+            hits.is_empty(),
+            "{department}/{subject} crossed ownership scope"
+        );
+    }
+}
+
+#[tokio::test]
+async fn postgres_migrations_are_restart_safe_and_reject_dimension_drift() {
+    let Some(url) = test_url() else {
+        return;
+    };
+    PostgresMemoryStore::connect(config(url.clone(), 2))
+        .await
+        .expect("apply PostgreSQL migrations");
+    PostgresMemoryStore::connect(config(url.clone(), 2))
+        .await
+        .expect("reapply PostgreSQL migrations after restart");
+
+    let mut drifted = config(url, 2);
+    drifted.embedding_dimension = 4;
+    let error = PostgresMemoryStore::connect(drifted)
+        .await
+        .expect_err("dimension drift must fail startup");
+    assert_eq!(error.kind, MemoryStoreErrorKind::InvalidRequest);
+    assert!(error.message.contains("dimension mismatch"));
+}
+
+#[tokio::test]
+async fn postgres_pool_exhaustion_returns_retryable_unavailable() {
+    let Some(url) = test_url() else {
+        return;
+    };
+    let store = PostgresMemoryStore::connect(config(url, 1))
+        .await
+        .expect("open one-connection PostgreSQL pool");
+    let held = store.client().await.expect("hold PostgreSQL connection");
+    let error = store
+        .client()
+        .await
+        .expect_err("pool acquisition must time out");
+    assert_eq!(error.kind, MemoryStoreErrorKind::Unavailable);
+    assert!(error.retryable);
+    drop(held);
+}
+
+#[tokio::test]
+async fn postgres_outage_fails_connect_without_hanging() {
+    let mut unavailable = config(
+        "postgres://postgres:tandem@127.0.0.1:1/tandem?connect_timeout=1".to_string(),
+        1,
+    );
+    unavailable.pool_wait_timeout = std::time::Duration::from_millis(100);
+    let error = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        PostgresMemoryStore::connect(unavailable),
+    )
+    .await
+    .expect("outage handling exceeded its deadline")
+    .expect_err("unreachable PostgreSQL must fail startup");
+    assert_eq!(error.kind, MemoryStoreErrorKind::Unavailable);
+    assert!(error.retryable);
 }

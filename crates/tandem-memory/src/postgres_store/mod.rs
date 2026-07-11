@@ -5,6 +5,7 @@ mod schema;
 mod write_mutate;
 
 use std::str::FromStr;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod, Runtime};
@@ -106,6 +107,7 @@ pub struct PostgresMemoryStoreConfig {
     pub embedding_dimension: usize,
     pub distance_metric: PostgresDistanceMetric,
     pub max_pool_size: usize,
+    pub pool_wait_timeout: Duration,
     pub search_surface_mode: PostgresSearchSurfaceMode,
     pub rerank_candidate_limit: i64,
 }
@@ -143,6 +145,19 @@ impl PostgresMemoryStoreConfig {
             })?
             .unwrap_or(16)
             .clamp(1, 128);
+        let pool_wait_timeout = Duration::from_millis(
+            std::env::var("TANDEM_MEMORY_POSTGRES_POOL_WAIT_TIMEOUT_MS")
+                .ok()
+                .map(|value| value.parse::<u64>())
+                .transpose()
+                .map_err(|_| {
+                    MemoryStoreError::invalid(
+                        "TANDEM_MEMORY_POSTGRES_POOL_WAIT_TIMEOUT_MS must be an integer",
+                    )
+                })?
+                .unwrap_or(5_000)
+                .clamp(10, 120_000),
+        );
         let search_surface_mode = PostgresSearchSurfaceMode::from_env()?;
         let rerank_candidate_limit = std::env::var("TANDEM_MEMORY_POSTGRES_RERANK_CANDIDATES")
             .ok()
@@ -160,6 +175,7 @@ impl PostgresMemoryStoreConfig {
             embedding_dimension,
             distance_metric,
             max_pool_size,
+            pool_wait_timeout,
             search_surface_mode,
             rerank_candidate_limit,
         })
@@ -200,6 +216,7 @@ impl PostgresMemoryStore {
         );
         let pool = Pool::builder(manager)
             .max_size(config.max_pool_size)
+            .wait_timeout(Some(config.pool_wait_timeout))
             .runtime(Runtime::Tokio1)
             .build()
             .map_err(|error| store_error("build PostgreSQL pool", error, false))?;
@@ -268,6 +285,7 @@ impl PostgresMemoryStore {
         Ok((ciphertext, envelope, policy_id, audit_id))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn decrypt_embedding(
         &self,
         ciphertext: &str,
