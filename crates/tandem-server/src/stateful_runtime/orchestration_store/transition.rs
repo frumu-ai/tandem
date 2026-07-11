@@ -1328,4 +1328,116 @@ mod tests {
                     && goal.final_artifact.is_some()
         ));
     }
+
+    #[test]
+    fn fake_clock_policy_limits_survive_restart_without_creating_a_handoff() {
+        let cases = [
+            (
+                "hop",
+                GoalPolicy {
+                    max_hops: 5,
+                    deadline_at_ms: None,
+                    max_total_tokens: None,
+                    max_total_cost_usd: None,
+                    on_limit: GoalLimitAction::PauseForReview,
+                },
+                5,
+                0,
+                0.0,
+                20,
+                LongRunningGoalStatus::Paused,
+            ),
+            (
+                "deadline",
+                GoalPolicy {
+                    max_hops: 5,
+                    deadline_at_ms: Some(20),
+                    max_total_tokens: None,
+                    max_total_cost_usd: None,
+                    on_limit: GoalLimitAction::PauseForReview,
+                },
+                0,
+                0,
+                0.0,
+                20,
+                LongRunningGoalStatus::Expired,
+            ),
+            (
+                "tokens",
+                GoalPolicy {
+                    max_hops: 5,
+                    deadline_at_ms: None,
+                    max_total_tokens: Some(24),
+                    max_total_cost_usd: None,
+                    on_limit: GoalLimitAction::Fail,
+                },
+                0,
+                0,
+                0.0,
+                20,
+                LongRunningGoalStatus::Failed,
+            ),
+            (
+                "cost",
+                GoalPolicy {
+                    max_hops: 5,
+                    deadline_at_ms: None,
+                    max_total_tokens: None,
+                    max_total_cost_usd: Some(0.49),
+                    on_limit: GoalLimitAction::Fail,
+                },
+                0,
+                0,
+                0.0,
+                20,
+                LongRunningGoalStatus::Failed,
+            ),
+        ];
+        for (name, policy, hop_count, total_tokens, total_cost_usd, now_ms, expected_status) in
+            cases
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = OrchestrationStorePaths {
+                database_path: directory.path().join(format!("{name}.sqlite3")),
+                engine_lock_path: directory.path().join(format!("{name}.lock")),
+            };
+            let mut persisted_goal = goal();
+            persisted_goal.policy = policy;
+            persisted_goal.hop_count = hop_count;
+            persisted_goal.total_tokens = total_tokens;
+            persisted_goal.total_cost_usd = total_cost_usd;
+            OrchestrationStateStore::open(paths.clone())
+                .unwrap()
+                .put_goal(&persisted_goal)
+                .unwrap();
+
+            let restarted_store = OrchestrationStateStore::open(paths).unwrap();
+            let restored_goal = restarted_store.get_goal("goal-1").unwrap().unwrap();
+            let mut request = request();
+            request.now_ms = now_ms;
+            assert!(
+                restarted_store
+                    .commit_governed_transition(
+                        &orchestration(false),
+                        &restored_goal,
+                        &source_run(),
+                        &downstream(&request),
+                        &request,
+                        &authority(false),
+                    )
+                    .is_err(),
+                "{name} limit should reject the transition"
+            );
+            let limited_goal = restarted_store.get_goal("goal-1").unwrap().unwrap();
+            assert_eq!(limited_goal.status, expected_status, "{name} status");
+            assert!(restarted_store
+                .get_automation_run(&request.downstream_run_id("goal-1"))
+                .unwrap()
+                .is_none());
+            if limited_goal.status.is_terminal() {
+                assert_eq!(limited_goal.finished_at_ms, Some(now_ms));
+                assert!(limited_goal.active_run_id.is_none());
+            }
+        }
+    }
 }
