@@ -166,13 +166,7 @@ pub(super) struct MemoryImportResponse {
     errors: usize,
 }
 
-fn default_memory_import_format() -> MemoryImportFormat {
-    MemoryImportFormat::Directory
-}
-
-fn default_memory_import_tier() -> MemoryTier {
-    MemoryTier::Project
-}
+include!("part01_import_helpers.rs");
 
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct MemoryAuditQuery {
@@ -223,20 +217,6 @@ pub(super) struct WorkflowLearningCandidatePromoteRequest {
 pub(super) struct WorkflowLearningCandidateSpawnRevisionRequest {
     reviewer_id: Option<String>,
     title: Option<String>,
-}
-
-fn tenant_context_event_value(tenant_context: &TenantContext) -> Value {
-    serde_json::to_value(tenant_context).unwrap_or_else(|_| json!(tenant_context))
-}
-
-fn with_tenant_context(mut properties: Value, tenant_context: &TenantContext) -> Value {
-    if let Some(map) = properties.as_object_mut() {
-        map.insert(
-            "tenantContext".to_string(),
-            tenant_context_event_value(tenant_context),
-        );
-    }
-    properties
 }
 
 fn publish_tenant_event(
@@ -1374,28 +1354,43 @@ impl GovernedDistillationWriter {
             fact.category,
             fact.content
         ));
-        let db = open_global_memory_db_for_state(&self.state)
+        let store = open_global_memory_store_for_state(&self.state)
             .await
             .ok_or_else(|| {
                 tandem_memory::types::MemoryError::InvalidConfig(
                     "global memory db unavailable".to_string(),
                 )
             })?;
-        let existing = db
-            .list_global_memory_for_tenant(
-                &self.tenant_context.org_id,
-                &self.tenant_context.workspace_id,
-                self.tenant_context.deployment_id.as_deref(),
-                &self.subject,
-                None,
-                Some(&self.partition.project_id),
-                None,
-                200,
-                0,
-            )
+        let mut scope = tandem_memory::MemoryReadScope::tenant(MemoryTenantScope {
+            org_id: self.tenant_context.org_id.clone(),
+            workspace_id: self.tenant_context.workspace_id.clone(),
+            deployment_id: self.tenant_context.deployment_id.clone(),
+        });
+        scope.subject = Some(self.subject.clone());
+        scope.org_unit = crate::memory::subject::active_org_unit(
+            self.verified_tenant_context.as_ref(),
+        );
+        let existing = match store
+            .query(tandem_memory::MemoryStoreQueryRequest::ListGlobalRecords {
+                scope: scope.clone(),
+                user_id: self.subject.clone(),
+                query: None,
+                project_tag: Some(self.partition.project_id.clone()),
+                channel_tag: None,
+                limit: 200,
+                offset: 0,
+            })
             .await
             .map_err(|error| tandem_memory::types::MemoryError::InvalidConfig(error.to_string()))?
-            .into_iter()
+        {
+            tandem_memory::MemoryStoreQueryResult::GlobalRecords(records) => records,
+            _ => {
+                return Err(tandem_memory::types::MemoryError::InvalidConfig(
+                    "memory store returned an unexpected global-record list result".to_string(),
+                ));
+            }
+        }
+        .into_iter()
             .find(|record| {
                 record.content_hash == content_hash
                     && record
@@ -1438,17 +1433,15 @@ impl GovernedDistillationWriter {
                     .as_deref(),
             )
             .unwrap_or_else(|| json!({}));
-            let _ = db
-                .update_global_memory_context_for_tenant(
-                    &existing.id,
-                    &self.tenant_context.org_id,
-                    &self.tenant_context.workspace_id,
-                    self.tenant_context.deployment_id.as_deref(),
-                    &existing.visibility,
-                    existing.demoted,
-                    Some(&next_metadata),
-                    existing.provenance.as_ref(),
-                )
+            let _ = store
+                .mutate(tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+                    scope,
+                    id: existing.id.clone(),
+                    visibility: existing.visibility.clone(),
+                    demoted: existing.demoted,
+                    metadata: Some(next_metadata),
+                    provenance: existing.provenance.clone(),
+                })
                 .await
                 .map_err(|error| {
                     tandem_memory::types::MemoryError::InvalidConfig(error.to_string())

@@ -50,6 +50,11 @@ impl MemorySubjectResolutionError {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActiveOrgUnitResolutionError {
+    MissingActiveMembership,
+}
+
 pub fn normalize_memory_subject(subject_hint: Option<&str>) -> String {
     normalized(subject_hint).unwrap_or_else(|| "default".to_string())
 }
@@ -177,8 +182,9 @@ pub fn local_memory_subjects_are_unrestricted(
 /// Department is the primary isolation axis, so each collected item is stamped
 /// with exactly **one** org-unit, chosen from the caller's verified memberships:
 ///
-/// - No org-units (unattributable / local single-tenant mode) → `None`, leaving
-///   the write tenant-wide (the pre-department behavior).
+/// - No org-units → `None`. Callers performing verified database operations
+///   must pass this through [`required_active_org_unit`], which rejects the
+///   missing membership instead of interpreting it as tenant-wide access.
 /// - Exactly one org-unit → that unit is the active department.
 /// - Multiple (e.g. a user in Sales + Leadership) → the first after a stable
 ///   sort. This is deterministic and conservative: it scopes the write to a
@@ -200,6 +206,21 @@ pub fn active_org_unit(verified: Option<&VerifiedTenantContext>) -> Option<Strin
         .collect();
     units.sort_unstable();
     units.first().map(|unit| unit.to_string())
+}
+
+/// Resolve the department scope for a database operation. Local requests may
+/// remain tenant-wide, but a verified caller must always have an active
+/// membership; treating an empty verified membership set as `None` would widen
+/// the operation to the entire tenant.
+pub fn required_active_org_unit(
+    verified: Option<&VerifiedTenantContext>,
+) -> Result<Option<String>, ActiveOrgUnitResolutionError> {
+    match verified {
+        None => Ok(None),
+        Some(verified) => active_org_unit(Some(verified))
+            .map(Some)
+            .ok_or(ActiveOrgUnitResolutionError::MissingActiveMembership),
+    }
 }
 
 fn verified_actor(verified: &VerifiedTenantContext) -> Option<String> {
@@ -315,6 +336,24 @@ mod tests {
         assert_eq!(
             active_org_unit(Some(&noisy)).as_deref(),
             Some("department/eng")
+        );
+    }
+
+    #[test]
+    fn required_active_org_unit_denies_verified_context_without_membership() {
+        assert_eq!(required_active_org_unit(None), Ok(None));
+
+        let none_units = verified_context("user-a", None);
+        assert_eq!(
+            required_active_org_unit(Some(&none_units)),
+            Err(ActiveOrgUnitResolutionError::MissingActiveMembership)
+        );
+
+        let mut member = verified_context("user-a", None);
+        member.org_units = vec!["department/finance".to_string()];
+        assert_eq!(
+            required_active_org_unit(Some(&member)),
+            Ok(Some("department/finance".to_string()))
         );
     }
 

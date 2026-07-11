@@ -21,6 +21,15 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tokio::sync::Mutex;
 
+impl From<rusqlite::Error> for MemoryError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Database(error.to_string())
+    }
+}
+
+#[path = "sqlite_atomic_batch.rs"]
+mod sqlite_atomic_batch;
+
 type ProjectIndexStatusRow = (
     Option<String>,
     Option<i64>,
@@ -50,32 +59,6 @@ fn memory_write_authorization_ids() -> (String, String) {
 }
 
 static SCHEMA_INIT_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-const MEMORY_SCHEMA_MIGRATIONS: &[(i64, &str)] = &[
-    (1, "bootstrap_memory_schema"),
-    (2, "memory_config_retention_columns"),
-    (3, "chunk_owner_org_unit_scope"),
-];
-
-fn ensure_schema_migrations_table(conn: &Connection) -> MemoryResult<()> {
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS schema_migrations (
-            version INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            applied_at_ms INTEGER NOT NULL
-        )",
-        [],
-    )?;
-    Ok(())
-}
-
-fn record_schema_migration(conn: &Connection, version: i64, name: &str) -> MemoryResult<()> {
-    conn.execute(
-        "INSERT OR IGNORE INTO schema_migrations (version, name, applied_at_ms)
-         VALUES (?1, ?2, ?3)",
-        params![version, name, Utc::now().timestamp_millis()],
-    )?;
-    Ok(())
-}
 
 /// Process-wide default for strict tenant enforcement, set once at startup by
 /// the host (engine `serve` in hosted/enterprise auth modes) before databases
@@ -424,7 +407,7 @@ impl MemoryDatabase {
         match result {
             Ok(node) => Ok(Some(node)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(MemoryError::Database(e)),
+            Err(e) => Err(MemoryError::from(e)),
         }
     }
 
@@ -502,7 +485,7 @@ impl MemoryDatabase {
         )?;
 
         rows.collect::<Result<Vec<_>, _>>()
-            .map_err(MemoryError::Database)
+            .map_err(MemoryError::from)
     }
 
     pub async fn get_layer(
@@ -580,7 +563,7 @@ impl MemoryDatabase {
                 Ok(Some(layer))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(MemoryError::Database(e)),
+            Err(e) => Err(MemoryError::from(e)),
         }
     }
 

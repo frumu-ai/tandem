@@ -182,11 +182,13 @@ impl ServerPromptContextHook {
         Self { state }
     }
 
-    async fn open_memory_db(&self) -> Option<MemoryDatabase> {
+    async fn open_memory_store(&self) -> Option<std::sync::Arc<dyn tandem_memory::MemoryStore>> {
         if let Some(parent) = self.state.memory_db_path.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
-        MemoryDatabase::new(&self.state.memory_db_path).await.ok()
+        tandem_memory::open_sqlite_memory_store(&self.state.memory_db_path)
+            .await
+            .ok()
     }
 
     async fn open_memory_manager(&self) -> Option<tandem_memory::MemoryManager> {
@@ -460,8 +462,9 @@ impl ServerPromptContextHook {
             .collect()
     }
 
-    async fn search_local_prompt_global_memory(
-        db: &MemoryDatabase,
+    async fn search_prompt_memory_with_scope(
+        store: &dyn tandem_memory::MemoryStore,
+        scope: tandem_memory::MemoryReadScope,
         user_id: &str,
         query: &str,
         project_id: Option<&str>,
@@ -469,31 +472,49 @@ impl ServerPromptContextHook {
         Vec<tandem_memory::types::GlobalMemorySearchHit>,
         Vec<tandem_memory::types::GlobalMemorySearchHit>,
     ) {
-        // LocalSingleTenant prompt memory uses the legacy local partition.
-        // Hosted/governed prompt memory must not call this helper; it belongs
-        // in the PromptMemoryAccess::Local arm only.
         let project_hits = if let Some(project_id) = project_id {
-            db.search_global_memory(user_id, query, 8, Some(project_id), None, None)
+            store
+                .query(
+                    tandem_memory::MemoryStoreQueryRequest::SearchGlobalRecords {
+                        scope: scope.clone(),
+                        user_id: user_id.to_string(),
+                        query: query.to_string(),
+                        limit: 8,
+                        project_tag: Some(project_id.to_string()),
+                    },
+                )
                 .await
+                .ok()
+                .and_then(|result| match result {
+                    tandem_memory::MemoryStoreQueryResult::GlobalSearchHits(hits) => Some(hits),
+                    _ => None,
+                })
                 .unwrap_or_default()
-                .into_iter()
-                .filter(|hit| Self::governed_memory_visible_without_source_grant(&hit.record))
-                .collect::<Vec<_>>()
         } else {
             Vec::new()
         };
-        let global_hits = db
-            .search_global_memory(user_id, query, 8, None, None, None)
+        let global_hits = store
+            .query(
+                tandem_memory::MemoryStoreQueryRequest::SearchGlobalRecords {
+                    scope,
+                    user_id: user_id.to_string(),
+                    query: query.to_string(),
+                    limit: 8,
+                    project_tag: None,
+                },
+            )
             .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|hit| Self::governed_memory_visible_without_source_grant(&hit.record))
-            .collect::<Vec<_>>();
+            .ok()
+            .and_then(|result| match result {
+                tandem_memory::MemoryStoreQueryResult::GlobalSearchHits(hits) => Some(hits),
+                _ => None,
+            })
+            .unwrap_or_default();
         (project_hits, global_hits)
     }
 
     pub(super) async fn search_prompt_global_memory(
-        db: &MemoryDatabase,
+        store: &dyn tandem_memory::MemoryStore,
         memory_access: &PromptMemoryAccess,
         query: &str,
         project_id: Option<&str>,
@@ -503,7 +524,27 @@ impl ServerPromptContextHook {
     ) {
         match memory_access {
             PromptMemoryAccess::Local { user_id, .. } => {
-                Self::search_local_prompt_global_memory(db, user_id, query, project_id).await
+                let mut scope = tandem_memory::MemoryReadScope::tenant(
+                    tandem_memory::types::MemoryTenantScope::local(),
+                );
+                scope.subject = Some(user_id.clone());
+                let (project_hits, global_hits) =
+                    Self::search_prompt_memory_with_scope(store, scope, user_id, query, project_id)
+                        .await;
+                (
+                    project_hits
+                        .into_iter()
+                        .filter(|hit| {
+                            Self::governed_memory_visible_without_source_grant(&hit.record)
+                        })
+                        .collect(),
+                    global_hits
+                        .into_iter()
+                        .filter(|hit| {
+                            Self::governed_memory_visible_without_source_grant(&hit.record)
+                        })
+                        .collect(),
+                )
             }
             PromptMemoryAccess::Governed {
                 tenant_context,
@@ -511,47 +552,34 @@ impl ServerPromptContextHook {
                 access_filter,
                 ..
             } => {
-                let project_hits = if let Some(project_id) = project_id {
-                    db.search_global_memory_for_tenant(
-                        &tenant_context.org_id,
-                        &tenant_context.workspace_id,
-                        tenant_context.deployment_id.as_deref(),
-                        subject,
-                        query,
-                        8,
-                        Some(project_id),
-                        None,
-                        None,
-                    )
-                    .await
-                    .unwrap_or_default()
+                let mut scope = tandem_memory::MemoryReadScope::tenant(
+                    tandem_memory::types::MemoryTenantScope {
+                        org_id: tenant_context.org_id.clone(),
+                        workspace_id: tenant_context.workspace_id.clone(),
+                        deployment_id: tenant_context.deployment_id.clone(),
+                    },
+                );
+                scope.subject = Some(subject.clone());
+                scope.org_unit = access_filter
+                    .caller_org_units
+                    .as_ref()
+                    .and_then(|units| (units.len() == 1).then(|| units.iter().next().cloned()))
+                    .flatten();
+                let (project_hits, global_hits) =
+                    Self::search_prompt_memory_with_scope(store, scope, subject, query, project_id)
+                        .await;
+                let project_hits = project_hits
                     .into_iter()
                     .filter(|hit| {
                         Self::governed_memory_visible_with_access_filter(&hit.record, access_filter)
                     })
-                    .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                };
-                let global_hits = db
-                    .search_global_memory_for_tenant(
-                        &tenant_context.org_id,
-                        &tenant_context.workspace_id,
-                        tenant_context.deployment_id.as_deref(),
-                        subject,
-                        query,
-                        8,
-                        None,
-                        None,
-                        None,
-                    )
-                    .await
-                    .unwrap_or_default()
+                    .collect();
+                let global_hits = global_hits
                     .into_iter()
                     .filter(|hit| {
                         Self::governed_memory_visible_with_access_filter(&hit.record, access_filter)
                     })
-                    .collect::<Vec<_>>();
+                    .collect();
                 (project_hits, global_hits)
             }
             PromptMemoryAccess::Blocked { .. } => (Vec::new(), Vec::new()),
@@ -807,11 +835,11 @@ impl PromptContextHook for ServerPromptContextHook {
                 ));
                 return Ok(PromptContextHookResult::new(messages, budget.finish()));
             }
-            let Some(db) = this.open_memory_db().await else {
+            let Some(store) = this.open_memory_store().await else {
                 return Ok(PromptContextHookResult::new(messages, budget.finish()));
             };
             let (project_hits, global_hits) = Self::search_prompt_global_memory(
-                &db,
+                store.as_ref(),
                 &memory_access,
                 &query,
                 project_id.as_deref(),

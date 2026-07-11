@@ -822,6 +822,65 @@ impl Tool for MemoryStoreTool {
     }
 }
 
+async fn read_local_memory_chunks(
+    manager: &MemoryManager,
+    selector: tandem_memory::store::MemoryChunkSelector,
+    limit: Option<i64>,
+    caller_subject: Option<&str>,
+) -> anyhow::Result<Vec<tandem_memory::types::MemoryChunk>> {
+    let mut scope = tandem_memory::store::MemoryReadScope::tenant(
+        tandem_memory::types::MemoryTenantScope::local(),
+    );
+    scope.subject = caller_subject.map(ToString::to_string);
+    let result = manager
+        .store()
+        .read(tandem_memory::store::MemoryStoreReadRequest::Chunks {
+            scope,
+            selector,
+            limit,
+        })
+        .await?;
+
+    match result {
+        tandem_memory::store::MemoryStoreReadResult::Chunks(chunks) => Ok(chunks),
+        _ => Err(anyhow!(
+            "memory store returned an unexpected result for a chunk read"
+        )),
+    }
+}
+
+async fn delete_local_memory_chunk(
+    manager: &MemoryManager,
+    selector: tandem_memory::store::MemoryChunkSelector,
+    chunk_id: &str,
+    caller_subject: Option<&str>,
+) -> anyhow::Result<u64> {
+    let tenant = tandem_memory::types::MemoryTenantScope::local();
+    let scope = if let Some(subject) = caller_subject {
+        let mut scope = tandem_memory::store::MemoryReadScope::tenant(tenant);
+        scope.subject = Some(subject.to_string());
+        scope
+    } else {
+        tandem_memory::store::MemoryReadScope::trusted_unrestricted(tenant)
+    };
+
+    let result = manager
+        .store()
+        .mutate(tandem_memory::store::MemoryStoreMutationRequest::DeleteChunk {
+            scope,
+            selector,
+            chunk_id: chunk_id.to_string(),
+        })
+        .await?;
+
+    match result {
+        tandem_memory::store::MemoryStoreMutationResult::Affected(count) => Ok(count),
+        _ => Err(anyhow!(
+            "memory store returned an unexpected result for a chunk deletion"
+        )),
+    }
+}
+
 struct MemoryListTool;
 #[async_trait]
 impl Tool for MemoryListTool {
@@ -873,6 +932,7 @@ impl Tool for MemoryListTool {
 
         let db_path = resolve_memory_db_path(&args);
         let manager = MemoryManager::new(&db_path).await?;
+        let caller_subject = channel_memory_subject(&args);
 
         let mut chunks: Vec<tandem_memory::types::MemoryChunk> = Vec::new();
         match tier.as_str() {
@@ -883,7 +943,15 @@ impl Tool for MemoryListTool {
                         metadata: json!({"ok": false, "reason": "missing_session_scope"}),
                     });
                 };
-                chunks.extend(manager.db().get_session_chunks(sid).await?);
+                chunks.extend(
+                    read_local_memory_chunks(
+                        &manager,
+                        tandem_memory::store::MemoryChunkSelector::session(sid),
+                        None,
+                        caller_subject.as_deref(),
+                    )
+                    .await?,
+                );
             }
             "project" => {
                 let Some(pid) = project_id.as_deref() else {
@@ -892,20 +960,60 @@ impl Tool for MemoryListTool {
                         metadata: json!({"ok": false, "reason": "missing_project_scope"}),
                     });
                 };
-                chunks.extend(manager.db().get_project_chunks(pid).await?);
+                chunks.extend(
+                    read_local_memory_chunks(
+                        &manager,
+                        tandem_memory::store::MemoryChunkSelector::project(pid),
+                        None,
+                        caller_subject.as_deref(),
+                    )
+                    .await?,
+                );
             }
             "global" => {
-                chunks.extend(manager.db().get_global_chunks(limit as i64).await?);
+                chunks.extend(
+                    read_local_memory_chunks(
+                        &manager,
+                        tandem_memory::store::MemoryChunkSelector::global(),
+                        Some(limit as i64),
+                        caller_subject.as_deref(),
+                    )
+                    .await?,
+                );
             }
             "all" => {
                 if let Some(sid) = session_id.as_deref() {
-                    chunks.extend(manager.db().get_session_chunks(sid).await?);
+                    chunks.extend(
+                        read_local_memory_chunks(
+                            &manager,
+                            tandem_memory::store::MemoryChunkSelector::session(sid),
+                            None,
+                            caller_subject.as_deref(),
+                        )
+                        .await?,
+                    );
                 }
                 if let Some(pid) = project_id.as_deref() {
-                    chunks.extend(manager.db().get_project_chunks(pid).await?);
+                    chunks.extend(
+                        read_local_memory_chunks(
+                            &manager,
+                            tandem_memory::store::MemoryChunkSelector::project(pid),
+                            None,
+                            caller_subject.as_deref(),
+                        )
+                        .await?,
+                    );
                 }
                 if allow_global {
-                    chunks.extend(manager.db().get_global_chunks(limit as i64).await?);
+                    chunks.extend(
+                        read_local_memory_chunks(
+                            &manager,
+                            tandem_memory::store::MemoryChunkSelector::global(),
+                            Some(limit as i64),
+                            caller_subject.as_deref(),
+                        )
+                        .await?,
+                    );
                 }
             }
             _ => {
@@ -917,10 +1025,9 @@ impl Tool for MemoryListTool {
             }
         }
 
-        // In a shared channel scope, hide other users' subject-scoped chunks so
-        // memory_list can't be used to read notes stored under another channel
-        // user's subject (TAN-639). Non-channel contexts keep everything.
-        if let Some(subject) = channel_memory_subject(&args) {
+        // Keep a defense-in-depth check after the storage-level subject predicate
+        // so memory_list cannot expose another channel user's private notes.
+        if let Some(subject) = caller_subject {
             chunks.retain(|chunk| {
                 channel_subject_allows(chunk.subject.as_deref(), Some(subject.as_str()))
             });
@@ -1053,41 +1160,23 @@ impl Tool for MemoryDeleteTool {
 
         let db_path = resolve_memory_db_path(&args);
         let manager = MemoryManager::new(&db_path).await?;
-
-        // In a shared channel scope, a user may only delete their own or shared
-        // (NULL-subject) chunks — never another channel user's note (TAN-639).
-        // Report the mismatch as not_found so existence isn't revealed.
-        if let Some(subject) = channel_memory_subject(&args) {
-            let scope_chunks = match tier {
-                MemoryTier::Session => match session_id.as_deref() {
-                    Some(sid) => manager.db().get_session_chunks(sid).await?,
-                    None => Vec::new(),
-                },
-                MemoryTier::Project => match project_id.as_deref() {
-                    Some(pid) => manager.db().get_project_chunks(pid).await?,
-                    None => Vec::new(),
-                },
-                MemoryTier::Global => Vec::new(),
-            };
-            if let Some(target) = scope_chunks.iter().find(|chunk| chunk.id == chunk_id) {
-                if !channel_subject_allows(target.subject.as_deref(), Some(subject.as_str())) {
-                    return Ok(ToolResult {
-                        output: format!("memory chunk `{chunk_id}` not found in {tier} memory"),
-                        metadata: json!({
-                            "ok": false,
-                            "reason": "not_found",
-                            "chunk_id": chunk_id,
-                            "tier": tier.to_string(),
-                        }),
-                    });
-                }
-            }
-        }
-
-        let deleted = manager
-            .db()
-            .delete_chunk(tier, chunk_id, project_id.as_deref(), session_id.as_deref())
-            .await?;
+        let selector = match tier {
+            MemoryTier::Session => tandem_memory::store::MemoryChunkSelector::session(
+                session_id.as_deref().expect("session scope validated above"),
+            ),
+            MemoryTier::Project => tandem_memory::store::MemoryChunkSelector::project(
+                project_id.as_deref().expect("project scope validated above"),
+            ),
+            MemoryTier::Global => tandem_memory::store::MemoryChunkSelector::global(),
+        };
+        let caller_subject = channel_memory_subject(&args);
+        let deleted = delete_local_memory_chunk(
+            &manager,
+            selector,
+            chunk_id,
+            caller_subject.as_deref(),
+        )
+        .await?;
 
         if deleted == 0 {
             return Ok(ToolResult {

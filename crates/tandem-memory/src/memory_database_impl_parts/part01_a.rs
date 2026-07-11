@@ -37,90 +37,6 @@ impl MemoryDatabase {
         Ok(())
     }
 
-    fn ensure_chunk_scope_columns(
-        &self,
-        conn: &Connection,
-        table: &str,
-        existing_cols: &HashSet<String>,
-    ) -> MemoryResult<()> {
-        if !existing_cols.contains("owner_org_unit_id") {
-            conn.execute(
-                &format!("ALTER TABLE {table} ADD COLUMN owner_org_unit_id TEXT"),
-                [],
-            )?;
-        }
-        if !existing_cols.contains("tenant_shared") {
-            conn.execute(
-                &format!("ALTER TABLE {table} ADD COLUMN tenant_shared INTEGER NOT NULL DEFAULT 0"),
-                [],
-            )?;
-        }
-        // Per-scope envelope for hosted-KMS encryption (TAN-668). NULL for
-        // local/plaintext rows; carries the wrapped DEK + key scope for hosted
-        // rows so `content`/`metadata` can be decrypted before use.
-        if !existing_cols.contains("crypto_envelope") {
-            conn.execute(
-                &format!("ALTER TABLE {table} ADD COLUMN crypto_envelope TEXT"),
-                [],
-            )?;
-        }
-        self.backfill_chunk_scope_columns(conn, table)
-    }
-
-    fn backfill_chunk_scope_columns(&self, conn: &Connection, table: &str) -> MemoryResult<()> {
-        let rows = {
-            let mut stmt = conn.prepare(&format!(
-                "SELECT id, metadata FROM {table}
-                 WHERE (owner_org_unit_id IS NULL OR tenant_shared = 0)
-                   AND metadata IS NOT NULL
-                   AND TRIM(metadata) != ''"
-            ))?;
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            rows
-        };
-
-        for (id, metadata_stored) in rows {
-            let Some(metadata_stored) = metadata_stored else {
-                continue;
-            };
-            let metadata_plain = match self.crypto.decrypt_field(&metadata_stored) {
-                Ok(metadata_plain) => metadata_plain,
-                Err(err) => {
-                    tracing::warn!(
-                        table = table,
-                        chunk_id = id.as_str(),
-                        "skipping owner_org_unit_id backfill for unreadable chunk metadata: {}",
-                        err
-                    );
-                    continue;
-                }
-            };
-            let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&metadata_plain) else {
-                continue;
-            };
-            let owner_org_unit_id = owner_org_unit_id_from_metadata(Some(&metadata));
-            let tenant_shared = tenant_shared_from_metadata(Some(&metadata));
-            if owner_org_unit_id.is_none() && !tenant_shared {
-                continue;
-            };
-            conn.execute(
-                &format!(
-                    "UPDATE {table}
-                     SET owner_org_unit_id = COALESCE(owner_org_unit_id, ?1),
-                         tenant_shared = CASE WHEN ?2 = 1 THEN 1 ELSE tenant_shared END
-                     WHERE id = ?3"
-                ),
-                params![owner_org_unit_id.as_deref(), i64::from(tenant_shared), id],
-            )?;
-        }
-
-        Ok(())
-    }
-
     /// Initialize or open the memory database
     pub async fn new(db_path: &Path) -> MemoryResult<Self> {
         if let Some(parent) = db_path.parent() {
@@ -220,8 +136,7 @@ impl MemoryDatabase {
 
     /// Initialize database schema
     async fn init_schema(&self) -> MemoryResult<()> {
-        let conn = self.conn.lock().await;
-        ensure_schema_migrations_table(&conn)?;
+        let mut conn = self.conn.lock().await;
 
         // Extension is already registered globally in new()
 
@@ -1136,16 +1051,6 @@ impl MemoryDatabase {
                AND NULLIF(TRIM(json_extract(metadata, '$.owner_org_unit_id')), '') IS NOT NULL",
             [],
         )?;
-        // Department is a distinguishing scope dimension (TAN-645): the same
-        // content collected for two departments must persist as two rows, so
-        // owner_org_unit_id participates in the dedup key. Recreated whenever the
-        // column set changes so pre-TAN-645 databases pick up the new dimension.
-        conn.execute("DROP INDEX IF EXISTS idx_memory_records_dedup", [])?;
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_records_dedup
-                ON memory_records(tenant_org_id, tenant_workspace_id, IFNULL(tenant_deployment_id, ''), user_id, source_type, content_hash, run_id, IFNULL(session_id, ''), IFNULL(message_id, ''), IFNULL(tool_name, ''), IFNULL(owner_org_unit_id, ''))",
-            [],
-        )?;
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_memory_records_user_created
                 ON memory_records(tenant_org_id, tenant_workspace_id, IFNULL(tenant_deployment_id, ''), user_id, created_at_ms DESC)",
@@ -1301,9 +1206,10 @@ impl MemoryDatabase {
             [],
         )?;
 
-        for (version, name) in MEMORY_SCHEMA_MIGRATIONS {
-            record_schema_migration(&conn, *version, name)?;
-        }
+        // Versions 1-4 are still owned by the bootstrap above. All new schema
+        // changes are translated by the pending-version coordinator, which
+        // records a version only in the transaction that applies it.
+        crate::migrations::run_sqlite_migrations(&mut conn)?;
 
         Ok(())
     }
@@ -1339,8 +1245,8 @@ impl MemoryDatabase {
         Ok(())
     }
 
-    fn is_vector_table_error(err: &rusqlite::Error) -> bool {
-        let text = err.to_string().to_lowercase();
+    fn is_vector_table_error(err: &str) -> bool {
+        let text = err.to_lowercase();
         text.contains("vector blob")
             || text.contains("chunks iter error")
             || text.contains("chunks iter")
@@ -1446,6 +1352,7 @@ impl MemoryDatabase {
     /// and recreate the schema in-place so new writes can proceed.
     /// This intentionally clears memory content for the active DB file.
     pub async fn reset_all_memory_tables(&self) -> MemoryResult<()> {
+        let _schema_init_guard = SCHEMA_INIT_LOCK.lock().await;
         let table_names = {
             let conn = self.conn.lock().await;
             let mut stmt = conn.prepare(
@@ -1541,6 +1448,12 @@ impl MemoryDatabase {
         // scope columns (TAN-645/647).
         let owner_org_unit_id = owner_org_unit_id_from_metadata(chunk.metadata.as_ref());
         let tenant_shared = tenant_shared_from_metadata(chunk.metadata.as_ref());
+        let owner_subject = chunk
+            .subject
+            .as_deref()
+            .map(str::trim)
+            .filter(|subject| !subject.is_empty());
+        let private = owner_subject.is_some();
         // Encrypt semantic payloads at rest under the row's key scope (no-op in
         // local plaintext mode; per-scope KMS envelope in hosted mode). This
         // supersedes the unscoped encrypt_field for content and metadata.
@@ -1562,8 +1475,8 @@ impl MemoryDatabase {
                         "INSERT INTO {} (
                             id, content, session_id, project_id, source, created_at, token_count, metadata,
                             source_path, source_mtime, source_size, source_hash,
-                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject, owner_org_unit_id, tenant_shared, crypto_envelope
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject, owner_org_unit_id, tenant_shared, private, owner_subject, crypto_envelope
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
                         chunks_table
                     ),
                     params![
@@ -1585,6 +1498,8 @@ impl MemoryDatabase {
                         chunk.subject.as_deref(),
                         owner_org_unit_id.as_deref(),
                         i64::from(tenant_shared),
+                        i64::from(private),
+                        owner_subject,
                         crypto_envelope
                     ],
                 )?;
@@ -1595,8 +1510,8 @@ impl MemoryDatabase {
                         "INSERT INTO {} (
                             id, content, project_id, session_id, source, created_at, token_count, metadata,
                             source_path, source_mtime, source_size, source_hash,
-                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject, owner_org_unit_id, tenant_shared, crypto_envelope
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject, owner_org_unit_id, tenant_shared, private, owner_subject, crypto_envelope
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
                         chunks_table
                     ),
                     params![
@@ -1618,6 +1533,8 @@ impl MemoryDatabase {
                         chunk.subject.as_deref(),
                         owner_org_unit_id.as_deref(),
                         i64::from(tenant_shared),
+                        i64::from(private),
+                        owner_subject,
                         crypto_envelope
                     ],
                 )?;
@@ -1628,8 +1545,8 @@ impl MemoryDatabase {
                         "INSERT INTO {} (
                             id, content, source, created_at, token_count, metadata,
                             source_path, source_mtime, source_size, source_hash,
-                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject, owner_org_unit_id, tenant_shared, crypto_envelope
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                            tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject, owner_org_unit_id, tenant_shared, private, owner_subject, crypto_envelope
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
                         chunks_table
                     ),
                     params![
@@ -1649,6 +1566,8 @@ impl MemoryDatabase {
                         chunk.subject.as_deref(),
                         owner_org_unit_id.as_deref(),
                         i64::from(tenant_shared),
+                        i64::from(private),
+                        owner_subject,
                         crypto_envelope
                     ],
                 )?;
@@ -1745,8 +1664,8 @@ impl MemoryDatabase {
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
                          WHERE c.session_id = ?1 AND {}
-                           AND (?7 IS NULL OR c.subject IS NULL OR c.subject = ?7)
-                           AND (?8 IS NULL OR c.owner_org_unit_id = ?8 OR c.tenant_shared = 1 OR (c.owner_org_unit_id IS NULL AND c.subject = ?7))
+                           AND (c.private = 0 OR c.owner_subject = ?7)
+                           AND (?8 IS NULL OR c.owner_org_unit_id = ?8 OR c.tenant_shared = 1)
                          ORDER BY distance
                          LIMIT ?6",
                         vectors_table, chunks_table, tenant_clause
@@ -1783,8 +1702,8 @@ impl MemoryDatabase {
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
                          WHERE c.project_id = ?1 AND {}
-                           AND (?7 IS NULL OR c.subject IS NULL OR c.subject = ?7)
-                           AND (?8 IS NULL OR c.owner_org_unit_id = ?8 OR c.tenant_shared = 1 OR (c.owner_org_unit_id IS NULL AND c.subject = ?7))
+                           AND (c.private = 0 OR c.owner_subject = ?7)
+                           AND (?8 IS NULL OR c.owner_org_unit_id = ?8 OR c.tenant_shared = 1)
                          ORDER BY distance
                          LIMIT ?6",
                         vectors_table, chunks_table, tenant_clause
@@ -1821,8 +1740,8 @@ impl MemoryDatabase {
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
                          WHERE {}
-                           AND (?6 IS NULL OR c.subject IS NULL OR c.subject = ?6)
-                           AND (?7 IS NULL OR c.owner_org_unit_id = ?7 OR c.tenant_shared = 1 OR (c.owner_org_unit_id IS NULL AND c.subject = ?6))
+                           AND (c.private = 0 OR c.owner_subject = ?6)
+                           AND (?7 IS NULL OR c.owner_org_unit_id = ?7 OR c.tenant_shared = 1)
                          ORDER BY distance
                          LIMIT ?5",
                         vectors_table, chunks_table, tenant_clause
@@ -1861,8 +1780,8 @@ impl MemoryDatabase {
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
                          WHERE c.project_id = ?1 AND {}
-                           AND (?7 IS NULL OR c.subject IS NULL OR c.subject = ?7)
-                           AND (?8 IS NULL OR c.owner_org_unit_id = ?8 OR c.tenant_shared = 1 OR (c.owner_org_unit_id IS NULL AND c.subject = ?7))
+                           AND (c.private = 0 OR c.owner_subject = ?7)
+                           AND (?8 IS NULL OR c.owner_org_unit_id = ?8 OR c.tenant_shared = 1)
                          ORDER BY distance
                          LIMIT ?6",
                         vectors_table, chunks_table, tenant_clause
@@ -1899,8 +1818,8 @@ impl MemoryDatabase {
                          FROM {} AS v
                          JOIN {} AS c ON v.chunk_id = c.id
                          WHERE {}
-                           AND (?6 IS NULL OR c.subject IS NULL OR c.subject = ?6)
-                           AND (?7 IS NULL OR c.owner_org_unit_id = ?7 OR c.tenant_shared = 1 OR (c.owner_org_unit_id IS NULL AND c.subject = ?6))
+                           AND (c.private = 0 OR c.owner_subject = ?6)
+                           AND (?7 IS NULL OR c.owner_org_unit_id = ?7 OR c.tenant_shared = 1)
                          ORDER BY distance
                          LIMIT ?5",
                         vectors_table, chunks_table, tenant_clause
@@ -1938,8 +1857,8 @@ impl MemoryDatabase {
                      FROM {} AS v
                      JOIN {} AS c ON v.chunk_id = c.id
                      WHERE {}
-                       AND (?6 IS NULL OR c.subject IS NULL OR c.subject = ?6)
-                       AND (?7 IS NULL OR c.owner_org_unit_id = ?7 OR c.tenant_shared = 1 OR (c.owner_org_unit_id IS NULL AND c.subject = ?6))
+                       AND (c.private = 0 OR c.owner_subject = ?6)
+                       AND (?7 IS NULL OR c.owner_org_unit_id = ?7 OR c.tenant_shared = 1)
                      ORDER BY distance
                      LIMIT ?5",
                     vectors_table, chunks_table, tenant_clause

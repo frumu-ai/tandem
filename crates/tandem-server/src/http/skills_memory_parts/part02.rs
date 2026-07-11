@@ -612,6 +612,7 @@ pub(super) struct RunMemoryContext {
     owner_org_unit_id: Option<String>,
 }
 
+#[cfg(test)]
 pub(super) async fn open_global_memory_db() -> Option<MemoryDatabase> {
     let paths = tandem_core::resolve_shared_paths().ok()?;
     if let Some(parent) = paths.memory_db_path.parent() {
@@ -620,11 +621,26 @@ pub(super) async fn open_global_memory_db() -> Option<MemoryDatabase> {
     MemoryDatabase::new(&paths.memory_db_path).await.ok()
 }
 
+#[cfg(test)]
 pub(super) async fn open_global_memory_db_for_state(state: &AppState) -> Option<MemoryDatabase> {
     if let Some(parent) = state.memory_db_path.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
     }
     MemoryDatabase::new(&state.memory_db_path).await.ok()
+}
+
+/// Assemble the bundled SQLite backend without exposing it to HTTP business
+/// workflows. Other deployments can replace this construction boundary with a
+/// different `MemoryStore` implementation.
+pub(super) async fn open_global_memory_store_for_state(
+    state: &AppState,
+) -> Option<std::sync::Arc<dyn tandem_memory::MemoryStore>> {
+    if let Some(parent) = state.memory_db_path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    tandem_memory::open_sqlite_memory_store(&state.memory_db_path)
+        .await
+        .ok()
 }
 
 pub(super) async fn open_memory_manager() -> Option<tandem_memory::MemoryManager> {
@@ -731,7 +747,7 @@ pub(super) const MAX_MEMORY_RECORD_CONTENT_CHARS: usize = 8_000;
 
 pub(super) async fn persist_global_memory_record(
     state: &AppState,
-    db: &MemoryDatabase,
+    store: &dyn tandem_memory::MemoryStore,
     mut record: GlobalMemoryRecord,
 ) {
     let tenant_context = record_tenant_context(&record);
@@ -770,8 +786,38 @@ pub(super) async fn persist_global_memory_record(
         ScrubStatus::Blocked => "blocked".to_string(),
     };
     record.content_hash = hash_text(&record.content);
-    match db.put_global_memory_record(&record).await {
-        Ok(write) => {
+    let owner_subject = tandem_memory::types::owner_subject_from_metadata(record.metadata.as_ref())
+        .or_else(|| {
+            matches!(
+                record.source_type.as_str(),
+                "user_message"
+                    | "assistant_final"
+                    | "tool_event"
+                    | "tool_input"
+                    | "tool_output"
+                    | "question_prompt"
+                    | "plan_todos"
+            )
+            .then(|| record.user_id.clone())
+        });
+    record.metadata = memory_metadata_with_owner_subject(
+        record.metadata.take(),
+        owner_subject.as_deref(),
+    );
+    let scope = tandem_memory::MemoryWriteScope {
+        tenant: MemoryTenantScope {
+            org_id: tenant_context.org_id.clone(),
+            workspace_id: tenant_context.workspace_id.clone(),
+            deployment_id: tenant_context.deployment_id.clone(),
+        },
+        org_unit: tandem_memory::types::owner_org_unit_id_from_metadata(record.metadata.as_ref()),
+        subject: tandem_memory::types::owner_subject_from_metadata(record.metadata.as_ref()),
+    };
+    match store
+        .write(tandem_memory::MemoryStoreWriteRequest::GlobalRecord { scope, record: record.clone() })
+        .await
+    {
+        Ok(tandem_memory::MemoryStoreWriteResult::GlobalRecord(write)) => {
             let event_name = if write.deduped {
                 "memory.write.skipped"
             } else {
@@ -793,6 +839,20 @@ pub(super) async fn persist_global_memory_record(
                 }),
             );
         }
+        Ok(_) => {
+            publish_tenant_event(
+                state,
+                &tenant_context,
+                "memory.write.skipped",
+                json!({
+                    "runID": record.run_id,
+                    "sourceType": record.source_type,
+                    "reason": "unexpected_memory_store_write_result",
+                    "sessionID": record.session_id,
+                    "messageID": record.message_id,
+                }),
+            );
+        }
         Err(err) => {
             publish_tenant_event(
                 state,
@@ -801,7 +861,7 @@ pub(super) async fn persist_global_memory_record(
                 json!({
                     "runID": record.run_id,
                     "sourceType": record.source_type,
-                    "reason": format!("db_error:{err}"),
+                    "reason": format!("store_error:{err}"),
                     "sessionID": record.session_id,
                     "messageID": record.message_id,
                 }),
@@ -812,7 +872,7 @@ pub(super) async fn persist_global_memory_record(
 
 pub(super) async fn ingest_run_messages(
     state: &AppState,
-    db: &MemoryDatabase,
+    store: &dyn tandem_memory::MemoryStore,
     session_id: &str,
     ctx: &RunMemoryContext,
 ) {
@@ -831,7 +891,7 @@ pub(super) async fn ingest_run_messages(
                     let now = crate::now_ms();
                     persist_global_memory_record(
                         state,
-                        db,
+                        store,
                         GlobalMemoryRecord {
                             id: Uuid::new_v4().to_string(),
                             user_id: ctx.user_id.clone(),
@@ -866,7 +926,7 @@ pub(super) async fn ingest_run_messages(
                     let now = crate::now_ms();
                     persist_global_memory_record(
                         state,
-                        db,
+                        store,
                         GlobalMemoryRecord {
                             id: Uuid::new_v4().to_string(),
                             user_id: ctx.user_id.clone(),
@@ -918,7 +978,7 @@ pub(super) async fn ingest_run_messages(
                             };
                             persist_global_memory_record(
                                 state,
-                                db,
+                                store,
                                 GlobalMemoryRecord {
                                     id: Uuid::new_v4().to_string(),
                                     user_id: ctx.user_id.clone(),
@@ -959,7 +1019,7 @@ pub(super) async fn ingest_run_messages(
                     let tool_input = summarize_value(&args, 1200);
                     persist_global_memory_record(
                         state,
-                        db,
+                        store,
                         GlobalMemoryRecord {
                             id: Uuid::new_v4().to_string(),
                             user_id: ctx.user_id.clone(),
@@ -1001,7 +1061,7 @@ pub(super) async fn ingest_run_messages(
                         let now = crate::now_ms();
                         persist_global_memory_record(
                             state,
-                            db,
+                            store,
                             GlobalMemoryRecord {
                                 id: Uuid::new_v4().to_string(),
                                 user_id: ctx.user_id.clone(),
@@ -1044,7 +1104,7 @@ pub(super) async fn ingest_run_messages(
 
 pub(super) async fn ingest_event_memory_records(
     state: &AppState,
-    db: &MemoryDatabase,
+    store: &dyn tandem_memory::MemoryStore,
     event: &EngineEvent,
     ctx_by_session: &HashMap<String, RunMemoryContext>,
 ) {
@@ -1154,7 +1214,7 @@ pub(super) async fn ingest_event_memory_records(
     let now = crate::now_ms();
     persist_global_memory_record(
         state,
-        db,
+        store,
         GlobalMemoryRecord {
             id: Uuid::new_v4().to_string(),
             user_id,
@@ -1228,7 +1288,7 @@ pub(super) async fn run_global_memory_ingestor(state: AppState) {
         return;
     }
     let mut rx = state.event_bus.subscribe();
-    let Some(db) = open_global_memory_db_for_state(&state).await else {
+    let Some(store) = open_global_memory_store_for_state(&state).await else {
         tracing::warn!("global memory ingestor disabled: could not open memory database");
         return;
     };
@@ -1293,13 +1353,13 @@ pub(super) async fn run_global_memory_ingestor(state: AppState) {
                 "session.run.finished" => {
                     if let Some(session_id) = event_session_id(&event) {
                         if let Some(ctx) = by_session.remove(&session_id) {
-                            ingest_run_messages(&state, &db, &session_id, &ctx).await;
+                    ingest_run_messages(&state, store.as_ref(), &session_id, &ctx).await;
                         }
                     }
                 }
                 "permission.asked" | "permission.replied" | "mcp.auth.required"
                 | "mcp.auth.pending" | "todo.updated" | "question.asked" => {
-                    ingest_event_memory_records(&state, &db, &event, &by_session).await;
+                    ingest_event_memory_records(&state, store.as_ref(), &event, &by_session).await;
                 }
                 _ => {}
             },
@@ -1834,13 +1894,21 @@ async fn source_objects_seen_since(
     binding_id: &str,
     started_at_ms: u64,
 ) -> Result<Vec<SourceObjectLifecycleRecord>, tandem_memory::types::MemoryError> {
-    let mut records: Vec<_> = manager
-        .db()
-        .list_source_object_lifecycle_for_binding_for_tenant(tenant_scope, binding_id)
-        .await?
-        .into_iter()
-        .filter(|record| record.last_seen_at_ms >= started_at_ms)
-        .collect();
+    let records = manager
+        .store()
+        .query(tandem_memory::MemoryStoreQueryRequest::SourceObjectLifecyclesForBinding {
+            scope: tandem_memory::MemoryReadScope::tenant(tenant_scope.clone()),
+            source_binding_id: binding_id.to_string(),
+        })
+        .await
+        .map_err(tandem_memory::types::MemoryError::from)?;
+    let tandem_memory::MemoryStoreQueryResult::SourceObjectLifecycles(mut records) = records
+    else {
+        return Err(tandem_memory::types::MemoryError::InvalidConfig(
+            "memory store returned an unexpected source lifecycle result".to_string(),
+        ));
+    };
+    records.retain(|record| record.last_seen_at_ms >= started_at_ms);
     records.sort_by(|left, right| left.source_object_id.cmp(&right.source_object_id));
     records.dedup_by(|left, right| left.source_object_id == right.source_object_id);
     Ok(records)
@@ -1855,110 +1923,44 @@ async fn quarantine_source_bound_import(
 ) -> Result<(), tandem_memory::types::MemoryError> {
     for record in source_objects {
         manager
-            .db()
-            .delete_file_chunks_by_path_for_tenant(
-                record.tier,
-                record.session_id.as_deref(),
-                record.project_id.as_deref(),
-                &record.indexed_path,
-                tenant_scope,
-            )
-            .await?;
+            .store()
+            .mutate(tandem_memory::MemoryStoreMutationRequest::DeleteChunksBySourcePath {
+                scope: tandem_memory::MemoryReadScope::tenant(tenant_scope.clone()),
+                selector: tandem_memory::MemoryChunkSelector {
+                    tier: record.tier,
+                    project_id: record.project_id.clone(),
+                    session_id: record.session_id.clone(),
+                },
+                source_path: record.indexed_path.clone(),
+            })
+            .await
+            .map_err(tandem_memory::types::MemoryError::from)?;
         manager
-            .db()
-            .delete_import_index_entry_for_tenant(
-                record.tier,
-                record.session_id.as_deref(),
-                record.project_id.as_deref(),
-                &record.indexed_path,
-                tenant_scope,
-            )
-            .await?;
+            .store()
+            .mutate(tandem_memory::MemoryStoreMutationRequest::DeleteImportIndexEntry {
+                scope: tandem_memory::MemoryReadScope::tenant(tenant_scope.clone()),
+                selector: tandem_memory::MemoryChunkSelector {
+                    tier: record.tier,
+                    project_id: record.project_id.clone(),
+                    session_id: record.session_id.clone(),
+                },
+                path: record.indexed_path.clone(),
+            })
+            .await
+            .map_err(tandem_memory::types::MemoryError::from)?;
         manager
-            .db()
-            .mark_source_object_lifecycle_state_for_tenant(
-                tenant_scope,
-                binding_id,
-                &record.source_object_id,
-                SourceObjectLifecycleState::Quarantined,
+            .store()
+            .mutate(tandem_memory::MemoryStoreMutationRequest::SetSourceObjectLifecycleState {
+                scope: tandem_memory::MemoryReadScope::tenant(tenant_scope.clone()),
+                source_binding_id: binding_id.to_string(),
+                source_object_id: record.source_object_id.clone(),
+                state: SourceObjectLifecycleState::Quarantined,
                 changed_at_ms,
-            )
-            .await?;
+            })
+            .await
+            .map_err(tandem_memory::types::MemoryError::from)?;
     }
     Ok(())
 }
 
-fn connector_lifecycle_state_label(state: ConnectorLifecycleState) -> &'static str {
-    match state {
-        ConnectorLifecycleState::Active => "active",
-        ConnectorLifecycleState::Paused => "paused",
-        ConnectorLifecycleState::Revoked => "revoked",
-        ConnectorLifecycleState::Quarantined => "quarantined",
-    }
-}
-
-fn memory_import_requires_source_binding(
-    tenant_context: &TenantContext,
-    request_principal: &RequestPrincipal,
-    verified_tenant_context: Option<&VerifiedTenantContext>,
-) -> bool {
-    verified_tenant_context.is_some()
-        || tenant_context.deployment_id.is_some()
-        || request_principal.source == "tandem-web"
-}
-
-fn memory_import_response(
-    path: String,
-    format: MemoryImportFormat,
-    tier: MemoryTier,
-    project_id: Option<String>,
-    session_id: Option<String>,
-    source_binding_id: Option<String>,
-    sync_deletes: bool,
-    stats: MemoryImportStats,
-) -> MemoryImportResponse {
-    MemoryImportResponse {
-        ok: true,
-        source: MemoryImportPathSourceResponse { kind: "path", path },
-        format,
-        tier,
-        project_id,
-        session_id,
-        source_binding_id,
-        sync_deletes,
-        discovered_files: stats.discovered_files,
-        files_processed: stats.files_processed,
-        indexed_files: stats.indexed_files,
-        skipped_files: stats.skipped_files,
-        deleted_files: stats.deleted_files,
-        chunks_created: stats.chunks_created,
-        errors: stats.errors,
-    }
-}
-
-fn normalize_optional_memory_import_id(value: Option<String>) -> Option<String> {
-    value
-        .map(|raw| raw.trim().to_string())
-        .filter(|trimmed| !trimmed.is_empty())
-}
-
-fn validate_memory_import_path(path: &str) -> Result<(), (StatusCode, Json<ErrorEnvelope>)> {
-    let metadata = std::fs::metadata(path).map_err(|err| {
-        skill_error(
-            StatusCode::BAD_REQUEST,
-            format!("source.path must exist and be readable: {err}"),
-        )
-    })?;
-
-    let readable = if metadata.is_dir() {
-        std::fs::read_dir(path).map(|_| ())
-    } else {
-        std::fs::File::open(path).map(|_| ())
-    };
-    readable.map_err(|err| {
-        skill_error(
-            StatusCode::BAD_REQUEST,
-            format!("source.path must be readable: {err}"),
-        )
-    })
-}
+include!("part02_import_helpers.rs");

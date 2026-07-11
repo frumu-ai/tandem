@@ -596,9 +596,14 @@ pub async fn serve_with_route_extensions(
             if retention_days > 0 {
                 match tandem_core::resolve_shared_paths() {
                     Ok(paths) => {
-                        match tandem_memory::db::MemoryDatabase::new(&paths.memory_db_path).await {
-                            Ok(db) => {
-                                if let Err(e) = db.run_hygiene_all_tenants(retention_days).await {
+                        match tandem_memory::open_sqlite_memory_store(&paths.memory_db_path).await {
+                            Ok(store) => {
+                                if let Err(e) = store
+                                    .mutate(tandem_memory::MemoryStoreMutationRequest::RunHygieneAllTenants {
+                                        retention_days,
+                                    })
+                                    .await
+                                {
                                     tracing::warn!("memory hygiene failed: {}", e);
                                 }
                             }

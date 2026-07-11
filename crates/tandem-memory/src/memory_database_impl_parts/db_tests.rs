@@ -9,5 +9,6 @@ mod tests {
     include!("db_tests_b.rs");
     include!("db_tests_c.rs");
     include!("db_schema_migration_tests.rs");
+    include!("db_private_scope_tests.rs");
     include!("db_tests_hosted_encryption.rs");
 }

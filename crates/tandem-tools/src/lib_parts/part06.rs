@@ -4,6 +4,7 @@ mod tests {
     use std::collections::HashSet;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex, OnceLock};
+    use tandem_memory::store::MemoryStore as _;
     use tandem_types::ToolProgressSink;
     use tempfile::TempDir;
     use tokio::fs;
@@ -1282,6 +1283,153 @@ mod tests {
                 .unwrap_or_default(),
             "not_found"
         ));
+    }
+
+    fn portable_delete_test_chunk(
+        id: &str,
+        project_id: &str,
+        subject: Option<&str>,
+    ) -> tandem_memory::types::MemoryChunk {
+        serde_json::from_value(json!({
+            "id": id,
+            "content": "portable delete test chunk",
+            "tier": "project",
+            "session_id": null,
+            "project_id": project_id,
+            "source": "test",
+            "source_path": null,
+            "source_mtime": null,
+            "source_size": null,
+            "source_hash": null,
+            "tenant_scope": tandem_memory::types::MemoryTenantScope::local(),
+            "subject": subject,
+            "created_at": "2026-01-01T00:00:00Z",
+            "token_count": 4,
+            "metadata": null
+        }))
+        .expect("valid memory chunk fixture")
+    }
+
+    #[tokio::test]
+    async fn memory_delete_routes_through_store_for_new_with_store_manager() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let db = Arc::new(
+            tandem_memory::db::MemoryDatabase::new(&temp_dir.path().join("memory.sqlite"))
+                .await
+                .expect("memory database"),
+        );
+        let chunk = portable_delete_test_chunk("chunk-123", "workspace-abc", None);
+        db.store_chunk(
+            &chunk,
+            &vec![0.0; tandem_memory::types::DEFAULT_EMBEDDING_DIMENSION],
+        )
+        .await
+        .expect("store chunk");
+        let manager = MemoryManager::new_with_store(
+            db,
+            tandem_memory::embeddings::EmbeddingService::new(),
+        )
+        .expect("portable manager");
+
+        let deleted = delete_local_memory_chunk(
+            &manager,
+            tandem_memory::store::MemoryChunkSelector::project("workspace-abc"),
+            "chunk-123",
+            None,
+        )
+        .await
+        .expect("portable delete");
+
+        assert_eq!(deleted, 1);
+    }
+
+    #[tokio::test]
+    async fn memory_list_keeps_a_channel_owners_private_notes_visible() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let db_path = temp_dir.path().join("memory.sqlite");
+        let db = tandem_memory::db::MemoryDatabase::new(&db_path)
+            .await
+            .expect("memory database");
+        let chunk = portable_delete_test_chunk(
+            "private-channel-chunk",
+            "workspace-abc",
+            Some("channel:discord:user-a"),
+        );
+        db.store_chunk(
+            &chunk,
+            &vec![0.0; tandem_memory::types::DEFAULT_EMBEDDING_DIMENSION],
+        )
+        .await
+        .expect("store private chunk");
+
+        let result = MemoryListTool
+            .execute(json!({
+                "tier": "project",
+                "__project_id": "workspace-abc",
+                "__channel_platform": "discord",
+                "__channel_user_id": "user-a",
+                "__channel_scope_id": "room-a",
+                "__memory_db_path": db_path,
+            }))
+            .await
+            .expect("memory list");
+
+        assert_eq!(result.metadata["count"], json!(1));
+        assert!(result.output.contains("private-channel-chunk"));
+    }
+
+    #[tokio::test]
+    async fn memory_delete_privacy_preflight_fails_closed() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let db = Arc::new(
+            tandem_memory::db::MemoryDatabase::new(&temp_dir.path().join("memory.sqlite"))
+                .await
+                .expect("memory database"),
+        );
+        let chunk = portable_delete_test_chunk(
+            "private-chunk",
+            "workspace-abc",
+            Some("channel:discord:user-b"),
+        );
+        db.store_chunk(
+            &chunk,
+            &vec![0.0; tandem_memory::types::DEFAULT_EMBEDDING_DIMENSION],
+        )
+        .await
+        .expect("store private chunk");
+        let manager = MemoryManager::new_with_store(
+            db.clone(),
+            tandem_memory::embeddings::EmbeddingService::new(),
+        )
+        .expect("portable manager");
+
+        let deleted = delete_local_memory_chunk(
+            &manager,
+            tandem_memory::store::MemoryChunkSelector::project("workspace-abc"),
+            "private-chunk",
+            Some("channel:discord:user-a"),
+        )
+        .await
+        .expect("privacy-scoped delete");
+
+        assert_eq!(deleted, 0);
+        let mut owner_scope = tandem_memory::store::MemoryReadScope::tenant(
+            tandem_memory::types::MemoryTenantScope::local(),
+        );
+        owner_scope.subject = Some("channel:discord:user-b".to_string());
+        let remaining = db
+            .read(tandem_memory::store::MemoryStoreReadRequest::Chunks {
+                scope: owner_scope,
+                selector: tandem_memory::store::MemoryChunkSelector::project("workspace-abc"),
+                limit: None,
+            })
+            .await
+            .expect("read private chunk");
+        let tandem_memory::store::MemoryStoreReadResult::Chunks(remaining) = remaining else {
+            panic!("unexpected read result");
+        };
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, "private-chunk");
     }
 
     #[test]

@@ -1821,14 +1821,14 @@ async fn list_governed_memory_hits(
     query: &str,
     limit: usize,
 ) -> Vec<Value> {
-    let Some(db) = super::skills_memory::open_global_memory_db_for_state(state).await else {
+    let Some(store) = super::skills_memory::open_global_memory_store_for_state(state).await else {
         return Vec::new();
     };
     let mut hits = Vec::<Value>::new();
     let mut seen_ids = HashSet::<String>::new();
     for subject in governed_memory_subjects(record, tenant_context) {
         let Ok(results) = search_governed_memory_for_coder_subject(
-            &db,
+            store.as_ref(),
             tenant_context,
             &subject,
             query,

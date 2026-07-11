@@ -1138,7 +1138,7 @@ pub struct EmbeddingHealth {
 #[derive(Error, Debug)]
 pub enum MemoryError {
     #[error("Database error: {0}")]
-    Database(#[from] rusqlite::Error),
+    Database(String),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

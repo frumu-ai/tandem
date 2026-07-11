@@ -433,3 +433,495 @@ async fn memory_promote_rejects_non_storage_backed_tiers() {
         );
     }
 }
+
+fn org_unit_http_request(
+    method: &str,
+    uri: &str,
+    actor: &str,
+    org_unit: &str,
+    body: Option<Value>,
+) -> Request<Body> {
+    let tenant_context = tandem_types::TenantContext::explicit_user_workspace(
+        "acme", "north", None, actor,
+    );
+    let verified = verified_org_unit_context(
+        tenant_context,
+        actor,
+        vec![org_unit.to_string()],
+    );
+    let mut request = tenant_memory_request(
+        method,
+        uri,
+        "acme",
+        "north",
+        actor,
+        body,
+    );
+    request.extensions_mut().insert(verified);
+    request
+}
+
+async fn memory_http_json(app: &axum::Router, request: Request<Body>) -> (StatusCode, Value) {
+    let response = app
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("memory HTTP response");
+    let status = response.status();
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("memory HTTP body");
+    let payload = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    (status, payload)
+}
+
+#[tokio::test]
+async fn memory_http_enforces_trusted_subject_and_active_org_unit_scopes() {
+    let state = test_state().await;
+    let app = app_router(state);
+
+    let put = |run_id: &str, content: &str, private: bool, metadata: Option<Value>| {
+        org_unit_http_request(
+            "POST",
+            "/memory/put",
+            "user-owner",
+            "ou-eng",
+            Some(json!({
+                "run_id": run_id,
+                "partition": {
+                    "org_id": "acme",
+                    "workspace_id": "north",
+                    "project_id": "proj-a",
+                    "tier": "session"
+                },
+                "kind": "fact",
+                "content": content,
+                "classification": "internal",
+                "private": private,
+                "metadata": metadata,
+                "capability": memory_capability(
+                    run_id,
+                    "user-owner",
+                    "acme",
+                    "north",
+                    "proj-a"
+                )
+            })),
+        )
+    };
+
+    let (status, shared_put) = memory_http_json(
+        &app,
+        put(
+            "trusted-scope-shared",
+            "trusted scope sentinel shared engineering detail",
+            false,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let shared_id = shared_put
+        .get("id")
+        .and_then(Value::as_str)
+        .expect("shared memory id")
+        .to_string();
+
+    let (status, private_put) = memory_http_json(
+        &app,
+        put(
+            "trusted-scope-private",
+            "trusted scope sentinel private owner detail",
+            true,
+            Some(json!({"owner_subject": "user-peer"})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let private_id = private_put
+        .get("id")
+        .and_then(Value::as_str)
+        .expect("private memory id")
+        .to_string();
+
+    let search = |actor: &str, org_unit: &str, run_id: &str| {
+        org_unit_http_request(
+            "POST",
+            "/memory/search",
+            actor,
+            org_unit,
+            Some(json!({
+                "run_id": run_id,
+                "query": "trusted scope sentinel",
+                "read_scopes": ["session"],
+                "partition": {
+                    "org_id": "acme",
+                    "workspace_id": "north",
+                    "project_id": "proj-a",
+                    "tier": "session"
+                },
+                "limit": 20,
+                "capability": memory_capability(
+                    run_id,
+                    actor,
+                    "acme",
+                    "north",
+                    "proj-a"
+                )
+            })),
+        )
+    };
+
+    let (status, owner_search) =
+        memory_http_json(&app, search("user-owner", "ou-eng", "scope-owner-search")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        owner_search
+            .get("results")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(2)
+    );
+
+    let (status, peer_search) =
+        memory_http_json(&app, search("user-peer", "ou-eng", "scope-peer-search")).await;
+    assert_eq!(status, StatusCode::OK);
+    let peer_results = peer_search
+        .get("results")
+        .and_then(Value::as_array)
+        .expect("peer search results");
+    assert_eq!(peer_results.len(), 1);
+    assert_eq!(
+        peer_results[0].get("id").and_then(Value::as_str),
+        Some(shared_id.as_str())
+    );
+
+    let (status, other_department_search) = memory_http_json(
+        &app,
+        search("user-sales", "ou-sales", "scope-sales-search"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(other_department_search
+        .get("results")
+        .and_then(Value::as_array)
+        .is_some_and(Vec::is_empty));
+
+    let list = |actor: &str, org_unit: &str| {
+        org_unit_http_request(
+            "GET",
+            "/memory?q=trusted%20scope%20sentinel&project_id=proj-a&limit=20",
+            actor,
+            org_unit,
+            None,
+        )
+    };
+    let (status, owner_list) = memory_http_json(&app, list("user-owner", "ou-eng")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(owner_list.get("count").and_then(Value::as_u64), Some(2));
+
+    let (status, peer_list) = memory_http_json(&app, list("user-peer", "ou-eng")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(peer_list.get("count").and_then(Value::as_u64), Some(1));
+
+    let (status, other_department_list) =
+        memory_http_json(&app, list("user-sales", "ou-sales")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        other_department_list.get("count").and_then(Value::as_u64),
+        Some(0)
+    );
+
+    // The forged owner_subject was replaced by the validated owner subject, so
+    // the named peer cannot point-read it through a delete operation.
+    let (status, _) = memory_http_json(
+        &app,
+        org_unit_http_request(
+            "DELETE",
+            &format!("/memory/{private_id}?project_id=proj-a"),
+            "user-peer",
+            "ou-eng",
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // A different department cannot point-read even a department-shared row.
+    let (status, _) = memory_http_json(
+        &app,
+        org_unit_http_request(
+            "DELETE",
+            &format!("/memory/{shared_id}?project_id=proj-a"),
+            "user-sales",
+            "ou-sales",
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, _) = memory_http_json(
+        &app,
+        org_unit_http_request(
+            "POST",
+            "/memory/demote",
+            "user-owner",
+            "ou-eng",
+            Some(json!({
+                "id": shared_id,
+                "run_id": "scope-owner-demote"
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = memory_http_json(
+        &app,
+        org_unit_http_request(
+            "DELETE",
+            &format!("/memory/{private_id}?project_id=proj-a"),
+            "user-owner",
+            "ou-eng",
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn revoked_org_unit_membership_denies_reads_and_mutations() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let run_id = "revoked-org-unit-membership";
+
+    let (status, put_payload) = memory_http_json(
+        &app,
+        org_unit_http_request(
+            "POST",
+            "/memory/put",
+            "user-owner",
+            "ou-eng",
+            Some(json!({
+                "run_id": run_id,
+                "partition": {
+                    "org_id": "acme",
+                    "workspace_id": "north",
+                    "project_id": "proj-a",
+                    "tier": "session"
+                },
+                "kind": "fact",
+                "content": "revoked department membership sentinel",
+                "classification": "internal",
+                "capability": memory_capability(
+                    run_id,
+                    "user-owner",
+                    "acme",
+                    "north",
+                    "proj-a"
+                )
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let memory_id = put_payload
+        .get("id")
+        .and_then(Value::as_str)
+        .expect("stored memory id")
+        .to_string();
+
+    let revoked_request = |method: &str, uri: &str, body: Option<Value>| {
+        let tenant_context = tandem_types::TenantContext::explicit_user_workspace(
+            "acme",
+            "north",
+            None,
+            "user-owner",
+        );
+        let verified = verified_org_unit_context(tenant_context, "user-owner", Vec::new());
+        let mut request = tenant_memory_request(
+            method,
+            uri,
+            "acme",
+            "north",
+            "user-owner",
+            body,
+        );
+        request.extensions_mut().insert(verified);
+        request
+    };
+
+    let (status, _) = memory_http_json(
+        &app,
+        revoked_request(
+            "GET",
+            "/memory?q=revoked%20department%20membership&project_id=proj-a&limit=10",
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, _) = memory_http_json(
+        &app,
+        revoked_request(
+            "POST",
+            "/memory/search",
+            Some(json!({
+                "run_id": run_id,
+                "query": "revoked department membership sentinel",
+                "read_scopes": ["session"],
+                "partition": {
+                    "org_id": "acme",
+                    "workspace_id": "north",
+                    "project_id": "proj-a",
+                    "tier": "session"
+                },
+                "limit": 10,
+                "capability": memory_capability(
+                    run_id,
+                    "user-owner",
+                    "acme",
+                    "north",
+                    "proj-a"
+                )
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, _) = memory_http_json(
+        &app,
+        revoked_request(
+            "POST",
+            "/memory/demote",
+            Some(json!({
+                "id": memory_id,
+                "run_id": "revoked-org-unit-demote"
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, _) = memory_http_json(
+        &app,
+        revoked_request(
+            "DELETE",
+            &format!("/memory/{memory_id}?project_id=proj-a"),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, member_list) = memory_http_json(
+        &app,
+        org_unit_http_request(
+            "GET",
+            "/memory?q=revoked%20department%20membership&project_id=proj-a&limit=10",
+            "user-owner",
+            "ou-eng",
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(member_list.get("count").and_then(Value::as_u64), Some(1));
+}
+
+#[tokio::test]
+async fn local_http_keeps_private_subject_reads_and_unrestricted_point_mutation() {
+    let state = test_state().await;
+    let app = app_router(state);
+    let run_id = "local-private-scope-run";
+    let capability = memory_capability(run_id, "local-owner", "local", "local", "proj-local");
+    let put = Request::builder()
+        .method("POST")
+        .uri("/memory/put")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "run_id": run_id,
+                "partition": {
+                    "org_id": "local",
+                    "workspace_id": "local",
+                    "project_id": "proj-local",
+                    "tier": "session"
+                },
+                "kind": "fact",
+                "content": "local unrestricted private scope sentinel",
+                "classification": "internal",
+                "private": true,
+                "capability": capability
+            })
+            .to_string(),
+        ))
+        .expect("local private put request");
+    let (status, put_payload) = memory_http_json(&app, put).await;
+    assert_eq!(status, StatusCode::OK);
+    let memory_id = put_payload
+        .get("id")
+        .and_then(Value::as_str)
+        .expect("local private memory id")
+        .to_string();
+
+    let list = Request::builder()
+        .method("GET")
+        .uri("/memory?user_id=local-owner&q=local%20unrestricted%20private&limit=20")
+        .body(Body::empty())
+        .expect("local private list request");
+    let (status, list_payload) = memory_http_json(&app, list).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list_payload.get("count").and_then(Value::as_u64), Some(1));
+
+    let search = Request::builder()
+        .method("POST")
+        .uri("/memory/search")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "run_id": run_id,
+                "query": "local unrestricted private scope sentinel",
+                "read_scopes": ["session"],
+                "partition": {
+                    "org_id": "local",
+                    "workspace_id": "local",
+                    "project_id": "proj-local",
+                    "tier": "session"
+                },
+                "limit": 20,
+                "capability": memory_capability(
+                    run_id,
+                    "local-owner",
+                    "local",
+                    "local",
+                    "proj-local"
+                )
+            })
+            .to_string(),
+        ))
+        .expect("local private search request");
+    let (status, search_payload) = memory_http_json(&app, search).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        search_payload
+            .get("results")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(1)
+    );
+
+    // Local implicit mode has no trusted caller identity for point operations;
+    // it intentionally retains the legacy unrestricted tenant behavior.
+    let delete = Request::builder()
+        .method("DELETE")
+        .uri(format!("/memory/{memory_id}?project_id=proj-local"))
+        .body(Body::empty())
+        .expect("local private delete request");
+    let (status, _) = memory_http_json(&app, delete).await;
+    assert_eq!(status, StatusCode::OK);
+}

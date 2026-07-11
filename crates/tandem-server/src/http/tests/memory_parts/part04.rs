@@ -397,6 +397,192 @@ async fn retrieval_gateway_enforces_cumulative_result_window() {
         })));
 }
 
+async fn seed_post_limit_filter_record(
+    state: &AppState,
+    id: &str,
+    content: &str,
+    source_binding_id: &str,
+    tier: &str,
+    created_at_ms: u64,
+) {
+    let mut metadata = source_bound_memory_metadata(
+        "org-1",
+        "ws-1",
+        "proj-1",
+        source_binding_id,
+        source_binding_id,
+        "internal",
+        id,
+    );
+    metadata
+        .as_object_mut()
+        .expect("source metadata object")
+        .insert("owner_org_unit_id".to_string(), json!("ou-product"));
+    let record = tandem_memory::types::GlobalMemoryRecord {
+        id: id.to_string(),
+        user_id: "user-limit-filter".to_string(),
+        source_type: "fact".to_string(),
+        content: content.to_string(),
+        content_hash: format!("hash-{id}"),
+        run_id: format!("run-{id}"),
+        session_id: None,
+        message_id: None,
+        tool_name: None,
+        project_tag: Some("proj-1".to_string()),
+        channel_tag: None,
+        host_tag: None,
+        metadata: Some(metadata),
+        provenance: Some(json!({
+            "tenant_context": {
+                "org_id": "org-1",
+                "workspace_id": "ws-1",
+                "deployment_id": null
+            },
+            "partition": {
+                "org_id": "org-1",
+                "workspace_id": "ws-1",
+                "project_id": "proj-1",
+                "tier": tier
+            }
+        })),
+        redaction_status: "passed".to_string(),
+        redaction_count: 0,
+        visibility: "private".to_string(),
+        demoted: false,
+        score_boost: 0.0,
+        created_at_ms,
+        updated_at_ms: created_at_ms,
+        expires_at_ms: None,
+    };
+    open_global_memory_db_for_state_test(state)
+        .await
+        .put_global_memory_record(&record)
+        .await
+        .expect("seed post-limit record");
+}
+
+#[tokio::test]
+async fn memory_http_applies_tier_and_source_filters_before_limit_and_offset() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let list_query = "post limit list authorization wedge";
+    let search_query = "post limit search authorization wedge";
+
+    for index in 0..3 {
+        seed_post_limit_filter_record(
+            &state,
+            &format!("blocked-source-{index}"),
+            &format!("{list_query} {search_query} {search_query} blocked source {index}"),
+            "binding-blocked",
+            "project",
+            300 + index,
+        )
+        .await;
+    }
+    for index in 0..3 {
+        seed_post_limit_filter_record(
+            &state,
+            &format!("blocked-tier-{index}"),
+            &format!("{search_query} {search_query} blocked tier {index}"),
+            "binding-allowed",
+            "session",
+            200 + index,
+        )
+        .await;
+    }
+    seed_post_limit_filter_record(
+        &state,
+        "allowed-older",
+        &format!("{list_query} {search_query} allowed older"),
+        "binding-allowed",
+        "project",
+        100,
+    )
+    .await;
+    seed_post_limit_filter_record(
+        &state,
+        "allowed-newer",
+        &format!("{list_query} {search_query} allowed newer"),
+        "binding-allowed",
+        "project",
+        101,
+    )
+    .await;
+
+    let mut verified = verified_source_bound_memory_context(
+        "org-1",
+        "ws-1",
+        "user-limit-filter",
+        &["binding-allowed"],
+        vec![tandem_types::DataClass::Internal],
+    );
+    verified.org_units = vec!["ou-product".to_string()];
+
+    let mut list_request = tenant_memory_request(
+        "GET",
+        "/memory?q=post%20limit%20list%20authorization%20wedge&project_id=proj-1&limit=1&offset=1",
+        "org-1",
+        "ws-1",
+        "user-limit-filter",
+        None,
+    );
+    list_request.extensions_mut().insert(verified.clone());
+    let (status, list_payload) = memory_http_json(&app, list_request).await;
+    assert_eq!(status, StatusCode::OK);
+    let listed = list_payload
+        .get("items")
+        .and_then(Value::as_array)
+        .expect("listed items");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(
+        listed[0].get("id").and_then(Value::as_str),
+        Some("allowed-older"),
+        "offset must be applied after source authorization"
+    );
+
+    let mut search_request = tenant_memory_request(
+        "POST",
+        "/memory/search",
+        "org-1",
+        "ws-1",
+        "user-limit-filter",
+        Some(json!({
+            "run_id": "post-limit-filter-search",
+            "query": search_query,
+            "read_scopes": ["project"],
+            "partition": {
+                "org_id": "org-1",
+                "workspace_id": "ws-1",
+                "project_id": "proj-1",
+                "tier": "project"
+            },
+            "limit": 2,
+            "capability": memory_capability(
+                "post-limit-filter-search",
+                "user-limit-filter",
+                "org-1",
+                "ws-1",
+                "proj-1"
+            )
+        })),
+    );
+    search_request.extensions_mut().insert(verified);
+    let (status, search_payload) = memory_http_json(&app, search_request).await;
+    assert_eq!(status, StatusCode::OK);
+    let result_ids = search_payload
+        .get("results")
+        .and_then(Value::as_array)
+        .expect("search results")
+        .iter()
+        .filter_map(|row| row.get("id").and_then(Value::as_str))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        result_ids,
+        std::collections::BTreeSet::from(["allowed-newer", "allowed-older"]),
+        "tier and source authorization must run before the requested limit"
+    );
+}
+
 #[tokio::test]
 async fn tenant_a_cannot_search_list_delete_demote_or_promote_tenant_b_memory() {
     let state = test_state().await;
@@ -880,7 +1066,8 @@ async fn memory_put_without_capability_ignores_client_id_and_defaults_to_connect
                 },
                 "kind": "fact",
                 "content": "actor default memory should belong to user a",
-                "classification": "internal"
+                "classification": "internal",
+                "private": true
             })
             .to_string(),
         ))
