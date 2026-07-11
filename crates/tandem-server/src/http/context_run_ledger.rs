@@ -67,8 +67,7 @@ pub(super) async fn context_run_governance_evidence_export(
     let events = load_context_run_ledger_source_events(&state, &context_run.run_id, None, None);
     let records = context_run_ledger_records(&events);
     let tool_manifest = context_run_tool_manifest(&events, &records);
-    let run_ids =
-        governance_evidence_run_ids(&context_run.run_id, automation_run.as_ref(), &events);
+    let run_ids = governance_evidence_run_ids(&context_run, automation_run.as_ref(), &events);
     let policy_decisions =
         load_governance_evidence_policy_decisions(&state, &tenant_context, &run_ids, &records)
             .await;
@@ -859,11 +858,15 @@ fn automation_run_id_from_context_run_id(context_run_id: &str) -> Option<String>
 }
 
 fn governance_evidence_run_ids(
-    context_run_id: &str,
+    context_run: &ContextRunState,
     automation_run: Option<&crate::automation_v2::types::AutomationV2RunRecord>,
     events: &[super::ContextRunEventRecord],
 ) -> BTreeSet<String> {
+    let context_run_id = context_run.run_id.as_str();
     let mut ids = BTreeSet::from([context_run_id.to_string()]);
+    if let Some(session_id) = context_run_id.strip_prefix("session-") {
+        ids.insert(session_id.to_string());
+    }
     if let Some(stripped) = context_run_id.strip_prefix("automation-v2-") {
         ids.insert(stripped.to_string());
     } else {
@@ -874,6 +877,18 @@ fn governance_evidence_run_ids(
         ids.insert(super::context_runs::automation_v2_context_run_id(
             &run.run_id,
         ));
+    }
+    if let Some(metadata) = context_run.source_metadata.as_ref() {
+        let event_id = metadata.get("last_event_id").and_then(Value::as_str);
+        if let Some(event_id) = event_id.filter(|value| !value.trim().is_empty()) {
+            ids.insert(event_id.to_string());
+            if let (Some(team_id), Some(app_id)) = (
+                metadata.get("slack_team_id").and_then(Value::as_str),
+                metadata.get("slack_app_id").and_then(Value::as_str),
+            ) {
+                ids.insert(format!("{team_id}:{app_id}:{event_id}"));
+            }
+        }
     }
     // Engine run ids journaled into this context run's own event log. A
     // governed session run executes and attributes evidence under a distinct
@@ -1419,6 +1434,25 @@ mod tests {
             package["policy_decisions"][0]["tool"].as_str(),
             Some("mcp.bank.release_funds")
         );
+    }
+
+    #[test]
+    fn slack_governance_evidence_correlates_session_and_claim_audit_ids() {
+        let automation_run = fintech_audit_fixture_run();
+        let mut context_run = governance_evidence_context_run(&automation_run);
+        context_run.run_id = "session-slack-session-1".to_string();
+        context_run.source_client = Some("channel:slack".to_string());
+        context_run.source_metadata = Some(json!({
+            "last_event_id": "Ev-receipt-1",
+            "slack_team_id": "T_ACME",
+            "slack_app_id": "A_TANDEM",
+        }));
+
+        let ids = governance_evidence_run_ids(&context_run, None, &[]);
+        assert!(ids.contains("session-slack-session-1"));
+        assert!(ids.contains("slack-session-1"));
+        assert!(ids.contains("Ev-receipt-1"));
+        assert!(ids.contains("T_ACME:A_TANDEM:Ev-receipt-1"));
     }
 
     #[test]

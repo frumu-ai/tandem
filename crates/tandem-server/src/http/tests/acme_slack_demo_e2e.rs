@@ -902,6 +902,20 @@ async fn acme_slack_demo_e2e_finance_sensitive_tool_enters_the_real_approval_gat
                 }),
             "evidence package must include the approval-required protected audit"
         );
+        for expected in [
+            "channel.slack.run.completed",
+            "channel.slack.response.delivered",
+        ] {
+            assert!(
+                package
+                    .pointer("/audit/protected_events")
+                    .and_then(Value::as_array)
+                    .is_some_and(|events| events.iter().any(|event| {
+                        event.get("event_type").and_then(Value::as_str) == Some(expected)
+                    })),
+                "evidence package must include {expected}"
+            );
+        }
         assert!(
             package
                 .pointer("/final_outcome/slack_visible_response")
