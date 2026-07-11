@@ -76,16 +76,50 @@ impl PostgresMemoryStore {
                         embedding.len()
                     )));
                 }
+                let (vector, ciphertext, envelope, policy_id, audit_id) = match self
+                    .search_surface_mode
+                {
+                    PostgresSearchSurfaceMode::PlaintextPgvector => {
+                        (Some(Vector::from(embedding)), None, None, None, None)
+                    }
+                    PostgresSearchSurfaceMode::EncryptedRerank => {
+                        let (ciphertext, envelope, policy_id, audit_id) = self.encrypt_embedding(
+                            &embedding,
+                            &scope.tenant,
+                            scope.org_unit.clone(),
+                            &chunk.id,
+                        )?;
+                        (
+                            None,
+                            Some(ciphertext),
+                            envelope.map(|value| json_value(&value)).transpose()?,
+                            Some(policy_id),
+                            Some(audit_id),
+                        )
+                    }
+                    PostgresSearchSurfaceMode::Disabled => (None, None, None, None, None),
+                };
+                let (data, data_ciphertext, data_envelope, data_policy_id, data_audit_id) =
+                    self.encode_payload(&chunk, &scope.tenant, scope.org_unit.clone(), &chunk.id)?;
                 let client = self.client().await?;
                 client
                     .execute(
                         "INSERT INTO tandem_memory_chunks
                        (id,tenant_org_id,tenant_workspace_id,tenant_deployment_id,
                         owner_org_unit_id,owner_subject,tier,project_id,session_id,source_path,
-                        created_at,data,embedding)
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                        created_at,data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,
+                        embedding,embedding_ciphertext,embedding_envelope,search_policy_decision_id,search_audit_id)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
                      ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data,
-                       embedding=EXCLUDED.embedding, created_at=EXCLUDED.created_at",
+                       data_ciphertext=EXCLUDED.data_ciphertext,data_envelope=EXCLUDED.data_envelope,
+                       data_policy_decision_id=EXCLUDED.data_policy_decision_id,
+                       data_audit_id=EXCLUDED.data_audit_id,
+                       embedding=EXCLUDED.embedding,
+                       embedding_ciphertext=EXCLUDED.embedding_ciphertext,
+                       embedding_envelope=EXCLUDED.embedding_envelope,
+                       search_policy_decision_id=EXCLUDED.search_policy_decision_id,
+                       search_audit_id=EXCLUDED.search_audit_id,
+                       created_at=EXCLUDED.created_at",
                         &[
                             &chunk.id,
                             &scope.tenant.org_id,
@@ -102,8 +136,16 @@ impl PostgresMemoryStore {
                             &chunk.session_id,
                             &chunk.source_path,
                             &chunk.created_at,
-                            &json_value(&chunk)?,
-                            &Vector::from(embedding),
+                            &data,
+                            &data_ciphertext,
+                            &data_envelope,
+                            &data_policy_id,
+                            &data_audit_id,
+                            &vector,
+                            &ciphertext,
+                            &envelope,
+                            &policy_id,
+                            &audit_id,
                         ],
                     )
                     .await
@@ -161,18 +203,27 @@ impl PostgresMemoryStore {
                         },
                     ));
                 }
+                let (data, data_ciphertext, data_envelope, data_policy_id, data_audit_id) =
+                    self.encode_payload(&record, &tenant, owner_org.clone(), &record.id)?;
+                let search_content =
+                    if self.search_surface_mode == PostgresSearchSurfaceMode::PlaintextPgvector {
+                        record.content.as_str()
+                    } else {
+                        ""
+                    };
                 client.execute(
                     "INSERT INTO tandem_memory_global_records
                      (id,tenant_org_id,tenant_workspace_id,tenant_deployment_id,owner_org_unit_id,
                       owner_subject,private,user_id,source_type,content_hash,run_id,session_id,message_id,
-                      tool_name,project_tag,channel_tag,demoted,expires_at_ms,created_at_ms,search_content,data)
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)",
+                      tool_name,project_tag,channel_tag,demoted,expires_at_ms,created_at_ms,search_content,
+                      data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)",
                     &[&record.id,&tenant.org_id,&tenant.workspace_id,&deployment(&tenant),&owner_org,
                       &owner_subject,&owner_subject.is_some(),&record.user_id,&record.source_type,
                       &record.content_hash,&record.run_id,&record.session_id,&record.message_id,
                       &record.tool_name,&record.project_tag,&record.channel_tag,&record.demoted,
                       &record.expires_at_ms.map(|value| value as i64),&(record.created_at_ms as i64),
-                      &record.content,&json_value(&record)?]
+                      &search_content,&data,&data_ciphertext,&data_envelope,&data_policy_id,&data_audit_id]
                 ).await.map_err(|error| store_error("write PostgreSQL global memory", error, false))?;
                 Ok(MemoryStoreWriteResult::GlobalRecord(
                     GlobalMemoryWriteResult {
@@ -385,7 +436,7 @@ impl PostgresMemoryStore {
                 project_id,
                 vacuum,
             } => {
-                let rows = client.query("DELETE FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND project_id=$4 AND data->>'source'='file' RETURNING octet_length(data::text)::bigint",
+                let rows = client.query("DELETE FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND project_id=$4 AND source_path IS NOT NULL RETURNING COALESCE(octet_length(data::text),octet_length(data_ciphertext))::bigint",
                     &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&project_id]).await.map_err(|error| store_error("clear PostgreSQL file index", error, true))?;
                 client.execute("DELETE FROM tandem_memory_entities WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND entity_type='import_index' AND key1=$4",
                     &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&project_id]).await.map_err(|error| store_error("clear PostgreSQL import index", error, true))?;
@@ -410,19 +461,31 @@ impl PostgresMemoryStore {
                 metadata,
                 provenance,
             } => {
-                let row = client.query_opt("SELECT data FROM tandem_memory_global_records WHERE id=$1 AND tenant_org_id=$2 AND tenant_workspace_id=$3 AND tenant_deployment_id=$4 AND ($5::boolean OR owner_subject=$6 OR (private=false AND owner_org_unit_id IS NOT NULL)) AND ($7::text IS NULL OR owner_org_unit_id=$7)",
+                let row = client.query_opt("SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,owner_org_unit_id FROM tandem_memory_global_records WHERE id=$1 AND tenant_org_id=$2 AND tenant_workspace_id=$3 AND tenant_deployment_id=$4 AND ($5::boolean OR owner_subject=$6 OR (private=false AND owner_org_unit_id IS NOT NULL)) AND ($7::text IS NULL OR owner_org_unit_id=$7)",
                     &[&id,&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&(scope.access == MemoryReadAccess::TrustedUnrestricted),&scope.subject,&scope.org_unit]).await.map_err(|error| store_error("read PostgreSQL global memory update", error, true))?;
                 let Some(row) = row else {
                     return Ok(MemoryStoreMutationResult::Changed(false));
                 };
-                let mut record: crate::types::GlobalMemoryRecord = from_json(row.get(0))?;
+                let mut record: crate::types::GlobalMemoryRecord = self.decode_payload(
+                    row.get(0),
+                    row.get(1),
+                    row.get(2),
+                    &scope.tenant,
+                    row.get(5),
+                    row.get(3),
+                    row.get(4),
+                )?;
                 record.visibility = visibility;
                 record.demoted = demoted;
                 record.metadata = metadata;
                 record.provenance = provenance;
                 record.updated_at_ms = chrono::Utc::now().timestamp_millis() as u64;
-                client.execute("UPDATE tandem_memory_global_records SET data=$2, demoted=$3, owner_org_unit_id=$4, owner_subject=$5, private=$6 WHERE id=$1",
-                    &[&id,&json_value(&record)?,&record.demoted,&owner_org_unit_id_from_metadata(record.metadata.as_ref()),&owner_subject_from_metadata(record.metadata.as_ref()),&owner_subject_from_metadata(record.metadata.as_ref()).is_some()]).await.map_err(|error| store_error("update PostgreSQL global memory", error, true))?;
+                let next_org = owner_org_unit_id_from_metadata(record.metadata.as_ref());
+                let next_subject = owner_subject_from_metadata(record.metadata.as_ref());
+                let (data, cipher, envelope, policy, audit) =
+                    self.encode_payload(&record, &scope.tenant, next_org.clone(), &id)?;
+                client.execute("UPDATE tandem_memory_global_records SET data=$2,data_ciphertext=$3,data_envelope=$4,data_policy_decision_id=$5,data_audit_id=$6,demoted=$7,owner_org_unit_id=$8,owner_subject=$9,private=$10 WHERE id=$1",
+                    &[&id,&data,&cipher,&envelope,&policy,&audit,&record.demoted,&next_org,&next_subject,&next_subject.is_some()]).await.map_err(|error| store_error("update PostgreSQL global memory", error, true))?;
                 Ok(MemoryStoreMutationResult::Changed(true))
             }
             MemoryStoreMutationRequest::PromoteKnowledgeItem { scope, request } => {
@@ -514,7 +577,7 @@ impl PostgresMemoryStore {
                 selector,
                 source_path,
             } => {
-                let rows = client.query("DELETE FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND tier=$4 AND ($5::text IS NULL OR project_id=$5) AND ($6::text IS NULL OR session_id=$6) AND source_path=$7 RETURNING octet_length(data::text)::bigint", &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&selector_tier(&selector),&selector.project_id,&selector.session_id,&source_path]).await.map_err(|error| store_error("delete PostgreSQL source chunks", error, true))?;
+                let rows = client.query("DELETE FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND tier=$4 AND ($5::text IS NULL OR project_id=$5) AND ($6::text IS NULL OR session_id=$6) AND source_path=$7 RETURNING COALESCE(octet_length(data::text),octet_length(data_ciphertext))::bigint", &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&selector_tier(&selector),&selector.project_id,&selector.session_id,&source_path]).await.map_err(|error| store_error("delete PostgreSQL source chunks", error, true))?;
                 Ok(MemoryStoreMutationResult::SourcePathDelete(
                     MemorySourcePathDeleteResult {
                         chunks_deleted: rows.len() as i64,
@@ -528,14 +591,25 @@ impl PostgresMemoryStore {
                 source_path,
                 metadata,
             } => {
-                let rows = client.query("SELECT id,data FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND tier=$4 AND ($5::text IS NULL OR project_id=$5) AND ($6::text IS NULL OR session_id=$6) AND source_path=$7", &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&selector_tier(&selector),&selector.project_id,&selector.session_id,&source_path]).await.map_err(|error| store_error("read PostgreSQL source chunks", error, true))?;
+                let rows = client.query("SELECT id,data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,owner_org_unit_id FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND tier=$4 AND ($5::text IS NULL OR project_id=$5) AND ($6::text IS NULL OR session_id=$6) AND source_path=$7", &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&selector_tier(&selector),&selector.project_id,&selector.session_id,&source_path]).await.map_err(|error| store_error("read PostgreSQL source chunks", error, true))?;
                 for row in &rows {
-                    let mut chunk: crate::types::MemoryChunk = from_json(row.get(1))?;
+                    let org: Option<String> = row.get(6);
+                    let mut chunk: crate::types::MemoryChunk = self.decode_payload(
+                        row.get(1),
+                        row.get(2),
+                        row.get(3),
+                        &scope.tenant,
+                        org.clone(),
+                        row.get(4),
+                        row.get(5),
+                    )?;
                     chunk.metadata = Some(metadata.clone());
+                    let (data, cipher, envelope, policy, audit) =
+                        self.encode_payload(&chunk, &scope.tenant, org, &chunk.id)?;
                     client
                         .execute(
-                            "UPDATE tandem_memory_chunks SET data=$2 WHERE id=$1",
-                            &[&chunk.id, &json_value(&chunk)?],
+                            "UPDATE tandem_memory_chunks SET data=$2,data_ciphertext=$3,data_envelope=$4,data_policy_decision_id=$5,data_audit_id=$6 WHERE id=$1",
+                            &[&chunk.id,&data,&cipher,&envelope,&policy,&audit],
                         )
                         .await
                         .map_err(|error| {
@@ -668,9 +742,221 @@ impl PostgresMemoryStore {
         request: MemoryStoreBatchRequest,
     ) -> MemoryStoreResult<MemoryStoreBatchResult> {
         if request.mode == MemoryStoreBatchMode::Atomic {
-            return Err(MemoryStoreError::unsupported(
-                "PostgreSQL atomic contract batches require transaction-local dispatch",
-            ));
+            if request.operations.iter().any(|operation| {
+                !matches!(
+                    operation,
+                    MemoryStoreBatchOperation::Write(MemoryStoreWriteRequest::Chunk { .. })
+                        | MemoryStoreBatchOperation::Write(
+                            MemoryStoreWriteRequest::GlobalRecord { .. }
+                        )
+                        | MemoryStoreBatchOperation::Mutation(
+                            MemoryStoreMutationRequest::DeleteGlobalRecord { .. }
+                        )
+                        | MemoryStoreBatchOperation::Mutation(
+                            MemoryStoreMutationRequest::UpdateGlobalRecordContext { .. }
+                        )
+                )
+            }) {
+                return Err(MemoryStoreError::unsupported(
+                    "atomic PostgreSQL batches currently support chunk writes and global-record CRUD",
+                ));
+            }
+            let mut client = self.client().await?;
+            let transaction = client
+                .transaction()
+                .await
+                .map_err(|error| store_error("start PostgreSQL memory batch", error, true))?;
+            let mut items = Vec::with_capacity(request.operations.len());
+            for (index, operation) in request.operations.into_iter().enumerate() {
+                let value = match operation {
+                    MemoryStoreBatchOperation::Write(MemoryStoreWriteRequest::Chunk {
+                        scope,
+                        chunk,
+                        embedding,
+                    }) => {
+                        if scope.tenant != chunk.tenant_scope
+                            || scope.subject != chunk.subject
+                            || scope.org_unit
+                                != owner_org_unit_id_from_metadata(chunk.metadata.as_ref())
+                        {
+                            return Err(MemoryStoreError::new(
+                                MemoryStoreErrorKind::ScopeViolation,
+                                "chunk ownership does not match the PostgreSQL write scope",
+                            ));
+                        }
+                        if embedding.len() != self.embedding_dimension {
+                            return Err(MemoryStoreError::invalid(format!(
+                                "embedding dimension mismatch: expected {}, got {}",
+                                self.embedding_dimension,
+                                embedding.len()
+                            )));
+                        }
+                        let (vector, ciphertext, envelope, policy_id, audit_id) = match self
+                            .search_surface_mode
+                        {
+                            PostgresSearchSurfaceMode::PlaintextPgvector => {
+                                (Some(Vector::from(embedding)), None, None, None, None)
+                            }
+                            PostgresSearchSurfaceMode::EncryptedRerank => {
+                                let (ciphertext, envelope, policy_id, audit_id) = self
+                                    .encrypt_embedding(
+                                        &embedding,
+                                        &scope.tenant,
+                                        scope.org_unit.clone(),
+                                        &chunk.id,
+                                    )?;
+                                (
+                                    None,
+                                    Some(ciphertext),
+                                    envelope.map(|value| json_value(&value)).transpose()?,
+                                    Some(policy_id),
+                                    Some(audit_id),
+                                )
+                            }
+                            PostgresSearchSurfaceMode::Disabled => (None, None, None, None, None),
+                        };
+                        let (data, data_ciphertext, data_envelope, data_policy_id, data_audit_id) =
+                            self.encode_payload(
+                                &chunk,
+                                &scope.tenant,
+                                scope.org_unit.clone(),
+                                &chunk.id,
+                            )?;
+                        transaction.execute(
+                            "INSERT INTO tandem_memory_chunks
+                               (id,tenant_org_id,tenant_workspace_id,tenant_deployment_id,
+                                owner_org_unit_id,owner_subject,tier,project_id,session_id,source_path,
+                                created_at,data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,
+                                embedding,embedding_ciphertext,embedding_envelope,search_policy_decision_id,search_audit_id)
+                             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)",
+                            &[&chunk.id,&scope.tenant.org_id,&scope.tenant.workspace_id,
+                              &deployment(&scope.tenant),&scope.org_unit,&scope.subject,
+                              &selector_tier(&MemoryChunkSelector { tier:chunk.tier, project_id:chunk.project_id.clone(), session_id:chunk.session_id.clone() }),
+                              &chunk.project_id,&chunk.session_id,&chunk.source_path,&chunk.created_at,
+                              &data,&data_ciphertext,&data_envelope,&data_policy_id,&data_audit_id,
+                              &vector,&ciphertext,&envelope,&policy_id,&audit_id]
+                        ).await.map_err(|error| store_error("write atomic PostgreSQL chunk", error, false))?;
+                        MemoryStoreBatchValue::Write(MemoryStoreWriteResult::Stored)
+                    }
+                    MemoryStoreBatchOperation::Write(MemoryStoreWriteRequest::GlobalRecord {
+                        scope,
+                        record,
+                    }) => {
+                        let tenant = tenant_scope_from_global_record(&record);
+                        let owner_org = owner_org_unit_id_from_metadata(record.metadata.as_ref());
+                        let owner_subject = owner_subject_from_metadata(record.metadata.as_ref());
+                        if tenant != scope.tenant
+                            || owner_org != scope.org_unit
+                            || owner_subject != scope.subject
+                        {
+                            return Err(MemoryStoreError::new(
+                                MemoryStoreErrorKind::ScopeViolation,
+                                "global record ownership does not match the PostgreSQL write scope",
+                            ));
+                        }
+                        let (data, data_ciphertext, data_envelope, data_policy_id, data_audit_id) =
+                            self.encode_payload(&record, &tenant, owner_org.clone(), &record.id)?;
+                        let search_content = if self.search_surface_mode
+                            == PostgresSearchSurfaceMode::PlaintextPgvector
+                        {
+                            record.content.as_str()
+                        } else {
+                            ""
+                        };
+                        transaction.execute(
+                            "INSERT INTO tandem_memory_global_records
+                             (id,tenant_org_id,tenant_workspace_id,tenant_deployment_id,owner_org_unit_id,
+                              owner_subject,private,user_id,source_type,content_hash,run_id,session_id,message_id,
+                              tool_name,project_tag,channel_tag,demoted,expires_at_ms,created_at_ms,search_content,
+                              data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id)
+                             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)",
+                            &[&record.id,&tenant.org_id,&tenant.workspace_id,&deployment(&tenant),&owner_org,
+                              &owner_subject,&owner_subject.is_some(),&record.user_id,&record.source_type,
+                              &record.content_hash,&record.run_id,&record.session_id,&record.message_id,
+                              &record.tool_name,&record.project_tag,&record.channel_tag,&record.demoted,
+                              &record.expires_at_ms.map(|value| value as i64),&(record.created_at_ms as i64),
+                              &search_content,&data,&data_ciphertext,&data_envelope,&data_policy_id,&data_audit_id]
+                        ).await.map_err(|error| store_error("write atomic PostgreSQL global memory", error, false))?;
+                        MemoryStoreBatchValue::Write(MemoryStoreWriteResult::GlobalRecord(
+                            GlobalMemoryWriteResult {
+                                id: record.id,
+                                stored: true,
+                                deduped: false,
+                            },
+                        ))
+                    }
+                    MemoryStoreBatchOperation::Mutation(
+                        MemoryStoreMutationRequest::DeleteGlobalRecord { scope, id },
+                    ) => {
+                        let changed=transaction.execute("DELETE FROM tandem_memory_global_records WHERE id=$1 AND tenant_org_id=$2 AND tenant_workspace_id=$3 AND tenant_deployment_id=$4 AND ($5::boolean OR owner_subject=$6 OR (private=false AND owner_org_unit_id IS NOT NULL)) AND ($7::text IS NULL OR owner_org_unit_id=$7)",
+                            &[&id,&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&(scope.access == MemoryReadAccess::TrustedUnrestricted),&scope.subject,&scope.org_unit]).await.map_err(|error| store_error("delete atomic PostgreSQL global memory", error, false))?;
+                        MemoryStoreBatchValue::Mutation(MemoryStoreMutationResult::Changed(
+                            changed > 0,
+                        ))
+                    }
+                    MemoryStoreBatchOperation::Mutation(
+                        MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+                            scope,
+                            id,
+                            visibility,
+                            demoted,
+                            metadata,
+                            provenance,
+                        },
+                    ) => {
+                        let row=transaction.query_opt("SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,owner_org_unit_id FROM tandem_memory_global_records WHERE id=$1 AND tenant_org_id=$2 AND tenant_workspace_id=$3 AND tenant_deployment_id=$4 AND ($5::boolean OR owner_subject=$6 OR (private=false AND owner_org_unit_id IS NOT NULL)) AND ($7::text IS NULL OR owner_org_unit_id=$7)",
+                            &[&id,&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&(scope.access == MemoryReadAccess::TrustedUnrestricted),&scope.subject,&scope.org_unit]).await.map_err(|error| store_error("read atomic PostgreSQL global memory", error, false))?;
+                        if let Some(row) = row {
+                            let mut record: crate::types::GlobalMemoryRecord = self
+                                .decode_payload(
+                                    row.get(0),
+                                    row.get(1),
+                                    row.get(2),
+                                    &scope.tenant,
+                                    row.get(5),
+                                    row.get(3),
+                                    row.get(4),
+                                )?;
+                            record.visibility = visibility;
+                            record.demoted = demoted;
+                            record.metadata = metadata;
+                            record.provenance = provenance;
+                            record.updated_at_ms = chrono::Utc::now().timestamp_millis() as u64;
+                            let owner_org =
+                                owner_org_unit_id_from_metadata(record.metadata.as_ref());
+                            let owner_subject =
+                                owner_subject_from_metadata(record.metadata.as_ref());
+                            let (data, cipher, envelope, policy, audit) = self.encode_payload(
+                                &record,
+                                &scope.tenant,
+                                owner_org.clone(),
+                                &id,
+                            )?;
+                            transaction.execute("UPDATE tandem_memory_global_records SET data=$2,data_ciphertext=$3,data_envelope=$4,data_policy_decision_id=$5,data_audit_id=$6,demoted=$7,owner_org_unit_id=$8,owner_subject=$9,private=$10 WHERE id=$1", &[&id,&data,&cipher,&envelope,&policy,&audit,&record.demoted,&owner_org,&owner_subject,&owner_subject.is_some()]).await.map_err(|error| store_error("update atomic PostgreSQL global memory", error, false))?;
+                            MemoryStoreBatchValue::Mutation(MemoryStoreMutationResult::Changed(
+                                true,
+                            ))
+                        } else {
+                            MemoryStoreBatchValue::Mutation(MemoryStoreMutationResult::Changed(
+                                false,
+                            ))
+                        }
+                    }
+                    _ => unreachable!("atomic batch was preflighted"),
+                };
+                items.push(MemoryStoreBatchItemResult {
+                    index,
+                    result: Ok(value),
+                });
+            }
+            transaction
+                .commit()
+                .await
+                .map_err(|error| store_error("commit PostgreSQL memory batch", error, true))?;
+            return Ok(MemoryStoreBatchResult {
+                completed: true,
+                items,
+            });
         }
         let mut items = Vec::with_capacity(request.operations.len());
         for (index, operation) in request.operations.into_iter().enumerate() {
@@ -709,7 +995,8 @@ impl PostgresMemoryStore {
             .await
             .map_err(|error| store_error("probe pgvector extension", error, true))?
             .get(0);
-        let dimension: i32=client.query_one("SELECT atttypmod FROM pg_attribute WHERE attrelid='tandem_memory_chunks'::regclass AND attname='embedding'", &[]).await.map_err(|error| store_error("probe pgvector dimension", error, true))?.get(0);
+        let vector_type: String = client.query_one("SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid='tandem_memory_chunks'::regclass AND attname='embedding'", &[]).await.map_err(|error| store_error("probe pgvector dimension", error, true))?.get(0);
+        let expected_vector_type = format!("vector({})", self.embedding_dimension);
         Ok(MemoryBackendHealthResult {
             backend: MemoryBackendKind::Postgres,
             status: MemoryBackendHealthStatus::Healthy,
@@ -727,8 +1014,8 @@ impl PostgresMemoryStore {
                 },
                 MemoryBackendHealthCheck {
                     name: "embedding_dimension".to_string(),
-                    healthy: dimension == self.embedding_dimension as i32,
-                    detail: Some(self.embedding_dimension.to_string()),
+                    healthy: vector_type == expected_vector_type,
+                    detail: Some(vector_type),
                 },
             ],
         })

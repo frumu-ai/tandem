@@ -9,16 +9,73 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use serde::{Deserialize, Serialize};
+use tandem_enterprise_contract::DataClass;
 use tokio_postgres::NoTls;
 
+use crate::crypto::MemoryCryptoProvider;
+use crate::decrypt_broker::MemoryDecryptPrincipal;
+use crate::envelope::{MemoryEnvelopeAuthority, MemoryEnvelopeMetadata, MemoryKeyScope};
 use crate::store::*;
 use crate::types::DEFAULT_EMBEDDING_DIMENSION;
+
+type EncodedPayload = (
+    Option<serde_json::Value>,
+    Option<String>,
+    Option<serde_json::Value>,
+    Option<String>,
+    Option<String>,
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PostgresDistanceMetric {
     Cosine,
     Euclidean,
     InnerProduct,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostgresSearchSurfaceMode {
+    PlaintextPgvector,
+    EncryptedRerank,
+    Disabled,
+}
+
+impl PostgresSearchSurfaceMode {
+    fn from_env() -> MemoryStoreResult<Self> {
+        let required = std::env::var("TANDEM_MEMORY_ENCRYPTION_REQUIRED")
+            .ok()
+            .is_some_and(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            });
+        let configured = std::env::var("TANDEM_MEMORY_SEARCH_SURFACE_MODE").ok();
+        let mode = match configured
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            None | Some("") if required => Self::EncryptedRerank,
+            None | Some("") | Some("plaintext_pgvector") | Some("plaintext") => {
+                Self::PlaintextPgvector
+            }
+            Some("encrypted_rerank") | Some("encrypted") => Self::EncryptedRerank,
+            Some("disabled") => Self::Disabled,
+            Some(value) => {
+                return Err(MemoryStoreError::invalid(format!(
+                    "unsupported TANDEM_MEMORY_SEARCH_SURFACE_MODE: {value}"
+                )))
+            }
+        };
+        if required && mode == Self::PlaintextPgvector {
+            return Err(MemoryStoreError::invalid(
+                "hosted encryption forbids plaintext PostgreSQL search surfaces; use encrypted_rerank or disabled",
+            ));
+        }
+        Ok(mode)
+    }
 }
 
 impl PostgresDistanceMetric {
@@ -48,6 +105,8 @@ pub struct PostgresMemoryStoreConfig {
     pub embedding_dimension: usize,
     pub distance_metric: PostgresDistanceMetric,
     pub max_pool_size: usize,
+    pub search_surface_mode: PostgresSearchSurfaceMode,
+    pub rerank_candidate_limit: i64,
 }
 
 impl PostgresMemoryStoreConfig {
@@ -83,11 +142,25 @@ impl PostgresMemoryStoreConfig {
             })?
             .unwrap_or(16)
             .clamp(1, 128);
+        let search_surface_mode = PostgresSearchSurfaceMode::from_env()?;
+        let rerank_candidate_limit = std::env::var("TANDEM_MEMORY_POSTGRES_RERANK_CANDIDATES")
+            .ok()
+            .map(|value| value.parse::<i64>())
+            .transpose()
+            .map_err(|_| {
+                MemoryStoreError::invalid(
+                    "TANDEM_MEMORY_POSTGRES_RERANK_CANDIDATES must be an integer",
+                )
+            })?
+            .unwrap_or(1000)
+            .clamp(1, 10_000);
         Ok(Self {
             url,
             embedding_dimension,
             distance_metric,
             max_pool_size,
+            search_surface_mode,
+            rerank_candidate_limit,
         })
     }
 }
@@ -97,6 +170,10 @@ pub struct PostgresMemoryStore {
     pool: Pool,
     embedding_dimension: usize,
     distance_metric: PostgresDistanceMetric,
+    search_surface_mode: PostgresSearchSurfaceMode,
+    rerank_candidate_limit: i64,
+    crypto: MemoryCryptoProvider,
+    decrypt_principal_id: Option<String>,
 }
 
 impl std::fmt::Debug for PostgresMemoryStore {
@@ -104,6 +181,7 @@ impl std::fmt::Debug for PostgresMemoryStore {
         f.debug_struct("PostgresMemoryStore")
             .field("embedding_dimension", &self.embedding_dimension)
             .field("distance_metric", &self.distance_metric)
+            .field("search_surface_mode", &self.search_surface_mode)
             .finish_non_exhaustive()
     }
 }
@@ -128,7 +206,18 @@ impl PostgresMemoryStore {
             pool,
             embedding_dimension: config.embedding_dimension,
             distance_metric: config.distance_metric,
+            search_surface_mode: config.search_surface_mode,
+            rerank_candidate_limit: config.rerank_candidate_limit,
+            crypto: MemoryCryptoProvider::from_env(),
+            decrypt_principal_id: std::env::var("TANDEM_MEMORY_DECRYPT_PRINCIPAL_ID").ok(),
         };
+        if store.search_surface_mode == PostgresSearchSurfaceMode::EncryptedRerank
+            && store.crypto.is_plaintext()
+        {
+            return Err(MemoryStoreError::invalid(
+                "encrypted_rerank requires an encrypted memory provider",
+            ));
+        }
         store.apply_migrations().await?;
         Ok(store)
     }
@@ -138,6 +227,169 @@ impl PostgresMemoryStore {
             .get()
             .await
             .map_err(|error| store_error("acquire PostgreSQL connection", error, true))
+    }
+
+    fn search_key_scope(
+        &self,
+        tenant: &crate::types::MemoryTenantScope,
+        org_unit: Option<String>,
+    ) -> MemoryKeyScope {
+        MemoryKeyScope::new(tenant, DataClass::Internal, None).with_org_unit(org_unit)
+    }
+
+    fn encrypt_embedding(
+        &self,
+        embedding: &[f32],
+        tenant: &crate::types::MemoryTenantScope,
+        org_unit: Option<String>,
+        row_id: &str,
+    ) -> MemoryStoreResult<(String, Option<MemoryEnvelopeMetadata>, String, String)> {
+        let policy_id = format!("memory-search-policy:{row_id}");
+        let audit_id = format!("memory-search-audit:{row_id}");
+        let plaintext = serde_json::to_string(embedding)
+            .map_err(|error| store_error("serialize encrypted embedding", error, false))?;
+        let (ciphertext, envelope) = self
+            .crypto
+            .encrypt_field_scoped(
+                &plaintext,
+                &self.search_key_scope(tenant, org_unit),
+                &policy_id,
+                &audit_id,
+            )
+            .map_err(MemoryStoreError::from)?;
+        Ok((ciphertext, envelope, policy_id, audit_id))
+    }
+
+    fn decrypt_embedding(
+        &self,
+        ciphertext: &str,
+        envelope: Option<&MemoryEnvelopeMetadata>,
+        tenant: &crate::types::MemoryTenantScope,
+        org_unit: Option<String>,
+        policy_id: &str,
+        audit_id: &str,
+    ) -> MemoryStoreResult<Vec<f32>> {
+        let principal_id = self
+            .decrypt_principal_id
+            .as_deref()
+            .unwrap_or("local-memory-runtime");
+        let principal = MemoryDecryptPrincipal::retrieval_gateway(
+            principal_id,
+            tenant.clone(),
+            vec![DataClass::Internal],
+            Vec::new(),
+        );
+        let authority = MemoryEnvelopeAuthority::new(
+            self.search_key_scope(tenant, org_unit),
+            policy_id,
+            audit_id,
+        );
+        let plaintext = self
+            .crypto
+            .decrypt_field_scoped_authorized(
+                ciphertext,
+                envelope,
+                Some(&principal),
+                &authority,
+                None,
+            )
+            .map_err(MemoryStoreError::from)?;
+        serde_json::from_str(&plaintext)
+            .map_err(|error| store_error("deserialize encrypted embedding", error, false))
+    }
+
+    fn encode_payload<T: serde::Serialize>(
+        &self,
+        value: &T,
+        tenant: &crate::types::MemoryTenantScope,
+        org_unit: Option<String>,
+        row_id: &str,
+    ) -> MemoryStoreResult<EncodedPayload> {
+        if self.search_surface_mode == PostgresSearchSurfaceMode::PlaintextPgvector {
+            return Ok((Some(json_value(value)?), None, None, None, None));
+        }
+        let policy_id = format!("memory-payload-policy:{row_id}");
+        let audit_id = format!("memory-payload-audit:{row_id}");
+        let plaintext = serde_json::to_string(value)
+            .map_err(|error| store_error("serialize encrypted memory payload", error, false))?;
+        let (ciphertext, envelope) = self
+            .crypto
+            .encrypt_field_scoped(
+                &plaintext,
+                &self.search_key_scope(tenant, org_unit),
+                &policy_id,
+                &audit_id,
+            )
+            .map_err(MemoryStoreError::from)?;
+        Ok((
+            None,
+            Some(ciphertext),
+            envelope.map(|value| json_value(&value)).transpose()?,
+            Some(policy_id),
+            Some(audit_id),
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn decode_payload<T: serde::de::DeserializeOwned>(
+        &self,
+        plaintext: Option<serde_json::Value>,
+        ciphertext: Option<String>,
+        envelope: Option<serde_json::Value>,
+        tenant: &crate::types::MemoryTenantScope,
+        org_unit: Option<String>,
+        policy_id: Option<String>,
+        audit_id: Option<String>,
+    ) -> MemoryStoreResult<T> {
+        if let Some(value) = plaintext {
+            return from_json(value);
+        }
+        let ciphertext = ciphertext.ok_or_else(|| {
+            MemoryStoreError::new(
+                MemoryStoreErrorKind::CorruptData,
+                "PostgreSQL memory row has neither plaintext nor ciphertext payload",
+            )
+        })?;
+        let policy_id = policy_id.ok_or_else(|| {
+            MemoryStoreError::new(
+                MemoryStoreErrorKind::CorruptData,
+                "missing payload policy id",
+            )
+        })?;
+        let audit_id = audit_id.ok_or_else(|| {
+            MemoryStoreError::new(
+                MemoryStoreErrorKind::CorruptData,
+                "missing payload audit id",
+            )
+        })?;
+        let envelope = envelope.map(from_json).transpose()?;
+        let principal_id = self
+            .decrypt_principal_id
+            .as_deref()
+            .unwrap_or("local-memory-runtime");
+        let principal = MemoryDecryptPrincipal::retrieval_gateway(
+            principal_id,
+            tenant.clone(),
+            vec![DataClass::Internal],
+            Vec::new(),
+        );
+        let authority = MemoryEnvelopeAuthority::new(
+            self.search_key_scope(tenant, org_unit),
+            &policy_id,
+            &audit_id,
+        );
+        let decoded = self
+            .crypto
+            .decrypt_field_scoped_authorized(
+                &ciphertext,
+                envelope.as_ref(),
+                Some(&principal),
+                &authority,
+                None,
+            )
+            .map_err(MemoryStoreError::from)?;
+        serde_json::from_str(&decoded)
+            .map_err(|error| store_error("deserialize encrypted memory payload", error, false))
     }
 }
 

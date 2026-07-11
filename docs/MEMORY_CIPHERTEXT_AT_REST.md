@@ -45,15 +45,15 @@ retrieval gateway, BR-02) plus the documented residual below:
 
 | Payload | Why it must stay plaintext |
 | --- | --- |
-| `{session,project,global}_memory_vectors.embedding` | sqlite-vec KNN computes distances over the raw vector; encryption breaks similarity search. |
-| `memory_records.content` | Indexed by the `memory_records_fts` FTS5 table (`content MATCH ?`); encryption breaks full-text search. |
+| SQLite `{session,project,global}_memory_vectors.embedding` | sqlite-vec KNN computes distances over the raw vector; encryption breaks similarity search. |
+| SQLite `memory_records.content` | Indexed by the `memory_records_fts` FTS5 table (`content MATCH ?`); encryption breaks full-text search. |
 
 Residual: embeddings can leak semantic content via inversion, and FTS content is
 plaintext. Both are tenant-partitioned and only returned through authority-filtered
-read paths. True encryption here requires a searchable-encryption / encrypted-index
-architecture, tracked as **TAN-681** (see
-`docs/MEMORY_SEARCH_SURFACE_AT_REST.md` for the accepted-risk decision and
-required infra mitigations until it lands).
+read paths. The PostgreSQL hosted backend closes this residual with encrypted
+embeddings, an empty FTS surface, and bounded decrypt-side reranking (TAN-681).
+See `docs/MEMORY_SEARCH_SURFACE_AT_REST.md`. The residual remains for SQLite and
+explicit local PostgreSQL plaintext mode.
 
 ## Remaining encryptable columns (follow-up within BR-14)
 

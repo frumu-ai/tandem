@@ -42,7 +42,20 @@ access filters), **not** by cryptography.
    on — which does not exist until TAN-666, and interacts with the M4 pgvector
    move (TAN-660).
 
-## Decision
+## Implemented follow-up
+
+The PostgreSQL backend now implements Option 3. In hosted encryption mode it
+defaults to `encrypted_rerank`: payloads and embeddings are envelope ciphertext,
+the FTS column is empty, and the runtime loads a bounded candidate window only
+after tenant/department/subject predicates. It then authorizes KMS decryption
+against independently reconstructed scope/policy/audit authority and reranks in
+process. `TANDEM_MEMORY_POSTGRES_RERANK_CANDIDATES` bounds the window.
+
+SQLite retains the accepted Option 1 behavior below for local compatibility.
+PostgreSQL plaintext pgvector remains available only as an explicit local mode;
+`TANDEM_MEMORY_ENCRYPTION_REQUIRED=true` rejects it at startup.
+
+## Prior decision
 
 **Adopt Option 1 (accept + mitigate) for now**, with Option 3 as a documented
 future revisit.
@@ -80,11 +93,8 @@ invert embeddings to approximate memory text. This is accepted for now and
 bounded by: access control as the primary gate, infra-layer FDE, and dump
 restriction.
 
-## Follow-up
+## Follow-up status
 
-- **TAN-681** tracks the implementation follow-up for protecting the FTS and
-  embedding surface (Option 3: encrypted embeddings + decrypt-side rerank).
-  The envelope/KMS prerequisite (TAN-666) has landed; the vector-store
-  portability prerequisite is still open — the pgvector backend is design-only
-  and implemented under TAN-678. Until TAN-681 lands, the search surface is
-  plaintext at rest and the Option 1 mitigations above are required.
+- TAN-681 implements encrypted PostgreSQL search surfaces. The residual and
+  infrastructure mitigations above continue to apply to SQLite and explicitly
+  configured local PostgreSQL plaintext mode.

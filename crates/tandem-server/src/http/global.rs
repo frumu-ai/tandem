@@ -32,9 +32,35 @@ pub(super) async fn global_health(State(state): State<AppState>) -> impl IntoRes
     let browser = state.browser_health_summary().await;
     let memory_context_policy =
         crate::memory::policy_status::current_memory_context_policy_status();
+    let memory_storage = match tandem_memory::open_memory_store(&state.memory_db_path).await {
+        Ok(store) => match store
+            .backend_health(tandem_memory::MemoryBackendHealthRequest { repair: false })
+            .await
+        {
+            Ok(health) => json!({
+                "healthy": health.status == tandem_memory::MemoryBackendHealthStatus::Healthy,
+                "backend": match health.backend {
+                    tandem_memory::MemoryBackendKind::Sqlite => "sqlite",
+                    tandem_memory::MemoryBackendKind::Postgres => "postgres",
+                    tandem_memory::MemoryBackendKind::Other(_) => "other",
+                },
+                "checks": health.checks.into_iter().map(|check| json!({
+                    "name": check.name,
+                    "healthy": check.healthy,
+                    "detail": check.detail,
+                })).collect::<Vec<_>>(),
+            }),
+            Err(error) => json!({ "healthy": false, "error": error.to_string() }),
+        },
+        Err(error) => json!({ "healthy": false, "error": error.to_string() }),
+    };
+    let healthy = memory_storage
+        .get("healthy")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     Json(json!({
-        "healthy": true,
-        "ready": state.is_ready(),
+        "healthy": healthy,
+        "ready": state.is_ready() && healthy,
         "apiTokenRequired": state.api_token().await.is_some(),
         "phase": startup.phase,
         "startup_attempt_id": startup.attempt_id,
@@ -50,6 +76,7 @@ pub(super) async fn global_health(State(state): State<AppState>) -> impl IntoRes
         "workspace_root": workspace_root,
         "environment": environment,
         "memory_context_policy": memory_context_policy,
+        "memory_storage": memory_storage,
         "browser": browser
     }))
 }

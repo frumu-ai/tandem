@@ -10,6 +10,13 @@ impl PostgresMemoryStore {
             .await
             .map_err(|error| store_error("start PostgreSQL migration", error, true))?;
         transaction
+            .execute(
+                "SELECT pg_advisory_xact_lock(hashtext('tandem_memory_schema'))",
+                &[],
+            )
+            .await
+            .map_err(|error| store_error("lock PostgreSQL memory migrations", error, true))?;
+        transaction
             .batch_execute("CREATE EXTENSION IF NOT EXISTS vector")
             .await
             .map_err(|error| store_error("enable pgvector extension", error, false))?;
@@ -37,8 +44,18 @@ impl PostgresMemoryStore {
                 session_id TEXT,
                 source_path TEXT,
                 created_at TIMESTAMPTZ NOT NULL,
-                data JSONB NOT NULL,
-                embedding vector({dimension}) NOT NULL
+                data JSONB,
+                data_ciphertext TEXT,
+                data_envelope JSONB,
+                data_policy_decision_id TEXT,
+                data_audit_id TEXT,
+                embedding vector({dimension}),
+                embedding_ciphertext TEXT,
+                embedding_envelope JSONB,
+                search_policy_decision_id TEXT,
+                search_audit_id TEXT,
+                CONSTRAINT tandem_memory_chunks_one_embedding
+                  CHECK ((embedding IS NOT NULL)::int + (embedding_ciphertext IS NOT NULL)::int <= 1)
             );
             CREATE INDEX IF NOT EXISTS tandem_memory_chunks_scope_idx ON tandem_memory_chunks
                 (tenant_org_id, tenant_workspace_id, tenant_deployment_id, tier,
@@ -64,7 +81,11 @@ impl PostgresMemoryStore {
                 expires_at_ms BIGINT,
                 created_at_ms BIGINT NOT NULL,
                 search_content TEXT NOT NULL,
-                data JSONB NOT NULL
+                data JSONB,
+                data_ciphertext TEXT,
+                data_envelope JSONB,
+                data_policy_decision_id TEXT,
+                data_audit_id TEXT
             );
             CREATE INDEX IF NOT EXISTS tandem_memory_global_scope_idx ON tandem_memory_global_records
                 (tenant_org_id, tenant_workspace_id, tenant_deployment_id,
@@ -98,6 +119,32 @@ impl PostgresMemoryStore {
             .await
             .map_err(|error| store_error("apply PostgreSQL memory schema", error, false))?;
         transaction
+            .batch_execute(
+                "ALTER TABLE tandem_memory_chunks ALTER COLUMN embedding DROP NOT NULL;
+                 ALTER TABLE tandem_memory_chunks ADD COLUMN IF NOT EXISTS embedding_ciphertext TEXT;
+                 ALTER TABLE tandem_memory_chunks ADD COLUMN IF NOT EXISTS embedding_envelope JSONB;
+                 ALTER TABLE tandem_memory_chunks ADD COLUMN IF NOT EXISTS search_policy_decision_id TEXT;
+                 ALTER TABLE tandem_memory_chunks ADD COLUMN IF NOT EXISTS search_audit_id TEXT;
+                 ALTER TABLE tandem_memory_chunks ALTER COLUMN data DROP NOT NULL;
+                 ALTER TABLE tandem_memory_chunks ADD COLUMN IF NOT EXISTS data_ciphertext TEXT;
+                 ALTER TABLE tandem_memory_chunks ADD COLUMN IF NOT EXISTS data_envelope JSONB;
+                 ALTER TABLE tandem_memory_chunks ADD COLUMN IF NOT EXISTS data_policy_decision_id TEXT;
+                 ALTER TABLE tandem_memory_chunks ADD COLUMN IF NOT EXISTS data_audit_id TEXT;
+                 ALTER TABLE tandem_memory_global_records ALTER COLUMN data DROP NOT NULL;
+                 ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS data_ciphertext TEXT;
+                 ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS data_envelope JSONB;
+                 ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS data_policy_decision_id TEXT;
+                 ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS data_audit_id TEXT;
+                 DO $$ BEGIN
+                   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='tandem_memory_chunks_one_embedding') THEN
+                     ALTER TABLE tandem_memory_chunks ADD CONSTRAINT tandem_memory_chunks_one_embedding
+                       CHECK ((embedding IS NOT NULL)::int + (embedding_ciphertext IS NOT NULL)::int <= 1);
+                   END IF;
+                 END $$;",
+            )
+            .await
+            .map_err(|error| store_error("upgrade PostgreSQL search surface", error, false))?;
+        transaction
             .execute(
                 "INSERT INTO tandem_memory_schema_migrations(version, name)
                  VALUES ($1, 'postgres_memory_store_v1') ON CONFLICT (version) DO NOTHING",
@@ -105,6 +152,21 @@ impl PostgresMemoryStore {
             )
             .await
             .map_err(|error| store_error("record PostgreSQL memory migration", error, false))?;
+        let vector_type: String = transaction
+            .query_one(
+                "SELECT format_type(atttypid, atttypmod) FROM pg_attribute
+                 WHERE attrelid='tandem_memory_chunks'::regclass AND attname='embedding'",
+                &[],
+            )
+            .await
+            .map_err(|error| store_error("inspect PostgreSQL embedding dimension", error, false))?
+            .get(0);
+        let expected = format!("vector({})", self.embedding_dimension);
+        if vector_type != expected {
+            return Err(MemoryStoreError::invalid(format!(
+                "PostgreSQL embedding dimension mismatch: schema is {vector_type}, configured {expected}"
+            )));
+        }
         transaction
             .commit()
             .await

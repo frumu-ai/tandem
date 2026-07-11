@@ -19,6 +19,46 @@ fn selector_tier(selector: &MemoryChunkSelector) -> String {
         .unwrap_or_else(|| "session".to_string())
 }
 
+fn rerank_score(metric: PostgresDistanceMetric, query: &[f32], candidate: &[f32]) -> f64 {
+    let dot = query
+        .iter()
+        .zip(candidate)
+        .map(|(left, right)| f64::from(*left) * f64::from(*right))
+        .sum::<f64>();
+    match metric {
+        PostgresDistanceMetric::InnerProduct => dot,
+        PostgresDistanceMetric::Euclidean => {
+            let distance = query
+                .iter()
+                .zip(candidate)
+                .map(|(left, right)| {
+                    let delta = f64::from(*left) - f64::from(*right);
+                    delta * delta
+                })
+                .sum::<f64>()
+                .sqrt();
+            1.0 / (1.0 + distance)
+        }
+        PostgresDistanceMetric::Cosine => {
+            let query_norm = query
+                .iter()
+                .map(|value| f64::from(*value).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            let candidate_norm = candidate
+                .iter()
+                .map(|value| f64::from(*value).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            if query_norm == 0.0 || candidate_norm == 0.0 {
+                0.0
+            } else {
+                dot / (query_norm * candidate_norm)
+            }
+        }
+    }
+}
+
 impl PostgresMemoryStore {
     pub(super) async fn entity<T: serde::de::DeserializeOwned>(
         &self,
@@ -60,7 +100,8 @@ impl PostgresMemoryStore {
                 let client = self.client().await?;
                 let rows = client
                     .query(
-                        "SELECT data FROM tandem_memory_chunks
+                        "SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,
+                                data_audit_id,owner_org_unit_id FROM tandem_memory_chunks
                          WHERE tenant_org_id=$1 AND tenant_workspace_id=$2
                            AND tenant_deployment_id=$3 AND tier=$4
                            AND ($5::text IS NULL OR project_id=$5)
@@ -84,7 +125,17 @@ impl PostgresMemoryStore {
                     .map_err(|error| store_error("read PostgreSQL chunks", error, true))?;
                 let chunks = rows
                     .into_iter()
-                    .map(|row| from_json(row.get(0)))
+                    .map(|row| {
+                        self.decode_payload(
+                            row.get(0),
+                            row.get(1),
+                            row.get(2),
+                            &scope.tenant,
+                            row.get(5),
+                            row.get(3),
+                            row.get(4),
+                        )
+                    })
                     .collect::<MemoryStoreResult<Vec<MemoryChunk>>>()?;
                 Ok(MemoryStoreReadResult::Chunks(chunks))
             }
@@ -92,7 +143,8 @@ impl PostgresMemoryStore {
                 let client = self.client().await?;
                 let row = client
                     .query_opt(
-                        "SELECT data FROM tandem_memory_global_records
+                        "SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,
+                                data_audit_id,owner_org_unit_id FROM tandem_memory_global_records
                          WHERE id=$1 AND tenant_org_id=$2 AND tenant_workspace_id=$3
                            AND tenant_deployment_id=$4
                            AND ($5::text IS NULL OR owner_org_unit_id=$5)
@@ -111,7 +163,18 @@ impl PostgresMemoryStore {
                     .await
                     .map_err(|error| store_error("read PostgreSQL global memory", error, true))?;
                 Ok(MemoryStoreReadResult::GlobalRecord(
-                    row.map(|row| from_json(row.get(0))).transpose()?,
+                    row.map(|row| {
+                        self.decode_payload(
+                            row.get(0),
+                            row.get(1),
+                            row.get(2),
+                            &scope.tenant,
+                            row.get(5),
+                            row.get(3),
+                            row.get(4),
+                        )
+                    })
+                    .transpose()?,
                 ))
             }
             MemoryStoreReadRequest::ProjectConfig { scope, project_id } => {
@@ -129,10 +192,10 @@ impl PostgresMemoryStore {
                             COUNT(*) FILTER (WHERE tier='session')::bigint,
                             COUNT(*) FILTER (WHERE tier='project')::bigint,
                             COUNT(*) FILTER (WHERE tier='global')::bigint,
-                            COALESCE(SUM(octet_length(data::text)),0)::bigint,
-                            COALESCE(SUM(octet_length(data::text)) FILTER (WHERE tier='session'),0)::bigint,
-                            COALESCE(SUM(octet_length(data::text)) FILTER (WHERE tier='project'),0)::bigint,
-                            COALESCE(SUM(octet_length(data::text)) FILTER (WHERE tier='global'),0)::bigint
+                            COALESCE(SUM(COALESCE(octet_length(data::text),octet_length(data_ciphertext))),0)::bigint,
+                            COALESCE(SUM(COALESCE(octet_length(data::text),octet_length(data_ciphertext))) FILTER (WHERE tier='session'),0)::bigint,
+                            COALESCE(SUM(COALESCE(octet_length(data::text),octet_length(data_ciphertext))) FILTER (WHERE tier='project'),0)::bigint,
+                            COALESCE(SUM(COALESCE(octet_length(data::text),octet_length(data_ciphertext))) FILTER (WHERE tier='global'),0)::bigint
                           FROM tandem_memory_chunks WHERE tenant_org_id=$1
                             AND tenant_workspace_id=$2 AND tenant_deployment_id=$3",
                         &[
@@ -160,9 +223,9 @@ impl PostgresMemoryStore {
                 let client = self.client().await?;
                 let row = client
                     .query_one(
-                        "SELECT COUNT(*)::bigint, COALESCE(SUM(octet_length(data::text)),0)::bigint,
-                            COUNT(*) FILTER (WHERE data->>'source'='file')::bigint,
-                            COALESCE(SUM(octet_length(data::text)) FILTER (WHERE data->>'source'='file'),0)::bigint
+                        "SELECT COUNT(*)::bigint, COALESCE(SUM(COALESCE(octet_length(data::text),octet_length(data_ciphertext))),0)::bigint,
+                            COUNT(*) FILTER (WHERE source_path IS NOT NULL)::bigint,
+                            COALESCE(SUM(COALESCE(octet_length(data::text),octet_length(data_ciphertext))) FILTER (WHERE source_path IS NOT NULL),0)::bigint
                          FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2
                            AND tenant_deployment_id=$3 AND project_id=$4",
                         &[
@@ -296,8 +359,81 @@ impl PostgresMemoryStore {
                     )));
                 }
                 let client = self.client().await?;
+                if self.search_surface_mode == PostgresSearchSurfaceMode::Disabled {
+                    return Err(MemoryStoreError::unsupported(
+                        "PostgreSQL vector search is disabled by TANDEM_MEMORY_SEARCH_SURFACE_MODE",
+                    ));
+                }
+                if self.search_surface_mode == PostgresSearchSurfaceMode::EncryptedRerank {
+                    let rows = client.query(
+                        "SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,
+                                data_audit_id,owner_org_unit_id,embedding_ciphertext,embedding_envelope,
+                                search_policy_decision_id,search_audit_id
+                         FROM tandem_memory_chunks
+                         WHERE tenant_org_id=$1 AND tenant_workspace_id=$2
+                           AND tenant_deployment_id=$3 AND tier=$4
+                           AND ($5::text IS NULL OR project_id=$5)
+                           AND ($6::text IS NULL OR session_id=$6)
+                           AND ($7::text IS NULL OR owner_org_unit_id=$7)
+                           AND (owner_subject IS NULL OR owner_subject=$8)
+                           AND embedding_ciphertext IS NOT NULL
+                         ORDER BY created_at DESC LIMIT $9",
+                        &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),
+                          &selector_tier(&selector),&selector.project_id,&selector.session_id,
+                          &scope.org_unit,&scope.subject,&self.rerank_candidate_limit]
+                    ).await.map_err(|error| store_error("load encrypted PostgreSQL vector candidates", error, true))?;
+                    let mut hits = rows
+                        .into_iter()
+                        .map(|row| {
+                            let org_unit: Option<String> = row.get(5);
+                            let chunk: MemoryChunk = self.decode_payload(
+                                row.get(0),
+                                row.get(1),
+                                row.get(2),
+                                &scope.tenant,
+                                org_unit.clone(),
+                                row.get(3),
+                                row.get(4),
+                            )?;
+                            let ciphertext: String = row.get(6);
+                            let envelope = row
+                                .get::<_, Option<serde_json::Value>>(7)
+                                .map(from_json)
+                                .transpose()?;
+                            let policy_id: String = row.get(8);
+                            let audit_id: String = row.get(9);
+                            let candidate = self.decrypt_embedding(
+                                &ciphertext,
+                                envelope.as_ref(),
+                                &scope.tenant,
+                                org_unit,
+                                &policy_id,
+                                &audit_id,
+                            )?;
+                            if candidate.len() != self.embedding_dimension {
+                                return Err(MemoryStoreError::new(
+                                    MemoryStoreErrorKind::CorruptData,
+                                    "encrypted PostgreSQL embedding has the wrong dimension",
+                                ));
+                            }
+                            Ok((
+                                chunk,
+                                rerank_score(self.distance_metric, &query_embedding, &candidate),
+                            ))
+                        })
+                        .collect::<MemoryStoreResult<Vec<(MemoryChunk, f64)>>>()?;
+                    hits.sort_by(|left, right| {
+                        right
+                            .1
+                            .total_cmp(&left.1)
+                            .then_with(|| left.0.id.cmp(&right.0.id))
+                    });
+                    hits.truncate(limit.clamp(1, 1000) as usize);
+                    return Ok(MemoryStoreQueryResult::SimilarChunks(hits));
+                }
                 let sql = format!(
-                    "SELECT data, embedding {operator} $9 AS distance
+                    "SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,
+                            data_audit_id,owner_org_unit_id,embedding {operator} $9 AS distance
                      FROM tandem_memory_chunks
                      WHERE tenant_org_id=$1 AND tenant_workspace_id=$2
                        AND tenant_deployment_id=$3 AND tier=$4
@@ -305,6 +441,7 @@ impl PostgresMemoryStore {
                        AND ($6::text IS NULL OR session_id=$6)
                        AND ($7::text IS NULL OR owner_org_unit_id=$7)
                        AND (owner_subject IS NULL OR owner_subject=$8)
+                       AND embedding IS NOT NULL
                      ORDER BY embedding {operator} $9 LIMIT $10",
                     operator = self.distance_metric.operator()
                 );
@@ -327,8 +464,16 @@ impl PostgresMemoryStore {
                 let hits = rows
                     .into_iter()
                     .map(|row| {
-                        let chunk = from_json(row.get(0))?;
-                        let distance: f64 = row.get(1);
+                        let chunk = self.decode_payload(
+                            row.get(0),
+                            row.get(1),
+                            row.get(2),
+                            &scope.tenant,
+                            row.get(5),
+                            row.get(3),
+                            row.get(4),
+                        )?;
+                        let distance: f64 = row.get(6);
                         let score = match self.distance_metric {
                             PostgresDistanceMetric::InnerProduct => -distance,
                             _ => 1.0 / (1.0 + distance.max(0.0)),
@@ -478,6 +623,7 @@ impl PostgresMemoryStore {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn global_records(
         &self,
         scope: &MemoryReadScope,
@@ -489,8 +635,22 @@ impl PostgresMemoryStore {
         offset: i64,
     ) -> MemoryStoreResult<Vec<GlobalMemoryRecord>> {
         let client = self.client().await?;
+        let database_query =
+            if self.search_surface_mode == PostgresSearchSurfaceMode::PlaintextPgvector {
+                query
+            } else {
+                None
+            };
+        let database_limit = if query.is_some()
+            && self.search_surface_mode != PostgresSearchSurfaceMode::PlaintextPgvector
+        {
+            self.rerank_candidate_limit
+        } else {
+            limit.clamp(1, 1000)
+        };
         let rows = client.query(
-            "SELECT data FROM tandem_memory_global_records
+            "SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,
+                    data_audit_id,owner_org_unit_id FROM tandem_memory_global_records
              WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3
                AND (owner_subject=$4 OR (private=false AND owner_org_unit_id IS NOT NULL)
                     OR (owner_subject IS NULL AND owner_org_unit_id IS NULL AND user_id=$5))
@@ -502,8 +662,35 @@ impl PostgresMemoryStore {
              ORDER BY created_at_ms DESC LIMIT $11 OFFSET $12",
             &[&scope.tenant.org_id, &scope.tenant.workspace_id, &deployment(&scope.tenant),
               &scope.subject, &user_id, &scope.org_unit, &chrono::Utc::now().timestamp_millis(),
-              &project_tag, &channel_tag, &query, &limit.clamp(1, 1000), &offset.max(0)]
+              &project_tag, &channel_tag, &database_query, &database_limit, &offset.max(0)]
         ).await.map_err(|error| store_error("query PostgreSQL global memory", error, true))?;
-        rows.into_iter().map(|row| from_json(row.get(0))).collect()
+        let mut records = rows
+            .into_iter()
+            .map(|row| {
+                self.decode_payload(
+                    row.get(0),
+                    row.get(1),
+                    row.get(2),
+                    &scope.tenant,
+                    row.get(5),
+                    row.get(3),
+                    row.get(4),
+                )
+            })
+            .collect::<MemoryStoreResult<Vec<GlobalMemoryRecord>>>()?;
+        if let Some(query) = query
+            .filter(|_| self.search_surface_mode != PostgresSearchSurfaceMode::PlaintextPgvector)
+        {
+            let terms = query
+                .split_whitespace()
+                .map(str::to_ascii_lowercase)
+                .collect::<Vec<_>>();
+            records.retain(|record| {
+                let content = record.content.to_ascii_lowercase();
+                terms.iter().all(|term| content.contains(term))
+            });
+            records.truncate(limit.clamp(1, 1000) as usize);
+        }
+        Ok(records)
     }
 }

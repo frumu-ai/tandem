@@ -219,6 +219,41 @@ jobs:
       - name: Run tests
         run: cargo test --manifest-path apps/tandem-desktop/src-tauri/Cargo.toml
 
+  test-postgres-memory:
+    name: Test PostgreSQL Memory
+    runs-on: ubuntu-22.04
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: tandem
+          POSTGRES_DB: tandem
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d tandem"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TANDEM_TEST_POSTGRES_URL: postgres://postgres:tandem@localhost:5432/tandem
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run PostgreSQL memory contract tests
+        run: cargo test -p tandem-memory --features postgres postgres_store::tests
+
+      - name: Lint PostgreSQL memory backend
+        run: cargo clippy -p tandem-memory --features postgres --lib -- -D warnings
+
   build:
     name: Build (${{ matrix.platform }})
     # Only run builds on manual trigger or workflow_dispatch

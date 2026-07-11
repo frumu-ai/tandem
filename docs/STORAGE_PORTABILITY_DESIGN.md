@@ -22,9 +22,10 @@ has the following completed foundation:
 - **Private owner scope:** `private` and `owner_subject` are queryable columns
   on memory records and chunks. Tenant, active org-unit, and shared-or-owner
   predicates run before FTS/vector ranking, pagination, and mutation (TAN-679).
-- **No PostgreSQL backend.** There is no `pgvector`, `tokio-postgres`, `sqlx`,
-  or other Postgres dependency in the workspace; the pgvector path below is
-  unimplemented design, tracked as TAN-678.
+- **PostgreSQL backend:** `PostgresMemoryStore` implements the production
+  contract with `tokio-postgres`, pooled connections, transactional migrations,
+  and pgvector. Enterprise builds include it and select it at runtime with
+  `TANDEM_MEMORY_BACKEND=postgres`.
 - **Envelope encryption** (TAN-666) shipped: per-scope DEK envelopes with
   hosted-KMS key scoping (`envelope.rs`, `envelope_crypto.rs`,
   `kms_providers.rs`, `decrypt_broker.rs`, `dek_cache.rs`).
@@ -53,9 +54,9 @@ has the following completed foundation:
   database retained by the SQLite constructor is a compatibility handle, not a
   business-logic dependency; `new_with_store` runs the same manager against any
   contract implementation.
-- **Workspace dependencies:** no `sqlx`, `tokio-postgres`, `diesel`, `sea-orm`,
-  or `pgvector` is used by the SQLite backend. The contract uses the existing
-  `async-trait` and `tokio` dependencies.
+- **Workspace dependencies:** PostgreSQL support is feature-gated in
+  `tandem-memory`; SQLite-only desktop builds do not link the Postgres client or
+  pgvector adapter.
 
 ## Decision 1 — backend abstraction (TAN-659)
 
@@ -106,9 +107,9 @@ pub trait MemoryStore: Send + Sync {
   storage scope is enforced before ranking and limits in each backend.
 - `MemoryDatabase` = current rusqlite + sqlite-vec compatibility adapter behind
   the trait.
-- `PostgresMemoryStore` is the next concrete adapter (TAN-678), using
-  `tokio-postgres` (+ `deadpool-postgres`) and `pgvector` against this completed
-  operation contract and migration registry.
+- `PostgresMemoryStore` is the second concrete adapter (TAN-678), using
+  `tokio-postgres`, `deadpool-postgres`, and `pgvector` against the same
+  operation contract. Scope predicates are applied before exact pgvector top-k.
 
 ## Decision 2 — vector portability (TAN-660)
 
