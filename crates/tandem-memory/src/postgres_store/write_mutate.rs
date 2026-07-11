@@ -187,43 +187,6 @@ impl PostgresMemoryStore {
                     ));
                 }
                 let client = self.client().await?;
-                let existing = client
-                    .query_opt(
-                        "SELECT id FROM tandem_memory_global_records WHERE tenant_org_id=$1
-                     AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND user_id=$4
-                     AND source_type=$5 AND content_hash=$6 AND run_id=$7
-                     AND COALESCE(session_id,'')=COALESCE($8,'')
-                     AND COALESCE(message_id,'')=COALESCE($9,'')
-                     AND COALESCE(tool_name,'')=COALESCE($10,'')
-                     AND COALESCE(owner_org_unit_id,'')=COALESCE($11,'')
-                     AND private=$12 AND COALESCE(owner_subject,'')=COALESCE($13,'') LIMIT 1",
-                        &[
-                            &tenant.org_id,
-                            &tenant.workspace_id,
-                            &deployment(&tenant),
-                            &record.user_id,
-                            &record.source_type,
-                            &record.content_hash,
-                            &record.run_id,
-                            &record.session_id,
-                            &record.message_id,
-                            &record.tool_name,
-                            &owner_org,
-                            &owner_subject.is_some(),
-                            &owner_subject,
-                        ],
-                    )
-                    .await
-                    .map_err(|error| store_error("dedupe PostgreSQL global memory", error, true))?;
-                if let Some(row) = existing {
-                    return Ok(MemoryStoreWriteResult::GlobalRecord(
-                        GlobalMemoryWriteResult {
-                            id: row.get(0),
-                            stored: false,
-                            deduped: true,
-                        },
-                    ));
-                }
                 let key_scope = memory_key_scope_from_metadata(&tenant, record.metadata.as_ref())
                     .with_owner_subject(owner_subject.clone());
                 let (data_class, source_binding_id) = Self::key_scope_columns(&key_scope)?;
@@ -235,13 +198,18 @@ impl PostgresMemoryStore {
                     } else {
                         ""
                     };
-                client.execute(
+                let inserted = client.query_opt(
                     "INSERT INTO tandem_memory_global_records
                      (id,tenant_org_id,tenant_workspace_id,tenant_deployment_id,owner_org_unit_id,
                       owner_subject,private,data_class,source_binding_id,user_id,source_type,content_hash,run_id,session_id,message_id,
                       tool_name,project_tag,channel_tag,demoted,expires_at_ms,created_at_ms,search_content,
                       data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id)
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)",
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
+                     ON CONFLICT (tenant_org_id,tenant_workspace_id,tenant_deployment_id,user_id,
+                       source_type,content_hash,run_id,(COALESCE(session_id,'')),
+                       (COALESCE(message_id,'')),(COALESCE(tool_name,'')),
+                       (COALESCE(owner_org_unit_id,'')),private,(COALESCE(owner_subject,'')))
+                     DO NOTHING RETURNING id",
                     &[&record.id,&tenant.org_id,&tenant.workspace_id,&deployment(&tenant),&owner_org,
                       &owner_subject,&owner_subject.is_some(),&data_class,&source_binding_id,
                       &record.user_id,&record.source_type,
@@ -250,11 +218,46 @@ impl PostgresMemoryStore {
                       &record.expires_at_ms.map(|value| value as i64),&(record.created_at_ms as i64),
                       &search_content,&data,&data_ciphertext,&data_envelope,&data_policy_id,&data_audit_id]
                 ).await.map_err(|error| store_error("write PostgreSQL global memory", error, false))?;
+                let (id, stored, deduped) = if let Some(row) = inserted {
+                    (row.get(0), true, false)
+                } else {
+                    let row = client
+                        .query_one(
+                            "SELECT id FROM tandem_memory_global_records WHERE tenant_org_id=$1
+                         AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND user_id=$4
+                         AND source_type=$5 AND content_hash=$6 AND run_id=$7
+                         AND COALESCE(session_id,'')=COALESCE($8,'')
+                         AND COALESCE(message_id,'')=COALESCE($9,'')
+                         AND COALESCE(tool_name,'')=COALESCE($10,'')
+                         AND COALESCE(owner_org_unit_id,'')=COALESCE($11,'')
+                         AND private=$12 AND COALESCE(owner_subject,'')=COALESCE($13,'') LIMIT 1",
+                            &[
+                                &tenant.org_id,
+                                &tenant.workspace_id,
+                                &deployment(&tenant),
+                                &record.user_id,
+                                &record.source_type,
+                                &record.content_hash,
+                                &record.run_id,
+                                &record.session_id,
+                                &record.message_id,
+                                &record.tool_name,
+                                &owner_org,
+                                &owner_subject.is_some(),
+                                &owner_subject,
+                            ],
+                        )
+                        .await
+                        .map_err(|error| {
+                            store_error("read deduped PostgreSQL global memory", error, true)
+                        })?;
+                    (row.get(0), false, true)
+                };
                 Ok(MemoryStoreWriteResult::GlobalRecord(
                     GlobalMemoryWriteResult {
-                        id: record.id,
-                        stored: true,
-                        deduped: false,
+                        id,
+                        stored,
+                        deduped,
                     },
                 ))
             }
@@ -588,6 +591,12 @@ impl PostgresMemoryStore {
                 project_id,
                 vacuum,
             } => {
+                if scope.org_unit.is_some() || scope.subject.is_some() {
+                    return Err(MemoryStoreError::new(
+                        MemoryStoreErrorKind::ScopeViolation,
+                        "PostgreSQL project file-index cleanup cannot widen an org-unit/subject scope",
+                    ));
+                }
                 let rows = client.query("DELETE FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND tier='project' AND project_id=$4 AND source='file' RETURNING COALESCE(octet_length(data::text),octet_length(data_ciphertext))::bigint",
                     &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&project_id]).await.map_err(|error| store_error("clear PostgreSQL file index", error, true))?;
                 client.execute("DELETE FROM tandem_memory_entities WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND entity_type='import_index' AND key1=$4",
@@ -1117,13 +1126,18 @@ impl PostgresMemoryStore {
                             } else {
                                 ""
                             };
-                            transaction.execute(
+                            let inserted = transaction.query_opt(
                             "INSERT INTO tandem_memory_global_records
                              (id,tenant_org_id,tenant_workspace_id,tenant_deployment_id,owner_org_unit_id,
                               owner_subject,private,data_class,source_binding_id,user_id,source_type,content_hash,run_id,session_id,message_id,
                               tool_name,project_tag,channel_tag,demoted,expires_at_ms,created_at_ms,search_content,
                               data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id)
-                             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)",
+                             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
+                             ON CONFLICT (tenant_org_id,tenant_workspace_id,tenant_deployment_id,user_id,
+                               source_type,content_hash,run_id,(COALESCE(session_id,'')),
+                               (COALESCE(message_id,'')),(COALESCE(tool_name,'')),
+                               (COALESCE(owner_org_unit_id,'')),private,(COALESCE(owner_subject,'')))
+                             DO NOTHING RETURNING id",
                             &[&record.id,&tenant.org_id,&tenant.workspace_id,&deployment(&tenant),&owner_org,
                               &owner_subject,&owner_subject.is_some(),&data_class,&source_binding_id,
                               &record.user_id,&record.source_type,
@@ -1132,11 +1146,29 @@ impl PostgresMemoryStore {
                               &record.expires_at_ms.map(|value| value as i64),&(record.created_at_ms as i64),
                               &search_content,&data,&data_ciphertext,&data_envelope,&data_policy_id,&data_audit_id]
                             ).await.map_err(|error| store_error("write atomic PostgreSQL global memory", error, false))?;
+                            let (id, stored, deduped) = if let Some(row) = inserted {
+                                (row.get(0), true, false)
+                            } else {
+                                let row = transaction.query_one(
+                                    "SELECT id FROM tandem_memory_global_records WHERE tenant_org_id=$1
+                                     AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND user_id=$4
+                                     AND source_type=$5 AND content_hash=$6 AND run_id=$7
+                                     AND COALESCE(session_id,'')=COALESCE($8,'')
+                                     AND COALESCE(message_id,'')=COALESCE($9,'')
+                                     AND COALESCE(tool_name,'')=COALESCE($10,'')
+                                     AND COALESCE(owner_org_unit_id,'')=COALESCE($11,'')
+                                     AND private=$12 AND COALESCE(owner_subject,'')=COALESCE($13,'') LIMIT 1",
+                                    &[&tenant.org_id,&tenant.workspace_id,&deployment(&tenant),&record.user_id,
+                                      &record.source_type,&record.content_hash,&record.run_id,&record.session_id,
+                                      &record.message_id,&record.tool_name,&owner_org,&owner_subject.is_some(),&owner_subject]
+                                ).await.map_err(|error| store_error("read atomic deduped PostgreSQL global memory", error, false))?;
+                                (row.get(0), false, true)
+                            };
                             MemoryStoreBatchValue::Write(MemoryStoreWriteResult::GlobalRecord(
                                 GlobalMemoryWriteResult {
-                                    id: record.id,
-                                    stored: true,
-                                    deduped: false,
+                                    id,
+                                    stored,
+                                    deduped,
                                 },
                             ))
                         }

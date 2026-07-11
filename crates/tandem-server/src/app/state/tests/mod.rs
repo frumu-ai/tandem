@@ -751,11 +751,15 @@ fn prompt_memory_access_uses_verified_actor_not_client_id() {
         PromptMemoryAccess::Governed {
             tenant_context,
             subject,
+            decrypt_principal,
             ..
         } => {
             assert_eq!(tenant_context.org_id, "org-a");
             assert_eq!(tenant_context.workspace_id, "workspace-a");
             assert_eq!(subject, "user-a");
+            let decrypt_principal = decrypt_principal.expect("governed prompt decrypt principal");
+            assert_eq!(decrypt_principal.tenant_scope.org_id, "org-a");
+            assert_eq!(decrypt_principal.allowed_owner_subjects, vec!["user-a"]);
         }
         other => panic!("expected governed prompt memory access, got {other:?}"),
     }

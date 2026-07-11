@@ -217,6 +217,63 @@ async fn postgres_atomic_batch_rolls_back_on_primary_key_failure() {
 }
 
 #[tokio::test]
+async fn postgres_concurrent_global_writes_dedupe_without_error() {
+    let Some(url) = test_url() else {
+        return;
+    };
+    let store = PostgresMemoryStore::connect(config(url, 4))
+        .await
+        .expect("open PostgreSQL test store");
+    store
+        .recover_backend(MemoryBackendRecoveryRequest {
+            action: MemoryBackendRecoveryAction::ResetAllData,
+            confirm_data_loss: true,
+        })
+        .await
+        .expect("reset PostgreSQL fixtures");
+    let tenant = tenant("concurrent-dedupe");
+    let first = global_record("concurrent-first", &tenant);
+    let mut second = first.clone();
+    second.id = "concurrent-second".to_string();
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(3));
+    let spawn_write = |store: PostgresMemoryStore,
+                       barrier: std::sync::Arc<tokio::sync::Barrier>,
+                       tenant: MemoryTenantScope,
+                       record: GlobalMemoryRecord| {
+        tokio::spawn(async move {
+            barrier.wait().await;
+            store
+                .write(MemoryStoreWriteRequest::GlobalRecord {
+                    scope: MemoryWriteScope::tenant(tenant),
+                    record,
+                })
+                .await
+        })
+    };
+    let first_write = spawn_write(store.clone(), barrier.clone(), tenant.clone(), first);
+    let second_write = spawn_write(store, barrier.clone(), tenant, second);
+    barrier.wait().await;
+    let first_result = first_write
+        .await
+        .expect("join first write")
+        .expect("first write");
+    let second_result = second_write
+        .await
+        .expect("join second write")
+        .expect("second write");
+    let results = [first_result, second_result]
+        .into_iter()
+        .map(|result| match result {
+            MemoryStoreWriteResult::GlobalRecord(result) => result,
+            other => panic!("expected global write result, got {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(results.iter().filter(|result| result.stored).count(), 1);
+    assert_eq!(results.iter().filter(|result| result.deduped).count(), 1);
+    assert_eq!(results[0].id, results[1].id);
+}
+
+#[tokio::test]
 async fn postgres_encrypted_mode_seals_payloads_and_reranks_in_scope() {
     let Some(url) = test_url() else {
         return;
@@ -914,6 +971,17 @@ async fn postgres_clear_operations_preserve_other_memory_tiers() {
             .await
             .expect("write file-clear fixture");
     }
+    let mut narrowed_scope = MemoryReadScope::tenant(tenant.clone());
+    narrowed_scope.org_unit = Some("finance".to_string());
+    let narrowed_error = store
+        .mutate(MemoryStoreMutationRequest::ClearProjectFileIndex {
+            scope: narrowed_scope,
+            project_id: "project".to_string(),
+            vacuum: false,
+        })
+        .await
+        .expect_err("narrowed file-index cleanup must fail closed");
+    assert_eq!(narrowed_error.kind, MemoryStoreErrorKind::ScopeViolation);
     let cleared = store
         .mutate(MemoryStoreMutationRequest::ClearProjectFileIndex {
             scope: MemoryReadScope::trusted_unrestricted(tenant.clone()),
