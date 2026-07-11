@@ -1723,11 +1723,8 @@ fn coder_memory_tenant_scope(tenant_context: &tandem_types::TenantContext) -> Me
 pub(super) fn coder_project_memory_decrypt_principal(
     tenant_context: &tandem_types::TenantContext,
 ) -> Option<tandem_memory::MemoryDecryptPrincipal> {
-    let actor_id = tenant_context
-        .actor_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|actor_id| !actor_id.is_empty())?;
+    let actor_id = tenant_context.actor_id.as_deref()?.trim();
+    (!actor_id.is_empty()).then_some(())?;
     Some(
         tandem_memory::MemoryDecryptPrincipal::retrieval_gateway(
             format!("coder-project-memory:{actor_id}"),
