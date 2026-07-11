@@ -383,20 +383,25 @@ fn import_rows(
     for wait in &rows.waits {
         transaction.execute(
             "INSERT INTO automation_waits
-                (wait_id, goal_id, run_id, status, wait_json, updated_at_ms,
-                 org_id, workspace_id, deployment_id)
+                (wait_id, goal_id, run_id, org_id, workspace_id, deployment_id,
+                 status, wait_json, updated_at_ms)
              VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(wait_id) DO UPDATE SET wait_json = excluded.wait_json,
-                 status = excluded.status, updated_at_ms = excluded.updated_at_ms",
+             ON CONFLICT(wait_id, run_id, org_id, workspace_id, deployment_id)
+             DO UPDATE SET wait_json = excluded.wait_json, status = excluded.status,
+                 updated_at_ms = excluded.updated_at_ms",
             params![
                 wait.wait_id,
                 wait.run_id,
+                wait.scope.tenant_context.org_id,
+                wait.scope.tenant_context.workspace_id,
+                wait.scope
+                    .tenant_context
+                    .deployment_id
+                    .as_deref()
+                    .unwrap_or(""),
                 enum_name(&wait.status)?,
                 serde_json::to_string(wait)?,
                 wait.updated_at_ms,
-                wait.scope.tenant_context.org_id,
-                wait.scope.tenant_context.workspace_id,
-                wait.scope.tenant_context.deployment_id,
             ],
         )?;
     }
@@ -557,8 +562,8 @@ mod tests {
 
     use super::*;
     use crate::stateful_runtime::{
-        OrchestrationStorePaths, StatefulRuntimeScope, StatefulWorkflowPhase,
-        StatefulWorkflowRunStatus,
+        OrchestrationStorePaths, StatefulReliabilityStoreFile, StatefulRuntimeScope,
+        StatefulWorkflowPhase, StatefulWorkflowRunStatus,
     };
 
     fn store(root: &Path) -> OrchestrationStateStore {
@@ -650,6 +655,35 @@ mod tests {
             consumed_by_automation_id: None,
             consumed_at_ms: None,
         }
+    }
+
+    fn reliability() -> StatefulReliabilityStoreFile {
+        let scope = serde_json::to_value(StatefulRuntimeScope::from_tenant_context(
+            TenantContext::local_implicit(),
+        ))
+        .unwrap();
+        serde_json::from_value(json!({
+            "schema_version": 1,
+            "outbox": [{
+                "schema_version": 1, "outbox_id": "outbox-1", "scope": scope.clone(),
+                "operation": "test", "status": "sent", "created_at_ms": 10, "updated_at_ms": 10
+            }],
+            "tool_effects": [{
+                "schema_version": 1, "effect_id": "effect-1", "scope": scope.clone(),
+                "status": "succeeded", "operation": "test", "audit_hash": "sha256:audit",
+                "created_at_ms": 10, "updated_at_ms": 10
+            }],
+            "dead_letters": [{
+                "schema_version": 1, "dead_letter_id": "dead-letter-1", "source_type": "tool_effect",
+                "source_id": "effect-1", "scope": scope.clone(), "reason": "test", "status": "resolved",
+                "created_at_ms": 10, "updated_at_ms": 10
+            }],
+            "compensations": [{
+                "schema_version": 1, "compensation_id": "compensation-1", "scope": scope,
+                "status": "completed", "compensation_type": "test", "created_at_ms": 10, "updated_at_ms": 10
+            }]
+        }))
+        .unwrap()
     }
 
     #[test]
@@ -833,12 +867,37 @@ mod tests {
     }
 
     #[test]
+    fn migration_preserves_duplicate_wait_ids_in_distinct_scope_boundaries() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = LegacyRuntimeMigrationPaths::from_runtime_root(directory.path());
+        let first = wait();
+        let mut second = wait();
+        second.run_id = "run-2".to_string();
+        second.scope = StatefulRuntimeScope::from_tenant_context(
+            TenantContext::explicit_user_workspace("org-b", "workspace-b", None, "user-b"),
+        );
+        std::fs::write(
+            &paths.waits_path,
+            serde_json::to_vec(&vec![first, second]).unwrap(),
+        )
+        .unwrap();
+
+        let store = store(directory.path());
+        store.import_legacy_runtime_state(&paths, 100).unwrap();
+        assert_eq!(store.load_stateful_runtime_waits().unwrap().len(), 2);
+    }
+
+    #[test]
     fn migration_write_failures_roll_back_every_imported_record_type() {
         for table in [
             "stateful_migrations",
             "stateful_events",
             "stateful_snapshots",
             "automation_waits",
+            "outbox_effects",
+            "tool_effects",
+            "dead_letters",
+            "compensations",
             "legacy_handoffs",
             "legacy_handoff_quarantine",
         ] {
@@ -859,6 +918,11 @@ mod tests {
             std::fs::write(
                 &paths.waits_path,
                 serde_json::to_vec(&vec![wait()]).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                &paths.reliability_path,
+                serde_json::to_vec(&reliability()).unwrap(),
             )
             .unwrap();
             let handoff_root = directory.path().join("handoffs");
@@ -891,6 +955,10 @@ mod tests {
                         "stateful_events",
                         "stateful_snapshots",
                         "automation_waits",
+                        "outbox_effects",
+                        "tool_effects",
+                        "dead_letters",
+                        "compensations",
                         "legacy_handoffs",
                         "legacy_handoff_quarantine",
                     ] {
@@ -912,13 +980,40 @@ mod tests {
                     report.events,
                     report.snapshots,
                     report.waits,
-                    report.handoffs
+                    report.outbox,
+                    report.tool_effects,
+                    report.dead_letters,
+                    report.compensations,
+                    report.handoffs,
                 ),
-                (1, 1, 1, 1),
+                (1, 1, 1, 1, 1, 1, 1, 1),
                 "{table} retry should import every valid record"
             );
             assert_eq!(report.quarantined_handoffs, 1);
             assert!(store.legacy_runtime_migration_complete().unwrap());
+            store
+                .with_connection(|connection| {
+                    for table in [
+                        "stateful_events",
+                        "stateful_snapshots",
+                        "automation_waits",
+                        "outbox_effects",
+                        "tool_effects",
+                        "dead_letters",
+                        "compensations",
+                        "legacy_handoffs",
+                        "legacy_handoff_quarantine",
+                    ] {
+                        let count: u64 = connection.query_row(
+                            &format!("SELECT COUNT(*) FROM {table}"),
+                            [],
+                            |row| row.get(0),
+                        )?;
+                        assert_eq!(count, 1, "{table} was not restored by retry");
+                    }
+                    Ok(())
+                })
+                .unwrap();
         }
     }
 

@@ -92,7 +92,9 @@ impl OrchestrationStateStore {
             let cancelled_run = cancelled.map(|cancelled| cancelled.run);
             let cancelled_wait_ids = active_run_id
                 .as_deref()
-                .map(|run_id| cancel_waits(&transaction, run_id, reason, now_ms))
+                .map(|run_id| {
+                    cancel_waits(&transaction, run_id, &goal.tenant_context, reason, now_ms)
+                })
                 .transpose()?
                 .unwrap_or_default();
             let dead_lettered_handoff_ids =
@@ -218,17 +220,25 @@ fn cancel_active_run(
 fn cancel_waits(
     transaction: &rusqlite::Transaction<'_>,
     run_id: &str,
+    tenant: &TenantContext,
     reason: &str,
     now_ms: u64,
 ) -> anyhow::Result<Vec<String>> {
     let mut statement = transaction.prepare(
         "SELECT wait_id, wait_json FROM automation_waits
-         WHERE run_id = ?1 AND status IN ('waiting', 'claimed')",
+         WHERE run_id = ?1 AND org_id = ?2 AND workspace_id = ?3 AND deployment_id = ?4
+           AND status IN ('waiting', 'claimed')",
     )?;
     let rows = statement
-        .query_map([run_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
+        .query_map(
+            params![
+                run_id,
+                tenant.org_id,
+                tenant.workspace_id,
+                tenant.deployment_id.as_deref().unwrap_or(""),
+            ],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(statement);
     let mut ids = Vec::new();
@@ -247,8 +257,17 @@ fn cancel_waits(
         ));
         transaction.execute(
             "UPDATE automation_waits SET status = 'cancelled', wait_json = ?2,
-                updated_at_ms = ?3 WHERE wait_id = ?1",
-            params![wait_id, serde_json::to_string(&wait)?, now_ms],
+                updated_at_ms = ?3 WHERE wait_id = ?1 AND run_id = ?4
+                AND org_id = ?5 AND workspace_id = ?6 AND deployment_id = ?7",
+            params![
+                wait_id,
+                serde_json::to_string(&wait)?,
+                now_ms,
+                wait.run_id,
+                tenant.org_id,
+                tenant.workspace_id,
+                tenant.deployment_id.as_deref().unwrap_or(""),
+            ],
         )?;
         ids.push(wait.wait_id);
     }
@@ -492,9 +511,9 @@ mod tests {
             .with_connection(|connection| {
                 connection.execute(
                     "INSERT INTO automation_waits
-                        (wait_id, goal_id, run_id, status, wait_json, updated_at_ms,
-                         org_id, workspace_id, deployment_id)
-                     VALUES (?1, 'goal-1', ?2, 'claimed', ?3, ?4, 'local', 'local', NULL)",
+                        (wait_id, goal_id, run_id, org_id, workspace_id, deployment_id,
+                         status, wait_json, updated_at_ms)
+                     VALUES (?1, 'goal-1', ?2, 'local', 'local', '', 'claimed', ?3, ?4)",
                     params![
                         wait.wait_id,
                         wait.run_id,
@@ -581,6 +600,61 @@ mod tests {
                 assert_eq!(outbox, 1);
                 assert_eq!(wait_status, "cancelled");
                 assert_eq!(handoff_status, "dead_lettered");
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn cancellation_only_settles_waits_in_the_goal_tenant() {
+        let (_directory, store) = store();
+        seed(&store);
+        let mut foreign_wait = wait();
+        foreign_wait.wait_id = "wait-foreign".to_string();
+        foreign_wait.scope = StatefulRuntimeScope::from_tenant_context(
+            TenantContext::explicit_user_workspace("org-b", "workspace-b", None, "user-b"),
+        );
+        store
+            .with_connection(|connection| {
+                connection.execute(
+                    "INSERT INTO automation_waits
+                        (wait_id, goal_id, run_id, org_id, workspace_id, deployment_id,
+                         status, wait_json, updated_at_ms)
+                     VALUES (?1, NULL, ?2, ?3, ?4, '', 'claimed', ?5, ?6)",
+                    params![
+                        foreign_wait.wait_id,
+                        foreign_wait.run_id,
+                        foreign_wait.scope.tenant_context.org_id,
+                        foreign_wait.scope.tenant_context.workspace_id,
+                        serde_json::to_string(&foreign_wait)?,
+                        foreign_wait.updated_at_ms,
+                    ],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        let actor = PrincipalRef::new(PrincipalKind::HumanUser, "operator");
+        let result = store
+            .cancel_goal(
+                "goal-1",
+                &TenantContext::local_implicit(),
+                "operator cancelled",
+                &actor,
+                20,
+            )
+            .unwrap();
+
+        assert_eq!(result.cancelled_wait_ids, vec!["wait-1"]);
+        store
+            .with_connection(|connection| {
+                let foreign_status: String = connection.query_row(
+                    "SELECT status FROM automation_waits
+                     WHERE wait_id = 'wait-foreign' AND org_id = 'org-b'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(foreign_status, "claimed");
                 Ok(())
             })
             .unwrap();
