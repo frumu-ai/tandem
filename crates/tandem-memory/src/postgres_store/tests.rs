@@ -306,6 +306,7 @@ async fn postgres_encrypted_mode_seals_payloads_and_reranks_in_scope() {
         ("best", vec![0.9, 0.1, 0.0]),
     ] {
         let mut encrypted_chunk = chunk(id, tenant.clone());
+        encrypted_chunk.source = "file".to_string();
         encrypted_chunk.source_path = Some("encrypted-source".to_string());
         encrypted_chunk.metadata = Some(serde_json::json!({
             "enterprise_source_binding": {
@@ -955,7 +956,7 @@ async fn postgres_clear_operations_preserve_other_memory_tiers() {
     project_file.source_path = Some("guide.md".to_string());
     let mut project_connector = chunk("project-connector", tenant.clone());
     project_connector.source = "connector".to_string();
-    project_connector.source_path = Some("connector/item".to_string());
+    project_connector.source_path = Some("guide.md".to_string());
     let mut session_file = chunk("session-file", tenant.clone());
     session_file.tier = MemoryTier::Session;
     session_file.session_id = Some("file-session".to_string());
@@ -971,6 +972,37 @@ async fn postgres_clear_operations_preserve_other_memory_tiers() {
             .await
             .expect("write file-clear fixture");
     }
+    store
+        .write(MemoryStoreWriteRequest::ProjectIndexStatus {
+            scope: MemoryWriteScope::tenant(tenant.clone()),
+            project_id: "project".to_string(),
+            total_files: 8,
+            processed_files: 7,
+            indexed_files: 5,
+            skipped_files: 1,
+            errors: 1,
+        })
+        .await
+        .expect("write project index status");
+    let stats = store
+        .read(MemoryStoreReadRequest::ProjectStats {
+            scope: MemoryReadScope::tenant(tenant.clone()),
+            project_id: "project".to_string(),
+        })
+        .await
+        .expect("read file and index stats");
+    assert!(matches!(
+        stats,
+        MemoryStoreReadResult::ProjectStats(stats)
+            if stats.project_chunks == 3
+                && stats.file_index_chunks == 1
+                && stats.last_indexed_at.is_some()
+                && stats.last_total_files == Some(8)
+                && stats.last_processed_files == Some(7)
+                && stats.last_indexed_files == Some(5)
+                && stats.last_skipped_files == Some(1)
+                && stats.last_errors == Some(1)
+    ));
     let mut narrowed_scope = MemoryReadScope::tenant(tenant.clone());
     narrowed_scope.org_unit = Some("finance".to_string());
     let source_path_error = store
@@ -1003,6 +1035,18 @@ async fn postgres_clear_operations_preserve_other_memory_tiers() {
         .await
         .expect_err("narrowed file-index cleanup must fail closed");
     assert_eq!(narrowed_error.kind, MemoryStoreErrorKind::ScopeViolation);
+    let source_path_deleted = store
+        .mutate(MemoryStoreMutationRequest::DeleteChunksBySourcePath {
+            scope: MemoryReadScope::tenant(tenant.clone()),
+            selector: MemoryChunkSelector::project("project"),
+            source_path: "guide.md".to_string(),
+        })
+        .await
+        .expect("delete file chunks by source path");
+    assert!(matches!(
+        source_path_deleted,
+        MemoryStoreMutationResult::SourcePathDelete(result) if result.chunks_deleted == 1
+    ));
     let cleared = store
         .mutate(MemoryStoreMutationRequest::ClearProjectFileIndex {
             scope: MemoryReadScope::trusted_unrestricted(tenant.clone()),

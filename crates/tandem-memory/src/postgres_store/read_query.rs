@@ -235,8 +235,8 @@ impl PostgresMemoryStore {
                 let row = client
                     .query_one(
                         "SELECT COUNT(*)::bigint, COALESCE(SUM(COALESCE(octet_length(data::text),octet_length(data_ciphertext))),0)::bigint,
-                            COUNT(*) FILTER (WHERE source_path IS NOT NULL)::bigint,
-                            COALESCE(SUM(COALESCE(octet_length(data::text),octet_length(data_ciphertext))) FILTER (WHERE source_path IS NOT NULL),0)::bigint
+                            COUNT(*) FILTER (WHERE source='file')::bigint,
+                            COALESCE(SUM(COALESCE(octet_length(data::text),octet_length(data_ciphertext))) FILTER (WHERE source='file'),0)::bigint
                          FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2
                            AND tenant_deployment_id=$3 AND tier='project' AND project_id=$4",
                         &[
@@ -256,6 +256,15 @@ impl PostgresMemoryStore {
                     )
                     .await?
                     .len() as i64;
+                let index_status = self
+                    .entity::<serde_json::Value>(&scope, "project_index_status", &project_id, "")
+                    .await?;
+                let status_value = |field: &str| {
+                    index_status
+                        .as_ref()
+                        .and_then(|status| status.get(field))
+                        .and_then(serde_json::Value::as_i64)
+                };
                 Ok(MemoryStoreReadResult::ProjectStats(ProjectMemoryStats {
                     project_id,
                     project_chunks: row.get(0),
@@ -263,12 +272,13 @@ impl PostgresMemoryStore {
                     file_index_chunks: row.get(2),
                     file_index_bytes: row.get(3),
                     indexed_files,
-                    last_indexed_at: None,
-                    last_total_files: None,
-                    last_processed_files: None,
-                    last_indexed_files: None,
-                    last_skipped_files: None,
-                    last_errors: None,
+                    last_indexed_at: status_value("updated_at_ms")
+                        .and_then(chrono::DateTime::from_timestamp_millis),
+                    last_total_files: status_value("total_files"),
+                    last_processed_files: status_value("processed_files"),
+                    last_indexed_files: status_value("indexed_files"),
+                    last_skipped_files: status_value("skipped_files"),
+                    last_errors: status_value("errors"),
                 }))
             }
             MemoryStoreReadRequest::KnowledgeSpace { scope, id } => {
