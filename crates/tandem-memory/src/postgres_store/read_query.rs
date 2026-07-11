@@ -33,6 +33,22 @@ fn validate_chunk_list_selector(selector: &MemoryChunkSelector) -> MemoryStoreRe
     }
 }
 
+fn validate_chunk_search_selector(selector: &MemoryChunkSelector) -> MemoryStoreResult<()> {
+    match selector.tier {
+        crate::types::MemoryTier::Session
+            if selector.session_id.as_deref().is_some_and(str::is_empty) =>
+        {
+            Err(MemoryStoreError::invalid(
+                "session_id must be non-empty when provided",
+            ))
+        }
+        crate::types::MemoryTier::Project | crate::types::MemoryTier::Global => {
+            validate_chunk_list_selector(selector)
+        }
+        crate::types::MemoryTier::Session => Ok(()),
+    }
+}
+
 fn current_principal_allows_row(
     tenant: &crate::types::MemoryTenantScope,
     owner_subject: Option<&str>,
@@ -549,6 +565,7 @@ impl PostgresMemoryStore {
                 query_embedding,
                 limit,
             } => {
+                validate_chunk_search_selector(&selector)?;
                 if query_embedding.len() != self.embedding_dimension {
                     return Err(MemoryStoreError::invalid(format!(
                         "embedding dimension mismatch: expected {}, got {}",

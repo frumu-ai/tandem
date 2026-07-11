@@ -399,6 +399,12 @@ impl PostgresMemoryStore {
                 node_type,
                 metadata,
             } => {
+                if scope.org_unit.is_some() || scope.subject.is_some() {
+                    return Err(MemoryStoreError::new(
+                        MemoryStoreErrorKind::ScopeViolation,
+                        "PostgreSQL context nodes cannot persist org-unit/subject scope",
+                    ));
+                }
                 let now = chrono::Utc::now();
                 let node = MemoryNode {
                     id: uuid::Uuid::new_v4().to_string(),
@@ -409,10 +415,39 @@ impl PostgresMemoryStore {
                     updated_at: now,
                     metadata,
                 };
-                self.upsert_entity(&scope, "context_node_uri", &uri, "", &node)
-                    .await?;
-                self.upsert_entity(&scope, "context_node_id", &node.id, "", &node)
-                    .await?;
+                let data = json_value(&node)?;
+                let mut client = self.client().await?;
+                let transaction = client.transaction().await.map_err(|error| {
+                    store_error("start PostgreSQL context-node write", error, true)
+                })?;
+                let inserted = transaction
+                    .execute(
+                        "INSERT INTO tandem_memory_entities
+                         (tenant_org_id,tenant_workspace_id,tenant_deployment_id,entity_type,key1,key2,data)
+                         VALUES ($1,$2,$3,'context_node_uri',$4,'',$5)
+                         ON CONFLICT (tenant_org_id,tenant_workspace_id,tenant_deployment_id,entity_type,key1,key2)
+                         DO NOTHING",
+                        &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&uri,&data],
+                    )
+                    .await
+                    .map_err(|error| store_error("reserve PostgreSQL context URI", error, true))?;
+                if inserted == 0 {
+                    return Err(MemoryStoreError::invalid(format!(
+                        "context URI already exists: {uri}"
+                    )));
+                }
+                transaction
+                    .execute(
+                        "INSERT INTO tandem_memory_entities
+                         (tenant_org_id,tenant_workspace_id,tenant_deployment_id,entity_type,key1,key2,data)
+                         VALUES ($1,$2,$3,'context_node_id',$4,'',$5)",
+                        &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&node.id,&data],
+                    )
+                    .await
+                    .map_err(|error| store_error("write PostgreSQL context node", error, true))?;
+                transaction.commit().await.map_err(|error| {
+                    store_error("commit PostgreSQL context-node write", error, true)
+                })?;
                 Ok(MemoryStoreWriteResult::ContextNodeCreated(node.id))
             }
             MemoryStoreWriteRequest::ContextLayer {
@@ -459,6 +494,222 @@ impl PostgresMemoryStore {
                 Ok(MemoryStoreWriteResult::Stored)
             }
         }
+    }
+
+    async fn record_hygiene_cleanup(
+        &self,
+        tenant: &crate::types::MemoryTenantScope,
+        cleanup_type: &str,
+        tier: crate::types::MemoryTier,
+        project_id: Option<String>,
+        chunks_deleted: u64,
+    ) -> MemoryStoreResult<()> {
+        if chunks_deleted == 0 {
+            return Ok(());
+        }
+        let record = CleanupLogEntry {
+            id: uuid::Uuid::new_v4().to_string(),
+            cleanup_type: cleanup_type.to_string(),
+            tier,
+            project_id,
+            session_id: None,
+            chunks_deleted: chunks_deleted as i64,
+            bytes_reclaimed: 0,
+            created_at: chrono::Utc::now(),
+        };
+        self.upsert_entity(
+            &MemoryWriteScope::tenant(tenant.clone()),
+            "cleanup_log",
+            &record.id,
+            "",
+            &record,
+        )
+        .await
+    }
+
+    async fn run_hygiene_for_tenant(
+        &self,
+        tenant: &crate::types::MemoryTenantScope,
+        env_override_days: u32,
+    ) -> MemoryStoreResult<u64> {
+        let read_scope = MemoryReadScope::tenant(tenant.clone());
+        let defaults = crate::types::MemoryConfig::default();
+        let global_config = self
+            .entity::<crate::types::MemoryConfig>(&read_scope, "project_config", "__global__", "")
+            .await?
+            .unwrap_or(defaults.clone());
+        let session_days = if env_override_days > 0 {
+            env_override_days
+        } else {
+            global_config.session_retention_days.max(0) as u32
+        };
+        let client = self.client().await?;
+        let mut total = 0u64;
+
+        if session_days > 0 {
+            let cutoff = chrono::Utc::now() - chrono::Duration::days(session_days as i64);
+            let deleted = client
+                .execute(
+                    "DELETE FROM tandem_memory_chunks WHERE tenant_org_id=$1
+                     AND tenant_workspace_id=$2 AND tenant_deployment_id=$3
+                     AND tier='session' AND created_at<$4",
+                    &[
+                        &tenant.org_id,
+                        &tenant.workspace_id,
+                        &deployment(tenant),
+                        &cutoff,
+                    ],
+                )
+                .await
+                .map_err(|error| store_error("run PostgreSQL session hygiene", error, true))?;
+            self.record_hygiene_cleanup(
+                tenant,
+                "hygiene_session_retention",
+                crate::types::MemoryTier::Session,
+                None,
+                deleted,
+            )
+            .await?;
+            total += deleted;
+        }
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let expired = client
+            .execute(
+                "DELETE FROM tandem_memory_global_records WHERE tenant_org_id=$1
+                 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3
+                 AND expires_at_ms IS NOT NULL AND expires_at_ms<=$4",
+                &[
+                    &tenant.org_id,
+                    &tenant.workspace_id,
+                    &deployment(tenant),
+                    &now_ms,
+                ],
+            )
+            .await
+            .map_err(|error| store_error("reap expired PostgreSQL memory", error, true))?;
+        self.record_hygiene_cleanup(
+            tenant,
+            "hygiene_expired_records",
+            crate::types::MemoryTier::Global,
+            None,
+            expired,
+        )
+        .await?;
+        total += expired;
+
+        if global_config.exchange_retention_days > 0 {
+            let cutoff = (chrono::Utc::now()
+                - chrono::Duration::days(global_config.exchange_retention_days))
+            .timestamp_millis();
+            let deleted = client
+                .execute(
+                    "DELETE FROM tandem_memory_global_records WHERE tenant_org_id=$1
+                     AND tenant_workspace_id=$2 AND tenant_deployment_id=$3
+                     AND source_type IN ('user_message','assistant_final') AND created_at_ms<$4",
+                    &[
+                        &tenant.org_id,
+                        &tenant.workspace_id,
+                        &deployment(tenant),
+                        &cutoff,
+                    ],
+                )
+                .await
+                .map_err(|error| store_error("prune PostgreSQL exchange memory", error, true))?;
+            self.record_hygiene_cleanup(
+                tenant,
+                "hygiene_exchange_retention",
+                crate::types::MemoryTier::Global,
+                None,
+                deleted,
+            )
+            .await?;
+            total += deleted;
+        }
+
+        let projects = client
+            .query(
+                "SELECT DISTINCT project_id FROM tandem_memory_chunks WHERE tenant_org_id=$1
+                 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3
+                 AND tier='project' AND project_id IS NOT NULL",
+                &[&tenant.org_id, &tenant.workspace_id, &deployment(tenant)],
+            )
+            .await
+            .map_err(|error| store_error("list PostgreSQL hygiene projects", error, true))?;
+        for row in projects {
+            let project_id: String = row.get(0);
+            let max_chunks = self
+                .entity::<crate::types::MemoryConfig>(
+                    &read_scope,
+                    "project_config",
+                    &project_id,
+                    "",
+                )
+                .await?
+                .unwrap_or_else(|| defaults.clone())
+                .max_chunks;
+            if max_chunks <= 0 {
+                continue;
+            }
+            let deleted = client
+                .execute(
+                    "DELETE FROM tandem_memory_chunks WHERE id IN (
+                       SELECT id FROM tandem_memory_chunks WHERE tenant_org_id=$1
+                       AND tenant_workspace_id=$2 AND tenant_deployment_id=$3
+                       AND tier='project' AND project_id=$4
+                       ORDER BY created_at DESC OFFSET $5)",
+                    &[
+                        &tenant.org_id,
+                        &tenant.workspace_id,
+                        &deployment(tenant),
+                        &project_id,
+                        &max_chunks,
+                    ],
+                )
+                .await
+                .map_err(|error| {
+                    store_error("enforce PostgreSQL hygiene project cap", error, true)
+                })?;
+            self.record_hygiene_cleanup(
+                tenant,
+                "hygiene_project_cap",
+                crate::types::MemoryTier::Project,
+                Some(project_id),
+                deleted,
+            )
+            .await?;
+            total += deleted;
+        }
+
+        if global_config.global_retention_days > 0 {
+            let cutoff =
+                chrono::Utc::now() - chrono::Duration::days(global_config.global_retention_days);
+            let deleted = client
+                .execute(
+                    "DELETE FROM tandem_memory_chunks WHERE tenant_org_id=$1
+                     AND tenant_workspace_id=$2 AND tenant_deployment_id=$3
+                     AND tier='global' AND created_at<$4",
+                    &[
+                        &tenant.org_id,
+                        &tenant.workspace_id,
+                        &deployment(tenant),
+                        &cutoff,
+                    ],
+                )
+                .await
+                .map_err(|error| store_error("prune PostgreSQL global chunks", error, true))?;
+            self.record_hygiene_cleanup(
+                tenant,
+                "hygiene_global_retention",
+                crate::types::MemoryTier::Global,
+                None,
+                deleted,
+            )
+            .await?;
+            total += deleted;
+        }
+
+        Ok(total)
     }
 
     pub(super) async fn mutate_impl(
@@ -993,19 +1244,46 @@ impl PostgresMemoryStore {
                 retention_days,
             } => {
                 reject_narrowed_bulk_scope(&scope, "hygiene cleanup")?;
-                let cutoff = chrono::Utc::now() - chrono::Duration::days(retention_days as i64);
-                let changed=client.execute("DELETE FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND tier='session' AND created_at<$4", &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&cutoff]).await.map_err(|error| store_error("run PostgreSQL hygiene", error, true))?;
+                drop(client);
+                let changed = self
+                    .run_hygiene_for_tenant(&scope.tenant, retention_days)
+                    .await?;
                 Ok(MemoryStoreMutationResult::Affected(changed))
             }
             MemoryStoreMutationRequest::RunHygieneAllTenants { retention_days } => {
-                let cutoff = chrono::Utc::now() - chrono::Duration::days(retention_days as i64);
-                let changed = client
-                    .execute(
-                        "DELETE FROM tandem_memory_chunks WHERE tier='session' AND created_at<$1",
-                        &[&cutoff],
+                let tenants = client
+                    .query(
+                        "SELECT DISTINCT tenant_org_id,tenant_workspace_id,tenant_deployment_id
+                           FROM tandem_memory_chunks
+                         UNION
+                         SELECT DISTINCT tenant_org_id,tenant_workspace_id,tenant_deployment_id
+                           FROM tandem_memory_global_records
+                         UNION
+                         SELECT DISTINCT tenant_org_id,tenant_workspace_id,tenant_deployment_id
+                           FROM tandem_memory_entities",
+                        &[],
                     )
                     .await
-                    .map_err(|error| store_error("run PostgreSQL global hygiene", error, true))?;
+                    .map_err(|error| store_error("list PostgreSQL hygiene tenants", error, true))?;
+                drop(client);
+                let mut changed = 0u64;
+                for row in tenants {
+                    let deployment_id: String = row.get(2);
+                    let tenant = crate::types::MemoryTenantScope {
+                        org_id: row.get(0),
+                        workspace_id: row.get(1),
+                        deployment_id: (!deployment_id.is_empty()).then_some(deployment_id),
+                    };
+                    match self.run_hygiene_for_tenant(&tenant, retention_days).await {
+                        Ok(deleted) => changed += deleted,
+                        Err(error) => tracing::warn!(
+                            tenant_org_id = %tenant.org_id,
+                            tenant_workspace_id = %tenant.workspace_id,
+                            %error,
+                            "PostgreSQL memory hygiene failed for tenant scope"
+                        ),
+                    }
+                }
                 Ok(MemoryStoreMutationResult::Affected(changed))
             }
             MemoryStoreMutationRequest::EnforceProjectChunkCap {

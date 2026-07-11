@@ -183,7 +183,7 @@ async fn postgres_scopes_candidates_before_vector_top_k() {
     let result = crate::decrypt_context::with_decrypt_principal(
         principal,
         store.query(MemoryStoreQueryRequest::SimilarChunks {
-            scope: MemoryReadScope::tenant(tenant),
+            scope: MemoryReadScope::tenant(tenant.clone()),
             selector: MemoryChunkSelector::project("project"),
             query_embedding: vec![1.0, 0.0, 0.0],
             limit: 1,
@@ -196,6 +196,20 @@ async fn postgres_scopes_candidates_before_vector_top_k() {
         MemoryStoreQueryResult::SimilarChunks(hits)
             if hits.len() == 1 && hits[0].0.id == "allowed-near"
     ));
+    let error = store
+        .query(MemoryStoreQueryRequest::SimilarChunks {
+            scope: MemoryReadScope::tenant(tenant),
+            selector: MemoryChunkSelector {
+                tier: MemoryTier::Project,
+                project_id: None,
+                session_id: None,
+            },
+            query_embedding: vec![1.0, 0.0, 0.0],
+            limit: 1,
+        })
+        .await
+        .expect_err("unconstrained project search must fail closed");
+    assert_eq!(error.kind, MemoryStoreErrorKind::InvalidRequest);
 }
 
 #[tokio::test]
@@ -257,6 +271,50 @@ async fn postgres_context_tree_recurses_and_entity_reads_fail_closed() {
                 && tree[0].children.len() == 1
                 && tree[0].children[0].children.len() == 1
                 && tree[0].children[0].children[0].node.uri.ends_with("file.txt")
+    ));
+    let original = store
+        .read(MemoryStoreReadRequest::ContextNode {
+            scope: MemoryReadScope::tenant(tenant.clone()),
+            uri: "memory://root/dir".to_string(),
+        })
+        .await
+        .expect("read original context URI");
+    let MemoryStoreReadResult::ContextNode(Some(original)) = original else {
+        panic!("expected original context node");
+    };
+    store
+        .write(MemoryStoreWriteRequest::ContextLayer {
+            scope: MemoryWriteScope::tenant(tenant.clone()),
+            node_id: original.id.clone(),
+            layer_type: LayerType::L1,
+            content: "preserved context layer".to_string(),
+            token_count: 3,
+            source_chunk_id: None,
+        })
+        .await
+        .expect("write original context layer");
+    let error = store
+        .write(MemoryStoreWriteRequest::ContextNode {
+            scope: MemoryWriteScope::tenant(tenant.clone()),
+            uri: "memory://root/dir".to_string(),
+            parent_uri: Some("memory://other".to_string()),
+            node_type: NodeType::Directory,
+            metadata: None,
+        })
+        .await
+        .expect_err("duplicate context URI must be rejected");
+    assert_eq!(error.kind, MemoryStoreErrorKind::InvalidRequest);
+    let layer = store
+        .read(MemoryStoreReadRequest::ContextLayer {
+            scope: MemoryReadScope::tenant(tenant.clone()),
+            node_id: original.id,
+            layer_type: LayerType::L1,
+        })
+        .await
+        .expect("read preserved context layer");
+    assert!(matches!(
+        layer,
+        MemoryStoreReadResult::ContextLayer(Some(layer)) if layer.content == "preserved context layer"
     ));
     let mut narrowed = MemoryReadScope::tenant(tenant.clone());
     narrowed.subject = Some("user-a".to_string());
@@ -1465,6 +1523,96 @@ async fn postgres_clear_operations_preserve_other_memory_tiers() {
         .map(|row| row.get::<_, String>(0))
         .collect::<Vec<_>>();
     assert_eq!(ids, vec!["project-connector", "session-file"]);
+
+    let mut global_config = crate::types::MemoryConfig::default();
+    global_config.exchange_retention_days = 1;
+    global_config.global_retention_days = 1;
+    store
+        .write(MemoryStoreWriteRequest::ProjectConfig {
+            scope: MemoryWriteScope::tenant(tenant.clone()),
+            project_id: "__global__".to_string(),
+            config: global_config,
+        })
+        .await
+        .expect("write global hygiene config");
+    let mut project_config = crate::types::MemoryConfig::default();
+    project_config.max_chunks = 1;
+    store
+        .write(MemoryStoreWriteRequest::ProjectConfig {
+            scope: MemoryWriteScope::tenant(tenant.clone()),
+            project_id: "hygiene-project".to_string(),
+            config: project_config,
+        })
+        .await
+        .expect("write project hygiene config");
+
+    let mut expired = global_record("hygiene-expired", &tenant);
+    expired.expires_at_ms =
+        Some((chrono::Utc::now() - chrono::Duration::days(1)).timestamp_millis() as u64);
+    let mut old_exchange = global_record("hygiene-exchange", &tenant);
+    old_exchange.source_type = "user_message".to_string();
+    old_exchange.created_at_ms =
+        (chrono::Utc::now() - chrono::Duration::days(2)).timestamp_millis() as u64;
+    for record in [expired, old_exchange] {
+        store
+            .write(MemoryStoreWriteRequest::GlobalRecord {
+                scope: MemoryWriteScope::tenant(tenant.clone()),
+                record,
+            })
+            .await
+            .expect("write global hygiene fixture");
+    }
+    let mut old_global = chunk("hygiene-global", tenant.clone());
+    old_global.tier = MemoryTier::Global;
+    old_global.project_id = None;
+    old_global.created_at = chrono::Utc::now() - chrono::Duration::days(2);
+    let mut project_a = chunk("hygiene-project-a", tenant.clone());
+    project_a.project_id = Some("hygiene-project".to_string());
+    project_a.created_at = chrono::Utc::now() - chrono::Duration::minutes(2);
+    let mut project_b = chunk("hygiene-project-b", tenant.clone());
+    project_b.project_id = Some("hygiene-project".to_string());
+    for row in [old_global, project_a, project_b] {
+        store
+            .write(MemoryStoreWriteRequest::Chunk {
+                scope: MemoryWriteScope::tenant(tenant.clone()),
+                chunk: row,
+                embedding: vec![1.0, 0.0, 0.0],
+            })
+            .await
+            .expect("write chunk hygiene fixture");
+    }
+    store
+        .mutate(MemoryStoreMutationRequest::RunHygieneAllTenants { retention_days: 1 })
+        .await
+        .expect("run complete PostgreSQL hygiene");
+    let remaining: i64 = client
+        .query_one(
+            "SELECT
+               (SELECT COUNT(*) FROM tandem_memory_global_records
+                 WHERE id IN ('hygiene-expired','hygiene-exchange'))
+             + (SELECT COUNT(*) FROM tandem_memory_chunks WHERE id='hygiene-global')
+             + (SELECT GREATEST(COUNT(*) - 1, 0) FROM tandem_memory_chunks
+                 WHERE project_id='hygiene-project' AND tier='project')",
+            &[],
+        )
+        .await
+        .expect("inspect complete hygiene result")
+        .get(0);
+    assert_eq!(remaining, 0);
+    let cleanup = store
+        .query(MemoryStoreQueryRequest::CleanupLog {
+            scope: MemoryReadScope::tenant(tenant),
+            limit: 20,
+        })
+        .await
+        .expect("read PostgreSQL cleanup evidence");
+    assert!(matches!(
+        cleanup,
+        MemoryStoreQueryResult::CleanupLog(rows)
+            if rows.iter().any(|row| row.cleanup_type == "hygiene_expired_records")
+                && rows.iter().any(|row| row.cleanup_type == "hygiene_project_cap")
+                && rows.iter().any(|row| row.cleanup_type == "hygiene_global_retention")
+    ));
 }
 
 #[tokio::test]
