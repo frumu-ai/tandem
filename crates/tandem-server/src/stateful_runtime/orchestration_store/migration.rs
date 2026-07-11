@@ -66,6 +66,7 @@ pub struct LegacyRuntimeMigrationReport {
     pub dead_letters: usize,
     pub compensations: usize,
     pub handoffs: usize,
+    pub quarantined_handoffs: usize,
 }
 
 impl LegacyRuntimeMigrationReport {
@@ -79,6 +80,7 @@ impl LegacyRuntimeMigrationReport {
             + self.dead_letters
             + self.compensations
             + self.handoffs
+            + self.quarantined_handoffs
     }
 }
 
@@ -89,7 +91,20 @@ struct LegacyRuntimeRows {
     snapshots: Vec<StatefulRunSnapshotRecord>,
     waits: Vec<StatefulWaitRecord>,
     reliability: StatefulReliabilityStoreFile,
-    handoffs: Vec<(PathBuf, HandoffArtifact, String)>,
+    handoffs: LegacyHandoffRows,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct LegacyHandoffRows {
+    pub(super) imported: Vec<(PathBuf, HandoffArtifact, String)>,
+    pub(super) quarantined: Vec<LegacyHandoffQuarantine>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct LegacyHandoffQuarantine {
+    pub(super) source_path: PathBuf,
+    pub(super) source_digest: Option<String>,
+    pub(super) error: String,
 }
 
 impl OrchestrationStateStore {
@@ -130,7 +145,8 @@ impl OrchestrationStateStore {
                 tool_effects: rows.reliability.tool_effects.len(),
                 dead_letters: rows.reliability.dead_letters.len(),
                 compensations: rows.reliability.compensations.len(),
-                handoffs: rows.handoffs.len(),
+                handoffs: rows.handoffs.imported.len(),
+                quarantined_handoffs: rows.handoffs.quarantined.len(),
                 ..Default::default()
             };
 
@@ -185,7 +201,7 @@ fn load_legacy_rows(paths: &LegacyRuntimeMigrationPaths) -> anyhow::Result<Legac
     let snapshots = load_snapshots(&paths.snapshots_root)?;
     let waits = load_json_file_or_default(&paths.waits_path)?;
     let reliability = load_json_file_or_default(&paths.reliability_path)?;
-    let handoffs = load_handoffs(paths.handoff_root.as_deref())?;
+    let handoffs = load_legacy_handoffs(paths.handoff_root.as_deref())?;
 
     Ok(LegacyRuntimeRows {
         automation_runs,
@@ -251,28 +267,55 @@ fn load_snapshots(root: &Path) -> anyhow::Result<Vec<StatefulRunSnapshotRecord>>
     Ok(rows)
 }
 
-fn load_handoffs(root: Option<&Path>) -> anyhow::Result<Vec<(PathBuf, HandoffArtifact, String)>> {
+pub(super) fn load_legacy_handoffs(root: Option<&Path>) -> anyhow::Result<LegacyHandoffRows> {
     let Some(root) = root else {
-        return Ok(Vec::new());
+        return Ok(LegacyHandoffRows {
+            imported: Vec::new(),
+            quarantined: Vec::new(),
+        });
     };
     let mut paths = Vec::new();
     collect_json_files(root, &mut paths)?;
-    paths
-        .into_iter()
-        .map(|path| {
-            let raw = std::fs::read_to_string(&path)?;
-            let handoff: HandoffArtifact = serde_json::from_str(&raw)
-                .with_context(|| format!("invalid legacy handoff {}", path.display()))?;
-            let status = if handoff.consumed_by_run_id.is_some() {
-                "archived"
-            } else if path.components().any(|part| part.as_os_str() == "approved") {
-                "approved"
-            } else {
-                "inbox"
-            };
-            Ok((path, handoff, status.to_string()))
-        })
-        .collect()
+    paths.sort();
+    let mut imported = Vec::new();
+    let mut quarantined = Vec::new();
+    for path in paths {
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(error) => {
+                quarantined.push(LegacyHandoffQuarantine {
+                    source_path: path,
+                    source_digest: None,
+                    error: format!("failed to read legacy handoff: {error}"),
+                });
+                continue;
+            }
+        };
+        let source_digest = stable_definition_snapshot_hash(&raw);
+        let handoff = match serde_json::from_str::<HandoffArtifact>(&raw) {
+            Ok(handoff) => handoff,
+            Err(error) => {
+                quarantined.push(LegacyHandoffQuarantine {
+                    source_path: path,
+                    source_digest: Some(source_digest),
+                    error: format!("invalid legacy handoff: {error}"),
+                });
+                continue;
+            }
+        };
+        let status = if handoff.consumed_by_run_id.is_some() {
+            "archived"
+        } else if path.components().any(|part| part.as_os_str() == "approved") {
+            "approved"
+        } else {
+            "inbox"
+        };
+        imported.push((path, handoff, status.to_string()));
+    }
+    Ok(LegacyHandoffRows {
+        imported,
+        quarantined,
+    })
 }
 
 fn validate_event_sequences(events: &[StatefulRunEventRecord]) -> anyhow::Result<()> {
@@ -358,7 +401,7 @@ fn import_rows(
         )?;
     }
     import_reliability(transaction, &rows.reliability)?;
-    for (path, handoff, status) in &rows.handoffs {
+    for (path, handoff, status) in &rows.handoffs.imported {
         transaction.execute(
             "INSERT INTO legacy_handoffs
                 (handoff_id, source_path, status, consumed_by_run_id, handoff_json,
@@ -374,6 +417,21 @@ fn import_rows(
                 handoff.consumed_by_run_id,
                 serde_json::to_string(handoff)?,
                 handoff.created_at_ms,
+                imported_at_ms,
+            ],
+        )?;
+    }
+    for quarantine in &rows.handoffs.quarantined {
+        transaction.execute(
+            "INSERT INTO legacy_handoff_quarantine
+                (source_path, source_digest, error, quarantined_at_ms)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(source_path) DO UPDATE SET source_digest = excluded.source_digest,
+                 error = excluded.error, quarantined_at_ms = excluded.quarantined_at_ms",
+            params![
+                quarantine.source_path.to_string_lossy(),
+                quarantine.source_digest,
+                quarantine.error,
                 imported_at_ms,
             ],
         )?;
@@ -576,10 +634,28 @@ mod tests {
         }
     }
 
+    fn handoff() -> HandoffArtifact {
+        HandoffArtifact {
+            handoff_id: "handoff-1".to_string(),
+            source_automation_id: "planner".to_string(),
+            source_run_id: "run-1".to_string(),
+            source_node_id: "plan".to_string(),
+            target_automation_id: "executor".to_string(),
+            artifact_type: "plan".to_string(),
+            created_at_ms: 13,
+            content_path: Some("artifacts/plan.json".to_string()),
+            content_digest: Some("sha256:plan".to_string()),
+            metadata: None,
+            consumed_by_run_id: None,
+            consumed_by_automation_id: None,
+            consumed_at_ms: None,
+        }
+    }
+
     #[test]
     fn legacy_import_is_atomic_idempotent_and_preserves_sources() {
         let directory = tempfile::tempdir().unwrap();
-        let paths = LegacyRuntimeMigrationPaths::from_runtime_root(directory.path());
+        let mut paths = LegacyRuntimeMigrationPaths::from_runtime_root(directory.path());
         std::fs::write(
             &paths.run_events_path,
             format!("{}\n", serde_json::to_string(&event()).unwrap()),
@@ -597,15 +673,26 @@ mod tests {
             serde_json::to_vec(&vec![wait()]).unwrap(),
         )
         .unwrap();
+        let handoff_root = directory.path().join("handoffs");
+        let approved = handoff_root.join("approved");
+        std::fs::create_dir_all(&approved).unwrap();
+        let valid_handoff = approved.join("handoff-1.json");
+        let corrupt_handoff = handoff_root.join("corrupt.json");
+        std::fs::write(&valid_handoff, serde_json::to_vec(&handoff()).unwrap()).unwrap();
+        std::fs::write(&corrupt_handoff, "{not-json}").unwrap();
+        paths.handoff_root = Some(handoff_root);
 
         let store = store(directory.path());
         let first = store.import_legacy_runtime_state(&paths, 100).unwrap();
         assert!(!first.already_complete);
         assert_eq!((first.events, first.snapshots, first.waits), (1, 1, 1));
+        assert_eq!((first.handoffs, first.quarantined_handoffs), (1, 1));
         assert!(store.legacy_runtime_migration_complete().unwrap());
         assert!(paths.run_events_path.exists());
         assert!(paths.snapshots_root.exists());
         assert!(paths.waits_path.exists());
+        assert!(valid_handoff.exists());
+        assert!(corrupt_handoff.exists());
 
         let second = store.import_legacy_runtime_state(&paths, 200).unwrap();
         assert!(second.already_complete);
@@ -622,7 +709,17 @@ mod tests {
                     connection.query_row("SELECT COUNT(*) FROM automation_waits", [], |row| {
                         row.get(0)
                     })?;
-                assert_eq!((events, snapshots, waits), (1, 1, 1));
+                let handoffs: u64 =
+                    connection
+                        .query_row("SELECT COUNT(*) FROM legacy_handoffs", [], |row| row.get(0))?;
+                let quarantine: (Option<String>, String) = connection.query_row(
+                    "SELECT source_digest, error FROM legacy_handoff_quarantine",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                assert_eq!((events, snapshots, waits, handoffs), (1, 1, 1, 1));
+                assert!(quarantine.0.is_some());
+                assert!(quarantine.1.contains("invalid legacy handoff"));
                 Ok(())
             })
             .unwrap();
@@ -677,6 +774,93 @@ mod tests {
                     connection
                         .query_row("SELECT COUNT(*) FROM stateful_events", [], |row| row.get(0))?;
                 assert_eq!(event_count, 1);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn direct_handoff_import_quarantines_bad_envelopes() {
+        let directory = tempfile::tempdir().unwrap();
+        let handoff_root = directory.path().join("handoffs");
+        let approved = handoff_root.join("approved");
+        std::fs::create_dir_all(&approved).unwrap();
+        std::fs::write(
+            approved.join("handoff-1.json"),
+            serde_json::to_vec(&handoff()).unwrap(),
+        )
+        .unwrap();
+        let corrupt = handoff_root.join("corrupt.json");
+        std::fs::write(&corrupt, "{not-json}").unwrap();
+        let store = store(directory.path());
+
+        assert_eq!(
+            store
+                .import_legacy_handoff_directory(&handoff_root, 100)
+                .unwrap(),
+            1
+        );
+        assert!(corrupt.exists());
+        let mut recovered = handoff();
+        recovered.handoff_id = "handoff-2".to_string();
+        std::fs::write(&corrupt, serde_json::to_vec(&recovered).unwrap()).unwrap();
+        assert_eq!(
+            store
+                .import_legacy_handoff_directory(&handoff_root, 101)
+                .unwrap(),
+            2
+        );
+        store
+            .with_connection(|connection| {
+                let handoffs: u64 =
+                    connection
+                        .query_row("SELECT COUNT(*) FROM legacy_handoffs", [], |row| row.get(0))?;
+                let quarantined: u64 = connection.query_row(
+                    "SELECT COUNT(*) FROM legacy_handoff_quarantine",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let source_count: u64 = connection.query_row(
+                    "SELECT record_count FROM migration_sources
+                     WHERE source_kind = 'legacy_handoffs'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!((handoffs, quarantined, source_count), (2, 0, 2));
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn existing_v2_store_upgrades_to_handoff_quarantine_schema() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("runtime.sqlite3");
+        let connection = rusqlite::Connection::open(&database_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_metadata (schema_version INTEGER NOT NULL);
+                 INSERT INTO schema_metadata (schema_version) VALUES (2);",
+            )
+            .unwrap();
+        drop(connection);
+
+        let store = store(directory.path());
+        store
+            .with_connection(|connection| {
+                let version: u64 = connection.query_row(
+                    "SELECT schema_version FROM schema_metadata",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let table: String = connection.query_row(
+                    "SELECT name FROM sqlite_master
+                     WHERE type = 'table' AND name = 'legacy_handoff_quarantine'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(version, 3);
+                assert_eq!(table, "legacy_handoff_quarantine");
                 Ok(())
             })
             .unwrap();
