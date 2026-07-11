@@ -976,6 +976,8 @@ mod tests {
     };
     use tandem_types::TenantContext;
 
+    use crate::stateful_runtime::{StatefulRunEventRecord, StatefulRuntimeScope};
+
     fn run(run_id: &str) -> AutomationV2RunRecord {
         serde_json::from_value(serde_json::json!({
             "run_id": run_id,
@@ -1046,6 +1048,47 @@ mod tests {
             consumed_by_run_id: None,
             metadata: None,
         }
+    }
+
+    fn event() -> StatefulRunEventRecord {
+        StatefulRunEventRecord {
+            schema_version: 1,
+            event_id: "event-1".to_string(),
+            run_id: "goal:goal-1".to_string(),
+            seq: 0,
+            event_type: "stateful_runtime.goal.transitioned".to_string(),
+            occurred_at_ms: 20,
+            scope: StatefulRuntimeScope::from_tenant_context(TenantContext::local_implicit()),
+            actor: None,
+            phase_id: None,
+            phase_transition: None,
+            wait_kind: None,
+            causation_id: Some("run-1".to_string()),
+            correlation_id: Some("goal-1".to_string()),
+            payload: serde_json::json!({"handoff_id": "handoff-1"}),
+        }
+    }
+
+    fn assert_transition_record_count(store: &OrchestrationStateStore, expected: u64) {
+        store
+            .with_connection(|connection| {
+                for table in [
+                    "workflow_handoffs",
+                    "automation_runs",
+                    "goal_run_links",
+                    "long_running_goals",
+                    "stateful_events",
+                ] {
+                    let count: u64 = connection.query_row(
+                        &format!("SELECT COUNT(*) FROM {table}"),
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    assert_eq!(count, expected, "unexpected {table} record count");
+                }
+                Ok(())
+            })
+            .unwrap();
     }
 
     fn published_spec() -> OrchestrationSpec {
@@ -1140,6 +1183,133 @@ mod tests {
         assert!(store
             .commit_handoff_transition(&handoff(), &cross_tenant_run, &link, &goal("run-2"))
             .is_err());
+    }
+
+    #[test]
+    fn atomic_handoff_commit_rolls_back_every_write_boundary() {
+        for table in [
+            "workflow_handoffs",
+            "automation_runs",
+            "goal_run_links",
+            "long_running_goals",
+            "stateful_events",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = OrchestrationStateStore::open(OrchestrationStorePaths {
+                database_path: directory.path().join("runtime.sqlite3"),
+                engine_lock_path: directory.path().join("engine.lock"),
+            })
+            .unwrap();
+            let downstream_run = run("run-2");
+            let link = GoalRunLink {
+                goal_id: "goal-1".to_string(),
+                run_id: downstream_run.run_id.clone(),
+                orchestration_node_id: "execute".to_string(),
+                orchestration_version: 3,
+                hop_index: 1,
+                parent_run_id: Some("run-1".to_string()),
+                triggering_handoff_id: Some("handoff-1".to_string()),
+                created_at_ms: 20,
+            };
+            store
+                .with_connection(|connection| {
+                    connection.execute_batch(&format!(
+                        "CREATE TRIGGER injected_atomic_failure AFTER INSERT ON {table}
+                         BEGIN SELECT RAISE(ABORT, 'injected atomic failure'); END;"
+                    ))?;
+                    Ok(())
+                })
+                .unwrap();
+
+            assert!(store
+                .commit_handoff_transition_with_event(
+                    &handoff(),
+                    &downstream_run,
+                    &link,
+                    &goal("run-2"),
+                    Some(&event()),
+                )
+                .is_err());
+            assert_transition_record_count(&store, 0);
+            store
+                .with_connection(|connection| {
+                    connection.execute_batch("DROP TRIGGER injected_atomic_failure")?;
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(
+                store
+                    .commit_handoff_transition_with_event(
+                        &handoff(),
+                        &downstream_run,
+                        &link,
+                        &goal("run-2"),
+                        Some(&event()),
+                    )
+                    .unwrap(),
+                AtomicHandoffCommit::Committed
+            );
+            assert_transition_record_count(&store, 1);
+        }
+    }
+
+    #[test]
+    fn concurrent_idempotent_handoffs_create_one_downstream_run() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = OrchestrationStateStore::open(OrchestrationStorePaths {
+            database_path: directory.path().join("runtime.sqlite3"),
+            engine_lock_path: directory.path().join("engine.lock"),
+        })
+        .unwrap();
+        let downstream_run = run("run-2");
+        let link = GoalRunLink {
+            goal_id: "goal-1".to_string(),
+            run_id: downstream_run.run_id.clone(),
+            orchestration_node_id: "execute".to_string(),
+            orchestration_version: 3,
+            hop_index: 1,
+            parent_run_id: Some("run-1".to_string()),
+            triggering_handoff_id: Some("handoff-1".to_string()),
+            created_at_ms: 20,
+        };
+        let barrier = std::sync::Barrier::new(2);
+        let (first, second) = std::thread::scope(|scope| {
+            let first = scope.spawn(|| {
+                barrier.wait();
+                store.commit_handoff_transition(&handoff(), &downstream_run, &link, &goal("run-2"))
+            });
+            let second = scope.spawn(|| {
+                barrier.wait();
+                store.commit_handoff_transition(&handoff(), &downstream_run, &link, &goal("run-2"))
+            });
+            (
+                first.join().expect("first worker panicked").unwrap(),
+                second.join().expect("second worker panicked").unwrap(),
+            )
+        });
+        assert!(matches!(
+            (first, second),
+            (
+                AtomicHandoffCommit::Committed,
+                AtomicHandoffCommit::AlreadyCommitted
+            ) | (
+                AtomicHandoffCommit::AlreadyCommitted,
+                AtomicHandoffCommit::Committed
+            )
+        ));
+        store
+            .with_connection(|connection| {
+                for table in ["workflow_handoffs", "automation_runs", "goal_run_links"] {
+                    let count: u64 = connection.query_row(
+                        &format!("SELECT COUNT(*) FROM {table}"),
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    assert_eq!(count, 1, "{table} should have exactly one row");
+                }
+                Ok(())
+            })
+            .unwrap();
     }
 
     #[test]
