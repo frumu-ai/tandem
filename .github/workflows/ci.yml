@@ -249,7 +249,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run PostgreSQL memory contract tests
-        run: cargo test -p tandem-memory --features postgres postgres_store::tests
+        run: cargo test -p tandem-memory --features postgres postgres_store::tests -- --test-threads=1
 
       - name: Lint PostgreSQL memory backend
         run: cargo clippy -p tandem-memory --features postgres --lib -- -D warnings
