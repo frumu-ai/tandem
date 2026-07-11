@@ -481,6 +481,124 @@ async fn postgres_denies_cross_department_and_cross_subject_reads() {
             "{department}/{subject} crossed ownership scope"
         );
     }
+
+    let mut tenant_shared = owned_chunk(
+        "tenant-shared-legal",
+        MemoryTier::Project,
+        tenant.clone(),
+        "alice",
+    );
+    tenant_shared.metadata = Some(serde_json::json!({
+        "owner_org_unit_id": "legal",
+        "tenant_shared": true
+    }));
+    store
+        .write(MemoryStoreWriteRequest::Chunk {
+            scope: MemoryWriteScope {
+                tenant: tenant.clone(),
+                org_unit: Some("legal".to_string()),
+                subject: Some("alice".to_string()),
+            },
+            chunk: tenant_shared,
+            embedding: vec![1.0, 0.0, 0.0],
+        })
+        .await
+        .expect("write tenant-shared PostgreSQL chunk");
+    let result = store
+        .query(MemoryStoreQueryRequest::SimilarChunks {
+            scope: MemoryReadScope {
+                tenant: tenant.clone(),
+                org_unit: Some("finance".to_string()),
+                subject: Some("alice".to_string()),
+                access: MemoryReadAccess::Scoped,
+            },
+            selector: MemoryChunkSelector::project("project"),
+            query_embedding: vec![1.0, 0.0, 0.0],
+            limit: 10,
+        })
+        .await
+        .expect("query tenant-shared PostgreSQL chunk");
+    let MemoryStoreQueryResult::SimilarChunks(hits) = result else {
+        panic!("expected vector results");
+    };
+    assert!(hits
+        .iter()
+        .any(|(chunk, _)| chunk.id == "tenant-shared-legal"));
+}
+
+#[tokio::test]
+async fn postgres_shared_global_point_reads_and_chunk_upserts_match_contract() {
+    let Some(url) = test_url() else {
+        return;
+    };
+    let store = PostgresMemoryStore::connect(config(url, 4))
+        .await
+        .expect("open PostgreSQL test store");
+    store
+        .recover_backend(MemoryBackendRecoveryRequest {
+            action: MemoryBackendRecoveryAction::ResetAllData,
+            confirm_data_loss: true,
+        })
+        .await
+        .expect("reset PostgreSQL fixtures");
+
+    let contract_tenant = tenant("contract");
+    store
+        .write(MemoryStoreWriteRequest::GlobalRecord {
+            scope: MemoryWriteScope::tenant(contract_tenant.clone()),
+            record: global_record("tenant-wide-shared", &contract_tenant),
+        })
+        .await
+        .expect("write tenant-wide shared global record");
+    let result = store
+        .read(MemoryStoreReadRequest::GlobalRecord {
+            scope: MemoryReadScope::tenant(contract_tenant.clone()),
+            id: "tenant-wide-shared".to_string(),
+        })
+        .await
+        .expect("read tenant-wide shared global record");
+    assert!(matches!(
+        result,
+        MemoryStoreReadResult::GlobalRecord(Some(record)) if record.id == "tenant-wide-shared"
+    ));
+
+    let mut original = chunk("scope-collision", contract_tenant.clone());
+    original.content = "original payload".to_string();
+    store
+        .write(MemoryStoreWriteRequest::Chunk {
+            scope: MemoryWriteScope::tenant(contract_tenant.clone()),
+            chunk: original,
+            embedding: vec![1.0, 0.0, 0.0],
+        })
+        .await
+        .expect("write original chunk");
+    let other_tenant = tenant("other-contract");
+    let mut conflicting = chunk("scope-collision", other_tenant.clone());
+    conflicting.content = "cross-scope replacement".to_string();
+    let error = store
+        .write(MemoryStoreWriteRequest::Chunk {
+            scope: MemoryWriteScope::tenant(other_tenant),
+            chunk: conflicting,
+            embedding: vec![0.0, 1.0, 0.0],
+        })
+        .await
+        .expect_err("cross-scope chunk upsert must be rejected");
+    assert_eq!(error.kind, MemoryStoreErrorKind::Conflict);
+
+    let result = store
+        .read(MemoryStoreReadRequest::Chunks {
+            scope: MemoryReadScope::tenant(contract_tenant),
+            selector: MemoryChunkSelector::project("project"),
+            limit: None,
+        })
+        .await
+        .expect("read original chunk after rejected collision");
+    let MemoryStoreReadResult::Chunks(chunks) = result else {
+        panic!("expected chunks");
+    };
+    assert!(chunks
+        .iter()
+        .any(|chunk| chunk.id == "scope-collision" && chunk.content == "original payload"));
 }
 
 #[tokio::test]

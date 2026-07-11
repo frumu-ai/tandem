@@ -106,7 +106,7 @@ impl PostgresMemoryStore {
                            AND tenant_deployment_id=$3 AND tier=$4
                            AND ($5::text IS NULL OR project_id=$5)
                            AND ($6::text IS NULL OR session_id=$6)
-                           AND ($7::text IS NULL OR owner_org_unit_id=$7)
+                           AND ($7::text IS NULL OR owner_org_unit_id=$7 OR tenant_shared=true)
                            AND (owner_subject IS NULL OR owner_subject=$8)
                          ORDER BY created_at DESC LIMIT $9",
                         &[
@@ -149,8 +149,7 @@ impl PostgresMemoryStore {
                          WHERE id=$1 AND tenant_org_id=$2 AND tenant_workspace_id=$3
                            AND tenant_deployment_id=$4
                            AND ($5::text IS NULL OR owner_org_unit_id=$5)
-                           AND ($6::boolean OR owner_subject=$7 OR
-                                (private=false AND owner_org_unit_id IS NOT NULL))",
+                           AND ($6::boolean OR private=false OR owner_subject=$7)",
                         &[
                             &id,
                             &scope.tenant.org_id,
@@ -376,7 +375,7 @@ impl PostgresMemoryStore {
                            AND tenant_deployment_id=$3 AND tier=$4
                            AND ($5::text IS NULL OR project_id=$5)
                            AND ($6::text IS NULL OR session_id=$6)
-                           AND ($7::text IS NULL OR owner_org_unit_id=$7)
+                           AND ($7::text IS NULL OR owner_org_unit_id=$7 OR tenant_shared=true)
                            AND (owner_subject IS NULL OR owner_subject=$8)
                            AND embedding_ciphertext IS NOT NULL
                          ORDER BY created_at DESC LIMIT $9",
@@ -444,7 +443,7 @@ impl PostgresMemoryStore {
                        AND tenant_deployment_id=$3 AND tier=$4
                        AND ($5::text IS NULL OR project_id=$5)
                        AND ($6::text IS NULL OR session_id=$6)
-                       AND ($7::text IS NULL OR owner_org_unit_id=$7)
+                       AND ($7::text IS NULL OR owner_org_unit_id=$7 OR tenant_shared=true)
                        AND (owner_subject IS NULL OR owner_subject=$8)
                        AND embedding IS NOT NULL
                      ORDER BY embedding {operator} $9 LIMIT $10",

@@ -2,8 +2,8 @@ use pgvector::Vector;
 
 use super::*;
 use crate::types::{
-    owner_org_unit_id_from_metadata, owner_subject_from_metadata, CleanupLogEntry,
-    ClearFileIndexResult, GlobalMemoryWriteResult, MemoryLayer, MemoryNode,
+    owner_org_unit_id_from_metadata, owner_subject_from_metadata, tenant_shared_from_metadata,
+    CleanupLogEntry, ClearFileIndexResult, GlobalMemoryWriteResult, MemoryLayer, MemoryNode,
     SourceObjectLifecycleRecord, SourceObjectLifecycleState,
 };
 
@@ -108,15 +108,16 @@ impl PostgresMemoryStore {
                         scope.subject.clone(),
                         &chunk.id,
                     )?;
+                let tenant_shared = tenant_shared_from_metadata(chunk.metadata.as_ref());
                 let client = self.client().await?;
-                client
+                let changed = client
                     .execute(
                         "INSERT INTO tandem_memory_chunks
                        (id,tenant_org_id,tenant_workspace_id,tenant_deployment_id,
-                        owner_org_unit_id,owner_subject,tier,project_id,session_id,source_path,
+                        owner_org_unit_id,owner_subject,tenant_shared,tier,project_id,session_id,source_path,
                         created_at,data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,
                         embedding,embedding_ciphertext,embedding_envelope,search_policy_decision_id,search_audit_id)
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
                      ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data,
                        data_ciphertext=EXCLUDED.data_ciphertext,data_envelope=EXCLUDED.data_envelope,
                        data_policy_decision_id=EXCLUDED.data_policy_decision_id,
@@ -126,7 +127,16 @@ impl PostgresMemoryStore {
                        embedding_envelope=EXCLUDED.embedding_envelope,
                        search_policy_decision_id=EXCLUDED.search_policy_decision_id,
                        search_audit_id=EXCLUDED.search_audit_id,
-                       created_at=EXCLUDED.created_at",
+                       tenant_shared=EXCLUDED.tenant_shared,
+                       created_at=EXCLUDED.created_at
+                     WHERE tandem_memory_chunks.tenant_org_id=EXCLUDED.tenant_org_id
+                       AND tandem_memory_chunks.tenant_workspace_id=EXCLUDED.tenant_workspace_id
+                       AND tandem_memory_chunks.tenant_deployment_id=EXCLUDED.tenant_deployment_id
+                       AND tandem_memory_chunks.owner_org_unit_id IS NOT DISTINCT FROM EXCLUDED.owner_org_unit_id
+                       AND tandem_memory_chunks.owner_subject IS NOT DISTINCT FROM EXCLUDED.owner_subject
+                       AND tandem_memory_chunks.tier=EXCLUDED.tier
+                       AND tandem_memory_chunks.project_id IS NOT DISTINCT FROM EXCLUDED.project_id
+                       AND tandem_memory_chunks.session_id IS NOT DISTINCT FROM EXCLUDED.session_id",
                         &[
                             &chunk.id,
                             &scope.tenant.org_id,
@@ -134,6 +144,7 @@ impl PostgresMemoryStore {
                             &deployment(&scope.tenant),
                             &scope.org_unit,
                             &scope.subject,
+                            &tenant_shared,
                             &selector_tier(&MemoryChunkSelector {
                                 tier: chunk.tier,
                                 project_id: chunk.project_id.clone(),
@@ -157,6 +168,12 @@ impl PostgresMemoryStore {
                     )
                     .await
                     .map_err(|error| store_error("write PostgreSQL memory chunk", error, true))?;
+                if changed == 0 {
+                    return Err(MemoryStoreError::new(
+                        MemoryStoreErrorKind::Conflict,
+                        "chunk id already exists in another PostgreSQL ownership scope",
+                    ));
+                }
                 Ok(MemoryStoreWriteResult::Stored)
             }
             MemoryStoreWriteRequest::GlobalRecord { scope, record } => {
@@ -416,7 +433,7 @@ impl PostgresMemoryStore {
                      AND tenant_workspace_id=$3 AND tenant_deployment_id=$4 AND tier=$5
                      AND ($6::text IS NULL OR project_id=$6) AND ($7::text IS NULL OR session_id=$7)
                      AND ($8::boolean OR owner_subject IS NULL OR owner_subject=$9)
-                     AND ($10::text IS NULL OR owner_org_unit_id=$10)",
+                     AND ($10::text IS NULL OR owner_org_unit_id=$10 OR tenant_shared=true)",
                         &[
                             &chunk_id,
                             &scope.tenant.org_id,
@@ -510,6 +527,7 @@ impl PostgresMemoryStore {
                         summary_scope.subject.clone(),
                         &summary.id,
                     )?;
+                let tenant_shared = tenant_shared_from_metadata(summary.metadata.as_ref());
                 let mut client = self.client().await?;
                 let transaction = client
                     .transaction()
@@ -518,13 +536,13 @@ impl PostgresMemoryStore {
                 transaction.execute(
                     "INSERT INTO tandem_memory_chunks
                      (id,tenant_org_id,tenant_workspace_id,tenant_deployment_id,owner_org_unit_id,
-                      owner_subject,tier,project_id,session_id,source_path,created_at,
+                      owner_subject,tenant_shared,tier,project_id,session_id,source_path,created_at,
                       data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,
                       embedding,embedding_ciphertext,embedding_envelope,search_policy_decision_id,search_audit_id)
-                     VALUES ($1,$2,$3,$4,$5,$6,'project',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)",
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,'project',$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)",
                     &[&summary.id,&summary_scope.tenant.org_id,&summary_scope.tenant.workspace_id,
                       &deployment(&summary_scope.tenant),&summary_scope.org_unit,&summary_scope.subject,
-                      &summary.project_id,&summary.session_id,&summary.source_path,&summary.created_at,
+                      &tenant_shared,&summary.project_id,&summary.session_id,&summary.source_path,&summary.created_at,
                       &data,&data_ciphertext,&data_envelope,&data_policy,&data_audit,
                       &vector,&ciphertext,&envelope,&policy_id,&audit_id]
                 ).await.map_err(|error| store_error("write PostgreSQL consolidation summary", error, false))?;
@@ -594,7 +612,7 @@ impl PostgresMemoryStore {
                 ))
             }
             MemoryStoreMutationRequest::DeleteGlobalRecord { scope, id } => {
-                let changed = client.execute("DELETE FROM tandem_memory_global_records WHERE id=$1 AND tenant_org_id=$2 AND tenant_workspace_id=$3 AND tenant_deployment_id=$4 AND ($5::boolean OR owner_subject=$6 OR (private=false AND owner_org_unit_id IS NOT NULL)) AND ($7::text IS NULL OR owner_org_unit_id=$7)",
+                let changed = client.execute("DELETE FROM tandem_memory_global_records WHERE id=$1 AND tenant_org_id=$2 AND tenant_workspace_id=$3 AND tenant_deployment_id=$4 AND ($5::boolean OR private=false OR owner_subject=$6) AND ($7::text IS NULL OR owner_org_unit_id=$7)",
                     &[&id,&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&(scope.access == MemoryReadAccess::TrustedUnrestricted),&scope.subject,&scope.org_unit]).await.map_err(|error| store_error("delete PostgreSQL global memory", error, true))?;
                 Ok(MemoryStoreMutationResult::Changed(changed > 0))
             }
@@ -606,7 +624,7 @@ impl PostgresMemoryStore {
                 metadata,
                 provenance,
             } => {
-                let row = client.query_opt("SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,owner_org_unit_id,owner_subject FROM tandem_memory_global_records WHERE id=$1 AND tenant_org_id=$2 AND tenant_workspace_id=$3 AND tenant_deployment_id=$4 AND ($5::boolean OR owner_subject=$6 OR (private=false AND owner_org_unit_id IS NOT NULL)) AND ($7::text IS NULL OR owner_org_unit_id=$7)",
+                let row = client.query_opt("SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,owner_org_unit_id,owner_subject FROM tandem_memory_global_records WHERE id=$1 AND tenant_org_id=$2 AND tenant_workspace_id=$3 AND tenant_deployment_id=$4 AND ($5::boolean OR private=false OR owner_subject=$6) AND ($7::text IS NULL OR owner_org_unit_id=$7)",
                     &[&id,&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&(scope.access == MemoryReadAccess::TrustedUnrestricted),&scope.subject,&scope.org_unit]).await.map_err(|error| store_error("read PostgreSQL global memory update", error, true))?;
                 let Some(row) = row else {
                     return Ok(MemoryStoreMutationResult::Changed(false));
@@ -981,15 +999,17 @@ impl PostgresMemoryStore {
                                 scope.subject.clone(),
                                 &chunk.id,
                             )?;
+                        let tenant_shared = tenant_shared_from_metadata(chunk.metadata.as_ref());
                         transaction.execute(
                             "INSERT INTO tandem_memory_chunks
                                (id,tenant_org_id,tenant_workspace_id,tenant_deployment_id,
-                                owner_org_unit_id,owner_subject,tier,project_id,session_id,source_path,
+                                owner_org_unit_id,owner_subject,tenant_shared,tier,project_id,session_id,source_path,
                                 created_at,data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,
                                 embedding,embedding_ciphertext,embedding_envelope,search_policy_decision_id,search_audit_id)
-                             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)",
+                             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)",
                             &[&chunk.id,&scope.tenant.org_id,&scope.tenant.workspace_id,
                               &deployment(&scope.tenant),&scope.org_unit,&scope.subject,
+                              &tenant_shared,
                               &selector_tier(&MemoryChunkSelector { tier:chunk.tier, project_id:chunk.project_id.clone(), session_id:chunk.session_id.clone() }),
                               &chunk.project_id,&chunk.session_id,&chunk.source_path,&chunk.created_at,
                               &data,&data_ciphertext,&data_envelope,&data_policy_id,&data_audit_id,
@@ -1053,7 +1073,7 @@ impl PostgresMemoryStore {
                     MemoryStoreBatchOperation::Mutation(
                         MemoryStoreMutationRequest::DeleteGlobalRecord { scope, id },
                     ) => {
-                        let changed=transaction.execute("DELETE FROM tandem_memory_global_records WHERE id=$1 AND tenant_org_id=$2 AND tenant_workspace_id=$3 AND tenant_deployment_id=$4 AND ($5::boolean OR owner_subject=$6 OR (private=false AND owner_org_unit_id IS NOT NULL)) AND ($7::text IS NULL OR owner_org_unit_id=$7)",
+                        let changed=transaction.execute("DELETE FROM tandem_memory_global_records WHERE id=$1 AND tenant_org_id=$2 AND tenant_workspace_id=$3 AND tenant_deployment_id=$4 AND ($5::boolean OR private=false OR owner_subject=$6) AND ($7::text IS NULL OR owner_org_unit_id=$7)",
                             &[&id,&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&(scope.access == MemoryReadAccess::TrustedUnrestricted),&scope.subject,&scope.org_unit]).await.map_err(|error| store_error("delete atomic PostgreSQL global memory", error, false))?;
                         MemoryStoreBatchValue::Mutation(MemoryStoreMutationResult::Changed(
                             changed > 0,
@@ -1069,7 +1089,7 @@ impl PostgresMemoryStore {
                             provenance,
                         },
                     ) => {
-                        let row=transaction.query_opt("SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,owner_org_unit_id,owner_subject FROM tandem_memory_global_records WHERE id=$1 AND tenant_org_id=$2 AND tenant_workspace_id=$3 AND tenant_deployment_id=$4 AND ($5::boolean OR owner_subject=$6 OR (private=false AND owner_org_unit_id IS NOT NULL)) AND ($7::text IS NULL OR owner_org_unit_id=$7)",
+                        let row=transaction.query_opt("SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,owner_org_unit_id,owner_subject FROM tandem_memory_global_records WHERE id=$1 AND tenant_org_id=$2 AND tenant_workspace_id=$3 AND tenant_deployment_id=$4 AND ($5::boolean OR private=false OR owner_subject=$6) AND ($7::text IS NULL OR owner_org_unit_id=$7)",
                             &[&id,&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&(scope.access == MemoryReadAccess::TrustedUnrestricted),&scope.subject,&scope.org_unit]).await.map_err(|error| store_error("read atomic PostgreSQL global memory", error, false))?;
                         if let Some(row) = row {
                             let mut record: crate::types::GlobalMemoryRecord = self

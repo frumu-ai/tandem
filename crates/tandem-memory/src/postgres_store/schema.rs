@@ -39,6 +39,7 @@ impl PostgresMemoryStore {
                 tenant_deployment_id TEXT NOT NULL DEFAULT '',
                 owner_org_unit_id TEXT,
                 owner_subject TEXT,
+                tenant_shared BOOLEAN NOT NULL DEFAULT false,
                 tier TEXT NOT NULL,
                 project_id TEXT,
                 session_id TEXT,
@@ -130,6 +131,7 @@ impl PostgresMemoryStore {
                  ALTER TABLE tandem_memory_chunks ADD COLUMN IF NOT EXISTS data_envelope JSONB;
                  ALTER TABLE tandem_memory_chunks ADD COLUMN IF NOT EXISTS data_policy_decision_id TEXT;
                  ALTER TABLE tandem_memory_chunks ADD COLUMN IF NOT EXISTS data_audit_id TEXT;
+                 ALTER TABLE tandem_memory_chunks ADD COLUMN IF NOT EXISTS tenant_shared BOOLEAN NOT NULL DEFAULT false;
                  ALTER TABLE tandem_memory_global_records ALTER COLUMN data DROP NOT NULL;
                  ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS data_ciphertext TEXT;
                  ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS data_envelope JSONB;
