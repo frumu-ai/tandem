@@ -38,6 +38,18 @@ pub struct MemoryManager {
     tokenizer: Tokenizer,
 }
 
+/// Trusted ownership coordinates for turning one session into project memory.
+/// Callers derive this from authenticated runtime context, never request-body
+/// tenant or subject fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopedMemoryConsolidationRequest {
+    pub tenant_scope: MemoryTenantScope,
+    pub org_unit: Option<String>,
+    pub subject: Option<String>,
+    pub project_id: String,
+    pub session_id: String,
+}
+
 const MAX_KNOWLEDGE_PACK_ITEMS: usize = 3;
 const GUIDE_DOC_SOURCE_PREFIX: &str = "guide_docs:";
 const GUIDE_DOC_RECENCY_HALFLIFE_MS: f64 = 30.0 * 24.0 * 60.0 * 60.0 * 1000.0;
@@ -1311,34 +1323,38 @@ impl MemoryManager {
         }
     }
 
-    /// Consolidate a session's memory into a summary chunk using the cheapest available provider.
-    pub async fn consolidate_session(
+    /// Consolidate visible session memory into a summary with the same trusted
+    /// ownership scope. Summary creation and source cleanup commit atomically.
+    pub async fn consolidate_scoped_session(
         &self,
-        session_id: &str,
-        project_id: Option<&str>,
+        request: &ScopedMemoryConsolidationRequest,
         providers: &ProviderRegistry,
         config: &MemoryConsolidationConfig,
-    ) -> MemoryResult<Option<String>> {
-        self.consolidate_session_with_egress(session_id, project_id, providers, config, None)
-            .await
-    }
-
-    pub async fn consolidate_session_with_egress(
-        &self,
-        session_id: &str,
-        project_id: Option<&str>,
-        providers: &ProviderRegistry,
-        config: &MemoryConsolidationConfig,
-        provider_egress: Option<&MemoryProviderEgressContext>,
+        provider_egress: &MemoryProviderEgressContext,
     ) -> MemoryResult<Option<String>> {
         if !config.enabled {
             return Ok(None);
         }
+        if request.session_id.trim().is_empty() || request.project_id.trim().is_empty() {
+            return Err(MemoryError::InvalidConfig(
+                "memory consolidation requires non-empty session and project ids".to_string(),
+            ));
+        }
+
+        let read_scope = MemoryReadScope {
+            tenant: request.tenant_scope.clone(),
+            org_unit: request.org_unit.clone(),
+            subject: request.subject.clone(),
+            access: crate::store::MemoryReadAccess::Scoped,
+        };
 
         let chunks = self
             .read_chunks(
-                MemoryChunkSelector::session(session_id),
-                Self::read_scope(&MemoryTenantScope::local()),
+                MemoryChunkSelector::session_in_project(
+                    &request.session_id,
+                    &request.project_id,
+                ),
+                read_scope.clone(),
                 None,
             )
             .await?;
@@ -1366,13 +1382,13 @@ impl MemoryManager {
         let provider_override = config.provider.as_deref().filter(|s| !s.is_empty());
         let model_override = config.model.as_deref().filter(|s| !s.is_empty());
 
-        let operation_id = format!("{session_id}:memory_consolidation");
+        let operation_id = format!("{}:memory_consolidation", request.session_id);
         let summary_text = match complete_memory_prompt(
             providers,
             &prompt,
             provider_override,
             model_override,
-            provider_egress,
+            Some(provider_egress),
             MemoryProviderEgressKind::Consolidation,
             &operation_id,
             "memory.session_consolidation",
@@ -1380,8 +1396,12 @@ impl MemoryManager {
         .await
         {
             Ok(s) => s,
+            Err(error @ MemoryError::TenantScopeViolation(_)) => return Err(error),
             Err(e) => {
-                tracing::warn!("Memory consolidation LLM failed for session {session_id}: {e}");
+                tracing::warn!(
+                    "Memory consolidation LLM failed for session {}: {e}",
+                    request.session_id
+                );
                 return Ok(None);
             }
         };
@@ -1400,13 +1420,48 @@ impl MemoryManager {
         };
 
         // Store the summary chunk
-        let chunk_id = uuid::Uuid::new_v4().to_string();
+        let source_chunk_ids = chunks
+            .iter()
+            .map(|chunk| chunk.id.clone())
+            .collect::<Vec<_>>();
+        let mut metadata = serde_json::Map::new();
+        if let Some(org_unit) = request.org_unit.as_ref() {
+            metadata.insert(
+                crate::types::OWNER_ORG_UNIT_METADATA_KEY.to_string(),
+                serde_json::Value::String(org_unit.clone()),
+            );
+        }
+        if let Some(subject) = request.subject.as_ref() {
+            metadata.insert(
+                crate::types::OWNER_SUBJECT_METADATA_KEY.to_string(),
+                serde_json::Value::String(subject.clone()),
+            );
+        } else if request.org_unit.is_none() {
+            metadata.insert(
+                crate::types::TENANT_SHARED_METADATA_KEY.to_string(),
+                serde_json::Value::Bool(true),
+            );
+        }
+        metadata.insert(
+            "consolidation_provenance".to_string(),
+            serde_json::json!({
+                "session_id": request.session_id,
+                "source_chunk_ids": source_chunk_ids,
+                "source_count": chunks.len(),
+                "tenant_context": {
+                    "org_id": request.tenant_scope.org_id,
+                    "workspace_id": request.tenant_scope.workspace_id,
+                    "deployment_id": request.tenant_scope.deployment_id,
+                }
+            }),
+        );
+
         let chunk = MemoryChunk {
-            id: chunk_id,
+            id: uuid::Uuid::new_v4().to_string(),
             content: summary_text.clone(),
             tier: MemoryTier::Project,
-            session_id: None, // The summary belongs to the project, not the ephemeral session
-            project_id: project_id.map(ToString::to_string),
+            session_id: None,
+            project_id: Some(request.project_id.clone()),
             created_at: Utc::now(),
             source: "consolidation".to_string(),
             token_count: self.count_tokens(&summary_text) as i64,
@@ -1414,33 +1469,32 @@ impl MemoryManager {
             source_mtime: None,
             source_size: None,
             source_hash: None,
-            tenant_scope: MemoryTenantScope::local(),
-            // Consolidated summaries merge multiple sources and stay shared
-            // within their project scope rather than being user-restricted.
-            subject: None,
-            metadata: None,
+            tenant_scope: request.tenant_scope.clone(),
+            subject: request.subject.clone(),
+            metadata: Some(serde_json::Value::Object(metadata)),
         };
 
-        self.write_chunk(&chunk, &embedding)
-            .await
-            .map_err(MemoryError::from)?;
-
-        // Clear original chunks now that they are consolidated
         match self
             .store
-            .mutate(MemoryStoreMutationRequest::ClearSession {
-                scope: Self::read_scope(&MemoryTenantScope::local()),
-                session_id: session_id.to_string(),
+            .mutate(MemoryStoreMutationRequest::ReplaceSessionWithSummary {
+                scope: read_scope,
+                session_id: request.session_id.clone(),
+                project_id: request.project_id.clone(),
+                source_chunk_ids,
+                summary_scope: Self::chunk_write_scope(&chunk),
+                summary: Box::new(chunk),
+                embedding,
             })
             .await
             .map_err(MemoryError::from)?
         {
             MemoryStoreMutationResult::Affected(_) => {}
-            _ => return Err(Self::unexpected_store_result("clear consolidated session")),
+            _ => return Err(Self::unexpected_store_result("consolidate session")),
         }
 
         tracing::info!(
-            "Session {session_id} consolidated into summary chunk. Original chunks cleared."
+            "Session {} consolidated into a scoped summary chunk",
+            request.session_id
         );
 
         Ok(Some(summary_text))

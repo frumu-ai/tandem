@@ -7,3 +7,7 @@ include!("manager_parts/part03.rs");
 #[cfg(test)]
 #[path = "manager_parts/store_migration_tests.rs"]
 mod store_migration_tests;
+
+#[cfg(test)]
+#[path = "manager_parts/consolidation_tests.rs"]
+mod consolidation_tests;
