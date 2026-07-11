@@ -2,6 +2,35 @@ use pgvector::Vector;
 use tokio_postgres::types::ToSql;
 
 use super::*;
+
+fn reject_narrowed_entity_scope(scope: &MemoryReadScope) -> MemoryStoreResult<()> {
+    if scope.org_unit.is_some() || scope.subject.is_some() {
+        return Err(MemoryStoreError::new(
+            MemoryStoreErrorKind::ScopeViolation,
+            "PostgreSQL entity reads cannot widen an org-unit/subject scope",
+        ));
+    }
+    Ok(())
+}
+
+fn build_context_tree(nodes: &[MemoryNode], parent_uri: &str, max_depth: usize) -> Vec<TreeNode> {
+    if max_depth == 0 {
+        return Vec::new();
+    }
+    nodes
+        .iter()
+        .filter(|node| node.parent_uri.as_deref() == Some(parent_uri))
+        .map(|node| TreeNode {
+            children: if node.node_type == crate::types::NodeType::Directory {
+                build_context_tree(nodes, &node.uri, max_depth.saturating_sub(1))
+            } else {
+                Vec::new()
+            },
+            node: node.clone(),
+            layer_summary: None,
+        })
+        .collect()
+}
 use crate::types::{
     CleanupLogEntry, GlobalMemoryRecord, GlobalMemorySearchHit, KnowledgeItemRecord,
     KnowledgeSpaceRecord, MemoryChunk, MemoryNode, MemoryStats, ProjectMemoryStats,
@@ -67,6 +96,7 @@ impl PostgresMemoryStore {
         key1: &str,
         key2: &str,
     ) -> MemoryStoreResult<Option<T>> {
+        reject_narrowed_entity_scope(scope)?;
         let client = self.client().await?;
         let row = client
             .query_opt(
@@ -342,6 +372,7 @@ impl PostgresMemoryStore {
         entity_type: &str,
         key1: &str,
     ) -> MemoryStoreResult<Vec<T>> {
+        reject_narrowed_entity_scope(scope)?;
         let client = self.client().await?;
         let rows = client
             .query(
@@ -587,6 +618,7 @@ impl PostgresMemoryStore {
                 Ok(MemoryStoreQueryResult::KnowledgeItems(values))
             }
             MemoryStoreQueryRequest::ImportIndexPaths { scope, selector } => {
+                reject_narrowed_entity_scope(&scope)?;
                 let key = selector
                     .project_id
                     .or(selector.session_id)
@@ -629,20 +661,18 @@ impl PostgresMemoryStore {
                 Ok(MemoryStoreQueryResult::ContextNodes(values))
             }
             MemoryStoreQueryRequest::ContextTree {
-                scope, parent_uri, ..
+                scope,
+                parent_uri,
+                max_depth,
             } => {
                 let values = self
                     .query_entity_values::<MemoryNode>(&scope, "context_node_uri", "")
-                    .await?
-                    .into_iter()
-                    .filter(|node| node.parent_uri.as_deref() == Some(parent_uri.as_str()))
-                    .map(|node| TreeNode {
-                        node,
-                        children: Vec::new(),
-                        layer_summary: None,
-                    })
-                    .collect();
-                Ok(MemoryStoreQueryResult::ContextTree(values))
+                    .await?;
+                Ok(MemoryStoreQueryResult::ContextTree(build_context_tree(
+                    &values,
+                    &parent_uri,
+                    max_depth,
+                )))
             }
             MemoryStoreQueryRequest::SourceObjectLifecyclesForBinding {
                 scope,

@@ -643,6 +643,27 @@ pub(super) async fn open_global_memory_store_for_state(
         .ok()
 }
 
+pub(super) async fn with_verified_memory_decrypt_principal<F, T>(
+    verified_tenant_context: Option<&VerifiedTenantContext>,
+    future: F,
+) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    let principal = verified_tenant_context.and_then(|verified| {
+        crate::memory::decrypt_principal::memory_decrypt_principal_from_verified_context(
+            verified,
+            crate::now_ms(),
+        )
+    });
+    match principal {
+        Some(principal) => {
+            tandem_memory::decrypt_context::with_decrypt_principal(principal, future).await
+        }
+        None => future.await,
+    }
+}
+
 pub(super) async fn open_memory_manager() -> Option<tandem_memory::MemoryManager> {
     let paths = tandem_core::resolve_shared_paths().ok()?;
     if let Some(parent) = paths.memory_db_path.parent() {

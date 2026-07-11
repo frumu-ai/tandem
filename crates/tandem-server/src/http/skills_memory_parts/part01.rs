@@ -1370,8 +1370,9 @@ impl GovernedDistillationWriter {
         scope.org_unit = crate::memory::subject::active_org_unit(
             self.verified_tenant_context.as_ref(),
         );
-        let existing = match store
-            .query(tandem_memory::MemoryStoreQueryRequest::ListGlobalRecords {
+        let existing = match with_verified_memory_decrypt_principal(
+            self.verified_tenant_context.as_ref(),
+            store.query(tandem_memory::MemoryStoreQueryRequest::ListGlobalRecords {
                 scope: scope.clone(),
                 user_id: self.subject.clone(),
                 query: None,
@@ -1379,7 +1380,8 @@ impl GovernedDistillationWriter {
                 channel_tag: None,
                 limit: 200,
                 offset: 0,
-            })
+            }),
+        )
             .await
             .map_err(|error| tandem_memory::types::MemoryError::InvalidConfig(error.to_string()))?
         {
@@ -1433,15 +1435,17 @@ impl GovernedDistillationWriter {
                     .as_deref(),
             )
             .unwrap_or_else(|| json!({}));
-            let _ = store
-                .mutate(tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+            let _ = with_verified_memory_decrypt_principal(
+                self.verified_tenant_context.as_ref(),
+                store.mutate(tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
                     scope,
                     id: existing.id.clone(),
                     visibility: existing.visibility.clone(),
                     demoted: existing.demoted,
                     metadata: Some(next_metadata),
                     provenance: existing.provenance.clone(),
-                })
+                }),
+            )
                 .await
                 .map_err(|error| {
                     tandem_memory::types::MemoryError::InvalidConfig(error.to_string())

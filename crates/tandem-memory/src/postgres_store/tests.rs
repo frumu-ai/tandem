@@ -1,5 +1,5 @@
 use super::*;
-use crate::types::{GlobalMemoryRecord, MemoryChunk, MemoryTenantScope, MemoryTier};
+use crate::types::{GlobalMemoryRecord, MemoryChunk, MemoryTenantScope, MemoryTier, NodeType};
 
 fn config(url: String, max_pool_size: usize) -> PostgresMemoryStoreConfig {
     PostgresMemoryStoreConfig {
@@ -141,6 +141,91 @@ async fn postgres_scopes_candidates_before_vector_top_k() {
     };
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].0.id, "target");
+}
+
+#[tokio::test]
+async fn postgres_context_tree_recurses_and_entity_reads_fail_closed() {
+    let Some(url) = test_url() else {
+        return;
+    };
+    let store = PostgresMemoryStore::connect(config(url, 4))
+        .await
+        .expect("open PostgreSQL test store");
+    store
+        .recover_backend(MemoryBackendRecoveryRequest {
+            action: MemoryBackendRecoveryAction::ResetAllData,
+            confirm_data_loss: true,
+        })
+        .await
+        .expect("reset PostgreSQL fixtures");
+    let tenant = tenant("context-tree");
+    for (uri, parent_uri, node_type) in [
+        (
+            "memory://root/dir",
+            Some("memory://root"),
+            NodeType::Directory,
+        ),
+        (
+            "memory://root/dir/nested",
+            Some("memory://root/dir"),
+            NodeType::Directory,
+        ),
+        (
+            "memory://root/dir/nested/file.txt",
+            Some("memory://root/dir/nested"),
+            NodeType::File,
+        ),
+    ] {
+        store
+            .write(MemoryStoreWriteRequest::ContextNode {
+                scope: MemoryWriteScope::tenant(tenant.clone()),
+                uri: uri.to_string(),
+                parent_uri: parent_uri.map(ToString::to_string),
+                node_type,
+                metadata: None,
+            })
+            .await
+            .expect("write PostgreSQL context node");
+    }
+    let tree = store
+        .query(MemoryStoreQueryRequest::ContextTree {
+            scope: MemoryReadScope::tenant(tenant.clone()),
+            parent_uri: "memory://root".to_string(),
+            max_depth: 3,
+        })
+        .await
+        .expect("read recursive PostgreSQL context tree");
+    assert!(matches!(
+        tree,
+        MemoryStoreQueryResult::ContextTree(tree)
+            if tree.len() == 1
+                && tree[0].children.len() == 1
+                && tree[0].children[0].children.len() == 1
+                && tree[0].children[0].children[0].node.uri.ends_with("file.txt")
+    ));
+    let mut narrowed = MemoryReadScope::tenant(tenant.clone());
+    narrowed.subject = Some("user-a".to_string());
+    let error = store
+        .read(MemoryStoreReadRequest::ContextNode {
+            scope: narrowed,
+            uri: "memory://root/dir".to_string(),
+        })
+        .await
+        .expect_err("narrowed entity read must fail closed");
+    assert_eq!(error.kind, MemoryStoreErrorKind::ScopeViolation);
+    let mut narrowed_write = MemoryWriteScope::tenant(tenant);
+    narrowed_write.subject = Some("user-a".to_string());
+    let error = store
+        .write(MemoryStoreWriteRequest::ContextNode {
+            scope: narrowed_write,
+            uri: "memory://root/other.txt".to_string(),
+            parent_uri: Some("memory://root".to_string()),
+            node_type: NodeType::File,
+            metadata: None,
+        })
+        .await
+        .expect_err("narrowed entity write must fail closed");
+    assert_eq!(error.kind, MemoryStoreErrorKind::ScopeViolation);
 }
 
 #[tokio::test]
@@ -365,6 +450,8 @@ async fn postgres_encrypted_mode_seals_payloads_and_reranks_in_scope() {
                 selector: MemoryChunkSelector::project("project"),
                 source_path: "encrypted-source".to_string(),
                 metadata: serde_json::json!({
+                    "owner_org_unit_id": "legal",
+                    "tenant_shared": true,
                     "enterprise_source_binding": {
                         "binding_id": "drive-legal",
                         "data_class": "confidential"
@@ -376,7 +463,7 @@ async fn postgres_encrypted_mode_seals_payloads_and_reranks_in_scope() {
         .expect("rekey encrypted PostgreSQL payloads and embeddings");
     let rekeyed_scope = client
         .query_one(
-            "SELECT data_class,source_binding_id FROM tandem_memory_chunks WHERE id='best'",
+            "SELECT data_class,source_binding_id,owner_org_unit_id,tenant_shared FROM tandem_memory_chunks WHERE id='best'",
             &[],
         )
         .await
@@ -386,6 +473,11 @@ async fn postgres_encrypted_mode_seals_payloads_and_reranks_in_scope() {
         rekeyed_scope.get::<_, Option<String>>(1).as_deref(),
         Some("drive-legal")
     );
+    assert_eq!(
+        rekeyed_scope.get::<_, Option<String>>(2).as_deref(),
+        Some("legal")
+    );
+    assert!(rekeyed_scope.get::<_, bool>(3));
     let result = store
         .query(MemoryStoreQueryRequest::SimilarChunks {
             scope: MemoryReadScope::tenant(tenant.clone()),

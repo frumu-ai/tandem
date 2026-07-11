@@ -240,11 +240,13 @@ async fn backfill_workflow_learning_source_memory_scope(
         scope.subject = resolved_subject;
         scope
     };
-    let source = match store
-        .read(tandem_memory::MemoryStoreReadRequest::GlobalRecord {
+    let source = match with_verified_memory_decrypt_principal(
+        verified_tenant_context,
+        store.read(tandem_memory::MemoryStoreReadRequest::GlobalRecord {
             scope: scope.clone(),
             id: memory_id.to_string(),
-        })
+        }),
+    )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
@@ -262,15 +264,17 @@ async fn backfill_workflow_learning_source_memory_scope(
         knowledge_scope_policy,
     )
     .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    let updated = store
-        .mutate(tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+    let updated = with_verified_memory_decrypt_principal(
+        verified_tenant_context,
+        store.mutate(tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
             scope,
             id: source.id.clone(),
             visibility: source.visibility.clone(),
             demoted: source.demoted,
             metadata: Some(metadata),
             provenance: source.provenance.clone(),
-        })
+        }),
+    )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if !matches!(updated, tandem_memory::MemoryStoreMutationResult::Changed(true)) {
@@ -544,8 +548,9 @@ pub(super) async fn memory_list(
         let mut authorized_seen = 0usize;
         let mut authorized_page = Vec::with_capacity(limit);
         while authorized_seen < authorized_end {
-            let rows = match store
-                .query(tandem_memory::MemoryStoreQueryRequest::ListGlobalRecords {
+            let rows = match with_verified_memory_decrypt_principal(
+                verified_tenant_context,
+                store.query(tandem_memory::MemoryStoreQueryRequest::ListGlobalRecords {
                     scope: scope.clone(),
                     user_id: user_id.clone(),
                     query: Some(q.clone()),
@@ -553,7 +558,8 @@ pub(super) async fn memory_list(
                     channel_tag: query.channel_tag.clone(),
                     limit: STORAGE_PAGE_SIZE,
                     offset: storage_offset,
-                })
+                }),
+            )
                 .await
             {
                 Ok(tandem_memory::MemoryStoreQueryResult::GlobalRecords(rows)) => rows,
@@ -709,11 +715,13 @@ pub(super) async fn memory_delete(
         scope.subject = resolved_subject;
         scope
     };
-    let record = match store
-        .read(tandem_memory::MemoryStoreReadRequest::GlobalRecord {
+    let record = match with_verified_memory_decrypt_principal(
+        verified_tenant_context.as_deref(),
+        store.read(tandem_memory::MemoryStoreReadRequest::GlobalRecord {
             scope: scope.clone(),
             id: id.clone(),
-        })
+        }),
+    )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {

@@ -108,11 +108,13 @@ async fn memory_promote_impl_with_verified(
         scope.subject = caller_subject;
         scope
     };
-    let source = match store
-        .read(tandem_memory::MemoryStoreReadRequest::GlobalRecord {
+    let source = match with_verified_memory_decrypt_principal(
+        verified_tenant_context,
+        store.read(tandem_memory::MemoryStoreReadRequest::GlobalRecord {
             scope: scope.clone(),
             id: request.source_memory_id.clone(),
-        })
+        }),
+    )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
@@ -608,15 +610,17 @@ async fn memory_promote_impl_with_verified(
         },
     )
     .await?;
-    let updated = store
-        .mutate(tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+    let updated = with_verified_memory_decrypt_principal(
+        verified_tenant_context,
+        store.mutate(tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
             scope,
             id: new_id.clone(),
             visibility: "shared".to_string(),
             demoted: false,
             metadata: next_metadata.clone(),
             provenance: Some(next_provenance.clone()),
-        })
+        }),
+    )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if !matches!(updated, tandem_memory::MemoryStoreMutationResult::Changed(true)) {
@@ -895,14 +899,16 @@ pub(super) async fn memory_search(
         });
         scope.org_unit = owner_org_unit_id;
         scope.subject = caller_subject;
-        let hits = match store
-            .query(tandem_memory::MemoryStoreQueryRequest::SearchGlobalRecords {
+        let hits = match with_verified_memory_decrypt_principal(
+            verified_tenant_context.as_deref(),
+            store.query(tandem_memory::MemoryStoreQueryRequest::SearchGlobalRecords {
                 scope,
                 user_id: capability.subject.clone(),
                 query: request.query.clone(),
                 limit: candidate_limit,
                 project_tag: Some(request.partition.project_id.clone()),
-            })
+            }),
+        )
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         {
@@ -1453,11 +1459,13 @@ pub(super) async fn memory_demote(
         scope.subject = resolved_subject;
         scope
     };
-    let record = match store
-        .read(tandem_memory::MemoryStoreReadRequest::GlobalRecord {
+    let record = match with_verified_memory_decrypt_principal(
+        verified_tenant_context.as_deref(),
+        store.read(tandem_memory::MemoryStoreReadRequest::GlobalRecord {
             scope: scope.clone(),
             id: input.id.clone(),
-        })
+        }),
+    )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
@@ -1518,8 +1526,9 @@ pub(super) async fn memory_demote(
         },
     )
     .await?;
-    let changed = match store
-        .mutate(tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+    let changed = match with_verified_memory_decrypt_principal(
+        verified_tenant_context.as_deref(),
+        store.mutate(tandem_memory::MemoryStoreMutationRequest::UpdateGlobalRecordContext {
             scope,
             id: input.id.clone(),
             visibility: "private".to_string(),
@@ -1529,7 +1538,8 @@ pub(super) async fn memory_demote(
                 Some(record.user_id.as_str()),
             ),
             provenance: record.provenance.clone(),
-        })
+        }),
+    )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {

@@ -37,6 +37,12 @@ impl PostgresMemoryStore {
         key2: &str,
         value: &T,
     ) -> MemoryStoreResult<()> {
+        if scope.org_unit.is_some() || scope.subject.is_some() {
+            return Err(MemoryStoreError::new(
+                MemoryStoreErrorKind::ScopeViolation,
+                "PostgreSQL entity writes cannot persist org-unit/subject scope",
+            ));
+        }
         let client = self.client().await?;
         client
             .execute(
@@ -802,6 +808,9 @@ impl PostgresMemoryStore {
                     let next_key_scope =
                         memory_key_scope_from_metadata(&scope.tenant, chunk.metadata.as_ref())
                             .with_owner_subject(chunk.subject.clone());
+                    let owner_org_unit_id =
+                        owner_org_unit_id_from_metadata(chunk.metadata.as_ref());
+                    let tenant_shared = tenant_shared_from_metadata(chunk.metadata.as_ref());
                     let (data_class, source_binding_id) = Self::key_scope_columns(&next_key_scope)?;
                     let (data, cipher, envelope, policy, audit) =
                         self.encode_payload(&chunk, &next_key_scope, &chunk.id)?;
@@ -851,8 +860,8 @@ impl PostgresMemoryStore {
                         };
                     client
                         .execute(
-                            "UPDATE tandem_memory_chunks SET data=$2,data_ciphertext=$3,data_envelope=$4,data_policy_decision_id=$5,data_audit_id=$6,data_class=$7,source_binding_id=$8,embedding_ciphertext=$9,embedding_envelope=$10,search_policy_decision_id=$11,search_audit_id=$12 WHERE id=$1",
-                            &[&chunk.id,&data,&cipher,&envelope,&policy,&audit,&data_class,&source_binding_id,&embedding_ciphertext,&embedding_envelope,&search_policy,&search_audit],
+                            "UPDATE tandem_memory_chunks SET data=$2,data_ciphertext=$3,data_envelope=$4,data_policy_decision_id=$5,data_audit_id=$6,data_class=$7,source_binding_id=$8,owner_org_unit_id=$9,owner_subject=$10,tenant_shared=$11,embedding_ciphertext=$12,embedding_envelope=$13,search_policy_decision_id=$14,search_audit_id=$15 WHERE id=$1",
+                            &[&chunk.id,&data,&cipher,&envelope,&policy,&audit,&data_class,&source_binding_id,&owner_org_unit_id,&chunk.subject,&tenant_shared,&embedding_ciphertext,&embedding_envelope,&search_policy,&search_audit],
                         )
                         .await
                         .map_err(|error| {
