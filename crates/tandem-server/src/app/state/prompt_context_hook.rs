@@ -191,7 +191,9 @@ impl ServerPromptContextHook {
         if let Some(parent) = self.state.memory_db_path.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
-        tandem_memory::MemoryManager::new_runtime(&self.state.memory_db_path)
+        // Embedded guide docs are a local product index even when customer
+        // memory is hosted in PostgreSQL.
+        tandem_memory::MemoryManager::new(&self.state.memory_db_path)
             .await
             .ok()
     }

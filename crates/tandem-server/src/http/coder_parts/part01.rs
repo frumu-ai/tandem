@@ -1720,6 +1720,25 @@ fn coder_memory_tenant_scope(tenant_context: &tandem_types::TenantContext) -> Me
     }
 }
 
+pub(super) fn coder_project_memory_decrypt_principal(
+    tenant_context: &tandem_types::TenantContext,
+) -> Option<tandem_memory::MemoryDecryptPrincipal> {
+    let actor_id = tenant_context
+        .actor_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|actor_id| !actor_id.is_empty())?;
+    Some(
+        tandem_memory::MemoryDecryptPrincipal::retrieval_gateway(
+            format!("coder-project-memory:{actor_id}"),
+            coder_memory_tenant_scope(tenant_context),
+            vec![tandem_enterprise_contract::DataClass::Internal],
+            Vec::new(),
+        )
+        .with_owner_subjects(vec![actor_id.to_string()]),
+    )
+}
+
 async fn list_project_memory_hits(
     state: &AppState,
     repo_binding: &CoderRepoBinding,
@@ -1731,8 +1750,10 @@ async fn list_project_memory_hits(
         return Vec::new();
     };
     let tenant_scope = tenant_context.map(coder_memory_tenant_scope);
-    let results = if let Some(tenant_scope) = tenant_scope.as_ref() {
-        manager
+    let results = if let (Some(tenant_context), Some(tenant_scope)) =
+        (tenant_context, tenant_scope.as_ref())
+    {
+        let search = manager
             .search_for_tenant(
                 query,
                 Some(MemoryTier::Project),
@@ -1740,8 +1761,13 @@ async fn list_project_memory_hits(
                 None,
                 tenant_scope,
                 Some(limit.clamp(1, 20) as i64),
-            )
-            .await
+            );
+        match coder_project_memory_decrypt_principal(tenant_context) {
+            Some(principal) => {
+                tandem_memory::decrypt_context::with_decrypt_principal(principal, search).await
+            }
+            None => search.await,
+        }
     } else {
         // Local/system callers intentionally use the legacy local partition.
         manager

@@ -175,3 +175,23 @@ fn coder_governed_memory_metadata_hides_source_bound_records_without_grant() {
     );
     assert!(crate::http::coder::governed_memory_metadata_visible_without_source_grant(None));
 }
+
+#[test]
+fn coder_project_memory_principal_is_tenant_actor_scoped() {
+    let tenant = tandem_types::TenantContext::explicit_user_workspace(
+        "acme",
+        "engineering",
+        Some("prod".to_string()),
+        "engineer-1",
+    );
+    let principal = crate::http::coder::coder_project_memory_decrypt_principal(&tenant)
+        .expect("explicit actor creates a project-memory principal");
+    assert_eq!(principal.tenant_scope.org_id, "acme");
+    assert_eq!(principal.tenant_scope.workspace_id, "engineering");
+    assert_eq!(principal.allowed_owner_subjects, vec!["engineer-1"]);
+    assert_eq!(
+        principal.allowed_data_classes,
+        vec![tandem_enterprise_contract::DataClass::Internal]
+    );
+    assert!(principal.allowed_source_binding_ids.is_empty());
+}
