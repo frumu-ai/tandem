@@ -33,6 +33,20 @@ fn chunk(id: &str, tenant_scope: MemoryTenantScope) -> MemoryChunk {
     }
 }
 
+fn owned_chunk(
+    id: &str,
+    tier: MemoryTier,
+    tenant_scope: MemoryTenantScope,
+    subject: &str,
+) -> MemoryChunk {
+    let mut chunk = chunk(id, tenant_scope);
+    chunk.tier = tier;
+    chunk.session_id = (tier == MemoryTier::Session).then(|| "session".to_string());
+    chunk.subject = Some(subject.to_string());
+    chunk.metadata = Some(serde_json::json!({ "owner_org_unit_id": "finance" }));
+    chunk
+}
+
 fn global_record(id: &str, tenant_scope: &MemoryTenantScope) -> GlobalMemoryRecord {
     GlobalMemoryRecord {
         id: id.to_string(),
@@ -290,4 +304,135 @@ async fn postgres_encrypted_mode_seals_payloads_and_reranks_in_scope() {
     std::env::remove_var("TANDEM_MEMORY_DECRYPT_PROVIDER");
     std::env::remove_var("TANDEM_MEMORY_LOCAL_KEY_FILE");
     std::env::remove_var("TANDEM_MEMORY_DECRYPT_PRINCIPAL_ID");
+}
+
+#[tokio::test]
+async fn postgres_consolidation_is_exactly_scoped_and_atomic() {
+    let Some(url) = test_url() else {
+        return;
+    };
+    let store = PostgresMemoryStore::connect(PostgresMemoryStoreConfig {
+        url,
+        embedding_dimension: 3,
+        distance_metric: PostgresDistanceMetric::Cosine,
+        max_pool_size: 4,
+        search_surface_mode: PostgresSearchSurfaceMode::PlaintextPgvector,
+        rerank_candidate_limit: 100,
+    })
+    .await
+    .expect("open PostgreSQL test store");
+    store
+        .recover_backend(MemoryBackendRecoveryRequest {
+            action: MemoryBackendRecoveryAction::ResetAllData,
+            confirm_data_loss: true,
+        })
+        .await
+        .expect("reset PostgreSQL fixtures");
+    let tenant = tenant("consolidation");
+    let owner_write = MemoryWriteScope {
+        tenant: tenant.clone(),
+        org_unit: Some("finance".to_string()),
+        subject: Some("alice".to_string()),
+    };
+    let owner_read = MemoryReadScope {
+        tenant: tenant.clone(),
+        org_unit: Some("finance".to_string()),
+        subject: Some("alice".to_string()),
+        access: MemoryReadAccess::Scoped,
+    };
+    for id in ["source-a", "source-b"] {
+        store
+            .write(MemoryStoreWriteRequest::Chunk {
+                scope: owner_write.clone(),
+                chunk: owned_chunk(id, MemoryTier::Session, tenant.clone(), "alice"),
+                embedding: vec![1.0, 0.0, 0.0],
+            })
+            .await
+            .expect("seed consolidation source");
+    }
+    let summary = owned_chunk("summary", MemoryTier::Project, tenant.clone(), "alice");
+    let result = store
+        .mutate(MemoryStoreMutationRequest::ReplaceSessionWithSummary {
+            scope: owner_read.clone(),
+            session_id: "session".to_string(),
+            project_id: "project".to_string(),
+            source_chunk_ids: vec!["source-a".to_string(), "source-b".to_string()],
+            summary_scope: owner_write.clone(),
+            summary: Box::new(summary),
+            embedding: vec![1.0, 0.0, 0.0],
+        })
+        .await
+        .expect("replace session with summary");
+    assert!(matches!(result, MemoryStoreMutationResult::Affected(2)));
+    let project = store
+        .read(MemoryStoreReadRequest::Chunks {
+            scope: owner_read.clone(),
+            selector: MemoryChunkSelector::project("project"),
+            limit: None,
+        })
+        .await
+        .expect("read summary");
+    let MemoryStoreReadResult::Chunks(project) = project else {
+        panic!("expected chunks");
+    };
+    assert_eq!(
+        project
+            .iter()
+            .map(|chunk| chunk.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["summary"]
+    );
+
+    let own = owned_chunk("rollback-own", MemoryTier::Session, tenant.clone(), "alice");
+    store
+        .write(MemoryStoreWriteRequest::Chunk {
+            scope: owner_write.clone(),
+            chunk: own,
+            embedding: vec![1.0, 0.0, 0.0],
+        })
+        .await
+        .expect("seed rollback owner source");
+    let peer_write = MemoryWriteScope {
+        tenant: tenant.clone(),
+        org_unit: Some("finance".to_string()),
+        subject: Some("bob".to_string()),
+    };
+    store
+        .write(MemoryStoreWriteRequest::Chunk {
+            scope: peer_write,
+            chunk: owned_chunk("rollback-peer", MemoryTier::Session, tenant.clone(), "bob"),
+            embedding: vec![1.0, 0.0, 0.0],
+        })
+        .await
+        .expect("seed rollback peer source");
+    let error = store
+        .mutate(MemoryStoreMutationRequest::ReplaceSessionWithSummary {
+            scope: owner_read.clone(),
+            session_id: "session".to_string(),
+            project_id: "project".to_string(),
+            source_chunk_ids: vec!["rollback-own".to_string(), "rollback-peer".to_string()],
+            summary_scope: owner_write,
+            summary: Box::new(owned_chunk(
+                "rollback-summary",
+                MemoryTier::Project,
+                tenant,
+                "alice",
+            )),
+            embedding: vec![1.0, 0.0, 0.0],
+        })
+        .await
+        .expect_err("peer source must roll back consolidation");
+    assert_eq!(error.kind, MemoryStoreErrorKind::Conflict);
+    let sources = store
+        .read(MemoryStoreReadRequest::Chunks {
+            scope: owner_read,
+            selector: MemoryChunkSelector::session("session"),
+            limit: None,
+        })
+        .await
+        .expect("read rollback source");
+    let MemoryStoreReadResult::Chunks(sources) = sources else {
+        panic!("expected chunks");
+    };
+    assert!(sources.iter().any(|chunk| chunk.id == "rollback-own"));
 }

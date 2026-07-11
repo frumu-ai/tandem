@@ -426,6 +426,136 @@ impl PostgresMemoryStore {
                     &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&session_id]).await.map_err(|error| store_error("clear PostgreSQL session", error, true))?;
                 Ok(MemoryStoreMutationResult::Affected(changed))
             }
+            MemoryStoreMutationRequest::ReplaceSessionWithSummary {
+                scope,
+                session_id,
+                project_id,
+                source_chunk_ids,
+                summary_scope,
+                summary,
+                embedding,
+            } => {
+                if session_id.trim().is_empty()
+                    || project_id.trim().is_empty()
+                    || source_chunk_ids.is_empty()
+                    || summary.tier != crate::types::MemoryTier::Project
+                    || summary.project_id.as_deref() != Some(project_id.as_str())
+                {
+                    return Err(MemoryStoreError::invalid(
+                        "session consolidation requires source chunks and a matching project summary",
+                    ));
+                }
+                if summary_scope.tenant != summary.tenant_scope
+                    || summary_scope.subject != summary.subject
+                    || summary_scope.org_unit
+                        != owner_org_unit_id_from_metadata(summary.metadata.as_ref())
+                    || summary_scope.tenant != scope.tenant
+                    || summary_scope.subject != scope.subject
+                    || summary_scope.org_unit != scope.org_unit
+                {
+                    return Err(MemoryStoreError::new(
+                        MemoryStoreErrorKind::ScopeViolation,
+                        "session summary ownership must exactly match the source scope",
+                    ));
+                }
+                if embedding.len() != self.embedding_dimension {
+                    return Err(MemoryStoreError::invalid(format!(
+                        "embedding dimension mismatch: expected {}, got {}",
+                        self.embedding_dimension,
+                        embedding.len()
+                    )));
+                }
+                let (vector, ciphertext, envelope, policy_id, audit_id) = match self
+                    .search_surface_mode
+                {
+                    PostgresSearchSurfaceMode::PlaintextPgvector => {
+                        (Some(Vector::from(embedding)), None, None, None, None)
+                    }
+                    PostgresSearchSurfaceMode::EncryptedRerank => {
+                        let (ciphertext, envelope, policy_id, audit_id) = self.encrypt_embedding(
+                            &embedding,
+                            &summary_scope.tenant,
+                            summary_scope.org_unit.clone(),
+                            &summary.id,
+                        )?;
+                        (
+                            None,
+                            Some(ciphertext),
+                            envelope.map(|value| json_value(&value)).transpose()?,
+                            Some(policy_id),
+                            Some(audit_id),
+                        )
+                    }
+                    PostgresSearchSurfaceMode::Disabled => (None, None, None, None, None),
+                };
+                let (data, data_ciphertext, data_envelope, data_policy, data_audit) = self
+                    .encode_payload(
+                        &summary,
+                        &summary_scope.tenant,
+                        summary_scope.org_unit.clone(),
+                        &summary.id,
+                    )?;
+                let mut client = self.client().await?;
+                let transaction = client
+                    .transaction()
+                    .await
+                    .map_err(|error| store_error("start PostgreSQL consolidation", error, true))?;
+                transaction.execute(
+                    "INSERT INTO tandem_memory_chunks
+                     (id,tenant_org_id,tenant_workspace_id,tenant_deployment_id,owner_org_unit_id,
+                      owner_subject,tier,project_id,session_id,source_path,created_at,
+                      data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,
+                      embedding,embedding_ciphertext,embedding_envelope,search_policy_decision_id,search_audit_id)
+                     VALUES ($1,$2,$3,$4,$5,$6,'project',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)",
+                    &[&summary.id,&summary_scope.tenant.org_id,&summary_scope.tenant.workspace_id,
+                      &deployment(&summary_scope.tenant),&summary_scope.org_unit,&summary_scope.subject,
+                      &summary.project_id,&summary.session_id,&summary.source_path,&summary.created_at,
+                      &data,&data_ciphertext,&data_envelope,&data_policy,&data_audit,
+                      &vector,&ciphertext,&envelope,&policy_id,&audit_id]
+                ).await.map_err(|error| store_error("write PostgreSQL consolidation summary", error, false))?;
+                let mut deleted = 0_u64;
+                for chunk_id in source_chunk_ids {
+                    let visible = transaction
+                        .query_opt(
+                            "SELECT 1 FROM tandem_memory_chunks WHERE id=$1 AND tier='session'
+                         AND session_id=$2 AND project_id=$3 AND tenant_org_id=$4
+                         AND tenant_workspace_id=$5 AND tenant_deployment_id=$6
+                         AND (($7::text IS NULL AND owner_subject IS NULL) OR owner_subject=$7)
+                         AND owner_org_unit_id IS NOT DISTINCT FROM $8",
+                            &[
+                                &chunk_id,
+                                &session_id,
+                                &project_id,
+                                &scope.tenant.org_id,
+                                &scope.tenant.workspace_id,
+                                &deployment(&scope.tenant),
+                                &scope.subject,
+                                &scope.org_unit,
+                            ],
+                        )
+                        .await
+                        .map_err(|error| {
+                            store_error("validate PostgreSQL consolidation source", error, true)
+                        })?;
+                    if visible.is_none() {
+                        return Err(MemoryStoreError::new(
+                            MemoryStoreErrorKind::Conflict,
+                            "session changed or a source chunk is outside the consolidation scope",
+                        ));
+                    }
+                    deleted += transaction
+                        .execute("DELETE FROM tandem_memory_chunks WHERE id=$1", &[&chunk_id])
+                        .await
+                        .map_err(|error| {
+                            store_error("delete PostgreSQL consolidation source", error, false)
+                        })?;
+                }
+                transaction
+                    .commit()
+                    .await
+                    .map_err(|error| store_error("commit PostgreSQL consolidation", error, true))?;
+                Ok(MemoryStoreMutationResult::Affected(deleted))
+            }
             MemoryStoreMutationRequest::ClearProject { scope, project_id } => {
                 let changed = client.execute("DELETE FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND project_id=$4",
                     &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&project_id]).await.map_err(|error| store_error("clear PostgreSQL project", error, true))?;
