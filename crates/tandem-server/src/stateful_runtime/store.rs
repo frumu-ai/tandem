@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::LazyLock,
 };
@@ -359,13 +359,19 @@ pub async fn compact_stateful_run_event_log(
     }
 
     let cutoff_ms = now_ms.saturating_sub(retention_ms);
+    let snapshot_floors = stateful_snapshot_floors(path, authoritative_store.as_ref()).await?;
     let mut retained = Vec::new();
     let mut compacted =
         HashMap::<StatefulRunEventCompactionKey, StatefulRunEventCompactionSummary>::new();
     let mut pruned = 0_usize;
 
     for row in load_stateful_run_events(path) {
-        if row.occurred_at_ms >= cutoff_ms {
+        // Events at or after a run's newest snapshot are the replay tail for
+        // that snapshot; age-based retention must never remove them.
+        let protected_by_snapshot = snapshot_floors
+            .get(&row.run_id)
+            .is_some_and(|floor| row.seq >= *floor);
+        if row.occurred_at_ms >= cutoff_ms || protected_by_snapshot {
             retained.push(row);
             continue;
         }
@@ -414,6 +420,153 @@ pub async fn compact_stateful_run_event_log(
     write_stateful_run_event_rows(path, &retained).await?;
     invalidate_stateful_run_event_cursors_for_path(&mut cursors, path);
     Ok(pruned)
+}
+
+/// Prunes stateful run snapshots older than `retention_ms`, always keeping
+/// the newest `keep_last_per_run` snapshots of every run so replay never
+/// loses its most recent restore point. Prunes the authoritative SQLite rows
+/// when the migration completed, and removes pruned JSON mirror files
+/// best-effort in both modes. Returns the number of snapshots pruned.
+pub async fn prune_stateful_run_snapshots(
+    snapshots_root: &Path,
+    retention_ms: u64,
+    keep_last_per_run: usize,
+    now_ms: u64,
+) -> anyhow::Result<usize> {
+    if retention_ms == 0 {
+        return Ok(0);
+    }
+    let cutoff_ms = now_ms.saturating_sub(retention_ms);
+    let keep = keep_last_per_run.max(1);
+    if let Some(store) = authoritative_stateful_store_for_snapshot_root(snapshots_root) {
+        let pruned = tokio::task::spawn_blocking(move || {
+            store.prune_stateful_runtime_snapshots(cutoff_ms, keep)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("stateful snapshot prune task failed: {error}"))??;
+        let pruned_ids = pruned.iter().cloned().collect::<HashSet<_>>();
+        remove_snapshot_mirror_files(snapshots_root, |snapshot| {
+            pruned_ids.contains(&snapshot.snapshot_id)
+        });
+        return Ok(pruned.len());
+    }
+    // Legacy JSON-only mode: compute the keep set per run, prune the rest.
+    let mut by_run = HashMap::<String, Vec<StatefulRunSnapshotRecord>>::new();
+    collect_snapshot_mirror_records(snapshots_root, |snapshot| {
+        by_run
+            .entry(snapshot.run_id.clone())
+            .or_default()
+            .push(snapshot);
+    });
+    let mut pruned_ids = HashSet::new();
+    for snapshots in by_run.values_mut() {
+        snapshots.sort_by(|left, right| {
+            right
+                .seq
+                .cmp(&left.seq)
+                .then_with(|| right.snapshot_id.cmp(&left.snapshot_id))
+        });
+        for snapshot in snapshots.iter().skip(keep) {
+            if snapshot.created_at_ms < cutoff_ms {
+                pruned_ids.insert(snapshot.snapshot_id.clone());
+            }
+        }
+    }
+    if pruned_ids.is_empty() {
+        return Ok(0);
+    }
+    remove_snapshot_mirror_files(snapshots_root, |snapshot| {
+        pruned_ids.contains(&snapshot.snapshot_id)
+    });
+    Ok(pruned_ids.len())
+}
+
+fn collect_snapshot_mirror_records(
+    snapshots_root: &Path,
+    mut visit: impl FnMut(StatefulRunSnapshotRecord),
+) {
+    let Ok(run_directories) = std::fs::read_dir(snapshots_root) else {
+        return;
+    };
+    for run_directory in run_directories.filter_map(Result::ok) {
+        let Ok(entries) = std::fs::read_dir(run_directory.path()) else {
+            continue;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            if let Ok(snapshot) = read_stateful_run_snapshot(&path) {
+                visit(snapshot);
+            }
+        }
+    }
+}
+
+fn remove_snapshot_mirror_files(
+    snapshots_root: &Path,
+    mut should_remove: impl FnMut(&StatefulRunSnapshotRecord) -> bool,
+) {
+    let Ok(run_directories) = std::fs::read_dir(snapshots_root) else {
+        return;
+    };
+    for run_directory in run_directories.filter_map(Result::ok) {
+        let Ok(entries) = std::fs::read_dir(run_directory.path()) else {
+            continue;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(snapshot) = read_stateful_run_snapshot(&path) else {
+                continue;
+            };
+            if should_remove(&snapshot) {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+}
+
+/// Per-run seq of the newest snapshot. Events at or above this floor are the
+/// tail needed to replay from that snapshot and must survive retention.
+async fn stateful_snapshot_floors(
+    run_events_path: &Path,
+    authoritative_store: Option<&super::OrchestrationStateStore>,
+) -> anyhow::Result<HashMap<String, u64>> {
+    if let Some(store) = authoritative_store {
+        let store = store.clone();
+        return tokio::task::spawn_blocking(move || store.latest_stateful_snapshot_seqs())
+            .await
+            .map_err(|error| anyhow::anyhow!("stateful snapshot floor task failed: {error}"))?;
+    }
+    let root = run_events_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(STATEFUL_RUNTIME_SNAPSHOTS_DIRECTORY_NAME);
+    let mut floors = HashMap::new();
+    let Ok(run_directories) = std::fs::read_dir(&root) else {
+        return Ok(floors);
+    };
+    for run_directory in run_directories.filter_map(Result::ok) {
+        let Ok(entries) = std::fs::read_dir(run_directory.path()) else {
+            continue;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(snapshot) = read_stateful_run_snapshot(&path) else {
+                continue;
+            };
+            let floor = floors.entry(snapshot.run_id.clone()).or_insert(0);
+            *floor = (*floor).max(snapshot.seq);
+        }
+    }
+    Ok(floors)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1201,6 +1354,131 @@ mod tests {
             3
         );
         let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn compaction_never_prunes_the_replay_tail_of_the_latest_snapshot() {
+        let root = std::env::temp_dir().join(format!(
+            "stateful-runtime-compact-snapshot-floor-{}",
+            Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("stateful_events.jsonl");
+        let tenant_a = tenant("org-a", "workspace-a");
+        for seq in 1..=3 {
+            let mut record = event(seq, "run-a", tenant_a.clone());
+            record.occurred_at_ms = seq * 100;
+            append_stateful_run_event(&path, &record)
+                .await
+                .expect("append old event");
+        }
+        let mut recent = event(4, "run-a", tenant_a.clone());
+        recent.occurred_at_ms = 900;
+        append_stateful_run_event(&path, &recent)
+            .await
+            .expect("append recent event");
+        // The newest snapshot pins seq 2: events 2 and 3 are its replay tail
+        // and must survive even though their timestamps are past retention.
+        let status = StatefulWorkflowRunStatus::Running;
+        let phase_state = phase_state_from_status("run-a", &status, 250, None);
+        let snapshot = StatefulRunSnapshotRecord {
+            schema_version: 1,
+            snapshot_id: "snapshot-run-a".to_string(),
+            run_id: "run-a".to_string(),
+            seq: 2,
+            created_at_ms: 250,
+            scope: StatefulRuntimeScope::from_tenant_context(tenant_a.clone()),
+            status,
+            phase: phase_state.phase,
+            phase_history: phase_state.phase_history,
+            allowed_next_phases: phase_state.allowed_next_phases,
+            phase_id: None,
+            source_record_kind: None,
+            checkpoint: None,
+            payload_digest: None,
+            workflow_definition_version: None,
+            workflow_definition_snapshot_hash: None,
+            metadata: None,
+        };
+        write_stateful_run_snapshot(&root.join("stateful_snapshots"), &snapshot)
+            .await
+            .expect("write snapshot");
+
+        let pruned = compact_stateful_run_event_log(&path, 500, 1_000)
+            .await
+            .expect("compact");
+
+        assert_eq!(pruned, 1, "only the pre-snapshot event may be pruned");
+        let rows = query_stateful_run_events(
+            &path,
+            &tenant_a,
+            StatefulRunEventQuery {
+                run_id: "run-a",
+                after_seq: None,
+                before_seq: None,
+                limit: None,
+                tail: false,
+            },
+        );
+        assert_eq!(
+            rows.iter().map(|row| row.seq).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(rows[0].event_type, STATEFUL_RUN_EVENT_LOG_COMPACTED_TYPE);
+        assert_eq!(rows[1].event_id, "event-2");
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn snapshot_prune_keeps_newest_mirror_files_per_run() {
+        let root = std::env::temp_dir().join(format!(
+            "stateful-runtime-snapshot-prune-{}",
+            Uuid::new_v4()
+        ));
+        let snapshots_root = root.join("stateful_snapshots");
+        let tenant_a = tenant("org-a", "workspace-a");
+        for (snapshot_id, seq, created_at_ms) in [
+            ("snapshot-old", 1_u64, 10_u64),
+            ("snapshot-mid", 2, 20),
+            ("snapshot-new", 3, 900),
+        ] {
+            let status = StatefulWorkflowRunStatus::Running;
+            let phase_state = phase_state_from_status("run-a", &status, created_at_ms, None);
+            let snapshot = StatefulRunSnapshotRecord {
+                schema_version: 1,
+                snapshot_id: snapshot_id.to_string(),
+                run_id: "run-a".to_string(),
+                seq,
+                created_at_ms,
+                scope: StatefulRuntimeScope::from_tenant_context(tenant_a.clone()),
+                status,
+                phase: phase_state.phase,
+                phase_history: phase_state.phase_history,
+                allowed_next_phases: phase_state.allowed_next_phases,
+                phase_id: None,
+                source_record_kind: None,
+                checkpoint: None,
+                payload_digest: None,
+                workflow_definition_version: None,
+                workflow_definition_snapshot_hash: None,
+                metadata: None,
+            };
+            write_stateful_run_snapshot(&snapshots_root, &snapshot)
+                .await
+                .expect("write snapshot");
+        }
+
+        let pruned = prune_stateful_run_snapshots(&snapshots_root, 500, 2, 1_000)
+            .await
+            .expect("prune snapshots");
+
+        assert_eq!(pruned, 1, "only snapshots beyond keep-last and cutoff go");
+        let remaining = list_stateful_run_snapshots(&snapshots_root, &tenant_a, "run-a", None)
+            .into_iter()
+            .map(|snapshot| snapshot.snapshot_id)
+            .collect::<Vec<_>>();
+        assert_eq!(remaining, vec!["snapshot-mid", "snapshot-new"]);
+        let _ = tokio::fs::remove_dir_all(root).await;
     }
 
     #[tokio::test]

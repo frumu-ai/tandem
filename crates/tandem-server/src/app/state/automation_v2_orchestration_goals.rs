@@ -12,6 +12,10 @@ use tandem_automation::{
 };
 use tandem_types::{PrincipalRef, TenantContext};
 
+/// Operator-supplied goal metadata is bounded so it can never smuggle bulk
+/// content (or secrets disguised as context) into prompts and graph records.
+pub(crate) const MAX_GOAL_METADATA_BYTES: usize = 16 * 1024;
+
 use super::AppState;
 use crate::stateful_runtime::{
     automation_definition_snapshot_hash, stable_definition_snapshot_hash, GoalPauseOutcome,
@@ -83,6 +87,14 @@ impl AppState {
         }
         if request.objective.trim().is_empty() {
             bail!("goal start requires an objective");
+        }
+        if let Some(metadata) = request.metadata.as_ref() {
+            let bytes = serde_json::to_vec(metadata)?.len();
+            if bytes > MAX_GOAL_METADATA_BYTES {
+                bail!(
+                    "goal metadata is {bytes} bytes; the admission bound is {MAX_GOAL_METADATA_BYTES} bytes"
+                );
+            }
         }
         let store =
             OrchestrationStateStore::from_automation_runs_path(&self.automation_v2_runs_path)?;

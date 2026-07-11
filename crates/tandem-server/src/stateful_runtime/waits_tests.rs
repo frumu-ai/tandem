@@ -350,6 +350,88 @@ async fn due_wait_claim_is_single_claimant_until_lease_expires() {
     let _ = tokio::fs::remove_file(path).await;
 }
 
+/// The wait-wake boundary is not one transaction: a claimant can crash after
+/// claiming and before completing. Crash/restart must still converge on one
+/// authoritative outcome — the lease expires, a successor reclaims, and wake
+/// remains exactly-once under its idempotency key.
+#[tokio::test]
+async fn crashed_claimant_wake_converges_to_one_authoritative_outcome() {
+    let path = temp_wait_store("stateful-waits-crashed-claimant");
+    let tenant_a = tenant("org-a", "workspace-a");
+    upsert_stateful_wait(&path, timer_wait("wait-1", "run-1", tenant_a.clone(), 100))
+        .await
+        .expect("register wait");
+
+    // Scheduler A claims the due wait, then crashes without completing.
+    let claimed =
+        claim_due_stateful_wait(&path, &tenant_a, "run-1", "wait-1", "scheduler-a", 100, 50)
+            .await
+            .expect("claim")
+            .expect("claimed record");
+    assert_eq!(claimed.claimed_by.as_deref(), Some("scheduler-a"));
+
+    // While A's lease is live, the wait cannot be woken or re-claimed: the
+    // crash window cannot produce a second in-flight owner.
+    assert!(
+        mark_stateful_wait_woken(&path, &tenant_a, "run-1", "wait-1", "wake-1", 7, 120)
+            .await
+            .expect("wake during lease")
+            .is_none()
+    );
+    assert!(
+        claim_due_stateful_wait(&path, &tenant_a, "run-1", "wait-1", "scheduler-b", 120, 50)
+            .await
+            .expect("reclaim during lease")
+            .is_none()
+    );
+
+    // After the lease expires (restart), a successor reclaims and completes.
+    let reclaimed =
+        claim_due_stateful_wait(&path, &tenant_a, "run-1", "wait-1", "scheduler-b", 200, 50)
+            .await
+            .expect("reclaim")
+            .expect("reclaimed record");
+    assert_eq!(reclaimed.claimed_by.as_deref(), Some("scheduler-b"));
+    let reserved =
+        begin_claimed_stateful_wait_wake_completion(&path, &tenant_a, &reclaimed, "wake-1", 210)
+            .await
+            .expect("begin completion")
+            .expect("completion reservation");
+    finish_claimed_stateful_wait_completion(
+        &path,
+        &tenant_a,
+        &reserved,
+        "wake-1",
+        7,
+        StatefulWaitStatus::Woken,
+        210,
+    )
+    .await
+    .expect("finish completion")
+    .expect("woken record");
+
+    // Replaying the same wake is idempotent; a different key cannot mint a
+    // second outcome; the terminal wait cannot be claimed again.
+    let replay = mark_stateful_wait_woken(&path, &tenant_a, "run-1", "wait-1", "wake-1", 7, 300)
+        .await
+        .expect("idempotent replay")
+        .expect("replayed record");
+    assert_eq!(replay.status, StatefulWaitStatus::Woken);
+    assert!(
+        mark_stateful_wait_woken(&path, &tenant_a, "run-1", "wait-1", "wake-2", 8, 300)
+            .await
+            .expect("conflicting wake")
+            .is_none()
+    );
+    assert!(
+        claim_due_stateful_wait(&path, &tenant_a, "run-1", "wait-1", "scheduler-c", 400, 50)
+            .await
+            .expect("claim after terminal")
+            .is_none()
+    );
+    let _ = tokio::fs::remove_file(path).await;
+}
+
 #[tokio::test]
 async fn regressed_due_clock_does_not_expire_active_claim_lease() {
     let path = temp_wait_store("stateful-waits-regressed-claim-lease");

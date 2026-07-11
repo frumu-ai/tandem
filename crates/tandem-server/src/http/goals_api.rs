@@ -13,7 +13,7 @@ use tandem_automation::{
     AutomationV2RunRecord, LongRunningGoal, OrchestrationArtifactRef, OrchestrationNodeKind,
     OrchestrationSpec,
 };
-use tandem_types::{PrincipalKind, PrincipalRef, RequestPrincipal};
+use tandem_types::{PrincipalKind, PrincipalRef, RequestPrincipal, VerifiedTenantContext};
 
 use crate::stateful_runtime::{
     list_stateful_waits, GoalPauseOutcome, GoalResumeOutcome, GovernedTransitionRequest,
@@ -27,6 +27,70 @@ const DEFAULT_GOAL_EVENT_LIMIT: usize = 250;
 const MAX_GOAL_EVENT_LIMIT: usize = 1_000;
 /// SSE replay page size; the stream keeps paging until it drains.
 const SSE_REPLAY_PAGE: usize = 500;
+
+/// File-backed artifact admission: the content path must resolve to a real
+/// file inside the workspace root — symlink escapes included, because the
+/// check runs on the canonicalized path — and the file must match its
+/// declared digest. Runs at every emit surface (HTTP and MCP) before a
+/// transition is attempted.
+pub(super) fn enforce_artifact_content_policy(
+    workspace_root: &str,
+    artifact: &OrchestrationArtifactRef,
+) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    let Some(content_path) = artifact.content_path.as_deref() else {
+        return Ok(());
+    };
+    let root = std::path::Path::new(workspace_root)
+        .canonicalize()
+        .context("workspace root is unavailable for artifact validation")?;
+    let resolved = root.join(content_path).canonicalize().with_context(|| {
+        format!("handoff artifact content `{content_path}` does not resolve to a workspace file")
+    })?;
+    if !resolved.starts_with(&root) {
+        anyhow::bail!("handoff artifact content `{content_path}` escapes the workspace root");
+    }
+    if !resolved.is_file() {
+        anyhow::bail!("handoff artifact content `{content_path}` is not a regular file");
+    }
+    if let Some(digest) = artifact.content_digest.as_deref() {
+        let expected = digest.strip_prefix("sha256:").unwrap_or(digest);
+        let actual = sha256_file_hex(&resolved)?;
+        if !expected.eq_ignore_ascii_case(&actual) {
+            anyhow::bail!(
+                "handoff artifact content digest mismatch for `{content_path}`: declared {expected}, found {actual}"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn sha256_file_hex(path: &std::path::Path) -> anyhow::Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn artifact_policy_response(error: &anyhow::Error) -> Response {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(json!({
+            "error": "artifact_policy_violation",
+            "detail": error.to_string(),
+        })),
+    )
+        .into_response()
+}
 
 fn goal_store(state: &AppState) -> Result<OrchestrationStateStore, Response> {
     OrchestrationStateStore::from_automation_runs_path(&state.automation_v2_runs_path).map_err(
@@ -71,15 +135,140 @@ fn request_actor(principal: &RequestPrincipal) -> PrincipalRef {
     )
 }
 
-/// Authority for emit/approve surfaces. Finer-grained enterprise authority
-/// (org-unit grants, delegation) lands with TAN-705; until then any
-/// authenticated tenant principal may emit and decide within its tenant.
+/// The actor a mutation is attributed to: the verified assertion's human
+/// actor when present, else the request principal. Audit records must name
+/// this identity, not the raw transport principal.
+pub(super) fn effective_actor(
+    principal: &RequestPrincipal,
+    verified: Option<&VerifiedTenantContext>,
+) -> PrincipalRef {
+    verified
+        .map(|context| context.human_actor.actor_id.trim())
+        .filter(|actor| !actor.is_empty())
+        .map(|actor| PrincipalRef::new(PrincipalKind::HumanUser, actor))
+        .unwrap_or_else(|| request_actor(principal))
+}
+
+/// Run-as/authority-chain context recorded into audit events so receipts can
+/// distinguish the effective actor from the delegating principal.
+pub(super) fn run_as_context(verified: Option<&VerifiedTenantContext>) -> Value {
+    verified
+        .map(|context| {
+            json!({
+                "actor_id": context.human_actor.actor_id,
+                "issuer": context.issuer,
+                "assertion_id": context.assertion_id,
+                "roles": context.roles,
+                "org_units": context.org_units,
+                "initiated_by": context.authority_chain.initiated_by,
+                "executed_as": context.authority_chain.executed_as,
+            })
+        })
+        .unwrap_or(Value::Null)
+}
+
+pub(super) fn verified_has_admin_authority(verified: Option<&VerifiedTenantContext>) -> bool {
+    verified.is_some_and(|context| {
+        context.roles.iter().any(|role| {
+            matches!(
+                role.as_str(),
+                "owner" | "admin" | "hosted:owner" | "hosted:admin" | "enterprise:admin"
+            )
+        }) || context.capabilities.iter().any(|capability| {
+            matches!(
+                capability.as_str(),
+                "hosted.admin" | "orchestration.control" | "orchestration.write"
+            )
+        })
+    })
+}
+
+/// Enterprise authority gate for goal mutations. In hosted and enterprise
+/// auth modes the ingress middleware already rejects explicit tenants without
+/// a verified assertion, so a present `VerifiedTenantContext` is the signal
+/// that enterprise enforcement applies: capability-gated surfaces (approval,
+/// wait resolution) then require the named capability or an administrative
+/// role. Local single-tenant mode (no assertion) keeps its operator UX. Deny
+/// wins: nothing in the request body or tenant headers can satisfy this
+/// check.
+fn require_goal_authority(
+    _tenant: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+    required_capability: Option<&str>,
+) -> Result<(), Response> {
+    let Some(verified) = verified else {
+        // Local single-tenant mode: hosted ingress never reaches here
+        // unverified because unsigned tenant headers are denied upstream.
+        return Ok(());
+    };
+    if let Some(capability) = required_capability {
+        let authorized = verified
+            .capabilities
+            .iter()
+            .any(|value| value == capability)
+            || verified.roles.iter().any(|role| {
+                matches!(
+                    role.as_str(),
+                    "owner" | "admin" | "hosted:owner" | "hosted:admin" | "enterprise:admin"
+                )
+            });
+        if !authorized {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": "goal_forbidden",
+                    "detail": format!("authenticated principal lacks {capability} authority"),
+                })),
+            )
+                .into_response());
+        }
+    }
+    Ok(())
+}
+
+/// Goal mutations belong to the goal's initiating actor unless the caller
+/// carries administrative authority. Enforced for verified (hosted) callers;
+/// the local single-operator is always the owner.
+fn require_goal_owner(
+    _tenant: &TenantContext,
+    verified: Option<&VerifiedTenantContext>,
+    goal: &LongRunningGoal,
+    actor: &PrincipalRef,
+) -> Result<(), Response> {
+    if verified.is_none() || verified_has_admin_authority(verified) {
+        return Ok(());
+    }
+    let started_by = goal
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("started_by"))
+        .and_then(|value| {
+            value
+                .get("id")
+                .and_then(Value::as_str)
+                .or_else(|| value.as_str())
+        });
+    if started_by != Some(actor.id.as_str()) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "goal_forbidden",
+                "detail": "goal mutation requires its initiating actor or an authorized administrator",
+            })),
+        )
+            .into_response());
+    }
+    Ok(())
+}
+
+/// Authority for emit/approve surfaces, derived from the verified principal.
 fn transition_authority(
     principal: &RequestPrincipal,
+    verified: Option<&VerifiedTenantContext>,
     can_approve: bool,
 ) -> OrchestrationTransitionAuthority {
     OrchestrationTransitionAuthority {
-        actor: request_actor(principal),
+        actor: effective_actor(principal, verified),
         can_emit: true,
         can_approve,
     }
@@ -90,11 +279,11 @@ fn load_tenant_goal(
     tenant: &TenantContext,
     goal_id: &str,
 ) -> Result<LongRunningGoal, Response> {
-    match store.get_goal(goal_id) {
-        // Scope match on org/workspace/deployment: the request tenant carries
-        // the caller's actor_id, which must not affect resource visibility.
-        Ok(Some(goal)) if super::tenant_matches(tenant, &goal.tenant_context) => Ok(goal),
-        Ok(_) => Err((
+    // Scope is enforced in the store's SQL (org/workspace/deployment); the
+    // request tenant's actor_id never affects resource visibility.
+    match store.get_goal_for_tenant(tenant, goal_id) {
+        Ok(Some(goal)) => Ok(goal),
+        Ok(None) => Err((
             StatusCode::NOT_FOUND,
             Json(json!({"error": "goal_not_found"})),
         )
@@ -157,8 +346,13 @@ pub(super) async fn start_goal(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Extension(principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Json(payload): Json<StartGoalPayload>,
 ) -> Response {
+    let verified = verified.as_deref();
+    if let Err(response) = require_goal_authority(&tenant, verified, None) {
+        return response;
+    }
     let request = crate::app::state::StartGoalRequest {
         orchestration_id: payload.orchestration_id,
         orchestration_version: payload.orchestration_version,
@@ -168,7 +362,7 @@ pub(super) async fn start_goal(
         now_ms: crate::now_ms(),
     };
     match state
-        .start_long_running_goal(&tenant, &request, &request_actor(&principal))
+        .start_long_running_goal(&tenant, &request, &effective_actor(&principal, verified))
         .await
     {
         Ok(StartGoalOutcome::Created { goal, root_run }) => (
@@ -246,9 +440,11 @@ pub(super) async fn pause_goal(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Extension(principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path(goal_id): Path<String>,
     Json(payload): Json<GoalControlPayload>,
 ) -> Response {
+    let verified = verified.as_deref();
     let reason = payload.reason.as_deref().unwrap_or("operator pause");
     let store = match goal_store(&state) {
         Ok(store) => store,
@@ -258,13 +454,15 @@ pub(super) async fn pause_goal(
         Ok(goal) => goal,
         Err(response) => return response,
     };
+    let actor = effective_actor(&principal, verified);
+    if let Err(response) = require_goal_authority(&tenant, verified, None) {
+        return response;
+    }
+    if let Err(response) = require_goal_owner(&tenant, verified, &stored, &actor) {
+        return response;
+    }
     match state
-        .pause_long_running_goal(
-            &goal_id,
-            &stored.tenant_context,
-            reason,
-            &request_actor(&principal),
-        )
+        .pause_long_running_goal(&goal_id, &stored.tenant_context, reason, &actor)
         .await
     {
         Ok((outcome, goal)) => Json(json!({
@@ -283,9 +481,11 @@ pub(super) async fn resume_goal(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Extension(principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path(goal_id): Path<String>,
     Json(payload): Json<GoalControlPayload>,
 ) -> Response {
+    let verified = verified.as_deref();
     let reason = payload.reason.as_deref().unwrap_or("operator resume");
     let store = match goal_store(&state) {
         Ok(store) => store,
@@ -295,13 +495,15 @@ pub(super) async fn resume_goal(
         Ok(goal) => goal,
         Err(response) => return response,
     };
+    let actor = effective_actor(&principal, verified);
+    if let Err(response) = require_goal_authority(&tenant, verified, None) {
+        return response;
+    }
+    if let Err(response) = require_goal_owner(&tenant, verified, &stored, &actor) {
+        return response;
+    }
     match state
-        .resume_long_running_goal(
-            &goal_id,
-            &stored.tenant_context,
-            reason,
-            &request_actor(&principal),
-        )
+        .resume_long_running_goal(&goal_id, &stored.tenant_context, reason, &actor)
         .await
     {
         Ok((outcome, goal)) => Json(json!({
@@ -320,9 +522,11 @@ pub(super) async fn cancel_goal(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Extension(principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path(goal_id): Path<String>,
     Json(payload): Json<GoalControlPayload>,
 ) -> Response {
+    let verified = verified.as_deref();
     let reason = payload.reason.as_deref().unwrap_or("operator cancel");
     let store = match goal_store(&state) {
         Ok(store) => store,
@@ -332,13 +536,15 @@ pub(super) async fn cancel_goal(
         Ok(goal) => goal,
         Err(response) => return response,
     };
+    let actor = effective_actor(&principal, verified);
+    if let Err(response) = require_goal_authority(&tenant, verified, None) {
+        return response;
+    }
+    if let Err(response) = require_goal_owner(&tenant, verified, &stored, &actor) {
+        return response;
+    }
     match state
-        .cancel_long_running_goal(
-            &goal_id,
-            &stored.tenant_context,
-            reason,
-            &request_actor(&principal),
-        )
+        .cancel_long_running_goal(&goal_id, &stored.tenant_context, reason, &actor)
         .await
     {
         Ok(result) => Json(json!({
@@ -385,7 +591,9 @@ pub(super) async fn get_goal_graph(
         }
         Err(error) => return goal_error_response(&error),
     };
-    let links = store.list_goal_run_links(&goal_id).unwrap_or_default();
+    let links = store
+        .list_goal_run_links_for_tenant(&tenant, &goal_id)
+        .unwrap_or_default();
     let mut runs_by_node = std::collections::HashMap::<String, Vec<Value>>::new();
     let mut active_run: Option<AutomationV2RunRecord> = None;
     for link in &links {
@@ -468,7 +676,9 @@ pub(super) async fn list_goal_runs(
         Ok(goal) => goal,
         Err(response) => return response,
     };
-    let links = store.list_goal_run_links(&goal_id).unwrap_or_default();
+    let links = store
+        .list_goal_run_links_for_tenant(&tenant, &goal_id)
+        .unwrap_or_default();
     let mut rows = Vec::new();
     for link in &links {
         let run = state.get_automation_v2_run(&link.run_id).await;
@@ -510,7 +720,7 @@ pub(super) async fn list_goal_events(
         .limit
         .unwrap_or(DEFAULT_GOAL_EVENT_LIMIT)
         .clamp(1, MAX_GOAL_EVENT_LIMIT);
-    match store.query_goal_events(&goal_id, query.cursor, limit) {
+    match store.query_goal_events_for_tenant(&tenant, &goal_id, query.cursor, limit) {
         Ok(rows) => {
             let last_cursor = rows.last().map(|row| row.cursor);
             Json(json!({
@@ -554,6 +764,7 @@ pub(super) async fn stream_goal_events(
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Event>(256);
     let mut bus = state.event_bus.subscribe();
+    let scope_tenant = tenant.clone();
     tokio::spawn(async move {
         let ready = Event::default().event("ready").data(
             json!({
@@ -570,7 +781,12 @@ pub(super) async fn stream_goal_events(
             // Drain everything the durable log has after the cursor. Rowid
             // order plus the id header gives exact-once reconnect semantics.
             loop {
-                let rows = match store.query_goal_events(&goal_id, Some(cursor), SSE_REPLAY_PAGE) {
+                let rows = match store.query_goal_events_for_tenant(
+                    &scope_tenant,
+                    &goal_id,
+                    Some(cursor),
+                    SSE_REPLAY_PAGE,
+                ) {
                     Ok(rows) => rows,
                     Err(error) => {
                         let _ = tx
@@ -652,7 +868,9 @@ pub(super) async fn list_goal_artifacts(
         Ok(goal) => goal,
         Err(response) => return response,
     };
-    let handoffs = store.list_goal_handoffs(&goal_id).unwrap_or_default();
+    let handoffs = store
+        .list_goal_handoffs_for_tenant(&tenant, &goal_id)
+        .unwrap_or_default();
     let artifacts = handoffs
         .iter()
         .map(|handoff| {
@@ -711,7 +929,7 @@ pub(super) async fn list_goal_handoffs(
     if let Err(response) = load_tenant_goal(&store, &tenant, &goal_id) {
         return response;
     }
-    match store.list_goal_handoffs(&goal_id) {
+    match store.list_goal_handoffs_for_tenant(&tenant, &goal_id) {
         Ok(handoffs) => {
             Json(json!({"goal_id": goal_id, "handoffs": handoffs, "count": handoffs.len()}))
                 .into_response()
@@ -731,14 +949,16 @@ pub(super) async fn emit_goal_transition(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Extension(principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path(goal_id): Path<String>,
     Json(payload): Json<EmitTransitionPayload>,
 ) -> Response {
+    let verified = verified.as_deref();
     let store = match goal_store(&state) {
         Ok(store) => store,
         Err(response) => return response,
     };
-    match load_tenant_goal(&store, &tenant, &goal_id) {
+    let stored = match load_tenant_goal(&store, &tenant, &goal_id) {
         // Terminal goals reject transition emissions with a stable contract
         // (only governed recovery operations may touch them).
         Ok(goal) if goal.status.is_terminal() => {
@@ -752,8 +972,19 @@ pub(super) async fn emit_goal_transition(
             )
                 .into_response()
         }
-        Ok(_) => {}
+        Ok(goal) => goal,
         Err(response) => return response,
+    };
+    let actor = effective_actor(&principal, verified);
+    if let Err(response) = require_goal_authority(&tenant, verified, None) {
+        return response;
+    }
+    if let Err(response) = require_goal_owner(&tenant, verified, &stored, &actor) {
+        return response;
+    }
+    let workspace_root = state.workspace_index.snapshot().await.root;
+    if let Err(error) = enforce_artifact_content_policy(&workspace_root, &payload.artifact) {
+        return artifact_policy_response(&error);
     }
     let request = GovernedTransitionRequest {
         transition_key: payload.transition_key,
@@ -761,7 +992,7 @@ pub(super) async fn emit_goal_transition(
         artifact: payload.artifact,
         now_ms: crate::now_ms(),
     };
-    let authority = transition_authority(&principal, false);
+    let authority = transition_authority(&principal, verified, false);
     match state
         .emit_orchestration_transition(&goal_id, &request, &authority)
         .await
@@ -806,9 +1037,17 @@ pub(super) async fn decide_goal_handoff(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Extension(principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path((goal_id, handoff_id)): Path<(String, String)>,
     Json(payload): Json<HandoffDecisionPayload>,
 ) -> Response {
+    let verified = verified.as_deref();
+    // Approvals move authority between workflows: they require the approval
+    // capability (or an administrative role) on explicit tenants.
+    if let Err(response) = require_goal_authority(&tenant, verified, Some("orchestration.approve"))
+    {
+        return response;
+    }
     let approve = match payload.decision.as_str() {
         "approve" => true,
         "reject" => false,
@@ -831,7 +1070,7 @@ pub(super) async fn decide_goal_handoff(
         Ok(goal) => goal,
         Err(response) => return response,
     };
-    match store.get_workflow_handoff(&handoff_id) {
+    match store.get_workflow_handoff_for_tenant(&tenant, &handoff_id) {
         Ok(Some(handoff)) if handoff.goal_id == goal_id => {}
         Ok(_) => {
             return (
@@ -842,7 +1081,7 @@ pub(super) async fn decide_goal_handoff(
         }
         Err(error) => return goal_error_response(&error),
     }
-    let authority = transition_authority(&principal, true);
+    let authority = transition_authority(&principal, verified, true);
     match store.decide_pending_handoff(
         &handoff_id,
         &stored.tenant_context,
@@ -861,6 +1100,8 @@ pub(super) async fn decide_goal_handoff(
                         "handoffID": handoff_id,
                         "approved": approve,
                         "reason": payload.reason,
+                        "effective_actor": authority.actor,
+                        "run_as": run_as_context(verified),
                     }),
                 ));
             Json(json!({"handoff": handoff})).into_response()
@@ -883,9 +1124,14 @@ pub(super) async fn settle_goal_completion(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Extension(principal): Extension<RequestPrincipal>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path(goal_id): Path<String>,
     Json(payload): Json<CompletionPayload>,
 ) -> Response {
+    let verified = verified.as_deref();
+    if let Err(response) = require_goal_authority(&tenant, verified, None) {
+        return response;
+    }
     let store = match goal_store(&state) {
         Ok(store) => store,
         Err(response) => return response,
@@ -905,7 +1151,13 @@ pub(super) async fn settle_goal_completion(
         Ok(_) => {}
         Err(response) => return response,
     }
-    let authority = transition_authority(&principal, false);
+    if let Some(final_artifact) = payload.final_artifact.as_ref() {
+        let workspace_root = state.workspace_index.snapshot().await.root;
+        if let Err(error) = enforce_artifact_content_policy(&workspace_root, final_artifact) {
+            return artifact_policy_response(&error);
+        }
+    }
+    let authority = transition_authority(&principal, verified, false);
     match state
         .settle_orchestration_workflow_completion(
             &goal_id,
@@ -943,7 +1195,7 @@ fn goal_waits(
     goal_id: &str,
 ) -> Vec<crate::stateful_runtime::StatefulWaitRecord> {
     let run_ids = store
-        .list_goal_run_links(goal_id)
+        .list_goal_run_links_for_tenant(tenant, goal_id)
         .unwrap_or_default()
         .into_iter()
         .map(|link| link.run_id)
@@ -1017,9 +1269,18 @@ pub(super) struct WaitResolutionPayload {
 pub(super) async fn resolve_goal_wait(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    verified: Option<Extension<VerifiedTenantContext>>,
     Path((goal_id, wait_id)): Path<(String, String)>,
     Json(payload): Json<WaitResolutionPayload>,
 ) -> Response {
+    let verified = verified.as_deref();
+    // Wait resolution injects external state into a paused run: it requires
+    // the resolve capability (or an administrative role) on explicit tenants.
+    if let Err(response) =
+        require_goal_authority(&tenant, verified, Some("orchestration.resolve_wait"))
+    {
+        return response;
+    }
     let store = match goal_store(&state) {
         Ok(store) => store,
         Err(response) => return response,

@@ -22,6 +22,33 @@ pub const ORCHESTRATION_DRAFT_VERSION: u64 = 0;
 pub const DRAFT_CONCURRENCY_CONFLICT: &str = "orchestration draft was modified concurrently";
 const ORCHESTRATION_TOOL_REQUEST_LEASE_MS: u64 = 30_000;
 
+/// Envelope context for the MCP tool-replay ledger. Replayed responses embed
+/// full orchestration and goal payloads, so hosted deployments seal them with
+/// a tenant-scoped DEK (TAN-675 contract). Local-first plaintext mode stores
+/// rows unchanged — the `tgs1:` prefix keeps stored rows self-describing, so
+/// both modes read each other's history where policy allows.
+fn tool_request_record_context(
+    tenant: &TenantContext,
+    operation: &str,
+    idempotency_key: &str,
+) -> crate::encrypted_file_store::ProtectedRecordContext {
+    let tenant_scope = tandem_memory::types::MemoryTenantScope {
+        org_id: tenant.org_id.clone(),
+        workspace_id: tenant.workspace_id.clone(),
+        deployment_id: tenant.deployment_id.clone(),
+    };
+    let key_scope = tandem_memory::envelope::MemoryKeyScope::new(
+        &tenant_scope,
+        tandem_enterprise_contract::DataClass::Restricted,
+        Some("tandem-orchestration-tool-replay".to_string()),
+    );
+    crate::encrypted_file_store::ProtectedRecordContext::new(
+        key_scope,
+        "tandem-orchestration-store:tool-replay:v1",
+        format!("{operation}:{idempotency_key}"),
+    )
+}
+
 impl OrchestrationStateStore {
     pub fn begin_orchestration_tool_request(
         &self,
@@ -83,7 +110,22 @@ impl OrchestrationStateStore {
                 }
                 transaction.commit()?;
                 return response
-                    .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
+                    .map(|payload| -> anyhow::Result<serde_json::Value> {
+                        let plaintext =
+                            if crate::encrypted_file_store::is_encrypted_payload(&payload) {
+                                crate::encrypted_file_store::decrypt_text(
+                                    &payload,
+                                    &tool_request_record_context(
+                                        tenant,
+                                        operation,
+                                        idempotency_key,
+                                    ),
+                                )?
+                            } else {
+                                payload
+                            };
+                        serde_json::from_str(&plaintext).map_err(Into::into)
+                    })
                     .transpose();
             }
             transaction.execute(
@@ -116,6 +158,13 @@ impl OrchestrationStateStore {
         response: &serde_json::Value,
         now_ms: u64,
     ) -> anyhow::Result<()> {
+        // Sealed before it reaches the connection: with a hosted provider the
+        // ledger row is ciphertext at rest, and a hosted-pending provider
+        // fails closed here instead of persisting plaintext.
+        let stored_response = crate::encrypted_file_store::encrypt_text(
+            &serde_json::to_string(response)?,
+            &tool_request_record_context(tenant, operation, idempotency_key),
+        )?;
         self.with_connection(|connection| {
             let updated = connection.execute(
                 "UPDATE orchestration_tool_requests
@@ -129,7 +178,7 @@ impl OrchestrationStateStore {
                     operation,
                     idempotency_key,
                     request_digest,
-                    serde_json::to_string(response)?,
+                    stored_response,
                     now_ms,
                 ],
             )?;

@@ -616,6 +616,15 @@ impl AppState {
             .agent_teams
             .ensure_loaded_for_workspace(&workspace_root)
             .await;
+        match self.import_legacy_workspace_handoffs().await {
+            Ok(imported) if imported > 0 => {
+                tracing::info!(imported, "indexed legacy workspace handoffs");
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(error = %error, "legacy workspace handoff import failed");
+            }
+        }
         let mut startup = self.startup.write().await;
         startup.status = StartupStatus::Ready;
         startup.phase = "ready".to_string();

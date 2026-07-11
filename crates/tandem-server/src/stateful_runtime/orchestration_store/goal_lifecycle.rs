@@ -270,6 +270,67 @@ impl OrchestrationStateStore {
         })
     }
 
+    /// Tenant-scoped goal read. Cross-tenant access is indistinguishable from
+    /// absence at the store layer, so callers cannot leak goals by skipping
+    /// an entrypoint-level scope check.
+    pub fn get_goal_for_tenant(
+        &self,
+        tenant: &TenantContext,
+        goal_id: &str,
+    ) -> anyhow::Result<Option<LongRunningGoal>> {
+        self.with_connection(|connection| {
+            let payload = connection
+                .query_row(
+                    "SELECT goal_json FROM long_running_goals
+                     WHERE goal_id = ?1 AND org_id = ?2 AND workspace_id = ?3
+                       AND (deployment_id IS ?4 OR deployment_id = ?4)",
+                    params![
+                        goal_id,
+                        tenant.org_id,
+                        tenant.workspace_id,
+                        tenant.deployment_id
+                    ],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            payload
+                .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
+                .transpose()
+        })
+    }
+
+    /// Tenant-scoped lineage read: run links join through their goal's scope
+    /// columns so a goal ID alone can never cross a tenant boundary.
+    pub fn list_goal_run_links_for_tenant(
+        &self,
+        tenant: &TenantContext,
+        goal_id: &str,
+    ) -> anyhow::Result<Vec<GoalRunLink>> {
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT links.link_json FROM goal_run_links links
+                 JOIN long_running_goals goals ON goals.goal_id = links.goal_id
+                 WHERE links.goal_id = ?1 AND goals.org_id = ?2 AND goals.workspace_id = ?3
+                   AND (goals.deployment_id IS ?4 OR goals.deployment_id = ?4)
+                 ORDER BY links.hop_index",
+            )?;
+            let rows = statement.query_map(
+                params![
+                    goal_id,
+                    tenant.org_id,
+                    tenant.workspace_id,
+                    tenant.deployment_id
+                ],
+                |row| row.get::<_, String>(0),
+            )?;
+            let mut links = Vec::new();
+            for row in rows {
+                links.push(serde_json::from_str(&row?)?);
+            }
+            Ok(links)
+        })
+    }
+
     pub fn list_goal_run_links(&self, goal_id: &str) -> anyhow::Result<Vec<GoalRunLink>> {
         self.with_connection(|connection| {
             let mut statement = connection.prepare(
@@ -296,6 +357,64 @@ impl OrchestrationStateStore {
                 handoffs.push(serde_json::from_str(&row?)?);
             }
             Ok(handoffs)
+        })
+    }
+
+    /// Tenant-scoped handoff listing for one goal.
+    pub fn list_goal_handoffs_for_tenant(
+        &self,
+        tenant: &TenantContext,
+        goal_id: &str,
+    ) -> anyhow::Result<Vec<WorkflowHandoff>> {
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT handoff_json FROM workflow_handoffs
+                 WHERE goal_id = ?1 AND org_id = ?2 AND workspace_id = ?3
+                   AND (deployment_id IS ?4 OR deployment_id = ?4)
+                 ORDER BY created_at_ms, handoff_id",
+            )?;
+            let rows = statement.query_map(
+                params![
+                    goal_id,
+                    tenant.org_id,
+                    tenant.workspace_id,
+                    tenant.deployment_id
+                ],
+                |row| row.get::<_, String>(0),
+            )?;
+            let mut handoffs = Vec::new();
+            for row in rows {
+                handoffs.push(serde_json::from_str(&row?)?);
+            }
+            Ok(handoffs)
+        })
+    }
+
+    /// Tenant-scoped handoff read: a handoff ID from another tenant resolves
+    /// to absence.
+    pub fn get_workflow_handoff_for_tenant(
+        &self,
+        tenant: &TenantContext,
+        handoff_id: &str,
+    ) -> anyhow::Result<Option<WorkflowHandoff>> {
+        self.with_connection(|connection| {
+            let payload = connection
+                .query_row(
+                    "SELECT handoff_json FROM workflow_handoffs
+                     WHERE handoff_id = ?1 AND org_id = ?2 AND workspace_id = ?3
+                       AND (deployment_id IS ?4 OR deployment_id = ?4)",
+                    params![
+                        handoff_id,
+                        tenant.org_id,
+                        tenant.workspace_id,
+                        tenant.deployment_id
+                    ],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            payload
+                .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
+                .transpose()
         })
     }
 
@@ -335,6 +454,48 @@ impl OrchestrationStateStore {
             )?;
             let rows = statement.query_map(
                 params![goal_id, after_cursor.unwrap_or(0), limit as i64],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )?;
+            let mut events = Vec::new();
+            for row in rows {
+                let (cursor, payload) = row?;
+                events.push(GoalEventRow {
+                    cursor,
+                    event: serde_json::from_str(&payload)?,
+                });
+            }
+            Ok(events)
+        })
+    }
+
+    /// Tenant-scoped variant of [`Self::query_goal_events`]: the scope
+    /// predicate runs in SQL, so replay reads fail closed at the store even
+    /// if a caller forgets its own goal ownership check.
+    pub fn query_goal_events_for_tenant(
+        &self,
+        tenant: &TenantContext,
+        goal_id: &str,
+        after_cursor: Option<i64>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<GoalEventRow>> {
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT rowid, event_json FROM stateful_events
+                 WHERE goal_id = ?1 AND rowid > ?2
+                   AND org_id = ?4 AND workspace_id = ?5
+                   AND (deployment_id IS ?6 OR deployment_id = ?6)
+                 ORDER BY rowid
+                 LIMIT ?3",
+            )?;
+            let rows = statement.query_map(
+                params![
+                    goal_id,
+                    after_cursor.unwrap_or(0),
+                    limit as i64,
+                    tenant.org_id,
+                    tenant.workspace_id,
+                    tenant.deployment_id
+                ],
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
             )?;
             let mut events = Vec::new();

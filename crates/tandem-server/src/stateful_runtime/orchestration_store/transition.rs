@@ -694,10 +694,51 @@ fn validate_downstream_run(
     Ok(())
 }
 
+/// Inline artifact values (and their serialized handoffs) are bounded so a
+/// single transition cannot balloon the durable store or downstream prompts.
+pub const MAX_ARTIFACT_VALUE_BYTES: usize = 256 * 1024;
+
+/// Structural admission policy applied to every emitted artifact, contract or
+/// not: bounded inline payloads, workspace-relative content paths, and digest
+/// provenance for file-backed content. Filesystem resolution (symlink escape,
+/// digest-vs-content) happens at the API surfaces where a workspace root is
+/// known; this layer rejects everything that is invalid on shape alone.
+pub(super) fn validate_artifact_shape(artifact: &OrchestrationArtifactRef) -> anyhow::Result<()> {
+    if let Some(value) = artifact.value.as_ref() {
+        let bytes = serde_json::to_vec(value)?.len();
+        if bytes > MAX_ARTIFACT_VALUE_BYTES {
+            bail!(
+                "handoff artifact value is {bytes} bytes; the admission bound is {MAX_ARTIFACT_VALUE_BYTES} bytes — store large content in the workspace and reference it by content_path + digest"
+            );
+        }
+    }
+    if let Some(content_path) = artifact.content_path.as_deref() {
+        let path = std::path::Path::new(content_path);
+        if path.is_absolute()
+            || path
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            bail!("handoff artifact content_path `{content_path}` escapes the workspace root");
+        }
+        if artifact.content_digest.is_none() {
+            bail!("file-backed handoff artifacts require a content_digest for provenance");
+        }
+    }
+    if let Some(digest) = artifact.content_digest.as_deref() {
+        let hex = digest.strip_prefix("sha256:").unwrap_or(digest);
+        if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            bail!("handoff artifact content_digest must be a sha256 hex digest");
+        }
+    }
+    Ok(())
+}
+
 fn validate_artifact(
     contract: Option<&tandem_automation::OrchestrationArtifactContract>,
     artifact: &OrchestrationArtifactRef,
 ) -> anyhow::Result<()> {
+    validate_artifact_shape(artifact)?;
     let Some(contract) = contract else {
         return Ok(());
     };

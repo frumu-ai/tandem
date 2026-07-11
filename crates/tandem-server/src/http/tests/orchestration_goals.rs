@@ -656,6 +656,156 @@ async fn goal_start_is_idempotent_and_lifecycle_is_governed() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+/// TAN-705: artifact admission policy on the emit surface — traversal and
+/// unresolvable content paths, symlink escapes, forged digests, and oversized
+/// inline values are all rejected before a transition is attempted.
+#[tokio::test]
+async fn artifact_admission_policy_rejects_unsafe_content() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut state = test_state().await;
+    state.automation_v2_runs_path = directory.path().join("automation_v2_runs.json");
+    let app = app_router(state.clone());
+    publish_orchestration(&app, &state).await;
+
+    let (status, started) = dispatch(
+        &app,
+        local_request(
+            "POST",
+            "/goals",
+            Some(json!({
+                "orchestration_id": "orch-goals",
+                "objective": "Ship the plan",
+                "idempotency_key": "start-artifact-policy",
+            })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{started}");
+    let goal_id = started["goal"]["goal_id"].as_str().unwrap().to_string();
+    let root_run_id = started["root_run_id"].as_str().unwrap().to_string();
+    complete_run(&state, &root_run_id).await;
+
+    let emit = |artifact: Value, key: &str| {
+        json!({
+            "transition_key": "continue",
+            "idempotency_key": key,
+            "artifact": artifact,
+        })
+    };
+
+    // Path traversal is rejected before any transition work happens.
+    let (status, body) = dispatch(
+        &app,
+        local_request(
+            "POST",
+            format!("/goals/{goal_id}/transitions"),
+            Some(emit(
+                json!({
+                    "artifact_type": "plan",
+                    "content_path": "../../etc/passwd",
+                    "content_digest": format!("sha256:{}", "0".repeat(64)),
+                }),
+                "hop-traversal",
+            )),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"], json!("artifact_policy_violation"));
+
+    // A content path that resolves to nothing is not provenance.
+    let (status, body) = dispatch(
+        &app,
+        local_request(
+            "POST",
+            format!("/goals/{goal_id}/transitions"),
+            Some(emit(
+                json!({
+                    "artifact_type": "plan",
+                    "content_path": "does/not/exist.md",
+                    "content_digest": format!("sha256:{}", "0".repeat(64)),
+                }),
+                "hop-missing",
+            )),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+
+    // A real workspace file with a forged digest is rejected; the correct
+    // digest commits.
+    let workspace_root = state.workspace_index.snapshot().await.root;
+    let relative_path = format!("target/tandem-artifact-policy-{}.md", uuid::Uuid::new_v4());
+    let absolute_path = std::path::Path::new(&workspace_root).join(&relative_path);
+    std::fs::create_dir_all(absolute_path.parent().unwrap()).unwrap();
+    std::fs::write(&absolute_path, b"the plan").unwrap();
+    let (status, body) = dispatch(
+        &app,
+        local_request(
+            "POST",
+            format!("/goals/{goal_id}/transitions"),
+            Some(emit(
+                json!({
+                    "artifact_type": "plan",
+                    "content_path": relative_path,
+                    "content_digest": format!("sha256:{}", "f".repeat(64)),
+                }),
+                "hop-forged",
+            )),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("digest mismatch"));
+
+    // Oversized inline values are rejected by the structural admission bound.
+    let oversized = "x".repeat(300 * 1024);
+    let (status, body) = dispatch(
+        &app,
+        local_request(
+            "POST",
+            format!("/goals/{goal_id}/transitions"),
+            Some(emit(
+                json!({"artifact_type": "plan", "value": oversized}),
+                "hop-oversized",
+            )),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("admission bound"));
+
+    let digest = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(b"the plan"))
+    };
+    let (status, committed) = dispatch(
+        &app,
+        local_request(
+            "POST",
+            format!("/goals/{goal_id}/transitions"),
+            Some(emit(
+                json!({
+                    "artifact_type": "plan",
+                    "content_path": relative_path,
+                    "content_digest": format!("sha256:{digest}"),
+                }),
+                "hop-verified",
+            )),
+        ),
+    )
+    .await;
+    let _ = std::fs::remove_file(&absolute_path);
+    assert_eq!(status, StatusCode::OK, "{committed}");
+    assert_eq!(committed["outcome"], json!("committed"));
+}
+
 #[tokio::test]
 async fn governed_transitions_flow_through_the_public_api() {
     let directory = tempfile::tempdir().unwrap();

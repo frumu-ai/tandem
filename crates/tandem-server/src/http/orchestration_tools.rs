@@ -494,8 +494,8 @@ impl OrchestrationTool {
             }
             OrchestrationToolKind::GoalGet => {
                 let goal = scoped_goal(&store, tenant, required_str(args, "goal_id")?)?;
-                let run_links = store.list_goal_run_links(&goal.goal_id)?;
-                let handoffs = store.list_goal_handoffs(&goal.goal_id)?;
+                let run_links = store.list_goal_run_links_for_tenant(tenant, &goal.goal_id)?;
+                let handoffs = store.list_goal_handoffs_for_tenant(tenant, &goal.goal_id)?;
                 let run_ids = run_links
                     .iter()
                     .map(|link| link.run_id.as_str())
@@ -575,6 +575,8 @@ impl OrchestrationTool {
                         .cloned()
                         .context("artifact is required")?,
                 )?;
+                let workspace_root = self.state.workspace_index.snapshot().await.root;
+                super::goals_api::enforce_artifact_content_policy(&workspace_root, &artifact)?;
                 let result = self
                     .state
                     .emit_orchestration_transition(
@@ -600,7 +602,7 @@ impl OrchestrationTool {
                 let goal = scoped_goal(&store, tenant, required_str(args, "goal_id")?)?;
                 let handoff_id = required_str(args, "handoff_id")?;
                 let handoff = store
-                    .get_workflow_handoff(handoff_id)?
+                    .get_workflow_handoff_for_tenant(tenant, handoff_id)?
                     .filter(|handoff| handoff.goal_id == goal.goal_id)
                     .context("handoff not found")?;
                 let approve = match required_str(args, "decision")? {
@@ -709,11 +711,10 @@ fn scoped_goal(
     tenant: &TenantContext,
     goal_id: &str,
 ) -> anyhow::Result<LongRunningGoal> {
-    let goal = store.get_goal(goal_id)?.context("goal not found")?;
-    if !scope_matches(&goal.tenant_context, tenant) {
-        bail!("goal not found");
-    }
-    Ok(goal)
+    // Scope runs in the store's SQL; a cross-tenant goal ID is absence.
+    store
+        .get_goal_for_tenant(tenant, goal_id)?
+        .context("goal not found")
 }
 
 fn scoped_wait(
@@ -724,7 +725,7 @@ fn scoped_wait(
     wait_id: &str,
 ) -> anyhow::Result<crate::stateful_runtime::StatefulWaitRecord> {
     let run_ids = store
-        .list_goal_run_links(&goal.goal_id)?
+        .list_goal_run_links_for_tenant(tenant, &goal.goal_id)?
         .into_iter()
         .map(|link| link.run_id)
         .collect::<HashSet<_>>();

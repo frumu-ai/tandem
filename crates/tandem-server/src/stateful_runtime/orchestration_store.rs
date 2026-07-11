@@ -1,11 +1,13 @@
 use std::{
     fs::{File, OpenOptions},
+    io::{Seek as _, SeekFrom, Write as _},
     path::{Path, PathBuf},
 };
 
 use anyhow::{bail, Context};
 use fs2::FileExt;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use serde::{Deserialize, Serialize};
 use tandem_automation::{
     validate_orchestration_spec, AutomationV2RunRecord, GoalRunLink, LongRunningGoal,
     LongRunningGoalStatus, OrchestrationSpec, OrchestrationStatus, WorkflowHandoff,
@@ -22,13 +24,15 @@ mod transition;
 pub use definitions::{DRAFT_CONCURRENCY_CONFLICT, ORCHESTRATION_DRAFT_VERSION};
 pub use goal_control::{GoalCancellationResult, GoalControlOutcome};
 pub use goal_lifecycle::{GoalEventRow, GoalPauseOutcome, GoalResumeOutcome, StartGoalOutcome};
-pub use migration::{LegacyRuntimeMigrationPaths, LegacyRuntimeMigrationReport};
+pub use migration::{
+    LegacyImportContext, LegacyRuntimeMigrationPaths, LegacyRuntimeMigrationReport,
+};
 pub use transition::{
     GovernedTransitionRequest, GovernedTransitionResult, OrchestrationTransitionAuthority,
     WorkflowCompletionResult,
 };
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrchestrationStorePaths {
@@ -65,6 +69,46 @@ fn canonical_stateful_runtime_root(path: &Path) -> &Path {
     }
 }
 
+/// Identity of the engine process holding (or last holding) the runtime lock.
+/// Written into the lock file so a blocked acquire can report who owns the
+/// root and whether that owner is still alive.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EngineLockOwner {
+    pub pid: u32,
+    pub acquired_at_ms: u64,
+    #[serde(default)]
+    pub process_start_hint: Option<String>,
+}
+
+impl EngineLockOwner {
+    fn current(acquired_at_ms: u64) -> Self {
+        Self {
+            pid: std::process::id(),
+            acquired_at_ms,
+            process_start_hint: std::env::args().next(),
+        }
+    }
+
+    /// Best-effort liveness probe for the recorded owner. `None` means the
+    /// platform cannot answer, which callers must treat as "possibly alive".
+    pub fn is_alive(&self) -> Option<bool> {
+        #[cfg(target_os = "linux")]
+        {
+            Some(Path::new(&format!("/proc/{}", self.pid)).exists())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
+        }
+    }
+}
+
+/// Reads the owner metadata recorded in an engine lock file, if any.
+pub fn read_engine_lock_owner(path: &Path) -> Option<EngineLockOwner> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(raw.trim()).ok()
+}
+
 /// Process-lifetime guard preventing two local engines from sharing one state root.
 #[derive(Debug)]
 pub struct StatefulEngineLock {
@@ -77,27 +121,79 @@ impl StatefulEngineLock {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let file = OpenOptions::new()
+        let mut file = OpenOptions::new()
             .create(true)
             .truncate(false)
             .read(true)
             .write(true)
             .open(path)
             .with_context(|| format!("failed to open engine lock {}", path.display()))?;
-        file.try_lock_exclusive().with_context(|| {
-            format!(
-                "another Tandem engine already owns runtime root lock {}",
-                path.display()
-            )
-        })?;
+        if file.try_lock_exclusive().is_err() {
+            bail!("{}", Self::held_lock_diagnostics(path));
+        }
+        // The advisory lock is held, so any metadata left behind belongs to an
+        // owner that exited without unlocking (crash or kill). Surface the
+        // recovery instead of silently overwriting it.
+        if let Some(previous) = read_engine_lock_owner(path) {
+            if previous.pid != std::process::id() {
+                tracing::info!(
+                    lock = %path.display(),
+                    previous_pid = previous.pid,
+                    "recovered stateful engine lock from an owner that exited uncleanly"
+                );
+            }
+        }
+        let owner = EngineLockOwner::current(crate::util::time::now_ms());
+        file.set_len(0)?;
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(serde_json::to_string(&owner)?.as_bytes())?;
+        file.sync_all()?;
         Ok(Self {
             file,
             path: path.to_path_buf(),
         })
     }
 
+    /// Actionable diagnostics for a lock that could not be acquired: names the
+    /// recorded owner and proves (where the platform allows) whether that
+    /// owner is still alive. Recovery from a genuinely stale lock is manual by
+    /// design — automatic takeover would enable unsafe multi-engine sharing on
+    /// filesystems where advisory locks are unreliable.
+    fn held_lock_diagnostics(path: &Path) -> String {
+        let base = format!(
+            "another Tandem engine already owns runtime root lock {}",
+            path.display()
+        );
+        match read_engine_lock_owner(path) {
+            Some(owner) => match owner.is_alive() {
+                Some(true) => format!(
+                    "{base}: held by live engine pid {} since {} — stop that engine before starting another on this runtime root",
+                    owner.pid, owner.acquired_at_ms
+                ),
+                Some(false) => format!(
+                    "{base}: recorded owner pid {} is no longer alive, so the advisory lock was not released by the filesystem (common on network mounts) — after confirming no other engine uses this root, delete {} and restart",
+                    owner.pid,
+                    path.display()
+                ),
+                None => format!(
+                    "{base}: recorded owner pid {} (liveness unknown on this platform) — verify the process before removing {}",
+                    owner.pid,
+                    path.display()
+                ),
+            },
+            None => format!(
+                "{base}: no owner metadata was recorded — verify no other engine uses this root before removing the lock file"
+            ),
+        }
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Owner metadata recorded by this guard.
+    pub fn owner(&self) -> Option<EngineLockOwner> {
+        read_engine_lock_owner(&self.path)
     }
 }
 
@@ -380,7 +476,32 @@ impl OrchestrationStateStore {
         handoff_root: &Path,
         imported_at_ms: u64,
     ) -> anyhow::Result<usize> {
-        let handoffs = migration::load_legacy_handoffs(Some(handoff_root))?;
+        self.import_legacy_handoff_directory_with_context(
+            handoff_root,
+            &migration::LegacyImportContext::default(),
+            imported_at_ms,
+        )
+    }
+
+    pub fn import_legacy_handoff_directory_with_context(
+        &self,
+        handoff_root: &Path,
+        context: &migration::LegacyImportContext,
+        imported_at_ms: u64,
+    ) -> anyhow::Result<usize> {
+        // Envelopes naming automations this runtime has never known are
+        // foreign and must quarantine instead of importing (they can never
+        // trigger local work, only leak another root's records into this one).
+        let mut known_automation_ids = self.with_connection(|connection| {
+            let mut statement =
+                connection.prepare("SELECT DISTINCT automation_id FROM automation_runs")?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            rows.collect::<Result<std::collections::BTreeSet<_>, _>>()
+                .map_err(Into::into)
+        })?;
+        known_automation_ids.extend(context.known_automation_ids.iter().cloned());
+        let known = (!known_automation_ids.is_empty()).then_some(&known_automation_ids);
+        let handoffs = migration::load_legacy_handoffs(Some(handoff_root), known)?;
         let source = handoff_root.to_string_lossy().to_string();
         self.with_connection(|connection| {
             let transaction =
@@ -444,6 +565,73 @@ impl OrchestrationStateStore {
             )?;
             transaction.commit()?;
             Ok(imported)
+        })
+    }
+
+    /// Highest snapshot sequence per run. Event retention must never prune
+    /// events at or above this floor, or replay-from-latest-snapshot breaks.
+    pub fn latest_stateful_snapshot_seqs(
+        &self,
+    ) -> anyhow::Result<std::collections::HashMap<String, u64>> {
+        self.with_connection(|connection| {
+            let mut statement = connection
+                .prepare("SELECT run_id, MAX(seq) FROM stateful_snapshots GROUP BY run_id")?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?;
+            rows.map(|row| {
+                let (run_id, seq) = row?;
+                Ok((run_id, seq.max(0) as u64))
+            })
+            .collect()
+        })
+    }
+
+    /// Deletes snapshots older than `cutoff_ms`, always retaining the newest
+    /// `keep_last_per_run` snapshots of every run so replay never loses its
+    /// most recent restore point. Returns the deleted snapshot IDs so callers
+    /// can prune file mirrors.
+    pub fn prune_stateful_runtime_snapshots(
+        &self,
+        cutoff_ms: u64,
+        keep_last_per_run: usize,
+    ) -> anyhow::Result<Vec<String>> {
+        let keep = keep_last_per_run.max(1) as i64;
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let pruned = {
+                let mut statement = transaction.prepare(
+                    "SELECT snapshot_id FROM stateful_snapshots
+                     WHERE created_at_ms < ?1
+                       AND snapshot_id NOT IN (
+                          SELECT newer.snapshot_id FROM stateful_snapshots newer
+                          WHERE newer.run_id = stateful_snapshots.run_id
+                          ORDER BY newer.seq DESC, newer.snapshot_id DESC
+                          LIMIT ?2
+                       )",
+                )?;
+                let rows =
+                    statement.query_map(params![cutoff_ms, keep], |row| row.get::<_, String>(0))?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            };
+            for snapshot_id in &pruned {
+                transaction.execute(
+                    "DELETE FROM stateful_snapshots WHERE snapshot_id = ?1",
+                    [snapshot_id],
+                )?;
+            }
+            transaction.commit()?;
+            Ok(pruned)
+        })
+    }
+
+    /// Truncates the WAL back into the main database file so long-running
+    /// engines reclaim log space between retention sweeps.
+    pub fn checkpoint_wal(&self) -> anyhow::Result<()> {
+        self.with_connection(|connection| {
+            connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+            Ok(())
         })
     }
 
@@ -623,6 +811,10 @@ impl OrchestrationStateStore {
         })?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
+        // `synchronous` is a per-connection pragma: without this, every
+        // connection after `initialize_schema` would silently fall back to the
+        // SQLite default and weaken the store's crash durability contract.
+        connection.pragma_update(None, "synchronous", "FULL")?;
         operation(&mut connection)
     }
 }
@@ -837,6 +1029,10 @@ fn initialize_schema(connection: &mut Connection) -> anyhow::Result<()> {
         migrate_schema_v3_to_v4(connection)?;
         version = 4;
     }
+    if version == 4 {
+        migrate_schema_v4_to_v5(connection)?;
+        version = 5;
+    }
     if version != SCHEMA_VERSION {
         bail!(
             "unsupported orchestration store schema version {version}; expected {SCHEMA_VERSION}"
@@ -929,6 +1125,27 @@ fn migrate_schema_v3_to_v4(connection: &mut Connection) -> anyhow::Result<()> {
          CREATE INDEX idx_automation_waits_scope_status
             ON automation_waits (org_id, workspace_id, status);
          UPDATE schema_metadata SET schema_version = 4;
+         COMMIT;",
+    )?;
+    Ok(())
+}
+
+fn migrate_schema_v4_to_v5(connection: &mut Connection) -> anyhow::Result<()> {
+    // Durable migration-attempt journal: rows are committed before the import
+    // transaction starts, so an interrupted import leaves evidence that the
+    // atomic once-only marker cannot (a rolled-back marker looks identical to
+    // "never attempted").
+    connection.execute_batch(
+        "BEGIN IMMEDIATE;
+         CREATE TABLE IF NOT EXISTS stateful_migration_attempts (
+            attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            migration_id TEXT NOT NULL,
+            source_fingerprint TEXT NOT NULL,
+            started_at_ms INTEGER NOT NULL,
+            outcome TEXT,
+            completed_at_ms INTEGER
+         );
+         UPDATE schema_metadata SET schema_version = 5;
          COMMIT;",
     )?;
     Ok(())
@@ -1225,6 +1442,28 @@ mod tests {
         }
     }
 
+    fn snapshot_record(run_id: &str) -> crate::stateful_runtime::StatefulRunSnapshotRecord {
+        crate::stateful_runtime::StatefulRunSnapshotRecord {
+            schema_version: 1,
+            snapshot_id: "snapshot-1".to_string(),
+            run_id: run_id.to_string(),
+            seq: 1,
+            created_at_ms: 10,
+            scope: StatefulRuntimeScope::from_tenant_context(TenantContext::local_implicit()),
+            status: crate::stateful_runtime::StatefulWorkflowRunStatus::Running,
+            phase: crate::stateful_runtime::StatefulWorkflowPhase::RunningPhase,
+            phase_history: Vec::new(),
+            allowed_next_phases: Vec::new(),
+            phase_id: None,
+            source_record_kind: None,
+            checkpoint: None,
+            payload_digest: None,
+            workflow_definition_version: None,
+            workflow_definition_snapshot_hash: None,
+            metadata: None,
+        }
+    }
+
     fn assert_transition_record_count(store: &OrchestrationStateStore, expected: u64) {
         store
             .with_connection(|connection| {
@@ -1339,6 +1578,177 @@ mod tests {
         assert!(store
             .commit_handoff_transition(&handoff(), &cross_tenant_run, &link, &goal("run-2"))
             .is_err());
+    }
+
+    /// TAN-705: cross-tenant access is absence at the store layer itself —
+    /// every scoped read runs its org/workspace/deployment predicate in SQL,
+    /// so no future caller can leak records by skipping an entrypoint check.
+    #[test]
+    fn tenant_scoped_reads_fail_closed_at_the_store_layer() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = OrchestrationStateStore::open(OrchestrationStorePaths {
+            database_path: directory.path().join("runtime.sqlite3"),
+            engine_lock_path: directory.path().join("engine.lock"),
+        })
+        .unwrap();
+        let downstream_run = run("run-2");
+        let link = GoalRunLink {
+            goal_id: "goal-1".to_string(),
+            run_id: downstream_run.run_id.clone(),
+            orchestration_node_id: "execute".to_string(),
+            orchestration_version: 3,
+            hop_index: 1,
+            parent_run_id: Some("run-1".to_string()),
+            triggering_handoff_id: Some("handoff-1".to_string()),
+            created_at_ms: 20,
+        };
+        let mut transition_event = event();
+        transition_event.payload = serde_json::json!({"goal_id": "goal-1"});
+        store
+            .commit_handoff_transition_with_event(
+                &handoff(),
+                &downstream_run,
+                &link,
+                &goal("run-2"),
+                Some(&transition_event),
+            )
+            .unwrap();
+
+        let local = TenantContext::local_implicit();
+        assert!(store
+            .get_goal_for_tenant(&local, "goal-1")
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            store
+                .list_goal_run_links_for_tenant(&local, "goal-1")
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .list_goal_handoffs_for_tenant(&local, "goal-1")
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(store
+            .get_workflow_handoff_for_tenant(&local, "handoff-1")
+            .unwrap()
+            .is_some());
+        assert!(!store
+            .query_goal_events_for_tenant(&local, "goal-1", None, 10)
+            .unwrap()
+            .is_empty());
+
+        let foreign = TenantContext::explicit("acme", "hq", None);
+        assert!(store
+            .get_goal_for_tenant(&foreign, "goal-1")
+            .unwrap()
+            .is_none());
+        assert!(store
+            .list_goal_run_links_for_tenant(&foreign, "goal-1")
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .list_goal_handoffs_for_tenant(&foreign, "goal-1")
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .get_workflow_handoff_for_tenant(&foreign, "handoff-1")
+            .unwrap()
+            .is_none());
+        assert!(store
+            .query_goal_events_for_tenant(&foreign, "goal-1", None, 10)
+            .unwrap()
+            .is_empty());
+    }
+
+    /// TAN-705/TAN-675: the MCP tool-replay ledger seals its stored responses
+    /// with the scoped crypto provider — ciphertext at rest, identical replay
+    /// through decryption, and fail-closed reads without the key.
+    #[tokio::test]
+    async fn tool_replay_ledger_round_trips_encrypted_records() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = OrchestrationStateStore::open(OrchestrationStorePaths {
+            database_path: directory.path().join("runtime.sqlite3"),
+            engine_lock_path: directory.path().join("engine.lock"),
+        })
+        .unwrap();
+        let tenant = TenantContext::explicit("acme", "hq", None);
+        let response = serde_json::json!({"orchestration": {"objective": "confidential"}});
+
+        crate::encrypted_file_store::with_test_crypto_provider(
+            tandem_memory::MemoryCryptoProvider::local_key([0x42; 32]),
+            None,
+            async {
+                assert!(store
+                    .begin_orchestration_tool_request(
+                        &tenant,
+                        "orchestration_publish",
+                        "key-1",
+                        "digest-1",
+                        10
+                    )
+                    .unwrap()
+                    .is_none());
+                store
+                    .complete_orchestration_tool_request(
+                        &tenant,
+                        "orchestration_publish",
+                        "key-1",
+                        "digest-1",
+                        &response,
+                        11,
+                    )
+                    .unwrap();
+                store
+                    .with_connection(|connection| {
+                        let stored: String = connection.query_row(
+                            "SELECT response_json FROM orchestration_tool_requests",
+                            [],
+                            |row| row.get(0),
+                        )?;
+                        assert!(
+                            stored.starts_with(crate::encrypted_file_store::SCOPED_RECORD_PREFIX),
+                            "replay ledger row must be ciphertext at rest"
+                        );
+                        assert!(!stored.contains("confidential"));
+                        Ok(())
+                    })
+                    .unwrap();
+                let replayed = store
+                    .begin_orchestration_tool_request(
+                        &tenant,
+                        "orchestration_publish",
+                        "key-1",
+                        "digest-1",
+                        12,
+                    )
+                    .unwrap();
+                assert_eq!(replayed, Some(response.clone()));
+            },
+        )
+        .await;
+
+        // A different key cannot read the sealed record: fail closed.
+        crate::encrypted_file_store::with_test_crypto_provider(
+            tandem_memory::MemoryCryptoProvider::local_key([0x43; 32]),
+            None,
+            async {
+                assert!(store
+                    .begin_orchestration_tool_request(
+                        &tenant,
+                        "orchestration_publish",
+                        "key-1",
+                        "digest-1",
+                        13
+                    )
+                    .is_err());
+            },
+        )
+        .await;
     }
 
     #[test]
@@ -1506,6 +1916,65 @@ mod tests {
         let first = store.acquire_engine_lock().unwrap();
         assert_eq!(first.path(), directory.path().join("engine.lock"));
         assert!(store.acquire_engine_lock().is_err());
+    }
+
+    #[test]
+    fn engine_lock_records_owner_and_diagnoses_the_holder() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock_path = directory.path().join("engine.lock");
+        let lock = StatefulEngineLock::acquire(&lock_path).unwrap();
+        let owner = read_engine_lock_owner(&lock_path).expect("owner metadata");
+        assert_eq!(owner.pid, std::process::id());
+        assert_eq!(lock.owner().map(|owner| owner.pid), Some(owner.pid));
+
+        let error = StatefulEngineLock::acquire(&lock_path)
+            .expect_err("second owner must be rejected")
+            .to_string();
+        assert!(error.contains(&format!("pid {}", owner.pid)), "{error}");
+        // This process holds the lock, so the diagnostics must prove the
+        // owner alive (or report that liveness cannot be determined here).
+        assert!(
+            error.contains("held by live engine") || error.contains("liveness unknown"),
+            "{error}"
+        );
+
+        // Once the holder exits, acquisition recovers without manual cleanup.
+        drop(lock);
+        assert!(StatefulEngineLock::acquire(&lock_path).is_ok());
+    }
+
+    #[test]
+    fn snapshot_prune_keeps_newest_snapshots_per_run() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = OrchestrationStateStore::open(OrchestrationStorePaths {
+            database_path: directory.path().join("runtime.sqlite3"),
+            engine_lock_path: directory.path().join("engine.lock"),
+        })
+        .unwrap();
+        for (snapshot_id, seq, created_at_ms) in [
+            ("snapshot-old-1", 1_u64, 10_u64),
+            ("snapshot-old-2", 2, 20),
+            ("snapshot-new", 3, 30),
+        ] {
+            let mut snapshot = snapshot_record("run-a");
+            snapshot.snapshot_id = snapshot_id.to_string();
+            snapshot.seq = seq;
+            snapshot.created_at_ms = created_at_ms;
+            store.put_stateful_runtime_snapshot(&snapshot).unwrap();
+        }
+        // Everything is older than the cutoff; only the newest survives.
+        let pruned = store.prune_stateful_runtime_snapshots(1_000, 1).unwrap();
+        assert_eq!(
+            pruned,
+            vec!["snapshot-old-1".to_string(), "snapshot-old-2".to_string()]
+        );
+        let remaining = store.list_stateful_runtime_snapshots("run-a").unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].snapshot_id, "snapshot-new");
+        assert_eq!(
+            store.latest_stateful_snapshot_seqs().unwrap().get("run-a"),
+            Some(&3)
+        );
     }
 
     #[test]
