@@ -591,15 +591,37 @@ impl PostgresMemoryStore {
         .await
     }
 
+    async fn hygiene_config(
+        &self,
+        tenant: &MemoryTenantScope,
+        project_id: &str,
+    ) -> MemoryStoreResult<Option<crate::types::MemoryConfig>> {
+        let principal = crate::MemoryDecryptPrincipal::retrieval_gateway(
+            "postgres-memory-hygiene",
+            tenant.clone(),
+            vec![tandem_enterprise_contract::DataClass::Internal],
+            Vec::new(),
+        );
+        crate::decrypt_context::with_decrypt_principal(
+            principal,
+            self.entity::<crate::types::MemoryConfig>(
+                &MemoryReadScope::tenant(tenant.clone()),
+                "project_config",
+                project_id,
+                "",
+            ),
+        )
+        .await
+    }
+
     async fn run_hygiene_for_tenant(
         &self,
         tenant: &crate::types::MemoryTenantScope,
         env_override_days: u32,
     ) -> MemoryStoreResult<u64> {
-        let read_scope = MemoryReadScope::tenant(tenant.clone());
         let defaults = crate::types::MemoryConfig::default();
         let global_config = self
-            .entity::<crate::types::MemoryConfig>(&read_scope, "project_config", "__global__", "")
+            .hygiene_config(tenant, "__global__")
             .await?
             .unwrap_or(defaults.clone());
         let session_days = if env_override_days > 0 {
@@ -703,12 +725,7 @@ impl PostgresMemoryStore {
         for row in projects {
             let project_id: String = row.get(0);
             let max_chunks = self
-                .entity::<crate::types::MemoryConfig>(
-                    &read_scope,
-                    "project_config",
-                    &project_id,
-                    "",
-                )
+                .hygiene_config(tenant, &project_id)
                 .await?
                 .unwrap_or_else(|| defaults.clone())
                 .max_chunks;

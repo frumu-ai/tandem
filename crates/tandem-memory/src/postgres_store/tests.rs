@@ -316,6 +316,21 @@ async fn postgres_context_tree_recurses_and_entity_reads_fail_closed() {
         layer,
         MemoryStoreReadResult::ContextLayer(Some(layer)) if layer.content == "preserved context layer"
     ));
+    let tree = store
+        .query(MemoryStoreQueryRequest::ContextTree {
+            scope: MemoryReadScope::tenant(tenant.clone()),
+            parent_uri: "memory://root".to_string(),
+            max_depth: 3,
+        })
+        .await
+        .expect("read PostgreSQL context tree layer summaries");
+    assert!(matches!(
+        tree,
+        MemoryStoreQueryResult::ContextTree(tree)
+            if tree[0].layer_summary.as_ref().is_some_and(|summary|
+                summary.l1_preview.as_deref() == Some("preserved context layer")
+                    && !summary.has_l2)
+    ));
     let error = store
         .write(MemoryStoreWriteRequest::ContextLayer {
             scope: MemoryWriteScope::tenant(tenant.clone()),

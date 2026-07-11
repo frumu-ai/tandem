@@ -116,7 +116,48 @@ fn current_principal_sql_grants(tenant: &crate::types::MemoryTenantScope) -> Pri
     }
 }
 
-fn build_context_tree(nodes: &[MemoryNode], parent_uri: &str, max_depth: usize) -> Vec<TreeNode> {
+fn layer_preview(content: &str, max_len: usize) -> String {
+    if content.chars().count() <= max_len {
+        return content.to_string();
+    }
+    let preview = content
+        .chars()
+        .take(max_len.saturating_sub(3))
+        .collect::<String>();
+    format!("{preview}...")
+}
+
+fn context_layer_summaries(
+    layers: Vec<MemoryLayer>,
+) -> std::collections::HashMap<String, LayerSummary> {
+    let mut summaries = std::collections::HashMap::new();
+    for layer in layers {
+        let summary = summaries
+            .entry(layer.node_id)
+            .or_insert_with(|| LayerSummary {
+                l0_preview: None,
+                l1_preview: None,
+                has_l2: false,
+            });
+        match layer.layer_type {
+            crate::types::LayerType::L0 => {
+                summary.l0_preview = Some(layer_preview(&layer.content, 100));
+            }
+            crate::types::LayerType::L1 => {
+                summary.l1_preview = Some(layer_preview(&layer.content, 200));
+            }
+            crate::types::LayerType::L2 => summary.has_l2 = true,
+        }
+    }
+    summaries
+}
+
+fn build_context_tree(
+    nodes: &[MemoryNode],
+    summaries: &std::collections::HashMap<String, LayerSummary>,
+    parent_uri: &str,
+    max_depth: usize,
+) -> Vec<TreeNode> {
     if max_depth == 0 {
         return Vec::new();
     }
@@ -125,19 +166,19 @@ fn build_context_tree(nodes: &[MemoryNode], parent_uri: &str, max_depth: usize) 
         .filter(|node| node.parent_uri.as_deref() == Some(parent_uri))
         .map(|node| TreeNode {
             children: if node.node_type == crate::types::NodeType::Directory {
-                build_context_tree(nodes, &node.uri, max_depth.saturating_sub(1))
+                build_context_tree(nodes, summaries, &node.uri, max_depth.saturating_sub(1))
             } else {
                 Vec::new()
             },
             node: node.clone(),
-            layer_summary: None,
+            layer_summary: summaries.get(&node.id).cloned(),
         })
         .collect()
 }
 use crate::types::{
     CleanupLogEntry, GlobalMemoryRecord, GlobalMemorySearchHit, KnowledgeItemRecord,
-    KnowledgeSpaceRecord, MemoryChunk, MemoryNode, MemoryStats, ProjectMemoryStats,
-    SourceObjectLifecycleRecord, TreeNode,
+    KnowledgeSpaceRecord, LayerSummary, MemoryChunk, MemoryLayer, MemoryNode, MemoryStats,
+    ProjectMemoryStats, SourceObjectLifecycleRecord, TreeNode,
 };
 
 fn deployment(scope: &crate::types::MemoryTenantScope) -> &str {
@@ -859,8 +900,13 @@ impl PostgresMemoryStore {
                 let values = self
                     .query_entity_values::<MemoryNode>(&scope, "context_node_uri", "")
                     .await?;
+                let summaries = context_layer_summaries(
+                    self.query_entity_values::<MemoryLayer>(&scope, "context_layer", "")
+                        .await?,
+                );
                 Ok(MemoryStoreQueryResult::ContextTree(build_context_tree(
                     &values,
+                    &summaries,
                     &parent_uri,
                     max_depth,
                 )))

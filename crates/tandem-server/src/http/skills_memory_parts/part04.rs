@@ -1661,16 +1661,21 @@ where
 pub(super) async fn context_resolve_uri(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
+    verified_tenant_context: Option<Extension<VerifiedTenantContext>>,
     Json(input): Json<ContextResolveUriRequest>,
 ) -> Result<Json<Value>, StatusCode> {
     let manager = open_memory_manager_for_state(&state)
         .await
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let node = manager
-        .resolve_uri(&input.uri, &context_memory_tenant_scope(&tenant_context))
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let scope = context_memory_tenant_scope(&tenant_context);
+    let node = read_under_decrypt_principal(
+        verified_tenant_context.as_deref(),
+        &tenant_context,
+        manager.resolve_uri(&input.uri, &scope),
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(json!({ "node": node })))
 }
