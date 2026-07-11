@@ -672,6 +672,62 @@ async fn global_query_forwards_shared_and_private_subject_scope() {
 }
 
 #[tokio::test]
+async fn legacy_global_user_scope_is_applied_before_search_limit() {
+    let (database, _temp_dir) = test_store().await;
+    let store: &dyn MemoryStore = &database;
+    let tenant = MemoryTenantScope::local();
+
+    let mut owned = global_record("owned-oldest", None);
+    owned.user_id = "subject-a".to_string();
+    owned.content = "legacy limit sentinel".to_string();
+    owned.created_at_ms = 1;
+    owned.updated_at_ms = 1;
+    store
+        .write(MemoryStoreWriteRequest::GlobalRecord {
+            scope: MemoryWriteScope::tenant(tenant.clone()),
+            record: owned,
+        })
+        .await
+        .expect("write owned legacy record");
+
+    for index in 0..20 {
+        let mut peer = global_record(&format!("peer-{index}"), None);
+        peer.user_id = "subject-b".to_string();
+        peer.content = "legacy limit sentinel".to_string();
+        peer.created_at_ms = 100 + index;
+        peer.updated_at_ms = 100 + index;
+        store
+            .write(MemoryStoreWriteRequest::GlobalRecord {
+                scope: MemoryWriteScope::tenant(tenant.clone()),
+                record: peer,
+            })
+            .await
+            .expect("write peer legacy record");
+    }
+
+    let result = store
+        .query(MemoryStoreQueryRequest::SearchGlobalRecords {
+            scope: MemoryReadScope {
+                tenant,
+                org_unit: None,
+                subject: Some("subject-a".to_string()),
+                access: MemoryReadAccess::Scoped,
+            },
+            user_id: "subject-a".to_string(),
+            query: "legacy limit sentinel".to_string(),
+            limit: 1,
+            project_tag: None,
+        })
+        .await
+        .expect("search legacy records with a limit");
+    let MemoryStoreQueryResult::GlobalSearchHits(hits) = result else {
+        panic!("expected global search hits");
+    };
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].record.id, "owned-oldest");
+}
+
+#[tokio::test]
 async fn chunk_list_applies_private_and_department_scope_before_limit() {
     let (database, _temp_dir) = test_store().await;
     let store: &dyn MemoryStore = &database;

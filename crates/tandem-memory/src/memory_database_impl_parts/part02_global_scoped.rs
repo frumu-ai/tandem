@@ -45,7 +45,11 @@ impl MemoryDatabase {
                AND m.tenant_org_id = ?2
                AND m.tenant_workspace_id = ?3
                AND IFNULL(m.tenant_deployment_id, '') = IFNULL(?4, '')
-               AND (m.private = 0 OR m.owner_subject = ?5 OR (m.owner_subject IS NULL AND m.user_id = ?12))
+               AND (
+                   m.owner_subject = ?5
+                   OR (m.private = 0 AND m.owner_org_unit_id IS NOT NULL)
+                   OR (m.owner_subject IS NULL AND m.owner_org_unit_id IS NULL AND m.user_id = ?12)
+               )
                AND m.demoted = 0
                AND (m.expires_at_ms IS NULL OR m.expires_at_ms > ?6)
                AND (?7 IS NULL OR m.project_tag = ?7)
@@ -99,7 +103,11 @@ impl MemoryDatabase {
              WHERE tenant_org_id = ?1
                AND tenant_workspace_id = ?2
                AND IFNULL(tenant_deployment_id, '') = IFNULL(?3, '')
-               AND (private = 0 OR owner_subject = ?4 OR (owner_subject IS NULL AND user_id = ?13))
+               AND (
+                   owner_subject = ?4
+                   OR (private = 0 AND owner_org_unit_id IS NOT NULL)
+                   OR (owner_subject IS NULL AND owner_org_unit_id IS NULL AND user_id = ?13)
+               )
                AND demoted = 0
                AND (expires_at_ms IS NULL OR expires_at_ms > ?5)
                AND (?6 IS NULL OR project_tag = ?6)
@@ -173,7 +181,11 @@ impl MemoryDatabase {
              WHERE tenant_org_id = ?1
                AND tenant_workspace_id = ?2
                AND IFNULL(tenant_deployment_id, '') = IFNULL(?3, '')
-               AND (private = 0 OR owner_subject = ?4 OR (owner_subject IS NULL AND user_id = ?12))
+               AND (
+                   owner_subject = ?4
+                   OR (private = 0 AND owner_org_unit_id IS NOT NULL)
+                   OR (owner_subject IS NULL AND owner_org_unit_id IS NULL AND user_id = ?12)
+               )
                AND (?5 = '' OR content LIKE ?6 OR source_type LIKE ?6 OR run_id LIKE ?6)
                AND (?7 IS NULL OR project_tag = ?7)
                AND (?8 IS NULL OR channel_tag = ?8)
