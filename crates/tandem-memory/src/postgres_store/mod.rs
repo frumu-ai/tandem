@@ -13,6 +13,7 @@ use tandem_enterprise_contract::DataClass;
 use tokio_postgres::NoTls;
 
 use crate::crypto::MemoryCryptoProvider;
+use crate::decrypt_broker::MemoryDecryptBrokerConfig;
 use crate::decrypt_broker::MemoryDecryptPrincipal;
 use crate::envelope::{MemoryEnvelopeAuthority, MemoryEnvelopeMetadata, MemoryKeyScope};
 use crate::store::*;
@@ -211,12 +212,15 @@ impl PostgresMemoryStore {
             crypto: MemoryCryptoProvider::from_env(),
             decrypt_principal_id: std::env::var("TANDEM_MEMORY_DECRYPT_PRINCIPAL_ID").ok(),
         };
-        if store.search_surface_mode == PostgresSearchSurfaceMode::EncryptedRerank
-            && store.crypto.is_plaintext()
-        {
-            return Err(MemoryStoreError::invalid(
-                "encrypted_rerank requires an encrypted memory provider",
-            ));
+        if store.search_surface_mode != PostgresSearchSurfaceMode::PlaintextPgvector {
+            MemoryDecryptBrokerConfig::from_env()
+                .and_then(|config| config.validate())
+                .map_err(MemoryStoreError::from)?;
+            if !store.crypto.is_encrypted_ready() {
+                return Err(MemoryStoreError::invalid(
+                    "protected PostgreSQL search mode requires a ready encrypted memory provider",
+                ));
+            }
         }
         store.apply_migrations().await?;
         Ok(store)
@@ -233,8 +237,11 @@ impl PostgresMemoryStore {
         &self,
         tenant: &crate::types::MemoryTenantScope,
         org_unit: Option<String>,
+        owner_subject: Option<String>,
     ) -> MemoryKeyScope {
-        MemoryKeyScope::new(tenant, DataClass::Internal, None).with_org_unit(org_unit)
+        MemoryKeyScope::new(tenant, DataClass::Internal, None)
+            .with_org_unit(org_unit)
+            .with_owner_subject(owner_subject)
     }
 
     fn encrypt_embedding(
@@ -242,6 +249,7 @@ impl PostgresMemoryStore {
         embedding: &[f32],
         tenant: &crate::types::MemoryTenantScope,
         org_unit: Option<String>,
+        owner_subject: Option<String>,
         row_id: &str,
     ) -> MemoryStoreResult<(String, Option<MemoryEnvelopeMetadata>, String, String)> {
         let policy_id = format!("memory-search-policy:{row_id}");
@@ -252,7 +260,7 @@ impl PostgresMemoryStore {
             .crypto
             .encrypt_field_scoped(
                 &plaintext,
-                &self.search_key_scope(tenant, org_unit),
+                &self.search_key_scope(tenant, org_unit, owner_subject),
                 &policy_id,
                 &audit_id,
             )
@@ -266,6 +274,7 @@ impl PostgresMemoryStore {
         envelope: Option<&MemoryEnvelopeMetadata>,
         tenant: &crate::types::MemoryTenantScope,
         org_unit: Option<String>,
+        owner_subject: Option<String>,
         policy_id: &str,
         audit_id: &str,
     ) -> MemoryStoreResult<Vec<f32>> {
@@ -278,9 +287,10 @@ impl PostgresMemoryStore {
             tenant.clone(),
             vec![DataClass::Internal],
             Vec::new(),
-        );
+        )
+        .with_owner_subjects(owner_subject.clone().into_iter().collect());
         let authority = MemoryEnvelopeAuthority::new(
-            self.search_key_scope(tenant, org_unit),
+            self.search_key_scope(tenant, org_unit, owner_subject),
             policy_id,
             audit_id,
         );
@@ -303,6 +313,7 @@ impl PostgresMemoryStore {
         value: &T,
         tenant: &crate::types::MemoryTenantScope,
         org_unit: Option<String>,
+        owner_subject: Option<String>,
         row_id: &str,
     ) -> MemoryStoreResult<EncodedPayload> {
         if self.search_surface_mode == PostgresSearchSurfaceMode::PlaintextPgvector {
@@ -316,7 +327,7 @@ impl PostgresMemoryStore {
             .crypto
             .encrypt_field_scoped(
                 &plaintext,
-                &self.search_key_scope(tenant, org_unit),
+                &self.search_key_scope(tenant, org_unit, owner_subject),
                 &policy_id,
                 &audit_id,
             )
@@ -338,6 +349,7 @@ impl PostgresMemoryStore {
         envelope: Option<serde_json::Value>,
         tenant: &crate::types::MemoryTenantScope,
         org_unit: Option<String>,
+        owner_subject: Option<String>,
         policy_id: Option<String>,
         audit_id: Option<String>,
     ) -> MemoryStoreResult<T> {
@@ -372,9 +384,10 @@ impl PostgresMemoryStore {
             tenant.clone(),
             vec![DataClass::Internal],
             Vec::new(),
-        );
+        )
+        .with_owner_subjects(owner_subject.clone().into_iter().collect());
         let authority = MemoryEnvelopeAuthority::new(
-            self.search_key_scope(tenant, org_unit),
+            self.search_key_scope(tenant, org_unit, owner_subject),
             &policy_id,
             &audit_id,
         );

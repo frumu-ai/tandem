@@ -228,6 +228,12 @@ impl ProtectedFileCrypto {
                         .iter()
                         .cloned()
                         .collect(),
+                    allowed_owner_subjects: expected
+                        .key_scope
+                        .owner_subject
+                        .iter()
+                        .cloned()
+                        .collect(),
                 })
             } else {
                 anyhow::ensure!(

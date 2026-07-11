@@ -35,6 +35,8 @@ pub struct MemoryDecryptPrincipal {
     pub allowed_data_classes: Vec<DataClass>,
     #[serde(default)]
     pub allowed_source_binding_ids: Vec<String>,
+    #[serde(default)]
+    pub allowed_owner_subjects: Vec<String>,
 }
 
 impl MemoryDecryptPrincipal {
@@ -50,7 +52,13 @@ impl MemoryDecryptPrincipal {
             tenant_scope,
             allowed_data_classes,
             allowed_source_binding_ids,
+            allowed_owner_subjects: Vec::new(),
         }
+    }
+
+    pub fn with_owner_subjects(mut self, subjects: Vec<String>) -> Self {
+        self.allowed_owner_subjects = subjects;
+        self
     }
 
     fn validate(&self) -> MemoryResult<()> {
@@ -77,6 +85,15 @@ impl MemoryDecryptPrincipal {
         {
             return Err(MemoryError::InvalidConfig(
                 "memory decrypt source grants must not use wildcard values".to_string(),
+            ));
+        }
+        if self
+            .allowed_owner_subjects
+            .iter()
+            .any(|value| is_wildcard_or_blank(value))
+        {
+            return Err(MemoryError::InvalidConfig(
+                "memory decrypt subject grants must not use wildcard values".to_string(),
             ));
         }
         Ok(())
@@ -560,6 +577,18 @@ fn validate_decrypt_request(request: &MemoryDecryptRequest) -> MemoryResult<()> 
             ));
         }
     }
+    if let Some(owner_subject) = request.envelope.key_scope.owner_subject.as_deref() {
+        if !request
+            .principal
+            .allowed_owner_subjects
+            .iter()
+            .any(|allowed| allowed == owner_subject)
+        {
+            return Err(MemoryError::InvalidConfig(
+                "memory decrypt principal lacks owner-subject grant".to_string(),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -901,6 +930,34 @@ mod tests {
             ))
             .expect_err("source-binding mismatch rejected");
         assert!(err.to_string().contains("lacks source-binding grant"));
+    }
+
+    #[test]
+    fn hosted_retrieval_requires_exact_owner_subject_grant() {
+        let mut private_envelope = envelope(DataClass::Confidential, None);
+        private_envelope.key_scope = private_envelope
+            .key_scope
+            .with_owner_subject(Some("alice".to_string()));
+
+        for unauthorized in [
+            principal(vec![DataClass::Confidential], vec![]),
+            principal(vec![DataClass::Confidential], vec![])
+                .with_owner_subjects(vec!["bob".to_string()]),
+        ] {
+            let err = broker()
+                .authorize_unwrap(request(private_envelope.clone(), unauthorized))
+                .expect_err("owner-subject mismatch rejected");
+            assert!(err.to_string().contains("lacks owner-subject grant"));
+        }
+
+        broker()
+            .authorize_unwrap(request(
+                private_envelope,
+                principal(vec![DataClass::Confidential], vec![])
+                    .with_owner_subjects(vec!["alice".to_string()]),
+            ))
+            .expect("matching owner subject is authorized")
+            .expect("hosted unwrap ticket");
     }
 
     #[test]

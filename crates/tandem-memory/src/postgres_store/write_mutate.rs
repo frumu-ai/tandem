@@ -87,6 +87,7 @@ impl PostgresMemoryStore {
                             &embedding,
                             &scope.tenant,
                             scope.org_unit.clone(),
+                            scope.subject.clone(),
                             &chunk.id,
                         )?;
                         (
@@ -99,8 +100,14 @@ impl PostgresMemoryStore {
                     }
                     PostgresSearchSurfaceMode::Disabled => (None, None, None, None, None),
                 };
-                let (data, data_ciphertext, data_envelope, data_policy_id, data_audit_id) =
-                    self.encode_payload(&chunk, &scope.tenant, scope.org_unit.clone(), &chunk.id)?;
+                let (data, data_ciphertext, data_envelope, data_policy_id, data_audit_id) = self
+                    .encode_payload(
+                        &chunk,
+                        &scope.tenant,
+                        scope.org_unit.clone(),
+                        scope.subject.clone(),
+                        &chunk.id,
+                    )?;
                 let client = self.client().await?;
                 client
                     .execute(
@@ -203,8 +210,14 @@ impl PostgresMemoryStore {
                         },
                     ));
                 }
-                let (data, data_ciphertext, data_envelope, data_policy_id, data_audit_id) =
-                    self.encode_payload(&record, &tenant, owner_org.clone(), &record.id)?;
+                let (data, data_ciphertext, data_envelope, data_policy_id, data_audit_id) = self
+                    .encode_payload(
+                        &record,
+                        &tenant,
+                        owner_org.clone(),
+                        owner_subject.clone(),
+                        &record.id,
+                    )?;
                 let search_content =
                     if self.search_surface_mode == PostgresSearchSurfaceMode::PlaintextPgvector {
                         record.content.as_str()
@@ -476,6 +489,7 @@ impl PostgresMemoryStore {
                             &embedding,
                             &summary_scope.tenant,
                             summary_scope.org_unit.clone(),
+                            summary_scope.subject.clone(),
                             &summary.id,
                         )?;
                         (
@@ -493,6 +507,7 @@ impl PostgresMemoryStore {
                         &summary,
                         &summary_scope.tenant,
                         summary_scope.org_unit.clone(),
+                        summary_scope.subject.clone(),
                         &summary.id,
                     )?;
                 let mut client = self.client().await?;
@@ -591,7 +606,7 @@ impl PostgresMemoryStore {
                 metadata,
                 provenance,
             } => {
-                let row = client.query_opt("SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,owner_org_unit_id FROM tandem_memory_global_records WHERE id=$1 AND tenant_org_id=$2 AND tenant_workspace_id=$3 AND tenant_deployment_id=$4 AND ($5::boolean OR owner_subject=$6 OR (private=false AND owner_org_unit_id IS NOT NULL)) AND ($7::text IS NULL OR owner_org_unit_id=$7)",
+                let row = client.query_opt("SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,owner_org_unit_id,owner_subject FROM tandem_memory_global_records WHERE id=$1 AND tenant_org_id=$2 AND tenant_workspace_id=$3 AND tenant_deployment_id=$4 AND ($5::boolean OR owner_subject=$6 OR (private=false AND owner_org_unit_id IS NOT NULL)) AND ($7::text IS NULL OR owner_org_unit_id=$7)",
                     &[&id,&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&(scope.access == MemoryReadAccess::TrustedUnrestricted),&scope.subject,&scope.org_unit]).await.map_err(|error| store_error("read PostgreSQL global memory update", error, true))?;
                 let Some(row) = row else {
                     return Ok(MemoryStoreMutationResult::Changed(false));
@@ -602,6 +617,7 @@ impl PostgresMemoryStore {
                     row.get(2),
                     &scope.tenant,
                     row.get(5),
+                    row.get(6),
                     row.get(3),
                     row.get(4),
                 )?;
@@ -612,8 +628,13 @@ impl PostgresMemoryStore {
                 record.updated_at_ms = chrono::Utc::now().timestamp_millis() as u64;
                 let next_org = owner_org_unit_id_from_metadata(record.metadata.as_ref());
                 let next_subject = owner_subject_from_metadata(record.metadata.as_ref());
-                let (data, cipher, envelope, policy, audit) =
-                    self.encode_payload(&record, &scope.tenant, next_org.clone(), &id)?;
+                let (data, cipher, envelope, policy, audit) = self.encode_payload(
+                    &record,
+                    &scope.tenant,
+                    next_org.clone(),
+                    next_subject.clone(),
+                    &id,
+                )?;
                 client.execute("UPDATE tandem_memory_global_records SET data=$2,data_ciphertext=$3,data_envelope=$4,data_policy_decision_id=$5,data_audit_id=$6,demoted=$7,owner_org_unit_id=$8,owner_subject=$9,private=$10 WHERE id=$1",
                     &[&id,&data,&cipher,&envelope,&policy,&audit,&record.demoted,&next_org,&next_subject,&next_subject.is_some()]).await.map_err(|error| store_error("update PostgreSQL global memory", error, true))?;
                 Ok(MemoryStoreMutationResult::Changed(true))
@@ -721,7 +742,7 @@ impl PostgresMemoryStore {
                 source_path,
                 metadata,
             } => {
-                let rows = client.query("SELECT id,data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,owner_org_unit_id FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND tier=$4 AND ($5::text IS NULL OR project_id=$5) AND ($6::text IS NULL OR session_id=$6) AND source_path=$7", &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&selector_tier(&selector),&selector.project_id,&selector.session_id,&source_path]).await.map_err(|error| store_error("read PostgreSQL source chunks", error, true))?;
+                let rows = client.query("SELECT id,data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,owner_org_unit_id,owner_subject FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND tier=$4 AND ($5::text IS NULL OR project_id=$5) AND ($6::text IS NULL OR session_id=$6) AND source_path=$7", &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&selector_tier(&selector),&selector.project_id,&selector.session_id,&source_path]).await.map_err(|error| store_error("read PostgreSQL source chunks", error, true))?;
                 for row in &rows {
                     let org: Option<String> = row.get(6);
                     let mut chunk: crate::types::MemoryChunk = self.decode_payload(
@@ -730,12 +751,18 @@ impl PostgresMemoryStore {
                         row.get(3),
                         &scope.tenant,
                         org.clone(),
+                        row.get(7),
                         row.get(4),
                         row.get(5),
                     )?;
                     chunk.metadata = Some(metadata.clone());
-                    let (data, cipher, envelope, policy, audit) =
-                        self.encode_payload(&chunk, &scope.tenant, org, &chunk.id)?;
+                    let (data, cipher, envelope, policy, audit) = self.encode_payload(
+                        &chunk,
+                        &scope.tenant,
+                        org,
+                        chunk.subject.clone(),
+                        &chunk.id,
+                    )?;
                     client
                         .execute(
                             "UPDATE tandem_memory_chunks SET data=$2,data_ciphertext=$3,data_envelope=$4,data_policy_decision_id=$5,data_audit_id=$6 WHERE id=$1",
@@ -933,6 +960,7 @@ impl PostgresMemoryStore {
                                         &embedding,
                                         &scope.tenant,
                                         scope.org_unit.clone(),
+                                        scope.subject.clone(),
                                         &chunk.id,
                                     )?;
                                 (
@@ -950,6 +978,7 @@ impl PostgresMemoryStore {
                                 &chunk,
                                 &scope.tenant,
                                 scope.org_unit.clone(),
+                                scope.subject.clone(),
                                 &chunk.id,
                             )?;
                         transaction.execute(
@@ -985,7 +1014,13 @@ impl PostgresMemoryStore {
                             ));
                         }
                         let (data, data_ciphertext, data_envelope, data_policy_id, data_audit_id) =
-                            self.encode_payload(&record, &tenant, owner_org.clone(), &record.id)?;
+                            self.encode_payload(
+                                &record,
+                                &tenant,
+                                owner_org.clone(),
+                                owner_subject.clone(),
+                                &record.id,
+                            )?;
                         let search_content = if self.search_surface_mode
                             == PostgresSearchSurfaceMode::PlaintextPgvector
                         {
@@ -1034,7 +1069,7 @@ impl PostgresMemoryStore {
                             provenance,
                         },
                     ) => {
-                        let row=transaction.query_opt("SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,owner_org_unit_id FROM tandem_memory_global_records WHERE id=$1 AND tenant_org_id=$2 AND tenant_workspace_id=$3 AND tenant_deployment_id=$4 AND ($5::boolean OR owner_subject=$6 OR (private=false AND owner_org_unit_id IS NOT NULL)) AND ($7::text IS NULL OR owner_org_unit_id=$7)",
+                        let row=transaction.query_opt("SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,owner_org_unit_id,owner_subject FROM tandem_memory_global_records WHERE id=$1 AND tenant_org_id=$2 AND tenant_workspace_id=$3 AND tenant_deployment_id=$4 AND ($5::boolean OR owner_subject=$6 OR (private=false AND owner_org_unit_id IS NOT NULL)) AND ($7::text IS NULL OR owner_org_unit_id=$7)",
                             &[&id,&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&(scope.access == MemoryReadAccess::TrustedUnrestricted),&scope.subject,&scope.org_unit]).await.map_err(|error| store_error("read atomic PostgreSQL global memory", error, false))?;
                         if let Some(row) = row {
                             let mut record: crate::types::GlobalMemoryRecord = self
@@ -1044,6 +1079,7 @@ impl PostgresMemoryStore {
                                     row.get(2),
                                     &scope.tenant,
                                     row.get(5),
+                                    row.get(6),
                                     row.get(3),
                                     row.get(4),
                                 )?;
@@ -1060,6 +1096,7 @@ impl PostgresMemoryStore {
                                 &record,
                                 &scope.tenant,
                                 owner_org.clone(),
+                                owner_subject.clone(),
                                 &id,
                             )?;
                             transaction.execute("UPDATE tandem_memory_global_records SET data=$2,data_ciphertext=$3,data_envelope=$4,data_policy_decision_id=$5,data_audit_id=$6,demoted=$7,owner_org_unit_id=$8,owner_subject=$9,private=$10 WHERE id=$1", &[&id,&data,&cipher,&envelope,&policy,&audit,&record.demoted,&owner_org,&owner_subject,&owner_subject.is_some()]).await.map_err(|error| store_error("update atomic PostgreSQL global memory", error, false))?;

@@ -22,6 +22,10 @@ pub struct MemoryKeyScope {
     /// tenant-wide (no department), mirroring the `owner_org_unit_id` row column.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub org_unit: Option<String>,
+    /// Optional private owner. Hosted search payloads bind their DEK authority
+    /// to this subject so a peer principal cannot unwrap owner-private memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_subject: Option<String>,
     pub data_class: DataClass,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_binding_id: Option<String>,
@@ -38,6 +42,7 @@ impl MemoryKeyScope {
             workspace_id: tenant_scope.workspace_id.clone(),
             deployment_id: tenant_scope.deployment_id.clone(),
             org_unit: None,
+            owner_subject: None,
             data_class,
             source_binding_id,
         }
@@ -49,6 +54,13 @@ impl MemoryKeyScope {
         self.org_unit = org_unit
             .map(|unit| unit.trim().to_string())
             .filter(|unit| !unit.is_empty());
+        self
+    }
+
+    pub fn with_owner_subject(mut self, owner_subject: Option<String>) -> Self {
+        self.owner_subject = owner_subject
+            .map(|subject| subject.trim().to_string())
+            .filter(|subject| !subject.is_empty());
         self
     }
 
@@ -71,14 +83,20 @@ impl MemoryKeyScope {
             }
             _ => String::new(),
         };
+        let subject = match self.owner_subject.as_deref() {
+            Some(owner_subject) => {
+                format!("/subject/{}", encode_scope_segment(owner_subject))
+            }
+            None => String::new(),
+        };
         match self.source_binding_id.as_deref() {
             Some(source_binding_id) if !source_binding_id.trim().is_empty() => format!(
-                "tandem/memory/{}/{}/{}/{}{}/source/{}",
-                self.org_id, self.workspace_id, deployment, class, dept, source_binding_id
+                "tandem/memory/{}/{}/{}/{}{}{}/source/{}",
+                self.org_id, self.workspace_id, deployment, class, dept, subject, source_binding_id
             ),
             _ => format!(
-                "tandem/memory/{}/{}/{}/{}{}",
-                self.org_id, self.workspace_id, deployment, class, dept
+                "tandem/memory/{}/{}/{}/{}{}{}",
+                self.org_id, self.workspace_id, deployment, class, dept, subject
             ),
         }
     }
@@ -91,8 +109,8 @@ impl MemoryKeyScope {
     }
 
     /// Validate that this scope is safe to seal a DEK under: no wildcard tenant,
-    /// deployment, or department segment (any of which would collapse per-scope
-    /// DEKs into a shared key). Called on the write path before wrapping.
+    /// deployment, department, or subject segment (any of which would collapse
+    /// per-scope DEKs into a shared key). Called before wrapping.
     pub fn validate_for_envelope(&self) -> MemoryResult<()> {
         self.validate_partitioned()
     }
@@ -130,6 +148,16 @@ impl MemoryKeyScope {
                 "memory envelope key scope must not use wildcard `org_unit`".to_string(),
             ));
         }
+        if self
+            .owner_subject
+            .as_deref()
+            .map(is_wildcard_scope)
+            .unwrap_or(false)
+        {
+            return Err(MemoryError::InvalidConfig(
+                "memory envelope key scope must not use a wildcard owner subject".to_string(),
+            ));
+        }
         Ok(())
     }
 }
@@ -139,7 +167,7 @@ impl MemoryKeyScope {
 /// This value must come from trusted request/store context, never from the
 /// untrusted envelope being decrypted. It binds tenant, department, data class,
 /// source, policy decision, and audit evidence into one exact authorization
-/// contract.
+/// contract, including an optional private owner subject.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryEnvelopeAuthority {
     pub key_scope: MemoryKeyScope,

@@ -171,6 +171,15 @@ impl MemoryCryptoProvider {
         matches!(self.inner, CryptoInner::Hosted(_))
     }
 
+    /// True only when encrypted writes can be completed now. Hosted-pending
+    /// configurations return false so readiness checks fail before first use.
+    pub fn is_encrypted_ready(&self) -> bool {
+        matches!(
+            self.inner,
+            CryptoInner::LocalKey(_) | CryptoInner::Hosted(_)
+        )
+    }
+
     /// Clear cached hosted DEKs so an operational readiness check can exercise
     /// the configured KMS unwrap path. This is a no-op outside hosted mode.
     pub fn clear_hosted_dek_cache(&self) {

@@ -725,9 +725,9 @@ pub fn source_binding_id_from_metadata(metadata: Option<&serde_json::Value>) -> 
 /// scope + metadata: department (`owner_org_unit_id`), data class (from
 /// `classification`, default `Internal`), and source binding. This mirrors the
 /// governed-read target derivation so the DEK scope a row is sealed under and the
-/// access-filter scope it is read under agree. Subject/`private` is an
-/// access-control axis, not a key dimension, so it is intentionally not part of
-/// the key scope.
+/// access-filter scope it is read under agree. Callers may additionally bind the
+/// returned scope to a private owner subject when that ownership is stored in a
+/// separate first-class column.
 pub fn memory_key_scope_from_metadata(
     tenant_scope: &MemoryTenantScope,
     metadata: Option<&serde_json::Value>,

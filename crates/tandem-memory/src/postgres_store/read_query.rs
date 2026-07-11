@@ -101,7 +101,7 @@ impl PostgresMemoryStore {
                 let rows = client
                     .query(
                         "SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,
-                                data_audit_id,owner_org_unit_id FROM tandem_memory_chunks
+                                data_audit_id,owner_org_unit_id,owner_subject FROM tandem_memory_chunks
                          WHERE tenant_org_id=$1 AND tenant_workspace_id=$2
                            AND tenant_deployment_id=$3 AND tier=$4
                            AND ($5::text IS NULL OR project_id=$5)
@@ -132,6 +132,7 @@ impl PostgresMemoryStore {
                             row.get(2),
                             &scope.tenant,
                             row.get(5),
+                            row.get(6),
                             row.get(3),
                             row.get(4),
                         )
@@ -144,7 +145,7 @@ impl PostgresMemoryStore {
                 let row = client
                     .query_opt(
                         "SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,
-                                data_audit_id,owner_org_unit_id FROM tandem_memory_global_records
+                                data_audit_id,owner_org_unit_id,owner_subject FROM tandem_memory_global_records
                          WHERE id=$1 AND tenant_org_id=$2 AND tenant_workspace_id=$3
                            AND tenant_deployment_id=$4
                            AND ($5::text IS NULL OR owner_org_unit_id=$5)
@@ -170,6 +171,7 @@ impl PostgresMemoryStore {
                             row.get(2),
                             &scope.tenant,
                             row.get(5),
+                            row.get(6),
                             row.get(3),
                             row.get(4),
                         )
@@ -367,7 +369,7 @@ impl PostgresMemoryStore {
                 if self.search_surface_mode == PostgresSearchSurfaceMode::EncryptedRerank {
                     let rows = client.query(
                         "SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,
-                                data_audit_id,owner_org_unit_id,embedding_ciphertext,embedding_envelope,
+                                data_audit_id,owner_org_unit_id,owner_subject,embedding_ciphertext,embedding_envelope,
                                 search_policy_decision_id,search_audit_id
                          FROM tandem_memory_chunks
                          WHERE tenant_org_id=$1 AND tenant_workspace_id=$2
@@ -386,27 +388,30 @@ impl PostgresMemoryStore {
                         .into_iter()
                         .map(|row| {
                             let org_unit: Option<String> = row.get(5);
+                            let owner_subject: Option<String> = row.get(6);
                             let chunk: MemoryChunk = self.decode_payload(
                                 row.get(0),
                                 row.get(1),
                                 row.get(2),
                                 &scope.tenant,
                                 org_unit.clone(),
+                                owner_subject.clone(),
                                 row.get(3),
                                 row.get(4),
                             )?;
-                            let ciphertext: String = row.get(6);
+                            let ciphertext: String = row.get(7);
                             let envelope = row
-                                .get::<_, Option<serde_json::Value>>(7)
+                                .get::<_, Option<serde_json::Value>>(8)
                                 .map(from_json)
                                 .transpose()?;
-                            let policy_id: String = row.get(8);
-                            let audit_id: String = row.get(9);
+                            let policy_id: String = row.get(9);
+                            let audit_id: String = row.get(10);
                             let candidate = self.decrypt_embedding(
                                 &ciphertext,
                                 envelope.as_ref(),
                                 &scope.tenant,
                                 org_unit,
+                                owner_subject,
                                 &policy_id,
                                 &audit_id,
                             )?;
@@ -433,7 +438,7 @@ impl PostgresMemoryStore {
                 }
                 let sql = format!(
                     "SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,
-                            data_audit_id,owner_org_unit_id,embedding {operator} $9 AS distance
+                            data_audit_id,owner_org_unit_id,owner_subject,embedding {operator} $9 AS distance
                      FROM tandem_memory_chunks
                      WHERE tenant_org_id=$1 AND tenant_workspace_id=$2
                        AND tenant_deployment_id=$3 AND tier=$4
@@ -470,10 +475,11 @@ impl PostgresMemoryStore {
                             row.get(2),
                             &scope.tenant,
                             row.get(5),
+                            row.get(6),
                             row.get(3),
                             row.get(4),
                         )?;
-                        let distance: f64 = row.get(6);
+                        let distance: f64 = row.get(7);
                         let score = match self.distance_metric {
                             PostgresDistanceMetric::InnerProduct => -distance,
                             _ => 1.0 / (1.0 + distance.max(0.0)),
@@ -650,7 +656,7 @@ impl PostgresMemoryStore {
         };
         let rows = client.query(
             "SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,
-                    data_audit_id,owner_org_unit_id FROM tandem_memory_global_records
+                    data_audit_id,owner_org_unit_id,owner_subject FROM tandem_memory_global_records
              WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3
                AND (owner_subject=$4 OR (private=false AND owner_org_unit_id IS NOT NULL)
                     OR (owner_subject IS NULL AND owner_org_unit_id IS NULL AND user_id=$5))
@@ -673,6 +679,7 @@ impl PostgresMemoryStore {
                     row.get(2),
                     &scope.tenant,
                     row.get(5),
+                    row.get(6),
                     row.get(3),
                     row.get(4),
                 )
