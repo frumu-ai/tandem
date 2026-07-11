@@ -13,6 +13,26 @@ fn reject_narrowed_entity_scope(scope: &MemoryReadScope) -> MemoryStoreResult<()
     Ok(())
 }
 
+fn validate_chunk_list_selector(selector: &MemoryChunkSelector) -> MemoryStoreResult<()> {
+    match selector.tier {
+        crate::types::MemoryTier::Session
+            if selector.session_id.as_deref().is_none_or(str::is_empty) =>
+        {
+            Err(MemoryStoreError::invalid(
+                "tier=session chunk lists require a non-empty session_id",
+            ))
+        }
+        crate::types::MemoryTier::Project
+            if selector.project_id.as_deref().is_none_or(str::is_empty) =>
+        {
+            Err(MemoryStoreError::invalid(
+                "tier=project chunk lists require a non-empty project_id",
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
 fn build_context_tree(nodes: &[MemoryNode], parent_uri: &str, max_depth: usize) -> Vec<TreeNode> {
     if max_depth == 0 {
         return Vec::new();
@@ -100,7 +120,8 @@ impl PostgresMemoryStore {
         let client = self.client().await?;
         let row = client
             .query_opt(
-                "SELECT data FROM tandem_memory_entities
+                "SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id
+                 FROM tandem_memory_entities
                  WHERE tenant_org_id=$1 AND tenant_workspace_id=$2
                    AND tenant_deployment_id=$3 AND entity_type=$4 AND key1=$5 AND key2=$6",
                 &[
@@ -114,7 +135,22 @@ impl PostgresMemoryStore {
             )
             .await
             .map_err(|error| store_error("read PostgreSQL memory entity", error, true))?;
-        row.map(|row| from_json(row.get(0))).transpose()
+        row.map(|row| {
+            let key_scope = MemoryKeyScope::new(
+                &scope.tenant,
+                tandem_enterprise_contract::DataClass::Internal,
+                None,
+            );
+            self.decode_payload(
+                row.get(0),
+                row.get(1),
+                row.get(2),
+                &key_scope,
+                row.get(3),
+                row.get(4),
+            )
+        })
+        .transpose()
     }
 
     pub(super) async fn read_impl(
@@ -127,6 +163,7 @@ impl PostgresMemoryStore {
                 selector,
                 limit,
             } => {
+                validate_chunk_list_selector(&selector)?;
                 let client = self.client().await?;
                 let rows = client
                     .query(
@@ -226,6 +263,7 @@ impl PostgresMemoryStore {
                 ))
             }
             MemoryStoreReadRequest::Stats { scope } => {
+                reject_narrowed_entity_scope(&scope)?;
                 let client = self.client().await?;
                 let row = client
                     .query_one(
@@ -261,6 +299,7 @@ impl PostgresMemoryStore {
                 }))
             }
             MemoryStoreReadRequest::ProjectStats { scope, project_id } => {
+                reject_narrowed_entity_scope(&scope)?;
                 let client = self.client().await?;
                 let row = client
                     .query_one(
@@ -376,7 +415,8 @@ impl PostgresMemoryStore {
         let client = self.client().await?;
         let rows = client
             .query(
-                "SELECT data FROM tandem_memory_entities WHERE tenant_org_id=$1
+                "SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id
+                 FROM tandem_memory_entities WHERE tenant_org_id=$1
                   AND tenant_workspace_id=$2 AND tenant_deployment_id=$3
                   AND entity_type=$4 AND ($5='' OR key1=$5) ORDER BY updated_at DESC",
                 &[
@@ -389,7 +429,23 @@ impl PostgresMemoryStore {
             )
             .await
             .map_err(|error| store_error("list PostgreSQL memory entities", error, true))?;
-        rows.into_iter().map(|row| from_json(row.get(0))).collect()
+        let key_scope = MemoryKeyScope::new(
+            &scope.tenant,
+            tandem_enterprise_contract::DataClass::Internal,
+            None,
+        );
+        rows.into_iter()
+            .map(|row| {
+                self.decode_payload(
+                    row.get(0),
+                    row.get(1),
+                    row.get(2),
+                    &key_scope,
+                    row.get(3),
+                    row.get(4),
+                )
+            })
+            .collect()
     }
 
     pub(super) async fn query_impl(

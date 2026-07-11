@@ -1,5 +1,7 @@
 use super::*;
-use crate::types::{GlobalMemoryRecord, MemoryChunk, MemoryTenantScope, MemoryTier, NodeType};
+use crate::types::{
+    GlobalMemoryRecord, LayerType, MemoryChunk, MemoryTenantScope, MemoryTier, NodeType,
+};
 
 fn config(url: String, max_pool_size: usize) -> PostgresMemoryStoreConfig {
     PostgresMemoryStoreConfig {
@@ -207,12 +209,26 @@ async fn postgres_context_tree_recurses_and_entity_reads_fail_closed() {
     narrowed.subject = Some("user-a".to_string());
     let error = store
         .read(MemoryStoreReadRequest::ContextNode {
-            scope: narrowed,
+            scope: narrowed.clone(),
             uri: "memory://root/dir".to_string(),
         })
         .await
         .expect_err("narrowed entity read must fail closed");
     assert_eq!(error.kind, MemoryStoreErrorKind::ScopeViolation);
+    let error = store
+        .read(MemoryStoreReadRequest::Stats { scope: narrowed })
+        .await
+        .expect_err("narrowed stats read must fail closed");
+    assert_eq!(error.kind, MemoryStoreErrorKind::ScopeViolation);
+    let error = store
+        .read(MemoryStoreReadRequest::Chunks {
+            scope: MemoryReadScope::tenant(tenant.clone()),
+            selector: MemoryChunkSelector::all_sessions(),
+            limit: None,
+        })
+        .await
+        .expect_err("unconstrained session chunk list must fail closed");
+    assert_eq!(error.kind, MemoryStoreErrorKind::InvalidRequest);
     let mut narrowed_write = MemoryWriteScope::tenant(tenant);
     narrowed_write.subject = Some("user-a".to_string());
     let error = store
@@ -428,6 +444,55 @@ async fn postgres_encrypted_mode_seals_payloads_and_reranks_in_scope() {
         raw.get::<_, Option<String>>(5).as_deref(),
         Some("drive-finance")
     );
+
+    let node_id = match store
+        .write(MemoryStoreWriteRequest::ContextNode {
+            scope: MemoryWriteScope::tenant(tenant.clone()),
+            uri: "memory://encrypted/context".to_string(),
+            parent_uri: Some("memory://encrypted".to_string()),
+            node_type: NodeType::File,
+            metadata: None,
+        })
+        .await
+        .expect("write encrypted context node")
+    {
+        MemoryStoreWriteResult::ContextNodeCreated(id) => id,
+        other => panic!("expected context node id, got {other:?}"),
+    };
+    store
+        .write(MemoryStoreWriteRequest::ContextLayer {
+            scope: MemoryWriteScope::tenant(tenant.clone()),
+            node_id: node_id.clone(),
+            layer_type: LayerType::L2,
+            content: "sensitive semantic context".to_string(),
+            token_count: 3,
+            source_chunk_id: None,
+        })
+        .await
+        .expect("write encrypted context layer");
+    let raw_entity = client
+        .query_one(
+            "SELECT data IS NULL,data_ciphertext FROM tandem_memory_entities
+             WHERE entity_type='context_layer' AND key1=$1",
+            &[&node_id],
+        )
+        .await
+        .expect("inspect encrypted entity row");
+    assert!(raw_entity.get::<_, bool>(0));
+    assert!(raw_entity.get::<_, String>(1).starts_with("tce1:"));
+    let layer = store
+        .read(MemoryStoreReadRequest::ContextLayer {
+            scope: MemoryReadScope::tenant(tenant.clone()),
+            node_id: node_id.clone(),
+            layer_type: LayerType::L2,
+        })
+        .await
+        .expect("read encrypted context layer");
+    assert!(matches!(
+        layer,
+        MemoryStoreReadResult::ContextLayer(Some(layer))
+            if layer.content == "sensitive semantic context"
+    ));
 
     let result = store
         .query(MemoryStoreQueryRequest::SimilarChunks {

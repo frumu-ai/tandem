@@ -111,7 +111,11 @@ impl PostgresMemoryStore {
                 entity_type TEXT NOT NULL,
                 key1 TEXT NOT NULL,
                 key2 TEXT NOT NULL DEFAULT '',
-                data JSONB NOT NULL,
+                data JSONB,
+                data_ciphertext TEXT,
+                data_envelope JSONB,
+                data_policy_decision_id TEXT,
+                data_audit_id TEXT,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 PRIMARY KEY (tenant_org_id, tenant_workspace_id,
                     tenant_deployment_id, entity_type, key1, key2)
@@ -148,6 +152,11 @@ impl PostgresMemoryStore {
                  ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS data_audit_id TEXT;
                  ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS data_class TEXT NOT NULL DEFAULT 'internal';
                  ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS source_binding_id TEXT;
+                 ALTER TABLE tandem_memory_entities ALTER COLUMN data DROP NOT NULL;
+                 ALTER TABLE tandem_memory_entities ADD COLUMN IF NOT EXISTS data_ciphertext TEXT;
+                 ALTER TABLE tandem_memory_entities ADD COLUMN IF NOT EXISTS data_envelope JSONB;
+                 ALTER TABLE tandem_memory_entities ADD COLUMN IF NOT EXISTS data_policy_decision_id TEXT;
+                 ALTER TABLE tandem_memory_entities ADD COLUMN IF NOT EXISTS data_audit_id TEXT;
                  DO $$ BEGIN
                    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='tandem_memory_chunks_one_embedding') THEN
                      ALTER TABLE tandem_memory_chunks ADD CONSTRAINT tandem_memory_chunks_one_embedding

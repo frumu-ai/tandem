@@ -43,14 +43,37 @@ impl PostgresMemoryStore {
                 "PostgreSQL entity writes cannot persist org-unit/subject scope",
             ));
         }
+        let key_scope = MemoryKeyScope::new(
+            &scope.tenant,
+            tandem_enterprise_contract::DataClass::Internal,
+            None,
+        );
+        let row_id = serde_json::to_string(&(
+            &scope.tenant.org_id,
+            &scope.tenant.workspace_id,
+            deployment(&scope.tenant),
+            entity_type,
+            key1,
+            key2,
+        ))
+        .map_err(|error| store_error("encode PostgreSQL entity identity", error, false))?;
+        let (data, ciphertext, envelope, policy_id, audit_id) = if entity_type == "context_layer" {
+            self.encode_payload(value, &key_scope, &row_id)?
+        } else {
+            (Some(json_value(value)?), None, None, None, None)
+        };
         let client = self.client().await?;
         client
             .execute(
                 "INSERT INTO tandem_memory_entities
-                    (tenant_org_id,tenant_workspace_id,tenant_deployment_id,entity_type,key1,key2,data)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7)
+                    (tenant_org_id,tenant_workspace_id,tenant_deployment_id,entity_type,key1,key2,
+                     data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
                  ON CONFLICT (tenant_org_id,tenant_workspace_id,tenant_deployment_id,entity_type,key1,key2)
-                 DO UPDATE SET data=EXCLUDED.data, updated_at=now()",
+                 DO UPDATE SET data=EXCLUDED.data,data_ciphertext=EXCLUDED.data_ciphertext,
+                   data_envelope=EXCLUDED.data_envelope,
+                   data_policy_decision_id=EXCLUDED.data_policy_decision_id,
+                   data_audit_id=EXCLUDED.data_audit_id,updated_at=now()",
                 &[
                     &scope.tenant.org_id,
                     &scope.tenant.workspace_id,
@@ -58,7 +81,11 @@ impl PostgresMemoryStore {
                     &entity_type,
                     &key1,
                     &key2,
-                    &json_value(value)?,
+                    &data,
+                    &ciphertext,
+                    &envelope,
+                    &policy_id,
+                    &audit_id,
                 ],
             )
             .await
