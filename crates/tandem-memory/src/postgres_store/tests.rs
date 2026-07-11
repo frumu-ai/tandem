@@ -249,6 +249,7 @@ async fn postgres_encrypted_mode_seals_payloads_and_reranks_in_scope() {
         ("best", vec![0.9, 0.1, 0.0]),
     ] {
         let mut encrypted_chunk = chunk(id, tenant.clone());
+        encrypted_chunk.source_path = Some("encrypted-source".to_string());
         encrypted_chunk.metadata = Some(serde_json::json!({
             "enterprise_source_binding": {
                 "binding_id": "drive-finance",
@@ -298,6 +299,48 @@ async fn postgres_encrypted_mode_seals_payloads_and_reranks_in_scope() {
         panic!("expected vector hits");
     };
     assert_eq!(hits[0].0.id, "best");
+
+    store
+        .mutate(
+            MemoryStoreMutationRequest::UpdateChunkMetadataBySourcePath {
+                scope: MemoryReadScope::trusted_unrestricted(tenant.clone()),
+                selector: MemoryChunkSelector::project("project"),
+                source_path: "encrypted-source".to_string(),
+                metadata: serde_json::json!({
+                    "enterprise_source_binding": {
+                        "binding_id": "drive-legal",
+                        "data_class": "confidential"
+                    }
+                }),
+            },
+        )
+        .await
+        .expect("rekey encrypted PostgreSQL payloads and embeddings");
+    let rekeyed_scope = client
+        .query_one(
+            "SELECT data_class,source_binding_id FROM tandem_memory_chunks WHERE id='best'",
+            &[],
+        )
+        .await
+        .expect("inspect rekeyed encrypted row");
+    assert_eq!(rekeyed_scope.get::<_, String>(0), "confidential");
+    assert_eq!(
+        rekeyed_scope.get::<_, Option<String>>(1).as_deref(),
+        Some("drive-legal")
+    );
+    let result = store
+        .query(MemoryStoreQueryRequest::SimilarChunks {
+            scope: MemoryReadScope::tenant(tenant.clone()),
+            selector: MemoryChunkSelector::project("project"),
+            query_embedding: vec![1.0, 0.0, 0.0],
+            limit: 1,
+        })
+        .await
+        .expect("search rekeyed encrypted candidates");
+    assert!(matches!(
+        result,
+        MemoryStoreQueryResult::SimilarChunks(hits) if hits[0].0.id == "best"
+    ));
 
     store
         .write(MemoryStoreWriteRequest::GlobalRecord {

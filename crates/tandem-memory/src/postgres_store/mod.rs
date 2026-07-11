@@ -14,7 +14,6 @@ use tokio_postgres::NoTls;
 
 use crate::crypto::MemoryCryptoProvider;
 use crate::decrypt_broker::MemoryDecryptBrokerConfig;
-use crate::decrypt_broker::MemoryDecryptPrincipal;
 use crate::envelope::{MemoryEnvelopeAuthority, MemoryEnvelopeMetadata, MemoryKeyScope};
 use crate::store::*;
 use crate::types::DEFAULT_EMBEDDING_DIMENSION;
@@ -189,7 +188,6 @@ pub struct PostgresMemoryStore {
     search_surface_mode: PostgresSearchSurfaceMode,
     rerank_candidate_limit: i64,
     crypto: MemoryCryptoProvider,
-    decrypt_principal_id: Option<String>,
 }
 
 impl std::fmt::Debug for PostgresMemoryStore {
@@ -226,7 +224,6 @@ impl PostgresMemoryStore {
             search_surface_mode: config.search_surface_mode,
             rerank_candidate_limit: config.rerank_candidate_limit,
             crypto: MemoryCryptoProvider::from_env(),
-            decrypt_principal_id: std::env::var("TANDEM_MEMORY_DECRYPT_PRINCIPAL_ID").ok(),
         };
         if store.search_surface_mode != PostgresSearchSurfaceMode::PlaintextPgvector {
             MemoryDecryptBrokerConfig::from_env()
@@ -296,28 +293,14 @@ impl PostgresMemoryStore {
         policy_id: &str,
         audit_id: &str,
     ) -> MemoryStoreResult<Vec<f32>> {
-        let principal_id = self
-            .decrypt_principal_id
-            .as_deref()
-            .unwrap_or("local-memory-runtime");
-        let principal = MemoryDecryptPrincipal::retrieval_gateway(
-            principal_id,
-            crate::types::MemoryTenantScope {
-                org_id: key_scope.org_id.clone(),
-                workspace_id: key_scope.workspace_id.clone(),
-                deployment_id: key_scope.deployment_id.clone(),
-            },
-            vec![key_scope.data_class],
-            key_scope.source_binding_id.clone().into_iter().collect(),
-        )
-        .with_owner_subjects(key_scope.owner_subject.clone().into_iter().collect());
+        let principal = crate::decrypt_context::current_decrypt_principal();
         let authority = MemoryEnvelopeAuthority::new(key_scope.clone(), policy_id, audit_id);
         let plaintext = self
             .crypto
             .decrypt_field_scoped_authorized(
                 ciphertext,
                 envelope,
-                Some(&principal),
+                principal.as_ref(),
                 &authority,
                 None,
             )
@@ -383,28 +366,14 @@ impl PostgresMemoryStore {
             )
         })?;
         let envelope = envelope.map(from_json).transpose()?;
-        let principal_id = self
-            .decrypt_principal_id
-            .as_deref()
-            .unwrap_or("local-memory-runtime");
-        let principal = MemoryDecryptPrincipal::retrieval_gateway(
-            principal_id,
-            crate::types::MemoryTenantScope {
-                org_id: key_scope.org_id.clone(),
-                workspace_id: key_scope.workspace_id.clone(),
-                deployment_id: key_scope.deployment_id.clone(),
-            },
-            vec![key_scope.data_class],
-            key_scope.source_binding_id.clone().into_iter().collect(),
-        )
-        .with_owner_subjects(key_scope.owner_subject.clone().into_iter().collect());
+        let principal = crate::decrypt_context::current_decrypt_principal();
         let authority = MemoryEnvelopeAuthority::new(key_scope.clone(), &policy_id, &audit_id);
         let decoded = self
             .crypto
             .decrypt_field_scoped_authorized(
                 &ciphertext,
                 envelope.as_ref(),
-                Some(&principal),
+                principal.as_ref(),
                 &authority,
                 None,
             )

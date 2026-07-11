@@ -753,7 +753,7 @@ impl PostgresMemoryStore {
                 source_path,
                 metadata,
             } => {
-                let rows = client.query("SELECT id,data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,owner_org_unit_id,owner_subject,data_class,source_binding_id FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND tier=$4 AND ($5::text IS NULL OR project_id=$5) AND ($6::text IS NULL OR session_id=$6) AND source_path=$7", &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&selector_tier(&selector),&selector.project_id,&selector.session_id,&source_path]).await.map_err(|error| store_error("read PostgreSQL source chunks", error, true))?;
+                let rows = client.query("SELECT id,data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,owner_org_unit_id,owner_subject,data_class,source_binding_id,embedding_ciphertext,embedding_envelope,search_policy_decision_id,search_audit_id FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND tier=$4 AND ($5::text IS NULL OR project_id=$5) AND ($6::text IS NULL OR session_id=$6) AND source_path=$7", &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&selector_tier(&selector),&selector.project_id,&selector.session_id,&source_path]).await.map_err(|error| store_error("read PostgreSQL source chunks", error, true))?;
                 for row in &rows {
                     let org: Option<String> = row.get(6);
                     let stored_key_scope = Self::persisted_key_scope(
@@ -778,10 +778,54 @@ impl PostgresMemoryStore {
                     let (data_class, source_binding_id) = Self::key_scope_columns(&next_key_scope)?;
                     let (data, cipher, envelope, policy, audit) =
                         self.encode_payload(&chunk, &next_key_scope, &chunk.id)?;
+                    let embedding_ciphertext: Option<String> = row.get(10);
+                    let embedding_envelope: Option<serde_json::Value> = row.get(11);
+                    let search_policy: Option<String> = row.get(12);
+                    let search_audit: Option<String> = row.get(13);
+                    let (embedding_ciphertext, embedding_envelope, search_policy, search_audit) =
+                        if self.search_surface_mode == PostgresSearchSurfaceMode::EncryptedRerank
+                            && embedding_ciphertext.is_some()
+                        {
+                            let old_envelope = embedding_envelope.map(from_json).transpose()?;
+                            let old_policy = search_policy.ok_or_else(|| {
+                                MemoryStoreError::new(
+                                    MemoryStoreErrorKind::CorruptData,
+                                    "missing encrypted embedding policy id",
+                                )
+                            })?;
+                            let old_audit = search_audit.ok_or_else(|| {
+                                MemoryStoreError::new(
+                                    MemoryStoreErrorKind::CorruptData,
+                                    "missing encrypted embedding audit id",
+                                )
+                            })?;
+                            let embedding = self.decrypt_embedding(
+                                embedding_ciphertext.as_deref().unwrap_or_default(),
+                                old_envelope.as_ref(),
+                                &stored_key_scope,
+                                &old_policy,
+                                &old_audit,
+                            )?;
+                            let (ciphertext, envelope, policy, audit) =
+                                self.encrypt_embedding(&embedding, &next_key_scope, &chunk.id)?;
+                            (
+                                Some(ciphertext),
+                                envelope.map(|value| json_value(&value)).transpose()?,
+                                Some(policy),
+                                Some(audit),
+                            )
+                        } else {
+                            (
+                                embedding_ciphertext,
+                                embedding_envelope,
+                                search_policy,
+                                search_audit,
+                            )
+                        };
                     client
                         .execute(
-                            "UPDATE tandem_memory_chunks SET data=$2,data_ciphertext=$3,data_envelope=$4,data_policy_decision_id=$5,data_audit_id=$6,data_class=$7,source_binding_id=$8 WHERE id=$1",
-                            &[&chunk.id,&data,&cipher,&envelope,&policy,&audit,&data_class,&source_binding_id],
+                            "UPDATE tandem_memory_chunks SET data=$2,data_ciphertext=$3,data_envelope=$4,data_policy_decision_id=$5,data_audit_id=$6,data_class=$7,source_binding_id=$8,embedding_ciphertext=$9,embedding_envelope=$10,search_policy_decision_id=$11,search_audit_id=$12 WHERE id=$1",
+                            &[&chunk.id,&data,&cipher,&envelope,&policy,&audit,&data_class,&source_binding_id,&embedding_ciphertext,&embedding_envelope,&search_policy,&search_audit],
                         )
                         .await
                         .map_err(|error| {
