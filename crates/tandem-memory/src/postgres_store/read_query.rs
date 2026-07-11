@@ -918,7 +918,10 @@ impl PostgresMemoryStore {
                AND (expires_at_ms IS NULL OR expires_at_ms>$8)
                AND ($9::text IS NULL OR project_tag=$9)
                AND ($10::text IS NULL OR channel_tag=$10)
-               AND ($11::text IS NULL OR to_tsvector('simple', search_content) @@ plainto_tsquery('simple', $11))
+               AND ($11::text IS NULL
+                    OR to_tsvector('simple', search_content) @@ plainto_tsquery('simple', $11)
+                    OR source_type ILIKE '%' || $11 || '%'
+                    OR run_id ILIKE '%' || $11 || '%')
                AND ($14::boolean OR ($15::boolean
                     AND data_class=ANY($16::text[])
                     AND (source_binding_id IS NULL OR source_binding_id=ANY($17::text[]))
@@ -967,8 +970,12 @@ impl PostgresMemoryStore {
                 .map(str::to_ascii_lowercase)
                 .collect::<Vec<_>>();
             records.retain(|record| {
-                let content = record.content.to_ascii_lowercase();
-                terms.iter().all(|term| content.contains(term))
+                let searchable = format!(
+                    "{} {} {}",
+                    record.content, record.source_type, record.run_id
+                )
+                .to_ascii_lowercase();
+                terms.iter().all(|term| searchable.contains(term))
             });
             records.truncate(limit.clamp(1, 1000) as usize);
         }

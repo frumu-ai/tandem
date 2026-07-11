@@ -28,6 +28,26 @@ fn selector_tier(selector: &MemoryChunkSelector) -> String {
         .unwrap_or_else(|| "session".to_string())
 }
 
+fn validate_chunk_selector(selector: &MemoryChunkSelector) -> MemoryStoreResult<()> {
+    match selector.tier {
+        crate::types::MemoryTier::Session
+            if selector.session_id.as_deref().is_none_or(str::is_empty) =>
+        {
+            Err(MemoryStoreError::invalid(
+                "tier=session requires a non-empty session_id",
+            ))
+        }
+        crate::types::MemoryTier::Project
+            if selector.project_id.as_deref().is_none_or(str::is_empty) =>
+        {
+            Err(MemoryStoreError::invalid(
+                "tier=project requires a non-empty project_id",
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
 impl PostgresMemoryStore {
     async fn upsert_entity<T: serde::Serialize>(
         &self,
@@ -344,6 +364,7 @@ impl PostgresMemoryStore {
                 path,
                 entry,
             } => {
+                validate_chunk_selector(&selector)?;
                 let key = selector
                     .project_id
                     .or(selector.session_id)
@@ -458,6 +479,26 @@ impl PostgresMemoryStore {
                 token_count,
                 source_chunk_id,
             } => {
+                if scope.org_unit.is_some() || scope.subject.is_some() {
+                    return Err(MemoryStoreError::new(
+                        MemoryStoreErrorKind::ScopeViolation,
+                        "PostgreSQL context layers cannot persist org-unit/subject scope",
+                    ));
+                }
+                let parent = self
+                    .entity::<MemoryNode>(
+                        &MemoryReadScope::tenant(scope.tenant.clone()),
+                        "context_node_id",
+                        &node_id,
+                        "",
+                    )
+                    .await?;
+                if parent.is_none() {
+                    return Err(MemoryStoreError::new(
+                        MemoryStoreErrorKind::NotFound,
+                        format!("context node not found: {node_id}"),
+                    ));
+                }
                 let layer = MemoryLayer {
                     id: uuid::Uuid::new_v4().to_string(),
                     node_id: node_id.clone(),
@@ -1040,6 +1081,7 @@ impl PostgresMemoryStore {
                 path,
             } => {
                 reject_narrowed_bulk_scope(&scope, "import-index cleanup")?;
+                validate_chunk_selector(&selector)?;
                 let key = selector
                     .project_id
                     .or(selector.session_id)
@@ -1053,6 +1095,7 @@ impl PostgresMemoryStore {
                 source_path,
             } => {
                 reject_narrowed_bulk_scope(&scope, "source-path cleanup")?;
+                validate_chunk_selector(&selector)?;
                 let rows = client.query("DELETE FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND tier=$4 AND ($5::text IS NULL OR project_id=$5) AND ($6::text IS NULL OR session_id=$6) AND source='file' AND source_path=$7 RETURNING COALESCE(octet_length(data::text),octet_length(data_ciphertext))::bigint", &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&selector_tier(&selector),&selector.project_id,&selector.session_id,&source_path]).await.map_err(|error| store_error("delete PostgreSQL source chunks", error, true))?;
                 Ok(MemoryStoreMutationResult::SourcePathDelete(
                     MemorySourcePathDeleteResult {
@@ -1068,6 +1111,7 @@ impl PostgresMemoryStore {
                 metadata,
             } => {
                 reject_narrowed_bulk_scope(&scope, "source-path metadata update")?;
+                validate_chunk_selector(&selector)?;
                 let rows = client.query("SELECT id,data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,owner_org_unit_id,owner_subject,data_class,source_binding_id,embedding_ciphertext,embedding_envelope,search_policy_decision_id,search_audit_id FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND tier=$4 AND ($5::text IS NULL OR project_id=$5) AND ($6::text IS NULL OR session_id=$6) AND source='file' AND source_path=$7", &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&selector_tier(&selector),&selector.project_id,&selector.session_id,&source_path]).await.map_err(|error| store_error("read PostgreSQL source chunks", error, true))?;
                 for row in &rows {
                     let org: Option<String> = row.get(6);

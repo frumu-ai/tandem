@@ -316,6 +316,18 @@ async fn postgres_context_tree_recurses_and_entity_reads_fail_closed() {
         layer,
         MemoryStoreReadResult::ContextLayer(Some(layer)) if layer.content == "preserved context layer"
     ));
+    let error = store
+        .write(MemoryStoreWriteRequest::ContextLayer {
+            scope: MemoryWriteScope::tenant(tenant.clone()),
+            node_id: "missing-context-node".to_string(),
+            layer_type: LayerType::L1,
+            content: "orphan".to_string(),
+            token_count: 1,
+            source_chunk_id: None,
+        })
+        .await
+        .expect_err("orphan context layer must be rejected");
+    assert_eq!(error.kind, MemoryStoreErrorKind::NotFound);
     let mut narrowed = MemoryReadScope::tenant(tenant.clone());
     narrowed.subject = Some("user-a".to_string());
     let error = store
@@ -1153,6 +1165,42 @@ async fn postgres_shared_global_point_reads_and_chunk_upserts_match_contract() {
         MemoryStoreQueryResult::GlobalSearchHits(records) if records.is_empty()
     ));
 
+    let mut source_match = global_record("source-filter-record", &contract_tenant);
+    source_match.source_type = "incident_note".to_string();
+    let mut run_match = global_record("run-filter-record", &contract_tenant);
+    run_match.run_id = "workflow-run-42".to_string();
+    for record in [source_match, run_match] {
+        store
+            .write(MemoryStoreWriteRequest::GlobalRecord {
+                scope: MemoryWriteScope::tenant(contract_tenant.clone()),
+                record,
+            })
+            .await
+            .expect("write global list filter fixture");
+    }
+    for (query, expected_id) in [
+        ("incident_note", "source-filter-record"),
+        ("workflow-run-42", "run-filter-record"),
+    ] {
+        let result = store
+            .query(MemoryStoreQueryRequest::ListGlobalRecords {
+                scope: MemoryReadScope::tenant(contract_tenant.clone()),
+                user_id: "legacy-user".to_string(),
+                query: Some(query.to_string()),
+                project_tag: None,
+                channel_tag: None,
+                limit: 10,
+                offset: 0,
+            })
+            .await
+            .expect("filter global list by source/run");
+        assert!(matches!(
+            result,
+            MemoryStoreQueryResult::GlobalRecords(records)
+                if records.iter().any(|record| record.id == expected_id)
+        ));
+    }
+
     let mut finance_record = global_record("governed-finance", &contract_tenant);
     finance_record.content_hash = "shared-governed-hash".to_string();
     finance_record.message_id = Some("shared-governed-message".to_string());
@@ -1487,6 +1535,22 @@ async fn postgres_clear_operations_preserve_other_memory_tiers() {
         .await
         .expect_err("narrowed file-index cleanup must fail closed");
     assert_eq!(narrowed_error.kind, MemoryStoreErrorKind::ScopeViolation);
+    let unscoped_selector_error = store
+        .mutate(MemoryStoreMutationRequest::DeleteChunksBySourcePath {
+            scope: MemoryReadScope::trusted_unrestricted(tenant.clone()),
+            selector: MemoryChunkSelector {
+                tier: MemoryTier::Project,
+                project_id: None,
+                session_id: None,
+            },
+            source_path: "guide.md".to_string(),
+        })
+        .await
+        .expect_err("unconstrained source-path delete must fail closed");
+    assert_eq!(
+        unscoped_selector_error.kind,
+        MemoryStoreErrorKind::InvalidRequest
+    );
     let source_path_deleted = store
         .mutate(MemoryStoreMutationRequest::DeleteChunksBySourcePath {
             scope: MemoryReadScope::tenant(tenant.clone()),
