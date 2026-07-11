@@ -1,5 +1,10 @@
 use super::*;
 
+#[cfg(feature = "premium-governance")]
+use crate::automation_v2::governance::{
+    GovernanceActorRef, GovernanceApprovalRequest, GovernanceApprovalRequestType,
+    GovernanceApprovalStatus,
+};
 use tandem_enterprise_contract::{
     EnterprisePolicyEffect, EnterprisePolicyRule, EnterprisePolicyScopeLevel,
 };
@@ -234,6 +239,209 @@ async fn tool_policy_gate_pauses_high_risk_tool_and_skips_reads() {
     )
     .await;
     assert!(read.is_none(), "low-risk read tools fall through the gate");
+}
+
+#[cfg(feature = "premium-governance")]
+fn protected_action_context() -> tandem_core::ToolPolicyContext {
+    tandem_core::ToolPolicyContext {
+        session_id: "session-action-approval".to_string(),
+        message_id: "message-action-approval".to_string(),
+        tenant_context: Some(tenant()),
+        verified_tenant_context: None,
+        tool: "mcp.email.send".to_string(),
+        args: json!({
+            "to": "ops@example.com",
+            "subject": "status",
+            "body": "Deployment finished."
+        }),
+    }
+}
+
+#[cfg(feature = "premium-governance")]
+async fn evaluate_protected_action(state: &AppState) -> tandem_core::ToolPolicyDecision {
+    let ctx = protected_action_context();
+    crate::agent_teams::evaluate_action_gate_tool_policy(state, &ctx, &ctx.tool)
+        .await
+        .expect("external send must resolve through the action gate")
+}
+
+#[cfg(feature = "premium-governance")]
+async fn action_gate_approval(state: &AppState) -> GovernanceApprovalRequest {
+    state
+        .list_approval_requests_for_tenant(
+            Some(GovernanceApprovalRequestType::ElevatedCapability),
+            None,
+            &tenant(),
+        )
+        .await
+        .into_iter()
+        .next()
+        .expect("durable action-gate approval request")
+}
+
+#[cfg(feature = "premium-governance")]
+#[tokio::test]
+async fn action_gate_pending_retry_reuses_durable_request() {
+    let state = test_state().await;
+
+    let first = evaluate_protected_action(&state).await;
+    let second = evaluate_protected_action(&state).await;
+    assert!(!first.allowed);
+    assert!(!second.allowed);
+
+    let approvals = state
+        .list_approval_requests_for_tenant(
+            Some(GovernanceApprovalRequestType::ElevatedCapability),
+            None,
+            &tenant(),
+        )
+        .await;
+    assert_eq!(approvals.len(), 1, "pending retries must deduplicate");
+    let approval = &approvals[0];
+    assert_eq!(approval.status, GovernanceApprovalStatus::Pending);
+    assert_eq!(
+        approval
+            .context
+            .pointer("/action_gate/session_id")
+            .and_then(Value::as_str),
+        Some("session-action-approval")
+    );
+    assert_eq!(
+        approval
+            .context
+            .pointer("/action_gate/message_id")
+            .and_then(Value::as_str),
+        Some("message-action-approval")
+    );
+    assert_eq!(
+        approval
+            .context
+            .pointer("/action_gate/tool")
+            .and_then(Value::as_str),
+        Some("mcp.email.send")
+    );
+    assert_eq!(
+        approval
+            .context
+            .pointer("/action_gate/risk_tier")
+            .and_then(Value::as_str),
+        Some("external_send")
+    );
+    assert_eq!(
+        approval
+            .context
+            .pointer("/action_gate/policy_id")
+            .and_then(Value::as_str),
+        Some("approval_gate_matrix")
+    );
+    assert!(approval
+        .context
+        .pointer("/action_gate/action_hash")
+        .and_then(Value::as_str)
+        .is_some());
+
+    for decision in [first, second] {
+        let decision_id = decision.policy_decision_id.expect("policy decision id");
+        let recorded = state
+            .get_policy_decision(&decision_id)
+            .await
+            .expect("linked policy decision");
+        assert_eq!(
+            recorded.approval_id.as_deref(),
+            Some(approval.approval_id.as_str())
+        );
+        assert_eq!(
+            recorded.session_id.as_deref(),
+            Some("session-action-approval")
+        );
+        assert_eq!(
+            recorded.message_id.as_deref(),
+            Some("message-action-approval")
+        );
+    }
+}
+
+#[cfg(feature = "premium-governance")]
+#[tokio::test]
+async fn action_gate_new_message_gets_a_distinct_approval() {
+    let state = test_state().await;
+    assert!(!evaluate_protected_action(&state).await.allowed);
+
+    let mut next = protected_action_context();
+    next.message_id = "message-action-approval-next".to_string();
+    let decision = crate::agent_teams::evaluate_action_gate_tool_policy(&state, &next, &next.tool)
+        .await
+        .expect("new message remains approval gated");
+    assert!(!decision.allowed);
+
+    let approvals = state
+        .list_approval_requests_for_tenant(
+            Some(GovernanceApprovalRequestType::ElevatedCapability),
+            None,
+            &tenant(),
+        )
+        .await;
+    assert_eq!(
+        approvals.len(),
+        2,
+        "new messages must not reuse old receipts"
+    );
+}
+
+#[cfg(feature = "premium-governance")]
+#[tokio::test]
+async fn action_gate_denial_executes_zero_times() {
+    let state = test_state().await;
+    assert!(!evaluate_protected_action(&state).await.allowed);
+    let approval = action_gate_approval(&state).await;
+    state
+        .decide_approval_request(
+            &approval.approval_id,
+            GovernanceActorRef::human(Some("reviewer-1".to_string()), "test"),
+            false,
+            Some("denied in test".to_string()),
+            &tenant(),
+        )
+        .await
+        .expect("deny approval")
+        .expect("approval exists");
+
+    let executions = usize::from(evaluate_protected_action(&state).await.allowed);
+    assert_eq!(executions, 0, "denied action must never dispatch");
+}
+
+#[cfg(feature = "premium-governance")]
+#[tokio::test]
+async fn action_gate_approval_resumes_exactly_one_execution() {
+    let state = test_state().await;
+    assert!(!evaluate_protected_action(&state).await.allowed);
+    let approval = action_gate_approval(&state).await;
+    state
+        .decide_approval_request(
+            &approval.approval_id,
+            GovernanceActorRef::human(Some("reviewer-1".to_string()), "test"),
+            true,
+            Some("approved in test".to_string()),
+            &tenant(),
+        )
+        .await
+        .expect("approve request")
+        .expect("approval exists");
+
+    let first_retry = evaluate_protected_action(&state).await;
+    let second_retry = evaluate_protected_action(&state).await;
+    let executions = usize::from(first_retry.allowed) + usize::from(second_retry.allowed);
+    assert_eq!(executions, 1, "approved action must dispatch exactly once");
+
+    let consumed = state
+        .get_governance_approval_request(&approval.approval_id)
+        .await
+        .expect("consumed approval remains durable");
+    assert!(consumed
+        .context
+        .pointer("/action_gate/consumed_at_ms")
+        .and_then(Value::as_u64)
+        .is_some());
 }
 
 #[tokio::test]

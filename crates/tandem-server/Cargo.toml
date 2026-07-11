@@ -18,6 +18,9 @@ premium-governance = ["dep:tandem-governance-engine"]
 # realistic AppState in their own HTTP integration tests. Test-only; not enabled
 # by any production build.
 test-support = []
+# Reusable, deterministic ACME Slack production-path demo command support.
+# Kept out of normal server builds and release artifacts.
+acme-demo = ["premium-governance"]
 
 [dependencies]
 anyhow = "1"

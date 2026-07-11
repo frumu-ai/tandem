@@ -22,6 +22,7 @@ enterprise = [
     "tandem-enterprise-server/google-drive",
 ]
 enterprise-full = ["enterprise", "tandem-enterprise-server/full"]
+acme-demo = ["tandem-server/acme-demo"]
 
 [[bin]]
 name = "tandem-engine"

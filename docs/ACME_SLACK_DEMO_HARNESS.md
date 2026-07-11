@@ -3,6 +3,59 @@
 The five-profile ACME governance demo has two layers with different evidence
 value (TAN-667 originally, made production-real by TAN-682):
 
+## Reusable live command
+
+Stop the Tandem server, run the feature-gated command against the same state
+directory, then restart the server:
+
+```bash
+cargo run -p tandem-ai --features acme-demo -- acme-slack-demo \
+  --state-dir /absolute/path/to/tandem-state
+```
+
+If the server normally receives `TANDEM_STATE_DIR`, pass that exact value as
+`--state-dir`. The command exits with a JSON report containing the five
+`receipt_run_ids`, the persisted `approval_decision_ids`, and the receipt IDs
+whose governance evidence correlates the decision and protected audit. After
+the normal server is restarted, the five receipts are
+selectable through the production API:
+
+```text
+GET /context/runs?run_type=session&source=channel:slack&limit=50
+```
+
+The command resets prior ACME demo sessions, their policy decisions,
+`acme-live-*` memory records, and context-run directories only when all ACME
+tenant/workspace/team/channel markers match. It preserves other tenants, Slack
+installations, memory, and receipts. It then seeds the five-profile authority
+graph and governed memory, sends five HMAC-signed events through a locally
+bound production router, runs
+the engine with the deterministic provider, delivers to a mock Slack API, and
+waits until exactly five ACME context-run receipts are returned by the
+production list API.
+
+Limitations:
+
+- Do not run this command concurrently with `tandem-engine serve` or the
+  desktop sidecar. The current file-backed stores do not provide a process-wide
+  transaction or writer lock. The stop/run/restart sequence is required.
+- Provider and Slack transport are deterministic local mocks. No real Slack
+  workspace is contacted and no model API key is required.
+- The command uses a temporary engine config, so it does not replace the
+  server's normal provider or Slack configuration.
+- Finance requests `mcp.invoices.read_invoices` through the real approval
+  bridge. Success requires the tool to remain unexecuted and the
+  `ApprovalRequired` policy decision, protected-audit event, and correlated
+  receipt governance-evidence package all to persist.
+- Protected audit is append-only, so historical ACME approval events remain in
+  the hash-chained ledger across resets. Each command reports and correlates
+  only the newly created decision; old ACME sessions, decisions, and receipts
+  are removed.
+- The feature is excluded from normal builds and release artifacts unless
+  `--features acme-demo` is explicitly supplied. `acme-demo` transitively
+  enables `premium-governance` so the approval bridge and evidence export are
+  present.
+
 ## Production-path E2E (the real proof)
 
 `crates/tandem-server/src/http/tests/acme_slack_demo_e2e.rs` executes the full

@@ -52,6 +52,8 @@ mod tests;
 
 pub mod harness;
 pub use harness::{acme_slack_demo_receipt_fixture, acme_slack_demo_receipt_for_profile};
+#[cfg(feature = "acme-demo")]
+pub mod live;
 
 /// Organization id for the demo tenant.
 pub const DEMO_ORG_ID: &str = "acme";
