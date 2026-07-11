@@ -891,8 +891,13 @@ impl PostgresMemoryStore {
         offset: i64,
         include_demoted: bool,
     ) -> MemoryStoreResult<Vec<GlobalMemoryRecord>> {
-        let client = self.client().await?;
         let query = query.map(str::trim).filter(|query| !query.is_empty());
+        if query.is_some() && self.search_surface_mode == PostgresSearchSurfaceMode::Disabled {
+            return Err(MemoryStoreError::unsupported(
+                "PostgreSQL global search is disabled by TANDEM_MEMORY_SEARCH_SURFACE_MODE",
+            ));
+        }
+        let client = self.client().await?;
         let database_query =
             if self.search_surface_mode == PostgresSearchSurfaceMode::PlaintextPgvector {
                 query

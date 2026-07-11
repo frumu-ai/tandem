@@ -4,7 +4,8 @@ use super::*;
 use crate::types::{
     memory_key_scope_from_metadata, owner_org_unit_id_from_metadata, owner_subject_from_metadata,
     tenant_shared_from_metadata, CleanupLogEntry, ClearFileIndexResult, GlobalMemoryWriteResult,
-    MemoryLayer, MemoryNode, SourceObjectLifecycleRecord, SourceObjectLifecycleState,
+    MemoryLayer, MemoryNode, MemoryTenantScope, SourceObjectLifecycleRecord,
+    SourceObjectLifecycleState,
 };
 
 fn deployment(scope: &crate::types::MemoryTenantScope) -> &str {
@@ -49,6 +50,31 @@ fn validate_chunk_selector(selector: &MemoryChunkSelector) -> MemoryStoreResult<
 }
 
 impl PostgresMemoryStore {
+    fn encode_entity_payload<T: serde::Serialize>(
+        &self,
+        tenant: &MemoryTenantScope,
+        entity_type: &str,
+        key1: &str,
+        key2: &str,
+        value: &T,
+    ) -> MemoryStoreResult<EncodedPayload> {
+        let key_scope = MemoryKeyScope::new(
+            tenant,
+            tandem_enterprise_contract::DataClass::Internal,
+            None,
+        );
+        let row_id = serde_json::to_string(&(
+            &tenant.org_id,
+            &tenant.workspace_id,
+            deployment(tenant),
+            entity_type,
+            key1,
+            key2,
+        ))
+        .map_err(|error| store_error("encode PostgreSQL entity identity", error, false))?;
+        self.encode_payload(value, &key_scope, &row_id)
+    }
+
     async fn upsert_entity<T: serde::Serialize>(
         &self,
         scope: &MemoryWriteScope,
@@ -63,25 +89,8 @@ impl PostgresMemoryStore {
                 "PostgreSQL entity writes cannot persist org-unit/subject scope",
             ));
         }
-        let key_scope = MemoryKeyScope::new(
-            &scope.tenant,
-            tandem_enterprise_contract::DataClass::Internal,
-            None,
-        );
-        let row_id = serde_json::to_string(&(
-            &scope.tenant.org_id,
-            &scope.tenant.workspace_id,
-            deployment(&scope.tenant),
-            entity_type,
-            key1,
-            key2,
-        ))
-        .map_err(|error| store_error("encode PostgreSQL entity identity", error, false))?;
-        let (data, ciphertext, envelope, policy_id, audit_id) = if entity_type == "context_layer" {
-            self.encode_payload(value, &key_scope, &row_id)?
-        } else {
-            (Some(json_value(value)?), None, None, None, None)
-        };
+        let (data, ciphertext, envelope, policy_id, audit_id) =
+            self.encode_entity_payload(&scope.tenant, entity_type, key1, key2, value)?;
         let client = self.client().await?;
         client
             .execute(
@@ -438,7 +447,15 @@ impl PostgresMemoryStore {
                     updated_at: now,
                     metadata,
                 };
-                let data = json_value(&node)?;
+                let uri_payload =
+                    self.encode_entity_payload(&scope.tenant, "context_node_uri", &uri, "", &node)?;
+                let id_payload = self.encode_entity_payload(
+                    &scope.tenant,
+                    "context_node_id",
+                    &node.id,
+                    "",
+                    &node,
+                )?;
                 let mut client = self.client().await?;
                 let transaction = client.transaction().await.map_err(|error| {
                     store_error("start PostgreSQL context-node write", error, true)
@@ -446,11 +463,13 @@ impl PostgresMemoryStore {
                 let inserted = transaction
                     .execute(
                         "INSERT INTO tandem_memory_entities
-                         (tenant_org_id,tenant_workspace_id,tenant_deployment_id,entity_type,key1,key2,data)
-                         VALUES ($1,$2,$3,'context_node_uri',$4,'',$5)
+                         (tenant_org_id,tenant_workspace_id,tenant_deployment_id,entity_type,key1,key2,
+                          data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id)
+                         VALUES ($1,$2,$3,'context_node_uri',$4,'',$5,$6,$7,$8,$9)
                          ON CONFLICT (tenant_org_id,tenant_workspace_id,tenant_deployment_id,entity_type,key1,key2)
                          DO NOTHING",
-                        &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&uri,&data],
+                        &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),
+                          &uri,&uri_payload.0,&uri_payload.1,&uri_payload.2,&uri_payload.3,&uri_payload.4],
                     )
                     .await
                     .map_err(|error| store_error("reserve PostgreSQL context URI", error, true))?;
@@ -462,9 +481,11 @@ impl PostgresMemoryStore {
                 transaction
                     .execute(
                         "INSERT INTO tandem_memory_entities
-                         (tenant_org_id,tenant_workspace_id,tenant_deployment_id,entity_type,key1,key2,data)
-                         VALUES ($1,$2,$3,'context_node_id',$4,'',$5)",
-                        &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&node.id,&data],
+                         (tenant_org_id,tenant_workspace_id,tenant_deployment_id,entity_type,key1,key2,
+                          data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id)
+                         VALUES ($1,$2,$3,'context_node_id',$4,'',$5,$6,$7,$8,$9)",
+                        &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),
+                          &node.id,&id_payload.0,&id_payload.1,&id_payload.2,&id_payload.3,&id_payload.4],
                     )
                     .await
                     .map_err(|error| store_error("write PostgreSQL context node", error, true))?;

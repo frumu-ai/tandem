@@ -659,6 +659,26 @@ async fn postgres_encrypted_mode_seals_payloads_and_reranks_in_scope() {
         .expect("inspect encrypted entity row");
     assert!(raw_entity.get::<_, bool>(0));
     assert!(raw_entity.get::<_, String>(1).starts_with("tce1:"));
+    let entity_storage = client
+        .query(
+            "SELECT entity_type,data IS NULL,data_ciphertext FROM tandem_memory_entities
+             WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3",
+            &[
+                &tenant.org_id,
+                &tenant.workspace_id,
+                &tenant.deployment_id.as_deref().unwrap_or(""),
+            ],
+        )
+        .await
+        .expect("inspect all protected entity rows");
+    assert!(entity_storage.len() >= 3);
+    for row in entity_storage {
+        assert!(row.get::<_, bool>(1), "entity remained plaintext");
+        assert!(
+            row.get::<_, String>(2).starts_with("tce1:"),
+            "entity ciphertext was not sealed"
+        );
+    }
     let layer = store
         .read(MemoryStoreReadRequest::ContextLayer {
             scope: MemoryReadScope::tenant(tenant.clone()),
@@ -866,6 +886,23 @@ async fn postgres_encrypted_mode_seals_payloads_and_reranks_in_scope() {
     };
     assert_eq!(global.len(), 1);
     assert_eq!(global[0].record.id, "encrypted-fts");
+
+    let mut disabled_config = config(url.clone(), 4);
+    disabled_config.search_surface_mode = PostgresSearchSurfaceMode::Disabled;
+    let disabled_store = PostgresMemoryStore::connect(disabled_config)
+        .await
+        .expect("open disabled-search PostgreSQL store");
+    let error = disabled_store
+        .query(MemoryStoreQueryRequest::SearchGlobalRecords {
+            scope: MemoryReadScope::tenant(tenant.clone()),
+            user_id: "legacy-user".to_string(),
+            query: "global record".to_string(),
+            limit: 5,
+            project_tag: None,
+        })
+        .await
+        .expect_err("disabled global search must fail closed");
+    assert_eq!(error.kind, MemoryStoreErrorKind::Unsupported);
 
     let plaintext_search_store = PostgresMemoryStore::connect(config(url, 4))
         .await
