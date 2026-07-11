@@ -1412,7 +1412,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                       {selectedIsHtml ? (
                         <button
                           type="button"
-                          aria-label="Close task details"
+                          aria-label="Fullscreen file preview"
                           className="tcp-btn h-7 px-2 text-xs"
                           onClick={() => setWorkspacePreviewFullscreen(true)}
                         >

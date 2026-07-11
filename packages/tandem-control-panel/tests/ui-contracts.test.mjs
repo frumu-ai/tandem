@@ -109,6 +109,7 @@ test("loading and typography use the shared UI contracts", async () => {
   assert.deepEqual(new Set(Object.keys(tailwind.theme.fontSize)), typeScale);
 
   const css = readFileSync(join(srcDir, "styles.css"), "utf8");
+  assert.match(css, /\.tcp-spinner\s*\{[^}]*animation:\s*tcpSpin\b/s);
   const declarations = [...css.matchAll(/font-size:\s*([^;]+);/g)].map((match) => match[1].trim());
   const allowedValues = new Set([...typeScale].map((name) => `var(--font-size-${name})`));
   assert.deepEqual(
