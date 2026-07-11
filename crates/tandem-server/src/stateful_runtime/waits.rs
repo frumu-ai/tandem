@@ -174,12 +174,24 @@ pub async fn prune_stateful_wait_store(
     }
 
     let cutoff_ms = now_ms.saturating_sub(retention_ms);
+    let pruned_rows = waits
+        .iter()
+        .filter(|wait| terminal_wait_is_older_than_retention_cutoff(wait, cutoff_ms))
+        .cloned()
+        .collect::<Vec<_>>();
     waits.retain(|wait| !terminal_wait_is_older_than_retention_cutoff(wait, cutoff_ms));
     let pruned = original_len.saturating_sub(waits.len());
     if pruned == 0 {
         return Ok(0);
     }
 
+    if let Some(store) = super::sqlite_compat::authoritative_stateful_store_for_wait_path(path)? {
+        tokio::task::spawn_blocking(move || {
+            store.delete_stateful_runtime_waits_if_unchanged(&pruned_rows)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("stateful wait retention task failed: {error}"))??;
+    }
     write_stateful_waits_unlocked(path, &waits).await?;
     Ok(pruned)
 }
@@ -964,7 +976,7 @@ async fn write_stateful_waits_unlocked(
     sort_waits(&mut sorted);
     if let Some(store) = super::sqlite_compat::authoritative_stateful_store_for_wait_path(path)? {
         let records = sorted.clone();
-        tokio::task::spawn_blocking(move || store.replace_stateful_runtime_waits(&records))
+        tokio::task::spawn_blocking(move || store.upsert_stateful_runtime_waits(&records))
             .await
             .map_err(|error| anyhow::anyhow!("stateful wait store task failed: {error}"))??;
     }

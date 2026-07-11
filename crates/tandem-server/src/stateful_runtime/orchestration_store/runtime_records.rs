@@ -182,19 +182,52 @@ impl OrchestrationStateStore {
         })
     }
 
-    pub fn replace_stateful_runtime_waits(
+    pub fn upsert_stateful_runtime_waits(
         &self,
         waits: &[StatefulWaitRecord],
     ) -> anyhow::Result<()> {
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            transaction.execute("DELETE FROM automation_waits", [])?;
             for wait in waits {
                 insert_wait(&transaction, wait)?;
             }
             transaction.commit()?;
             Ok(())
+        })
+    }
+
+    /// Deletes only records that still match the snapshot the caller pruned.
+    /// This prevents a retention sweep from removing a concurrently updated wait.
+    pub fn delete_stateful_runtime_waits_if_unchanged(
+        &self,
+        waits: &[StatefulWaitRecord],
+    ) -> anyhow::Result<usize> {
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let mut deleted = 0;
+            for wait in waits {
+                deleted += transaction.execute(
+                    "DELETE FROM automation_waits
+                     WHERE wait_id = ?1 AND run_id = ?2 AND org_id = ?3
+                       AND workspace_id = ?4 AND deployment_id = ?5 AND wait_json = ?6",
+                    params![
+                        wait.wait_id,
+                        wait.run_id,
+                        wait.scope.tenant_context.org_id,
+                        wait.scope.tenant_context.workspace_id,
+                        wait.scope
+                            .tenant_context
+                            .deployment_id
+                            .as_deref()
+                            .unwrap_or(""),
+                        serde_json::to_string(wait)?,
+                    ],
+                )?;
+            }
+            transaction.commit()?;
+            Ok(deleted)
         })
     }
 
@@ -212,21 +245,13 @@ impl OrchestrationStateStore {
         })
     }
 
-    pub fn replace_stateful_runtime_reliability(
+    pub fn upsert_stateful_runtime_reliability(
         &self,
         reliability: &StatefulReliabilityStoreFile,
     ) -> anyhow::Result<()> {
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            for table in [
-                "outbox_effects",
-                "tool_effects",
-                "dead_letters",
-                "compensations",
-            ] {
-                transaction.execute(&format!("DELETE FROM {table}"), [])?;
-            }
             for row in &reliability.outbox {
                 insert_reliability_record(
                     &transaction,
@@ -287,6 +312,61 @@ impl OrchestrationStateStore {
             Ok(())
         })
     }
+
+    /// Deletes only settled reliability rows that still match the retained
+    /// snapshot, preserving a record concurrently changed by a recovery path.
+    pub fn delete_stateful_runtime_reliability_if_unchanged(
+        &self,
+        reliability: &StatefulReliabilityStoreFile,
+    ) -> anyhow::Result<usize> {
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let mut deleted = 0;
+            for row in &reliability.outbox {
+                deleted += delete_reliability_record(
+                    &transaction,
+                    "outbox_effects",
+                    "effect_id",
+                    &row.outbox_id,
+                    "effect_json",
+                    row,
+                )?;
+            }
+            for row in &reliability.tool_effects {
+                deleted += delete_reliability_record(
+                    &transaction,
+                    "tool_effects",
+                    "effect_id",
+                    &row.effect_id,
+                    "effect_json",
+                    row,
+                )?;
+            }
+            for row in &reliability.dead_letters {
+                deleted += delete_reliability_record(
+                    &transaction,
+                    "dead_letters",
+                    "dead_letter_id",
+                    &row.dead_letter_id,
+                    "record_json",
+                    row,
+                )?;
+            }
+            for row in &reliability.compensations {
+                deleted += delete_reliability_record(
+                    &transaction,
+                    "compensations",
+                    "compensation_id",
+                    &row.compensation_id,
+                    "record_json",
+                    row,
+                )?;
+            }
+            transaction.commit()?;
+            Ok(deleted)
+        })
+    }
 }
 
 fn insert_wait(
@@ -300,7 +380,9 @@ fn insert_wait(
          VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(wait_id, run_id, org_id, workspace_id, deployment_id) DO UPDATE SET
             status = excluded.status, wait_json = excluded.wait_json,
-            updated_at_ms = excluded.updated_at_ms",
+            updated_at_ms = excluded.updated_at_ms
+         WHERE automation_waits.status NOT IN ('woken', 'timed_out', 'escalated', 'cancelled')
+           AND excluded.updated_at_ms >= automation_waits.updated_at_ms",
         params![
             wait.wait_id,
             wait.run_id,
@@ -356,7 +438,8 @@ fn insert_reliability_record<T: serde::Serialize, S: serde::Serialize>(
          ON CONFLICT({id_column}) DO UPDATE SET status = excluded.status,
              {json_column} = excluded.{json_column}, updated_at_ms = excluded.updated_at_ms,
              org_id = excluded.org_id, workspace_id = excluded.workspace_id,
-             deployment_id = excluded.deployment_id"
+             deployment_id = excluded.deployment_id
+         WHERE excluded.updated_at_ms >= {table}.updated_at_ms"
     );
     transaction.execute(
         &sql,
@@ -372,6 +455,22 @@ fn insert_reliability_record<T: serde::Serialize, S: serde::Serialize>(
         ],
     )?;
     Ok(())
+}
+
+fn delete_reliability_record<T: serde::Serialize>(
+    transaction: &rusqlite::Transaction<'_>,
+    table: &str,
+    id_column: &str,
+    id: &str,
+    json_column: &str,
+    record: &T,
+) -> anyhow::Result<usize> {
+    transaction
+        .execute(
+            &format!("DELETE FROM {table} WHERE {id_column} = ?1 AND {json_column} = ?2"),
+            params![id, serde_json::to_string(record)?],
+        )
+        .map_err(Into::into)
 }
 
 fn enum_name<T: serde::Serialize>(value: &T) -> anyhow::Result<String> {
@@ -443,7 +542,10 @@ mod tests {
     use tandem_types::TenantContext;
 
     use super::*;
-    use crate::stateful_runtime::StatefulRuntimeScope;
+    use crate::stateful_runtime::{
+        StatefulOutboxRecord, StatefulOutboxStatus, StatefulReliabilityStoreFile,
+        StatefulRuntimeScope, StatefulWaitKind, StatefulWaitStatus,
+    };
 
     fn event(run_id: &str) -> StatefulRunEventRecord {
         StatefulRunEventRecord {
@@ -463,6 +565,66 @@ mod tests {
             causation_id: None,
             correlation_id: None,
             payload: json!({}),
+        }
+    }
+
+    fn wait(status: StatefulWaitStatus, updated_at_ms: u64) -> StatefulWaitRecord {
+        StatefulWaitRecord {
+            schema_version: 1,
+            wait_id: "wait-1".to_string(),
+            run_id: "run-1".to_string(),
+            wait_kind: StatefulWaitKind::Timer,
+            status,
+            scope: StatefulRuntimeScope::from_tenant_context(
+                TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "user-a"),
+            ),
+            phase_id: None,
+            reason: None,
+            created_at_ms: 1,
+            updated_at_ms,
+            wake_at_ms: Some(10),
+            timeout_policy: None,
+            event_seq: None,
+            wake_idempotency_key: None,
+            claimed_by: None,
+            claimed_at_ms: None,
+            claim_expires_at_ms: None,
+            completed_at_ms: None,
+            metadata: None,
+        }
+    }
+
+    fn outbox(id: &str, updated_at_ms: u64) -> StatefulOutboxRecord {
+        StatefulOutboxRecord {
+            schema_version: 1,
+            outbox_id: id.to_string(),
+            run_id: Some("run-1".to_string()),
+            scope: StatefulRuntimeScope::from_tenant_context(
+                TenantContext::explicit_user_workspace("org-a", "workspace-a", None, "user-a"),
+            ),
+            operation: "test".to_string(),
+            status: StatefulOutboxStatus::Pending,
+            source_kind: None,
+            source_id: None,
+            node_id: None,
+            provider: None,
+            tool: None,
+            target: None,
+            idempotency_key: None,
+            payload_digest: None,
+            policy_decision_id: None,
+            context_assertion_id: None,
+            effect_id: None,
+            receipt_id: None,
+            compensation_id: None,
+            dead_letter_id: None,
+            attempts: 0,
+            created_at_ms: 1,
+            updated_at_ms,
+            claimed_by: None,
+            claimed_at_ms: None,
+            claim_expires_at_ms: None,
+            metadata: None,
         }
     }
 
@@ -494,5 +656,73 @@ mod tests {
                 stored
             }]
         );
+    }
+
+    #[test]
+    fn stale_wait_upsert_cannot_revive_a_terminal_wait() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = OrchestrationStateStore::from_automation_runs_path(
+            &directory.path().join("automation_v2_runs.json"),
+        )
+        .unwrap();
+        let stale = wait(StatefulWaitStatus::Waiting, 10);
+        store
+            .upsert_stateful_runtime_waits(&[stale.clone()])
+            .unwrap();
+
+        let mut cancelled = stale.clone();
+        cancelled.status = StatefulWaitStatus::Cancelled;
+        cancelled.updated_at_ms = 20;
+        cancelled.completed_at_ms = Some(20);
+        store.upsert_stateful_runtime_waits(&[cancelled]).unwrap();
+        store.upsert_stateful_runtime_waits(&[stale]).unwrap();
+
+        let rows = store.load_stateful_runtime_waits().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, StatefulWaitStatus::Cancelled);
+    }
+
+    #[test]
+    fn reliability_upsert_preserves_concurrently_inserted_outbox_rows() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = OrchestrationStateStore::from_automation_runs_path(
+            &directory.path().join("automation_v2_runs.json"),
+        )
+        .unwrap();
+        let stale = StatefulReliabilityStoreFile {
+            schema_version: 1,
+            outbox: vec![outbox("outbox-stale", 10)],
+            ..Default::default()
+        };
+        store.upsert_stateful_runtime_reliability(&stale).unwrap();
+        let concurrent = outbox("goal-cancel:goal-1:run-1", 20);
+        store
+            .with_connection(|connection| {
+                connection.execute(
+                    "INSERT INTO outbox_effects
+                        (effect_id, goal_id, run_id, status, effect_json, updated_at_ms,
+                         org_id, workspace_id, deployment_id)
+                     VALUES (?1, NULL, ?2, 'pending', ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        concurrent.outbox_id,
+                        concurrent.run_id,
+                        serde_json::to_string(&concurrent)?,
+                        concurrent.updated_at_ms,
+                        concurrent.scope.tenant_context.org_id,
+                        concurrent.scope.tenant_context.workspace_id,
+                        concurrent.scope.tenant_context.deployment_id,
+                    ],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        store.upsert_stateful_runtime_reliability(&stale).unwrap();
+        let records = store.load_stateful_runtime_reliability().unwrap();
+        assert_eq!(records.outbox.len(), 2);
+        assert!(records
+            .outbox
+            .iter()
+            .any(|row| row.outbox_id == concurrent.outbox_id));
     }
 }

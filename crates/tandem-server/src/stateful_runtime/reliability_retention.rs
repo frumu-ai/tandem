@@ -3,8 +3,8 @@ use std::path::Path;
 use super::reliability::{
     try_load_stateful_reliability, write_stateful_reliability_unlocked, StatefulCompensationRecord,
     StatefulCompensationStatus, StatefulDeadLetterRecord, StatefulDeadLetterStatus,
-    StatefulOutboxRecord, StatefulOutboxStatus, StatefulToolEffectRecord, StatefulToolEffectStatus,
-    STATEFUL_RELIABILITY_STORE_LOCK,
+    StatefulOutboxRecord, StatefulOutboxStatus, StatefulReliabilityStoreFile,
+    StatefulToolEffectRecord, StatefulToolEffectStatus, STATEFUL_RELIABILITY_STORE_LOCK,
 };
 
 /// Removes only settled reliability records older than the configured retention
@@ -21,20 +21,48 @@ pub async fn prune_stateful_reliability_store(
     let mut store = try_load_stateful_reliability(path)?;
     let before = record_count(&store);
     let cutoff_ms = now_ms.saturating_sub(retention_ms);
-    store
-        .outbox
-        .retain(|record| !settled_outbox_before(record, cutoff_ms));
-    store
-        .tool_effects
-        .retain(|record| !settled_effect_before(record, cutoff_ms));
-    store
-        .dead_letters
-        .retain(|record| !settled_dead_letter_before(record, cutoff_ms));
-    store
-        .compensations
-        .retain(|record| !settled_compensation_before(record, cutoff_ms));
+    let mut removed = StatefulReliabilityStoreFile::default();
+    store.outbox.retain(|record| {
+        let remove = settled_outbox_before(record, cutoff_ms);
+        if remove {
+            removed.outbox.push(record.clone());
+        }
+        !remove
+    });
+    store.tool_effects.retain(|record| {
+        let remove = settled_effect_before(record, cutoff_ms);
+        if remove {
+            removed.tool_effects.push(record.clone());
+        }
+        !remove
+    });
+    store.dead_letters.retain(|record| {
+        let remove = settled_dead_letter_before(record, cutoff_ms);
+        if remove {
+            removed.dead_letters.push(record.clone());
+        }
+        !remove
+    });
+    store.compensations.retain(|record| {
+        let remove = settled_compensation_before(record, cutoff_ms);
+        if remove {
+            removed.compensations.push(record.clone());
+        }
+        !remove
+    });
     let pruned = before.saturating_sub(record_count(&store));
     if pruned > 0 {
+        if let Some(database) =
+            super::sqlite_compat::authoritative_stateful_store_for_reliability_path(path)?
+        {
+            tokio::task::spawn_blocking(move || {
+                database.delete_stateful_runtime_reliability_if_unchanged(&removed)
+            })
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!("stateful reliability retention task failed: {error}")
+            })??;
+        }
         write_stateful_reliability_unlocked(path, &store).await?;
     }
     Ok(pruned)
