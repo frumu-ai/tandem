@@ -255,6 +255,14 @@ pub(super) fn build_router(state: AppState, route_extensions: &[super::RouteRegi
             axum::routing::get(super::goals_api::get_goal),
         )
         .route(
+            "/goals/{goal_id}/projection",
+            axum::routing::get(super::goals_projection::get_goal_projection),
+        )
+        .route(
+            "/goals/{goal_id}/actions/{action_id}",
+            axum::routing::post(super::goals_projection::dispatch_goal_action),
+        )
+        .route(
             "/goals/{goal_id}/pause",
             axum::routing::post(super::goals_api::pause_goal),
         )

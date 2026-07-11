@@ -32,5 +32,6 @@
 
 export { TandemClient } from "./client.js";
 export { streamSse, filterByType, on, isRunTerminalEvent } from "./stream.js";
+export type { StreamSseOptions, SseSequenceGap } from "./stream.js";
 export { TandemValidationError } from "./normalize/index.js";
 export type * from "./public/index.js";

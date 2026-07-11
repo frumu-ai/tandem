@@ -28,7 +28,7 @@ const MAX_GOAL_EVENT_LIMIT: usize = 1_000;
 /// SSE replay page size; the stream keeps paging until it drains.
 const SSE_REPLAY_PAGE: usize = 500;
 
-fn goal_store(state: &AppState) -> Result<OrchestrationStateStore, Response> {
+pub(super) fn goal_store(state: &AppState) -> Result<OrchestrationStateStore, Response> {
     OrchestrationStateStore::from_automation_runs_path(&state.automation_v2_runs_path).map_err(
         |error| {
             tracing::error!(?error, "failed to open orchestration store");
@@ -41,7 +41,7 @@ fn goal_store(state: &AppState) -> Result<OrchestrationStateStore, Response> {
     )
 }
 
-fn goal_error_response(error: &anyhow::Error) -> Response {
+pub(super) fn goal_error_response(error: &anyhow::Error) -> Response {
     let message = error.to_string();
     let (status, code) = if message.contains("not found") {
         (StatusCode::NOT_FOUND, "goal_not_found")
@@ -64,7 +64,7 @@ fn goal_error_response(error: &anyhow::Error) -> Response {
     (status, Json(json!({"error": code, "detail": message}))).into_response()
 }
 
-fn request_actor(principal: &RequestPrincipal) -> PrincipalRef {
+pub(super) fn request_actor(principal: &RequestPrincipal) -> PrincipalRef {
     PrincipalRef::new(
         PrincipalKind::HumanUser,
         principal.actor_id.as_deref().unwrap_or("anonymous"),
@@ -85,7 +85,7 @@ fn transition_authority(
     }
 }
 
-fn load_tenant_goal(
+pub(super) fn load_tenant_goal(
     store: &OrchestrationStateStore,
     tenant: &TenantContext,
     goal_id: &str,
@@ -112,7 +112,7 @@ fn goal_response(goal: &LongRunningGoal) -> Value {
     })
 }
 
-fn goal_budgets(goal: &LongRunningGoal) -> Value {
+pub(super) fn goal_budgets(goal: &LongRunningGoal) -> Value {
     json!({
         "policy": goal.policy,
         "consumed": {
@@ -517,7 +517,7 @@ pub(super) async fn list_goal_events(
                 "goal_id": goal_id,
                 "events": rows
                     .iter()
-                    .map(|row| json!({"cursor": row.cursor, "event": row.event}))
+                    .map(|row| json!({"cursor": row.cursor, "event": goal_event_wire(row.event.clone())}))
                     .collect::<Vec<_>>(),
                 "count": rows.len(),
                 "last_cursor": last_cursor,
@@ -591,7 +591,7 @@ pub(super) async fn stream_goal_events(
                         .data(
                             serde_json::to_string(&json!({
                                 "cursor": row.cursor,
-                                "event": row.event,
+                                "event": goal_event_wire(row.event),
                             }))
                             .unwrap_or_default(),
                         );
@@ -637,6 +637,16 @@ pub(super) async fn stream_goal_events(
         Ok,
     ))
     .keep_alive(KeepAlive::new().interval(Duration::from_secs(10))))
+}
+
+pub(super) fn goal_event_wire(
+    mut event: crate::stateful_runtime::StatefulRunEventRecord,
+) -> crate::stateful_runtime::StatefulRunEventRecord {
+    if let Some(payload) = event.payload.as_object_mut() {
+        payload.remove("projection_snapshot");
+        payload.remove("projection_snapshot_ref");
+    }
+    event
 }
 
 pub(super) async fn list_goal_artifacts(
@@ -936,7 +946,7 @@ pub(super) async fn settle_goal_completion(
 // Waits: list, inspect, resolve
 // ---------------------------------------------------------------------------
 
-fn goal_waits(
+pub(super) fn goal_waits(
     state: &AppState,
     tenant: &TenantContext,
     store: &OrchestrationStateStore,

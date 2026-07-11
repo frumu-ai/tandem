@@ -16,6 +16,10 @@ const OrchestrationsPage = lazyNamed(
   () => import("../pages/OrchestrationsPage"),
   "OrchestrationsPage"
 );
+const GoalOperationsPage = lazyNamed(
+  () => import("../pages/GoalOperationsPage"),
+  "GoalOperationsPage"
+);
 const MarketplacePage = lazyNamed(() => import("../pages/MarketplacePage"), "MarketplacePage");
 const WorkflowStudioPage = lazyNamed(
   () => import("../pages/WorkflowStudioPage"),
@@ -102,6 +106,8 @@ function renderRoute(routeId: ReturnType<typeof ensureRouteId>, pageProps: any) 
       return <WorkflowsPage {...pageProps} />;
     case "orchestrations":
       return <OrchestrationsPage {...pageProps} />;
+    case "goal-operations":
+      return <GoalOperationsPage {...pageProps} />;
     case "marketplace":
       return <MarketplacePage {...pageProps} />;
     case "studio":

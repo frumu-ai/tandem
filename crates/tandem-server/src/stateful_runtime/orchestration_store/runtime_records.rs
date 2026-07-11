@@ -1,5 +1,6 @@
 use anyhow::{bail, Context};
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
+use tandem_automation::AutomationV2RunRecord;
 
 use super::OrchestrationStateStore;
 use crate::stateful_runtime::reliability::{
@@ -9,9 +10,41 @@ use crate::stateful_runtime::reliability::{
 use crate::stateful_runtime::types::{
     StatefulRunEventRecord, StatefulRunSnapshotRecord, StatefulWaitRecord,
 };
-use crate::stateful_runtime::{stateful_run_event_compacted_event_ids, StatefulRuntimeScope};
+use crate::stateful_runtime::{
+    stable_definition_snapshot_hash, stateful_run_event_compacted_event_ids, StatefulRuntimeScope,
+};
 
 impl OrchestrationStateStore {
+    pub fn resolve_goal_projection_snapshot(
+        &self,
+        reference: &serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
+        self.with_connection(|connection| {
+            let component = |key: &str| -> anyhow::Result<serde_json::Value> {
+                let digest = reference
+                    .get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .with_context(|| format!("projection snapshot is missing {key}"))?;
+                let raw = connection
+                    .query_row(
+                        "SELECT payload_json FROM goal_projection_blobs WHERE digest = ?1",
+                        [digest],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                    .with_context(|| format!("projection snapshot blob {digest} is missing"))?;
+                Ok(serde_json::from_str(&raw)?)
+            };
+            Ok(serde_json::json!({
+                "goal": component("goal")?,
+                "links": component("links")?,
+                "runs": component("runs")?,
+                "waits": component("waits")?,
+                "handoffs": component("handoffs")?,
+            }))
+        })
+    }
+
     pub fn append_stateful_runtime_event(
         &self,
         event: &StatefulRunEventRecord,
@@ -96,9 +129,31 @@ impl OrchestrationStateStore {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             transaction.execute("DELETE FROM stateful_events", [])?;
+            transaction.execute(
+                "CREATE TEMP TABLE retained_projection_blobs (digest TEXT PRIMARY KEY)",
+                [],
+            )?;
             for event in events {
                 insert_event(&transaction, event)?;
+                if let Some(reference) = event
+                    .payload
+                    .get("projection_snapshot_ref")
+                    .and_then(serde_json::Value::as_object)
+                {
+                    for digest in reference.values().filter_map(serde_json::Value::as_str) {
+                        transaction.execute(
+                            "INSERT OR IGNORE INTO retained_projection_blobs (digest) VALUES (?1)",
+                            [digest],
+                        )?;
+                    }
+                }
             }
+            transaction.execute(
+                "DELETE FROM goal_projection_blobs
+                 WHERE digest NOT IN (SELECT digest FROM retained_projection_blobs)",
+                [],
+            )?;
+            transaction.execute("DROP TABLE retained_projection_blobs", [])?;
             transaction.commit()?;
             Ok(())
         })
@@ -487,6 +542,29 @@ fn insert_event(
     transaction: &rusqlite::Transaction<'_>,
     event: &StatefulRunEventRecord,
 ) -> anyhow::Result<bool> {
+    let goal_id = event
+        .payload
+        .get("goal_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            transaction
+                .query_row(
+                    "SELECT goal_id FROM goal_run_links WHERE run_id = ?1",
+                    [&event.run_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .ok()
+                .flatten()
+        });
+    let has_projection_reference = event.payload.get("projection_snapshot_ref").is_some()
+        || event.payload.get("projection_snapshot").is_some();
+    let stored_event = match (goal_id.as_deref(), has_projection_reference) {
+        (_, true) => event.clone(),
+        (Some(goal_id), false) => event_with_projection_snapshot(transaction, event, goal_id)?,
+        (None, false) => event.clone(),
+    };
     let inserted = transaction.execute(
         "INSERT INTO stateful_events
             (event_id, goal_id, run_id, seq, event_json, created_at_ms,
@@ -495,13 +573,10 @@ fn insert_event(
          ON CONFLICT(event_id) DO NOTHING",
         params![
             event.event_id,
-            event
-                .payload
-                .get("goal_id")
-                .and_then(serde_json::Value::as_str),
+            goal_id,
             event.run_id,
             event.seq,
-            serde_json::to_string(event)?,
+            serde_json::to_string(&stored_event)?,
             event.occurred_at_ms,
             event.scope.tenant_context.org_id,
             event.scope.tenant_context.workspace_id,
@@ -509,6 +584,133 @@ fn insert_event(
         ],
     )?;
     Ok(inserted > 0)
+}
+
+pub(super) fn event_with_projection_snapshot(
+    transaction: &rusqlite::Transaction<'_>,
+    event: &StatefulRunEventRecord,
+    goal_id: &str,
+) -> anyhow::Result<StatefulRunEventRecord> {
+    let mut stored_event = event.clone();
+    let mut payload = stored_event
+        .payload
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    payload.insert(
+        "goal_id".to_string(),
+        serde_json::Value::String(goal_id.to_string()),
+    );
+    payload.insert(
+        "projection_snapshot_ref".to_string(),
+        projection_snapshot_for_goal(transaction, goal_id)?,
+    );
+    stored_event.payload = serde_json::Value::Object(payload);
+    Ok(stored_event)
+}
+
+pub(super) fn projection_snapshot_for_goal(
+    transaction: &rusqlite::Transaction<'_>,
+    goal_id: &str,
+) -> anyhow::Result<serde_json::Value> {
+    let goal = transaction
+        .query_row(
+            "SELECT goal_json FROM long_running_goals WHERE goal_id = ?1",
+            [goal_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|raw| serde_json::from_str::<serde_json::Value>(&raw))
+        .transpose()?
+        .context("goal projection snapshot is missing its goal")?;
+    let active_run_id = goal
+        .get("active_run_id")
+        .and_then(serde_json::Value::as_str);
+    let links = json_rows(
+        transaction,
+        "SELECT link_json FROM (
+            SELECT link_json, hop_index FROM goal_run_links
+            WHERE goal_id = ?1 ORDER BY hop_index DESC LIMIT 250
+         ) ORDER BY hop_index",
+        goal_id,
+    )?;
+    let runs = active_run_id
+        .map(|run_id| {
+            transaction
+                .query_row(
+                    "SELECT run_json FROM automation_runs WHERE run_id = ?1",
+                    [run_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+        })
+        .transpose()?
+        .flatten()
+        .map(|raw| -> anyhow::Result<serde_json::Value> {
+            let mut run = serde_json::from_str::<AutomationV2RunRecord>(&raw)?;
+            run.active_session_ids.clear();
+            run.latest_session_id = None;
+            run.active_instance_ids.clear();
+            run.runtime_context = None;
+            run.automation_snapshot = None;
+            run.execution_claim = None;
+            run.scheduler = None;
+            run.learning_summary = None;
+            Ok(serde_json::to_value(run)?)
+        })
+        .transpose()?
+        .into_iter()
+        .collect::<Vec<_>>();
+    let waits = json_rows(
+        transaction,
+        "SELECT wait_json FROM (
+            SELECT w.wait_json, w.updated_at_ms, w.wait_id
+            FROM automation_waits w
+            INNER JOIN goal_run_links l ON l.run_id = w.run_id
+            WHERE l.goal_id = ?1
+            ORDER BY w.updated_at_ms DESC, w.wait_id DESC LIMIT 250
+         ) ORDER BY updated_at_ms, wait_id",
+        goal_id,
+    )?;
+    let handoffs = json_rows(
+        transaction,
+        "SELECT handoff_json FROM (
+            SELECT handoff_json, created_at_ms, handoff_id FROM workflow_handoffs
+            WHERE goal_id = ?1 ORDER BY created_at_ms DESC, handoff_id DESC LIMIT 250
+         ) ORDER BY created_at_ms, handoff_id",
+        goal_id,
+    )?;
+    Ok(serde_json::json!({
+        "schema_version": 2,
+        "goal": store_projection_blob(transaction, &goal)?,
+        "links": store_projection_blob(transaction, &links)?,
+        "runs": store_projection_blob(transaction, &runs)?,
+        "waits": store_projection_blob(transaction, &waits)?,
+        "handoffs": store_projection_blob(transaction, &handoffs)?,
+    }))
+}
+
+fn store_projection_blob<T: serde::Serialize>(
+    transaction: &rusqlite::Transaction<'_>,
+    value: &T,
+) -> anyhow::Result<String> {
+    let digest = stable_definition_snapshot_hash(value);
+    transaction.execute(
+        "INSERT INTO goal_projection_blobs (digest, payload_json, created_at_ms)
+         VALUES (?1, ?2, ?3) ON CONFLICT(digest) DO NOTHING",
+        params![digest, serde_json::to_string(value)?, crate::now_ms()],
+    )?;
+    Ok(digest)
+}
+
+fn json_rows(
+    transaction: &rusqlite::Transaction<'_>,
+    sql: &str,
+    value: &str,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    let mut statement = transaction.prepare(sql)?;
+    let rows = statement.query_map([value], |row| row.get::<_, String>(0))?;
+    rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
 }
 
 fn event_seq_by_id(

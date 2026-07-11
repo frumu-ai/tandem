@@ -348,6 +348,52 @@ impl OrchestrationStateStore {
             Ok(events)
         })
     }
+
+    /// A bounded chronological window ending at `through_cursor`. This is the
+    /// canonical projection replay read; the descending inner query avoids
+    /// scanning an entire long-lived goal just to return its recent timeline.
+    pub fn query_goal_event_window(
+        &self,
+        goal_id: &str,
+        through_cursor: Option<i64>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<GoalEventRow>> {
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT rowid, event_json FROM (
+                    SELECT rowid, event_json FROM stateful_events
+                    WHERE goal_id = ?1 AND rowid <= ?2
+                    ORDER BY rowid DESC LIMIT ?3
+                 ) ORDER BY rowid",
+            )?;
+            let rows = statement.query_map(
+                params![goal_id, through_cursor.unwrap_or(i64::MAX), limit as i64],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )?;
+            let mut events = Vec::new();
+            for row in rows {
+                let (cursor, payload) = row?;
+                events.push(GoalEventRow {
+                    cursor,
+                    event: serde_json::from_str(&payload)?,
+                });
+            }
+            Ok(events)
+        })
+    }
+
+    pub fn goal_event_cursor_bounds(&self, goal_id: &str) -> anyhow::Result<Option<(i64, i64)>> {
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT MIN(rowid), MAX(rowid) FROM stateful_events WHERE goal_id = ?1",
+                    [goal_id],
+                    |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)),
+                )
+                .map(|(minimum, maximum)| minimum.zip(maximum))
+                .map_err(Into::into)
+        })
+    }
 }
 
 fn load_goal_for_update(
@@ -396,9 +442,11 @@ fn insert_goal_event(
         wait_kind: None,
         causation_id: None,
         correlation_id: Some(goal.goal_id.clone()),
-        payload,
+        payload: payload_with_goal_snapshot(payload, goal),
     };
     event.seq = super::next_event_seq(transaction, &run_id)?;
+    let event =
+        super::runtime_records::event_with_projection_snapshot(transaction, &event, &goal.goal_id)?;
     transaction.execute(
         "INSERT INTO stateful_events
             (event_id, goal_id, run_id, seq, event_json, created_at_ms,
@@ -418,4 +466,13 @@ fn insert_goal_event(
         ],
     )?;
     Ok(())
+}
+
+fn payload_with_goal_snapshot(
+    payload: serde_json::Value,
+    goal: &LongRunningGoal,
+) -> serde_json::Value {
+    let mut object = payload.as_object().cloned().unwrap_or_default();
+    object.insert("goal_snapshot".to_string(), json!(goal));
+    serde_json::Value::Object(object)
 }

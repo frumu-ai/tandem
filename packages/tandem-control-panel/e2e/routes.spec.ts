@@ -15,6 +15,7 @@ const routeIdentity: Record<string, string> = {
   planner: "Planner",
   workflows: "Workflows",
   orchestrations: "Orchestrations",
+  "goal-operations": "Goal Operations",
   marketplace: "Marketplace",
   studio: "Studio",
   automations: "Automations",

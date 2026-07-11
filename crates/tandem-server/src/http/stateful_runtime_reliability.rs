@@ -308,6 +308,25 @@ pub(super) async fn get_stateful_run_resume_plan(
     Json(plan).into_response()
 }
 
+pub(super) async fn stateful_run_resume_plan_value(
+    state: &AppState,
+    tenant_context: &TenantContext,
+    run_id: &str,
+    requested_limit: usize,
+) -> Option<Value> {
+    let context = find_run_recovery_context(state, tenant_context, run_id).await?;
+    Some(
+        build_resume_plan(
+            state,
+            tenant_context,
+            run_id,
+            context,
+            requested_limit.clamp(1, MAX_RELIABILITY_API_LIMIT),
+        )
+        .await,
+    )
+}
+
 pub(super) async fn apply_stateful_run_resume_plan_action(
     State(state): State<AppState>,
     Extension(tenant_context): Extension<TenantContext>,
