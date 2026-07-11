@@ -315,7 +315,7 @@ impl PostgresMemoryStore {
         key_scope: &MemoryKeyScope,
         row_id: &str,
     ) -> MemoryStoreResult<EncodedPayload> {
-        if self.search_surface_mode == PostgresSearchSurfaceMode::PlaintextPgvector {
+        if self.crypto.is_plaintext() {
             return Ok((Some(json_value(value)?), None, None, None, None));
         }
         let policy_id = format!("memory-payload-policy:{row_id}");

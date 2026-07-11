@@ -454,7 +454,7 @@ async fn postgres_encrypted_mode_seals_payloads_and_reranks_in_scope() {
         "TANDEM_MEMORY_DECRYPT_PRINCIPAL_ID",
         "postgres-test-runtime",
     );
-    let mut encrypted_config = config(url, 4);
+    let mut encrypted_config = config(url.clone(), 4);
     encrypted_config.search_surface_mode = PostgresSearchSurfaceMode::EncryptedRerank;
     let store = PostgresMemoryStore::connect(encrypted_config)
         .await
@@ -703,6 +703,44 @@ async fn postgres_encrypted_mode_seals_payloads_and_reranks_in_scope() {
     };
     assert_eq!(global.len(), 1);
     assert_eq!(global[0].record.id, "encrypted-fts");
+
+    let plaintext_search_store = PostgresMemoryStore::connect(config(url, 4))
+        .await
+        .expect("open local-encrypted plaintext-search store");
+    plaintext_search_store
+        .recover_backend(MemoryBackendRecoveryRequest {
+            action: MemoryBackendRecoveryAction::ResetAllData,
+            confirm_data_loss: true,
+        })
+        .await
+        .expect("reset plaintext-search fixtures");
+    let plaintext_search_tenant = MemoryTenantScope {
+        org_id: "local-encrypted-plaintext-search".to_string(),
+        workspace_id: "workspace".to_string(),
+        deployment_id: Some("deployment".to_string()),
+    };
+    plaintext_search_store
+        .write(MemoryStoreWriteRequest::Chunk {
+            scope: MemoryWriteScope::tenant(plaintext_search_tenant.clone()),
+            chunk: chunk("local-encrypted", plaintext_search_tenant),
+            embedding: vec![1.0, 0.0, 0.0],
+        })
+        .await
+        .expect("write local-encrypted plaintext-search chunk");
+    let raw = plaintext_search_store
+        .client()
+        .await
+        .expect("inspect plaintext-search storage")
+        .query_one(
+            "SELECT embedding IS NOT NULL,data IS NULL,data_ciphertext
+             FROM tandem_memory_chunks WHERE id='local-encrypted'",
+            &[],
+        )
+        .await
+        .expect("read local-encrypted plaintext-search row");
+    assert!(raw.get::<_, bool>(0));
+    assert!(raw.get::<_, bool>(1));
+    assert!(raw.get::<_, String>(2).starts_with("tce1:"));
 
     std::env::remove_var("TANDEM_MEMORY_DECRYPT_PROVIDER");
     std::env::remove_var("TANDEM_MEMORY_LOCAL_KEY_FILE");
