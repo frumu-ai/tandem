@@ -1,4 +1,5 @@
 include!("manager_parts/part01.rs");
+include!("manager_parts/part01_support.rs");
 include!("manager_parts/part01_store.rs");
 include!("manager_parts/part01_knowledge.rs");
 include!("manager_parts/part02.rs");
