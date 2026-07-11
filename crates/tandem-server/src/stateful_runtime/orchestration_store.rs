@@ -367,6 +367,10 @@ impl OrchestrationStateStore {
                         imported_at_ms,
                     ],
                 )?;
+                transaction.execute(
+                    "DELETE FROM legacy_handoff_quarantine WHERE source_path = ?1",
+                    [path.to_string_lossy().as_ref()],
+                )?;
             }
             for quarantine in &handoffs.quarantined {
                 transaction.execute(

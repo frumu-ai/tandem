@@ -801,6 +801,15 @@ mod tests {
             1
         );
         assert!(corrupt.exists());
+        let mut recovered = handoff();
+        recovered.handoff_id = "handoff-2".to_string();
+        std::fs::write(&corrupt, serde_json::to_vec(&recovered).unwrap()).unwrap();
+        assert_eq!(
+            store
+                .import_legacy_handoff_directory(&handoff_root, 101)
+                .unwrap(),
+            2
+        );
         store
             .with_connection(|connection| {
                 let handoffs: u64 =
@@ -817,7 +826,7 @@ mod tests {
                     [],
                     |row| row.get(0),
                 )?;
-                assert_eq!((handoffs, quarantined, source_count), (1, 1, 2));
+                assert_eq!((handoffs, quarantined, source_count), (2, 0, 2));
                 Ok(())
             })
             .unwrap();
