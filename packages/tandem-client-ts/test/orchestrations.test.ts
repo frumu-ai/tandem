@@ -60,11 +60,11 @@ describe("canonical draft-v0 orchestration contracts", () => {
         root_node_id: "build",
         expected_updated_at_ms: 8,
       });
-      await api.archive("orch/one");
+      await api.archive("orch/one", 8);
       await api.validate("orch/one");
       await api.staleReferences("orch/one");
       await api.refreshReferences("orch/one", 9);
-      await api.publish("orch/one");
+      await api.publish("orch/one", 9);
       await api.listVersions("orch/one");
       await api.getVersion("orch/one", 2);
       await api.dryRun("orch/one", {
@@ -90,12 +90,26 @@ describe("canonical draft-v0 orchestration contracts", () => {
         expected_updated_at_ms: 8,
       });
       expect(JSON.parse(String(calls[4]?.init?.body))).toEqual({ expected_updated_at_ms: 9 });
+      expect(JSON.parse(String(calls[1]?.init?.body))).toEqual({ expected_updated_at_ms: 8 });
+      expect(JSON.parse(String(calls[5]?.init?.body))).toEqual({ expected_updated_at_ms: 9 });
       expect(JSON.parse(String(calls[8]?.init?.body))).toEqual({
         from_node_id: "build",
         transition_key: "ready",
         artifact_type: "release",
         version: 2,
       });
+    } finally { restore(); }
+  });
+
+  it("sends an empty revision object for backward-compatible draft actions", async () => {
+    const calls: FetchCall[] = [];
+    const restore = installFetch(calls);
+    try {
+      const api = client().orchestrations;
+      await api.archive("orch/legacy");
+      await api.publish("orch/legacy");
+
+      expect(calls.map(({ init }) => JSON.parse(String(init?.body)))).toEqual([{}, {}]);
     } finally { restore(); }
   });
 });

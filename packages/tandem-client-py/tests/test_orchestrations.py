@@ -146,11 +146,13 @@ async def test_canonical_draft_v0_routes_and_aggregate_contracts() -> None:
         refs = await client.orchestrations.stale_references("goal/loop")
         validation = await client.orchestrations.validate("goal/loop")
         refresh = await client.orchestrations.refresh_references("goal/loop", expected_updated_at_ms=150)
-        release = await client.orchestrations.publish("goal/loop")
+        release = await client.orchestrations.publish("goal/loop", expected_updated_at_ms=150)
+        await client.orchestrations.publish("goal/loop")
         preview = await client.orchestrations.dry_run(
             "goal/loop", from_node_id="start", transition_key="complete", artifact_type="report", version=1
         )
-        archived = await client.orchestrations.archive("goal/loop")
+        archived = await client.orchestrations.archive("goal/loop", expected_updated_at_ms=150)
+        await client.orchestrations.archive("goal/loop")
 
     assert listed.orchestrations[0].draft.status == "draft"  # type: ignore[union-attr]
     assert created.version == 0
@@ -164,6 +166,10 @@ async def test_canonical_draft_v0_routes_and_aggregate_contracts() -> None:
     assert release.version == 1
     assert preview.target.kind["kind"] == "terminal"  # type: ignore[union-attr]
     assert archived.status == "archived"
+    assert publish_route.calls[0].request.content == b'{"expected_updated_at_ms":150}'
+    assert publish_route.calls[1].request.content == b'{}'
+    assert archive_route.calls[0].request.content == b'{"expected_updated_at_ms":150}'
+    assert archive_route.calls[1].request.content == b'{}'
 
     create_body = json.loads(create_route.calls[0].request.content)
     assert "status" not in create_body and "version" not in create_body

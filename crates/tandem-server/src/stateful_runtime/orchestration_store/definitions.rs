@@ -295,7 +295,11 @@ impl OrchestrationStateStore {
     /// validated the graph and refreshed referenced definition hashes; this
     /// method only guards the version sequence inside one transaction so two
     /// concurrent publishes cannot both claim the same version number.
-    pub fn publish_orchestration_draft(&self, published: &OrchestrationSpec) -> anyhow::Result<()> {
+    pub fn publish_orchestration_draft(
+        &self,
+        published: &OrchestrationSpec,
+        expected_draft_updated_at_ms: Option<u64>,
+    ) -> anyhow::Result<()> {
         if published.status != OrchestrationStatus::Published {
             bail!("publishing requires a spec with published status");
         }
@@ -306,6 +310,33 @@ impl OrchestrationStateStore {
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            if let Some(expected) = expected_draft_updated_at_ms {
+                let stored: Option<u64> = transaction
+                    .query_row(
+                        "SELECT updated_at_ms FROM orchestration_specs
+                         WHERE orchestration_id = ?1 AND version = ?2
+                           AND org_id = ?3 AND workspace_id = ?4 AND deployment_key = ?5",
+                        params![
+                            published.orchestration_id,
+                            ORCHESTRATION_DRAFT_VERSION,
+                            published.tenant_context.org_id,
+                            published.tenant_context.workspace_id,
+                            published
+                                .tenant_context
+                                .deployment_id
+                                .as_deref()
+                                .unwrap_or(""),
+                        ],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if stored != Some(expected) {
+                    bail!(
+                        "{DRAFT_CONCURRENCY_CONFLICT}: stored updated_at_ms {:?}, expected {expected}",
+                        stored
+                    );
+                }
+            }
             let latest: Option<u64> = transaction
                 .query_row(
                     "SELECT MAX(version) FROM orchestration_specs
@@ -366,6 +397,7 @@ impl OrchestrationStateStore {
         &self,
         tenant: &TenantContext,
         orchestration_id: &str,
+        expected_updated_at_ms: Option<u64>,
         now_ms: u64,
     ) -> anyhow::Result<OrchestrationSpec> {
         let mut draft = self
@@ -376,6 +408,13 @@ impl OrchestrationStateStore {
             && draft.tenant_context.deployment_id == tenant.deployment_id;
         if !same_scope {
             bail!("orchestration is outside the caller tenant scope");
+        }
+        if expected_updated_at_ms.is_some_and(|expected| expected != draft.updated_at_ms) {
+            bail!(
+                "{DRAFT_CONCURRENCY_CONFLICT}: stored updated_at_ms {}, expected {}",
+                draft.updated_at_ms,
+                expected_updated_at_ms.unwrap_or_default()
+            );
         }
         draft.status = OrchestrationStatus::Archived;
         let expected = draft.updated_at_ms;

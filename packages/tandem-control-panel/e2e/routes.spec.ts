@@ -14,6 +14,7 @@ const routeIdentity: Record<string, string> = {
   chat: "Chat",
   planner: "Planner",
   workflows: "Workflows",
+  orchestrations: "Orchestrations",
   marketplace: "Marketplace",
   studio: "Studio",
   automations: "Automations",
@@ -39,7 +40,10 @@ const routeIdentity: Record<string, string> = {
 
 const canonicalRoutes = registeredRoutes.filter((routeId) => !(routeId in legacyRedirects));
 
-async function expectVisibleRouteIdentity(page: Parameters<typeof waitForRoute>[0], routeId: string) {
+async function expectVisibleRouteIdentity(
+  page: Parameters<typeof waitForRoute>[0],
+  routeId: string
+) {
   await expect(
     page
       .locator("main")
@@ -83,13 +87,19 @@ test("computed application typography uses no more than eight font sizes", async
     await page.goto(`/#/${routeId}`);
     await waitForRoute(page, routeId);
     const routeSamples = await page.locator("#app").evaluate((app, currentRoute) => {
-      const excluded = "pre, code, .prose, .prose *, .markdown, .markdown *, [class*='markdown'], [class*='markdown'] *";
+      const excluded =
+        "pre, code, .prose, .prose *, .markdown, .markdown *, [class*='markdown'], [class*='markdown'] *";
       const samples: Record<string, string[]> = {};
       for (const element of app.querySelectorAll<HTMLElement>("*")) {
         if (element.matches(excluded) || !element.textContent?.trim()) continue;
         const rect = element.getBoundingClientRect();
         const style = getComputedStyle(element);
-        if (!rect.width || !rect.height || style.display === "none" || style.visibility === "hidden") {
+        if (
+          !rect.width ||
+          !rect.height ||
+          style.display === "none" ||
+          style.visibility === "hidden"
+        ) {
           continue;
         }
         const hasDirectText = [...element.childNodes].some(
@@ -99,7 +109,9 @@ test("computed application typography uses no more than eight font sizes", async
         const descriptor = [
           `#/${currentRoute}`,
           element.tagName.toLowerCase(),
-          element.className ? `.${String(element.className).trim().split(/\s+/).slice(0, 3).join(".")}` : "",
+          element.className
+            ? `.${String(element.className).trim().split(/\s+/).slice(0, 3).join(".")}`
+            : "",
           JSON.stringify(element.textContent.trim().replace(/\s+/g, " ").slice(0, 80)),
         ].join(" ");
         (samples[style.fontSize] ||= []).push(descriptor);

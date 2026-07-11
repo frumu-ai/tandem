@@ -25,6 +25,7 @@ export type IdentityInfo = {
 export type NavigationLockState = {
   title: string;
   message: string;
+  showOverlay?: boolean;
 };
 
 export type NavigationPreferences = {

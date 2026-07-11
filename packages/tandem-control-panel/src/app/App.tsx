@@ -356,7 +356,7 @@ function AppBody() {
 
   useEffect(() => {
     if (!navigationLock) return;
-    if (route === "automations") return;
+    if (route === "automations" || route === "orchestrations") return;
     setNavigationLock(null);
   }, [navigationLock, route]);
 

@@ -13,6 +13,7 @@ const primaryRoutes = [
   "planner",
   "studio",
   "automations",
+  "orchestrations",
 ] as const;
 
 const wcagTags = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"];
@@ -45,11 +46,12 @@ test("primary navigation and page controls are keyboard reachable", async ({ pag
   for (let attempt = 0; attempt < 30 && focusTrail.length < 5; attempt += 1) {
     const focused = page.locator(":focus");
     if (await focused.isVisible().catch(() => false)) {
-      const label = await focused.evaluate((element) =>
-        element.getAttribute("aria-label") ||
-        element.getAttribute("title") ||
-        element.textContent?.trim() ||
-        element.tagName
+      const label = await focused.evaluate(
+        (element) =>
+          element.getAttribute("aria-label") ||
+          element.getAttribute("title") ||
+          element.textContent?.trim() ||
+          element.tagName
       );
       expect(label).toBeTruthy();
       focusTrail.push(String(label));

@@ -217,18 +217,74 @@ async fn draft_lifecycle_enforces_optimistic_concurrency() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(updated["orchestration"]["name"], json!("Renamed"));
+    let updated_token = updated["updated_at_ms"].as_u64().expect("updated token");
 
     // List surfaces the draft; archive retires it.
     let (status, listed) = dispatch(&app, local_request("GET", "/orchestrations", None)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(listed["count"], json!(1));
+    let (status, conflict) = dispatch(
+        &app,
+        local_request(
+            "POST",
+            "/orchestrations/orch-goals/archive",
+            Some(json!({"expected_updated_at_ms": token})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
     let (status, archived) = dispatch(
         &app,
-        local_request("POST", "/orchestrations/orch-goals/archive", None),
+        local_request(
+            "POST",
+            "/orchestrations/orch-goals/archive",
+            Some(json!({"expected_updated_at_ms": updated_token})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(archived["status"], json!("archived"));
+}
+
+#[tokio::test]
+async fn draft_actions_accept_legacy_empty_and_null_json_bodies() {
+    let state = test_state().await;
+    let app = app_router(state.clone());
+    let (planner_hash, executor_hash) = seed_workflows(&state).await;
+    let (status, _) = dispatch(
+        &app,
+        local_request(
+            "POST",
+            "/orchestrations",
+            Some(draft_payload(&planner_hash, &executor_hash)),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let empty_json_request = Request::builder()
+        .method("POST")
+        .uri("/orchestrations/orch-goals/publish")
+        .header("x-tandem-org-id", "local")
+        .header("x-tandem-workspace-id", "local")
+        .header("x-tandem-actor-id", "operator")
+        .header("content-type", "application/json")
+        .body(Body::empty())
+        .expect("legacy empty JSON request");
+    let (status, body) = dispatch(&app, empty_json_request).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let null_json_request = Request::builder()
+        .method("POST")
+        .uri("/orchestrations/orch-goals/archive")
+        .header("x-tandem-org-id", "local")
+        .header("x-tandem-workspace-id", "local")
+        .header("x-tandem-actor-id", "operator")
+        .header("content-type", "application/json")
+        .body(Body::from("null"))
+        .expect("legacy null JSON request");
+    let (status, body) = dispatch(&app, null_json_request).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 #[tokio::test]
@@ -317,9 +373,26 @@ async fn stale_references_block_publish_until_refreshed() {
     .await;
     assert_eq!(status, StatusCode::OK, "{refreshed}");
     assert_eq!(refreshed["refreshed_node_ids"], json!(["plan"]));
+    let refreshed_token = refreshed["orchestration"]["updated_at_ms"]
+        .as_u64()
+        .expect("refreshed draft token");
+    let (status, conflict) = dispatch(
+        &app,
+        local_request(
+            "POST",
+            "/orchestrations/orch-goals/publish",
+            Some(json!({"expected_updated_at_ms": token})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
     let (status, published) = dispatch(
         &app,
-        local_request("POST", "/orchestrations/orch-goals/publish", None),
+        local_request(
+            "POST",
+            "/orchestrations/orch-goals/publish",
+            Some(json!({"expected_updated_at_ms": refreshed_token})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{published}");
