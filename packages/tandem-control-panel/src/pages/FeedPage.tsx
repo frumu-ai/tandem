@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useEngineStream } from "../features/stream/useEngineStream";
 import { api } from "../lib/api";
-import { AnimatedPage, DetailDrawer, FilterChip, PanelCard, Toolbar } from "../ui/index.tsx";
+import { AnimatedPage, DetailDrawer, FilterChip, PanelCard, SearchInput, Toolbar } from "../ui/index.tsx";
 import { EmptyState } from "./ui";
 import { LazyJson } from "../features/automations/LazyJson";
 import type { AppPageProps } from "./pageTypes";
@@ -158,7 +158,7 @@ export function FeedPage({ client, toast, navigate }: AppPageProps) {
         }
       >
         <Toolbar className="mb-3">
-          <input
+          <SearchInput
             className="tcp-input min-w-[220px] flex-1"
             value={filter}
             onInput={(e) => setFilter((e.target as HTMLInputElement).value)}

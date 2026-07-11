@@ -7,6 +7,7 @@ import type { AppPageProps } from "./pageTypes";
 import agentCatalog from "../generated/agent-catalog.json";
 import { detectBrowserTimezone } from "../features/automations/timezone";
 import { Icon } from "../ui/Icon";
+import { SearchInput } from "../ui/index.tsx";
 
 type AgentCatalogCategory = {
   id: string;
@@ -448,8 +449,9 @@ export function TeamsPage({ client, toast, navigate }: AppPageProps) {
       >
         <div className="grid gap-3">
           <div className="grid gap-2 md:grid-cols-[1fr_auto]">
-            <input
+            <SearchInput
               className="tcp-input"
+              aria-label="Search agents"
               placeholder="Search agent name, category, tag, or path"
               value={catalogQuery}
               onInput={(event) => setCatalogQuery((event.target as HTMLInputElement).value)}

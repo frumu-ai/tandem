@@ -30,6 +30,7 @@ import { EmptyState } from "./ui";
 import type { AppPageProps } from "./pageTypes";
 import type { NavigationVisibility } from "../app/navigation";
 import type { RouteId } from "../app/routes";
+import type { IconName } from "../ui/Icon";
 import { buildPlannerProviderOptions } from "../features/planner/plannerShared";
 
 type BrowserBlockingIssue = {
@@ -3486,7 +3487,7 @@ export function useSettingsPageController({
     return rows;
   }, [worktreeCleanupResult]);
 
-  const sectionTabs: Array<{ id: SettingsSection; label: string; icon: string }> = [
+  const sectionTabs: Array<{ id: SettingsSection; label: string; icon: IconName }> = [
     { id: "install", label: "Install", icon: "clipboard-list" },
     { id: "navigation", label: "Navigation", icon: "panel-left" },
     { id: "providers", label: "Providers", icon: "cpu" },
@@ -3556,7 +3557,7 @@ export function useSettingsPageController({
     return {
       routeId,
       label,
-      icon,
+      icon: icon as IconName,
       enabled,
       defaultVisible,
       description:

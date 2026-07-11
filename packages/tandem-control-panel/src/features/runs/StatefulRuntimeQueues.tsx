@@ -41,7 +41,7 @@ function StatTiles({ items }: { items: Array<{ key: string; label: string; value
 
 function RunButton({ runId, onOpenRun }: { runId: string; onOpenRun: (runId: string) => void }) {
   return runId ? (
-    <button type="button" className="tcp-btn h-7 px-2 text-xs" onClick={() => onOpenRun(runId)} title="Open run">
+    <button type="button" aria-label="Open run" className="tcp-btn h-7 px-2 text-xs" onClick={() => onOpenRun(runId)} title="Open run">
       <Icon name="external-link" />
     </button>
   ) : null;
@@ -177,6 +177,7 @@ export function WebhookInboxView({ api, navigate, filters, onFiltersChange, onOp
                         <RunButton runId={row.runId} onOpenRun={onOpenRun} />
                         <button
                           type="button"
+                          aria-label="Open trigger manager"
                           className="tcp-btn h-7 px-2 text-xs"
                           onClick={() => navigate("automations")}
                           title="Open trigger manager"
@@ -305,6 +306,7 @@ export function ApprovalWaitsView({ api, navigate, filters, onFiltersChange, onO
                         <RunButton runId={row.runId} onOpenRun={onOpenRun} />
                         <button
                           type="button"
+                          aria-label="Open approvals inbox"
                           className="tcp-btn h-7 px-2 text-xs"
                           onClick={() => navigate("approvals")}
                           title="Open approvals inbox"

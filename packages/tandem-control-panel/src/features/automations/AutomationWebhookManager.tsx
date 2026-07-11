@@ -578,6 +578,7 @@ export function AutomationWebhookManager({
             </code>
             <button
               type="button"
+              aria-label="Copy revealed webhook secret"
               className="tcp-btn h-8 w-8 px-0"
               onClick={() =>
                 void copyText(revealedSecret.secret).then(
@@ -866,6 +867,7 @@ export function AutomationWebhookManager({
                   </code>
                   <button
                     type="button"
+                    aria-label="Copy callback URL"
                     className="tcp-btn h-8 w-8 px-0"
                     onClick={() => void copyCallback(selectedTrigger)}
                   >
@@ -938,6 +940,7 @@ export function AutomationWebhookManager({
                       </code>
                       <button
                         type="button"
+                        aria-label="Copy callback URL"
                         className="tcp-btn h-8 w-8 px-0"
                         onClick={() => void copyCallback(selectedTrigger)}
                       >

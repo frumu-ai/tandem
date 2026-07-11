@@ -1,6 +1,6 @@
-import { Badge, PanelCard } from "../ui/index.tsx";
+import { Badge, PanelCard, SearchInput } from "../ui/index.tsx";
 import type { GithubRepoRef, TaskSourceType } from "./CodingWorkflowsHelpers";
-import { Icon } from "../ui/Icon";
+import { Icon, type IconName } from "../ui/Icon";
 
 type LinearCatalog = {
   ok?: boolean;
@@ -19,7 +19,7 @@ function textValue(value: unknown): string {
   return String(value || "").trim();
 }
 
-function linearProjectIcon(project: LinearProject): string {
+function linearProjectIcon(project: LinearProject): IconName {
   const icon = textValue(project?.icon).toLowerCase();
   const name = textValue(project?.name).toLowerCase();
   if (icon === "server" || name.includes("hosted")) return "server";
@@ -545,8 +545,9 @@ export function CodingWorkflowsRegisterProjectPanel({
                 }
               />
             </div>
-            <input
+            <SearchInput
               className="tcp-input"
+              aria-label="Search Linear tasks"
               placeholder="Linear search query (optional)"
               value={taskSourceLinearQuery}
               onInput={(event) =>

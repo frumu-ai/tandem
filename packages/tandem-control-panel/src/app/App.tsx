@@ -30,7 +30,7 @@ import { useCapabilities, useSwarmStatus, useSystemHealth } from "../features/sy
 import { PanelCard, StatusPulse } from "../ui/index.tsx";
 import type { RouteId } from "./routes";
 import type { NavigationLockState } from "../pages/pageTypes";
-import { Icon } from "../ui/Icon";
+import { Icon, isIconName, type IconName } from "../ui/Icon";
 
 const TOKEN_STORAGE_KEY = "tandem_control_panel_token";
 const PALETTE_HIDDEN_ROUTE_IDS = new Set<RouteId>([
@@ -537,7 +537,14 @@ function AppBody() {
     setNavVisibility(getDefaultNavigationVisibility(acaMode));
   }, [acaMode]);
 
-  const navRoutes = useMemo(() => visibleNavigationRoutes(navVisibility), [navVisibility]);
+  const navRoutes = useMemo(
+    () =>
+      visibleNavigationRoutes(navVisibility).map(([id, label, icon]) => {
+        if (!isIconName(icon)) throw new Error(`Unknown navigation icon: ${icon}`);
+        return [id, label, icon] as [string, string, IconName];
+      }),
+    [navVisibility]
+  );
   const navigation = useMemo(
     () => ({
       acaMode,
@@ -724,7 +731,7 @@ function AppBody() {
         identity={identity}
         currentRoute={currentRoute}
         providerLocked={providerLocked}
-        navRoutes={navRoutes as Array<[string, string, string]>}
+        navRoutes={navRoutes}
         onNavigate={navigate}
         onPaletteOpen={() => setPaletteOpen(true)}
         onThemeCycle={() => setTheme(cycleThemeId(themeId))}

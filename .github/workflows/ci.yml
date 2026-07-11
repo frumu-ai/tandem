@@ -75,6 +75,9 @@ jobs:
       - name: Install control panel dependencies
         run: pnpm -C packages/tandem-control-panel install --frozen-lockfile
 
+      - name: Install Playwright Chromium
+        run: pnpm -C packages/tandem-control-panel exec playwright install --with-deps chromium
+
       - name: Typecheck control panel
         run: pnpm -C packages/tandem-control-panel typecheck
 
@@ -83,6 +86,27 @@ jobs:
 
       - name: Run control panel contract tests
         run: pnpm -C packages/tandem-control-panel test
+
+      - name: Run control panel Playwright and accessibility tests
+        run: pnpm -C packages/tandem-control-panel playwright test
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: control-panel-playwright-report
+          path: packages/tandem-control-panel/playwright-report
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload Playwright failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: control-panel-playwright-failures
+          path: packages/tandem-control-panel/test-results
+          if-no-files-found: ignore
+          retention-days: 14
 
   lint-backend:
     name: Lint Backend

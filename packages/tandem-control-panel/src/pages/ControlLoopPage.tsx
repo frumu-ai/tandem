@@ -5,20 +5,21 @@ import {
   Badge,
   LoadingState,
   PanelCard,
+  SearchInput,
   StatusPulse,
   Toolbar,
 } from "../ui/index.tsx";
 import { RunTimeline, useRunTimeline } from "../features/runs/RunTimeline";
 import { EmptyState } from "./ui";
 import type { AppPageProps } from "./pageTypes";
-import { Icon } from "../ui/Icon";
+import { Icon, type IconName } from "../ui/Icon";
 
 type EvidenceTone = "ok" | "warn" | "info" | "ghost" | "err";
 
 type EvidenceStep = {
   id: string;
   label: string;
-  icon: string;
+  icon: IconName;
   tone: EvidenceTone;
   headline: string;
   detail: string;
@@ -736,8 +737,9 @@ export function ControlLoopPage({ api, client, navigate, toast }: AppPageProps) 
             onInput={(event) => setSelectedRunId((event.target as HTMLInputElement).value)}
             placeholder="Run id"
           />
-          <input
+          <SearchInput
             className="tcp-input min-w-0 flex-1"
+            aria-label="Filter recent runs"
             value={query}
             onInput={(event) => setQuery((event.target as HTMLInputElement).value)}
             placeholder="Filter recent runs"
@@ -1059,7 +1061,7 @@ function EvidenceRow({
   meta,
   tone,
 }: {
-  icon: string;
+  icon: IconName;
   title: string;
   subtitle: string;
   meta: string;

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Badge, PanelCard } from "../../ui/index.tsx";
+import { Badge, PanelCard, SearchInput } from "../../ui/index.tsx";
 import { PlannerMetricGrid, PlannerSubsection } from "./plannerPrimitives";
 import { listNamedPlannerDrafts, listPlannerDraftHistory } from "./plannerDraftStorage";
 import { Icon } from "../../ui/Icon";
@@ -97,8 +97,9 @@ export function PlannerDraftList({
           </Badge>
         </div>
 
-        <input
+        <SearchInput
           className="tcp-input"
+          aria-label="Filter saved drafts"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Filter saved drafts and autosaves"

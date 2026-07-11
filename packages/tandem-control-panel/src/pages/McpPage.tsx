@@ -14,6 +14,7 @@ import {
 import type { AppPageProps } from "./pageTypes";
 import { PageCard } from "./ui";
 import { Icon } from "../ui/Icon";
+import { SearchInput } from "../ui/index.tsx";
 
 type McpServer = {
   name: string;
@@ -955,8 +956,9 @@ export function McpPage({ client, api, toast, navigate }: AppPageProps) {
               add a provider definition.
             </p>
             <div className="mb-3 grid gap-2 md:grid-cols-[1fr_auto]">
-              <input
+              <SearchInput
                 className="tcp-input"
+                aria-label="Search MCP providers"
                 placeholder="Search provider name, slug, or URL"
                 value={catalogSearch}
                 onInput={(event) => setCatalogSearch((event.target as HTMLInputElement).value)}

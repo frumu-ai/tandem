@@ -50,7 +50,7 @@ import {
   runUpdatedAt,
   toArray,
 } from "./CodingWorkflowsHelpers";
-import { Icon } from "../ui/Icon";
+import { Icon, type IconName } from "../ui/Icon";
 
 const LINEAR_CATALOG_TIMEOUT_MS = 8_000;
 
@@ -637,7 +637,7 @@ export function CodingWorkflowsPage({
     const validIds = new Set(githubBoard.items.map((item: any) => String(item.id || "")));
     setSelectedGithubItemIds((current) => current.filter((id) => validIds.has(id)));
   }, [githubBoard.items]);
-  const tabs: Array<{ id: CodingTab; label: string; icon: string }> = [
+  const tabs: Array<{ id: CodingTab; label: string; icon: IconName }> = [
     { id: "overview", label: "Overview", icon: "layout-dashboard" },
     { id: "manual", label: "Launch", icon: "rocket" },
     { id: "board", label: "Intake", icon: "list-checks" },

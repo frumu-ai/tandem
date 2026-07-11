@@ -1,4 +1,5 @@
 import { Icon } from "../ui/Icon";
+import { SearchInput } from "../ui/index.tsx";
 type ProviderOption = {
   id: string;
   models: string[];
@@ -84,7 +85,8 @@ export function ProviderModelSelector({
           <Icon name="sparkles" />
           <span>{modelLabel}</span>
         </div>
-        <input
+        <SearchInput
+          aria-label="Filter models"
           className="tcp-input h-10 w-full"
           value={draft.model}
           onInput={(event) =>

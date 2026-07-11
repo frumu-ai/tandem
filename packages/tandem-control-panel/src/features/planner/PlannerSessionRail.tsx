@@ -83,6 +83,7 @@ export function PlannerSessionRail({
                 <div className="mt-2 flex flex-wrap gap-2">
                   <button
                     type="button"
+                    aria-label="Rename session"
                     className="tcp-btn h-7 px-2 tcp-text-caption"
                     onClick={() => onRenameSession(session.id)}
                     title="Rename session"
@@ -91,6 +92,7 @@ export function PlannerSessionRail({
                   </button>
                   <button
                     type="button"
+                    aria-label="Duplicate session"
                     className="tcp-btn h-7 px-2 tcp-text-caption"
                     onClick={() => onDuplicateSession(session.id)}
                     title="Duplicate session"
@@ -99,6 +101,7 @@ export function PlannerSessionRail({
                   </button>
                   <button
                     type="button"
+                    aria-label="Delete session"
                     className="tcp-btn h-7 px-2 tcp-text-caption"
                     onClick={() => onDeleteSession(session.id)}
                     title="Delete session"

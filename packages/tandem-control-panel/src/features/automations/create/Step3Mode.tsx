@@ -3,6 +3,7 @@ import { ProviderModelSelector } from "../../../components/ProviderModelSelector
 import { EmptyState } from "../../../pages/ui";
 import type { ExecutionProfile } from "../AutomationsRunHelpers";
 import { ExecutionProfileToggle } from "../ExecutionProfileToggle";
+import { SearchInput } from "../../../ui/index.tsx";
 
 type ExecutionMode = "single" | "team" | "swarm";
 type WizardExecutionProfile = "" | ExecutionProfile;
@@ -275,8 +276,9 @@ export function Step3Mode(props: Step3ModeProps) {
                 </button>
               </div>
               <div className="mb-2">
-                <input
+                <SearchInput
                   className="tcp-input"
+                  aria-label="Filter folders"
                   placeholder="Type to filter folders..."
                   value={workspaceBrowserSearch}
                   onInput={(e) =>

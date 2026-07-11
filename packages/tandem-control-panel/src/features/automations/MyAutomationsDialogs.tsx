@@ -15,7 +15,7 @@ import { HandoffPanel } from "./HandoffPanel";
 import { ExecutionProfileToggle } from "./ExecutionProfileToggle";
 import { WorkflowEditFlowMap } from "./WorkflowEditFlowMap";
 import { AutomationWebhookManager } from "./AutomationWebhookManager";
-import { Icon } from "../../ui/Icon";
+import { Icon, type IconName } from "../../ui/Icon";
 
 function normalizeMcpNamespaceSegment(raw: string) {
   let out = "";
@@ -343,14 +343,14 @@ export function AccordionSection({
   children,
   description = "",
   headerStyle = "",
-  icon = "",
+  icon,
 }: {
   title: string;
   defaultOpen?: boolean;
   children: any;
   description?: string;
   headerStyle?: string;
-  icon?: string;
+  icon?: IconName;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
@@ -520,7 +520,7 @@ export function WorkflowAutomationEditDialog({
               Update scheduling, model routing, MCP access, and the actual step prompts.
             </div>
           </div>
-          <button className="tcp-btn h-9 w-9 px-0" onClick={() => setWorkflowEditDraft(null)}>
+          <button aria-label="Close workflow editor" className="tcp-btn h-9 w-9 px-0" onClick={() => setWorkflowEditDraft(null)}>
             <Icon name="x" />
           </button>
         </div>

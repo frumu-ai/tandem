@@ -1512,6 +1512,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
             </button>
             <button
               type="button"
+              aria-label="Refresh sessions"
               className="tcp-btn h-8 px-2.5 text-xs"
               onClick={() => void refreshSessions()}
             >
@@ -1543,6 +1544,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
                 </button>
                 <button
                   type="button"
+                  aria-label="Delete session"
                   className="chat-session-del"
                   title="Delete session"
                   onClick={() => setDeleteConfirm({ id: session.id, title: session.title })}
@@ -1576,6 +1578,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
           <header className="chat-main-header shrink-0">
             <button
               type="button"
+              aria-label="Toggle sessions"
               className="chat-icon-btn h-8 w-8"
               title="Sessions"
               onClick={() => setSessionsOpen((prev) => !prev)}
@@ -1593,6 +1596,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
             ) : null}
             <button
               type="button"
+              aria-label="Open tools, approvals, and activity"
               className="chat-icon-btn h-8 w-8 ml-auto xl:hidden"
               title="Tools, approvals, and activity"
               onClick={() => setRailDrawerOpen(true)}
@@ -1731,6 +1735,7 @@ export function ChatPage({ client, api, toast, providerStatus, identity, navigat
                   <span className="chat-planner-nudge-hint">for this message</span>
                   <button
                     type="button"
+                    aria-label="Dismiss workflow suggestion"
                     className="chat-planner-nudge-dismiss"
                     title="Dismiss"
                     onClick={() => setWorkflowNudgeDismissedFor(workflowNudgePrompt)}

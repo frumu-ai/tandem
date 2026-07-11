@@ -23,7 +23,7 @@
     --color-error: #ef4444;
     --color-text: #f8fafc;
     --color-text-muted: #94a3b8;
-    --color-text-subtle: #64748b;
+    --color-text-subtle: #8795aa;
     --color-glass: rgba(18, 18, 26, 0.8);
     --color-glass-border: rgba(255, 255, 255, 0.1);
     --font-sans: "Inter", system-ui, -apple-system, sans-serif;
@@ -31,8 +31,15 @@
     --font-mono:
       "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
     --radius: 0px;
-    --font-size-caption: 11px;
-    --font-size-micro: 10px;
+    /* Keep these eight tokens aligned with tailwind.config.js. */
+    --font-size-micro: 0.625rem;
+    --font-size-caption: 0.6875rem;
+    --font-size-xs: 0.75rem;
+    --font-size-sm: 0.875rem;
+    --font-size-base: 1rem;
+    --font-size-lg: 1.125rem;
+    --font-size-xl: 1.5rem;
+    --font-size-2xl: 2rem;
     --border-width: 1px;
     --border-width-strong: 2px;
     --tcp-hover-border-primary: color-mix(in srgb, var(--color-primary) 42%, transparent);
@@ -257,7 +264,7 @@
   .tcp-context-section-label,
   .tcp-page-eyebrow {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--font-size-caption);
     line-height: 1;
     letter-spacing: 0.18em;
     text-transform: uppercase;
@@ -384,7 +391,7 @@
   .tcp-main-title,
   .tcp-page-title {
     font-family: var(--font-display);
-    font-size: clamp(1.75rem, 3vw, 2.7rem);
+    font-size: var(--font-size-2xl);
     line-height: 1;
     letter-spacing: -0.03em;
     color: var(--color-text);
@@ -404,7 +411,7 @@
     min-height: 2rem;
     border-radius: 9999px;
     padding: 0.34rem 0.72rem;
-    font-size: 0.72rem;
+    font-size: var(--font-size-caption);
     font-weight: 700;
     letter-spacing: 0.02em;
     border: 1px solid color-mix(in srgb, var(--color-border-subtle) 88%, transparent);
@@ -468,7 +475,7 @@
     min-height: 2rem;
     border-radius: 9999px;
     padding: 0.34rem 0.72rem;
-    font-size: 0.72rem;
+    font-size: var(--font-size-caption);
     font-weight: 800;
     letter-spacing: 0.02em;
     color: color-mix(in srgb, var(--color-warning) 70%, white 30%);
@@ -557,7 +564,7 @@
     gap: 0.45rem;
     border-radius: 9999px;
     padding: 0.34rem 0.62rem;
-    font-size: 0.72rem;
+    font-size: var(--font-size-caption);
     font-weight: 600;
     letter-spacing: 0.02em;
     border: 1px solid color-mix(in srgb, var(--color-border-subtle) 88%, transparent);
@@ -646,7 +653,7 @@
   }
 
   .tcp-btn {
-    @apply inline-flex h-9 items-center justify-center gap-1.5 rounded-none px-3.5 text-[13px] font-semibold leading-none shadow-soft transition-all duration-150 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex h-9 items-center justify-center gap-1.5 rounded-none px-3.5 text-sm font-semibold leading-none shadow-soft transition-all duration-150 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50;
     border: 1px solid color-mix(in srgb, var(--color-border-subtle) 92%, transparent);
     background: color-mix(in srgb, var(--color-surface-elevated) 94%, #000 6%);
     color: var(--color-text);
@@ -825,7 +832,7 @@
 
   .tcp-empty-state-title {
     font-family: var(--font-display);
-    font-size: 1.05rem;
+    font-size: var(--font-size-base);
     color: var(--color-text);
   }
 
@@ -836,7 +843,7 @@
     min-height: 2rem;
     border-radius: 0;
     padding: 0.35rem 0.82rem;
-    font-size: 0.78rem;
+    font-size: var(--font-size-xs);
     color: var(--color-text-muted);
     border: 1px solid color-mix(in srgb, var(--color-border-subtle) 88%, transparent);
     background: color-mix(in srgb, var(--color-surface-elevated) 90%, #000 10%);
@@ -992,7 +999,7 @@
     gap: 0.35rem;
     border-radius: 9999px;
     padding: 0.35rem 0.62rem;
-    font-size: 0.72rem;
+    font-size: var(--font-size-caption);
     font-weight: 700;
     color: #101010;
     background: linear-gradient(
@@ -1150,7 +1157,8 @@
 /* lucide renders `loader-circle` as <svg class="lucide lucide-loader-circle">.
    Spin every loader icon globally so loading states animate without each call
    site having to add an animation class. */
-svg.lucide-loader-circle {
+svg.lucide-loader-circle,
+.tcp-spinner {
   animation: tcpSpin 0.8s linear infinite;
 }
 
@@ -1172,14 +1180,15 @@ svg.lucide-loader-circle {
 @media (prefers-reduced-motion: reduce) {
   .tcp-status-pulse-dot,
   .tcp-skeleton,
-  svg.lucide-loader-circle {
+  svg.lucide-loader-circle,
+  .tcp-spinner {
     animation: none !important;
   }
 }
 
 .tcp-markdown {
   color: var(--color-text-muted);
-  font-size: 13px;
+  font-size: var(--font-size-sm);
   line-height: 1.68;
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -1206,7 +1215,7 @@ svg.lucide-loader-circle {
 }
 
 .tcp-markdown h1 {
-  font-size: 1.08rem;
+  font-size: var(--font-size-base);
 }
 
 .tcp-confirm-overlay {
@@ -1322,14 +1331,14 @@ svg.lucide-loader-circle {
 .tcp-confirm-title {
   margin: 0;
   color: var(--color-text);
-  font-size: 1rem;
+  font-size: var(--font-size-base);
   font-weight: 650;
 }
 
 .tcp-confirm-message {
   margin: 0.65rem 0 0;
   color: var(--color-text-muted);
-  font-size: 0.9rem;
+  font-size: var(--font-size-sm);
   line-height: 1.45;
 }
 
@@ -1374,7 +1383,7 @@ svg.lucide-loader-circle {
 .tcp-doc-title {
   margin: 0;
   color: var(--color-text);
-  font-size: 0.95rem;
+  font-size: var(--font-size-base);
   font-weight: 650;
 }
 
@@ -1390,18 +1399,18 @@ svg.lucide-loader-circle {
   overflow: auto;
   background: color-mix(in srgb, var(--color-surface) 80%, #000 20%);
   color: var(--color-text-muted);
-  font-size: 12px;
+  font-size: var(--font-size-xs);
   line-height: 1.55;
   font-family: var(--font-mono);
   white-space: pre;
 }
 
 .tcp-markdown h2 {
-  font-size: 1rem;
+  font-size: var(--font-size-base);
 }
 
 .tcp-markdown h3 {
-  font-size: 0.95rem;
+  font-size: var(--font-size-base);
 }
 
 .tcp-markdown h1::after,
@@ -1474,7 +1483,7 @@ svg.lucide-loader-circle {
   border-radius: var(--radius);
   padding: 0.05rem 0.3rem;
   font-family: var(--font-mono);
-  font-size: 0.78rem;
+  font-size: var(--font-size-xs);
   color: var(--color-text);
 }
 
@@ -1505,7 +1514,7 @@ svg.lucide-loader-circle {
   background: transparent;
   border-radius: var(--radius);
   padding: 0;
-  font-size: 0.75rem;
+  font-size: var(--font-size-xs);
 }
 
 .tcp-markdown blockquote {
@@ -1543,7 +1552,7 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   align-items: center;
   gap: 0.38rem;
   color: rgb(148 163 184);
-  font-size: 0.78rem;
+  font-size: var(--font-size-xs);
   letter-spacing: 0.01em;
 }
 
@@ -1971,12 +1980,12 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
     white-space: pre-wrap;
     word-break: break-all;
     font-family: var(--font-mono);
-    font-size: 0.75rem;
+    font-size: var(--font-size-xs);
     color: var(--color-text);
   }
 
   .chat-msg-attachments {
-    font-size: 10px;
+    font-size: var(--font-size-micro);
     color: var(--color-text-muted);
   }
 
@@ -1984,7 +1993,7 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
     display: inline-flex;
     align-items: center;
     gap: 0.375rem;
-    font-size: 11px;
+    font-size: var(--font-size-caption);
     color: var(--color-text-muted);
   }
 
@@ -2015,22 +2024,22 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   }
 
   .chat-pack-event-title {
-    font-size: 11px;
+    font-size: var(--font-size-caption);
     color: var(--color-text);
   }
 
   .chat-pack-event-time {
-    font-size: 10px;
+    font-size: var(--font-size-micro);
     color: var(--color-text-subtle);
   }
 
   .chat-pack-event-summary {
-    font-size: 10px;
+    font-size: var(--font-size-micro);
     color: var(--color-text-subtle);
   }
 
   .chat-pack-event-error {
-    font-size: 10px;
+    font-size: var(--font-size-micro);
     color: var(--color-error);
   }
 
@@ -2232,7 +2241,7 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 0.76rem;
+  font-size: var(--font-size-xs);
   color: var(--color-text);
 }
 
@@ -2327,12 +2336,12 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
 }
 
 .dashboard-kpis strong {
-  font-size: 1rem;
+  font-size: var(--font-size-base);
   line-height: 1.2;
 }
 
 .dashboard-kpi-label {
-  font-size: 0.7rem;
+  font-size: var(--font-size-caption);
   color: var(--color-text-subtle);
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -2349,7 +2358,7 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   background: color-mix(in srgb, var(--color-surface-elevated) 84%, #000 16%);
   color: var(--color-text-muted);
   border-radius: 9999px;
-  font-size: 0.78rem;
+  font-size: var(--font-size-xs);
   line-height: 1;
   padding: 0.45rem 0.8rem;
   transition:
@@ -2383,7 +2392,7 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   border: 1px solid color-mix(in srgb, var(--color-border-subtle) 90%, transparent);
   border-radius: 9999px;
   padding: 0.28rem 0.65rem;
-  font-size: 0.72rem;
+  font-size: var(--font-size-caption);
   color: var(--color-text-subtle);
   background: color-mix(in srgb, var(--color-surface-elevated) 80%, #000 20%);
 }
@@ -2468,7 +2477,7 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   border-radius: 0;
   color: var(--color-text-muted);
   background: transparent;
-  font-size: 0.8rem;
+  font-size: var(--font-size-xs);
   font-weight: 600;
   line-height: 1;
   letter-spacing: 0.01em;
@@ -2519,7 +2528,7 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   background: color-mix(in srgb, var(--color-surface-elevated) 88%, #000 12%);
   color: var(--color-text-muted);
   border-radius: 9999px;
-  font-size: 0.75rem;
+  font-size: var(--font-size-xs);
   line-height: 1;
   padding: 0.34rem 0.7rem;
   transition:
@@ -2924,7 +2933,7 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
 }
 
 .fc .fc-toolbar-title {
-  font-size: 1.15rem;
+  font-size: var(--font-size-lg);
   font-weight: 700;
   color: var(--color-text);
 }
@@ -2950,7 +2959,7 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
 .fc .fc-button-primary:not(:disabled):active {
   background: color-mix(in srgb, var(--color-primary) 35%, transparent);
   border-color: color-mix(in srgb, var(--color-primary) 65%, transparent);
-  color: color-mix(in srgb, var(--color-primary) 70%, white 30%);
+  color: var(--color-text);
 }
 
 .fc .fc-scrollgrid,
@@ -3018,7 +3027,7 @@ html[data-theme="porcelain"] .tcp-markdown-ai {
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--color-surface-elevated) 86%, transparent);
   color: color-mix(in srgb, var(--color-primary) 82%, var(--color-text) 18%);
-  font-size: 0.7rem;
+  font-size: var(--font-size-caption);
   font-weight: 600;
   letter-spacing: 0.01em;
 }

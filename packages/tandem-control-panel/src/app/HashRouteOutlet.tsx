@@ -150,7 +150,11 @@ export function HashRouteOutlet({ routeId, pageProps }: { routeId: string; pageP
   const safeRoute = ensureRouteId(routeId);
   return (
     <LazyRouteErrorBoundary key={safeRoute}>
-      <Suspense fallback={<RouteFallback />}>{renderRoute(safeRoute, pageProps)}</Suspense>
+      <Suspense fallback={<RouteFallback />}>
+        <div className="contents" data-testid="route-outlet" data-route-id={safeRoute}>
+          {renderRoute(safeRoute, pageProps)}
+        </div>
+      </Suspense>
     </LazyRouteErrorBoundary>
   );
 }

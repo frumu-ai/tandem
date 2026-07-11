@@ -318,7 +318,7 @@ export function SignalLifecyclePanel({
         {items.map((item) => (
           <div key={item.label} className="min-w-0 rounded border border-white/10 bg-black/10 p-2">
             <div className="mb-1 flex items-center justify-between gap-2">
-              <span className="tcp-subtle text-[0.68rem] uppercase tracking-[0.14em]">
+              <span className="tcp-subtle text-caption uppercase tracking-[0.14em]">
                 {item.label}
               </span>
               <Badge tone={item.tone || "info"}>

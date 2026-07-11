@@ -36,6 +36,7 @@ import type {
   ScopeView,
 } from "./scopeInspectorPrimitives";
 import { Icon } from "../../ui/Icon";
+import { SearchInput } from "../../ui/index.tsx";
 
 export function ScopeInspector({
   planPackage,
@@ -1823,7 +1824,8 @@ export function ScopeInspector({
               <div className="mt-2 grid gap-2">
                 <div className="grid gap-1">
                   <label className="text-xs text-slate-400">Search overlap history</label>
-                  <input
+                  <SearchInput
+                    aria-label="Search overlap history"
                     className="tcp-input"
                     value={overlapHistorySearch}
                     onInput={(event) =>

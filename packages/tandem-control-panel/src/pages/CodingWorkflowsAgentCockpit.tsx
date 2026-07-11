@@ -6,7 +6,7 @@ import { EmptyState } from "./ui";
 import { formatStatus, runStatus, runTitle, runUpdatedAt, toArray } from "./CodingWorkflowsHelpers";
 import { subscribeSse } from "../services/sse.js";
 import { api } from "../lib/api.ts";
-import { Icon } from "../ui/Icon";
+import { Icon, type IconName } from "../ui/Icon";
 
 type ThreadEntry = {
   id: string;
@@ -865,12 +865,12 @@ export function CodingWorkflowsAgentCockpit({
               <Icon name="pause" />
               Pause / cancel run
             </button>
-            {[
+            {([
               ["play", "Resume", actionUnavailable],
               ["wrench", "Request repair", actionUnavailable],
               ["badge-check", "Approve merge", actionUnavailable],
               ["x-circle", "Block task", actionUnavailable],
-            ].map(([icon, label, reason]) => (
+            ] as Array<[IconName, string, string]>).map(([icon, label, reason]) => (
               <button key={label} type="button" className="tcp-btn" disabled title={reason}>
                 <Icon name={icon} />
                 {label}

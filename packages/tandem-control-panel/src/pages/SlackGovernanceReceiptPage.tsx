@@ -143,6 +143,7 @@ export function SlackGovernanceReceiptPage({ api, toast }: AppPageProps) {
           </p>
         </div>
         <select
+          aria-label="Select Slack governance receipt"
           className="tcp-input min-w-[18rem]"
           value={effectiveRunId}
           onChange={(event) => setSelectedContextRunId(event.currentTarget.value)}
@@ -177,6 +178,7 @@ export function SlackGovernanceReceiptPage({ api, toast }: AppPageProps) {
               actions={
                 <button
                   type="button"
+                  aria-label="Show export error"
                   className="tcp-btn-secondary"
                   onClick={() => toast("warn", safeString(evidenceQuery.data?.error, "Export unavailable"))}
                 >

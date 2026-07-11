@@ -778,6 +778,7 @@ export function WorkflowStudioInspectorPanels(props: InspectorPanelsProps) {
               </div>
               <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
                 <select
+                  aria-label="Existing agent template"
                   className="tcp-input text-sm"
                   value={selectedTemplateLoadId}
                   onInput={(event) =>

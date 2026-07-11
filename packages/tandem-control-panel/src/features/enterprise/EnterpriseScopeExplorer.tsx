@@ -208,7 +208,7 @@ function RecentRuns({
                 <span>{formatRunTimestamp(row.updatedAtMs)}</span>
               </div>
             </div>
-            <button type="button" className="tcp-btn h-7 px-2 text-xs" onClick={() => onOpenRun(row.id)}>
+            <button type="button" aria-label={`Open run ${row.id}`} className="tcp-btn h-7 px-2 text-xs" onClick={() => onOpenRun(row.id)}>
               <Icon name="external-link" />
             </button>
           </div>

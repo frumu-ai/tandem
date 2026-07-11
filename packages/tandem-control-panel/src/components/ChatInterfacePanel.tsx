@@ -2,7 +2,7 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import { renderMarkdownSafe } from "../lib/markdown";
-import { Icon } from "../ui/Icon";
+import { Icon, Spinner } from "../ui";
 
 export type ChatInterfaceMessage = {
   id: string;
@@ -238,10 +238,7 @@ export function ChatInterfacePanel({
       {statusTitle ? (
         <div className="mb-2 rounded-xl border border-sky-500/30 bg-sky-950/20 p-3 text-sm text-sky-100">
           <div className="flex items-center gap-2 font-medium">
-            <span
-              className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-sky-200 border-t-transparent"
-              aria-hidden="true"
-            ></span>
+            <Spinner className="text-sky-200" label={statusTitle} />
             {statusTitle}
           </div>
           {statusDetail ? <div className="mt-1 text-xs text-sky-200/80">{statusDetail}</div> : null}

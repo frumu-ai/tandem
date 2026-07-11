@@ -164,6 +164,10 @@ const ICONS = {
 
 export type IconName = keyof typeof ICONS;
 
+export function isIconName(value: unknown): value is IconName {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(ICONS, value);
+}
+
 const A11Y_PROPS = ["aria-label", "aria-labelledby", "title", "role"];
 
 export function Icon({
@@ -173,14 +177,13 @@ export function Icon({
   className = "",
   ...rest
 }: {
-  name: IconName | (string & {});
+  name: IconName;
   size?: number;
   strokeWidth?: number;
   className?: string;
   [key: string]: unknown;
 }) {
-  const node = ICONS[name as IconName];
-  if (!node) return <svg width={size} height={size} aria-hidden="true" />;
+  const node = ICONS[name];
   const hasA11yProp = Object.keys(rest).some((key) => A11Y_PROPS.includes(key));
   const classes = ["lucide", `lucide-${name}`, className].filter(Boolean).join(" ");
   return (
