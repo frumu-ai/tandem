@@ -247,8 +247,21 @@ fn cancel_waits(
         ));
         transaction.execute(
             "UPDATE automation_waits SET status = 'cancelled', wait_json = ?2,
-                updated_at_ms = ?3 WHERE wait_id = ?1",
-            params![wait_id, serde_json::to_string(&wait)?, now_ms],
+                updated_at_ms = ?3 WHERE wait_id = ?1 AND run_id = ?4
+                AND org_id = ?5 AND workspace_id = ?6 AND deployment_id = ?7",
+            params![
+                wait_id,
+                serde_json::to_string(&wait)?,
+                now_ms,
+                wait.run_id,
+                wait.scope.tenant_context.org_id,
+                wait.scope.tenant_context.workspace_id,
+                wait.scope
+                    .tenant_context
+                    .deployment_id
+                    .as_deref()
+                    .unwrap_or(""),
+            ],
         )?;
         ids.push(wait.wait_id);
     }
@@ -492,9 +505,9 @@ mod tests {
             .with_connection(|connection| {
                 connection.execute(
                     "INSERT INTO automation_waits
-                        (wait_id, goal_id, run_id, status, wait_json, updated_at_ms,
-                         org_id, workspace_id, deployment_id)
-                     VALUES (?1, 'goal-1', ?2, 'claimed', ?3, ?4, 'local', 'local', NULL)",
+                        (wait_id, goal_id, run_id, org_id, workspace_id, deployment_id,
+                         status, wait_json, updated_at_ms)
+                     VALUES (?1, 'goal-1', ?2, 'local', 'local', '', 'claimed', ?3, ?4)",
                     params![
                         wait.wait_id,
                         wait.run_id,

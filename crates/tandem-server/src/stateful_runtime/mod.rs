@@ -5,8 +5,10 @@ pub mod orchestration_store;
 mod outbox_reconcile;
 pub mod phases;
 pub mod reliability;
+mod reliability_retention;
 mod reliability_retry;
 pub mod scheduler;
+mod sqlite_compat;
 pub mod store;
 pub mod types;
 pub mod waits;
@@ -42,6 +44,7 @@ pub use reliability::{
     StatefulReliabilityStoragePaths, StatefulReliabilityStoreFile, StatefulToolEffectRecord,
     StatefulToolEffectStatus,
 };
+pub use reliability_retention::prune_stateful_reliability_store;
 pub use reliability_retry::{
     dead_letter_retry_dispatch_count, dead_letter_retry_dispatched_at_ms,
     dead_letter_superseded_by_success, mark_dead_letter_retry_dispatched,

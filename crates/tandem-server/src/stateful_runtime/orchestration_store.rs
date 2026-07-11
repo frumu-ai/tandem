@@ -834,7 +834,7 @@ fn initialize_schema(connection: &mut Connection) -> anyhow::Result<()> {
         version = 3;
     }
     if version == 3 {
-        connection.execute("UPDATE schema_metadata SET schema_version = 4", [])?;
+        migrate_schema_v3_to_v4(connection)?;
         version = 4;
     }
     if version != SCHEMA_VERSION {
@@ -895,6 +895,40 @@ fn migrate_schema_v2_to_v3(connection: &mut Connection) -> anyhow::Result<()> {
             quarantined_at_ms INTEGER NOT NULL
          );
          UPDATE schema_metadata SET schema_version = 3;
+         COMMIT;",
+    )?;
+    Ok(())
+}
+
+fn migrate_schema_v3_to_v4(connection: &mut Connection) -> anyhow::Result<()> {
+    // Some early development v2 stores reached v3 without the scope-column
+    // backfill. Normalize them before rebuilding the scoped wait identity.
+    add_scope_columns(connection, "automation_waits")?;
+    connection.execute_batch(
+        "BEGIN IMMEDIATE;
+         CREATE TABLE automation_waits_v4 (
+            wait_id TEXT NOT NULL,
+            goal_id TEXT,
+            run_id TEXT NOT NULL,
+            org_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            deployment_id TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL,
+            wait_json TEXT NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (wait_id, run_id, org_id, workspace_id, deployment_id)
+         );
+         INSERT INTO automation_waits_v4
+            (wait_id, goal_id, run_id, org_id, workspace_id, deployment_id,
+             status, wait_json, updated_at_ms)
+         SELECT wait_id, goal_id, COALESCE(run_id, ''), org_id, workspace_id,
+                COALESCE(deployment_id, ''), status, wait_json, updated_at_ms
+         FROM automation_waits;
+         DROP TABLE automation_waits;
+         ALTER TABLE automation_waits_v4 RENAME TO automation_waits;
+         CREATE INDEX idx_automation_waits_scope_status
+            ON automation_waits (org_id, workspace_id, status);
+         UPDATE schema_metadata SET schema_version = 4;
          COMMIT;",
     )?;
     Ok(())
