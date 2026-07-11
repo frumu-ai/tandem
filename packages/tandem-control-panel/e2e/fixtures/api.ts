@@ -14,7 +14,13 @@ type PendingHold = {
 
 export type ApiFixture = {
   holdNext: (path: string | RegExp, method?: string) => HeldRequest;
+  mockResponse: (path: string | RegExp, response: unknown, method?: string) => void;
   requests: string[];
+};
+
+type ResponseOverride = {
+  matches: (path: string, method: string) => boolean;
+  response: unknown;
 };
 
 const jsonHeaders = { "access-control-allow-origin": "*", "content-type": "application/json" };
@@ -55,7 +61,7 @@ function responseFor(path: string, method: string): unknown {
   }
   if (path === "/api/engine/provider") {
     return {
-      all: [{ id: "openai", name: "OpenAI", models: [{ id: "gpt-5-mini" }] }],
+      all: [{ id: "openai", name: "OpenAI", models: ["gpt-5-mini"] }],
       connected: ["openai"],
     };
   }
@@ -134,7 +140,12 @@ function responseFor(path: string, method: string): unknown {
   return method === "GET" ? {} : { ok: true };
 }
 
-async function fulfillApi(route: Route, pending: PendingHold[], requests: string[]) {
+async function fulfillApi(
+  route: Route,
+  pending: PendingHold[],
+  overrides: ResponseOverride[],
+  requests: string[]
+) {
   const request = route.request();
   const url = new URL(request.url());
   const path = url.pathname;
@@ -145,25 +156,35 @@ async function fulfillApi(route: Route, pending: PendingHold[], requests: string
     held.requested();
     await held.wait;
   }
+  const override = [...overrides].reverse().find((entry) => entry.matches(path, request.method()));
   await route.fulfill({
     status: 200,
     headers: jsonHeaders,
-    body: JSON.stringify(responseFor(path, request.method())),
+    body: JSON.stringify(override ? override.response : responseFor(path, request.method())),
   });
 }
 
 export const test = base.extend<{ apiFixture: ApiFixture }>({
   apiFixture: [async ({ page }, use) => {
     const pending: PendingHold[] = [];
+    const overrides: ResponseOverride[] = [];
     const requests: string[] = [];
     await page.addInitScript(() => {
       localStorage.clear();
       sessionStorage.clear();
       localStorage.setItem("tandem.navigationVisibility.v1", JSON.stringify({}));
     });
-    await page.route("**/api/**", (route) => fulfillApi(route, pending, requests));
+    await page.route("**/api/**", (route) => fulfillApi(route, pending, overrides, requests));
     await use({
       requests,
+      mockResponse(path, response, method) {
+        overrides.push({
+          matches: (candidate, candidateMethod) =>
+            (!method || candidateMethod === method) &&
+            (typeof path === "string" ? candidate === path : path.test(candidate)),
+          response,
+        });
+      },
       holdNext(path, method) {
         let releaseRequest!: () => void;
         let markRequested!: () => void;

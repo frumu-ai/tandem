@@ -1286,7 +1286,7 @@ export function AdvancedMissionBuilderPanel({
               ["workstreams", "workflow"],
               ["review", "shield-check"],
               ["compile", "binary"],
-            ] as Array<[CreateModeTab, string]>
+            ] as Array<[CreateModeTab, IconName]>
           ).map(([tab, icon]) => (
             <ToggleChip
               key={tab}

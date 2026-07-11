@@ -70,10 +70,10 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+          cache-dependency-path: packages/tandem-control-panel/pnpm-lock.yaml
 
       - name: Install control panel dependencies
-        run: pnpm -C packages/tandem-control-panel install --lockfile-dir . --frozen-lockfile
+        run: pnpm -C packages/tandem-control-panel install --frozen-lockfile
 
       - name: Install Playwright Chromium
         run: pnpm -C packages/tandem-control-panel exec playwright install --with-deps chromium

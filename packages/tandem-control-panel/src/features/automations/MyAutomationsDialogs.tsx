@@ -343,7 +343,7 @@ export function AccordionSection({
   children,
   description = "",
   headerStyle = "",
-  icon = "",
+  icon,
 }: {
   title: string;
   defaultOpen?: boolean;

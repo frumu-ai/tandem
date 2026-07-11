@@ -584,12 +584,15 @@ export function AutomationCalendar({
             scrollTimeReset={false}
             stickyHeaderDates
             navLinks
+            buttonIcons={false}
             headerToolbar={{
               left: "prev,next today",
               center: "title",
               right: "timeGridWeek,timeGridDay",
             }}
             buttonText={{
+              prev: "previous",
+              next: "next",
               timeGridWeek: "week",
               timeGridDay: "day",
               today: "today",

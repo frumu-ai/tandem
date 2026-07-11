@@ -71,7 +71,7 @@ export const THEMES: ThemeDefinition[] = [
       "--color-error": "#ef4444",
       "--color-text": "#f8fafc",
       "--color-text-muted": "#94a3b8",
-      "--color-text-subtle": "#64748b",
+      "--color-text-subtle": "#8795aa",
       "--color-glass": "rgba(18, 18, 26, 0.8)",
       "--color-glass-border": "rgba(255, 255, 255, 0.1)",
       "--font-sans": '"Inter", system-ui, -apple-system, sans-serif',

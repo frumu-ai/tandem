@@ -143,6 +143,7 @@ export function SlackGovernanceReceiptPage({ api, toast }: AppPageProps) {
           </p>
         </div>
         <select
+          aria-label="Select Slack governance receipt"
           className="tcp-input min-w-[18rem]"
           value={effectiveRunId}
           onChange={(event) => setSelectedContextRunId(event.currentTarget.value)}

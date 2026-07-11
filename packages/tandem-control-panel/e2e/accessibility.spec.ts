@@ -9,15 +9,20 @@ const primaryRoutes = [
   "runs",
   "slack-receipts",
   "approvals",
+  "settings",
+  "planner",
+  "studio",
+  "automations",
 ] as const;
 
-// Existing component/style debt outside this Playwright-owned change. Keep this
-// route-specific so every other axe rule remains a required CI failure.
-const existingViolationIds: Partial<Record<(typeof primaryRoutes)[number], string[]>> = {
-  dashboard: ["color-contrast"],
-  chat: ["color-contrast"],
-  "slack-receipts": ["select-name"],
-};
+const wcagTags = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"];
+
+test("application shell and rendered dashboard have no WCAG A/AA violations", async ({ page }) => {
+  await page.goto("/#/dashboard");
+  await waitForRoute(page, "dashboard");
+  const results = await new AxeBuilder({ page }).withTags(wcagTags).analyze();
+  expect(results.violations).toEqual([]);
+});
 
 for (const routeId of primaryRoutes) {
   test(`${routeId} has no unexpected WCAG A/AA violations`, async ({ page }) => {
@@ -25,12 +30,9 @@ for (const routeId of primaryRoutes) {
     await waitForRoute(page, routeId);
     const results = await new AxeBuilder({ page })
       .include('[data-testid="route-outlet"]')
-      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+      .withTags(wcagTags)
       .analyze();
-    const unexpected = results.violations.filter(
-      (violation) => !existingViolationIds[routeId]?.includes(violation.id)
-    );
-    expect(unexpected).toEqual([]);
+    expect(results.violations).toEqual([]);
   });
 }
 
