@@ -83,6 +83,7 @@ test_cases:
         tenant_id: "tenant-a"
         subject_id: "channel:telegram:dm:alice"
         forbidden_subject_id: "channel:telegram:dm:bob"
+        forbidden_marker_text: "meteor-bob-forbidden-marker"
         require_fail_closed_subject_scope: true
         max_repair_iterations: 1
     expected_output:

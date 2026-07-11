@@ -105,6 +105,17 @@ impl MemoryChunkSelector {
         }
     }
 
+    pub fn session_in_project(
+        session_id: impl Into<String>,
+        project_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            tier: MemoryTier::Session,
+            project_id: Some(project_id.into()),
+            session_id: Some(session_id.into()),
+        }
+    }
+
     pub fn project(project_id: impl Into<String>) -> Self {
         Self {
             tier: MemoryTier::Project,
@@ -383,6 +394,18 @@ pub enum MemoryStoreMutationRequest {
     ClearSession {
         scope: MemoryReadScope,
         session_id: String,
+    },
+    /// Atomically replace an exact set of visible session chunks with one
+    /// scoped project summary. Backends must reject the whole operation if any
+    /// source chunk is missing or outside `scope`.
+    ReplaceSessionWithSummary {
+        scope: MemoryReadScope,
+        session_id: String,
+        project_id: String,
+        source_chunk_ids: Vec<String>,
+        summary_scope: MemoryWriteScope,
+        summary: Box<MemoryChunk>,
+        embedding: Vec<f32>,
     },
     ClearProject {
         scope: MemoryReadScope,

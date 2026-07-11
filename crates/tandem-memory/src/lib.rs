@@ -35,7 +35,7 @@ pub use importer::import_files;
 pub use key_lifecycle::*;
 pub use kms_providers::*;
 pub use knowledge_scope::*;
-pub use manager::MemoryManager;
+pub use manager::{MemoryManager, ScopedMemoryConsolidationRequest};
 pub use provider_egress::*;
 pub use recursive_retrieval::*;
 pub use response_cache::ResponseCache;

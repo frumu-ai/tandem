@@ -906,6 +906,235 @@ async fn chunk_delete_enforces_owner_scope_in_the_mutation() {
 }
 
 #[tokio::test]
+async fn session_summary_replacement_is_scoped_and_atomic() {
+    let (database, _temp_dir) = test_store().await;
+    let store: &dyn MemoryStore = &database;
+    let tenant = tenant("consolidation-scope");
+    let owner_metadata = serde_json::json!({
+        "owner_org_unit_id": "finance",
+        "owner_subject": "subject-a"
+    });
+
+    for (id, subject) in [
+        ("source-a-1", "subject-a"),
+        ("source-a-2", "subject-a"),
+        ("source-b", "subject-b"),
+    ] {
+        let mut value = chunk(
+            id,
+            MemoryTier::Session,
+            Some("shared-session"),
+            Some("project-a"),
+            tenant.clone(),
+        );
+        value.subject = Some(subject.to_string());
+        value.metadata = Some(serde_json::json!({
+            "owner_org_unit_id": "finance",
+            "owner_subject": subject
+        }));
+        store
+            .write(MemoryStoreWriteRequest::Chunk {
+                scope: MemoryWriteScope {
+                    tenant: tenant.clone(),
+                    org_unit: Some("finance".to_string()),
+                    subject: Some(subject.to_string()),
+                },
+                chunk: value,
+                embedding: embedding(1.0, 0.0),
+            })
+            .await
+            .expect("write consolidation fixture");
+    }
+    let mut shared = chunk(
+        "source-shared",
+        MemoryTier::Session,
+        Some("shared-session"),
+        Some("project-a"),
+        tenant.clone(),
+    );
+    shared.metadata = Some(serde_json::json!({ "owner_org_unit_id": "finance" }));
+    store
+        .write(MemoryStoreWriteRequest::Chunk {
+            scope: MemoryWriteScope {
+                tenant: tenant.clone(),
+                org_unit: Some("finance".to_string()),
+                subject: None,
+            },
+            chunk: shared,
+            embedding: embedding(0.0, 1.0),
+        })
+        .await
+        .expect("write shared consolidation fixture");
+
+    let mut summary = chunk(
+        "summary-a",
+        MemoryTier::Project,
+        None,
+        Some("project-a"),
+        tenant.clone(),
+    );
+    summary.subject = Some("subject-a".to_string());
+    summary.metadata = Some(owner_metadata);
+    let scope = MemoryReadScope {
+        tenant: tenant.clone(),
+        org_unit: Some("finance".to_string()),
+        subject: Some("subject-a".to_string()),
+        access: MemoryReadAccess::Scoped,
+    };
+
+    let result = store
+        .mutate(MemoryStoreMutationRequest::ReplaceSessionWithSummary {
+            scope: scope.clone(),
+            session_id: "shared-session".to_string(),
+            project_id: "project-a".to_string(),
+            source_chunk_ids: vec!["source-a-1".to_string(), "source-a-2".to_string()],
+            summary_scope: MemoryWriteScope {
+                tenant: tenant.clone(),
+                org_unit: Some("finance".to_string()),
+                subject: Some("subject-a".to_string()),
+            },
+            summary: Box::new(summary),
+            embedding: embedding(0.5, 0.5),
+        })
+        .await
+        .expect("replace owned session chunks");
+    assert!(matches!(result, MemoryStoreMutationResult::Affected(2)));
+
+    let remaining = store
+        .read(MemoryStoreReadRequest::Chunks {
+            scope: MemoryReadScope {
+                subject: Some("subject-b".to_string()),
+                ..scope.clone()
+            },
+            selector: MemoryChunkSelector::session("shared-session"),
+            limit: None,
+        })
+        .await
+        .expect("read peer session chunks");
+    let MemoryStoreReadResult::Chunks(remaining) = remaining else {
+        panic!("expected chunks");
+    };
+    assert_eq!(remaining.len(), 2);
+    assert_eq!(
+        remaining
+            .iter()
+            .map(|chunk| chunk.id.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from(["source-b", "source-shared"])
+    );
+
+    let summaries = store
+        .read(MemoryStoreReadRequest::Chunks {
+            scope,
+            selector: MemoryChunkSelector::project("project-a"),
+            limit: None,
+        })
+        .await
+        .expect("read scoped summary");
+    let MemoryStoreReadResult::Chunks(summaries) = summaries else {
+        panic!("expected chunks");
+    };
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].id, "summary-a");
+}
+
+#[tokio::test]
+async fn session_summary_replacement_rolls_back_when_a_source_is_out_of_scope() {
+    let (database, _temp_dir) = test_store().await;
+    let store: &dyn MemoryStore = &database;
+    let tenant = tenant("consolidation-rollback");
+    let mut source = chunk(
+        "source-b",
+        MemoryTier::Session,
+        Some("shared-session"),
+        Some("project-a"),
+        tenant.clone(),
+    );
+    source.subject = Some("subject-b".to_string());
+    source.metadata = Some(serde_json::json!({ "owner_subject": "subject-b" }));
+    store
+        .write(MemoryStoreWriteRequest::Chunk {
+            scope: MemoryWriteScope {
+                tenant: tenant.clone(),
+                org_unit: None,
+                subject: Some("subject-b".to_string()),
+            },
+            chunk: source,
+            embedding: embedding(1.0, 0.0),
+        })
+        .await
+        .expect("write rollback fixture");
+
+    let mut summary = chunk(
+        "summary-a",
+        MemoryTier::Project,
+        None,
+        Some("project-a"),
+        tenant.clone(),
+    );
+    summary.subject = Some("subject-a".to_string());
+    summary.metadata = Some(serde_json::json!({ "owner_subject": "subject-a" }));
+    let error = store
+        .mutate(MemoryStoreMutationRequest::ReplaceSessionWithSummary {
+            scope: MemoryReadScope {
+                tenant: tenant.clone(),
+                org_unit: None,
+                subject: Some("subject-a".to_string()),
+                access: MemoryReadAccess::Scoped,
+            },
+            session_id: "shared-session".to_string(),
+            project_id: "project-a".to_string(),
+            source_chunk_ids: vec!["source-b".to_string()],
+            summary_scope: MemoryWriteScope {
+                tenant: tenant.clone(),
+                org_unit: None,
+                subject: Some("subject-a".to_string()),
+            },
+            summary: Box::new(summary),
+            embedding: embedding(0.5, 0.5),
+        })
+        .await
+        .expect_err("foreign source must abort replacement");
+    assert_eq!(error.kind, MemoryStoreErrorKind::Conflict);
+
+    let peer_chunks = store
+        .read(MemoryStoreReadRequest::Chunks {
+            scope: MemoryReadScope {
+                tenant: tenant.clone(),
+                org_unit: None,
+                subject: Some("subject-b".to_string()),
+                access: MemoryReadAccess::Scoped,
+            },
+            selector: MemoryChunkSelector::session("shared-session"),
+            limit: None,
+        })
+        .await
+        .expect("source remains after rollback");
+    let MemoryStoreReadResult::Chunks(peer_chunks) = peer_chunks else {
+        panic!("expected chunks");
+    };
+    assert_eq!(peer_chunks.len(), 1);
+
+    let summaries = store
+        .read(MemoryStoreReadRequest::Chunks {
+            scope: MemoryReadScope {
+                tenant,
+                org_unit: None,
+                subject: Some("subject-a".to_string()),
+                access: MemoryReadAccess::Scoped,
+            },
+            selector: MemoryChunkSelector::project("project-a"),
+            limit: None,
+        })
+        .await
+        .expect("summary read after rollback");
+    let MemoryStoreReadResult::Chunks(summaries) = summaries else {
+        panic!("expected chunks");
+    };
+    assert!(summaries.is_empty());
+}
+
+#[tokio::test]
 async fn global_point_operations_enforce_department_and_subject_scope() {
     let (database, _temp_dir) = test_store().await;
     let store: &dyn MemoryStore = &database;

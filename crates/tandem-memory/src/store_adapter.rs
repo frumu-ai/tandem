@@ -604,6 +604,37 @@ impl MemoryStore for MemoryDatabase {
                         .await?,
                 ))
             }
+            MemoryStoreMutationRequest::ReplaceSessionWithSummary {
+                scope,
+                session_id,
+                project_id,
+                source_chunk_ids,
+                summary_scope,
+                summary,
+                embedding,
+            } => {
+                validate_chunk_write_scope(&summary_scope, &summary)?;
+                if summary_scope.tenant != scope.tenant
+                    || summary_scope.org_unit != scope.org_unit
+                    || summary_scope.subject != scope.subject
+                {
+                    return Err(MemoryStoreError::new(
+                        MemoryStoreErrorKind::ScopeViolation,
+                        "consolidation summary scope must match its source read scope",
+                    ));
+                }
+                let replaced = self
+                    .replace_session_with_summary(
+                        &scope,
+                        &session_id,
+                        &project_id,
+                        &source_chunk_ids,
+                        &summary,
+                        &embedding,
+                    )
+                    .await?;
+                Ok(MemoryStoreMutationResult::Affected(replaced))
+            }
             MemoryStoreMutationRequest::ClearProject { scope, project_id } => {
                 reject_unimplemented_narrowing(&scope)?;
                 Ok(MemoryStoreMutationResult::Affected(

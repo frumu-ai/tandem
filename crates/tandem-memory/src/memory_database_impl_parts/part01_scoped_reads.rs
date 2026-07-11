@@ -26,18 +26,20 @@ impl MemoryDatabase {
                             tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject, crypto_envelope
                      FROM session_memory_chunks
                      WHERE session_id = ?1
-                       AND tenant_org_id = ?2
-                       AND tenant_workspace_id = ?3
-                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?4, '')
-                       AND (private = 0 OR owner_subject = ?5)
-                       AND (?6 IS NULL OR owner_org_unit_id = ?6 OR tenant_shared = 1)
+                       AND (?2 IS NULL OR project_id = ?2)
+                       AND tenant_org_id = ?3
+                       AND tenant_workspace_id = ?4
+                       AND IFNULL(tenant_deployment_id, '') = IFNULL(?5, '')
+                       AND (private = 0 OR owner_subject = ?6)
+                       AND (?7 IS NULL OR owner_org_unit_id = ?7 OR tenant_shared = 1)
                      ORDER BY created_at DESC
-                     LIMIT ?7",
+                     LIMIT ?8",
                 )?;
                 let chunks = stmt
                     .query_map(
                     params![
                         session_id,
+                        project_id,
                         tenant_scope.org_id,
                         tenant_scope.workspace_id,
                         tenant_scope.deployment_id,

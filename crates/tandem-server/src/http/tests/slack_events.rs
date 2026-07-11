@@ -35,6 +35,7 @@ const WORKSPACE_ID: &str = "hq";
 struct GovernedSlackProbe {
     calls: Arc<AtomicUsize>,
     tools_seen: Arc<Mutex<Vec<Vec<String>>>>,
+    prompts_seen: Arc<Mutex<Vec<Vec<String>>>>,
     failures_remaining: Arc<AtomicUsize>,
     block_until_cancel: Arc<AtomicBool>,
 }
@@ -68,7 +69,7 @@ impl Provider for GovernedSlackProvider {
 
     async fn stream(
         &self,
-        _messages: Vec<ChatMessage>,
+        messages: Vec<ChatMessage>,
         _model_override: Option<&str>,
         _tool_mode: ToolMode,
         tools: Option<Vec<ToolSchema>>,
@@ -76,6 +77,12 @@ impl Provider for GovernedSlackProvider {
         cancel: CancellationToken,
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<StreamChunk>> + Send>>> {
         self.probe.calls.fetch_add(1, Ordering::SeqCst);
+        self.probe.prompts_seen.lock().await.push(
+            messages
+                .into_iter()
+                .map(|message| message.content)
+                .collect(),
+        );
         let mut tool_names = tools
             .unwrap_or_default()
             .into_iter()
@@ -297,6 +304,14 @@ async fn seed_governed_slack_identity(state: &AppState) {
 }
 
 async fn seed_governed_slack_identity_with_tools(state: &AppState, tool_patterns: &[&str]) {
+    seed_governed_slack_identity_for_user(state, SLACK_USER, tool_patterns).await;
+}
+
+async fn seed_governed_slack_identity_for_user(
+    state: &AppState,
+    user_id: &str,
+    tool_patterns: &[&str],
+) {
     let now_ms = crate::now_ms();
     let tenant = TenantContext::explicit(ORG_ID, WORKSPACE_ID, None);
     let admin = PrincipalRef::human_user("admin");
@@ -318,12 +333,11 @@ async fn seed_governed_slack_identity_with_tools(state: &AppState, tool_patterns
         now_ms,
     )
     .with_taxonomy_id("role");
-    let actor = PrincipalRef::human_user(format!(
-        "channel:slack:{SLACK_TEAM}:{SLACK_APP}:{SLACK_USER}"
-    ));
+    let actor =
+        PrincipalRef::human_user(format!("channel:slack:{SLACK_TEAM}:{SLACK_APP}:{user_id}"));
     let memberships = [
         OrganizationUnitMembership::active(
-            "membership-engineering",
+            format!("membership-engineering-{user_id}"),
             tenant.clone(),
             department.principal_ref(),
             actor.clone(),
@@ -331,7 +345,7 @@ async fn seed_governed_slack_identity_with_tools(state: &AppState, tool_patterns
             now_ms,
         ),
         OrganizationUnitMembership::active(
-            "membership-engineer-role",
+            format!("membership-engineer-role-{user_id}"),
             tenant.clone(),
             role.principal_ref(),
             actor,
@@ -501,6 +515,43 @@ fn hex_encode(bytes: &[u8]) -> String {
         out.push_str(&format!("{byte:02x}"));
     }
     out
+}
+
+fn slack_private_memory_record(
+    id: &str,
+    subject: &str,
+    content: &str,
+) -> tandem_memory::types::GlobalMemoryRecord {
+    tandem_memory::types::GlobalMemoryRecord {
+        id: id.to_string(),
+        user_id: subject.to_string(),
+        source_type: "channel_message".to_string(),
+        content: content.to_string(),
+        content_hash: format!("hash-{id}"),
+        run_id: format!("run-{id}"),
+        session_id: None,
+        message_id: Some(id.to_string()),
+        tool_name: None,
+        project_tag: None,
+        channel_tag: Some(SLACK_CHANNEL.to_string()),
+        host_tag: None,
+        metadata: Some(json!({ "owner_subject": subject })),
+        provenance: Some(json!({
+            "tenant_context": {
+                "org_id": ORG_ID,
+                "workspace_id": WORKSPACE_ID,
+                "deployment_id": null
+            }
+        })),
+        redaction_status: "passed".to_string(),
+        redaction_count: 0,
+        visibility: "private".to_string(),
+        demoted: false,
+        score_boost: 0.0,
+        created_at_ms: crate::now_ms(),
+        updated_at_ms: crate::now_ms(),
+        expires_at_ms: None,
+    }
 }
 
 async fn wait_for_posts(mock: &SlackApiMock, expected: usize) {
@@ -715,6 +766,99 @@ async fn signed_slack_events_run_with_governed_context_reuse_and_dedupe() {
             .count()
             >= 2
     );
+    mock_task.abort();
+}
+
+#[tokio::test]
+async fn signed_slack_senders_receive_only_their_private_prompt_memory() {
+    const ALICE: &str = "U_ALICE";
+    const BOB: &str = "U_BOB";
+    const ALICE_MARKER: &str = "meteor-alice-private-marker";
+    const BOB_MARKER: &str = "meteor-bob-forbidden-marker";
+
+    let state = test_state().await;
+    let (api_base_url, slack_mock, mock_task) = start_slack_api_mock().await;
+    configure_slack_events_for_installation(
+        &state,
+        &api_base_url,
+        SLACK_TEAM,
+        SLACK_APP,
+        SLACK_CHANNEL,
+        &[ALICE, BOB],
+    )
+    .await;
+    seed_governed_slack_identity_for_user(&state, ALICE, &["memory.*"]).await;
+    seed_governed_slack_identity_for_user(&state, BOB, &["memory.*"]).await;
+    let provider = install_governed_slack_provider(&state, 0).await;
+    let database = tandem_memory::db::MemoryDatabase::new(&state.memory_db_path)
+        .await
+        .expect("memory database");
+    let alice_subject = format!("channel:slack:{SLACK_TEAM}:{SLACK_APP}:{ALICE}");
+    let bob_subject = format!("channel:slack:{SLACK_TEAM}:{SLACK_APP}:{BOB}");
+    database
+        .put_global_memory_record(&slack_private_memory_record(
+            "slack-alice-private",
+            &alice_subject,
+            &format!("What changed for ACME? {ALICE_MARKER}"),
+        ))
+        .await
+        .expect("store Alice memory");
+    database
+        .put_global_memory_record(&slack_private_memory_record(
+            "slack-bob-private",
+            &bob_subject,
+            &format!("What changed for ACME? {BOB_MARKER}"),
+        ))
+        .await
+        .expect("store Bob memory");
+
+    let app = app_router(state.clone());
+    let timestamp = chrono::Utc::now().timestamp();
+    let alice_response = app
+        .clone()
+        .oneshot(signed_slack_event_request(
+            "Ev-private-alice",
+            ALICE,
+            "1800000100.100001",
+            None,
+            timestamp,
+        ))
+        .await
+        .expect("Alice signed event");
+    assert_eq!(alice_response.status(), StatusCode::OK);
+    wait_for_posts(&slack_mock, 1).await;
+    wait_for_slack_tasks(&state).await;
+
+    let bob_response = app
+        .oneshot(signed_slack_event_request(
+            "Ev-private-bob",
+            BOB,
+            "1800000100.200001",
+            None,
+            timestamp,
+        ))
+        .await
+        .expect("Bob signed event");
+    assert_eq!(bob_response.status(), StatusCode::OK);
+    wait_for_posts(&slack_mock, 2).await;
+    wait_for_slack_tasks(&state).await;
+
+    let prompts = provider.prompts_seen.lock().await;
+    assert_eq!(prompts.len(), 2);
+    let alice_prompt = prompts[0].join("\n");
+    let bob_prompt = prompts[1].join("\n");
+    assert!(alice_prompt.contains(ALICE_MARKER), "{alice_prompt}");
+    assert!(!alice_prompt.contains(BOB_MARKER), "{alice_prompt}");
+    assert!(bob_prompt.contains(BOB_MARKER), "{bob_prompt}");
+    assert!(!bob_prompt.contains(ALICE_MARKER), "{bob_prompt}");
+
+    let tools = provider.tools_seen.lock().await;
+    assert_eq!(tools.len(), 2);
+    assert!(tools.iter().all(|names| {
+        names
+            .iter()
+            .all(|name| name.starts_with("memory.") || name.starts_with("mcp.memory."))
+    }));
     mock_task.abort();
 }
 

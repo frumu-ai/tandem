@@ -679,6 +679,27 @@ mod tests {
     }
 
     #[test]
+    fn public_room_memory_scope_is_shared_by_senders_but_isolated_by_room() {
+        let mut alice = test_channel_message("room-a");
+        alice.sender = "alice".to_string();
+        let mut bob = alice.clone();
+        bob.sender = "bob".to_string();
+        let mut other_room = bob.clone();
+        other_room.scope.id = "room-b".to_string();
+
+        assert_eq!(
+            public_channel_memory_scope_key(&alice),
+            public_channel_memory_scope_key(&bob),
+            "public room memory is intentionally shared across senders"
+        );
+        assert_ne!(
+            public_channel_memory_scope_key(&alice),
+            public_channel_memory_scope_key(&other_room),
+            "public room memory must not cross room boundaries"
+        );
+    }
+
+    #[test]
     fn public_demo_help_lists_disabled_commands_for_security() {
         let help = help_text(None, ChannelSecurityProfile::PublicDemo);
         assert!(help.contains("Disabled in this public channel for security"));

@@ -8,12 +8,158 @@ use crate::store::{
 };
 use crate::types::{
     owner_org_unit_id_from_metadata, owner_subject_from_metadata, GlobalMemoryRecord,
-    GlobalMemoryWriteResult, MemoryError, MemoryTenantScope,
+    GlobalMemoryWriteResult, MemoryChunk, MemoryError, MemoryTenantScope, MemoryTier,
 };
 
 use super::{global_memory_record_tenant_scope, MemoryDatabase};
 
 impl MemoryDatabase {
+    pub(crate) async fn replace_session_with_summary(
+        &self,
+        scope: &crate::store::MemoryReadScope,
+        session_id: &str,
+        project_id: &str,
+        source_chunk_ids: &[String],
+        summary: &MemoryChunk,
+        embedding: &[f32],
+    ) -> MemoryStoreResult<u64> {
+        self.enforce_store_tenant_scope("session consolidation", &scope.tenant)?;
+        if session_id.trim().is_empty()
+            || project_id.trim().is_empty()
+            || source_chunk_ids.is_empty()
+        {
+            return Err(MemoryStoreError::invalid(
+                "session consolidation requires a session id and source chunks",
+            ));
+        }
+        if summary.tier != MemoryTier::Project || summary.project_id.as_deref() != Some(project_id)
+        {
+            return Err(MemoryStoreError::invalid(
+                "session consolidation summary must match the source project scope",
+            ));
+        }
+
+        let metadata_plain = summary
+            .metadata
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let key_scope = crate::types::memory_key_scope_from_metadata(
+            &summary.tenant_scope,
+            summary.metadata.as_ref(),
+        );
+        let (content_stored, metadata_stored, crypto_envelope) = self
+            .seal_row_columns(&summary.content, &metadata_plain, &key_scope)
+            .map_err(MemoryStoreError::from)?;
+        let embedding_json = format!(
+            "[{}]",
+            embedding
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let owner_org_unit_id = owner_org_unit_id_from_metadata(summary.metadata.as_ref());
+        let owner_subject = summary.subject.as_deref();
+        let tenant_shared = crate::types::tenant_shared_from_metadata(summary.metadata.as_ref());
+
+        let mut conn = self.conn.lock().await;
+        let transaction = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(store_database_error)?;
+
+        transaction
+            .execute(
+                "INSERT INTO project_memory_chunks (
+                    id, content, project_id, session_id, source, created_at, token_count, metadata,
+                    source_path, source_mtime, source_size, source_hash,
+                    tenant_org_id, tenant_workspace_id, tenant_deployment_id, subject,
+                    owner_org_unit_id, tenant_shared, private, owner_subject, crypto_envelope
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+                params![
+                    summary.id,
+                    content_stored,
+                    summary.project_id,
+                    summary.session_id,
+                    summary.source,
+                    summary.created_at.to_rfc3339(),
+                    summary.token_count,
+                    metadata_stored,
+                    summary.source_path,
+                    summary.source_mtime,
+                    summary.source_size,
+                    summary.source_hash,
+                    summary.tenant_scope.org_id,
+                    summary.tenant_scope.workspace_id,
+                    summary.tenant_scope.deployment_id,
+                    summary.subject,
+                    owner_org_unit_id,
+                    i64::from(tenant_shared),
+                    i64::from(owner_subject.is_some()),
+                    owner_subject,
+                    crypto_envelope,
+                ],
+            )
+            .map_err(store_database_error)?;
+        transaction
+            .execute(
+                "INSERT INTO project_memory_vectors (chunk_id, embedding) VALUES (?1, ?2)",
+                params![summary.id, embedding_json],
+            )
+            .map_err(store_database_error)?;
+
+        let mut deleted = 0_u64;
+        for chunk_id in source_chunk_ids {
+            let visible: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM session_memory_chunks
+                        WHERE id = ?1 AND session_id = ?2 AND project_id = ?3
+                          AND tenant_org_id = ?4 AND tenant_workspace_id = ?5
+                          AND IFNULL(tenant_deployment_id, '') = IFNULL(?6, '')
+                          AND (
+                              (?7 IS NULL AND private = 0 AND owner_subject IS NULL)
+                              OR (?7 IS NOT NULL AND private = 1 AND owner_subject = ?7)
+                          )
+                          AND IFNULL(owner_org_unit_id, '') = IFNULL(?8, '')
+                    )",
+                    params![
+                        chunk_id,
+                        session_id,
+                        project_id,
+                        scope.tenant.org_id,
+                        scope.tenant.workspace_id,
+                        scope.tenant.deployment_id,
+                        scope.subject,
+                        scope.org_unit,
+                    ],
+                    |row| row.get(0),
+                )
+                .map_err(store_database_error)?;
+            if !visible {
+                return Err(MemoryStoreError::new(
+                    MemoryStoreErrorKind::Conflict,
+                    "session changed or a source chunk is outside the consolidation scope",
+                ));
+            }
+            transaction
+                .execute(
+                    "DELETE FROM session_memory_vectors WHERE chunk_id = ?1",
+                    params![chunk_id],
+                )
+                .map_err(store_database_error)?;
+            deleted += transaction
+                .execute(
+                    "DELETE FROM session_memory_chunks WHERE id = ?1",
+                    params![chunk_id],
+                )
+                .map_err(store_database_error)? as u64;
+        }
+
+        transaction.commit().map_err(store_database_error)?;
+        Ok(deleted)
+    }
+
     pub(crate) fn enforce_store_tenant_scope(
         &self,
         operation: &str,
