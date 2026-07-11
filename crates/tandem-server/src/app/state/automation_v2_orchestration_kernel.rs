@@ -198,7 +198,39 @@ impl AppState {
         automation: &AutomationV2Spec,
         request: &GovernedTransitionRequest,
     ) -> anyhow::Result<AutomationV2RunRecord> {
-        if automation.tenant_context() != goal.tenant_context {
+        self.prepare_orchestration_node_run(
+            goal,
+            automation,
+            request.downstream_run_id(&goal.goal_id),
+            request.now_ms,
+            "orchestration_handoff",
+            format!(
+                "goal {} transition {}",
+                goal.goal_id, request.transition_key
+            ),
+            Some(request.handoff_id(&goal.goal_id)),
+        )
+        .await
+    }
+
+    /// Shared builder for every Automation V2 run an orchestration creates —
+    /// the goal's root run and each governed-transition downstream run.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn prepare_orchestration_node_run(
+        &self,
+        goal: &LongRunningGoal,
+        automation: &AutomationV2Spec,
+        run_id: String,
+        now_ms: u64,
+        trigger_type: &str,
+        trigger_reason: String,
+        consumed_handoff_id: Option<String>,
+    ) -> anyhow::Result<AutomationV2RunRecord> {
+        let automation_tenant = automation.tenant_context();
+        let same_scope = automation_tenant.org_id == goal.tenant_context.org_id
+            && automation_tenant.workspace_id == goal.tenant_context.workspace_id
+            && automation_tenant.deployment_id == goal.tenant_context.deployment_id;
+        if !same_scope {
             bail!("target automation is outside the goal tenant scope");
         }
         self.validate_automation_enterprise_delegation_grants(automation)
@@ -220,13 +252,13 @@ impl AppState {
         let effective_execution_profile =
             crate::automation_v2::types::resolve_effective_execution_profile(automation, None);
         let mut run = AutomationV2RunRecord {
-            run_id: request.downstream_run_id(&goal.goal_id),
+            run_id,
             automation_id: automation.automation_id.clone(),
             tenant_context: goal.tenant_context.clone(),
-            trigger_type: "orchestration_handoff".to_string(),
+            trigger_type: trigger_type.to_string(),
             status: AutomationRunStatus::Queued,
-            created_at_ms: request.now_ms,
-            updated_at_ms: request.now_ms,
+            created_at_ms: now_ms,
+            updated_at_ms: now_ms,
             started_at_ms: None,
             finished_at_ms: None,
             active_session_ids: Vec::new(),
@@ -260,11 +292,8 @@ impl AppState {
             total_tokens: 0,
             estimated_cost_usd: 0.0,
             scheduler: None,
-            trigger_reason: Some(format!(
-                "goal {} transition {}",
-                goal.goal_id, request.transition_key
-            )),
-            consumed_handoff_id: Some(request.handoff_id(&goal.goal_id)),
+            trigger_reason: Some(trigger_reason),
+            consumed_handoff_id,
             learning_summary: None,
             effective_execution_profile,
             requested_execution_profile: None,

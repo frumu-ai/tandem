@@ -12,12 +12,16 @@ use tandem_automation::{
     WorkflowHandoff, WorkflowHandoffStatus,
 };
 
+mod definitions;
 mod goal_control;
+mod goal_lifecycle;
 mod migration;
 mod runtime_records;
 mod transition;
 
+pub use definitions::{DRAFT_CONCURRENCY_CONFLICT, ORCHESTRATION_DRAFT_VERSION};
 pub use goal_control::{GoalCancellationResult, GoalControlOutcome};
+pub use goal_lifecycle::{GoalEventRow, GoalPauseOutcome, GoalResumeOutcome, StartGoalOutcome};
 pub use migration::{LegacyRuntimeMigrationPaths, LegacyRuntimeMigrationReport};
 pub use transition::{
     GovernedTransitionRequest, GovernedTransitionResult, OrchestrationTransitionAuthority,
