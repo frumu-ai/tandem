@@ -1,7 +1,7 @@
 """Pydantic v2 models for the Tandem engine HTTP API — full parity with tandem-server."""
 from __future__ import annotations
 
-from typing import Any, Literal, Optional, Union
+from typing import Annotated, Any, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, AliasChoices
 
 # ─── Enums & Core ──────────────────────────────────────────────────────────────
@@ -1624,6 +1624,285 @@ class AgentTeamSpawnResponse(BaseModel):
 # ─── Automations V2 ───────────────────────────────────────────────────────────
 
 
+# Orchestration contracts
+OrchestrationStatus = Literal["draft", "published", "archived"]
+OrchestrationTerminalOutcome = Literal["complete", "pause", "fail"]
+OrchestrationGoalLimitAction = Literal["pause_for_review", "fail"]
+OrchestrationTenantSource = Literal["local_implicit", "explicit"]
+
+
+class OrchestrationTenantContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    org_id: str
+    workspace_id: str
+    deployment_id: Optional[str] = None
+    actor_id: Optional[str] = None
+    source: OrchestrationTenantSource = "local_implicit"
+
+
+class OrchestrationCanvasPosition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    x: float = 0.0
+    y: float = 0.0
+
+
+class OrchestrationWorkflowNodeSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    node_id: str
+    name: str
+    position: OrchestrationCanvasPosition = Field(default_factory=OrchestrationCanvasPosition)
+    kind: Literal["workflow"]
+    automation_id: str
+    pinned_definition_hash: Optional[str] = None
+    allowed_transition_keys: list[str] = Field(default_factory=list)
+    accepts_artifact_types: list[str] = Field(default_factory=list)
+    emits_artifact_types: list[str] = Field(default_factory=list)
+
+
+class OrchestrationWaitNodeSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    node_id: str
+    name: str
+    position: OrchestrationCanvasPosition = Field(default_factory=OrchestrationCanvasPosition)
+    kind: Literal["wait"]
+    wait: "AutomationWaitSpec"
+
+
+class OrchestrationTerminalNodeSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    node_id: str
+    name: str
+    position: OrchestrationCanvasPosition = Field(default_factory=OrchestrationCanvasPosition)
+    kind: Literal["terminal"]
+    outcome: OrchestrationTerminalOutcome
+    final_artifact_type: Optional[str] = None
+
+
+OrchestrationNodeSpec = Annotated[
+    Union[
+        OrchestrationWorkflowNodeSpec,
+        OrchestrationWaitNodeSpec,
+        OrchestrationTerminalNodeSpec,
+    ],
+    Field(discriminator="kind"),
+]
+
+
+class OrchestrationArtifactContract(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    artifact_type: str
+    schema_: Optional[JsonValue] = Field(None, alias="schema")
+    required: bool = False
+
+
+class OrchestrationTransitionApprovalPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    required: bool = False
+    expires_after_ms: Optional[int] = None
+    approver_scope: Optional[str] = None
+
+
+class OrchestrationEdgeSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    edge_id: str
+    from_node_id: str
+    to_node_id: str
+    transition_key: str
+    artifact_contract: Optional[OrchestrationArtifactContract] = None
+    approval: Optional[OrchestrationTransitionApprovalPolicy] = None
+    metadata: Optional[JsonValue] = None
+
+
+class OrchestrationGoalPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_hops: int = 100
+    deadline_at_ms: Optional[int] = None
+    max_total_tokens: Optional[int] = None
+    max_total_cost_usd: Optional[float] = None
+    on_limit: OrchestrationGoalLimitAction = "pause_for_review"
+
+
+class OrchestrationSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schema_version: int = 1
+    orchestration_id: str
+    name: str
+    description: Optional[str] = None
+    status: OrchestrationStatus
+    version: int
+    root_node_id: str
+    nodes: list[OrchestrationNodeSpec] = Field(default_factory=list)
+    edges: list[OrchestrationEdgeSpec] = Field(default_factory=list)
+    goal_policy: OrchestrationGoalPolicy = Field(default_factory=OrchestrationGoalPolicy)
+    tenant_context: OrchestrationTenantContext
+    created_at_ms: int
+    updated_at_ms: int
+    published_at_ms: Optional[int] = None
+    metadata: Optional[JsonValue] = None
+
+
+class OrchestrationDraftInput(BaseModel):
+    """Writable draft fields accepted by ``POST/PUT /orchestrations``."""
+
+    model_config = ConfigDict(extra="forbid")
+    orchestration_id: Optional[str] = None
+    name: str
+    description: Optional[str] = None
+    root_node_id: str
+    nodes: list[OrchestrationNodeSpec] = Field(default_factory=list)
+    edges: list[OrchestrationEdgeSpec] = Field(default_factory=list)
+    goal_policy: Optional[OrchestrationGoalPolicy] = None
+    metadata: Optional[JsonValue] = None
+    expected_updated_at_ms: Optional[int] = None
+
+
+class OrchestrationValidationIssue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    code: str
+    message: str
+    node_id: Optional[str] = None
+    edge_id: Optional[str] = None
+
+
+class OrchestrationValidationReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    valid: bool
+    issues: list[OrchestrationValidationIssue] = Field(default_factory=list)
+
+
+class OrchestrationWorkflowReference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    node_id: str
+    automation_id: str
+    state: Literal["missing", "unpinned", "fresh", "stale"]
+    pinned_hash: Optional[str] = None
+    current_hash: Optional[str] = None
+
+
+class OrchestrationDraftSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["draft", "archived"]
+    updated_at_ms: int
+
+
+class OrchestrationPublishedVersionSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    version: int
+    published_at_ms: Optional[int] = None
+
+
+class OrchestrationSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    orchestration_id: str
+    name: str
+    draft: Optional[OrchestrationDraftSummary] = None
+    latest_published_version: Optional[int] = None
+    published_versions: list[OrchestrationPublishedVersionSummary] = Field(default_factory=list)
+
+
+class OrchestrationListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    orchestrations: list[OrchestrationSummary] = Field(default_factory=list)
+    count: int
+
+
+class OrchestrationAggregateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    orchestration_id: str
+    draft: Optional[OrchestrationSpec] = None
+    latest_published: Optional[OrchestrationSpec] = None
+
+
+class OrchestrationVersionSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    version: int
+    name: str
+    published_at_ms: Optional[int] = None
+    metadata: Optional[JsonValue] = None
+
+
+class OrchestrationVersionsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    orchestration_id: str
+    versions: list[OrchestrationVersionSummary] = Field(default_factory=list)
+    count: int
+
+
+class OrchestrationVersionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    orchestration: OrchestrationSpec
+    orchestration_id: str
+    version: int
+    status: OrchestrationStatus
+    updated_at_ms: int
+
+
+class OrchestrationValidationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    orchestration_id: str
+    version: int
+    report: OrchestrationValidationReport
+    stale_references: list[OrchestrationWorkflowReference] = Field(default_factory=list)
+
+
+OrchestrationPublishResponse = OrchestrationVersionResponse
+
+
+class OrchestrationStaleReferencesResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    orchestration_id: str
+    references: list[OrchestrationWorkflowReference] = Field(default_factory=list)
+    stale_count: int
+
+
+class OrchestrationRefreshReferencesResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    orchestration: OrchestrationSpec
+    refreshed_node_ids: list[str] = Field(default_factory=list)
+
+
+class OrchestrationTransitionPreviewInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    from_node_id: str
+    transition_key: str
+    artifact_type: Optional[str] = None
+    version: Optional[int] = None
+
+
+class OrchestrationDryRunEdge(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    edge_id: str
+    transition_key: str
+    artifact_contract: Optional[OrchestrationArtifactContract] = None
+    approval_required: bool
+
+
+class OrchestrationDryRunTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    node_id: str
+    name: str
+    kind: dict[str, Any]
+
+
+class OrchestrationDryRunIssue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    code: str
+    node_id: Optional[str] = None
+    transition_key: Optional[str] = None
+    edge_id: Optional[str] = None
+    expected: Optional[str] = None
+    provided: Optional[str] = None
+
+
+class OrchestrationTransitionPreviewResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    allowed: bool
+    issues: list[OrchestrationDryRunIssue] = Field(default_factory=list)
+    edge: Optional[OrchestrationDryRunEdge] = None
+    target: Optional[OrchestrationDryRunTarget] = None
+
+
+# Automation V2 contracts
 AutomationV2Status = Literal["active", "paused", "draft"]
 AutomationV2RunStatus = Literal[
     "queued",
@@ -1746,6 +2025,389 @@ class AutomationV2RunListResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
     runs: list[AutomationV2RunRecord] = []
     count: int = 0
+
+
+# Stateful runtime goal contracts
+GoalLimitAction = OrchestrationGoalLimitAction
+GoalPolicy = OrchestrationGoalPolicy
+LongRunningGoalStatus = Literal[
+    "queued", "active", "waiting", "paused", "completed", "failed", "cancelled", "expired"
+]
+WorkflowHandoffStatus = Literal[
+    "pending_approval", "approved", "rejected", "claimed", "consumed", "dead_lettered"
+]
+StatefulGoalAutomationRunStatus = Literal[
+    "queued",
+    "running",
+    "pausing",
+    "paused",
+    "awaiting_approval",
+    "completed",
+    "blocked",
+    "failed",
+    "cancelled",
+]
+StatefulWaitKind = Literal[
+    "timer", "webhook", "approval", "external_condition", "retry_backoff"
+]
+StatefulWaitStatus = Literal[
+    "waiting", "claimed", "woken", "timed_out", "escalated", "cancelled"
+]
+StatefulGoalCancelOutcome = Literal["Applied", "AlreadyTerminal"]
+
+
+class OrchestrationArtifactRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    artifact_type: str
+    content_path: Optional[str] = None
+    content_digest: Optional[str] = None
+    value: Optional[JsonValue] = None
+
+
+class LongRunningGoal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schema_version: int = 1
+    goal_id: str
+    orchestration_id: str
+    orchestration_version: int
+    objective: str
+    status: LongRunningGoalStatus
+    tenant_context: OrchestrationTenantContext
+    policy: OrchestrationGoalPolicy
+    active_run_id: Optional[str] = None
+    current_node_id: Optional[str] = None
+    hop_count: int = 0
+    total_tokens: int = 0
+    total_cost_usd: float = 0.0
+    created_at_ms: int
+    updated_at_ms: int
+    finished_at_ms: Optional[int] = None
+    final_artifact: Optional[OrchestrationArtifactRef] = None
+    metadata: Optional[JsonValue] = None
+
+
+class GoalRunLink(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    goal_id: str
+    run_id: str
+    orchestration_node_id: str
+    orchestration_version: int
+    hop_index: int
+    parent_run_id: Optional[str] = None
+    triggering_handoff_id: Optional[str] = None
+    created_at_ms: int
+
+
+class WorkflowHandoff(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schema_version: int = 1
+    handoff_id: str
+    idempotency_key: str
+    goal_id: str
+    orchestration_id: str
+    orchestration_version: int
+    tenant_context: OrchestrationTenantContext
+    edge_id: str
+    transition_key: str
+    source_automation_id: str
+    source_run_id: str
+    source_node_id: str
+    target_automation_id: str
+    target_node_id: str
+    artifact: OrchestrationArtifactRef
+    status: WorkflowHandoffStatus
+    created_at_ms: int
+    updated_at_ms: int
+    consumed_by_run_id: Optional[str] = None
+    metadata: Optional[JsonValue] = None
+
+
+class StatefulRuntimeScope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schema_version: int = 1
+    tenant_context: OrchestrationTenantContext
+    owning_org_unit_id: Optional[str] = None
+    owner_principal: Optional[dict[str, Any]] = None
+    resource_scope: Optional[dict[str, Any]] = None
+    data_classes: list[str] = Field(default_factory=list)
+    risk_tier: Optional[str] = None
+    policy_version_id: Optional[str] = None
+    delegation_grant_ids: list[str] = Field(default_factory=list)
+
+
+class StatefulWaitTimeoutPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    timeout_at_ms: int
+    on_timeout: AutomationWaitTimeoutAction
+    escalate_to: Optional[str] = None
+    remind_every_ms: Optional[int] = None
+    metadata: Optional[JsonValue] = None
+
+
+class StatefulGoalWaitRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schema_version: int = 1
+    wait_id: str
+    run_id: str
+    wait_kind: StatefulWaitKind
+    status: StatefulWaitStatus
+    scope: StatefulRuntimeScope
+    phase_id: Optional[str] = None
+    reason: Optional[str] = None
+    created_at_ms: int
+    updated_at_ms: int
+    wake_at_ms: Optional[int] = None
+    timeout_policy: Optional[StatefulWaitTimeoutPolicy] = None
+    event_seq: Optional[int] = None
+    wake_idempotency_key: Optional[str] = None
+    claimed_by: Optional[str] = None
+    claimed_at_ms: Optional[int] = None
+    claim_expires_at_ms: Optional[int] = None
+    completed_at_ms: Optional[int] = None
+    metadata: Optional[JsonValue] = None
+
+
+class StatefulGoalEventRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    goal_seq: Optional[int] = None
+    schema_version: int = 1
+    event_id: str
+    run_id: str
+    seq: int
+    event_type: str
+    occurred_at_ms: int
+    scope: StatefulRuntimeScope
+    actor: Optional[dict[str, Any]] = None
+    phase_id: Optional[str] = None
+    phase_transition: Optional[dict[str, Any]] = None
+    wait_kind: Optional[StatefulWaitKind] = None
+    causation_id: Optional[str] = None
+    correlation_id: Optional[str] = None
+    payload: JsonValue = None
+
+
+class LongRunningGoalStartInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    orchestration_id: str
+    orchestration_version: Optional[int] = None
+    objective: str
+    idempotency_key: str
+    metadata: Optional[JsonValue] = None
+
+
+class LongRunningGoalCancelInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: Optional[str] = None
+
+
+class LongRunningGoalHandoffEmitInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    transition_key: str
+    artifact: OrchestrationArtifactRef
+    idempotency_key: str
+
+
+class LongRunningGoalHandoffDecisionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["approve", "reject"]
+    reason: Optional[str] = None
+
+
+class LongRunningGoalCompletionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    transition_key: Optional[str] = None
+    final_artifact: Optional[OrchestrationArtifactRef] = None
+
+
+class LongRunningGoalWaitResolveInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    idempotency_key: str
+    payload: JsonValue = None
+
+
+class LongRunningGoalListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    goals: list[LongRunningGoal] = Field(default_factory=list)
+    count: int
+
+
+class LongRunningGoalResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    goal: LongRunningGoal
+    goal_id: Optional[str] = None
+    status: Optional[LongRunningGoalStatus] = None
+    budgets: Optional["LongRunningGoalBudgetSummary"] = None
+
+
+class LongRunningGoalControlResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    goal: LongRunningGoal
+    outcome: Literal["paused", "already_paused", "resumed", "not_paused"]
+
+
+class LongRunningGoalStartResponse(LongRunningGoalResponse):
+    root_run_id: str
+    replayed: bool
+
+
+class StatefulGoalAutomationRunRecord(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    run_id: str
+    automation_id: str
+    tenant_context: OrchestrationTenantContext
+    trigger_type: str
+    status: StatefulGoalAutomationRunStatus
+    created_at_ms: int
+    updated_at_ms: int
+    started_at_ms: Optional[int] = None
+    finished_at_ms: Optional[int] = None
+    active_session_ids: list[str] = Field(default_factory=list)
+    latest_session_id: Optional[str] = None
+    active_instance_ids: list[str] = Field(default_factory=list)
+    checkpoint: dict[str, Any] = Field(default_factory=dict)
+    workflow_definition_version: Optional[str] = None
+    workflow_definition_snapshot_hash: Optional[str] = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    estimated_cost_usd: float = 0.0
+
+
+class LongRunningGoalRun(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    link: GoalRunLink
+    run: Optional[StatefulGoalAutomationRunRecord] = None
+
+
+class LongRunningGoalRunsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    goal_id: str
+    active_run_id: Optional[str] = None
+    runs: list[LongRunningGoalRun] = Field(default_factory=list)
+    count: int
+
+
+class LongRunningGoalGraphResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    goal_id: str
+    status: LongRunningGoalStatus
+    orchestration_id: str
+    orchestration_version: int
+    current_node_id: Optional[str] = None
+    current_workflow: Optional[dict[str, Any]] = None
+    nodes: list[dict[str, Any]] = Field(default_factory=list)
+    edges: list[OrchestrationEdgeSpec] = Field(default_factory=list)
+    budgets: "LongRunningGoalBudgetSummary"
+
+
+class StatefulGoalCursorEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cursor: int
+    event: StatefulGoalEventRecord
+
+
+class LongRunningGoalEventsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    goal_id: str
+    events: list[StatefulGoalCursorEvent] = Field(default_factory=list)
+    count: int
+    last_cursor: Optional[int] = None
+    event_source: Literal["stateful_runtime"]
+
+
+class LongRunningGoalHandoffsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    goal_id: str
+    handoffs: list[WorkflowHandoff] = Field(default_factory=list)
+    count: int
+
+
+class LongRunningGoalHandoffTransitionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    outcome: Literal["pending_approval", "committed"]
+    handoff: WorkflowHandoff
+    goal: LongRunningGoal
+    commit: Optional[str] = None
+    downstream_run_id: Optional[str] = None
+    link: Optional[GoalRunLink] = None
+
+
+class LongRunningGoalHandoffDecisionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    handoff: WorkflowHandoff
+
+
+class LongRunningGoalCompletionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    outcome: Literal["awaiting_transition", "terminal"]
+    goal: LongRunningGoal
+
+
+class LongRunningGoalWaitsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    goal_id: str
+    waits: list[StatefulGoalWaitRecord] = Field(default_factory=list)
+    count: int
+
+
+class LongRunningGoalWaitResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    goal_id: str
+    wait: StatefulGoalWaitRecord
+
+
+class LongRunningGoalArtifact(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    artifact: OrchestrationArtifactRef
+    handoff_id: str
+    transition_key: str
+    source_run_id: str
+    consumed_by_run_id: Optional[str] = None
+    created_at_ms: int
+
+
+class LongRunningGoalArtifactsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    goal_id: str
+    artifacts: list[LongRunningGoalArtifact] = Field(default_factory=list)
+    final_artifact: Optional[OrchestrationArtifactRef] = None
+    count: int
+
+
+class LongRunningGoalBudgetUsage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    hops: int
+    total_tokens: int
+    total_cost_usd: float
+
+
+class LongRunningGoalBudgetRemaining(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    hops: int
+    tokens: Optional[int] = None
+    cost_usd: Optional[float] = None
+    deadline_ms: Optional[int] = None
+
+
+class LongRunningGoalBudgetSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    policy: OrchestrationGoalPolicy
+    consumed: LongRunningGoalBudgetUsage
+    remaining: LongRunningGoalBudgetRemaining
+
+
+class LongRunningGoalBudgetsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    goal_id: str
+    status: LongRunningGoalStatus
+    budgets: LongRunningGoalBudgetSummary
+
+
+class LongRunningGoalCancelResponse(LongRunningGoalResponse):
+    outcome: StatefulGoalCancelOutcome
+    cancelled_run_id: Optional[str] = None
+    cancelled_wait_ids: list[str] = Field(default_factory=list)
+    dead_lettered_handoff_ids: list[str] = Field(default_factory=list)
 
 
 # ─── Workflow Plans ───────────────────────────────────────────────────────────
@@ -2313,6 +2975,11 @@ class ToolExecuteResult(BaseModel):
 
 class EngineEventBase(BaseModel):
     properties: dict[str, Any] = Field(default_factory=dict)
+    cursor: Optional[int] = None
+    goal_seq: Optional[int] = None
+    event_id: Optional[str] = None
+    seq: Optional[int] = None
+    occurred_at_ms: Optional[int] = None
     session_id: Optional[str] = Field(None, validation_alias=AliasChoices("sessionID", "sessionId", "session_id"))
     run_id: Optional[str] = Field(None, validation_alias=AliasChoices("runID", "runId", "run_id"))
     timestamp: Optional[str] = None

@@ -26,7 +26,11 @@ impl AppState {
             .get_goal(goal_id)?
             .context("long-running goal not found")?;
         let orchestration = store
-            .get_orchestration(&goal.orchestration_id, goal.orchestration_version)?
+            .get_orchestration_for_tenant(
+                &goal.tenant_context,
+                &goal.orchestration_id,
+                goal.orchestration_version,
+            )?
             .context("published orchestration version not found")?;
         let run_id = goal
             .active_run_id
@@ -62,7 +66,11 @@ impl AppState {
             .get_goal(goal_id)?
             .context("long-running goal not found")?;
         let orchestration = store
-            .get_orchestration(&goal.orchestration_id, goal.orchestration_version)?
+            .get_orchestration_for_tenant(
+                &goal.tenant_context,
+                &goal.orchestration_id,
+                goal.orchestration_version,
+            )?
             .context("published orchestration version not found")?;
         if let Some(replayed) =
             store.replay_existing_governed_transition(&orchestration, &goal, request, authority)?
@@ -107,16 +115,28 @@ impl AppState {
                 .write()
                 .await
                 .insert(downstream_run.run_id.clone(), downstream_run.clone());
-            self.persist_automation_v2_runs().await?;
-            crate::http::context_runs::sync_automation_v2_run_blackboard(
+            if let Err(error) = self.persist_automation_v2_runs().await {
+                tracing::warn!(
+                    %goal_id,
+                    run_id = %downstream_run.run_id,
+                    %error,
+                    "durable orchestration transition committed; compatibility run persistence will recover from SQLite"
+                );
+            }
+            if let Err(status) = crate::http::context_runs::sync_automation_v2_run_blackboard(
                 self,
                 &target_automation,
                 downstream_run,
             )
             .await
-            .map_err(|status| {
-                anyhow::anyhow!("failed to sync orchestration context run: {status}")
-            })?;
+            {
+                tracing::warn!(
+                    %goal_id,
+                    run_id = %downstream_run.run_id,
+                    ?status,
+                    "durable orchestration transition committed; context blackboard synchronization will be retried"
+                );
+            }
             self.event_bus
                 .publish(crate::routines::types::tenant_scoped_engine_event(
                     "orchestration.goal.transitioned",

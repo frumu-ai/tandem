@@ -923,7 +923,7 @@ mod tests {
     }
 
     #[test]
-    fn existing_v2_store_upgrades_to_handoff_quarantine_schema() {
+    fn existing_v2_store_upgrades_to_current_schema() {
         let directory = tempfile::tempdir().unwrap();
         let database_path = directory.path().join("runtime.sqlite3");
         let connection = rusqlite::Connection::open(&database_path).unwrap();
@@ -949,8 +949,15 @@ mod tests {
                     [],
                     |row| row.get(0),
                 )?;
-                assert_eq!(version, 3);
+                let deployment_key_columns: u64 = connection.query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('orchestration_specs')
+                     WHERE name = 'deployment_key'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(version, 4);
                 assert_eq!(table, "legacy_handoff_quarantine");
+                assert_eq!(deployment_key_columns, 1);
                 Ok(())
             })
             .unwrap();

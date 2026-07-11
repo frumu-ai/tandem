@@ -370,18 +370,21 @@ pub(super) async fn get_goal_graph(
         Ok(goal) => goal,
         Err(response) => return response,
     };
-    let orchestration =
-        match store.get_orchestration(&goal.orchestration_id, goal.orchestration_version) {
-            Ok(Some(spec)) => spec,
-            Ok(None) => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({"error": "orchestration_not_found"})),
-                )
-                    .into_response()
-            }
-            Err(error) => return goal_error_response(&error),
-        };
+    let orchestration = match store.get_orchestration_for_tenant(
+        &tenant,
+        &goal.orchestration_id,
+        goal.orchestration_version,
+    ) {
+        Ok(Some(spec)) => spec,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "orchestration_not_found"})),
+            )
+                .into_response()
+        }
+        Err(error) => return goal_error_response(&error),
+    };
     let links = store.list_goal_run_links(&goal_id).unwrap_or_default();
     let mut runs_by_node = std::collections::HashMap::<String, Vec<Value>>::new();
     let mut active_run: Option<AutomationV2RunRecord> = None;

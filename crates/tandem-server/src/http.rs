@@ -91,6 +91,7 @@ mod mission_builder_runtime;
 mod missions_teams;
 mod observability_metrics;
 mod optimizations;
+pub(crate) mod orchestration_tools;
 mod orchestrations_api;
 mod pack_builder;
 mod packs;

@@ -22,7 +22,31 @@ function parseSseLine(data: string): EngineEvent | null {
   const trimmed = data.trim();
   if (!trimmed || trimmed === ": keep-alive" || trimmed.startsWith(":")) return null;
   try {
-    const parsed = JSON.parse(trimmed);
+    let parsed = JSON.parse(trimmed);
+    let cursor: number | undefined;
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      typeof parsed.cursor === "number" &&
+      parsed.event &&
+      typeof parsed.event === "object"
+    ) {
+      cursor = parsed.cursor;
+      parsed = parsed.event;
+    }
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      typeof parsed.type !== "string" &&
+      typeof parsed.event_type === "string"
+    ) {
+      parsed.type = parsed.event_type;
+      parsed.properties =
+        parsed.payload && typeof parsed.payload === "object" && !Array.isArray(parsed.payload)
+          ? parsed.payload
+          : { payload: parsed.payload };
+    }
+    if (cursor !== undefined) parsed.cursor = cursor;
     const result = EngineEventSchema.safeParse(parsed);
     if (result.success) return result.data;
     return null;
@@ -142,24 +166,31 @@ export async function* streamSse(
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      // Keep the last partial line in buffer
-      buffer = lines.pop() ?? "";
+      const frames = buffer.split(/\r?\n\r?\n/);
+      buffer = frames.pop() ?? "";
 
-      let currentData = "";
-      for (const line of lines) {
-        if (line.startsWith("data:")) {
-          currentData += line.slice(5).trimStart();
-        } else if (line === "") {
-          // Blank line = end of event
-          if (currentData) {
-            const event = parseSseLine(currentData);
-            if (event) yield event;
-            currentData = "";
-          }
+      for (const frame of frames) {
+        const data = frame
+          .split(/\r?\n/)
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trimStart())
+          .join("\n");
+        if (data) {
+          const event = parseSseLine(data);
+          if (event) yield event;
         }
-        // Ignore "event:", "id:", "retry:" lines at this level
       }
+    }
+
+    buffer += decoder.decode();
+    if (buffer) {
+      const data = buffer
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart())
+        .join("\n");
+      const event = data ? parseSseLine(data) : null;
+      if (event) yield event;
     }
   } finally {
     reader.releaseLock();

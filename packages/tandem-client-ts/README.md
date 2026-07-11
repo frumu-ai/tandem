@@ -201,6 +201,77 @@ The TypeScript SDK already includes the newer engine surfaces that have landed a
 - `client.skills` for list/get/import plus validation, routing, evals, compile, and generate flows
 - `client.packs` and `client.capabilities` for pack lifecycle and capability resolution
 - `client.automationsV2`, `client.incidentMonitor`, `client.coder`, `client.agentTeams`, and `client.missions` for newer orchestration APIs
+
+### Long-running orchestrations
+
+```ts
+const draft = await client.orchestrations.create({
+  orchestration_id: "quarter-close",
+  name: "Quarter close",
+  root_node_id: "collect",
+  nodes: [
+    {
+      node_id: "collect",
+      name: "Collect evidence",
+      position: { x: 0, y: 0 },
+      kind: "workflow",
+      automation_id: "collect-evidence",
+      allowed_transition_keys: ["complete"],
+    },
+    {
+      node_id: "done",
+      name: "Done",
+      position: { x: 300, y: 0 },
+      kind: "terminal",
+      outcome: "complete",
+    },
+  ],
+  edges: [{
+    edge_id: "collect-complete",
+    from_node_id: "collect",
+    to_node_id: "done",
+    transition_key: "complete",
+  }],
+});
+const refreshed = await client.orchestrations.refreshReferences(
+  "quarter-close",
+  draft.updated_at_ms,
+);
+const validation = await client.orchestrations.validate("quarter-close");
+if (!validation.report.valid || validation.stale_references.length > 0) {
+  throw new Error("Orchestration is not publishable");
+}
+const published = await client.orchestrations.publish("quarter-close");
+const started = await client.statefulRuntime.startGoal({
+  orchestrationId: "quarter-close",
+  orchestrationVersion: published.orchestration.version,
+  objective: "Complete the quarter close with verified evidence",
+  idempotencyKey: "quarter-close-2026-q2",
+});
+for await (const event of client.statefulRuntime.events(started.goal.goal_id, { cursor: 0 })) {
+  console.log(event.cursor, event.type, event.properties);
+}
+```
+
+Orchestration authoring uses the canonical draft-v0 API. Update the mutable draft with
+`updateDraft(id, { ...draft, expected_updated_at_ms })`, inspect both draft and latest published
+state with `get(id)`, and inspect workflow pins with `staleReferences(id)`. Published versions are
+immutable and available through `listVersions(id)` and `getVersion(id, version)`.
+
+Goal APIs use `/goals` response envelopes. Event history is cursor-paged:
+
+```ts
+const page = await client.statefulRuntime.listGoalEvents(started.goal.goal_id, {
+  cursor: 0,
+  limit: 250,
+});
+const nextCursor = page.last_cursor;
+
+await client.statefulRuntime.settleGoalCompletion(started.goal.goal_id, {
+  transitionKey: "complete",
+  finalArtifact: { artifact_type: "close-report", value: { approved: true } },
+});
+```
 - For the Incident Monitor flow, see [Incident Monitor](https://docs.tandem.ac/incident-monitor/overview/)
 
 ```typescript

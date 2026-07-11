@@ -224,7 +224,7 @@ fn load_tenant_draft(
     tenant: &TenantContext,
     orchestration_id: &str,
 ) -> Result<OrchestrationSpec, Response> {
-    match store.get_orchestration_draft(orchestration_id) {
+    match store.get_orchestration_draft(tenant, orchestration_id) {
         Ok(Some(draft)) if super::tenant_matches(tenant, &draft.tenant_context) => Ok(draft),
         Ok(_) => Err((
             StatusCode::NOT_FOUND,
@@ -316,16 +316,16 @@ pub(super) async fn get_orchestration(
         Err(response) => return response,
     };
     let draft = store
-        .get_orchestration_draft(&orchestration_id)
+        .get_orchestration_draft(&tenant, &orchestration_id)
         .ok()
         .flatten();
     let latest_published = store
-        .latest_published_orchestration_version(&orchestration_id)
+        .latest_published_orchestration_version(&tenant, &orchestration_id)
         .ok()
         .flatten()
         .and_then(|version| {
             store
-                .get_orchestration(&orchestration_id, version)
+                .get_orchestration_for_tenant(&tenant, &orchestration_id, version)
                 .ok()
                 .flatten()
         });
@@ -400,7 +400,7 @@ pub(super) async fn get_orchestration_version(
         Ok(store) => store,
         Err(response) => return response,
     };
-    match store.get_orchestration(&orchestration_id, version) {
+    match store.get_orchestration_for_tenant(&tenant, &orchestration_id, version) {
         Ok(Some(spec)) if super::tenant_matches(&tenant, &spec.tenant_context) => {
             Json(spec_response(&spec)).into_response()
         }
@@ -541,7 +541,7 @@ pub(super) async fn publish_orchestration(
     }
     let now = crate::util::time::now_ms();
     let next_version = store
-        .latest_published_orchestration_version(&orchestration_id)
+        .latest_published_orchestration_version(&tenant, &orchestration_id)
         .ok()
         .flatten()
         .unwrap_or(0)
@@ -605,11 +605,11 @@ pub(super) async fn dry_run_orchestration_transition(
     };
     let spec = match payload.version {
         Some(version) => store
-            .get_orchestration(&orchestration_id, version)
+            .get_orchestration_for_tenant(&tenant, &orchestration_id, version)
             .ok()
             .flatten(),
         None => store
-            .get_orchestration_draft(&orchestration_id)
+            .get_orchestration_draft(&tenant, &orchestration_id)
             .ok()
             .flatten(),
     };

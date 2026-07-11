@@ -32,6 +32,7 @@ pub(super) mod missions;
 pub(super) mod observability_metrics;
 pub(super) mod optimizations;
 pub(super) mod orchestration_goals;
+pub(super) mod orchestration_tools;
 pub(super) mod pack_builder;
 pub(super) mod packs;
 pub(super) mod permissions;
