@@ -162,6 +162,7 @@ async fn postgres_atomic_batch_rolls_back_on_primary_key_failure() {
     let first = global_record("duplicate", &tenant);
     let mut conflicting = first.clone();
     conflicting.content = "different payload".to_string();
+    conflicting.content_hash = "different-hash".to_string();
 
     store
         .batch(MemoryStoreBatchRequest {
@@ -182,12 +183,37 @@ async fn postgres_atomic_batch_rolls_back_on_primary_key_failure() {
 
     let read = store
         .read(MemoryStoreReadRequest::GlobalRecord {
-            scope: MemoryReadScope::trusted_unrestricted(tenant),
+            scope: MemoryReadScope::trusted_unrestricted(tenant.clone()),
             id: "duplicate".to_string(),
         })
         .await
         .expect("read after rollback");
     assert!(matches!(read, MemoryStoreReadResult::GlobalRecord(None)));
+
+    let first = global_record("dedupe-first", &tenant);
+    let mut equivalent = first.clone();
+    equivalent.id = "dedupe-second".to_string();
+    let result = store
+        .batch(MemoryStoreBatchRequest {
+            mode: MemoryStoreBatchMode::Atomic,
+            operations: vec![
+                MemoryStoreBatchOperation::Write(MemoryStoreWriteRequest::GlobalRecord {
+                    scope: MemoryWriteScope::tenant(tenant.clone()),
+                    record: first,
+                }),
+                MemoryStoreBatchOperation::Write(MemoryStoreWriteRequest::GlobalRecord {
+                    scope: MemoryWriteScope::tenant(tenant),
+                    record: equivalent,
+                }),
+            ],
+        })
+        .await
+        .expect("atomic equivalent records dedupe");
+    assert!(matches!(
+        &result.items[1].result,
+        Ok(MemoryStoreBatchValue::Write(MemoryStoreWriteResult::GlobalRecord(result)))
+            if result.deduped && !result.stored && result.id == "dedupe-first"
+    ));
 }
 
 #[tokio::test]
@@ -293,7 +319,7 @@ async fn postgres_encrypted_mode_seals_payloads_and_reranks_in_scope() {
     assert!(raw_global.get::<_, String>(2).starts_with("tce1:"));
     let global = store
         .query(MemoryStoreQueryRequest::SearchGlobalRecords {
-            scope: MemoryReadScope::tenant(tenant),
+            scope: MemoryReadScope::tenant(tenant.clone()),
             user_id: "legacy-user".to_string(),
             query: "global record".to_string(),
             limit: 5,
@@ -728,7 +754,7 @@ async fn postgres_clear_operations_preserve_other_memory_tiers() {
         .expect("clear project tier");
     let session_rows = store
         .read(MemoryStoreReadRequest::Chunks {
-            scope: MemoryReadScope::tenant(tenant),
+            scope: MemoryReadScope::tenant(tenant.clone()),
             selector: MemoryChunkSelector::session("active-session"),
             limit: None,
         })
@@ -738,6 +764,122 @@ async fn postgres_clear_operations_preserve_other_memory_tiers() {
         session_rows,
         MemoryStoreReadResult::Chunks(rows) if rows.iter().any(|row| row.id == "session-row-2")
     ));
+
+    let mut old_session = chunk("old-session", tenant.clone());
+    old_session.tier = MemoryTier::Session;
+    old_session.session_id = Some("old-session".to_string());
+    old_session.created_at = chrono::Utc::now() - chrono::Duration::days(2);
+    let mut old_project = chunk("old-project", tenant.clone());
+    old_project.created_at = chrono::Utc::now() - chrono::Duration::days(2);
+    for row in [old_session, old_project] {
+        store
+            .write(MemoryStoreWriteRequest::Chunk {
+                scope: MemoryWriteScope::tenant(tenant.clone()),
+                chunk: row,
+                embedding: vec![1.0, 0.0, 0.0],
+            })
+            .await
+            .expect("write hygiene fixture");
+    }
+    store
+        .mutate(MemoryStoreMutationRequest::RunHygiene {
+            scope: MemoryReadScope::trusted_unrestricted(tenant.clone()),
+            retention_days: 1,
+        })
+        .await
+        .expect("run session hygiene");
+    let project_rows = store
+        .read(MemoryStoreReadRequest::Chunks {
+            scope: MemoryReadScope::tenant(tenant.clone()),
+            selector: MemoryChunkSelector::project("project"),
+            limit: None,
+        })
+        .await
+        .expect("read project after hygiene");
+    assert!(matches!(
+        project_rows,
+        MemoryStoreReadResult::Chunks(rows) if rows.iter().any(|row| row.id == "old-project")
+    ));
+
+    let mut active_session = chunk("cap-session", tenant.clone());
+    active_session.tier = MemoryTier::Session;
+    active_session.session_id = Some("cap-session".to_string());
+    for row in [
+        active_session,
+        chunk("cap-project-a", tenant.clone()),
+        chunk("cap-project-b", tenant.clone()),
+    ] {
+        store
+            .write(MemoryStoreWriteRequest::Chunk {
+                scope: MemoryWriteScope::tenant(tenant.clone()),
+                chunk: row,
+                embedding: vec![1.0, 0.0, 0.0],
+            })
+            .await
+            .expect("write project-cap fixture");
+    }
+    store
+        .mutate(MemoryStoreMutationRequest::EnforceProjectChunkCap {
+            scope: MemoryReadScope::trusted_unrestricted(tenant.clone()),
+            project_id: "project".to_string(),
+            max_chunks: 1,
+        })
+        .await
+        .expect("enforce project cap");
+    let sessions = store
+        .read(MemoryStoreReadRequest::Chunks {
+            scope: MemoryReadScope::tenant(tenant.clone()),
+            selector: MemoryChunkSelector::session("cap-session"),
+            limit: None,
+        })
+        .await
+        .expect("read session after project cap");
+    assert!(matches!(
+        sessions,
+        MemoryStoreReadResult::Chunks(rows) if rows.iter().any(|row| row.id == "cap-session")
+    ));
+
+    let mut project_file = chunk("project-file", tenant.clone());
+    project_file.source = "file".to_string();
+    project_file.source_path = Some("guide.md".to_string());
+    let mut project_connector = chunk("project-connector", tenant.clone());
+    project_connector.source = "connector".to_string();
+    project_connector.source_path = Some("connector/item".to_string());
+    let mut session_file = chunk("session-file", tenant.clone());
+    session_file.tier = MemoryTier::Session;
+    session_file.session_id = Some("file-session".to_string());
+    session_file.source = "file".to_string();
+    session_file.source_path = Some("guide.md".to_string());
+    for row in [project_file, project_connector, session_file] {
+        store
+            .write(MemoryStoreWriteRequest::Chunk {
+                scope: MemoryWriteScope::tenant(tenant.clone()),
+                chunk: row,
+                embedding: vec![1.0, 0.0, 0.0],
+            })
+            .await
+            .expect("write file-clear fixture");
+    }
+    store
+        .mutate(MemoryStoreMutationRequest::ClearProjectFileIndex {
+            scope: MemoryReadScope::trusted_unrestricted(tenant.clone()),
+            project_id: "project".to_string(),
+            vacuum: false,
+        })
+        .await
+        .expect("clear project file index");
+    let client = store.client().await.expect("inspect file-clear rows");
+    let ids = client
+        .query(
+            "SELECT id FROM tandem_memory_chunks WHERE id IN ('project-file','project-connector','session-file') ORDER BY id",
+            &[],
+        )
+        .await
+        .expect("query file-clear rows")
+        .into_iter()
+        .map(|row| row.get::<_, String>(0))
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec!["project-connector", "session-file"]);
 }
 
 #[tokio::test]

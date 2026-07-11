@@ -42,6 +42,7 @@ impl PostgresMemoryStore {
                 tenant_shared BOOLEAN NOT NULL DEFAULT false,
                 data_class TEXT NOT NULL DEFAULT 'internal',
                 source_binding_id TEXT,
+                source TEXT NOT NULL DEFAULT '',
                 tier TEXT NOT NULL,
                 project_id TEXT,
                 session_id TEXT,
@@ -138,6 +139,8 @@ impl PostgresMemoryStore {
                  ALTER TABLE tandem_memory_chunks ADD COLUMN IF NOT EXISTS tenant_shared BOOLEAN NOT NULL DEFAULT false;
                  ALTER TABLE tandem_memory_chunks ADD COLUMN IF NOT EXISTS data_class TEXT NOT NULL DEFAULT 'internal';
                  ALTER TABLE tandem_memory_chunks ADD COLUMN IF NOT EXISTS source_binding_id TEXT;
+                 ALTER TABLE tandem_memory_chunks ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT '';
+                 UPDATE tandem_memory_chunks SET source='file' WHERE source='' AND source_path IS NOT NULL;
                  ALTER TABLE tandem_memory_global_records ALTER COLUMN data DROP NOT NULL;
                  ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS data_ciphertext TEXT;
                  ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS data_envelope JSONB;
