@@ -1,6 +1,7 @@
 use super::*;
 use crate::types::{
     GlobalMemoryRecord, LayerType, MemoryChunk, MemoryTenantScope, MemoryTier, NodeType,
+    SourceObjectLifecycleRecord, SourceObjectLifecycleState,
 };
 
 fn config(url: String, max_pool_size: usize) -> PostgresMemoryStoreConfig {
@@ -229,7 +230,7 @@ async fn postgres_context_tree_recurses_and_entity_reads_fail_closed() {
         .await
         .expect_err("unconstrained session chunk list must fail closed");
     assert_eq!(error.kind, MemoryStoreErrorKind::InvalidRequest);
-    let mut narrowed_write = MemoryWriteScope::tenant(tenant);
+    let mut narrowed_write = MemoryWriteScope::tenant(tenant.clone());
     narrowed_write.subject = Some("user-a".to_string());
     let error = store
         .write(MemoryStoreWriteRequest::ContextNode {
@@ -242,6 +243,61 @@ async fn postgres_context_tree_recurses_and_entity_reads_fail_closed() {
         .await
         .expect_err("narrowed entity write must fail closed");
     assert_eq!(error.kind, MemoryStoreErrorKind::ScopeViolation);
+
+    store
+        .write(MemoryStoreWriteRequest::SourceObjectLifecycle {
+            scope: MemoryWriteScope::tenant(tenant.clone()),
+            record: SourceObjectLifecycleRecord {
+                source_object_id: "object-1".to_string(),
+                tenant_scope: tenant.clone(),
+                source_binding_id: "binding-1".to_string(),
+                connector_id: "connector-1".to_string(),
+                state: SourceObjectLifecycleState::Active,
+                tier: MemoryTier::Project,
+                session_id: None,
+                project_id: Some("project".to_string()),
+                import_namespace: "namespace".to_string(),
+                indexed_path: "object.md".to_string(),
+                native_object_id: "native-1".to_string(),
+                resource_ref: serde_json::json!({"id": "native-1"}),
+                data_class: "internal".to_string(),
+                content_hash: Some("hash".to_string()),
+                source_hash: Some("source-hash".to_string()),
+                first_seen_at_ms: 1,
+                last_seen_at_ms: 1,
+                tombstoned_at_ms: None,
+                metadata: None,
+            },
+        })
+        .await
+        .expect("write source lifecycle fixture");
+    let tombstoned = store
+        .mutate(MemoryStoreMutationRequest::TombstoneSourceObjectLifecycle {
+            scope: MemoryReadScope::tenant(tenant.clone()),
+            source_binding_id: "binding-1".to_string(),
+            native_object_id: "native-1".to_string(),
+            tombstoned_at_ms: 10,
+        })
+        .await
+        .expect("tombstone source lifecycle");
+    assert!(matches!(
+        tombstoned,
+        MemoryStoreMutationResult::Changed(true)
+    ));
+    let lifecycle = store
+        .query(MemoryStoreQueryRequest::SourceObjectLifecyclesForBinding {
+            scope: MemoryReadScope::tenant(tenant),
+            source_binding_id: "binding-1".to_string(),
+        })
+        .await
+        .expect("read tombstoned source lifecycle");
+    assert!(matches!(
+        lifecycle,
+        MemoryStoreQueryResult::SourceObjectLifecycles(records)
+            if records.len() == 1
+                && records[0].state == SourceObjectLifecycleState::Tombstoned
+                && records[0].tombstoned_at_ms == Some(10)
+    ));
 }
 
 #[tokio::test]
@@ -492,6 +548,52 @@ async fn postgres_encrypted_mode_seals_payloads_and_reranks_in_scope() {
         layer,
         MemoryStoreReadResult::ContextLayer(Some(layer))
             if layer.content == "sensitive semantic context"
+    ));
+
+    for (id, binding) in [
+        ("allowed-global", "drive-finance"),
+        ("denied-global", "drive-legal"),
+    ] {
+        let mut record = global_record(id, &tenant);
+        record.content = format!("mixed grant payload {id}");
+        record.metadata = Some(serde_json::json!({
+            "enterprise_source_binding": {
+                "binding_id": binding,
+                "data_class": "confidential"
+            }
+        }));
+        store
+            .write(MemoryStoreWriteRequest::GlobalRecord {
+                scope: MemoryWriteScope::tenant(tenant.clone()),
+                record,
+            })
+            .await
+            .expect("write mixed-grant encrypted global record");
+    }
+    let principal = crate::MemoryDecryptPrincipal::retrieval_gateway(
+        "finance-reader",
+        tenant.clone(),
+        vec![tandem_enterprise_contract::DataClass::Confidential],
+        vec!["drive-finance".to_string()],
+    );
+    let records = crate::decrypt_context::with_decrypt_principal(
+        principal,
+        store.query(MemoryStoreQueryRequest::ListGlobalRecords {
+            scope: MemoryReadScope::tenant(tenant.clone()),
+            user_id: "legacy-user".to_string(),
+            query: None,
+            project_tag: None,
+            channel_tag: None,
+            limit: 10,
+            offset: 0,
+        }),
+    )
+    .await
+    .expect("list only authorized encrypted global records");
+    assert!(matches!(
+        records,
+        MemoryStoreQueryResult::GlobalRecords(records)
+            if records.len() == 1 && records[0].id == "allowed-global"
     ));
 
     let result = store

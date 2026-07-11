@@ -33,6 +33,38 @@ fn validate_chunk_list_selector(selector: &MemoryChunkSelector) -> MemoryStoreRe
     }
 }
 
+fn current_principal_allows_row(
+    tenant: &crate::types::MemoryTenantScope,
+    owner_subject: Option<&str>,
+    data_class: &str,
+    source_binding_id: Option<&str>,
+) -> bool {
+    let Some(principal) = crate::decrypt_context::current_decrypt_principal() else {
+        return true;
+    };
+    if principal.tenant_scope != *tenant {
+        return false;
+    }
+    let Ok(data_class) = serde_json::from_value::<tandem_enterprise_contract::DataClass>(
+        serde_json::Value::String(data_class.to_string()),
+    ) else {
+        return false;
+    };
+    principal.allowed_data_classes.contains(&data_class)
+        && source_binding_id.is_none_or(|source| {
+            principal
+                .allowed_source_binding_ids
+                .iter()
+                .any(|allowed| allowed == source)
+        })
+        && owner_subject.is_none_or(|owner| {
+            principal
+                .allowed_owner_subjects
+                .iter()
+                .any(|allowed| allowed == owner)
+        })
+}
+
 fn build_context_tree(nodes: &[MemoryNode], parent_uri: &str, max_depth: usize) -> Vec<TreeNode> {
     if max_depth == 0 {
         return Vec::new();
@@ -192,6 +224,14 @@ impl PostgresMemoryStore {
                     .map_err(|error| store_error("read PostgreSQL chunks", error, true))?;
                 let chunks = rows
                     .into_iter()
+                    .filter(|row| {
+                        current_principal_allows_row(
+                            &scope.tenant,
+                            row.get::<_, Option<String>>(6).as_deref(),
+                            &row.get::<_, String>(7),
+                            row.get::<_, Option<String>>(8).as_deref(),
+                        )
+                    })
                     .map(|row| {
                         let key_scope = Self::persisted_key_scope(
                             &scope.tenant,
@@ -235,7 +275,15 @@ impl PostgresMemoryStore {
                     .await
                     .map_err(|error| store_error("read PostgreSQL global memory", error, true))?;
                 Ok(MemoryStoreReadResult::GlobalRecord(
-                    row.map(|row| {
+                    row.filter(|row| {
+                        current_principal_allows_row(
+                            &scope.tenant,
+                            row.get::<_, Option<String>>(6).as_deref(),
+                            &row.get::<_, String>(7),
+                            row.get::<_, Option<String>>(8).as_deref(),
+                        )
+                    })
+                    .map(|row| {
                         let key_scope = Self::persisted_key_scope(
                             &scope.tenant,
                             row.get(5),
@@ -492,6 +540,14 @@ impl PostgresMemoryStore {
                     ).await.map_err(|error| store_error("load encrypted PostgreSQL vector candidates", error, true))?;
                     let mut hits = rows
                         .into_iter()
+                        .filter(|row| {
+                            current_principal_allows_row(
+                                &scope.tenant,
+                                row.get::<_, Option<String>>(6).as_deref(),
+                                &row.get::<_, String>(7),
+                                row.get::<_, Option<String>>(8).as_deref(),
+                            )
+                        })
                         .map(|row| {
                             let org_unit: Option<String> = row.get(5);
                             let owner_subject: Option<String> = row.get(6);
@@ -791,6 +847,14 @@ impl PostgresMemoryStore {
         ).await.map_err(|error| store_error("query PostgreSQL global memory", error, true))?;
         let mut records = rows
             .into_iter()
+            .filter(|row| {
+                current_principal_allows_row(
+                    &scope.tenant,
+                    row.get::<_, Option<String>>(6).as_deref(),
+                    &row.get::<_, String>(7),
+                    row.get::<_, Option<String>>(8).as_deref(),
+                )
+            })
             .map(|row| {
                 let key_scope = Self::persisted_key_scope(
                     &scope.tenant,

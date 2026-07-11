@@ -927,7 +927,7 @@ impl PostgresMemoryStore {
                     .into_iter()
                     .filter(|value| value.native_object_id == native_object_id)
                 {
-                    value.state = SourceObjectLifecycleState::Deleted;
+                    value.state = SourceObjectLifecycleState::Tombstoned;
                     value.tombstoned_at_ms = Some(tombstoned_at_ms);
                     value.last_seen_at_ms = tombstoned_at_ms;
                     self.upsert_entity(
@@ -940,7 +940,7 @@ impl PostgresMemoryStore {
                     .await?;
                     count += 1;
                 }
-                Ok(MemoryStoreMutationResult::Affected(count))
+                Ok(MemoryStoreMutationResult::Changed(count > 0))
             }
             MemoryStoreMutationRequest::SetSourceObjectLifecycleState {
                 scope,
