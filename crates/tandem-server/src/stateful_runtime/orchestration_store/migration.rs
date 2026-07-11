@@ -833,6 +833,96 @@ mod tests {
     }
 
     #[test]
+    fn migration_write_failures_roll_back_every_imported_record_type() {
+        for table in [
+            "stateful_migrations",
+            "stateful_events",
+            "stateful_snapshots",
+            "automation_waits",
+            "legacy_handoffs",
+            "legacy_handoff_quarantine",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut paths = LegacyRuntimeMigrationPaths::from_runtime_root(directory.path());
+            std::fs::write(
+                &paths.run_events_path,
+                format!("{}\n", serde_json::to_string(&event()).unwrap()),
+            )
+            .unwrap();
+            let snapshot_dir = paths.snapshots_root.join("run-1");
+            std::fs::create_dir_all(&snapshot_dir).unwrap();
+            std::fs::write(
+                snapshot_dir.join("snapshot-1.json"),
+                serde_json::to_vec(&snapshot()).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                &paths.waits_path,
+                serde_json::to_vec(&vec![wait()]).unwrap(),
+            )
+            .unwrap();
+            let handoff_root = directory.path().join("handoffs");
+            let approved = handoff_root.join("approved");
+            std::fs::create_dir_all(&approved).unwrap();
+            std::fs::write(
+                approved.join("handoff-1.json"),
+                serde_json::to_vec(&handoff()).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(handoff_root.join("corrupt.json"), "{not-json}").unwrap();
+            paths.handoff_root = Some(handoff_root);
+            let store = store(directory.path());
+            store
+                .with_connection(|connection| {
+                    connection.execute_batch(&format!(
+                        "CREATE TRIGGER injected_migration_failure AFTER INSERT ON {table}
+                         BEGIN SELECT RAISE(ABORT, 'injected migration failure'); END;"
+                    ))?;
+                    Ok(())
+                })
+                .unwrap();
+
+            assert!(store.import_legacy_runtime_state(&paths, 100).is_err());
+            assert!(!store.legacy_runtime_migration_complete().unwrap());
+            store
+                .with_connection(|connection| {
+                    for table in [
+                        "stateful_migrations",
+                        "stateful_events",
+                        "stateful_snapshots",
+                        "automation_waits",
+                        "legacy_handoffs",
+                        "legacy_handoff_quarantine",
+                    ] {
+                        let count: u64 = connection.query_row(
+                            &format!("SELECT COUNT(*) FROM {table}"),
+                            [],
+                            |row| row.get(0),
+                        )?;
+                        assert_eq!(count, 0, "{table} retained a partial migration");
+                    }
+                    connection.execute_batch("DROP TRIGGER injected_migration_failure")?;
+                    Ok(())
+                })
+                .unwrap();
+
+            let report = store.import_legacy_runtime_state(&paths, 101).unwrap();
+            assert_eq!(
+                (
+                    report.events,
+                    report.snapshots,
+                    report.waits,
+                    report.handoffs
+                ),
+                (1, 1, 1, 1),
+                "{table} retry should import every valid record"
+            );
+            assert_eq!(report.quarantined_handoffs, 1);
+            assert!(store.legacy_runtime_migration_complete().unwrap());
+        }
+    }
+
+    #[test]
     fn existing_v2_store_upgrades_to_handoff_quarantine_schema() {
         let directory = tempfile::tempdir().unwrap();
         let database_path = directory.path().join("runtime.sqlite3");
