@@ -21,7 +21,7 @@ enterprise = [
     "tandem-enterprise-server/governance",
     "tandem-enterprise-server/google-drive",
 ]
-enterprise-full = ["enterprise-server", "tandem-enterprise-server/full"]
+enterprise-full = ["enterprise", "tandem-enterprise-server/full"]
 
 [[bin]]
 name = "tandem-engine"

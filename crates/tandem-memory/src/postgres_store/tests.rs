@@ -973,6 +973,27 @@ async fn postgres_clear_operations_preserve_other_memory_tiers() {
     }
     let mut narrowed_scope = MemoryReadScope::tenant(tenant.clone());
     narrowed_scope.org_unit = Some("finance".to_string());
+    let source_path_error = store
+        .mutate(MemoryStoreMutationRequest::DeleteChunksBySourcePath {
+            scope: narrowed_scope.clone(),
+            selector: MemoryChunkSelector::project("project"),
+            source_path: "guide.md".to_string(),
+        })
+        .await
+        .expect_err("narrowed source-path cleanup must fail closed");
+    assert_eq!(source_path_error.kind, MemoryStoreErrorKind::ScopeViolation);
+    let metadata_error = store
+        .mutate(
+            MemoryStoreMutationRequest::UpdateChunkMetadataBySourcePath {
+                scope: narrowed_scope.clone(),
+                selector: MemoryChunkSelector::project("project"),
+                source_path: "guide.md".to_string(),
+                metadata: serde_json::json!({"owner_org_unit_id": "finance"}),
+            },
+        )
+        .await
+        .expect_err("narrowed source-path metadata update must fail closed");
+    assert_eq!(metadata_error.kind, MemoryStoreErrorKind::ScopeViolation);
     let narrowed_error = store
         .mutate(MemoryStoreMutationRequest::ClearProjectFileIndex {
             scope: narrowed_scope,

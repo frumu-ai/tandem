@@ -11,6 +11,16 @@ fn deployment(scope: &crate::types::MemoryTenantScope) -> &str {
     scope.deployment_id.as_deref().unwrap_or("")
 }
 
+fn reject_narrowed_bulk_scope(scope: &MemoryReadScope, operation: &str) -> MemoryStoreResult<()> {
+    if scope.org_unit.is_some() || scope.subject.is_some() {
+        return Err(MemoryStoreError::new(
+            MemoryStoreErrorKind::ScopeViolation,
+            format!("PostgreSQL {operation} cannot widen an org-unit/subject scope"),
+        ));
+    }
+    Ok(())
+}
+
 fn selector_tier(selector: &MemoryChunkSelector) -> String {
     serde_json::to_value(selector.tier)
         .ok()
@@ -450,6 +460,7 @@ impl PostgresMemoryStore {
                 Ok(MemoryStoreMutationResult::Affected(changed))
             }
             MemoryStoreMutationRequest::ClearSession { scope, session_id } => {
+                reject_narrowed_bulk_scope(&scope, "session cleanup")?;
                 let changed = client.execute("DELETE FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND tier='session' AND session_id=$4",
                     &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&session_id]).await.map_err(|error| store_error("clear PostgreSQL session", error, true))?;
                 Ok(MemoryStoreMutationResult::Affected(changed))
@@ -582,6 +593,7 @@ impl PostgresMemoryStore {
                 Ok(MemoryStoreMutationResult::Affected(deleted))
             }
             MemoryStoreMutationRequest::ClearProject { scope, project_id } => {
+                reject_narrowed_bulk_scope(&scope, "project cleanup")?;
                 let changed = client.execute("DELETE FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND tier='project' AND project_id=$4",
                     &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&project_id]).await.map_err(|error| store_error("clear PostgreSQL project", error, true))?;
                 Ok(MemoryStoreMutationResult::Affected(changed))
@@ -591,12 +603,7 @@ impl PostgresMemoryStore {
                 project_id,
                 vacuum,
             } => {
-                if scope.org_unit.is_some() || scope.subject.is_some() {
-                    return Err(MemoryStoreError::new(
-                        MemoryStoreErrorKind::ScopeViolation,
-                        "PostgreSQL project file-index cleanup cannot widen an org-unit/subject scope",
-                    ));
-                }
+                reject_narrowed_bulk_scope(&scope, "project file-index cleanup")?;
                 let rows = client.query("DELETE FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND tier='project' AND project_id=$4 AND source='file' RETURNING COALESCE(octet_length(data::text),octet_length(data_ciphertext))::bigint",
                     &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&project_id]).await.map_err(|error| store_error("clear PostgreSQL file index", error, true))?;
                 client.execute("DELETE FROM tandem_memory_entities WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND entity_type='import_index' AND key1=$4",
@@ -744,6 +751,7 @@ impl PostgresMemoryStore {
                 selector,
                 path,
             } => {
+                reject_narrowed_bulk_scope(&scope, "import-index cleanup")?;
                 let key = selector
                     .project_id
                     .or(selector.session_id)
@@ -756,6 +764,7 @@ impl PostgresMemoryStore {
                 selector,
                 source_path,
             } => {
+                reject_narrowed_bulk_scope(&scope, "source-path cleanup")?;
                 let rows = client.query("DELETE FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND tier=$4 AND ($5::text IS NULL OR project_id=$5) AND ($6::text IS NULL OR session_id=$6) AND source_path=$7 RETURNING COALESCE(octet_length(data::text),octet_length(data_ciphertext))::bigint", &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&selector_tier(&selector),&selector.project_id,&selector.session_id,&source_path]).await.map_err(|error| store_error("delete PostgreSQL source chunks", error, true))?;
                 Ok(MemoryStoreMutationResult::SourcePathDelete(
                     MemorySourcePathDeleteResult {
@@ -770,6 +779,7 @@ impl PostgresMemoryStore {
                 source_path,
                 metadata,
             } => {
+                reject_narrowed_bulk_scope(&scope, "source-path metadata update")?;
                 let rows = client.query("SELECT id,data,data_ciphertext,data_envelope,data_policy_decision_id,data_audit_id,owner_org_unit_id,owner_subject,data_class,source_binding_id,embedding_ciphertext,embedding_envelope,search_policy_decision_id,search_audit_id FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND tier=$4 AND ($5::text IS NULL OR project_id=$5) AND ($6::text IS NULL OR session_id=$6) AND source_path=$7", &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&selector_tier(&selector),&selector.project_id,&selector.session_id,&source_path]).await.map_err(|error| store_error("read PostgreSQL source chunks", error, true))?;
                 for row in &rows {
                     let org: Option<String> = row.get(6);
@@ -857,6 +867,7 @@ impl PostgresMemoryStore {
                 native_object_id,
                 tombstoned_at_ms,
             } => {
+                reject_narrowed_bulk_scope(&scope, "source lifecycle tombstone")?;
                 let read_scope = MemoryReadScope {
                     tenant: scope.tenant.clone(),
                     org_unit: scope.org_unit.clone(),
@@ -902,6 +913,7 @@ impl PostgresMemoryStore {
                 state,
                 changed_at_ms,
             } => {
+                reject_narrowed_bulk_scope(&scope, "source lifecycle state update")?;
                 let read_scope = MemoryReadScope {
                     tenant: scope.tenant.clone(),
                     org_unit: scope.org_unit.clone(),
@@ -940,6 +952,7 @@ impl PostgresMemoryStore {
                 scope,
                 retention_days,
             } => {
+                reject_narrowed_bulk_scope(&scope, "hygiene cleanup")?;
                 let cutoff = chrono::Utc::now() - chrono::Duration::days(retention_days as i64);
                 let changed=client.execute("DELETE FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND tier='session' AND created_at<$4", &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&cutoff]).await.map_err(|error| store_error("run PostgreSQL hygiene", error, true))?;
                 Ok(MemoryStoreMutationResult::Affected(changed))
@@ -960,6 +973,7 @@ impl PostgresMemoryStore {
                 project_id,
                 max_chunks,
             } => {
+                reject_narrowed_bulk_scope(&scope, "project-cap cleanup")?;
                 let changed=client.execute("DELETE FROM tandem_memory_chunks WHERE id IN (SELECT id FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND tier='project' AND project_id=$4 ORDER BY created_at DESC OFFSET $5)", &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&project_id,&max_chunks.max(0)]).await.map_err(|error| store_error("enforce PostgreSQL project cap", error, true))?;
                 Ok(MemoryStoreMutationResult::Affected(changed))
             }
