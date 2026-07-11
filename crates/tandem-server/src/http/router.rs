@@ -198,6 +198,126 @@ pub(super) fn build_router(state: AppState, route_extensions: &[super::RouteRegi
             "/stateful-runtime/runs/{run_id}/snapshots/{snapshot_id}",
             axum::routing::get(super::stateful_runtime_api::get_stateful_run_snapshot),
         );
+    // Orchestration authoring APIs (TAN-694): drafts, validation, versions,
+    // publishing, stale references, and dry-run transition previews.
+    router = router
+        .route(
+            "/orchestrations",
+            axum::routing::get(super::orchestrations_api::list_orchestrations)
+                .post(super::orchestrations_api::create_orchestration_draft),
+        )
+        .route(
+            "/orchestrations/{orchestration_id}",
+            axum::routing::get(super::orchestrations_api::get_orchestration)
+                .put(super::orchestrations_api::update_orchestration_draft),
+        )
+        .route(
+            "/orchestrations/{orchestration_id}/archive",
+            axum::routing::post(super::orchestrations_api::archive_orchestration_draft),
+        )
+        .route(
+            "/orchestrations/{orchestration_id}/validate",
+            axum::routing::post(super::orchestrations_api::validate_orchestration),
+        )
+        .route(
+            "/orchestrations/{orchestration_id}/publish",
+            axum::routing::post(super::orchestrations_api::publish_orchestration),
+        )
+        .route(
+            "/orchestrations/{orchestration_id}/versions",
+            axum::routing::get(super::orchestrations_api::list_orchestration_versions),
+        )
+        .route(
+            "/orchestrations/{orchestration_id}/versions/{version}",
+            axum::routing::get(super::orchestrations_api::get_orchestration_version),
+        )
+        .route(
+            "/orchestrations/{orchestration_id}/stale-references",
+            axum::routing::get(super::orchestrations_api::orchestration_stale_references),
+        )
+        .route(
+            "/orchestrations/{orchestration_id}/refresh-references",
+            axum::routing::post(super::orchestrations_api::refresh_orchestration_references),
+        )
+        .route(
+            "/orchestrations/{orchestration_id}/dry-run",
+            axum::routing::post(super::orchestrations_api::dry_run_orchestration_transition),
+        );
+    // Long-running goal runtime APIs (TAN-695): lifecycle, graph/lineage and
+    // event read models, governed handoffs, waits, and the SSE change stream.
+    router = router
+        .route(
+            "/goals",
+            axum::routing::get(super::goals_api::list_goals).post(super::goals_api::start_goal),
+        )
+        .route(
+            "/goals/{goal_id}",
+            axum::routing::get(super::goals_api::get_goal),
+        )
+        .route(
+            "/goals/{goal_id}/pause",
+            axum::routing::post(super::goals_api::pause_goal),
+        )
+        .route(
+            "/goals/{goal_id}/resume",
+            axum::routing::post(super::goals_api::resume_goal),
+        )
+        .route(
+            "/goals/{goal_id}/cancel",
+            axum::routing::post(super::goals_api::cancel_goal),
+        )
+        .route(
+            "/goals/{goal_id}/graph",
+            axum::routing::get(super::goals_api::get_goal_graph),
+        )
+        .route(
+            "/goals/{goal_id}/runs",
+            axum::routing::get(super::goals_api::list_goal_runs),
+        )
+        .route(
+            "/goals/{goal_id}/events",
+            axum::routing::get(super::goals_api::list_goal_events),
+        )
+        .route(
+            "/goals/{goal_id}/events/stream",
+            axum::routing::get(super::goals_api::stream_goal_events),
+        )
+        .route(
+            "/goals/{goal_id}/artifacts",
+            axum::routing::get(super::goals_api::list_goal_artifacts),
+        )
+        .route(
+            "/goals/{goal_id}/budgets",
+            axum::routing::get(super::goals_api::get_goal_budgets),
+        )
+        .route(
+            "/goals/{goal_id}/handoffs",
+            axum::routing::get(super::goals_api::list_goal_handoffs),
+        )
+        .route(
+            "/goals/{goal_id}/transitions",
+            axum::routing::post(super::goals_api::emit_goal_transition),
+        )
+        .route(
+            "/goals/{goal_id}/completion",
+            axum::routing::post(super::goals_api::settle_goal_completion),
+        )
+        .route(
+            "/goals/{goal_id}/handoffs/{handoff_id}/decision",
+            axum::routing::post(super::goals_api::decide_goal_handoff),
+        )
+        .route(
+            "/goals/{goal_id}/waits",
+            axum::routing::get(super::goals_api::list_goal_waits),
+        )
+        .route(
+            "/goals/{goal_id}/waits/{wait_id}",
+            axum::routing::get(super::goals_api::get_goal_wait),
+        )
+        .route(
+            "/goals/{goal_id}/waits/{wait_id}/resolve",
+            axum::routing::post(super::goals_api::resolve_goal_wait),
+        );
     router = super::routes_incident_monitor::apply(router);
     router = super::routes_external_actions::apply(router);
     router = super::routes_goal_capability_learning::apply(router);

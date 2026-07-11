@@ -89,6 +89,7 @@ use crate::{
 pub mod approval_message_map;
 mod automation_enterprise_delegation;
 mod automation_v2_dead_letter_retry;
+mod automation_v2_orchestration_goals;
 mod automation_v2_orchestration_kernel;
 mod automation_v2_orchestration_store;
 mod automation_v2_run_claims;
@@ -117,6 +118,7 @@ mod prompt_memory_context;
 mod slack_event_runtime;
 mod tool_dispatch_outbox;
 
+pub(crate) use automation_v2_orchestration_goals::StartGoalRequest;
 pub(crate) use automation_v2_run_store::*;
 pub(crate) use automation_v2_wait_nodes::*;
 pub(crate) use automation_webhook_delivery::*;
@@ -1403,4 +1405,4 @@ mod automation_v2_context_recovery;
 pub mod principals;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
