@@ -555,6 +555,7 @@ export function StatefulRunsPage({
                           <div className="flex gap-1">
                             <button
                               type="button"
+                              aria-label="Inspect run detail"
                               className="tcp-btn h-7 px-2 text-xs"
                               onClick={(event) => {
                                 event.stopPropagation();
@@ -566,6 +567,7 @@ export function StatefulRunsPage({
                             </button>
                             <button
                               type="button"
+                              aria-label={`Open ${row.sourceLabel.toLowerCase()} view`}
                               className="tcp-btn h-7 px-2 text-xs"
                               onClick={(event) => {
                                 event.stopPropagation();

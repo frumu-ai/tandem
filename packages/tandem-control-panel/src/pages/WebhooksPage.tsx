@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { AutomationWebhookManager } from "../features/automations/AutomationWebhookManager";
-import { AnimatedPage, EmptyState, LoadingState } from "../ui/index.tsx";
+import { AnimatedPage, EmptyState, LoadingState, SearchInput } from "../ui/index.tsx";
 import { Icon } from "../ui/Icon";
 import type { AppPageProps } from "./pageTypes";
 
@@ -162,7 +162,7 @@ function TriggerSummary({ trigger }: { trigger: any }) {
   const rejected = countValue(counts.rejected);
   const duplicate = countValue(counts.duplicate);
   return (
-    <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-500">
+    <div className="mt-2 flex flex-wrap gap-2 text-caption text-slate-500">
       <span>{total} deliveries</span>
       <span>{accepted} accepted</span>
       <span>{rejected} rejected</span>
@@ -312,27 +312,27 @@ export function WebhooksPage({ client, toast }: AppPageProps) {
         </div>
         <div className="grid gap-2 md:grid-cols-6">
           <div className="rounded-md border border-slate-800/70 bg-black/20 p-2">
-            <div className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Workflows</div>
+            <div className="text-caption uppercase tracking-[0.14em] text-slate-500">Workflows</div>
             <div className="mt-1 text-lg font-semibold text-slate-100">{totals.automations}</div>
           </div>
           <div className="rounded-md border border-slate-800/70 bg-black/20 p-2">
-            <div className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Triggers</div>
+            <div className="text-caption uppercase tracking-[0.14em] text-slate-500">Triggers</div>
             <div className="mt-1 text-lg font-semibold text-slate-100">{totals.triggers}</div>
           </div>
           <div className="rounded-md border border-slate-800/70 bg-black/20 p-2">
-            <div className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Ready</div>
+            <div className="text-caption uppercase tracking-[0.14em] text-slate-500">Ready</div>
             <div className="mt-1 text-lg font-semibold text-emerald-200">{totals.ready}</div>
           </div>
           <div className="rounded-md border border-slate-800/70 bg-black/20 p-2">
-            <div className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Accepted</div>
+            <div className="text-caption uppercase tracking-[0.14em] text-slate-500">Accepted</div>
             <div className="mt-1 text-lg font-semibold text-sky-200">{totals.accepted}</div>
           </div>
           <div className="rounded-md border border-slate-800/70 bg-black/20 p-2">
-            <div className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Rejected</div>
+            <div className="text-caption uppercase tracking-[0.14em] text-slate-500">Rejected</div>
             <div className="mt-1 text-lg font-semibold text-amber-200">{totals.rejected}</div>
           </div>
           <div className="rounded-md border border-slate-800/70 bg-black/20 p-2">
-            <div className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Duplicate</div>
+            <div className="text-caption uppercase tracking-[0.14em] text-slate-500">Duplicate</div>
             <div className="mt-1 text-lg font-semibold text-slate-200">{totals.duplicate}</div>
           </div>
         </div>
@@ -350,8 +350,9 @@ export function WebhooksPage({ client, toast }: AppPageProps) {
                 <span className="tcp-badge tcp-badge-info">Syncing</span>
               ) : null}
             </div>
-            <input
+            <SearchInput
               className="tcp-input h-8 text-xs"
+              aria-label="Search webhooks"
               value={query}
               onInput={(event) => setQuery((event.target as HTMLInputElement).value)}
               placeholder="Search trigger, provider, workflow, URL"
@@ -413,7 +414,7 @@ export function WebhooksPage({ client, toast }: AppPageProps) {
                             <div className="truncate text-xs font-semibold text-slate-200">
                               {safeString(trigger?.name) || triggerProvider(trigger)}
                             </div>
-                            <div className="mt-1 truncate text-[11px] text-slate-500">
+                            <div className="mt-1 truncate text-caption text-slate-500">
                               {triggerProvider(trigger)} · {triggerEventKind(trigger)}
                             </div>
                           </div>

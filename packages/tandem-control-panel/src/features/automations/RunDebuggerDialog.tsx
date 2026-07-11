@@ -21,7 +21,7 @@ import {
   workflowBlockedNodeCount as fallbackWorkflowBlockedNodeCount,
   workflowCompletedNodeCount as fallbackWorkflowCompletedNodeCount,
 } from "../orchestration/workflowStability";
-import { Icon } from "../../ui/Icon";
+import { Icon, Spinner } from "../../ui";
 
 function RunHistoryEventDetails({
   event,
@@ -291,10 +291,7 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
                 }
               >
                 {workflowTaskContinueMutation.isPending ? (
-                  <span
-                    aria-hidden="true"
-                    className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent"
-                  />
+                  <Spinner size={14} label="Continuing task" />
                 ) : (
                   <Icon name="skip-forward" />
                 )}
@@ -331,10 +328,7 @@ export function RunDebuggerDialog({ state, actions, helpers }: any) {
                 }
               >
                 {workflowTaskRetryMutation.isPending || workflowRecoverMutation.isPending ? (
-                  <span
-                    aria-hidden="true"
-                    className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent"
-                  />
+                  <Spinner size={14} label="Retrying task" />
                 ) : (
                   <Icon name="rotate-ccw" />
                 )}

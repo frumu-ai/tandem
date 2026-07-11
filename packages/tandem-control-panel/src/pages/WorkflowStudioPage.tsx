@@ -28,6 +28,7 @@ import {
   type McpConnectionSummary,
 } from "../features/mcp/mcpConnections";
 import { WorkflowStudioInspectorPanels } from "./WorkflowStudioInspectorPanels";
+import { SearchInput } from "../ui/index.tsx";
 import {
   AGENT_CATALOG_HANDOFF_KEY,
   AUTOMATIONS_STUDIO_HANDOFF_KEY,
@@ -1858,8 +1859,9 @@ export function WorkflowStudioPage({ client, api, toast, navigate }: AppPageProp
                     </button>
                   </div>
                   <div className="mb-2">
-                    <input
+                    <SearchInput
                       className="tcp-input"
+                      aria-label="Filter folders"
                       placeholder="Type to filter folders..."
                       value={workspaceBrowserSearch}
                       onInput={(event) =>

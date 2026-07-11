@@ -409,6 +409,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
             {paused ? "Resume" : "Pause"}
           </button>
           <button
+            aria-label="Remove automation"
             className="tcp-btn-danger h-8 w-8 px-0 flex items-center justify-center"
             onClick={() =>
               setDeleteConfirm({
@@ -455,7 +456,7 @@ export function MyAutomationsContent({ state, actions, helpers }: any) {
             >
               <Icon name="star" className={`w-3.5 h-3.5 ${favorite ? "fill-current" : ""}`} />
             </button>
-            <button className="tcp-btn h-7 px-2 text-xs" onClick={() => beginEdit(automation)}>
+            <button aria-label="Edit automation" className="tcp-btn h-7 px-2 text-xs" onClick={() => beginEdit(automation)}>
               <Icon name="pencil" />
             </button>
             <span className={statusColor(status)}>{status}</span>

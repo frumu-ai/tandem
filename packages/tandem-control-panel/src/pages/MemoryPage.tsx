@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { useMemo, useState } from "react";
 import { MemoryImportDialog } from "../components/MemoryImportDialog";
 import { renderMarkdownSafe } from "../lib/markdown";
-import { AnimatedPage, Badge, PanelCard, Toolbar } from "../ui/index.tsx";
+import { AnimatedPage, Badge, PanelCard, SearchInput, Toolbar } from "../ui/index.tsx";
 import { EmptyState } from "./ui";
 import type { AppPageProps } from "./pageTypes";
 import { Icon } from "../ui/Icon";
@@ -301,7 +301,7 @@ export function MemoryPage({ api, client, toast }: AppPageProps) {
         </div>
 
         <Toolbar className="mb-3">
-          <input
+          <SearchInput
             className="tcp-input flex-1"
             value={query}
             onInput={(e) => setQuery((e.target as HTMLInputElement).value)}

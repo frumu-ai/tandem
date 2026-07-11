@@ -5,7 +5,7 @@ import { groupNavRoutes } from "./store.js";
 import { IconButton, StatusPulse } from "../ui/index.tsx";
 import { TandemLogoAnimation } from "../ui/TandemLogoAnimation";
 import type { NavigationLockState } from "../pages/pageTypes";
-import { Icon } from "../ui/Icon";
+import { Icon, type IconName } from "../ui/Icon";
 
 // Keep subtitles to a short descriptor — the shell header shows one line and the
 // page body carries the detail. Every primary nav route needs an entry so none
@@ -67,7 +67,7 @@ export function AppShell({
   identity: { botName: string; botAvatarUrl: string; controlPanelName?: string };
   currentRoute: string;
   providerLocked: boolean;
-  navRoutes: Array<[string, string, string]>;
+  navRoutes: Array<[string, string, IconName]>;
   onNavigate: (route: string) => void;
   onPaletteOpen: () => void;
   onThemeCycle: () => void;
@@ -190,6 +190,7 @@ export function AppShell({
             key={id}
             type="button"
             title={label}
+            aria-label={label}
             disabled={disabled}
             className={`tcp-rail-icon ${active ? "active" : ""} ${disabled ? "locked" : ""}`}
             onClick={() => onNavigate(id)}
@@ -209,7 +210,7 @@ export function AppShell({
         : buttons;
     });
 
-  const renderContextNavButton = ([id, label, icon]: [string, string, string], mobile: boolean) => {
+  const renderContextNavButton = ([id, label, icon]: [string, string, IconName], mobile: boolean) => {
     const active = currentRoute === id;
     const locked = providerLocked && id !== "settings";
     const disabled = locked || navigationLocked;
@@ -384,13 +385,13 @@ export function AppShell({
         </button>
         <nav className="tcp-rail-nav">{renderIconRailItems()}</nav>
         <div className="tcp-rail-footer">
-          <IconButton title="Command palette" onClick={onPaletteOpen} disabled={navigationLocked}>
+          <IconButton aria-label="Command palette" onClick={onPaletteOpen} disabled={navigationLocked}>
             <Icon name="search" />
           </IconButton>
-          <IconButton title="Cycle theme" onClick={onThemeCycle} disabled={navigationLocked}>
+          <IconButton aria-label="Cycle theme" onClick={onThemeCycle} disabled={navigationLocked}>
             <Icon name="paint-bucket" />
           </IconButton>
-          <IconButton title="Logout" onClick={onLogout} disabled={navigationLocked}>
+          <IconButton aria-label="Logout" onClick={onLogout} disabled={navigationLocked}>
             <Icon name="log-out" />
           </IconButton>
           <div className="mt-2 flex justify-center">
@@ -426,6 +427,7 @@ export function AppShell({
             <button
               type="button"
               className={`tcp-incident-monitor-pill ${incidentMonitorState.toneClass}`}
+              aria-label={incidentMonitorState.label}
               disabled={navigationLocked}
               title={
                 statusBar.incidentMonitor?.lastError
@@ -559,7 +561,7 @@ export function AppShell({
                   <div className="text-sm font-semibold">{identity.botName}</div>
                   <div className="tcp-subtle text-xs">{routeMeta.title}</div>
                 </div>
-                <IconButton title="Close" onClick={() => setMobileNavOpen(false)}>
+                <IconButton aria-label="Close navigation" onClick={() => setMobileNavOpen(false)}>
                   <Icon name="x" />
                 </IconButton>
               </div>

@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
-import { Badge, DetailDrawer, Toolbar } from "../ui/index.tsx";
+import { Badge, DetailDrawer, SearchInput, Toolbar } from "../ui/index.tsx";
 import { IncidentMonitorExternalProjectsPanel } from "../components/IncidentMonitorExternalProjectsPanel";
 import { EmptyState } from "./ui";
 import {
@@ -285,8 +285,9 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                 </button>
               </div>
               <div className="mb-2">
-                <input
+                <SearchInput
                   className="tcp-input"
+                  aria-label="Filter folders"
                   placeholder="Type to filter folders..."
                   value={incidentMonitorWorkspaceBrowserSearch}
                   onInput={(e) =>
@@ -521,6 +522,7 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                 </div>
                 <button
                   type="button"
+                  aria-label="Close MCP server dialog"
                   className="tcp-btn h-8 px-2"
                   onClick={() => setMcpModalOpen(false)}
                 >
@@ -575,7 +577,8 @@ export function SettingsPageOverlays({ controller }: SettingsPageOverlaysProps) 
                         Refresh
                       </button>
                     </div>
-                    <input
+                    <SearchInput
+                      aria-label="Search built-in MCP providers"
                       className="tcp-input"
                       value={mcpCatalogSearch}
                       onInput={(event) =>

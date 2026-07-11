@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { EmptyState } from "../ui/index.tsx";
+import { EmptyState, SearchInput } from "../ui/index.tsx";
 import { Icon } from "../ui/Icon";
 
 export function WorkspaceDirectoryPicker({
@@ -102,8 +102,9 @@ export function WorkspaceDirectoryPicker({
               </button>
             </div>
             <div className="mb-2">
-              <input
+              <SearchInput
                 className="tcp-input"
+                aria-label="Filter folders"
                 placeholder="Type to filter folders..."
                 value={search}
                 onInput={(event) => onSearchChange((event.target as HTMLInputElement).value)}

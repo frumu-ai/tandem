@@ -1,7 +1,7 @@
 import { AnimatePresence, motion } from "motion/react";
 import type { ReactNode } from "react";
 import { useEffect, useRef } from "react";
-import { Icon } from "../ui/Icon";
+import { Icon, type IconName } from "../ui/Icon";
 
 function useDialogIconRender(active: boolean) {
   const dialogRef = useRef<HTMLDivElement | null>(null);
@@ -77,7 +77,7 @@ type ConfirmDialogProps = {
   children?: ReactNode;
   confirmLabel?: string;
   cancelLabel?: string;
-  confirmIcon?: string;
+  confirmIcon?: IconName;
   confirmTone?: "default" | "danger";
   confirmDisabled?: boolean;
   widthClassName?: string;
@@ -137,7 +137,7 @@ type PromptDialogProps = {
   placeholder?: string;
   confirmLabel?: string;
   cancelLabel?: string;
-  confirmIcon?: string;
+  confirmIcon?: IconName;
   confirmTone?: "default" | "primary" | "danger";
   confirmDisabled?: boolean;
   widthClassName?: string;

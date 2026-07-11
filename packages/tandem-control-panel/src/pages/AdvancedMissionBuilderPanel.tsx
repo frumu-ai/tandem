@@ -12,7 +12,8 @@ import {
   type MissionBuilderScheduleDefaults,
 } from "../features/mission-builder/shared";
 import type { NavigationLockState } from "./pageTypes";
-import { Icon } from "../ui/Icon";
+import { Icon, type IconName } from "../ui/Icon";
+import { SearchInput } from "../ui/index.tsx";
 
 type ApiFn = (path: string, init?: RequestInit) => Promise<any>;
 
@@ -141,7 +142,7 @@ type StarterPresetFile = {
   blueprint: MissionBlueprint;
 };
 
-const STARTER_PRESET_ICON_BY_ID: Record<string, string> = {
+const STARTER_PRESET_ICON_BY_ID: Record<string, IconName> = {
   "ai-opportunity": "sparkles",
   "workflow-audit": "workflow",
   "agentic-design": "bot",
@@ -377,7 +378,7 @@ function Section({
 }: {
   title: string;
   subtitle?: string;
-  icon?: string;
+  icon?: IconName;
   children: any;
 }) {
   return (
@@ -460,7 +461,7 @@ function ToggleChip({
 }: {
   active: boolean;
   label: string;
-  icon?: string;
+  icon?: IconName;
   onClick: () => void;
   disabled?: boolean;
 }) {
@@ -584,8 +585,9 @@ function WorkspaceDirectoryPicker({
               </button>
             </div>
             <div className="mb-2">
-              <input
+              <SearchInput
                 className="tcp-input"
+                aria-label="Filter folders"
                 placeholder="Type to filter folders..."
                 value={search}
                 onInput={(event) => onSearchChange((event.target as HTMLInputElement).value)}

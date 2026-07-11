@@ -4,6 +4,18 @@ import forms from "@tailwindcss/forms";
 export default {
   content: ["./index.html", "./src/**/*.{js,mjs,ts,tsx}"],
   theme: {
+    // TAN-685: the application type scale is intentionally limited to eight sizes.
+    // Markdown content may define its own prose rhythm, but application UI must use these tokens.
+    fontSize: {
+      micro: ["0.625rem", { lineHeight: "0.875rem" }],
+      caption: ["0.6875rem", { lineHeight: "1rem" }],
+      xs: ["0.75rem", { lineHeight: "1rem" }],
+      sm: ["0.875rem", { lineHeight: "1.25rem" }],
+      base: ["1rem", { lineHeight: "1.5rem" }],
+      lg: ["1.125rem", { lineHeight: "1.75rem" }],
+      xl: ["1.5rem", { lineHeight: "2rem" }],
+      "2xl": ["2rem", { lineHeight: "2.25rem" }],
+    },
     borderRadius: {
       none: "var(--radius)",
       sm: "var(--radius)",

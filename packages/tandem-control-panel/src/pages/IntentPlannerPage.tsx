@@ -1277,6 +1277,7 @@ export function IntentPlannerPage({
                 </button>
                 <button
                   type="button"
+                  aria-label="Reset session"
                   className="tcp-btn"
                   onClick={() => void resetPlan()}
                   title="Reset session"

@@ -515,7 +515,7 @@ export function AutomationCalendar({
             {previewText}
           </span>
           {overflowCount > 0 ? (
-            <span className="inline-flex shrink-0 items-center rounded-full border border-slate-600/70 bg-slate-950/80 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-slate-200">
+            <span className="inline-flex shrink-0 items-center rounded-full border border-slate-600/70 bg-slate-950/80 px-1.5 py-0.5 text-micro font-semibold uppercase tracking-[0.18em] text-slate-200">
               +{overflowCount}
             </span>
           ) : null}

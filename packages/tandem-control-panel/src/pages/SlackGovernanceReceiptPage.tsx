@@ -177,6 +177,7 @@ export function SlackGovernanceReceiptPage({ api, toast }: AppPageProps) {
               actions={
                 <button
                   type="button"
+                  aria-label="Show export error"
                   className="tcp-btn-secondary"
                   onClick={() => toast("warn", safeString(evidenceQuery.data?.error, "Export unavailable"))}
                 >

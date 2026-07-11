@@ -4,11 +4,11 @@ import { StatefulRunsPage } from "../features/runs/StatefulRunsPage";
 import { ApprovalWaitsView, RecoveryQueueView, WebhookInboxView } from "../features/runs/StatefulRuntimeQueues";
 import type { AppPageProps } from "./pageTypes";
 import { DEFAULT_STATEFUL_RUN_FILTERS } from "../../lib/runs/stateful-runs.js";
-import { Icon } from "../ui/Icon";
+import { Icon, type IconName } from "../ui/Icon";
 
 type RunsSurface = "runs" | "webhooks" | "approvals" | "recovery";
 
-const RUNS_SURFACES: Array<{ id: RunsSurface; label: string; icon: string }> = [
+const RUNS_SURFACES: Array<{ id: RunsSurface; label: string; icon: IconName }> = [
   { id: "runs", label: "Runs", icon: "activity" },
   { id: "webhooks", label: "Webhooks", icon: "webhook" },
   { id: "approvals", label: "Approvals", icon: "shield-check" },

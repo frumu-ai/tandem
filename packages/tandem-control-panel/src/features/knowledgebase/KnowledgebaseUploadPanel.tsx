@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { renderMarkdownSafe } from "../../lib/markdown";
 import { ConfirmDialog } from "../../components/ControlPanelDialogs";
-import { Badge, EmptyState, PanelCard, Toolbar } from "../../ui/index.tsx";
+import { Badge, EmptyState, PanelCard, SearchInput, Toolbar } from "../../ui/index.tsx";
 import { Icon } from "../../ui/Icon";
 
 type KnowledgebaseCollection = {
@@ -1379,8 +1379,9 @@ export function KnowledgebaseUploadPanel({
               <div className="grid min-h-0 gap-3">
                 <div className="grid gap-2 rounded-xl border border-white/10 bg-black/20 p-3">
                   <div className="flex flex-wrap items-center gap-2">
-                    <input
+                    <SearchInput
                       className="tcp-input h-9 min-w-[220px] flex-1"
+                      aria-label="Filter documents"
                       value={documentSearch}
                       onChange={(event) => setDocumentSearch(event.target.value)}
                       placeholder="Filter documents"

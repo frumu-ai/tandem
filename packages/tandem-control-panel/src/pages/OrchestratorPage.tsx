@@ -17,6 +17,7 @@ import { EmptyState } from "./ui";
 import { LazyJson } from "../features/automations/LazyJson";
 import type { AppPageProps } from "./pageTypes";
 import { Icon } from "../ui/Icon";
+import { SearchInput } from "../ui/index.tsx";
 
 const DEFAULT_BUDGET: BudgetUsage = {
   max_iterations: 500,
@@ -959,6 +960,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                 <div className="inline-flex items-center gap-2 text-sm font-semibold">
                   <button
                     type="button"
+                    aria-label="Toggle history"
                     className="chat-icon-btn h-8 w-8"
                     title="History"
                     onClick={() => setHistoryOpen((prev) => !prev)}
@@ -1101,8 +1103,9 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                 </button>
               </div>
               <div className="mb-2">
-                <input
+                <SearchInput
                   className="tcp-input"
+                  aria-label="Filter folders"
                   placeholder="Type to filter folders..."
                   value={workspaceBrowserSearch}
                   onInput={(e) => setWorkspaceBrowserSearch((e.target as HTMLInputElement).value)}
@@ -1148,6 +1151,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                 <div className="inline-flex items-center gap-2 text-sm font-semibold">
                   <button
                     type="button"
+                    aria-label="Toggle history"
                     className="chat-icon-btn h-8 w-8"
                     title="History"
                     onClick={() => setHistoryOpen((prev) => !prev)}
@@ -1156,6 +1160,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                   </button>
                   <button
                     type="button"
+                    aria-label="Back to start"
                     className="chat-icon-btn h-8 w-8"
                     title="Back to start"
                     onClick={goToStartView}
@@ -1407,6 +1412,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                       {selectedIsHtml ? (
                         <button
                           type="button"
+                          aria-label="Close task details"
                           className="tcp-btn h-7 px-2 text-xs"
                           onClick={() => setWorkspacePreviewFullscreen(true)}
                         >
@@ -1946,6 +1952,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                         </div>
                         <button
                           type="button"
+                          aria-label="Close task details"
                           className="tcp-btn h-8 px-2"
                           onClick={() => setSelectedKanbanTaskId("")}
                         >
@@ -2096,6 +2103,7 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
                         </div>
                         <button
                           type="button"
+                          aria-label="Close verification details"
                           className="tcp-btn h-8 px-2"
                           onClick={() => setSelectedVerificationId("")}
                         >
@@ -2274,8 +2282,9 @@ export function OrchestratorPage({ api, toast, navigate }: AppPageProps) {
               </button>
             </div>
             <div className="mb-2">
-              <input
+              <SearchInput
                 className="tcp-input"
+                aria-label="Filter folders"
                 placeholder="Type to filter folders..."
                 value={workspaceBrowserSearch}
                 onInput={(e) => setWorkspaceBrowserSearch((e.target as HTMLInputElement).value)}

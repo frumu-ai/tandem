@@ -69,6 +69,7 @@ export function WatchConditionEditor({ value, onChange, automations = [] }: Prop
             </div>
             <button
               type="button"
+              aria-label="Remove condition"
               className="tcp-btn h-6 w-6 px-0 text-red-400/70 hover:text-red-300"
               onClick={() => remove(i)}
               title="Remove condition"
@@ -124,7 +125,7 @@ export function WatchConditionEditor({ value, onChange, automations = [] }: Prop
             <Icon name="zap" />
             Add HandoffAvailable condition
           </button>
-          <button type="button" className="tcp-btn" onClick={() => setAdding(false)}>
+          <button type="button" aria-label="Cancel adding condition" className="tcp-btn" onClick={() => setAdding(false)}>
             <Icon name="x" />
           </button>
         </div>

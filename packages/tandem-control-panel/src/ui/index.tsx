@@ -1,8 +1,10 @@
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { MOTION_TOKENS, prefersReducedMotion } from "../app/themes.js";
 import { TandemLogoAnimation } from "./TandemLogoAnimation";
-import { Icon } from "./Icon";
+import { Icon, type IconName } from "./Icon";
+
+export { Icon, type IconName } from "./Icon";
 
 function useReducedMotionPreference() {
   const [reduced, setReduced] = useState(() => prefersReducedMotion());
@@ -193,18 +195,55 @@ export function Toolbar({ className = "", children }: { className?: string; chil
 export function IconButton({
   className = "",
   title,
+  "aria-label": ariaLabel,
   children,
   ...props
 }: {
   className?: string;
   title?: string;
+  "aria-label": string;
   children?: any;
   [key: string]: any;
 }) {
   return (
-    <button type="button" title={title} className={`tcp-icon-btn ${className}`.trim()} {...props}>
+    <button
+      type="button"
+      title={title || ariaLabel}
+      aria-label={ariaLabel}
+      className={`tcp-icon-btn ${className}`.trim()}
+      {...props}
+    >
       {children}
     </button>
+  );
+}
+
+type SearchInputProps = Omit<ComponentProps<"input">, "aria-label" | "type"> & {
+  "aria-label": string;
+  type?: "search";
+};
+
+export function SearchInput({ "aria-label": ariaLabel, type = "search", ...props }: SearchInputProps) {
+  return <input type={type} aria-label={ariaLabel} {...props} />;
+}
+
+export function Spinner({
+  size = 16,
+  className = "",
+  label = "Loading",
+}: {
+  size?: number;
+  className?: string;
+  label?: string;
+}) {
+  return (
+    <Icon
+      name="loader-circle"
+      size={size}
+      className={`tcp-spinner ${className}`.trim()}
+      aria-label={label}
+      role="status"
+    />
   );
 }
 
@@ -425,7 +464,7 @@ export function DetailDrawer({
           >
             <div className="tcp-drawer-head">
               <div className="min-w-0">{title ? <h3 className="tcp-title">{title}</h3> : null}</div>
-              <IconButton title="Close drawer" onClick={onClose}>
+              <IconButton aria-label="Close drawer" onClick={onClose}>
                 <Icon name="x" />
               </IconButton>
             </div>

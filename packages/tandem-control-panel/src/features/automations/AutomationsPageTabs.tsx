@@ -1,11 +1,11 @@
 import { useEffect } from "react";
 import { seedAutomationPlanner } from "../chat/chatPageHelpers";
-import { Icon } from "../../ui/Icon";
+import { Icon, type IconName } from "../../ui/Icon";
 
 type ActiveTab = "create" | "calendar" | "list" | "running";
 type CreateMode = "simple" | "advanced" | "composer";
 
-function SectionTitle({ icon, label }: { icon: string; label: string }) {
+function SectionTitle({ icon, label }: { icon: IconName; label: string }) {
   return (
     <span className="inline-flex items-center gap-2">
       <Icon name={icon} className="h-4 w-4 text-amber-300/90" />
@@ -97,7 +97,7 @@ export function AutomationsPageTabs({
   AdvancedMissionBuilderPanelComponent,
 }: AutomationsPageTabsProps) {
 
-  const tabs: { id: ActiveTab; label: string; icon: string }[] = [
+  const tabs: { id: ActiveTab; label: string; icon: IconName }[] = [
     { id: "create", label: "Create", icon: "sparkles" },
     { id: "calendar", label: "Calendar", icon: "calendar" },
     { id: "list", label: "Library", icon: "book-open" },

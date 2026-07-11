@@ -10,7 +10,8 @@ import * as lucide from "lucide";
 // (b) a real export of the installed `lucide` package. An unregistered name
 // resolves to `undefined` in the ICONS map, and the Icon component renders an
 // empty placeholder svg — so without this check a typo or a missing registry
-// entry ships as an invisible icon (see TAN-576, TAN-578).
+// entry used to ship as an invisible icon (see TAN-576, TAN-578). The typed
+// registry now rejects unknown names, while this test verifies source coverage.
 
 const here = dirname(fileURLToPath(import.meta.url));
 const srcDir = join(here, "..", "src");

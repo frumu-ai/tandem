@@ -9,6 +9,7 @@ import { buildPlannerProviderOptions } from "../features/planner/plannerShared";
 import { TimezoneField } from "../features/automations/TimezoneField";
 import { isValidTimezone } from "../features/automations/timezone";
 import { Icon } from "../ui/Icon";
+import { SearchInput } from "../ui/index.tsx";
 
 type ProviderOption = {
   id: string;
@@ -535,8 +536,9 @@ export function AgentStandupBuilder({
               </button>
             </div>
             <div className="mb-2">
-              <input
+              <SearchInput
                 className="tcp-input"
+                aria-label="Filter folders"
                 placeholder="Type to filter folders..."
                 value={workspaceBrowserSearch}
                 onInput={(event) =>

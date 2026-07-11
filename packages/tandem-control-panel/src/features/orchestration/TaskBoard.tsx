@@ -1,5 +1,6 @@
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { Spinner } from "../../ui";
 import type { OrchestrationTask, TaskState } from "./types";
 
 const LABELS: Record<TaskState, string> = {
@@ -32,12 +33,7 @@ function taskCardClass(state: TaskState, isCurrent: boolean, isSelected: boolean
 
 function statusIcon(state: TaskState) {
   if (state === "in_progress" || state === "assigned") {
-    return (
-      <span
-        className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent"
-        aria-hidden="true"
-      ></span>
-    );
+    return <Spinner size={14} label={`${LABELS[state]} task`} />;
   }
   return null;
 }
