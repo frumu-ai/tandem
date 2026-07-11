@@ -569,6 +569,7 @@ async fn postgres_encrypted_mode_seals_payloads_and_reranks_in_scope() {
     );
     let mut encrypted_config = config(url.clone(), 4);
     encrypted_config.search_surface_mode = PostgresSearchSurfaceMode::EncryptedRerank;
+    encrypted_config.rerank_candidate_limit = 2;
     let store = PostgresMemoryStore::connect(encrypted_config)
         .await
         .expect("open encrypted PostgreSQL test store");
@@ -718,6 +719,55 @@ async fn postgres_encrypted_mode_seals_payloads_and_reranks_in_scope() {
         records,
         MemoryStoreQueryResult::GlobalRecords(records)
             if records.len() == 1 && records[0].id == "allowed-global"
+    ));
+
+    for (id, content, created_at_ms) in [
+        ("newest-no-match", "ordinary payload", 60),
+        ("newer-no-match", "another ordinary payload", 50),
+        ("first-match", "pagination needle one", 40),
+        ("second-match", "pagination needle two", 35),
+    ] {
+        let mut record = global_record(id, &tenant);
+        record.content = content.to_string();
+        record.created_at_ms = created_at_ms;
+        record.metadata = Some(serde_json::json!({
+            "enterprise_source_binding": {
+                "binding_id": "drive-finance",
+                "data_class": "confidential"
+            }
+        }));
+        store
+            .write(MemoryStoreWriteRequest::GlobalRecord {
+                scope: MemoryWriteScope::tenant(tenant.clone()),
+                record,
+            })
+            .await
+            .expect("write encrypted pagination fixture");
+    }
+    let principal = crate::MemoryDecryptPrincipal::retrieval_gateway(
+        "finance-reader",
+        tenant.clone(),
+        vec![tandem_enterprise_contract::DataClass::Confidential],
+        vec!["drive-finance".to_string()],
+    );
+    let records = crate::decrypt_context::with_decrypt_principal(
+        principal,
+        store.query(MemoryStoreQueryRequest::ListGlobalRecords {
+            scope: MemoryReadScope::tenant(tenant.clone()),
+            user_id: "legacy-user".to_string(),
+            query: Some("pagination needle".to_string()),
+            project_tag: None,
+            channel_tag: None,
+            limit: 1,
+            offset: 1,
+        }),
+    )
+    .await
+    .expect("paginate after encrypted global filtering");
+    assert!(matches!(
+        records,
+        MemoryStoreQueryResult::GlobalRecords(records)
+            if records.len() == 1 && records[0].id == "second-match"
     ));
 
     let result = store
@@ -1254,6 +1304,54 @@ async fn postgres_shared_global_point_reads_and_chunk_upserts_match_contract() {
         })
         .await
         .expect("write original chunk");
+    let mut indexed = chunk("indexed-source-upsert", contract_tenant.clone());
+    indexed.source = "connector".to_string();
+    indexed.source_path = Some("old-path".to_string());
+    store
+        .write(MemoryStoreWriteRequest::Chunk {
+            scope: MemoryWriteScope::tenant(contract_tenant.clone()),
+            chunk: indexed.clone(),
+            embedding: vec![1.0, 0.0, 0.0],
+        })
+        .await
+        .expect("write indexed chunk columns");
+    indexed.source = "file".to_string();
+    indexed.source_path = Some("new-path".to_string());
+    store
+        .write(MemoryStoreWriteRequest::Chunk {
+            scope: MemoryWriteScope::tenant(contract_tenant.clone()),
+            chunk: indexed,
+            embedding: vec![0.0, 1.0, 0.0],
+        })
+        .await
+        .expect("update indexed chunk columns");
+    let indexed_columns = store
+        .client()
+        .await
+        .expect("inspect indexed chunk columns")
+        .query_one(
+            "SELECT source,source_path FROM tandem_memory_chunks WHERE id='indexed-source-upsert'",
+            &[],
+        )
+        .await
+        .expect("read indexed chunk columns");
+    assert_eq!(indexed_columns.get::<_, String>(0), "file");
+    assert_eq!(
+        indexed_columns.get::<_, Option<String>>(1).as_deref(),
+        Some("new-path")
+    );
+    let deleted = store
+        .mutate(MemoryStoreMutationRequest::DeleteChunksBySourcePath {
+            scope: MemoryReadScope::tenant(contract_tenant.clone()),
+            selector: MemoryChunkSelector::project("project"),
+            source_path: "new-path".to_string(),
+        })
+        .await
+        .expect("delete chunk by updated indexed path");
+    assert!(matches!(
+        deleted,
+        MemoryStoreMutationResult::SourcePathDelete(result) if result.chunks_deleted == 1
+    ));
     let other_tenant = tenant("other-contract");
     let mut conflicting = chunk("scope-collision", other_tenant.clone());
     conflicting.content = "cross-scope replacement".to_string();
@@ -1698,6 +1796,27 @@ async fn postgres_migrations_are_restart_safe_and_reject_dimension_drift() {
         .expect_err("dimension drift must fail startup");
     assert_eq!(error.kind, MemoryStoreErrorKind::InvalidRequest);
     assert!(error.message.contains("dimension mismatch"));
+}
+
+#[tokio::test]
+async fn postgres_health_degrades_when_embedding_dimension_check_fails() {
+    let Some(url) = test_url() else {
+        return;
+    };
+    let store = PostgresMemoryStore::connect(config(url, 2))
+        .await
+        .expect("open PostgreSQL health test store");
+    let mut drifted = store.clone();
+    drifted.embedding_dimension = 4;
+    let health = drifted
+        .backend_health(MemoryBackendHealthRequest { repair: false })
+        .await
+        .expect("probe drifted PostgreSQL health");
+    assert_eq!(health.status, MemoryBackendHealthStatus::Degraded);
+    assert!(health
+        .checks
+        .iter()
+        .any(|check| check.name == "embedding_dimension" && !check.healthy));
 }
 
 #[tokio::test]

@@ -899,16 +899,31 @@ impl PostgresMemoryStore {
             } else {
                 None
             };
-        let database_limit = if query.is_some()
-            && self.search_surface_mode != PostgresSearchSurfaceMode::PlaintextPgvector
-        {
-            self.rerank_candidate_limit
+        let encrypted_filter = query.is_some()
+            && self.search_surface_mode != PostgresSearchSurfaceMode::PlaintextPgvector;
+        let requested_limit = limit.clamp(1, 1000);
+        let requested_offset = offset.max(0);
+        let encrypted_terms = query.filter(|_| encrypted_filter).map(|query| {
+            query
+                .split_whitespace()
+                .map(str::to_ascii_lowercase)
+                .collect::<Vec<_>>()
+        });
+        let database_limit = if encrypted_filter {
+            self.rerank_candidate_limit.max(1)
         } else {
-            limit.clamp(1, 1000)
+            requested_limit
         };
         let grants = current_principal_sql_grants(&scope.tenant);
-        let rows = client.query(
-            "SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,
+        let mut database_offset = if encrypted_filter {
+            0
+        } else {
+            requested_offset
+        };
+        let mut records: Vec<GlobalMemoryRecord> = Vec::new();
+        loop {
+            let rows = client.query(
+                "SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,
                     data_audit_id,owner_org_unit_id,owner_subject,data_class,source_binding_id FROM tandem_memory_global_records
              WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3
                AND (owner_subject=$4 OR (private=false AND owner_org_unit_id IS NOT NULL)
@@ -930,21 +945,20 @@ impl PostgresMemoryStore {
             &[&scope.tenant.org_id, &scope.tenant.workspace_id, &deployment(&scope.tenant),
               &scope.subject, &user_id, &scope.org_unit, &include_demoted,
               &chrono::Utc::now().timestamp_millis(), &project_tag, &channel_tag,
-              &database_query, &database_limit, &offset.max(0), &grants.bypass,
+              &database_query, &database_limit, &database_offset, &grants.bypass,
               &grants.tenant_matches, &grants.data_classes, &grants.source_binding_ids,
               &grants.owner_subjects]
-        ).await.map_err(|error| store_error("query PostgreSQL global memory", error, true))?;
-        let mut records = rows
-            .into_iter()
-            .filter(|row| {
-                current_principal_allows_row(
+            ).await.map_err(|error| store_error("query PostgreSQL global memory", error, true))?;
+            let row_count = rows.len() as i64;
+            for row in rows {
+                if !current_principal_allows_row(
                     &scope.tenant,
                     row.get::<_, Option<String>>(6).as_deref(),
                     &row.get::<_, String>(7),
                     row.get::<_, Option<String>>(8).as_deref(),
-                )
-            })
-            .map(|row| {
+                ) {
+                    continue;
+                }
                 let key_scope = Self::persisted_key_scope(
                     &scope.tenant,
                     row.get(5),
@@ -952,32 +966,39 @@ impl PostgresMemoryStore {
                     row.get(7),
                     row.get(8),
                 )?;
-                self.decode_payload(
+                let record: GlobalMemoryRecord = self.decode_payload(
                     row.get(0),
                     row.get(1),
                     row.get(2),
                     &key_scope,
                     row.get(3),
                     row.get(4),
-                )
-            })
-            .collect::<MemoryStoreResult<Vec<GlobalMemoryRecord>>>()?;
-        if let Some(query) = query
-            .filter(|_| self.search_surface_mode != PostgresSearchSurfaceMode::PlaintextPgvector)
-        {
-            let terms = query
-                .split_whitespace()
-                .map(str::to_ascii_lowercase)
-                .collect::<Vec<_>>();
-            records.retain(|record| {
-                let searchable = format!(
-                    "{} {} {}",
-                    record.content, record.source_type, record.run_id
-                )
-                .to_ascii_lowercase();
-                terms.iter().all(|term| searchable.contains(term))
-            });
-            records.truncate(limit.clamp(1, 1000) as usize);
+                )?;
+                if let Some(terms) = encrypted_terms.as_ref() {
+                    let searchable = format!(
+                        "{} {} {}",
+                        record.content, record.source_type, record.run_id
+                    )
+                    .to_ascii_lowercase();
+                    if !terms.iter().all(|term| searchable.contains(term)) {
+                        continue;
+                    }
+                }
+                records.push(record);
+            }
+            let have_requested_page =
+                records.len() as i64 >= requested_offset.saturating_add(requested_limit);
+            if !encrypted_filter || have_requested_page || row_count < database_limit {
+                break;
+            }
+            database_offset += row_count;
+        }
+        if encrypted_filter {
+            records = records
+                .into_iter()
+                .skip(requested_offset as usize)
+                .take(requested_limit as usize)
+                .collect();
         }
         Ok(records)
     }

@@ -182,6 +182,8 @@ impl PostgresMemoryStore {
                        embedding_envelope=EXCLUDED.embedding_envelope,
                        search_policy_decision_id=EXCLUDED.search_policy_decision_id,
                        search_audit_id=EXCLUDED.search_audit_id,
+                       source=EXCLUDED.source,
+                       source_path=EXCLUDED.source_path,
                        tenant_shared=EXCLUDED.tenant_shared,
                        data_class=EXCLUDED.data_class,
                        source_binding_id=EXCLUDED.source_binding_id,
@@ -1674,9 +1676,14 @@ impl PostgresMemoryStore {
             .get(0);
         let vector_type: String = client.query_one("SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid='tandem_memory_chunks'::regclass AND attname='embedding'", &[]).await.map_err(|error| store_error("probe pgvector dimension", error, true))?.get(0);
         let expected_vector_type = format!("vector({})", self.embedding_dimension);
+        let dimension_healthy = vector_type == expected_vector_type;
         Ok(MemoryBackendHealthResult {
             backend: MemoryBackendKind::Postgres,
-            status: MemoryBackendHealthStatus::Healthy,
+            status: if dimension_healthy {
+                MemoryBackendHealthStatus::Healthy
+            } else {
+                MemoryBackendHealthStatus::Degraded
+            },
             repaired: false,
             checks: vec![
                 MemoryBackendHealthCheck {
@@ -1691,7 +1698,7 @@ impl PostgresMemoryStore {
                 },
                 MemoryBackendHealthCheck {
                     name: "embedding_dimension".to_string(),
-                    healthy: vector_type == expected_vector_type,
+                    healthy: dimension_healthy,
                     detail: Some(vector_type),
                 },
             ],
