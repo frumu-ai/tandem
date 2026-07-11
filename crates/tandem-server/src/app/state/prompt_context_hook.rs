@@ -186,7 +186,7 @@ impl ServerPromptContextHook {
         if let Some(parent) = self.state.memory_db_path.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
-        tandem_memory::open_sqlite_memory_store(&self.state.memory_db_path)
+        tandem_memory::open_memory_store(&self.state.memory_db_path)
             .await
             .ok()
     }
@@ -195,7 +195,7 @@ impl ServerPromptContextHook {
         if let Some(parent) = self.state.memory_db_path.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
-        tandem_memory::MemoryManager::new(&self.state.memory_db_path)
+        tandem_memory::MemoryManager::new_runtime(&self.state.memory_db_path)
             .await
             .ok()
     }

@@ -9,6 +9,7 @@ repository = "https://github.com/frumu-ai/tandem"
 [features]
 default = []
 local-embeddings = ["dep:fastembed"]
+postgres = ["dep:deadpool-postgres", "dep:pgvector", "dep:tokio-postgres"]
 
 [dependencies]
 rusqlite = { version = "0.32", features = ["bundled", "uuid", "blob"] }
@@ -35,6 +36,9 @@ tandem-providers = { path = "../tandem-providers", version = "0.6.8" }
 tandem-data-boundary = { path = "../tandem-data-boundary", version = "0.6.8" }
 tandem-orchestrator = { path = "../tandem-orchestrator", version = "0.6.8" }
 tandem-enterprise-contract = { path = "../tandem-enterprise-contract", version = "0.6.8" }
+deadpool-postgres = { version = "0.14", optional = true }
+pgvector = { version = "0.4", features = ["postgres"], optional = true }
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1"], optional = true }
 
 [dev-dependencies]
 tandem-types = { path = "../tandem-types", version = "0.6.8" }

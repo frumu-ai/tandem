@@ -638,7 +638,7 @@ pub(super) async fn open_global_memory_store_for_state(
     if let Some(parent) = state.memory_db_path.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
     }
-    tandem_memory::open_sqlite_memory_store(&state.memory_db_path)
+    tandem_memory::open_memory_store(&state.memory_db_path)
         .await
         .ok()
 }
@@ -648,7 +648,7 @@ pub(super) async fn open_memory_manager() -> Option<tandem_memory::MemoryManager
     if let Some(parent) = paths.memory_db_path.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
     }
-    tandem_memory::MemoryManager::new(&paths.memory_db_path)
+    tandem_memory::MemoryManager::new_runtime(&paths.memory_db_path)
         .await
         .ok()
 }
@@ -660,7 +660,7 @@ pub(super) async fn open_memory_manager_for_state(
     if let Some(parent) = state.memory_db_path.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
     }
-    tandem_memory::MemoryManager::new(&state.memory_db_path)
+    tandem_memory::MemoryManager::new_runtime(&state.memory_db_path)
         .await
         .ok()
 }

@@ -1003,7 +1003,7 @@ async fn load_coder_memory_candidate_payload(
 
 #[cfg(not(test))]
 async fn open_semantic_memory_manager(state: &AppState) -> Option<MemoryManager> {
-    MemoryManager::new(&state.memory_db_path).await.ok()
+    MemoryManager::new_runtime(&state.memory_db_path).await.ok()
 }
 
 #[cfg(test)]

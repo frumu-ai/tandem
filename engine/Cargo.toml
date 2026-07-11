@@ -16,6 +16,8 @@ enterprise-server = ["dep:tandem-enterprise-server"]
 # enterprise-full. All release artifacts build with this feature (TAN-632).
 enterprise = [
     "enterprise-server",
+    "tandem-memory/postgres",
+    "tandem-server/postgres",
     "tandem-enterprise-server/governance",
     "tandem-enterprise-server/google-drive",
 ]

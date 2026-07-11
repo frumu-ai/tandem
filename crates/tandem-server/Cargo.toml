@@ -8,9 +8,10 @@ edition = "2021"
 
 [features]
 default = []
-enterprise = []
+enterprise = ["tandem-memory/postgres"]
 browser = ["tandem-browser"]
 local-embeddings = ["tandem-memory/local-embeddings"]
+postgres = ["tandem-memory/postgres"]
 premium-governance = ["dep:tandem-governance-engine"]
 # Exposes the `test_support` module (test_state / next_event_of_type) so crates
 # that mount routes onto the server (e.g. tandem-enterprise-server) can build a

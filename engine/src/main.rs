@@ -1049,7 +1049,7 @@ async fn main() -> anyhow::Result<()> {
             } => {
                 let state_dir = resolve_state_dir(state_dir);
                 configure_memory_db_path_env(&state_dir);
-                let manager = MemoryManager::new(&resolve_memory_db_path(&state_dir)).await?;
+                let manager = MemoryManager::new_runtime(&resolve_memory_db_path(&state_dir)).await?;
                 let format = parse_memory_import_format(&format)?;
                 let tier = parse_memory_import_tier(&tier)?;
                 let stats = import_files(

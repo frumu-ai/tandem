@@ -87,6 +87,13 @@ impl MemoryManager {
         Self::new_with_embedding_service(db_path, EmbeddingService::new()).await
     }
 
+    /// Initialize the manager with the environment-selected production store.
+    /// SQLite remains the default; enterprise builds can select PostgreSQL.
+    pub async fn new_runtime(db_path: &Path) -> crate::store::MemoryStoreResult<Self> {
+        let store = crate::store::open_memory_store(db_path).await?;
+        Self::build(store, EmbeddingService::new()).map_err(crate::store::MemoryStoreError::from)
+    }
+
     /// Initialize the memory manager with a caller-provided embedding
     /// service. Tests use this to avoid depending on local model assets.
     pub async fn new_with_embedding_service(

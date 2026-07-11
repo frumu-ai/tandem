@@ -19,6 +19,8 @@ pub mod kms_providers;
 pub mod knowledge_scope;
 pub mod manager;
 pub mod migrations;
+#[cfg(feature = "postgres")]
+pub mod postgres_store;
 pub mod provider_egress;
 pub mod recursive_retrieval;
 pub mod response_cache;

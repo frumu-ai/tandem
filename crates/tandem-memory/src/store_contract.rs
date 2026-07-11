@@ -214,7 +214,7 @@ pub enum MemoryStoreReadResult {
 }
 
 /// Portable replacement for the concrete import-index tuple.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MemoryImportIndexEntry {
     pub modified_at: i64,
     pub size: i64,

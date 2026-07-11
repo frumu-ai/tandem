@@ -429,7 +429,7 @@ async fn automation_knowledge_preflight(
     }
     let task_family = automation_node_knowledge_task_family(node);
     let paths = resolve_shared_paths().ok()?;
-    let manager = MemoryManager::new(&paths.memory_db_path).await.ok()?;
+    let manager = MemoryManager::new_runtime(&paths.memory_db_path).await.ok()?;
     let tenant_context = automation.tenant_context();
     let memory_tenant_scope = tandem_memory::types::MemoryTenantScope {
         org_id: tenant_context.org_id.clone(),

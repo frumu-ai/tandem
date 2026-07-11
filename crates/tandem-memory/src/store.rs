@@ -26,6 +26,39 @@ pub async fn open_sqlite_memory_store(db_path: &Path) -> MemoryResult<Arc<dyn Me
     Ok(Arc::new(database))
 }
 
+/// Open the configured production backend. SQLite remains the default; setting
+/// `TANDEM_MEMORY_BACKEND=postgres` requires the `postgres` crate feature and a
+/// `TANDEM_MEMORY_POSTGRES_URL` connection string.
+pub async fn open_memory_store(db_path: &Path) -> MemoryStoreResult<Arc<dyn MemoryStore>> {
+    match std::env::var("TANDEM_MEMORY_BACKEND")
+        .unwrap_or_else(|_| "sqlite".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "" | "sqlite" => open_sqlite_memory_store(db_path)
+            .await
+            .map_err(MemoryStoreError::from),
+        "postgres" | "postgresql" => {
+            #[cfg(feature = "postgres")]
+            {
+                let config = crate::postgres_store::PostgresMemoryStoreConfig::from_env()?;
+                let store = crate::postgres_store::PostgresMemoryStore::connect(config).await?;
+                Ok(Arc::new(store))
+            }
+            #[cfg(not(feature = "postgres"))]
+            {
+                Err(MemoryStoreError::unsupported(
+                    "TANDEM_MEMORY_BACKEND=postgres requires the tandem-memory/postgres feature",
+                ))
+            }
+        }
+        backend => Err(MemoryStoreError::invalid(format!(
+            "unsupported TANDEM_MEMORY_BACKEND value: {backend}"
+        ))),
+    }
+}
+
 /// Visibility authority carried by a read or mutation request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryReadAccess {
