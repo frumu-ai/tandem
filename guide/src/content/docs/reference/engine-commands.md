@@ -71,6 +71,21 @@ tandem-engine status [OPTIONS]
 - `--hostname <HOSTNAME>` / `--host <HOSTNAME>`: Hostname or IP to check (default: `127.0.0.1`, env: `TANDEM_ENGINE_HOST`).
 - `--port <PORT>`: Port to check (default: `39731`, env: `TANDEM_ENGINE_PORT`).
 
+## `acmeslackdemo`
+
+The feature-gated `acme-slack-demo` command resets and runs the deterministic
+five-profile ACME Slack governance proof against a stopped server's state
+directory. It is available only in builds compiled with `--features acme-demo`.
+
+```bash
+cargo run -p tandem-ai --features acme-demo -- acme-slack-demo \
+  --state-dir /absolute/path/to/tandem-state
+```
+
+The JSON result reports persisted receipt IDs, Slack post count, approval
+decision IDs, and reset/replay counts. See `docs/ACME_SLACK_DEMO_HARNESS.md`
+for operating constraints and evidence details.
+
 ## `config`
 
 Inspect and validate startup environment before the engine binds.

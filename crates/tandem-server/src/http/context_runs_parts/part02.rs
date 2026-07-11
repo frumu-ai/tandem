@@ -1903,17 +1903,7 @@ pub(crate) async fn ensure_session_context_run(
     let run_id = session_context_run_id(&session.id);
     let channel_source = session_context_run_channel_source(session);
     if let Ok(mut existing) = load_context_run_state(state, &run_id).await {
-        if let Some((source_client, source_metadata)) = channel_source.as_ref() {
-            let changed = existing.source_client.as_ref() != Some(source_client)
-                || existing.source_metadata.as_ref() != Some(source_metadata);
-            if changed {
-                existing.source_client = Some(source_client.clone());
-                existing.source_metadata = Some(source_metadata.clone());
-                existing.revision = existing.revision.saturating_add(1);
-                existing.updated_at_ms = crate::now_ms();
-                save_context_run_state(state, &existing).await?;
-            }
-        }
+        backfill_session_context_run_source(state, &mut existing, channel_source.as_ref()).await?;
         return Ok(run_id);
     }
     let now = crate::now_ms();
@@ -1931,9 +1921,6 @@ pub(crate) async fn ensure_session_context_run(
             lease_epoch: 0,
         })
         .unwrap_or_default();
-    // Channel-originated sessions (e.g. governed Slack runs) carry their
-    // origin so `GET /context/runs?source=channel:slack` can select them and
-    // receipts can correlate the run with its channel identity.
     let run = ContextRunState {
         run_id: run_id.clone(),
         run_type: "session".to_string(),
@@ -1975,20 +1962,6 @@ pub(crate) async fn ensure_session_context_run(
     };
     save_context_run_state(state, &run).await?;
     Ok(run_id)
-}
-
-fn session_context_run_channel_source(
-    session: &tandem_types::Session,
-) -> Option<(String, Value)> {
-    if session.source_kind.as_deref() != Some("channel") {
-        return None;
-    }
-    let metadata = session.source_metadata.clone()?;
-    let channel = metadata.get("channel")?.as_str()?.trim();
-    if channel.is_empty() {
-        return None;
-    }
-    Some((format!("channel:{channel}"), metadata))
 }
 
 pub(crate) fn workflow_context_run_id(run_id: &str) -> String {
