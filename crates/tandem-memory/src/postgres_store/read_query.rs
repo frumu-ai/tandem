@@ -65,6 +65,41 @@ fn current_principal_allows_row(
         })
 }
 
+struct PrincipalSqlGrants {
+    bypass: bool,
+    tenant_matches: bool,
+    data_classes: Vec<String>,
+    source_binding_ids: Vec<String>,
+    owner_subjects: Vec<String>,
+}
+
+fn current_principal_sql_grants(tenant: &crate::types::MemoryTenantScope) -> PrincipalSqlGrants {
+    let Some(principal) = crate::decrypt_context::current_decrypt_principal() else {
+        return PrincipalSqlGrants {
+            bypass: true,
+            tenant_matches: true,
+            data_classes: Vec::new(),
+            source_binding_ids: Vec::new(),
+            owner_subjects: Vec::new(),
+        };
+    };
+    PrincipalSqlGrants {
+        bypass: false,
+        tenant_matches: principal.tenant_scope == *tenant,
+        data_classes: principal
+            .allowed_data_classes
+            .into_iter()
+            .filter_map(|class| {
+                serde_json::to_value(class)
+                    .ok()
+                    .and_then(|value| value.as_str().map(ToString::to_string))
+            })
+            .collect(),
+        source_binding_ids: principal.allowed_source_binding_ids,
+        owner_subjects: principal.allowed_owner_subjects,
+    }
+}
+
 fn build_context_tree(nodes: &[MemoryNode], parent_uri: &str, max_depth: usize) -> Vec<TreeNode> {
     if max_depth == 0 {
         return Vec::new();
@@ -100,26 +135,23 @@ fn selector_tier(selector: &MemoryChunkSelector) -> String {
         .unwrap_or_else(|| "session".to_string())
 }
 
-fn rerank_score(metric: PostgresDistanceMetric, query: &[f32], candidate: &[f32]) -> f64 {
+fn rerank_distance(metric: PostgresDistanceMetric, query: &[f32], candidate: &[f32]) -> f64 {
     let dot = query
         .iter()
         .zip(candidate)
         .map(|(left, right)| f64::from(*left) * f64::from(*right))
         .sum::<f64>();
     match metric {
-        PostgresDistanceMetric::InnerProduct => dot,
-        PostgresDistanceMetric::Euclidean => {
-            let distance = query
-                .iter()
-                .zip(candidate)
-                .map(|(left, right)| {
-                    let delta = f64::from(*left) - f64::from(*right);
-                    delta * delta
-                })
-                .sum::<f64>()
-                .sqrt();
-            1.0 / (1.0 + distance)
-        }
+        PostgresDistanceMetric::InnerProduct => -dot,
+        PostgresDistanceMetric::Euclidean => query
+            .iter()
+            .zip(candidate)
+            .map(|(left, right)| {
+                let delta = f64::from(*left) - f64::from(*right);
+                delta * delta
+            })
+            .sum::<f64>()
+            .sqrt(),
         PostgresDistanceMetric::Cosine => {
             let query_norm = query
                 .iter()
@@ -132,9 +164,9 @@ fn rerank_score(metric: PostgresDistanceMetric, query: &[f32], candidate: &[f32]
                 .sum::<f64>()
                 .sqrt();
             if query_norm == 0.0 || candidate_norm == 0.0 {
-                0.0
+                1.0
             } else {
-                dot / (query_norm * candidate_norm)
+                1.0 - dot / (query_norm * candidate_norm)
             }
         }
     }
@@ -197,6 +229,7 @@ impl PostgresMemoryStore {
             } => {
                 validate_chunk_list_selector(&selector)?;
                 let client = self.client().await?;
+                let grants = current_principal_sql_grants(&scope.tenant);
                 let rows = client
                     .query(
                         "SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,
@@ -207,7 +240,11 @@ impl PostgresMemoryStore {
                            AND ($6::text IS NULL OR session_id=$6)
                            AND ($7::text IS NULL OR owner_org_unit_id=$7 OR tenant_shared=true)
                            AND (owner_subject IS NULL OR owner_subject=$8)
-                         ORDER BY created_at DESC LIMIT $9",
+                           AND ($9::boolean OR ($10::boolean
+                                AND data_class=ANY($11::text[])
+                                AND (source_binding_id IS NULL OR source_binding_id=ANY($12::text[]))
+                                AND (owner_subject IS NULL OR owner_subject=ANY($13::text[]))))
+                         ORDER BY created_at DESC LIMIT $14",
                         &[
                             &scope.tenant.org_id,
                             &scope.tenant.workspace_id,
@@ -217,6 +254,11 @@ impl PostgresMemoryStore {
                             &selector.session_id,
                             &scope.org_unit,
                             &scope.subject,
+                            &grants.bypass,
+                            &grants.tenant_matches,
+                            &grants.data_classes,
+                            &grants.source_binding_ids,
+                            &grants.owner_subjects,
                             &limit.unwrap_or(1000).clamp(1, 10_000),
                         ],
                     )
@@ -521,6 +563,7 @@ impl PostgresMemoryStore {
                     ));
                 }
                 if self.search_surface_mode == PostgresSearchSurfaceMode::EncryptedRerank {
+                    let grants = current_principal_sql_grants(&scope.tenant);
                     let rows = client.query(
                         "SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,
                                 data_audit_id,owner_org_unit_id,owner_subject,data_class,source_binding_id,embedding_ciphertext,embedding_envelope,
@@ -533,10 +576,16 @@ impl PostgresMemoryStore {
                            AND ($7::text IS NULL OR owner_org_unit_id=$7 OR tenant_shared=true)
                            AND (owner_subject IS NULL OR owner_subject=$8)
                            AND embedding_ciphertext IS NOT NULL
-                         ORDER BY created_at DESC LIMIT $9",
+                           AND ($9::boolean OR ($10::boolean
+                                AND data_class=ANY($11::text[])
+                                AND (source_binding_id IS NULL OR source_binding_id=ANY($12::text[]))
+                                AND (owner_subject IS NULL OR owner_subject=ANY($13::text[]))))
+                         ORDER BY created_at DESC LIMIT $14",
                         &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),
                           &selector_tier(&selector),&selector.project_id,&selector.session_id,
-                          &scope.org_unit,&scope.subject,&self.rerank_candidate_limit]
+                          &scope.org_unit,&scope.subject,&grants.bypass,&grants.tenant_matches,
+                          &grants.data_classes,&grants.source_binding_ids,&grants.owner_subjects,
+                          &self.rerank_candidate_limit]
                     ).await.map_err(|error| store_error("load encrypted PostgreSQL vector candidates", error, true))?;
                     let mut hits = rows
                         .into_iter()
@@ -588,14 +637,13 @@ impl PostgresMemoryStore {
                             }
                             Ok((
                                 chunk,
-                                rerank_score(self.distance_metric, &query_embedding, &candidate),
+                                rerank_distance(self.distance_metric, &query_embedding, &candidate),
                             ))
                         })
                         .collect::<MemoryStoreResult<Vec<(MemoryChunk, f64)>>>()?;
                     hits.sort_by(|left, right| {
-                        right
-                            .1
-                            .total_cmp(&left.1)
+                        left.1
+                            .total_cmp(&right.1)
                             .then_with(|| left.0.id.cmp(&right.0.id))
                     });
                     hits.truncate(limit.clamp(1, 1000) as usize);
@@ -650,11 +698,7 @@ impl PostgresMemoryStore {
                             row.get(4),
                         )?;
                         let distance: f64 = row.get(9);
-                        let score = match self.distance_metric {
-                            PostgresDistanceMetric::InnerProduct => -distance,
-                            _ => 1.0 / (1.0 + distance.max(0.0)),
-                        };
-                        Ok((chunk, score))
+                        Ok((chunk, distance))
                     })
                     .collect::<MemoryStoreResult<Vec<(MemoryChunk, f64)>>>()?;
                 Ok(MemoryStoreQueryResult::SimilarChunks(hits))
@@ -827,6 +871,7 @@ impl PostgresMemoryStore {
         } else {
             limit.clamp(1, 1000)
         };
+        let grants = current_principal_sql_grants(&scope.tenant);
         let rows = client.query(
             "SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,
                     data_audit_id,owner_org_unit_id,owner_subject,data_class,source_binding_id FROM tandem_memory_global_records
@@ -839,11 +884,17 @@ impl PostgresMemoryStore {
                AND ($9::text IS NULL OR project_tag=$9)
                AND ($10::text IS NULL OR channel_tag=$10)
                AND ($11::text IS NULL OR to_tsvector('simple', search_content) @@ plainto_tsquery('simple', $11))
+               AND ($14::boolean OR ($15::boolean
+                    AND data_class=ANY($16::text[])
+                    AND (source_binding_id IS NULL OR source_binding_id=ANY($17::text[]))
+                    AND (owner_subject IS NULL OR owner_subject=ANY($18::text[]))))
              ORDER BY created_at_ms DESC LIMIT $12 OFFSET $13",
             &[&scope.tenant.org_id, &scope.tenant.workspace_id, &deployment(&scope.tenant),
               &scope.subject, &user_id, &scope.org_unit, &include_demoted,
               &chrono::Utc::now().timestamp_millis(), &project_tag, &channel_tag,
-              &database_query, &database_limit, &offset.max(0)]
+              &database_query, &database_limit, &offset.max(0), &grants.bypass,
+              &grants.tenant_matches, &grants.data_classes, &grants.source_binding_ids,
+              &grants.owner_subjects]
         ).await.map_err(|error| store_error("query PostgreSQL global memory", error, true))?;
         let mut records = rows
             .into_iter()

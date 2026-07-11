@@ -129,21 +129,30 @@ async fn postgres_scopes_candidates_before_vector_top_k() {
         })
         .await
         .expect("seed in-scope chunk");
+    store
+        .write(MemoryStoreWriteRequest::Chunk {
+            scope: MemoryWriteScope::tenant(tenant.clone()),
+            chunk: chunk("target-less-similar", tenant.clone()),
+            embedding: vec![0.0, 1.0, 0.0],
+        })
+        .await
+        .expect("seed less-similar in-scope chunk");
 
     let result = store
         .query(MemoryStoreQueryRequest::SimilarChunks {
             scope: MemoryReadScope::tenant(tenant.clone()),
             selector: MemoryChunkSelector::project("project"),
             query_embedding: vec![1.0, 0.0, 0.0],
-            limit: 1,
+            limit: 2,
         })
         .await
         .expect("run scoped pgvector query");
     let MemoryStoreQueryResult::SimilarChunks(hits) = result else {
         panic!("expected vector results");
     };
-    assert_eq!(hits.len(), 1);
+    assert_eq!(hits.len(), 2);
     assert_eq!(hits[0].0.id, "target");
+    assert!(hits[0].1 < hits[1].1, "best match must have lower distance");
 }
 
 #[tokio::test]
@@ -550,12 +559,14 @@ async fn postgres_encrypted_mode_seals_payloads_and_reranks_in_scope() {
             if layer.content == "sensitive semantic context"
     ));
 
-    for (id, binding) in [
-        ("allowed-global", "drive-finance"),
-        ("denied-global", "drive-legal"),
+    for (id, binding, created_at_ms) in [
+        ("allowed-global", "drive-finance", 10),
+        ("denied-global-a", "drive-legal", 30),
+        ("denied-global-b", "drive-legal", 20),
     ] {
         let mut record = global_record(id, &tenant);
         record.content = format!("mixed grant payload {id}");
+        record.created_at_ms = created_at_ms;
         record.metadata = Some(serde_json::json!({
             "enterprise_source_binding": {
                 "binding_id": binding,
@@ -584,7 +595,7 @@ async fn postgres_encrypted_mode_seals_payloads_and_reranks_in_scope() {
             query: None,
             project_tag: None,
             channel_tag: None,
-            limit: 10,
+            limit: 1,
             offset: 0,
         }),
     )
