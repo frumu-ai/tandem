@@ -382,7 +382,10 @@ fn insert_wait(
             status = excluded.status, wait_json = excluded.wait_json,
             updated_at_ms = excluded.updated_at_ms
          WHERE automation_waits.status NOT IN ('woken', 'timed_out', 'escalated', 'cancelled')
-           AND excluded.updated_at_ms >= automation_waits.updated_at_ms",
+            OR (
+                automation_waits.status IN ('timed_out', 'escalated')
+                AND excluded.status IN ('woken', 'cancelled')
+               )",
         params![
             wait.wait_id,
             wait.run_id,
@@ -680,6 +683,36 @@ mod tests {
         let rows = store.load_stateful_runtime_waits().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].status, StatefulWaitStatus::Cancelled);
+    }
+
+    #[test]
+    fn approval_settlement_can_close_an_escalated_wait_with_an_earlier_scheduler_clock() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = OrchestrationStateStore::from_automation_runs_path(
+            &directory.path().join("automation_v2_runs.json"),
+        )
+        .unwrap();
+        let mut waiting = wait(StatefulWaitStatus::Waiting, 10);
+        waiting.wait_kind = StatefulWaitKind::Approval;
+        store
+            .upsert_stateful_runtime_waits(&[waiting.clone()])
+            .unwrap();
+
+        let mut escalated = waiting.clone();
+        escalated.status = StatefulWaitStatus::Escalated;
+        escalated.updated_at_ms = 20;
+        escalated.completed_at_ms = Some(20);
+        store.upsert_stateful_runtime_waits(&[escalated]).unwrap();
+
+        let mut settled = waiting;
+        settled.status = StatefulWaitStatus::Woken;
+        settled.updated_at_ms = 5;
+        settled.completed_at_ms = Some(5);
+        store.upsert_stateful_runtime_waits(&[settled]).unwrap();
+
+        let rows = store.load_stateful_runtime_waits().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, StatefulWaitStatus::Woken);
     }
 
     #[test]

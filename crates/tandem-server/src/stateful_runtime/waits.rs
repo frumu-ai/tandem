@@ -150,7 +150,12 @@ pub async fn upsert_stateful_wait(
         .iter_mut()
         .find(|existing| wait_identity_matches(existing, &wait))
     {
-        Some(existing) => *existing = wait.clone(),
+        Some(existing) => {
+            if existing.status.is_terminal() && !wait_later_settlement_is_allowed(existing, &wait) {
+                return Ok(existing.clone());
+            }
+            *existing = wait.clone();
+        }
         None => waits.push(wait.clone()),
     }
     write_stateful_waits_unlocked(path, &waits).await?;
@@ -901,6 +906,22 @@ fn wait_is_claimable(wait: &StatefulWaitRecord, due_now_ms: u64, lease_now_ms: u
         return due;
     }
     wait.status == StatefulWaitStatus::Claimed && !wait.claim_is_active_at(lease_now_ms) && due
+}
+
+fn wait_later_settlement_is_allowed(
+    existing: &StatefulWaitRecord,
+    next: &StatefulWaitRecord,
+) -> bool {
+    existing.wait_kind == StatefulWaitKind::Approval
+        && next.wait_kind == StatefulWaitKind::Approval
+        && matches!(
+            existing.status,
+            StatefulWaitStatus::TimedOut | StatefulWaitStatus::Escalated
+        )
+        && matches!(
+            next.status,
+            StatefulWaitStatus::Woken | StatefulWaitStatus::Cancelled
+        )
 }
 
 fn webhook_wait_is_claimable(wait: &StatefulWaitRecord, now_ms: u64) -> bool {
