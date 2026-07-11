@@ -339,6 +339,45 @@ async fn prompt_async_return_run_returns_202_with_run_id_and_attach_stream() {
 }
 
 #[tokio::test]
+async fn existing_session_context_run_backfills_slack_attribution() {
+    let state = test_state().await;
+    let mut session = Session::new(Some("existing thread".to_string()), Some(".".to_string()));
+    let context_run_id = crate::http::context_runs::ensure_session_context_run(&state, &session)
+        .await
+        .expect("create context run");
+    let initial = crate::http::context_runs::load_context_run_state(&state, &context_run_id)
+        .await
+        .expect("load initial context run");
+    assert_eq!(initial.source_client.as_deref(), Some("session_api"));
+
+    session.source_kind = Some("channel".to_string());
+    session.source_metadata = Some(json!({
+        "channel": "slack",
+        "user_id": "U_EXISTING",
+        "slack_team_id": "T_EXISTING",
+        "slack_channel_id": "C_EXISTING",
+        "slack_thread_ts": "1800000400.000001",
+    }));
+    crate::http::context_runs::ensure_session_context_run(&state, &session)
+        .await
+        .expect("backfill context run");
+
+    let updated = crate::http::context_runs::load_context_run_state(&state, &context_run_id)
+        .await
+        .expect("load updated context run");
+    assert_eq!(updated.source_client.as_deref(), Some("channel:slack"));
+    assert_eq!(
+        updated
+            .source_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("user_id"))
+            .and_then(Value::as_str),
+        Some("U_EXISTING")
+    );
+    assert!(updated.revision > initial.revision);
+}
+
+#[tokio::test]
 async fn prompt_async_stream_error_persists_error_message_and_finishes_run() {
     let state = test_state().await;
     state

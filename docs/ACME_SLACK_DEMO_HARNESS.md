@@ -90,17 +90,18 @@ production path for all five seeded requester profiles:
   policy decision end to end — this is what the control panel's Slack
   Governance Receipts page reads.
 
-Run everything (fixture + E2E) with one command — the same tests run in
-required CI via the workspace nextest job:
+Run everything (fixture + E2E) with one command. The dedicated
+`ACME Slack Governance Proof` workflow runs this exact feature set and then
+runs the persistent command twice against the same state directory:
 
 ```bash
-cargo test -p tandem-server acme_slack_demo --lib
+cargo test --locked -p tandem-server --features acme-demo acme_slack_demo --lib
 ```
 
-or process-isolated, as CI runs it:
+The process-isolated equivalent is:
 
 ```bash
-cargo nextest run -p tandem-server -E 'test(acme_slack_demo)'
+cargo nextest run -p tandem-server --features acme-demo -E 'test(acme_slack_demo)'
 ```
 
 The prompt every profile asks:

@@ -902,6 +902,13 @@ async fn acme_slack_demo_e2e_finance_sensitive_tool_enters_the_real_approval_gat
                 }),
             "evidence package must include the approval-required protected audit"
         );
+        assert!(
+            package
+                .pointer("/final_outcome/slack_visible_response")
+                .and_then(Value::as_str)
+                .is_some_and(|response| !response.trim().is_empty()),
+            "evidence package must expose the persisted Slack-visible response"
+        );
     }
 
     journaler.abort();

@@ -7,8 +7,8 @@ use tandem_core::{
     ToolEffectLedgerPhase, ToolEffectLedgerRecord, ToolEffectLedgerStatus,
 };
 use tandem_types::{
-    AccessDecision, AccessPermission, DataClass, PolicyDecisionEffect, PolicyDecisionRecord,
-    ResourceRef, StrictTenantContext, TenantContext,
+    AccessDecision, AccessPermission, DataClass, MessagePart, MessageRole, PolicyDecisionEffect,
+    PolicyDecisionRecord, ResourceRef, StrictTenantContext, TenantContext,
 };
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -20,6 +20,7 @@ struct ContextRunLedgerEventView {
 }
 
 include!("context_run_ledger_parts/tool_manifest.rs");
+include!("context_run_ledger_parts/final_outcome.rs");
 
 pub(super) async fn context_run_ledger(
     State(state): State<AppState>,
@@ -133,6 +134,7 @@ pub(super) async fn context_run_governance_evidence_export(
         }
     }
 
+    let slack_visible_response = governance_evidence_slack_response(&state, &context_run).await;
     let package = governance_evidence_package_for_records(
         &context_run,
         automation_run.as_ref(),
@@ -141,6 +143,7 @@ pub(super) async fn context_run_governance_evidence_export(
         &policy_decisions,
         &memory_audit,
         &protected_audit,
+        slack_visible_response.as_deref(),
     );
     let content_sha256 = stable_json_sha256(&package);
     let filename = format!(
@@ -359,6 +362,7 @@ fn governance_evidence_package_for_records(
     policy_decisions: &[PolicyDecisionRecord],
     memory_audit: &[crate::MemoryAuditEvent],
     protected_audit: &[ProtectedAuditEnvelope],
+    slack_visible_response: Option<&str>,
 ) -> Value {
     let run_goal = automation_run
         .and_then(|run| {
@@ -491,7 +495,11 @@ fn governance_evidence_package_for_records(
         "memory_promotions": memory_promotion_rows,
         "memory_audit": memory_audit_rows,
         "artifacts": artifacts,
-        "final_outcome": governance_evidence_final_outcome(context_run, automation_run),
+        "final_outcome": governance_evidence_final_outcome(
+            context_run,
+            automation_run,
+            slack_visible_response,
+        ),
         "limitations": artifact_limitations,
         "redaction_policy": {
             "goal_included": true,
@@ -695,23 +703,6 @@ fn governance_evidence_artifacts(
     (rows, limitations)
 }
 
-fn governance_evidence_final_outcome(
-    context_run: &ContextRunState,
-    automation_run: Option<&crate::automation_v2::types::AutomationV2RunRecord>,
-) -> Value {
-    json!({
-        "context_status": context_run.status,
-        "automation_status": automation_run.map(|run| serde_json::to_value(&run.status).unwrap_or(Value::Null)),
-        "completed_nodes": automation_run.map(|run| run.checkpoint.completed_nodes.clone()).unwrap_or_default(),
-        "pending_nodes": automation_run.map(|run| run.checkpoint.pending_nodes.clone()).unwrap_or_default(),
-        "blocked_nodes": automation_run.map(|run| run.checkpoint.blocked_nodes.clone()).unwrap_or_default(),
-        "last_error": redacted_text_ref(context_run.last_error.as_deref()),
-        "detail": redacted_text_ref(automation_run.and_then(|run| run.detail.as_deref())),
-        "stop_kind": automation_run.and_then(|run| run.stop_kind.as_ref()).map(|kind| serde_json::to_value(kind).unwrap_or(Value::Null)),
-        "stop_reason": redacted_text_ref(automation_run.and_then(|run| run.stop_reason.as_deref())),
-    })
-}
-
 fn governance_evidence_actors(
     context_run: &ContextRunState,
     automation_run: Option<&crate::automation_v2::types::AutomationV2RunRecord>,
@@ -746,10 +737,14 @@ fn governance_evidence_actors(
         .unwrap_or_default();
     let mut requester_org_units = BTreeSet::new();
     let mut requester_roles = BTreeSet::new();
+    let mut requester_grant_ids = BTreeSet::new();
     for decision in policy_decisions {
         if let Some(requester) = decision.requester_context.as_ref() {
             requester_org_units.extend(requester.org_units.iter().cloned());
             requester_roles.extend(requester.roles.iter().cloned());
+        }
+        if let Some(grant_id) = decision.grant_id.as_ref() {
+            requester_grant_ids.insert(grant_id.clone());
         }
     }
 
@@ -760,6 +755,7 @@ fn governance_evidence_actors(
         "memory_actor_ids": memory_actor_ids.into_iter().collect::<Vec<_>>(),
         "requester_org_units": requester_org_units.into_iter().collect::<Vec<_>>(),
         "requester_roles": requester_roles.into_iter().collect::<Vec<_>>(),
+        "requester_grant_ids": requester_grant_ids.into_iter().collect::<Vec<_>>(),
         "approval_deciders": approval_deciders,
     })
 }
@@ -1555,6 +1551,7 @@ mod tests {
             &policy_decisions,
             &memory_audit,
             &protected_audit,
+            None,
         );
 
         assert_eq!(package["schema_version"].as_u64(), Some(1));
@@ -1755,6 +1752,7 @@ mod tests {
             &policy_decisions,
             &[],
             &[],
+            None,
         );
 
         // Top-level provenance block.

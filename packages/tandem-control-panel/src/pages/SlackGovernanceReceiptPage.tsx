@@ -161,7 +161,10 @@ export function SlackGovernanceReceiptPage({ api, toast }: AppPageProps) {
   const memoryAudit = toArray(packagePayload.memory_audit, "memory_audit");
   const protectedEvents = toArray(packagePayload.audit?.protected_events, "protected_events");
   const artifacts = toArray(packagePayload.artifacts, "artifacts");
+  const redactions = toArray(packagePayload.redactions, "redactions");
   const limitations = toArray(packagePayload.limitations, "limitations");
+  const finalOutcome = packagePayload.final_outcome || {};
+  const pendingApproval = packagePayload.approvals?.pending_gate;
 
   const counts = run.counts || {};
   const receiptUnavailable = !!evidenceQuery.data?.error;
@@ -179,7 +182,7 @@ export function SlackGovernanceReceiptPage({ api, toast }: AppPageProps) {
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <Icon name="file-check-2" className="h-4 w-4 text-emerald-300" />
-            <h2 className="tcp-page-title">Slack Governance Receipts</h2>
+            <h1 className="tcp-page-title">Slack Governance Receipts</h1>
           </div>
           <p className="tcp-subtle mt-1 truncate">
             {effectiveRunId ? `Context run ${effectiveRunId}` : "Waiting for a governed Slack run"}
@@ -198,6 +201,8 @@ export function SlackGovernanceReceiptPage({ api, toast }: AppPageProps) {
           ))}
         </select>
       </Toolbar>
+
+      <h2 className="sr-only">Governance receipt evidence</h2>
 
       {!effectiveRunId && contextRunsQuery.isLoading ? (
         <LoadingState title="Loading receipts" text="Fetching governed Slack runs." />
@@ -255,10 +260,33 @@ export function SlackGovernanceReceiptPage({ api, toast }: AppPageProps) {
           ) : null}
 
           <PanelCard title="Requester" subtitle={safeString(run.goal || selectedRun?.objective, "No goal captured")}>
-            <div className="grid gap-3 md:grid-cols-3">
+            <div className="grid gap-3 md:grid-cols-4">
               <Metric label="Tenant actor" value={actors.tenant_actor_id || run.tenant_context?.actor_id || "unknown"} />
               <Metric label="Department" value={listText(actors.requester_org_units)} />
               <Metric label="Roles" value={listText(actors.requester_roles)} />
+              <Metric label="Grant IDs" value={listText(actors.requester_grant_ids)} />
+            </div>
+          </PanelCard>
+
+          <PanelCard
+            title="Final Slack Outcome"
+            subtitle="Persisted response and execution state for this governed Slack run"
+          >
+            <div className="grid gap-3 md:grid-cols-[2fr_1fr]">
+              <div className="min-w-0 rounded-md border border-white/8 bg-black/20 p-3">
+                <div className="text-sm font-semibold text-white">Slack-visible response</div>
+                <div className="tcp-subtle mt-1 whitespace-pre-wrap break-words text-sm">
+                  {safeString(finalOutcome.slack_visible_response, "No Slack response captured")}
+                </div>
+              </div>
+              <div className="grid gap-2">
+                <Metric label="Context status" value={finalOutcome.context_status || selectedRun?.status || "unknown"} />
+                <Metric label="Automation status" value={finalOutcome.automation_status || "not applicable"} />
+                <Metric
+                  label="Approval state"
+                  value={pendingApproval ? "Approval required" : approvals.length ? "Decided" : "Not required"}
+                />
+              </div>
             </div>
           </PanelCard>
 
@@ -320,6 +348,14 @@ export function SlackGovernanceReceiptPage({ api, toast }: AppPageProps) {
             <PanelCard title="Approvals And Redactions" subtitle={`${protectedEvents.length} protected audit event(s)`}>
               <div className="grid gap-2">
                 <div className="rounded-md border border-white/8 bg-black/20 p-3">
+                  <div className="text-sm font-semibold text-white">Approval evidence</div>
+                  <div className="tcp-subtle mt-1 text-xs">
+                    {pendingApproval
+                      ? `Pending ${safeString(pendingApproval.approval_id || pendingApproval.decision_id, "approval")}`
+                      : `${approvals.length} completed approval decision(s)`}
+                  </div>
+                </div>
+                <div className="rounded-md border border-white/8 bg-black/20 p-3">
                   <div className="text-sm font-semibold text-white">Redaction policy</div>
                   <div className="tcp-subtle mt-1 text-xs">
                     {Object.entries(packagePayload.redaction_policy || {})
@@ -328,12 +364,24 @@ export function SlackGovernanceReceiptPage({ api, toast }: AppPageProps) {
                   </div>
                 </div>
                 <div className="rounded-md border border-white/8 bg-black/20 p-3">
+                  <div className="text-sm font-semibold text-white">Redactions</div>
+                  <div className="tcp-subtle mt-1 text-xs">
+                    {redactions.length
+                      ? listText(redactions.map((row: any) => row.reason || row.kind || row.redaction_id))
+                      : "No explicit redactions recorded"}
+                  </div>
+                </div>
+                <div className="rounded-md border border-white/8 bg-black/20 p-3">
                   <div className="text-sm font-semibold text-white">Limitations</div>
                   <div className="tcp-subtle mt-1 text-xs">{listText(limitations)}</div>
                 </div>
                 <div className="rounded-md border border-white/8 bg-black/20 p-3">
                   <div className="text-sm font-semibold text-white">Artifacts</div>
-                  <div className="tcp-subtle mt-1 text-xs">{artifacts.length} receipt artifact(s)</div>
+                  <div className="tcp-subtle mt-1 text-xs">
+                    {artifacts.length
+                      ? listText(artifacts.map((row: any) => row.name || row.artifact_id || row.node_id))
+                      : "No receipt artifacts"}
+                  </div>
                 </div>
               </div>
             </PanelCard>
