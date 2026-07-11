@@ -1492,6 +1492,7 @@ pub(super) async fn context_run_create_impl(
             .source_client
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty()),
+        source_metadata: None,
         model_provider: input
             .model_provider
             .map(|v| v.trim().to_string())
@@ -1555,6 +1556,9 @@ pub(super) async fn context_run_list(
                 if run.run_type.trim().to_ascii_lowercase() != run_type {
                     continue;
                 }
+            }
+            if !context_run_matches_source(&run, query.source.as_deref()) {
+                continue;
             }
             rows.push(run);
             if rows.len() >= limit {

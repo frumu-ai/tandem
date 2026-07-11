@@ -159,6 +159,15 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    #[cfg(feature = "acme-demo")]
+    #[command(about = "Reset and run the persistent five-profile ACME Slack demo.")]
+    AcmeSlackDemo {
+        #[arg(
+            long,
+            help = "Engine state directory. Must match the stopped server's state directory."
+        )]
+        state_dir: Option<String>,
+    },
     #[command(about = "Check engine health status (GET /global/health).")]
     #[command(after_help = STATUS_EXAMPLES)]
     Status {
@@ -581,6 +590,25 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        #[cfg(feature = "acme-demo")]
+        Command::AcmeSlackDemo { state_dir } => {
+            let state_dir = resolve_state_dir(state_dir);
+            std::env::set_var("TANDEM_STATE_DIR", &state_dir);
+            std::env::set_var("TANDEM_DISABLE_EMBEDDINGS", "1");
+            let state = AppState::new_starting(Uuid::new_v4().to_string(), true);
+            let config_file = tempfile::NamedTempFile::new()?;
+            let global_config_file = tempfile::NamedTempFile::new()?;
+            std::env::set_var("TANDEM_GLOBAL_CONFIG", global_config_file.path());
+            initialize_runtime(
+                state.clone(),
+                state_dir.clone(),
+                None,
+                Some(config_file.path().to_path_buf()),
+            )
+            .await?;
+            let report = tandem_server::acme_demo::live::reset_and_run(&state).await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
         Command::Status { hostname, port } => {
             let url = format!("http://{hostname}:{port}/global/health");
             let resp = reqwest::Client::new().get(&url).send().await?;

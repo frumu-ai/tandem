@@ -1,11 +1,14 @@
-//! Deterministic end-to-end ACME Slack demo harness (TAN-667).
+//! Deterministic ACME Slack demo **receipt fixture** (TAN-667, honesty pass
+//! TAN-682).
 //!
-//! The live Slack Events endpoint establishes signed/allowlisted ingress. This
-//! harness gives the demo a resettable replay surface for the same prompt and the
-//! five seeded Slack users without depending on Slack delivery timing or an LLM.
-//! It consumes the TAN-655 dataset and renders the governance receipt contract
-//! the control panel expects (`run`, `actors`, `tool_manifest`, decisions,
-//! approvals, memory audit, protected events, redactions, final response).
+//! This module synthesizes the governance-receipt JSON contract the control
+//! panel expects (`run`, `actors`, `tool_manifest`, decisions, approvals,
+//! memory audit, protected events, redactions, final response) directly from
+//! the seeded TAN-655 dataset. It executes **nothing**: no signed ingress, no
+//! sessions, no engine, no policy or approval systems, and no persisted
+//! evidence — it is a receipt-shape contract fixture and must not be cited as
+//! end-to-end proof. The production-path five-profile E2E lives in
+//! `crate::http::tests::acme_slack_demo_e2e` (TAN-682).
 
 use serde_json::{json, Value};
 use tandem_core::{tool_schema_risk_tier, ToolEffectLedgerPhase, ToolEffectLedgerStatus};
@@ -22,12 +25,12 @@ pub const DEMO_SLACK_WORKSPACE_NAME: &str = "acme-hq";
 pub const DEMO_SLACK_CHANNEL_ID: &str = "C_ACME_DEMO";
 pub const DEMO_SLACK_CHANNEL_NAME: &str = "acme-governance-demo";
 
-/// Run the deterministic five-profile Slack governance demo and return the
-/// receipt bundle. This is the harness behind the documented single-command
-/// test flow:
+/// Build the five-profile receipt-fixture bundle from the seeded dataset.
+/// Fixture only — nothing executes; see the module docs. The production-path
+/// flow is exercised by:
 ///
-/// `cargo test -p tandem-server acme_slack_demo_harness --lib`
-pub fn run_acme_slack_demo_harness() -> Value {
+/// `cargo test -p tandem-server acme_slack_demo --lib`
+pub fn acme_slack_demo_receipt_fixture() -> Value {
     let dataset = acme_demo_dataset();
     let runs = dataset
         .profiles
@@ -723,8 +726,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn acme_slack_demo_harness_replays_all_five_profiles() {
-        let bundle = run_acme_slack_demo_harness();
+    fn acme_slack_demo_receipt_fixture_replays_all_five_profiles() {
+        let bundle = acme_slack_demo_receipt_fixture();
         assert_eq!(bundle["prompt"].as_str(), Some(DEMO_PROMPT));
         assert_eq!(bundle["profile_count"].as_u64(), Some(5));
         let runs = bundle["runs"].as_array().expect("runs");
@@ -747,7 +750,7 @@ mod tests {
     }
 
     #[test]
-    fn acme_slack_demo_receipts_have_required_evidence_shape() {
+    fn acme_slack_demo_receipt_fixture_has_required_evidence_shape() {
         for run in receipt_runs() {
             assert!(run["slack_request"]["workspace_id"].as_str().is_some());
             assert!(run["slack_request"]["channel_id"].as_str().is_some());
@@ -775,7 +778,7 @@ mod tests {
     }
 
     #[test]
-    fn acme_slack_demo_department_answers_are_profile_appropriate() {
+    fn acme_slack_demo_receipt_fixture_department_answers_are_profile_appropriate() {
         let sales = run_for("U_SALES");
         assert_returned_memory(
             &sales,
@@ -823,7 +826,7 @@ mod tests {
     }
 
     #[test]
-    fn acme_slack_demo_tool_scoping_keeps_hidden_tools_unoffered() {
+    fn acme_slack_demo_receipt_fixture_tool_scoping_keeps_hidden_tools_unoffered() {
         for run in receipt_runs() {
             let offered = string_array(&run["tools"]["offered"]);
             let hidden = string_array(&run["tools"]["hidden_by_scope"]);
@@ -872,7 +875,7 @@ mod tests {
     }
 
     #[test]
-    fn acme_slack_demo_approval_gate_covers_finance_sensitive_actions() {
+    fn acme_slack_demo_receipt_fixture_approval_gate_covers_finance_sensitive_actions() {
         let finance = run_for("U_FINANCE");
         let approvals = finance["approvals"]["approval_required_events"]
             .as_array()
@@ -933,7 +936,7 @@ mod tests {
     }
 
     #[test]
-    fn acme_slack_demo_receipt_matches_control_panel_contract() {
+    fn acme_slack_demo_receipt_fixture_matches_control_panel_contract() {
         for run in receipt_runs() {
             let receipt = &run["control_panel_receipt"];
             assert!(receipt["ledger"]["tool_manifest"].is_object());
@@ -971,7 +974,7 @@ mod tests {
     }
 
     fn receipt_runs() -> Vec<Value> {
-        run_acme_slack_demo_harness()["runs"]
+        acme_slack_demo_receipt_fixture()["runs"]
             .as_array()
             .expect("runs")
             .clone()

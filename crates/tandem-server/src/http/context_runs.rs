@@ -6,6 +6,7 @@ use axum::{
 };
 
 include!("context_runs_parts/part01.rs");
+include!("context_runs_parts/source_attribution.rs");
 include!("context_runs_parts/part02.rs");
 include!("context_runs_parts/part03.rs");
 include!("context_runs_parts/part04.rs");

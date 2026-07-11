@@ -51,7 +51,9 @@ use tandem_types::{
 mod tests;
 
 pub mod harness;
-pub use harness::{acme_slack_demo_receipt_for_profile, run_acme_slack_demo_harness};
+pub use harness::{acme_slack_demo_receipt_fixture, acme_slack_demo_receipt_for_profile};
+#[cfg(feature = "acme-demo")]
+pub mod live;
 
 /// Organization id for the demo tenant.
 pub const DEMO_ORG_ID: &str = "acme";
@@ -296,13 +298,18 @@ fn deny_grant(
     .with_data_classes(data_classes)
 }
 
-/// A tool-only grant: carries `tool_patterns` but no readable data class, so it
-/// contributes to a department's reachable tool set without granting any
-/// resource read (kept separate from resource grants for clarity).
+/// A tool-only grant: carries `tool_patterns` plus View at the data classes of
+/// the granted tools. View (not Read) keeps this from widening any resource
+/// *read* clearance, while satisfying the strict tool-projection visibility
+/// rule (`tool_schema_visible_to_strict_context`) so the granted tools are
+/// actually offered to the model through the production engine path — the
+/// same grants drive `verified.capabilities` (the run tool allowlist) and
+/// strict-scope discovery.
 fn tool_grant(
     grant_id: &str,
     unit: &PrincipalRef,
     tool_patterns: Vec<String>,
+    data_classes: Vec<DataClass>,
 ) -> OrganizationUnitAccessGrant {
     OrganizationUnitAccessGrant::active(
         grant_id,
@@ -311,7 +318,8 @@ fn tool_grant(
         org_wide_resource(),
         DEMO_BASE_NOW_MS,
     )
-    .with_permissions(vec![AccessPermission::Execute])
+    .with_permissions(vec![AccessPermission::View, AccessPermission::Execute])
+    .with_data_classes(data_classes)
     .with_tool_patterns(tool_patterns)
 }
 
@@ -586,6 +594,11 @@ pub fn acme_demo_dataset() -> AcmeDemoDataset {
             "g-sales-tools",
             &sales.unit_principal,
             patterns(&["mcp.crm.*", "mcp.support.*", "mcp.email.*"]),
+            vec![
+                DataClass::CustomerData,
+                DataClass::Confidential,
+                DataClass::Internal,
+            ],
         ),
         // Engineering: source + delivery; explicit deny on finance domains.
         allow_grant(
@@ -627,6 +640,7 @@ pub fn acme_demo_dataset() -> AcmeDemoDataset {
                 "mcp.incidents.*",
                 "mcp.email.*",
             ]),
+            vec![DataClass::SourceCode, DataClass::Internal],
         ),
         // Finance: the FinancialRecord department.
         allow_grant(
@@ -651,6 +665,7 @@ pub fn acme_demo_dataset() -> AcmeDemoDataset {
             "g-finance-tools",
             &finance.unit_principal,
             patterns(&["mcp.invoices.*", "mcp.contracts.*", "mcp.email.*"]),
+            vec![DataClass::FinancialRecord, DataClass::Internal],
         ),
         // Leadership: org-wide read at non-financial classes (finance +
         // credentials are redacted — not listed here, so they fail closed).
@@ -675,6 +690,12 @@ pub fn acme_demo_dataset() -> AcmeDemoDataset {
                     .chain(["mcp.email.*"])
                     .collect::<Vec<_>>(),
             ),
+            vec![
+                DataClass::CustomerData,
+                DataClass::Confidential,
+                DataClass::SourceCode,
+                DataClass::Internal,
+            ],
         ),
         // Contractor: only the assigned project.
         allow_grant(
@@ -687,6 +708,7 @@ pub fn acme_demo_dataset() -> AcmeDemoDataset {
             "g-contractor-tools",
             &contractor.unit_principal,
             patterns(&["mcp.projects.x.*"]),
+            vec![DataClass::Internal],
         ),
     ]);
 

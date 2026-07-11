@@ -13,6 +13,9 @@ pub(super) struct ContextRunReplayQuery {
 pub(super) struct ContextRunListQuery {
     pub(super) workspace: Option<String>,
     pub(super) run_type: Option<String>,
+    /// Filters on `source_client` (case-insensitive exact match), e.g.
+    /// `channel:slack` to select governed Slack-originated session runs.
+    pub(super) source: Option<String>,
     pub(super) limit: Option<usize>,
 }
 
@@ -63,6 +66,11 @@ pub(super) struct ContextRunState {
     pub(super) tenant_context: TenantContext,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) source_client: Option<String>,
+    /// Origin attribution for channel-originated runs (e.g. the Slack
+    /// team/app/channel/user/thread identity of a governed Slack session),
+    /// so receipts can correlate run ↔ channel identities end to end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) source_metadata: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) model_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

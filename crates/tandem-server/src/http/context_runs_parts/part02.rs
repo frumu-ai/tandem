@@ -1611,6 +1611,7 @@ pub(crate) async fn sync_automation_v2_run_blackboard(
             run_type: "automation_v2".to_string(),
             tenant_context: run.tenant_context.clone(),
             source_client: Some("automation_v2_scheduler".to_string()),
+            source_metadata: None,
             model_provider: None,
             model_id: None,
             mcp_servers: Vec::new(),
@@ -1900,7 +1901,9 @@ pub(crate) async fn ensure_session_context_run(
     session: &tandem_types::Session,
 ) -> Result<String, StatusCode> {
     let run_id = session_context_run_id(&session.id);
-    if load_context_run_state(state, &run_id).await.is_ok() {
+    let channel_source = session_context_run_channel_source(session);
+    if let Ok(mut existing) = load_context_run_state(state, &run_id).await {
+        backfill_session_context_run_source(state, &mut existing, channel_source.as_ref()).await?;
         return Ok(run_id);
     }
     let now = crate::now_ms();
@@ -1922,7 +1925,13 @@ pub(crate) async fn ensure_session_context_run(
         run_id: run_id.clone(),
         run_type: "session".to_string(),
         tenant_context: session.tenant_context.clone(),
-        source_client: Some("session_api".to_string()),
+        source_client: Some(
+            channel_source
+                .as_ref()
+                .map(|(source_client, _)| source_client.clone())
+                .unwrap_or_else(|| "session_api".to_string()),
+        ),
+        source_metadata: channel_source.map(|(_, metadata)| metadata),
         model_provider: session.provider.clone(),
         model_id: session.model.as_ref().map(|model| model.model_id.clone()),
         mcp_servers: Vec::new(),

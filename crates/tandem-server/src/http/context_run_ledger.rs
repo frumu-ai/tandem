@@ -7,8 +7,8 @@ use tandem_core::{
     ToolEffectLedgerPhase, ToolEffectLedgerRecord, ToolEffectLedgerStatus,
 };
 use tandem_types::{
-    AccessDecision, AccessPermission, DataClass, PolicyDecisionEffect, PolicyDecisionRecord,
-    ResourceRef, StrictTenantContext, TenantContext,
+    AccessDecision, AccessPermission, DataClass, MessagePart, MessageRole, PolicyDecisionEffect,
+    PolicyDecisionRecord, ResourceRef, StrictTenantContext, TenantContext,
 };
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -20,6 +20,7 @@ struct ContextRunLedgerEventView {
 }
 
 include!("context_run_ledger_parts/tool_manifest.rs");
+include!("context_run_ledger_parts/final_outcome.rs");
 
 pub(super) async fn context_run_ledger(
     State(state): State<AppState>,
@@ -66,7 +67,7 @@ pub(super) async fn context_run_governance_evidence_export(
     let events = load_context_run_ledger_source_events(&state, &context_run.run_id, None, None);
     let records = context_run_ledger_records(&events);
     let tool_manifest = context_run_tool_manifest(&events, &records);
-    let run_ids = governance_evidence_run_ids(&context_run.run_id, automation_run.as_ref());
+    let run_ids = governance_evidence_run_ids(&context_run, automation_run.as_ref(), &events);
     let policy_decisions =
         load_governance_evidence_policy_decisions(&state, &tenant_context, &run_ids, &records)
             .await;
@@ -132,6 +133,7 @@ pub(super) async fn context_run_governance_evidence_export(
         }
     }
 
+    let slack_visible_response = governance_evidence_slack_response(&state, &context_run).await;
     let package = governance_evidence_package_for_records(
         &context_run,
         automation_run.as_ref(),
@@ -140,6 +142,7 @@ pub(super) async fn context_run_governance_evidence_export(
         &policy_decisions,
         &memory_audit,
         &protected_audit,
+        slack_visible_response.as_deref(),
     );
     let content_sha256 = stable_json_sha256(&package);
     let filename = format!(
@@ -358,6 +361,7 @@ fn governance_evidence_package_for_records(
     policy_decisions: &[PolicyDecisionRecord],
     memory_audit: &[crate::MemoryAuditEvent],
     protected_audit: &[ProtectedAuditEnvelope],
+    slack_visible_response: Option<&str>,
 ) -> Value {
     let run_goal = automation_run
         .and_then(|run| {
@@ -434,6 +438,8 @@ fn governance_evidence_package_for_records(
             "automation_v2_run_id": automation_run.map(|run| run.run_id.clone()),
             "automation_id": automation_run.map(|run| run.automation_id.clone()),
             "run_type": context_run.run_type,
+            "source_client": context_run.source_client,
+            "source_metadata": context_run.source_metadata,
             "goal": run_goal,
             "goal_sha256": crate::sha256_hex(&[run_goal]),
             "tenant_context": context_run.tenant_context,
@@ -488,7 +494,11 @@ fn governance_evidence_package_for_records(
         "memory_promotions": memory_promotion_rows,
         "memory_audit": memory_audit_rows,
         "artifacts": artifacts,
-        "final_outcome": governance_evidence_final_outcome(context_run, automation_run),
+        "final_outcome": governance_evidence_final_outcome(
+            context_run,
+            automation_run,
+            slack_visible_response,
+        ),
         "limitations": artifact_limitations,
         "redaction_policy": {
             "goal_included": true,
@@ -692,23 +702,6 @@ fn governance_evidence_artifacts(
     (rows, limitations)
 }
 
-fn governance_evidence_final_outcome(
-    context_run: &ContextRunState,
-    automation_run: Option<&crate::automation_v2::types::AutomationV2RunRecord>,
-) -> Value {
-    json!({
-        "context_status": context_run.status,
-        "automation_status": automation_run.map(|run| serde_json::to_value(&run.status).unwrap_or(Value::Null)),
-        "completed_nodes": automation_run.map(|run| run.checkpoint.completed_nodes.clone()).unwrap_or_default(),
-        "pending_nodes": automation_run.map(|run| run.checkpoint.pending_nodes.clone()).unwrap_or_default(),
-        "blocked_nodes": automation_run.map(|run| run.checkpoint.blocked_nodes.clone()).unwrap_or_default(),
-        "last_error": redacted_text_ref(context_run.last_error.as_deref()),
-        "detail": redacted_text_ref(automation_run.and_then(|run| run.detail.as_deref())),
-        "stop_kind": automation_run.and_then(|run| run.stop_kind.as_ref()).map(|kind| serde_json::to_value(kind).unwrap_or(Value::Null)),
-        "stop_reason": redacted_text_ref(automation_run.and_then(|run| run.stop_reason.as_deref())),
-    })
-}
-
 fn governance_evidence_actors(
     context_run: &ContextRunState,
     automation_run: Option<&crate::automation_v2::types::AutomationV2RunRecord>,
@@ -743,10 +736,14 @@ fn governance_evidence_actors(
         .unwrap_or_default();
     let mut requester_org_units = BTreeSet::new();
     let mut requester_roles = BTreeSet::new();
+    let mut requester_grant_ids = BTreeSet::new();
     for decision in policy_decisions {
         if let Some(requester) = decision.requester_context.as_ref() {
             requester_org_units.extend(requester.org_units.iter().cloned());
             requester_roles.extend(requester.roles.iter().cloned());
+        }
+        if let Some(grant_id) = decision.grant_id.as_ref() {
+            requester_grant_ids.insert(grant_id.clone());
         }
     }
 
@@ -757,6 +754,7 @@ fn governance_evidence_actors(
         "memory_actor_ids": memory_actor_ids.into_iter().collect::<Vec<_>>(),
         "requester_org_units": requester_org_units.into_iter().collect::<Vec<_>>(),
         "requester_roles": requester_roles.into_iter().collect::<Vec<_>>(),
+        "requester_grant_ids": requester_grant_ids.into_iter().collect::<Vec<_>>(),
         "approval_deciders": approval_deciders,
     })
 }
@@ -783,7 +781,10 @@ async fn load_governance_evidence_policy_decisions(
         let Some(decision) = state.get_policy_decision(decision_id).await else {
             continue;
         };
-        if decision.tenant_context == *tenant_context {
+        // Tenant scope, not struct equality: a decision carries the acting
+        // requester's actor_id in its tenant context, which an operator's
+        // reader tenant will never equal field-for-field.
+        if super::tenant_matches(tenant_context, &decision.tenant_context) {
             rows.insert(decision.decision_id.clone(), decision);
         }
     }
@@ -811,7 +812,10 @@ async fn load_governance_evidence_memory_audit(
     if rows.is_empty() {
         rows = state.memory_audit_log.read().await.clone();
     }
-    rows.retain(|event| event.tenant_context == *tenant_context && run_ids.contains(&event.run_id));
+    rows.retain(|event| {
+        super::tenant_matches(tenant_context, &event.tenant_context)
+            && run_ids.contains(&event.run_id)
+    });
     rows.sort_by(|a, b| {
         a.created_at_ms
             .cmp(&b.created_at_ms)
@@ -854,10 +858,15 @@ fn automation_run_id_from_context_run_id(context_run_id: &str) -> Option<String>
 }
 
 fn governance_evidence_run_ids(
-    context_run_id: &str,
+    context_run: &ContextRunState,
     automation_run: Option<&crate::automation_v2::types::AutomationV2RunRecord>,
+    events: &[super::ContextRunEventRecord],
 ) -> BTreeSet<String> {
+    let context_run_id = context_run.run_id.as_str();
     let mut ids = BTreeSet::from([context_run_id.to_string()]);
+    if let Some(session_id) = context_run_id.strip_prefix("session-") {
+        ids.insert(session_id.to_string());
+    }
     if let Some(stripped) = context_run_id.strip_prefix("automation-v2-") {
         ids.insert(stripped.to_string());
     } else {
@@ -868,6 +877,36 @@ fn governance_evidence_run_ids(
         ids.insert(super::context_runs::automation_v2_context_run_id(
             &run.run_id,
         ));
+    }
+    if let Some(metadata) = context_run.source_metadata.as_ref() {
+        let event_id = metadata.get("last_event_id").and_then(Value::as_str);
+        if let Some(event_id) = event_id.filter(|value| !value.trim().is_empty()) {
+            ids.insert(event_id.to_string());
+            if let (Some(team_id), Some(app_id)) = (
+                metadata.get("slack_team_id").and_then(Value::as_str),
+                metadata.get("slack_app_id").and_then(Value::as_str),
+            ) {
+                ids.insert(format!("{team_id}:{app_id}:{event_id}"));
+            }
+        }
+    }
+    // Engine run ids journaled into this context run's own event log. A
+    // governed session run executes and attributes evidence under a distinct
+    // engine run id (e.g. the deterministic `slack-<sha256>` id of a Slack
+    // claim), so policy decisions and protected audit written during
+    // execution are keyed to that id, not to `session-<id>`. The journaled
+    // `session_run_started`/`session_run_finished` payloads carry it.
+    for event in events {
+        if let Some(run_id) = event
+            .payload
+            .get("runID")
+            .and_then(serde_json::Value::as_str)
+        {
+            let trimmed = run_id.trim();
+            if !trimmed.is_empty() {
+                ids.insert(trimmed.to_string());
+            }
+        }
     }
     ids
 }
@@ -1322,6 +1361,7 @@ mod tests {
             run_type: "automation_v2".to_string(),
             tenant_context: run.tenant_context.clone(),
             source_client: None,
+            source_metadata: None,
             model_provider: None,
             model_id: None,
             mcp_servers: Vec::new(),
@@ -1394,6 +1434,25 @@ mod tests {
             package["policy_decisions"][0]["tool"].as_str(),
             Some("mcp.bank.release_funds")
         );
+    }
+
+    #[test]
+    fn slack_governance_evidence_correlates_session_and_claim_audit_ids() {
+        let automation_run = fintech_audit_fixture_run();
+        let mut context_run = governance_evidence_context_run(&automation_run);
+        context_run.run_id = "session-slack-session-1".to_string();
+        context_run.source_client = Some("channel:slack".to_string());
+        context_run.source_metadata = Some(json!({
+            "last_event_id": "Ev-receipt-1",
+            "slack_team_id": "T_ACME",
+            "slack_app_id": "A_TANDEM",
+        }));
+
+        let ids = governance_evidence_run_ids(&context_run, None, &[]);
+        assert!(ids.contains("session-slack-session-1"));
+        assert!(ids.contains("slack-session-1"));
+        assert!(ids.contains("Ev-receipt-1"));
+        assert!(ids.contains("T_ACME:A_TANDEM:Ev-receipt-1"));
     }
 
     #[test]
@@ -1526,6 +1585,7 @@ mod tests {
             &policy_decisions,
             &memory_audit,
             &protected_audit,
+            None,
         );
 
         assert_eq!(package["schema_version"].as_u64(), Some(1));
@@ -1726,6 +1786,7 @@ mod tests {
             &policy_decisions,
             &[],
             &[],
+            None,
         );
 
         // Top-level provenance block.

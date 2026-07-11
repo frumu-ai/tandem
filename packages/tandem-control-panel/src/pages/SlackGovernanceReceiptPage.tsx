@@ -3,6 +3,13 @@ import { useQuery } from "@tanstack/react-query";
 import { AnimatedPage, Badge, LoadingState, PanelCard, Toolbar } from "../ui/index.tsx";
 import { Icon } from "../ui/Icon";
 import type { AppPageProps } from "./pageTypes";
+import {
+  evidenceCompleteness,
+  receiptCorrelation,
+  receiptOptionLabel,
+  slackIdentityOf,
+  slackReceiptRuns,
+} from "./slackGovernanceReceiptModel.mjs";
 
 function toArray(input: any, key: string) {
   if (Array.isArray(input)) return input;
@@ -75,20 +82,53 @@ function ToolList({ title, rows, tone }: { title: string; rows: any[]; tone: "ok
   );
 }
 
+function SlackIdentityCard({ run, packagePayload }: { run: any; packagePayload: any }) {
+  const identity = slackIdentityOf(run);
+  const correlation = receiptCorrelation(run, packagePayload);
+  if (!identity) return null;
+  return (
+    <PanelCard
+      title="Slack Identity"
+      subtitle={
+        correlation.identityConsistent
+          ? "Run and evidence identities agree"
+          : "Run and evidence identities disagree — inspect before trusting this receipt"
+      }
+    >
+      <div className="grid gap-3 md:grid-cols-3">
+        <Metric label="Workspace (team)" value={identity.teamId || "unknown"} />
+        <Metric label="Channel" value={identity.channelId || "unknown"} />
+        <Metric label="Slack user" value={identity.userId || "unknown"} />
+        <Metric label="Thread" value={identity.threadTs || "none"} />
+        <Metric label="Context run" value={correlation.contextRunId} />
+        <Metric
+          label="Evidence run"
+          value={correlation.packageContextRunId || "not exported yet"}
+        />
+      </div>
+    </PanelCard>
+  );
+}
+
 export function SlackGovernanceReceiptPage({ api, toast }: AppPageProps) {
   const [selectedContextRunId, setSelectedContextRunId] = useState("");
 
   const contextRunsQuery = useQuery({
     queryKey: ["slack-governance-receipts", "context-runs"],
     queryFn: () =>
-      api("/api/engine/context/runs?limit=120").catch((error: any) => ({
-        runs: [],
-        error: String(error?.message || error),
-      })),
+      api("/api/engine/context/runs?limit=120&run_type=session&source=channel%3Aslack").catch(
+        (error: any) => ({
+          runs: [],
+          error: String(error?.message || error),
+        })
+      ),
     refetchInterval: 10000,
   });
 
-  const contextRuns = sortedRecent(toArray(contextRunsQuery.data, "runs"));
+  // Server-side `source=channel:slack` filtering plus a defensive client-side
+  // pass: receipts on this page are exclusively Slack-originated session runs,
+  // never "whatever context run happens to be newest".
+  const contextRuns = sortedRecent(slackReceiptRuns(toArray(contextRunsQuery.data, "runs")));
   const effectiveRunId = safeString(selectedContextRunId || runIdOf(contextRuns[0]));
 
   const ledgerQuery = useQuery({
@@ -121,10 +161,16 @@ export function SlackGovernanceReceiptPage({ api, toast }: AppPageProps) {
   const memoryAudit = toArray(packagePayload.memory_audit, "memory_audit");
   const protectedEvents = toArray(packagePayload.audit?.protected_events, "protected_events");
   const artifacts = toArray(packagePayload.artifacts, "artifacts");
+  const redactions = toArray(packagePayload.redactions, "redactions");
   const limitations = toArray(packagePayload.limitations, "limitations");
+  const finalOutcome = packagePayload.final_outcome || {};
+  const pendingApproval = packagePayload.approvals?.pending_gate;
 
   const counts = run.counts || {};
   const receiptUnavailable = !!evidenceQuery.data?.error;
+  const evidenceMissing: string[] = receiptUnavailable
+    ? []
+    : evidenceCompleteness(evidenceQuery.data ? packagePayload : null).missing;
   const selectedRun = useMemo(
     () => contextRuns.find((candidate) => runIdOf(candidate) === effectiveRunId),
     [contextRuns, effectiveRunId]
@@ -136,7 +182,7 @@ export function SlackGovernanceReceiptPage({ api, toast }: AppPageProps) {
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <Icon name="file-check-2" className="h-4 w-4 text-emerald-300" />
-            <h2 className="tcp-page-title">Slack Governance Receipts</h2>
+            <h1 className="tcp-page-title">Slack Governance Receipts</h1>
           </div>
           <p className="tcp-subtle mt-1 truncate">
             {effectiveRunId ? `Context run ${effectiveRunId}` : "Waiting for a governed Slack run"}
@@ -150,17 +196,23 @@ export function SlackGovernanceReceiptPage({ api, toast }: AppPageProps) {
         >
           {contextRuns.map((run) => (
             <option key={runIdOf(run)} value={runIdOf(run)}>
-              {runIdOf(run)}
+              {receiptOptionLabel(run)}
             </option>
           ))}
         </select>
       </Toolbar>
 
+      <h2 className="sr-only">Governance receipt evidence</h2>
+
       {!effectiveRunId && contextRunsQuery.isLoading ? (
-        <LoadingState title="Loading receipts" text="Fetching recent context runs." />
+        <LoadingState title="Loading receipts" text="Fetching governed Slack runs." />
       ) : !effectiveRunId ? (
-        <PanelCard title="No receipts" subtitle="No context runs are available yet.">
-          <div className="tcp-subtle">Run the Slack demo harness, then return here.</div>
+        <PanelCard title="No receipts" subtitle="No governed Slack runs have been recorded yet.">
+          <div className="tcp-subtle">
+            Receipts appear after a signed Slack message runs through the governed ingress. The
+            five-profile ACME E2E (`acme_slack_demo` in tandem-server) exercises and persists this
+            exact flow.
+          </div>
         </PanelCard>
       ) : (
         <>
@@ -170,6 +222,23 @@ export function SlackGovernanceReceiptPage({ api, toast }: AppPageProps) {
             <Metric label="Approvals" value={counts.approval_records ?? approvals.length} />
             <Metric label="Memory audit" value={counts.memory_audit_records ?? memoryAudit.length} />
           </div>
+
+          <SlackIdentityCard run={selectedRun} packagePayload={packagePayload} />
+
+          {evidenceMissing.length && !receiptUnavailable ? (
+            <PanelCard
+              title="Partial evidence"
+              subtitle="Sections missing from the persisted evidence package — not zeros."
+            >
+              <div className="flex flex-wrap gap-2">
+                {evidenceMissing.map((section: string) => (
+                  <Badge key={section} tone="warn">
+                    {section}
+                  </Badge>
+                ))}
+              </div>
+            </PanelCard>
+          ) : null}
 
           {receiptUnavailable ? (
             <PanelCard
@@ -191,10 +260,33 @@ export function SlackGovernanceReceiptPage({ api, toast }: AppPageProps) {
           ) : null}
 
           <PanelCard title="Requester" subtitle={safeString(run.goal || selectedRun?.objective, "No goal captured")}>
-            <div className="grid gap-3 md:grid-cols-3">
+            <div className="grid gap-3 md:grid-cols-4">
               <Metric label="Tenant actor" value={actors.tenant_actor_id || run.tenant_context?.actor_id || "unknown"} />
               <Metric label="Department" value={listText(actors.requester_org_units)} />
               <Metric label="Roles" value={listText(actors.requester_roles)} />
+              <Metric label="Grant IDs" value={listText(actors.requester_grant_ids)} />
+            </div>
+          </PanelCard>
+
+          <PanelCard
+            title="Final Slack Outcome"
+            subtitle="Persisted response and execution state for this governed Slack run"
+          >
+            <div className="grid gap-3 md:grid-cols-[2fr_1fr]">
+              <div className="min-w-0 rounded-md border border-white/8 bg-black/20 p-3">
+                <div className="text-sm font-semibold text-white">Slack-visible response</div>
+                <div className="tcp-subtle mt-1 whitespace-pre-wrap break-words text-sm">
+                  {safeString(finalOutcome.slack_visible_response, "No Slack response captured")}
+                </div>
+              </div>
+              <div className="grid gap-2">
+                <Metric label="Context status" value={finalOutcome.context_status || selectedRun?.status || "unknown"} />
+                <Metric label="Automation status" value={finalOutcome.automation_status || "not applicable"} />
+                <Metric
+                  label="Approval state"
+                  value={pendingApproval ? "Approval required" : approvals.length ? "Decided" : "Not required"}
+                />
+              </div>
             </div>
           </PanelCard>
 
@@ -256,6 +348,14 @@ export function SlackGovernanceReceiptPage({ api, toast }: AppPageProps) {
             <PanelCard title="Approvals And Redactions" subtitle={`${protectedEvents.length} protected audit event(s)`}>
               <div className="grid gap-2">
                 <div className="rounded-md border border-white/8 bg-black/20 p-3">
+                  <div className="text-sm font-semibold text-white">Approval evidence</div>
+                  <div className="tcp-subtle mt-1 text-xs">
+                    {pendingApproval
+                      ? `Pending ${safeString(pendingApproval.approval_id || pendingApproval.decision_id, "approval")}`
+                      : `${approvals.length} completed approval decision(s)`}
+                  </div>
+                </div>
+                <div className="rounded-md border border-white/8 bg-black/20 p-3">
                   <div className="text-sm font-semibold text-white">Redaction policy</div>
                   <div className="tcp-subtle mt-1 text-xs">
                     {Object.entries(packagePayload.redaction_policy || {})
@@ -264,12 +364,24 @@ export function SlackGovernanceReceiptPage({ api, toast }: AppPageProps) {
                   </div>
                 </div>
                 <div className="rounded-md border border-white/8 bg-black/20 p-3">
+                  <div className="text-sm font-semibold text-white">Redactions</div>
+                  <div className="tcp-subtle mt-1 text-xs">
+                    {redactions.length
+                      ? listText(redactions.map((row: any) => row.reason || row.kind || row.redaction_id))
+                      : "No explicit redactions recorded"}
+                  </div>
+                </div>
+                <div className="rounded-md border border-white/8 bg-black/20 p-3">
                   <div className="text-sm font-semibold text-white">Limitations</div>
                   <div className="tcp-subtle mt-1 text-xs">{listText(limitations)}</div>
                 </div>
                 <div className="rounded-md border border-white/8 bg-black/20 p-3">
                   <div className="text-sm font-semibold text-white">Artifacts</div>
-                  <div className="tcp-subtle mt-1 text-xs">{artifacts.length} receipt artifact(s)</div>
+                  <div className="tcp-subtle mt-1 text-xs">
+                    {artifacts.length
+                      ? listText(artifacts.map((row: any) => row.name || row.artifact_id || row.node_id))
+                      : "No receipt artifacts"}
+                  </div>
                 </div>
               </div>
             </PanelCard>

@@ -1,5 +1,6 @@
 use super::*;
 
+pub(super) mod acme_slack_demo_e2e;
 pub(super) mod agent_teams;
 pub(super) mod approval_gate_matrix;
 pub(super) mod approvals_aggregator;

@@ -72,7 +72,7 @@ fn display_agent_id(agent_id: &str, scoped_to_raw: &HashMap<String, String>) -> 
 /// default tenant, so it is compared against the local-implicit org/workspace; this keeps
 /// single-tenant deployments a no-op (every caller shares that org/workspace) while a real
 /// explicit tenant can never consume a receipt issued by a different org/workspace.
-fn approval_receipt_matches_tenant(
+pub(super) fn approval_receipt_matches_tenant(
     approval: &GovernanceApprovalRequest,
     caller: &tandem_types::TenantContext,
 ) -> bool {
@@ -880,38 +880,48 @@ impl AppState {
         tenant_context: &tandem_types::TenantContext,
     ) -> anyhow::Result<GovernanceApprovalRequest> {
         let now = now_ms();
-        let snapshot = {
-            let guard = self.automation_governance.read().await;
-            self.governance_snapshot(&guard)
-        };
-        let mut request = self
-            .governance_engine
-            .create_approval_request(
-                &snapshot,
-                GovernanceApprovalDraftInput {
-                    request_type,
-                    requested_by,
-                    target_resource,
-                    rationale,
-                    context,
-                    expires_at_ms,
-                },
-                now,
-            )
-            .map_err(|error| anyhow::anyhow!(error.message))?;
-        // CT-09: bind the issuing tenant to the receipt so it cannot later be
-        // replayed (approved or revoked) from a different tenant. Local/single-tenant
-        // receipts stay unbound (None), keeping the tenant check a no-op there.
-        if !tenant_context.is_local_implicit() {
-            request.tenant_context = Some(tenant_context.clone());
-        }
-        {
+        let request = {
             let mut guard = self.automation_governance.write().await;
+            if super::governance_action_gate::is_action_gate_context(&context) {
+                if let Some(existing) = guard.approvals.values().find(|request| {
+                    request.request_type == request_type
+                        && super::governance_action_gate::same_action_gate_scope(
+                            &request.context,
+                            &context,
+                        )
+                        && approval_receipt_matches_tenant(request, tenant_context)
+                }) {
+                    return Ok(existing.clone());
+                }
+            }
+
+            let snapshot = self.governance_snapshot(&guard);
+            let mut request = self
+                .governance_engine
+                .create_approval_request(
+                    &snapshot,
+                    GovernanceApprovalDraftInput {
+                        request_type,
+                        requested_by,
+                        target_resource,
+                        rationale,
+                        context,
+                        expires_at_ms,
+                    },
+                    now,
+                )
+                .map_err(|error| anyhow::anyhow!(error.message))?;
+            // CT-09: bind the issuing tenant to the receipt so it cannot later be
+            // replayed (approved or revoked) from a different tenant.
+            if !tenant_context.is_local_implicit() {
+                request.tenant_context = Some(tenant_context.clone());
+            }
             guard
                 .approvals
                 .insert(request.approval_id.clone(), request.clone());
             guard.updated_at_ms = now;
-        }
+            request
+        };
         self.persist_automation_governance().await?;
         append_protected_audit_event(
             self,

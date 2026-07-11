@@ -391,6 +391,7 @@ include!("app_state_impl_parts/part03.rs");
 include!("app_state_impl_parts/part05.rs");
 include!("app_state_impl_parts/part04.rs");
 pub(crate) mod governance;
+pub(crate) mod governance_action_gate;
 
 /// Returns the canonical filename for a handoff artifact JSON file.
 fn handoff_filename(handoff_id: &str) -> String {

@@ -152,13 +152,13 @@ impl tandem_tools::Tool for SlackVisibleTool {
 }
 
 #[derive(Clone, Default)]
-struct SlackApiMock {
-    posts: Arc<Mutex<Vec<Value>>>,
+pub(super) struct SlackApiMock {
+    pub(super) posts: Arc<Mutex<Vec<Value>>>,
     attempts: Arc<AtomicUsize>,
     auth_attempts: Arc<AtomicUsize>,
     bots_info_attempts: Arc<AtomicUsize>,
-    auth_team_id: Arc<Mutex<String>>,
-    auth_app_id: Arc<Mutex<String>>,
+    pub(super) auth_team_id: Arc<Mutex<String>>,
+    pub(super) auth_app_id: Arc<Mutex<String>>,
     auth_is_bot: Arc<AtomicBool>,
     failures_remaining: Arc<AtomicUsize>,
 }
@@ -221,7 +221,7 @@ async fn slack_post_message(
     .into_response()
 }
 
-async fn start_slack_api_mock() -> (String, SlackApiMock, tokio::task::JoinHandle<()>) {
+pub(super) async fn start_slack_api_mock() -> (String, SlackApiMock, tokio::task::JoinHandle<()>) {
     start_slack_api_mock_with_failures(0).await
 }
 
@@ -264,7 +264,7 @@ async fn configure_slack_events(state: &AppState, api_base_url: &str) {
     .await;
 }
 
-async fn configure_slack_events_for_installation(
+pub(super) async fn configure_slack_events_for_installation(
     state: &AppState,
     api_base_url: &str,
     team_id: &str,
@@ -386,7 +386,9 @@ async fn seed_governed_slack_identity_for_user(
         .insert(grant.grant_id.clone(), grant);
 }
 
-async fn seed_acme_demo_authority(state: &AppState) -> crate::acme_demo::AcmeDemoDataset {
+pub(super) async fn seed_acme_demo_authority(
+    state: &AppState,
+) -> crate::acme_demo::AcmeDemoDataset {
     let dataset = crate::acme_demo::acme_demo_dataset();
     state.enterprise.org_units.write().await.extend(
         dataset
@@ -439,7 +441,7 @@ fn signed_slack_event_request(
     )
 }
 
-fn signed_slack_event_request_for_installation(
+pub(super) fn signed_slack_event_request_for_installation(
     event_id: &str,
     user_id: &str,
     channel_id: &str,
@@ -449,11 +451,36 @@ fn signed_slack_event_request_for_installation(
     thread_ts: Option<&str>,
     request_timestamp: i64,
 ) -> Request<Body> {
+    signed_slack_event_request_with_text(
+        event_id,
+        user_id,
+        channel_id,
+        team_id,
+        app_id,
+        message_ts,
+        thread_ts,
+        request_timestamp,
+        "What changed for ACME?",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn signed_slack_event_request_with_text(
+    event_id: &str,
+    user_id: &str,
+    channel_id: &str,
+    team_id: Option<&str>,
+    app_id: Option<&str>,
+    message_ts: &str,
+    thread_ts: Option<&str>,
+    request_timestamp: i64,
+    text: &str,
+) -> Request<Body> {
     let mut event = json!({
         "type": "message",
         "user": user_id,
         "channel": channel_id,
-        "text": "What changed for ACME?",
+        "text": text,
         "ts": message_ts
     });
     if let Some(thread_ts) = thread_ts {
@@ -554,7 +581,7 @@ fn slack_private_memory_record(
     }
 }
 
-async fn wait_for_posts(mock: &SlackApiMock, expected: usize) {
+pub(super) async fn wait_for_posts(mock: &SlackApiMock, expected: usize) {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if mock.posts.lock().await.len() >= expected {
@@ -580,7 +607,7 @@ async fn wait_for_counter(counter: &AtomicUsize, expected: usize, label: &str) {
     .unwrap_or_else(|_| panic!("{label} timeout"));
 }
 
-async fn wait_for_slack_tasks(state: &AppState) {
+pub(super) async fn wait_for_slack_tasks(state: &AppState) {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if state.slack_event_tasks.active_count().await == 0 {
