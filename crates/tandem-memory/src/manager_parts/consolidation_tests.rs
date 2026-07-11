@@ -9,6 +9,52 @@ use super::*;
 
 struct FailingConsolidationProvider;
 
+#[test]
+fn consolidation_ownership_match_excludes_shared_and_peer_chunks() {
+    let tenant = MemoryTenantScope::local();
+    let request = ScopedMemoryConsolidationRequest {
+        tenant_scope: tenant.clone(),
+        org_unit: Some("finance".to_string()),
+        subject: Some("alice".to_string()),
+        project_id: "project-a".to_string(),
+        session_id: "session-a".to_string(),
+    };
+    let chunk = |id: &str, subject: Option<&str>, org_unit: &str| MemoryChunk {
+        id: id.to_string(),
+        content: id.to_string(),
+        tier: MemoryTier::Session,
+        session_id: Some("session-a".to_string()),
+        project_id: Some("project-a".to_string()),
+        source: "test".to_string(),
+        source_path: None,
+        source_mtime: None,
+        source_size: None,
+        source_hash: None,
+        tenant_scope: tenant.clone(),
+        subject: subject.map(ToString::to_string),
+        created_at: chrono::Utc::now(),
+        token_count: 1,
+        metadata: Some(serde_json::json!({ "owner_org_unit_id": org_unit })),
+    };
+
+    assert!(consolidation_chunk_has_exact_ownership(
+        &chunk("owned", Some("alice"), "finance"),
+        &request
+    ));
+    assert!(!consolidation_chunk_has_exact_ownership(
+        &chunk("shared", None, "finance"),
+        &request
+    ));
+    assert!(!consolidation_chunk_has_exact_ownership(
+        &chunk("peer", Some("bob"), "finance"),
+        &request
+    ));
+    assert!(!consolidation_chunk_has_exact_ownership(
+        &chunk("other-unit", Some("alice"), "legal"),
+        &request
+    ));
+}
+
 #[async_trait]
 impl Provider for FailingConsolidationProvider {
     fn info(&self) -> ProviderInfo {

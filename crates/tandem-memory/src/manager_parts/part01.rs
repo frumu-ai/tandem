@@ -1346,6 +1346,10 @@ impl MemoryManager {
                 None,
             )
             .await?;
+        let chunks = chunks
+            .into_iter()
+            .filter(|chunk| consolidation_chunk_has_exact_ownership(chunk, request))
+            .collect::<Vec<_>>();
         if chunks.is_empty() {
             return Ok(None);
         }

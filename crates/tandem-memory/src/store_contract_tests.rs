@@ -945,6 +945,26 @@ async fn session_summary_replacement_is_scoped_and_atomic() {
             .await
             .expect("write consolidation fixture");
     }
+    let mut shared = chunk(
+        "source-shared",
+        MemoryTier::Session,
+        Some("shared-session"),
+        Some("project-a"),
+        tenant.clone(),
+    );
+    shared.metadata = Some(serde_json::json!({ "owner_org_unit_id": "finance" }));
+    store
+        .write(MemoryStoreWriteRequest::Chunk {
+            scope: MemoryWriteScope {
+                tenant: tenant.clone(),
+                org_unit: Some("finance".to_string()),
+                subject: None,
+            },
+            chunk: shared,
+            embedding: embedding(0.0, 1.0),
+        })
+        .await
+        .expect("write shared consolidation fixture");
 
     let mut summary = chunk(
         "summary-a",
@@ -994,8 +1014,14 @@ async fn session_summary_replacement_is_scoped_and_atomic() {
     let MemoryStoreReadResult::Chunks(remaining) = remaining else {
         panic!("expected chunks");
     };
-    assert_eq!(remaining.len(), 1);
-    assert_eq!(remaining[0].id, "source-b");
+    assert_eq!(remaining.len(), 2);
+    assert_eq!(
+        remaining
+            .iter()
+            .map(|chunk| chunk.id.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from(["source-b", "source-shared"])
+    );
 
     let summaries = store
         .read(MemoryStoreReadRequest::Chunks {

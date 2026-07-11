@@ -117,8 +117,11 @@ impl MemoryDatabase {
                         WHERE id = ?1 AND session_id = ?2 AND project_id = ?3
                           AND tenant_org_id = ?4 AND tenant_workspace_id = ?5
                           AND IFNULL(tenant_deployment_id, '') = IFNULL(?6, '')
-                          AND (private = 0 OR owner_subject = ?7)
-                          AND (?8 IS NULL OR owner_org_unit_id = ?8 OR tenant_shared = 1)
+                          AND (
+                              (?7 IS NULL AND private = 0 AND owner_subject IS NULL)
+                              OR (?7 IS NOT NULL AND private = 1 AND owner_subject = ?7)
+                          )
+                          AND IFNULL(owner_org_unit_id, '') = IFNULL(?8, '')
                     )",
                     params![
                         chunk_id,

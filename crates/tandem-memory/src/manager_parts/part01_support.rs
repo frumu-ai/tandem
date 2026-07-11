@@ -10,6 +10,15 @@ pub struct ScopedMemoryConsolidationRequest {
     pub session_id: String,
 }
 
+fn consolidation_chunk_has_exact_ownership(
+    chunk: &MemoryChunk,
+    request: &ScopedMemoryConsolidationRequest,
+) -> bool {
+    chunk.subject == request.subject
+        && crate::types::owner_org_unit_id_from_metadata(chunk.metadata.as_ref())
+            == request.org_unit
+}
+
 fn memory_chunk_visible_to_access_filter(
     chunk: &MemoryChunk,
     access_filter: Option<&crate::types::MemoryAccessFilter>,
