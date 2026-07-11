@@ -20,8 +20,126 @@ pub const ORCHESTRATION_DRAFT_VERSION: u64 = 0;
 /// Marker embedded in optimistic-concurrency failures so the HTTP layer can
 /// map them to 409 instead of 500.
 pub const DRAFT_CONCURRENCY_CONFLICT: &str = "orchestration draft was modified concurrently";
+const ORCHESTRATION_TOOL_REQUEST_LEASE_MS: u64 = 30_000;
 
 impl OrchestrationStateStore {
+    pub fn begin_orchestration_tool_request(
+        &self,
+        tenant: &TenantContext,
+        operation: &str,
+        idempotency_key: &str,
+        request_digest: &str,
+        now_ms: u64,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let deployment = tenant.deployment_id.as_deref().unwrap_or("");
+            let existing = transaction
+                .query_row(
+                    "SELECT request_digest, response_json, created_at_ms
+                     FROM orchestration_tool_requests
+                     WHERE org_id = ?1 AND workspace_id = ?2 AND deployment_key = ?3
+                       AND operation = ?4 AND idempotency_key = ?5",
+                    params![
+                        tenant.org_id,
+                        tenant.workspace_id,
+                        deployment,
+                        operation,
+                        idempotency_key,
+                    ],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, u64>(2)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            if let Some((stored_digest, response, created_at_ms)) = existing {
+                if stored_digest != request_digest {
+                    bail!("idempotency key is already bound to a different {operation} request");
+                }
+                if response.is_none()
+                    && now_ms.saturating_sub(created_at_ms) < ORCHESTRATION_TOOL_REQUEST_LEASE_MS
+                {
+                    bail!("{operation} request with this idempotency key is still in flight");
+                }
+                if response.is_none() {
+                    transaction.execute(
+                        "UPDATE orchestration_tool_requests SET created_at_ms = ?6
+                         WHERE org_id = ?1 AND workspace_id = ?2 AND deployment_key = ?3
+                           AND operation = ?4 AND idempotency_key = ?5",
+                        params![
+                            tenant.org_id,
+                            tenant.workspace_id,
+                            deployment,
+                            operation,
+                            idempotency_key,
+                            now_ms,
+                        ],
+                    )?;
+                }
+                transaction.commit()?;
+                return response
+                    .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
+                    .transpose();
+            }
+            transaction.execute(
+                "INSERT INTO orchestration_tool_requests (
+                    org_id, workspace_id, deployment_key, operation, idempotency_key,
+                    request_digest, response_json, created_at_ms, completed_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL)",
+                params![
+                    tenant.org_id,
+                    tenant.workspace_id,
+                    deployment,
+                    operation,
+                    idempotency_key,
+                    request_digest,
+                    now_ms,
+                ],
+            )?;
+            transaction.commit()?;
+            Ok(None)
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn complete_orchestration_tool_request(
+        &self,
+        tenant: &TenantContext,
+        operation: &str,
+        idempotency_key: &str,
+        request_digest: &str,
+        response: &serde_json::Value,
+        now_ms: u64,
+    ) -> anyhow::Result<()> {
+        self.with_connection(|connection| {
+            let updated = connection.execute(
+                "UPDATE orchestration_tool_requests
+                 SET response_json = ?7, completed_at_ms = ?8
+                 WHERE org_id = ?1 AND workspace_id = ?2 AND deployment_key = ?3
+                   AND operation = ?4 AND idempotency_key = ?5 AND request_digest = ?6",
+                params![
+                    tenant.org_id,
+                    tenant.workspace_id,
+                    tenant.deployment_id.as_deref().unwrap_or(""),
+                    operation,
+                    idempotency_key,
+                    request_digest,
+                    serde_json::to_string(response)?,
+                    now_ms,
+                ],
+            )?;
+            if updated != 1 {
+                bail!("orchestration tool request reservation was not found");
+            }
+            Ok(())
+        })
+    }
+
     /// Upsert the draft slot. `expected_updated_at_ms` is the optimistic
     /// concurrency token: when provided it must equal the stored draft's
     /// `updated_at_ms`, otherwise the write is rejected so a stale editor
@@ -45,8 +163,15 @@ impl OrchestrationStateStore {
             let existing = transaction
                 .query_row(
                     "SELECT updated_at_ms FROM orchestration_specs
-                     WHERE orchestration_id = ?1 AND version = ?2",
-                    params![spec.orchestration_id, ORCHESTRATION_DRAFT_VERSION],
+                     WHERE orchestration_id = ?1 AND version = ?2
+                       AND org_id = ?3 AND workspace_id = ?4 AND deployment_key = ?5",
+                    params![
+                        spec.orchestration_id,
+                        ORCHESTRATION_DRAFT_VERSION,
+                        spec.tenant_context.org_id,
+                        spec.tenant_context.workspace_id,
+                        spec.tenant_context.deployment_id.as_deref().unwrap_or(""),
+                    ],
                     |row| row.get::<_, u64>(0),
                 )
                 .optional()?;
@@ -66,10 +191,11 @@ impl OrchestrationStateStore {
             }
             transaction.execute(
                 "INSERT INTO orchestration_specs (
-                    orchestration_id, version, org_id, workspace_id, deployment_id,
+                    orchestration_id, version, org_id, workspace_id, deployment_id, deployment_key,
                     status, definition_json, created_at_ms, updated_at_ms, published_at_ms
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL)
-                 ON CONFLICT(orchestration_id, version) DO UPDATE SET
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL)
+                 ON CONFLICT(org_id, workspace_id, deployment_key, orchestration_id, version)
+                 DO UPDATE SET
                     status = excluded.status,
                     definition_json = excluded.definition_json,
                     updated_at_ms = excluded.updated_at_ms",
@@ -79,6 +205,7 @@ impl OrchestrationStateStore {
                     spec.tenant_context.org_id,
                     spec.tenant_context.workspace_id,
                     spec.tenant_context.deployment_id,
+                    spec.tenant_context.deployment_id.as_deref().unwrap_or(""),
                     serde_json::to_value(&spec.status)?
                         .as_str()
                         .unwrap_or("draft"),
@@ -94,9 +221,10 @@ impl OrchestrationStateStore {
 
     pub fn get_orchestration_draft(
         &self,
+        tenant: &TenantContext,
         orchestration_id: &str,
     ) -> anyhow::Result<Option<OrchestrationSpec>> {
-        self.get_orchestration(orchestration_id, ORCHESTRATION_DRAFT_VERSION)
+        self.get_orchestration_for_tenant(tenant, orchestration_id, ORCHESTRATION_DRAFT_VERSION)
     }
 
     /// Every stored row (drafts and published versions) visible to the tenant.
@@ -140,14 +268,21 @@ impl OrchestrationStateStore {
 
     pub fn latest_published_orchestration_version(
         &self,
+        tenant: &TenantContext,
         orchestration_id: &str,
     ) -> anyhow::Result<Option<u64>> {
         self.with_connection(|connection| {
             let version = connection
                 .query_row(
                     "SELECT MAX(version) FROM orchestration_specs
-                     WHERE orchestration_id = ?1 AND status = 'published'",
-                    [orchestration_id],
+                     WHERE orchestration_id = ?1 AND status = 'published'
+                       AND org_id = ?2 AND workspace_id = ?3 AND deployment_key = ?4",
+                    params![
+                        orchestration_id,
+                        tenant.org_id,
+                        tenant.workspace_id,
+                        tenant.deployment_id.as_deref().unwrap_or(""),
+                    ],
                     |row| row.get::<_, Option<u64>>(0),
                 )
                 .optional()?
@@ -174,8 +309,18 @@ impl OrchestrationStateStore {
             let latest: Option<u64> = transaction
                 .query_row(
                     "SELECT MAX(version) FROM orchestration_specs
-                     WHERE orchestration_id = ?1 AND status = 'published'",
-                    [&published.orchestration_id],
+                     WHERE orchestration_id = ?1 AND status = 'published'
+                       AND org_id = ?2 AND workspace_id = ?3 AND deployment_key = ?4",
+                    params![
+                        published.orchestration_id,
+                        published.tenant_context.org_id,
+                        published.tenant_context.workspace_id,
+                        published
+                            .tenant_context
+                            .deployment_id
+                            .as_deref()
+                            .unwrap_or(""),
+                    ],
                     |row| row.get::<_, Option<u64>>(0),
                 )
                 .optional()?
@@ -190,15 +335,20 @@ impl OrchestrationStateStore {
             }
             transaction.execute(
                 "INSERT INTO orchestration_specs (
-                    orchestration_id, version, org_id, workspace_id, deployment_id,
+                    orchestration_id, version, org_id, workspace_id, deployment_id, deployment_key,
                     status, definition_json, created_at_ms, updated_at_ms, published_at_ms
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, 'published', ?6, ?7, ?8, ?9)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'published', ?7, ?8, ?9, ?10)",
                 params![
                     published.orchestration_id,
                     published.version,
                     published.tenant_context.org_id,
                     published.tenant_context.workspace_id,
                     published.tenant_context.deployment_id,
+                    published
+                        .tenant_context
+                        .deployment_id
+                        .as_deref()
+                        .unwrap_or(""),
                     payload,
                     published.created_at_ms,
                     published.updated_at_ms,
@@ -219,7 +369,7 @@ impl OrchestrationStateStore {
         now_ms: u64,
     ) -> anyhow::Result<OrchestrationSpec> {
         let mut draft = self
-            .get_orchestration_draft(orchestration_id)?
+            .get_orchestration_draft(tenant, orchestration_id)?
             .context("orchestration draft not found")?;
         let same_scope = draft.tenant_context.org_id == tenant.org_id
             && draft.tenant_context.workspace_id == tenant.workspace_id

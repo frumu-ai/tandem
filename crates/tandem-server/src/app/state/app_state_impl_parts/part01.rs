@@ -531,6 +531,10 @@ impl AppState {
                 Arc::new(crate::pack_builder::PackBuilderTool::new(self.clone())),
             )
             .await;
+        for tool in crate::http::orchestration_tools::orchestration_tools(self.clone()) {
+            let name = tool.schema().name;
+            self.tools.register_tool(name, tool).await;
+        }
         self.tools
             .register_tool(
                 "mcp_list".to_string(),

@@ -78,6 +78,43 @@ from .types import (
     MissionEventResponse,
     MissionListResponse,
     MissionRecord,
+    LongRunningGoalArtifactsResponse,
+    LongRunningGoalBudgetsResponse,
+    LongRunningGoalCancelResponse,
+    LongRunningGoalCompletionInput,
+    LongRunningGoalCompletionResponse,
+    LongRunningGoalControlResponse,
+    LongRunningGoalEventsResponse,
+    LongRunningGoalGraphResponse,
+    LongRunningGoalHandoffDecisionInput,
+    LongRunningGoalHandoffDecisionResponse,
+    LongRunningGoalHandoffEmitInput,
+    LongRunningGoalHandoffTransitionResponse,
+    LongRunningGoalHandoffsResponse,
+    LongRunningGoalListResponse,
+    LongRunningGoalResponse,
+    LongRunningGoalRunsResponse,
+    LongRunningGoalStartInput,
+    LongRunningGoalStartResponse,
+    LongRunningGoalStatus,
+    LongRunningGoalWaitResponse,
+    LongRunningGoalWaitResolveInput,
+    LongRunningGoalWaitsResponse,
+    OrchestrationArtifactRef,
+    OrchestrationAggregateResponse,
+    OrchestrationDraftInput,
+    OrchestrationGoalPolicy,
+    OrchestrationListResponse,
+    OrchestrationPublishResponse,
+    OrchestrationRefreshReferencesResponse,
+    OrchestrationSpec,
+    OrchestrationStatus,
+    OrchestrationStaleReferencesResponse,
+    OrchestrationTransitionPreviewInput,
+    OrchestrationTransitionPreviewResponse,
+    OrchestrationValidationResponse,
+    OrchestrationVersionResponse,
+    OrchestrationVersionsResponse,
     PermissionSnapshotResponse,
     PromptPartInput,
     PromptAsyncResult,
@@ -173,6 +210,10 @@ class TandemClient:
         self.routines = _Routines(self._base_url, self._token, self._http)
         self.automations = _Automations(self._base_url, self._token, self._http)
         self.automations_v2 = _AutomationsV2(self._base_url, self._token, self._http)
+        self.orchestrations = _Orchestrations(self._http)
+        self.stateful_runtime = _StatefulRuntime(
+            self._base_url, self._token, self._http
+        )
         self.optimizations = _Optimizations(self._http)
         self.workflow_plans = _WorkflowPlans(self._http)
         self.memory = _Memory(self._http)
@@ -2301,6 +2342,404 @@ class _Automations:
             params.append(f"run_id={quote(run_id)}")
         qs = f"?{'&'.join(params)}" if params else ""
         return stream_sse(f"{self._base_url}/automations/events{qs}", self._token, client=self._http)
+
+
+def _orchestration_payload(payload: OrchestrationDraftInput | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(payload, OrchestrationDraftInput):
+        return payload.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    return dict(payload)
+
+
+class _Orchestrations:
+    def __init__(self, http: httpx.AsyncClient) -> None:
+        self._http = http
+
+    async def list(
+        self, *, status: Optional[OrchestrationStatus] = None, limit: Optional[int] = None
+    ) -> OrchestrationListResponse:
+        params: dict[str, Any] = {}
+        if status is not None:
+            params["status"] = status
+        if limit is not None:
+            params["limit"] = limit
+        res = await self._http.get("/orchestrations", params=params)
+        res.raise_for_status()
+        return OrchestrationListResponse.model_validate(res.json())
+
+    async def create(
+        self, draft: OrchestrationDraftInput | dict[str, Any]
+    ) -> OrchestrationVersionResponse:
+        res = await self._http.post("/orchestrations", json=_orchestration_payload(draft))
+        res.raise_for_status()
+        return OrchestrationVersionResponse.model_validate(res.json())
+
+    async def list_versions(self, orchestration_id: str) -> OrchestrationVersionsResponse:
+        res = await self._http.get(
+            f"/orchestrations/{quote(orchestration_id, safe='')}/versions"
+        )
+        res.raise_for_status()
+        return OrchestrationVersionsResponse.model_validate(res.json())
+
+    async def get(self, orchestration_id: str) -> OrchestrationAggregateResponse:
+        res = await self._http.get(self._path(orchestration_id))
+        res.raise_for_status()
+        return OrchestrationAggregateResponse.model_validate(res.json())
+
+    async def get_version(
+        self, orchestration_id: str, version: int
+    ) -> OrchestrationVersionResponse:
+        res = await self._http.get(self._version_path(orchestration_id, version))
+        res.raise_for_status()
+        return OrchestrationVersionResponse.model_validate(res.json())
+
+    async def update(
+        self,
+        orchestration_id: str,
+        draft: OrchestrationDraftInput | dict[str, Any],
+        *,
+        expected_updated_at_ms: int,
+    ) -> OrchestrationVersionResponse:
+        payload = _orchestration_payload(draft)
+        payload["expected_updated_at_ms"] = expected_updated_at_ms
+        res = await self._http.put(self._path(orchestration_id), json=payload)
+        res.raise_for_status()
+        return OrchestrationVersionResponse.model_validate(res.json())
+
+    async def archive(self, orchestration_id: str) -> OrchestrationVersionResponse:
+        res = await self._http.post(f"{self._path(orchestration_id)}/archive")
+        res.raise_for_status()
+        return OrchestrationVersionResponse.model_validate(res.json())
+
+    async def validate(
+        self, orchestration_id: str
+    ) -> OrchestrationValidationResponse:
+        res = await self._http.post(f"{self._path(orchestration_id)}/validate")
+        res.raise_for_status()
+        return OrchestrationValidationResponse.model_validate(res.json())
+
+    async def publish(
+        self, orchestration_id: str
+    ) -> OrchestrationPublishResponse:
+        res = await self._http.post(f"{self._path(orchestration_id)}/publish")
+        res.raise_for_status()
+        return OrchestrationPublishResponse.model_validate(res.json())
+
+    async def stale_references(
+        self, orchestration_id: str
+    ) -> OrchestrationStaleReferencesResponse:
+        res = await self._http.get(f"{self._path(orchestration_id)}/stale-references")
+        res.raise_for_status()
+        return OrchestrationStaleReferencesResponse.model_validate(res.json())
+
+    async def refresh_references(
+        self, orchestration_id: str, *, expected_updated_at_ms: int
+    ) -> OrchestrationRefreshReferencesResponse:
+        res = await self._http.post(
+            f"{self._path(orchestration_id)}/refresh-references",
+            json={"expected_updated_at_ms": expected_updated_at_ms},
+        )
+        res.raise_for_status()
+        return OrchestrationRefreshReferencesResponse.model_validate(res.json())
+
+    async def dry_run(
+        self,
+        orchestration_id: str,
+        preview: OrchestrationTransitionPreviewInput | dict[str, Any] | None = None,
+        *,
+        from_node_id: Optional[str] = None,
+        transition_key: Optional[str] = None,
+        artifact_type: Optional[str] = None,
+        version: Optional[int] = None,
+    ) -> OrchestrationTransitionPreviewResponse:
+        if preview is None:
+            if from_node_id is None or transition_key is None:
+                raise ValueError(
+                    "from_node_id and transition_key are required without a preview input"
+                )
+            preview = OrchestrationTransitionPreviewInput(
+                from_node_id=from_node_id,
+                transition_key=transition_key,
+                artifact_type=artifact_type,
+                version=version,
+            )
+        payload = preview.model_dump(mode="json") if isinstance(
+            preview, OrchestrationTransitionPreviewInput
+        ) else dict(preview)
+        res = await self._http.post(
+            f"{self._path(orchestration_id)}/dry-run",
+            json=payload,
+        )
+        res.raise_for_status()
+        return OrchestrationTransitionPreviewResponse.model_validate(res.json())
+
+    @staticmethod
+    def _path(orchestration_id: str) -> str:
+        return f"/orchestrations/{quote(orchestration_id, safe='')}"
+
+    @staticmethod
+    def _version_path(orchestration_id: str, version: int) -> str:
+        return f"/orchestrations/{quote(orchestration_id, safe='')}/versions/{version}"
+
+    delete = archive
+    transition_preview = dry_run
+
+
+class _StatefulRuntime:
+    def __init__(self, base_url: str, token: str, http: httpx.AsyncClient) -> None:
+        self._base_url = base_url
+        self._token = token
+        self._http = http
+
+    async def list_goals(
+        self,
+        *,
+        limit: Optional[int] = None,
+        status: Optional[LongRunningGoalStatus] = None,
+        orchestration_id: Optional[str] = None,
+    ) -> LongRunningGoalListResponse:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if status is not None:
+            params["status"] = status
+        if orchestration_id is not None:
+            params["orchestration_id"] = orchestration_id
+        res = await self._http.get("/goals", params=params)
+        res.raise_for_status()
+        return LongRunningGoalListResponse.model_validate(res.json())
+
+    async def start_goal(
+        self,
+        goal: LongRunningGoalStartInput | dict[str, Any] | None = None,
+        *,
+        idempotency_key: Optional[str] = None,
+        orchestration_id: Optional[str] = None,
+        orchestration_version: Optional[int] = None,
+        objective: Optional[str] = None,
+        metadata: Any = None,
+    ) -> LongRunningGoalStartResponse:
+        if goal is None:
+            if orchestration_id is None or objective is None or idempotency_key is None:
+                raise ValueError(
+                    "orchestration_id, objective, and idempotency_key are required"
+                )
+            goal = LongRunningGoalStartInput(
+                orchestration_id=orchestration_id,
+                orchestration_version=orchestration_version,
+                objective=objective,
+                idempotency_key=idempotency_key,
+                metadata=metadata,
+            )
+        payload = (
+            goal.model_dump(mode="json", exclude_unset=True, exclude_none=True)
+            if isinstance(goal, LongRunningGoalStartInput)
+            else dict(goal)
+        )
+        if idempotency_key is not None:
+            payload["idempotency_key"] = idempotency_key
+        res = await self._http.post("/goals", json=payload)
+        res.raise_for_status()
+        return LongRunningGoalStartResponse.model_validate(res.json())
+
+    async def get_goal(self, goal_id: str) -> LongRunningGoalResponse:
+        res = await self._http.get(self._goal_path(goal_id))
+        res.raise_for_status()
+        return LongRunningGoalResponse.model_validate(res.json())
+
+    async def get_goal_graph(self, goal_id: str) -> LongRunningGoalGraphResponse:
+        res = await self._http.get(f"{self._goal_path(goal_id)}/graph")
+        res.raise_for_status()
+        return LongRunningGoalGraphResponse.model_validate(res.json())
+
+    async def list_goal_runs(self, goal_id: str) -> LongRunningGoalRunsResponse:
+        res = await self._http.get(f"{self._goal_path(goal_id)}/runs")
+        res.raise_for_status()
+        return LongRunningGoalRunsResponse.model_validate(res.json())
+
+    async def list_goal_events(
+        self, goal_id: str, *, cursor: Optional[int] = None, limit: Optional[int] = None
+    ) -> LongRunningGoalEventsResponse:
+        params: dict[str, int] = {}
+        if cursor is not None:
+            params["cursor"] = cursor
+        if limit is not None:
+            params["limit"] = limit
+        res = await self._http.get(f"{self._goal_path(goal_id)}/events", params=params)
+        res.raise_for_status()
+        return LongRunningGoalEventsResponse.model_validate(res.json())
+
+    def events(
+        self, goal_id: str, cursor: Optional[int] = None
+    ) -> AsyncGenerator[EngineEvent, None]:
+        params = f"?cursor={cursor}" if cursor is not None else ""
+        url = f"{self._base_url}{self._goal_path(goal_id)}/events/stream{params}"
+        return stream_sse(url, self._token, client=self._http)
+
+    async def list_goal_handoffs(
+        self, goal_id: str
+    ) -> LongRunningGoalHandoffsResponse:
+        res = await self._http.get(f"{self._goal_path(goal_id)}/handoffs")
+        res.raise_for_status()
+        return LongRunningGoalHandoffsResponse.model_validate(res.json())
+
+    async def emit_goal_handoff(
+        self,
+        goal_id: str,
+        *,
+        transition_key: str,
+        artifact: OrchestrationArtifactRef | dict[str, Any],
+        idempotency_key: str,
+    ) -> LongRunningGoalHandoffTransitionResponse:
+        payload = LongRunningGoalHandoffEmitInput(
+            transition_key=transition_key,
+            artifact=artifact,
+            idempotency_key=idempotency_key,
+        ).model_dump(mode="json", exclude_unset=True)
+        res = await self._http.post(
+            f"{self._goal_path(goal_id)}/transitions",
+            json=payload,
+        )
+        res.raise_for_status()
+        return LongRunningGoalHandoffTransitionResponse.model_validate(res.json())
+
+    async def decide_goal_handoff(
+        self,
+        goal_id: str,
+        handoff_id: str,
+        *,
+        approve: bool,
+        reason: Optional[str] = None,
+    ) -> LongRunningGoalHandoffDecisionResponse:
+        payload = LongRunningGoalHandoffDecisionInput(
+            decision="approve" if approve else "reject",
+            reason=reason,
+        ).model_dump(mode="json", exclude_none=True)
+        res = await self._http.post(
+            f"{self._goal_path(goal_id)}/handoffs/{quote(handoff_id, safe='')}/decision",
+            json=payload,
+        )
+        res.raise_for_status()
+        return LongRunningGoalHandoffDecisionResponse.model_validate(res.json())
+
+    async def settle_goal_completion(
+        self,
+        goal_id: str,
+        completion: LongRunningGoalCompletionInput | dict[str, Any] | None = None,
+        *,
+        transition_key: Optional[str] = None,
+        final_artifact: OrchestrationArtifactRef | dict[str, Any] | None = None,
+    ) -> LongRunningGoalCompletionResponse:
+        if completion is None:
+            completion = LongRunningGoalCompletionInput(
+                transition_key=transition_key, final_artifact=final_artifact
+            )
+        payload = (
+            completion.model_dump(mode="json", exclude_none=True)
+            if isinstance(completion, LongRunningGoalCompletionInput)
+            else dict(completion)
+        )
+        res = await self._http.post(
+            f"{self._goal_path(goal_id)}/completion", json=payload
+        )
+        res.raise_for_status()
+        return LongRunningGoalCompletionResponse.model_validate(res.json())
+
+    async def list_goal_waits(self, goal_id: str) -> LongRunningGoalWaitsResponse:
+        res = await self._http.get(f"{self._goal_path(goal_id)}/waits")
+        res.raise_for_status()
+        return LongRunningGoalWaitsResponse.model_validate(res.json())
+
+    async def get_goal_wait(
+        self, goal_id: str, wait_id: str
+    ) -> LongRunningGoalWaitResponse:
+        res = await self._http.get(
+            f"{self._goal_path(goal_id)}/waits/{quote(wait_id, safe='')}"
+        )
+        res.raise_for_status()
+        return LongRunningGoalWaitResponse.model_validate(res.json())
+
+    async def resolve_goal_wait(
+        self,
+        goal_id: str,
+        wait_id: str,
+        *,
+        idempotency_key: str,
+        payload: Any = None,
+    ) -> LongRunningGoalWaitResponse:
+        body = LongRunningGoalWaitResolveInput(
+            idempotency_key=idempotency_key,
+            payload=payload,
+        ).model_dump(mode="json")
+        res = await self._http.post(
+            f"{self._goal_path(goal_id)}/waits/{quote(wait_id, safe='')}/resolve",
+            json=body,
+        )
+        res.raise_for_status()
+        return LongRunningGoalWaitResponse.model_validate(res.json())
+
+    async def list_goal_artifacts(
+        self, goal_id: str
+    ) -> LongRunningGoalArtifactsResponse:
+        res = await self._http.get(f"{self._goal_path(goal_id)}/artifacts")
+        res.raise_for_status()
+        return LongRunningGoalArtifactsResponse.model_validate(res.json())
+
+    async def get_goal_budgets(self, goal_id: str) -> LongRunningGoalBudgetsResponse:
+        res = await self._http.get(f"{self._goal_path(goal_id)}/budgets")
+        res.raise_for_status()
+        return LongRunningGoalBudgetsResponse.model_validate(res.json())
+
+    async def cancel_goal(
+        self, goal_id: str, *, reason: Optional[str] = None
+    ) -> LongRunningGoalCancelResponse:
+        res = await self._http.post(
+            f"{self._goal_path(goal_id)}/cancel",
+            json={"reason": reason} if reason is not None else {},
+        )
+        res.raise_for_status()
+        return LongRunningGoalCancelResponse.model_validate(res.json())
+
+    async def pause_goal(
+        self, goal_id: str, *, reason: Optional[str] = None
+    ) -> LongRunningGoalControlResponse:
+        res = await self._http.post(
+            f"{self._goal_path(goal_id)}/pause",
+            json={"reason": reason} if reason is not None else {},
+        )
+        res.raise_for_status()
+        return LongRunningGoalControlResponse.model_validate(res.json())
+
+    async def resume_goal(
+        self, goal_id: str, *, reason: Optional[str] = None
+    ) -> LongRunningGoalControlResponse:
+        res = await self._http.post(
+            f"{self._goal_path(goal_id)}/resume",
+            json={"reason": reason} if reason is not None else {},
+        )
+        res.raise_for_status()
+        return LongRunningGoalControlResponse.model_validate(res.json())
+
+    @staticmethod
+    def _goal_path(goal_id: str) -> str:
+        return f"/goals/{quote(goal_id, safe='')}"
+
+    list = list_goals
+    start = start_goal
+    get = get_goal
+    graph = get_goal_graph
+    runs = list_goal_runs
+    handoffs = list_goal_handoffs
+    emit_handoff = emit_goal_handoff
+    decide_handoff = decide_goal_handoff
+    completion = settle_goal_completion
+    waits = list_goal_waits
+    get_wait = get_goal_wait
+    resolve_wait = resolve_goal_wait
+    artifacts = list_goal_artifacts
+    budgets = get_goal_budgets
+    cancel = cancel_goal
+    pause = pause_goal
+    resume = resume_goal
 
 
 _WEBHOOK_TRIGGER_PAYLOAD_ALIASES = {

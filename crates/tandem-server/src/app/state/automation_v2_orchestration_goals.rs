@@ -30,14 +30,24 @@ pub(crate) struct StartGoalRequest {
 }
 
 impl StartGoalRequest {
-    pub fn goal_id(&self) -> String {
-        stable_lifecycle_id("goal", &self.orchestration_id, &self.idempotency_key)
+    pub fn goal_id(&self, tenant: &TenantContext) -> String {
+        stable_lifecycle_id(
+            "goal",
+            &format!(
+                "{}:{}:{}:{}",
+                tenant.org_id,
+                tenant.workspace_id,
+                tenant.deployment_id.as_deref().unwrap_or(""),
+                self.orchestration_id
+            ),
+            &self.idempotency_key,
+        )
     }
 
-    pub fn root_run_id(&self) -> String {
+    pub fn root_run_id(&self, tenant: &TenantContext) -> String {
         stable_lifecycle_id(
             "automation-v2-run",
-            &self.goal_id(),
+            &self.goal_id(tenant),
             &format!("root:{}", self.idempotency_key),
         )
     }
@@ -79,11 +89,11 @@ impl AppState {
         let version = match request.orchestration_version {
             Some(version) => version,
             None => store
-                .latest_published_orchestration_version(&request.orchestration_id)?
+                .latest_published_orchestration_version(tenant, &request.orchestration_id)?
                 .context("orchestration has no published version")?,
         };
         let orchestration = store
-            .get_orchestration(&request.orchestration_id, version)?
+            .get_orchestration_for_tenant(tenant, &request.orchestration_id, version)?
             .context("published orchestration version not found")?;
         if orchestration.status != OrchestrationStatus::Published {
             bail!("goals can only start from a published orchestration version");
@@ -120,8 +130,8 @@ impl AppState {
             bail!("root workflow definition changed after orchestration publication");
         }
 
-        let goal_id = request.goal_id();
-        let root_run_id = request.root_run_id();
+        let goal_id = request.goal_id(tenant);
+        let root_run_id = request.root_run_id(tenant);
         let goal = LongRunningGoal {
             schema_version: 1,
             goal_id: goal_id.clone(),
@@ -172,14 +182,28 @@ impl AppState {
                 .write()
                 .await
                 .insert(root_run.run_id.clone(), root_run.clone());
-            self.persist_automation_v2_runs().await?;
-            crate::http::context_runs::sync_automation_v2_run_blackboard(
+            if let Err(error) = self.persist_automation_v2_runs().await {
+                tracing::warn!(
+                    goal_id = %goal.goal_id,
+                    run_id = %root_run.run_id,
+                    %error,
+                    "durable goal start committed; compatibility run persistence will recover from SQLite"
+                );
+            }
+            if let Err(status) = crate::http::context_runs::sync_automation_v2_run_blackboard(
                 self,
                 &automation,
                 root_run,
             )
             .await
-            .map_err(|status| anyhow::anyhow!("failed to sync goal context run: {status}"))?;
+            {
+                tracing::warn!(
+                    goal_id = %goal.goal_id,
+                    run_id = %root_run.run_id,
+                    ?status,
+                    "durable goal start committed; context blackboard synchronization will be retried"
+                );
+            }
             self.event_bus
                 .publish(crate::routines::types::tenant_scoped_engine_event(
                     "orchestration.goal.started",

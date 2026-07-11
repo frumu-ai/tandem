@@ -357,6 +357,7 @@ export const EngineEventSchema = z
   .object({
     type: z.string(),
     properties: z.record(z.string(), z.any()).optional().default({}),
+    goal_seq: z.number().optional(),
     envelope: RuntimeEventEnvelopeSchema.optional(),
     sessionID: z.string().optional(),
     session_id: z.string().optional(),

@@ -65,10 +65,27 @@ async def stream_sse(
                 continue
             if not isinstance(payload, dict):
                 continue
-            event_type: str = payload.get("type", "unknown")  # type: ignore[assignment]
+            if sse.event in {"ready", "heartbeat", "keepalive"}:
+                continue
+            # Goal streams wrap each durable event with its replay cursor.
+            wrapped_event = payload.get("event")
+            if isinstance(wrapped_event, dict):
+                cursor = payload.get("cursor")
+                payload = dict(wrapped_event)
+                if isinstance(cursor, int):
+                    payload["cursor"] = cursor
+            event_type: str = payload.get(  # type: ignore[assignment]
+                "type", payload.get("event_type", sse.event or "unknown")
+            )
             if not isinstance(event_type, str):
-                payload["type"] = "unknown"
-            
+                event_type = "unknown"
+            payload["type"] = event_type
+            properties = payload.get("properties", payload.get("payload"))
+            payload.setdefault(
+                "properties",
+                properties if isinstance(properties, dict) else {"payload": properties},
+            )
+
             try:
                 yield _engine_event_adapter.validate_python(payload)
             except Exception:

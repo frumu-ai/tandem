@@ -28,7 +28,7 @@ pub use transition::{
     WorkflowCompletionResult,
 };
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrchestrationStorePaths {
@@ -168,8 +168,15 @@ impl OrchestrationStateStore {
             let existing = connection
                 .query_row(
                     "SELECT status, definition_json FROM orchestration_specs
-                     WHERE orchestration_id = ?1 AND version = ?2",
-                    params![spec.orchestration_id, spec.version],
+                     WHERE orchestration_id = ?1 AND version = ?2
+                       AND org_id = ?3 AND workspace_id = ?4 AND deployment_key = ?5",
+                    params![
+                        spec.orchestration_id,
+                        spec.version,
+                        spec.tenant_context.org_id,
+                        spec.tenant_context.workspace_id,
+                        spec.tenant_context.deployment_id.as_deref().unwrap_or(""),
+                    ],
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                 )
                 .optional()?;
@@ -187,10 +194,11 @@ impl OrchestrationStateStore {
             }
             connection.execute(
                 "INSERT INTO orchestration_specs (
-                    orchestration_id, version, org_id, workspace_id, deployment_id,
+                    orchestration_id, version, org_id, workspace_id, deployment_id, deployment_key,
                     status, definition_json, created_at_ms, updated_at_ms, published_at_ms
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-                 ON CONFLICT(orchestration_id, version) DO UPDATE SET
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 ON CONFLICT(org_id, workspace_id, deployment_key, orchestration_id, version)
+                 DO UPDATE SET
                     status = excluded.status,
                     definition_json = excluded.definition_json,
                     updated_at_ms = excluded.updated_at_ms,
@@ -201,6 +209,7 @@ impl OrchestrationStateStore {
                     spec.tenant_context.org_id,
                     spec.tenant_context.workspace_id,
                     spec.tenant_context.deployment_id,
+                    spec.tenant_context.deployment_id.as_deref().unwrap_or(""),
                     serde_json::to_value(&spec.status)?
                         .as_str()
                         .unwrap_or("draft"),
@@ -225,6 +234,34 @@ impl OrchestrationStateStore {
                     "SELECT definition_json FROM orchestration_specs
                      WHERE orchestration_id = ?1 AND version = ?2",
                     params![orchestration_id, version],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            payload
+                .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
+                .transpose()
+        })
+    }
+
+    pub fn get_orchestration_for_tenant(
+        &self,
+        tenant: &tandem_types::TenantContext,
+        orchestration_id: &str,
+        version: u64,
+    ) -> anyhow::Result<Option<OrchestrationSpec>> {
+        self.with_connection(|connection| {
+            let payload = connection
+                .query_row(
+                    "SELECT definition_json FROM orchestration_specs
+                     WHERE orchestration_id = ?1 AND version = ?2
+                       AND org_id = ?3 AND workspace_id = ?4 AND deployment_key = ?5",
+                    params![
+                        orchestration_id,
+                        version,
+                        tenant.org_id,
+                        tenant.workspace_id,
+                        tenant.deployment_id.as_deref().unwrap_or(""),
+                    ],
                     |row| row.get::<_, String>(0),
                 )
                 .optional()?;
@@ -607,12 +644,13 @@ fn initialize_schema(connection: &mut Connection) -> anyhow::Result<()> {
             org_id TEXT NOT NULL,
             workspace_id TEXT NOT NULL,
             deployment_id TEXT,
+            deployment_key TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL,
             definition_json TEXT NOT NULL,
             created_at_ms INTEGER NOT NULL,
             updated_at_ms INTEGER NOT NULL,
             published_at_ms INTEGER,
-            PRIMARY KEY (orchestration_id, version)
+            PRIMARY KEY (org_id, workspace_id, deployment_key, orchestration_id, version)
          );
          CREATE INDEX IF NOT EXISTS idx_orchestration_scope_status
             ON orchestration_specs (org_id, workspace_id, status);
@@ -647,6 +685,21 @@ fn initialize_schema(connection: &mut Connection) -> anyhow::Result<()> {
          );
          CREATE INDEX IF NOT EXISTS idx_goals_scope_status
             ON long_running_goals (org_id, workspace_id, status);
+
+         CREATE TABLE IF NOT EXISTS orchestration_tool_requests (
+            org_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            deployment_key TEXT NOT NULL DEFAULT '',
+            operation TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            request_digest TEXT NOT NULL,
+            response_json TEXT,
+            created_at_ms INTEGER NOT NULL,
+            completed_at_ms INTEGER,
+            PRIMARY KEY (
+                org_id, workspace_id, deployment_key, operation, idempotency_key
+            )
+         );
 
          CREATE TABLE IF NOT EXISTS workflow_handoffs (
             handoff_id TEXT PRIMARY KEY,
@@ -736,6 +789,37 @@ fn initialize_schema(connection: &mut Connection) -> anyhow::Result<()> {
             [],
         )?;
     }
+    if !table_has_column(connection, "orchestration_specs", "deployment_key")? {
+        connection.execute_batch(
+            "BEGIN IMMEDIATE;
+             CREATE TABLE orchestration_specs_v3 (
+                orchestration_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                org_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                deployment_id TEXT,
+                deployment_key TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL,
+                definition_json TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                published_at_ms INTEGER,
+                PRIMARY KEY (org_id, workspace_id, deployment_key, orchestration_id, version)
+             );
+             INSERT INTO orchestration_specs_v3 (
+                orchestration_id, version, org_id, workspace_id, deployment_id, deployment_key,
+                status, definition_json, created_at_ms, updated_at_ms, published_at_ms
+             ) SELECT orchestration_id, version, org_id, workspace_id, deployment_id,
+                      COALESCE(deployment_id, ''), status, definition_json, created_at_ms,
+                      updated_at_ms, published_at_ms
+               FROM orchestration_specs;
+             DROP TABLE orchestration_specs;
+             ALTER TABLE orchestration_specs_v3 RENAME TO orchestration_specs;
+             CREATE INDEX idx_orchestration_scope_status
+                ON orchestration_specs (org_id, workspace_id, status);
+             COMMIT;",
+        )?;
+    }
     let mut version: i64 = connection.query_row(
         "SELECT schema_version FROM schema_metadata LIMIT 1",
         [],
@@ -748,6 +832,10 @@ fn initialize_schema(connection: &mut Connection) -> anyhow::Result<()> {
     if version == 2 {
         migrate_schema_v2_to_v3(connection)?;
         version = 3;
+    }
+    if version == 3 {
+        connection.execute("UPDATE schema_metadata SET schema_version = 4", [])?;
+        version = 4;
     }
     if version != SCHEMA_VERSION {
         bail!(
@@ -1405,5 +1493,63 @@ mod tests {
         changed.name = "Changed after publish".to_string();
         changed.updated_at_ms += 1;
         assert!(store.put_orchestration(&changed).is_err());
+    }
+
+    #[test]
+    fn tool_request_ledger_blocks_concurrent_replays_and_reclaims_stale_leases() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = OrchestrationStateStore::open(OrchestrationStorePaths {
+            database_path: directory.path().join("runtime.sqlite3"),
+            engine_lock_path: directory.path().join("engine.lock"),
+        })
+        .unwrap();
+        let tenant = TenantContext::local_implicit();
+
+        assert_eq!(
+            store
+                .begin_orchestration_tool_request(&tenant, "publish", "request-1", "digest-1", 100)
+                .unwrap(),
+            None
+        );
+        let error = store
+            .begin_orchestration_tool_request(&tenant, "publish", "request-1", "digest-1", 101)
+            .expect_err("a live reservation must block a concurrent replay");
+        assert!(error.to_string().contains("still in flight"));
+
+        assert_eq!(
+            store
+                .begin_orchestration_tool_request(
+                    &tenant,
+                    "publish",
+                    "request-1",
+                    "digest-1",
+                    30_100,
+                )
+                .unwrap(),
+            None
+        );
+        let response = serde_json::json!({"version": 3});
+        store
+            .complete_orchestration_tool_request(
+                &tenant,
+                "publish",
+                "request-1",
+                "digest-1",
+                &response,
+                30_101,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .begin_orchestration_tool_request(
+                    &tenant,
+                    "publish",
+                    "request-1",
+                    "digest-1",
+                    30_102,
+                )
+                .unwrap(),
+            Some(response)
+        );
     }
 }

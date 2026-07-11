@@ -387,6 +387,25 @@ async fn cross_tenant_references_and_reads_fail_closed() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Storage identity is tenant-scoped: the local tenant may use the same
+    // orchestration ID/version without learning about or colliding with acme.
+    let (status, local_created) = dispatch(
+        &app,
+        local_request(
+            "POST",
+            "/orchestrations",
+            Some(draft_payload(&planner_hash, &executor_hash)),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{local_created}");
+    let (status, local_draft) = dispatch(
+        &app,
+        local_request("GET", "/orchestrations/orch-goals", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{local_draft}");
 }
 
 #[tokio::test]

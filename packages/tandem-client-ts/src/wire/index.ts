@@ -2210,6 +2210,7 @@ export interface ToolExecuteResult {
 export interface EngineEvent {
   type: string;
   properties: Record<string, unknown>;
+  goal_seq?: number;
   sessionID?: string;
   runID?: string;
   timestamp?: string;

@@ -326,6 +326,70 @@ The Python SDK already includes the newer engine surfaces that have landed acros
 - `client.skills` for list/get/import plus preview, templates, validation, routing, evals, compile, and generate flows
 - `client.packs` and `client.capabilities` for pack lifecycle and capability resolution
 - `client.automations_v2`, `client.incident_monitor`, `client.coder`, `client.agent_teams`, and `client.missions` for newer orchestration APIs
+
+### Long-running orchestrations
+
+```python
+draft = await client.orchestrations.create({
+    "orchestration_id": "quarter-close",
+    "name": "Quarter close",
+    "root_node_id": "collect",
+    "nodes": [{
+        "node_id": "collect",
+        "name": "Collect evidence",
+        "position": {"x": 0, "y": 0},
+        "kind": "workflow",
+        "automation_id": "collect-evidence",
+        "allowed_transition_keys": ["complete"],
+    }, {
+        "node_id": "done",
+        "name": "Done",
+        "position": {"x": 300, "y": 0},
+        "kind": "terminal",
+        "outcome": "complete",
+    }],
+    "edges": [{
+        "edge_id": "collect-complete",
+        "from_node_id": "collect",
+        "to_node_id": "done",
+        "transition_key": "complete",
+    }],
+    "goal_policy": {"max_hops": 20, "on_limit": "pause_for_review"},
+})
+validation = await client.orchestrations.validate("quarter-close")
+stale = await client.orchestrations.stale_references("quarter-close")
+refreshed = await client.orchestrations.refresh_references(
+    "quarter-close", expected_updated_at_ms=draft.updated_at_ms
+)
+published = await client.orchestrations.publish("quarter-close")
+started = await client.stateful_runtime.start_goal(
+    orchestration_id="quarter-close",
+    orchestration_version=published.orchestration.version,
+    objective="Complete the quarter close with verified evidence",
+    idempotency_key="quarter-close-2026-q2",
+)
+events = await client.stateful_runtime.list_goal_events(
+    started.goal.goal_id, cursor=0, limit=100
+)
+async for event in client.stateful_runtime.events(
+    started.goal.goal_id, cursor=events.last_cursor
+):
+    print(event.cursor, event.type, event.properties)
+
+completed = await client.stateful_runtime.settle_goal_completion(
+    started.goal.goal_id,
+    transition_key="complete",
+    final_artifact={"artifact_type": "report", "value": {"ok": True}},
+)
+```
+
+Orchestration authoring uses the canonical draft-v0 routes. Draft writes contain
+only writable graph fields; server-owned fields such as `status`, `version`,
+tenant context, and timestamps are returned by the server. `get(id)` returns the
+draft and latest published version together, while `get_version(id, version)`
+returns an immutable published snapshot. Goal event cursors are durable and may
+be passed back to both `list_goal_events(..., cursor=...)` and
+`events(..., cursor=...)` for exact replay.
 - For the Incident Monitor flow, see [Incident Monitor](https://docs.tandem.ac/incident-monitor/overview/)
 
 ```python

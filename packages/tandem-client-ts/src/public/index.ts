@@ -2303,6 +2303,689 @@ export interface AgentTeamApprovalsResponse {
   count: number;
 }
 
+// ─── Orchestrations ──────────────────────────────────────────────────────────
+
+export type OrchestrationStatus = "draft" | "published" | "archived";
+export type GoalTerminalOutcome = "complete" | "pause" | "fail";
+export type GoalLimitAction = "pause_for_review" | "fail";
+export type OrchestrationWaitTimeoutAction = "cancel" | "escalate" | "remind" | "resume";
+export type OrchestrationWebhookCorrelationField =
+  | "provider_event_id"
+  | "idempotency_key"
+  | "body_digest";
+
+export interface OrchestrationTenantContext {
+  org_id: string;
+  workspace_id: string;
+  deployment_id?: string;
+  actor_id?: string;
+  source: "local_implicit" | "explicit";
+}
+
+export interface OrchestrationCanvasPosition {
+  x: number;
+  y: number;
+}
+
+export interface OrchestrationWaitTimeoutPolicy {
+  expires_after_ms: number;
+  on_timeout: OrchestrationWaitTimeoutAction;
+  escalate_to?: string;
+  remind_every_ms?: number;
+}
+
+export type OrchestrationValueBinding =
+  | { source: "literal"; value: JsonValue }
+  | { source: "node_output"; node_id: string; json_pointer?: string };
+
+export interface OrchestrationWebhookCorrelationBinding {
+  field: OrchestrationWebhookCorrelationField;
+  value: OrchestrationValueBinding;
+}
+
+export type OrchestrationWaitSpec =
+  | {
+      kind: "timer";
+      delay_ms?: number;
+      wake_at?: OrchestrationValueBinding;
+      timeout?: OrchestrationWaitTimeoutPolicy;
+    }
+  | {
+      kind: "approval";
+      decisions: string[];
+      expires_after_ms?: number;
+      timeout?: OrchestrationWaitTimeoutPolicy;
+    }
+  | {
+      kind: "webhook";
+      trigger_id: string;
+      provider?: string;
+      provider_event_kind?: string;
+      correlation: OrchestrationWebhookCorrelationBinding;
+      timeout: OrchestrationWaitTimeoutPolicy;
+    }
+  | {
+      kind: "external_condition";
+      condition_key: OrchestrationValueBinding;
+      timeout: OrchestrationWaitTimeoutPolicy;
+      payload_schema?: JsonValue;
+    };
+
+interface OrchestrationNodeBase {
+  node_id: string;
+  name: string;
+  position: OrchestrationCanvasPosition;
+}
+
+export type OrchestrationNodeKind =
+  | {
+      kind: "workflow";
+      automation_id: string;
+      pinned_definition_hash?: string;
+      allowed_transition_keys?: string[];
+      accepts_artifact_types?: string[];
+      emits_artifact_types?: string[];
+    }
+  | { kind: "wait"; wait: OrchestrationWaitSpec }
+  | { kind: "terminal"; outcome: GoalTerminalOutcome; final_artifact_type?: string };
+
+export type OrchestrationNodeSpec = OrchestrationNodeBase & OrchestrationNodeKind;
+
+export interface OrchestrationArtifactContract {
+  artifact_type: string;
+  schema?: JsonValue;
+  required: boolean;
+}
+
+export interface OrchestrationTransitionApprovalPolicy {
+  required: boolean;
+  expires_after_ms?: number;
+  approver_scope?: string;
+}
+
+export interface OrchestrationEdgeSpec {
+  edge_id: string;
+  from_node_id: string;
+  to_node_id: string;
+  transition_key: string;
+  artifact_contract?: OrchestrationArtifactContract;
+  approval?: OrchestrationTransitionApprovalPolicy;
+  metadata?: JsonValue;
+}
+
+export interface OrchestrationGoalPolicy {
+  max_hops: number;
+  deadline_at_ms?: number;
+  max_total_tokens?: number;
+  max_total_cost_usd?: number;
+  on_limit: GoalLimitAction;
+}
+
+/** Exact snake_case representation serialized by `OrchestrationSpec` in Rust. */
+export interface OrchestrationSpec {
+  schema_version: number;
+  orchestration_id: string;
+  name: string;
+  description?: string;
+  status: OrchestrationStatus;
+  version: number;
+  root_node_id: string;
+  nodes: OrchestrationNodeSpec[];
+  edges: OrchestrationEdgeSpec[];
+  goal_policy: OrchestrationGoalPolicy;
+  tenant_context: OrchestrationTenantContext;
+  created_at_ms: number;
+  updated_at_ms: number;
+  published_at_ms?: number;
+  metadata?: JsonValue;
+}
+
+export interface CreateOrchestrationDraftInput {
+  orchestration_id?: string;
+  name: string;
+  root_node_id: string;
+  description?: string;
+  nodes?: OrchestrationNodeSpec[];
+  edges?: OrchestrationEdgeSpec[];
+  goal_policy?: Partial<OrchestrationGoalPolicy>;
+  metadata?: JsonValue;
+}
+
+export interface UpdateOrchestrationDraftInput extends CreateOrchestrationDraftInput {
+  expected_updated_at_ms: number;
+}
+
+export interface ListOrchestrationsOptions {
+  status?: OrchestrationStatus;
+  limit?: number;
+}
+
+export interface OrchestrationDraftSummary {
+  status: "draft" | "archived";
+  updated_at_ms: number;
+}
+
+export interface OrchestrationPublishedVersionSummary {
+  version: number;
+  published_at_ms?: number | null;
+}
+
+export interface OrchestrationSummary {
+  orchestration_id: string;
+  name: string;
+  draft: OrchestrationDraftSummary | null;
+  latest_published_version: number | null;
+  published_versions: OrchestrationPublishedVersionSummary[];
+}
+
+export interface OrchestrationListResponse {
+  orchestrations: OrchestrationSummary[];
+  count: number;
+}
+
+export interface OrchestrationAggregateResponse {
+  orchestration_id: string;
+  draft: OrchestrationSpec | null;
+  latest_published: OrchestrationSpec | null;
+}
+
+export interface OrchestrationVersionSummary {
+  version: number;
+  name: string;
+  published_at_ms?: number | null;
+  metadata?: JsonValue;
+}
+
+export interface OrchestrationVersionsResponse {
+  orchestration_id: string;
+  versions: OrchestrationVersionSummary[];
+  count: number;
+}
+
+export interface OrchestrationVersionResponse {
+  orchestration: OrchestrationSpec;
+  orchestration_id: string;
+  version: number;
+  status: OrchestrationStatus;
+  updated_at_ms: number;
+}
+
+export interface OrchestrationValidationIssue {
+  code: string;
+  message: string;
+  node_id?: string;
+  edge_id?: string;
+}
+
+export interface OrchestrationWorkflowReference {
+  node_id: string;
+  automation_id: string;
+  state: "missing" | "unpinned" | "fresh" | "stale";
+  pinned_hash?: string | null;
+  current_hash?: string;
+}
+
+export interface OrchestrationValidationReport {
+  valid: boolean;
+  issues: OrchestrationValidationIssue[];
+}
+
+export interface OrchestrationValidationResponse {
+  orchestration_id: string;
+  version: number;
+  report: OrchestrationValidationReport;
+  stale_references: OrchestrationWorkflowReference[];
+}
+
+export type OrchestrationPublishResponse = OrchestrationVersionResponse;
+
+export interface OrchestrationStaleReferencesResponse {
+  orchestration_id: string;
+  references: OrchestrationWorkflowReference[];
+  stale_count: number;
+}
+
+export interface OrchestrationRefreshReferencesResponse {
+  orchestration: OrchestrationSpec;
+  refreshed_node_ids: string[];
+}
+
+export interface OrchestrationTransitionPreviewInput {
+  fromNodeId: string;
+  transitionKey: string;
+  artifactType?: string;
+  version?: number;
+}
+
+export interface OrchestrationTransitionPreviewResponse {
+  allowed: boolean;
+  issues: Array<{
+    code: string;
+    node_id?: string;
+    edge_id?: string;
+    transition_key?: string;
+    expected?: string;
+    provided?: string;
+  }>;
+  edge?: {
+    edge_id: string;
+    transition_key: string;
+    artifact_contract?: OrchestrationArtifactContract | null;
+    approval_required: boolean;
+  };
+  target?: {
+    node_id: string;
+    name: string;
+    kind: OrchestrationNodeKind;
+  } | null;
+}
+
+// ─── Stateful Runtime Goals ──────────────────────────────────────────────────
+
+export type LongRunningGoalStatus =
+  | "queued"
+  | "active"
+  | "waiting"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "expired";
+
+export interface OrchestrationArtifactRef {
+  artifact_type: string;
+  content_path?: string;
+  content_digest?: string;
+  value?: JsonValue;
+}
+
+/** Exact snake_case representation serialized by `LongRunningGoal` in Rust. */
+export interface LongRunningGoal {
+  schema_version: number;
+  goal_id: string;
+  orchestration_id: string;
+  orchestration_version: number;
+  objective: string;
+  status: LongRunningGoalStatus;
+  tenant_context: OrchestrationTenantContext;
+  policy: OrchestrationGoalPolicy;
+  active_run_id?: string;
+  current_node_id?: string;
+  hop_count: number;
+  total_tokens: number;
+  total_cost_usd: number;
+  created_at_ms: number;
+  updated_at_ms: number;
+  finished_at_ms?: number;
+  final_artifact?: OrchestrationArtifactRef;
+  metadata?: JsonValue;
+}
+
+export interface GoalRunLink {
+  goal_id: string;
+  run_id: string;
+  orchestration_node_id: string;
+  orchestration_version: number;
+  hop_index: number;
+  parent_run_id?: string;
+  triggering_handoff_id?: string;
+  created_at_ms: number;
+}
+
+export type WorkflowHandoffStatus =
+  | "pending_approval"
+  | "approved"
+  | "rejected"
+  | "claimed"
+  | "consumed"
+  | "dead_lettered";
+
+export interface WorkflowHandoff {
+  schema_version: number;
+  handoff_id: string;
+  idempotency_key: string;
+  goal_id: string;
+  orchestration_id: string;
+  orchestration_version: number;
+  tenant_context: OrchestrationTenantContext;
+  edge_id: string;
+  transition_key: string;
+  source_automation_id: string;
+  source_run_id: string;
+  source_node_id: string;
+  target_automation_id: string;
+  target_node_id: string;
+  artifact: OrchestrationArtifactRef;
+  status: WorkflowHandoffStatus;
+  created_at_ms: number;
+  updated_at_ms: number;
+  consumed_by_run_id?: string;
+  metadata?: JsonValue;
+}
+
+export interface StatefulRuntimeScope {
+  schema_version: number;
+  tenant_context: OrchestrationTenantContext;
+  owning_org_unit_id?: string;
+  owner_principal?: JsonObject;
+  resource_scope?: JsonObject;
+  data_classes?: string[];
+  risk_tier?: string;
+  policy_version_id?: string;
+  delegation_grant_ids?: string[];
+}
+
+export type StatefulWaitKind =
+  | "timer"
+  | "webhook"
+  | "approval"
+  | "external_condition"
+  | "retry_backoff";
+export type StatefulWaitStatus =
+  | "waiting"
+  | "claimed"
+  | "woken"
+  | "timed_out"
+  | "escalated"
+  | "cancelled";
+
+export interface StatefulWaitTimeoutPolicy {
+  timeout_at_ms: number;
+  on_timeout: OrchestrationWaitTimeoutAction;
+  escalate_to?: string;
+  remind_every_ms?: number;
+  metadata?: JsonValue;
+}
+
+export interface StatefulWaitRecord {
+  schema_version: number;
+  wait_id: string;
+  run_id: string;
+  wait_kind: StatefulWaitKind;
+  status: StatefulWaitStatus;
+  scope: StatefulRuntimeScope;
+  phase_id?: string;
+  reason?: string;
+  created_at_ms: number;
+  updated_at_ms: number;
+  wake_at_ms?: number;
+  timeout_policy?: StatefulWaitTimeoutPolicy;
+  event_seq?: number;
+  wake_idempotency_key?: string;
+  claimed_by?: string;
+  claimed_at_ms?: number;
+  claim_expires_at_ms?: number;
+  completed_at_ms?: number;
+  metadata?: JsonValue;
+}
+
+export interface StatefulGoalEventRecord {
+  goal_seq?: number;
+  schema_version: number;
+  event_id: string;
+  run_id: string;
+  seq: number;
+  event_type: string;
+  occurred_at_ms: number;
+  scope: StatefulRuntimeScope;
+  actor?: JsonObject;
+  phase_id?: string;
+  phase_transition?: JsonObject;
+  wait_kind?: StatefulWaitKind;
+  causation_id?: string;
+  correlation_id?: string;
+  payload: JsonValue;
+}
+
+/** Snake_case Automation V2 run record returned by the stateful-runtime routes. */
+export type StatefulGoalAutomationRunStatus =
+  | "queued"
+  | "running"
+  | "pausing"
+  | "paused"
+  | "awaiting_approval"
+  | "completed"
+  | "blocked"
+  | "failed"
+  | "cancelled";
+
+export interface StatefulGoalAutomationRunRecord {
+  run_id: string;
+  automation_id: string;
+  tenant_context: OrchestrationTenantContext;
+  trigger_type: string;
+  status: StatefulGoalAutomationRunStatus;
+  created_at_ms: number;
+  updated_at_ms: number;
+  started_at_ms?: number;
+  finished_at_ms?: number;
+  active_session_ids: string[];
+  latest_session_id?: string;
+  active_instance_ids: string[];
+  checkpoint: JsonObject;
+  workflow_definition_version?: string;
+  workflow_definition_snapshot_hash?: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  estimated_cost_usd: number;
+  [key: string]: unknown;
+}
+
+export interface StartLongRunningGoalInput {
+  orchestrationId: string;
+  orchestrationVersion?: number;
+  objective: string;
+  idempotencyKey: string;
+  metadata?: JsonValue;
+}
+
+export interface ListLongRunningGoalsOptions {
+  limit?: number;
+  status?: LongRunningGoalStatus;
+  orchestrationId?: string;
+}
+
+export interface LongRunningGoalMutationInput {
+  reason?: string;
+}
+
+export type CancelLongRunningGoalInput = LongRunningGoalMutationInput;
+
+export interface EmitGoalHandoffInput {
+  transitionKey: string;
+  artifact: OrchestrationArtifactRef;
+  idempotencyKey: string;
+}
+
+export interface DecideGoalHandoffInput {
+  decision: "approve" | "reject";
+  reason?: string;
+}
+
+export interface SettleGoalCompletionInput {
+  transitionKey?: string;
+  finalArtifact?: OrchestrationArtifactRef;
+}
+
+export interface ResolveGoalWaitInput {
+  idempotencyKey: string;
+  payload?: JsonValue;
+}
+
+export interface LongRunningGoalListResponse {
+  goals: LongRunningGoal[];
+  count: number;
+}
+
+export interface LongRunningGoalResponse {
+  goal: LongRunningGoal;
+  goal_id: string;
+  status: LongRunningGoalStatus;
+  budgets: LongRunningGoalBudgets;
+}
+
+export interface StartLongRunningGoalResponse {
+  goal: LongRunningGoal;
+  root_run_id: string;
+  replayed: boolean;
+}
+
+export interface StatefulGoalRun {
+  link: GoalRunLink;
+  run: StatefulGoalAutomationRunRecord | null;
+}
+
+export interface LongRunningGoalRunsResponse {
+  goal_id: string;
+  active_run_id?: string | null;
+  runs: StatefulGoalRun[];
+  count: number;
+}
+
+export interface LongRunningGoalGraphNodeRun {
+  run_id: string;
+  hop_index: number;
+  parent_run_id?: string | null;
+  triggering_handoff_id?: string | null;
+  status?: StatefulGoalAutomationRunStatus | null;
+}
+
+export interface LongRunningGoalGraphNode {
+  node_id: string;
+  name: string;
+  kind: OrchestrationNodeKind;
+  state: "current" | "visited" | "not_started";
+  runs: LongRunningGoalGraphNodeRun[];
+}
+
+export interface LongRunningGoalGraphResponse {
+  goal_id: string;
+  status: LongRunningGoalStatus;
+  orchestration_id: string;
+  orchestration_version: number;
+  current_node_id?: string | null;
+  current_workflow?: {
+    run_id: string;
+    automation_id: string;
+    status: StatefulGoalAutomationRunStatus;
+    current_node_id?: string | null;
+    completed_nodes: number;
+    pending_nodes: number;
+  } | null;
+  nodes: LongRunningGoalGraphNode[];
+  edges: OrchestrationEdgeSpec[];
+  budgets: LongRunningGoalBudgets;
+}
+
+export interface StatefulGoalCursorEvent {
+  cursor: number;
+  event: StatefulGoalEventRecord;
+}
+
+export interface LongRunningGoalEventsResponse {
+  goal_id: string;
+  events: StatefulGoalCursorEvent[];
+  count: number;
+  last_cursor: number | null;
+  event_source: "stateful_runtime";
+}
+
+export interface LongRunningGoalHandoffsResponse {
+  goal_id: string;
+  handoffs: WorkflowHandoff[];
+  count: number;
+}
+
+export type GoalHandoffTransitionResponse =
+  | {
+      outcome: "pending_approval";
+      handoff: WorkflowHandoff;
+      goal: LongRunningGoal;
+    }
+  | {
+      outcome: "committed";
+      commit: "Committed" | "AlreadyCommitted";
+      handoff: WorkflowHandoff;
+      downstream_run_id: string;
+      link: GoalRunLink;
+      goal: LongRunningGoal;
+    };
+
+export interface GoalHandoffDecisionResponse {
+  handoff: WorkflowHandoff;
+}
+
+export type GoalCompletionResponse =
+  | { outcome: "awaiting_transition"; goal: LongRunningGoal }
+  | { outcome: "terminal"; goal: LongRunningGoal };
+
+export interface LongRunningGoalWaitsResponse {
+  goal_id: string;
+  waits: StatefulWaitRecord[];
+  count: number;
+}
+
+export interface LongRunningGoalWaitResponse {
+  goal_id: string;
+  wait: StatefulWaitRecord;
+}
+
+export interface StatefulGoalArtifact {
+  artifact: OrchestrationArtifactRef;
+  handoff_id: string;
+  transition_key: string;
+  source_run_id: string;
+  consumed_by_run_id?: string | null;
+  created_at_ms: number;
+}
+
+export interface LongRunningGoalArtifactsResponse {
+  goal_id: string;
+  artifacts: StatefulGoalArtifact[];
+  final_artifact?: OrchestrationArtifactRef | null;
+  count: number;
+}
+
+export interface LongRunningGoalBudgets {
+  policy: OrchestrationGoalPolicy;
+  consumed: {
+    hops: number;
+    total_tokens: number;
+    total_cost_usd: number;
+  };
+  remaining: {
+    hops: number;
+    tokens?: number | null;
+    cost_usd?: number | null;
+    deadline_ms?: number | null;
+  };
+}
+
+export interface LongRunningGoalBudgetsResponse {
+  goal_id: string;
+  status: LongRunningGoalStatus;
+  budgets: LongRunningGoalBudgets;
+}
+
+export interface CancelLongRunningGoalResponse {
+  goal: LongRunningGoal;
+  outcome: "Applied" | "AlreadyTerminal";
+  cancelled_run_id?: string | null;
+  cancelled_wait_ids: string[];
+  dead_lettered_handoff_ids: string[];
+}
+
+export interface PauseLongRunningGoalResponse {
+  goal: LongRunningGoal;
+  outcome: "paused" | "already_paused";
+}
+
+export interface ResumeLongRunningGoalResponse {
+  goal: LongRunningGoal;
+  outcome: "resumed" | "not_paused";
+}
+
 // ─── Automations V2 ──────────────────────────────────────────────────────────
 
 export type AutomationV2Status = "active" | "paused" | "draft";
@@ -3144,6 +3827,9 @@ export interface RuntimeEventEnvelope {
 export interface EngineEventBase {
   type: string;
   properties: Record<string, unknown>;
+  /** Durable goal-event cursor when yielded by `statefulRuntime.events()`. */
+  cursor?: number;
+  goal_seq?: number;
   sessionId?: string;
   runId?: string;
   timestamp?: string;

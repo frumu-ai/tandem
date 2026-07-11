@@ -146,6 +146,44 @@ import type {
   AgentTeamApprovalsResponse,
   AgentStandupComposeInput,
   AgentStandupComposeResponse,
+  CreateOrchestrationDraftInput,
+  UpdateOrchestrationDraftInput,
+  ListOrchestrationsOptions,
+  OrchestrationAggregateResponse,
+  OrchestrationListResponse,
+  OrchestrationPublishResponse,
+  OrchestrationRefreshReferencesResponse,
+  OrchestrationStaleReferencesResponse,
+  OrchestrationTransitionPreviewInput,
+  OrchestrationTransitionPreviewResponse,
+  OrchestrationValidationResponse,
+  OrchestrationVersionResponse,
+  OrchestrationVersionsResponse,
+  CancelLongRunningGoalInput,
+  CancelLongRunningGoalResponse,
+  DecideGoalHandoffInput,
+  EmitGoalHandoffInput,
+  GoalHandoffDecisionResponse,
+  GoalHandoffTransitionResponse,
+  GoalCompletionResponse,
+  ListLongRunningGoalsOptions,
+  LongRunningGoalArtifactsResponse,
+  LongRunningGoalBudgetsResponse,
+  LongRunningGoalEventsResponse,
+  LongRunningGoalGraphResponse,
+  LongRunningGoalHandoffsResponse,
+  LongRunningGoalListResponse,
+  LongRunningGoalMutationInput,
+  LongRunningGoalResponse,
+  PauseLongRunningGoalResponse,
+  ResumeLongRunningGoalResponse,
+  LongRunningGoalRunsResponse,
+  LongRunningGoalWaitsResponse,
+  LongRunningGoalWaitResponse,
+  ResolveGoalWaitInput,
+  SettleGoalCompletionInput,
+  StartLongRunningGoalInput,
+  StartLongRunningGoalResponse,
   AutomationV2Spec,
   AutomationV2RunRecord,
   AutomationWebhookDeleteResponse,
@@ -336,6 +374,10 @@ export class TandemClient {
   readonly automations: Automations;
   /** Persistent automation flows (V2) */
   readonly automationsV2: AutomationsV2;
+  /** Versioned cross-workflow orchestration definitions */
+  readonly orchestrations: Orchestrations;
+  /** Durable long-running goal runtime */
+  readonly statefulRuntime: StatefulRuntime;
   /** Workflow optimization campaigns */
   readonly optimizations: Optimizations;
   /** Engine-owned workflow planning */
@@ -386,6 +428,8 @@ export class TandemClient {
     this.routines = new Routines(this.baseUrl, getToken, req);
     this.automations = new Automations(this.baseUrl, getToken, req);
     this.automationsV2 = new AutomationsV2(this.baseUrl, getToken, req);
+    this.orchestrations = new Orchestrations(req);
+    this.statefulRuntime = new StatefulRuntime(this.baseUrl, getToken, req);
     this.optimizations = new Optimizations(req);
     this.workflowPlans = new WorkflowPlans(req);
     this.workflowPlannerSessions = new WorkflowPlannerSessions(req);
@@ -3516,6 +3560,368 @@ class Automations {
     return this.req<JsonObject>(`/automations/runs/${encodeURIComponent(runId)}/artifacts`, {
       method: "POST",
       body: JSON.stringify(payload),
+    });
+  }
+}
+
+// ─── Orchestrations namespace ────────────────────────────────────────────────
+
+class Orchestrations {
+  constructor(private req: TandemClient["_request"]) {}
+
+  /** List one aggregate summary per orchestration visible to the current tenant. */
+  async list(options?: ListOrchestrationsOptions): Promise<OrchestrationListResponse> {
+    const params = new URLSearchParams();
+    if (options?.status !== undefined) params.set("status", options.status);
+    if (options?.limit !== undefined) params.set("limit", String(options.limit));
+    const query = params.toString();
+    return this.req<OrchestrationListResponse>(`/orchestrations${query ? `?${query}` : ""}`);
+  }
+
+  /** Create the mutable draft-v0 slot for an orchestration. */
+  async create(input: CreateOrchestrationDraftInput): Promise<OrchestrationVersionResponse> {
+    return this.req<OrchestrationVersionResponse>("/orchestrations", {
+      method: "POST",
+      body: JSON.stringify({
+        ...(input.orchestration_id !== undefined
+          ? { orchestration_id: input.orchestration_id }
+          : {}),
+        name: input.name,
+        ...(input.description !== undefined ? { description: input.description } : {}),
+        root_node_id: input.root_node_id,
+        nodes: input.nodes ?? [],
+        edges: input.edges ?? [],
+        ...(input.goal_policy !== undefined ? { goal_policy: input.goal_policy } : {}),
+        ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
+      }),
+    });
+  }
+
+  /** Get the mutable draft and latest published snapshot together. */
+  async get(orchestrationId: string): Promise<OrchestrationAggregateResponse> {
+    return this.req<OrchestrationAggregateResponse>(this.orchestrationPath(orchestrationId));
+  }
+
+  /** List every stored version of an orchestration. */
+  async listVersions(orchestrationId: string): Promise<OrchestrationVersionsResponse> {
+    return this.req<OrchestrationVersionsResponse>(
+      `/orchestrations/${encodeURIComponent(orchestrationId)}/versions`
+    );
+  }
+
+  /** Get one immutable published version (or version 0 for a draft). */
+  async getVersion(
+    orchestrationId: string,
+    version: number
+  ): Promise<OrchestrationVersionResponse> {
+    return this.req<OrchestrationVersionResponse>(this.versionPath(orchestrationId, version));
+  }
+
+  /** Replace draft v0 using its updated-at timestamp as the concurrency token. */
+  async updateDraft(
+    orchestrationId: string,
+    input: UpdateOrchestrationDraftInput
+  ): Promise<OrchestrationVersionResponse> {
+    return this.req<OrchestrationVersionResponse>(this.orchestrationPath(orchestrationId), {
+      method: "PUT",
+      body: JSON.stringify(input),
+    });
+  }
+
+  /** Archive the mutable draft slot. */
+  async archive(orchestrationId: string): Promise<OrchestrationVersionResponse> {
+    return this.req<OrchestrationVersionResponse>(`${this.orchestrationPath(orchestrationId)}/archive`, {
+      method: "POST",
+    });
+  }
+
+  /** Validate structural and referenced-workflow constraints. */
+  async validate(
+    orchestrationId: string
+  ): Promise<OrchestrationValidationResponse> {
+    return this.req<OrchestrationValidationResponse>(
+      `${this.orchestrationPath(orchestrationId)}/validate`,
+      { method: "POST" }
+    );
+  }
+
+  /** Publish a validated draft as the next immutable version. */
+  async publish(orchestrationId: string): Promise<OrchestrationPublishResponse> {
+    return this.req<OrchestrationPublishResponse>(
+      `${this.orchestrationPath(orchestrationId)}/publish`,
+      { method: "POST" }
+    );
+  }
+
+  /** Inspect missing, unpinned, fresh, and stale workflow references. */
+  async staleReferences(orchestrationId: string): Promise<OrchestrationStaleReferencesResponse> {
+    return this.req<OrchestrationStaleReferencesResponse>(
+      `${this.orchestrationPath(orchestrationId)}/stale-references`
+    );
+  }
+
+  /** Refresh every workflow pin to its current same-tenant definition hash. */
+  async refreshReferences(
+    orchestrationId: string,
+    expectedUpdatedAtMs: number
+  ): Promise<OrchestrationRefreshReferencesResponse> {
+    return this.req<OrchestrationRefreshReferencesResponse>(
+      `${this.orchestrationPath(orchestrationId)}/refresh-references`,
+      { method: "POST", body: JSON.stringify({ expected_updated_at_ms: expectedUpdatedAtMs }) }
+    );
+  }
+
+  /** Resolve a named transition without mutating runtime state. */
+  async previewTransition(
+    orchestrationId: string,
+    input: OrchestrationTransitionPreviewInput
+  ): Promise<OrchestrationTransitionPreviewResponse> {
+    return this.req<OrchestrationTransitionPreviewResponse>(
+      `${this.orchestrationPath(orchestrationId)}/dry-run`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          from_node_id: input.fromNodeId,
+          transition_key: input.transitionKey,
+          ...(input.artifactType !== undefined ? { artifact_type: input.artifactType } : {}),
+          ...(input.version !== undefined ? { version: input.version } : {}),
+        }),
+      }
+    );
+  }
+
+  /** Alias using the canonical route terminology. */
+  dryRun(orchestrationId: string, input: OrchestrationTransitionPreviewInput) {
+    return this.previewTransition(orchestrationId, input);
+  }
+
+  private orchestrationPath(orchestrationId: string): string {
+    return `/orchestrations/${encodeURIComponent(orchestrationId)}`;
+  }
+
+  private versionPath(orchestrationId: string, version: number): string {
+    return `${this.orchestrationPath(orchestrationId)}/versions/${version}`;
+  }
+}
+
+// ─── Stateful Runtime namespace ──────────────────────────────────────────────
+
+class StatefulRuntime {
+  constructor(
+    private baseUrl: string,
+    private getToken: () => string,
+    private req: TandemClient["_request"]
+  ) {}
+
+  /** List durable long-running goals visible to the current tenant. */
+  async listGoals(options?: ListLongRunningGoalsOptions): Promise<LongRunningGoalListResponse> {
+    const params = new URLSearchParams();
+    if (options?.limit !== undefined) params.set("limit", String(options.limit));
+    if (options?.status !== undefined) params.set("status", options.status);
+    if (options?.orchestrationId !== undefined) {
+      params.set("orchestration_id", options.orchestrationId);
+    }
+    const query = params.toString();
+    return this.req<LongRunningGoalListResponse>(`${this.goalsPath}${query ? `?${query}` : ""}`);
+  }
+
+  /** Start a goal and its root run with an idempotent request key. */
+  async startGoal(input: StartLongRunningGoalInput): Promise<StartLongRunningGoalResponse> {
+    return this.req<StartLongRunningGoalResponse>(this.goalsPath, {
+      method: "POST",
+      body: JSON.stringify({
+        orchestration_id: input.orchestrationId,
+        ...(input.orchestrationVersion !== undefined
+          ? { orchestration_version: input.orchestrationVersion }
+          : {}),
+        objective: input.objective,
+        idempotency_key: input.idempotencyKey,
+        ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
+      }),
+    });
+  }
+
+  /** Get the current durable goal record. */
+  async getGoal(goalId: string): Promise<LongRunningGoalResponse> {
+    return this.req<LongRunningGoalResponse>(this.goalPath(goalId));
+  }
+
+  /** Get the goal, pinned orchestration graph, and linked runs. */
+  async getGoalGraph(goalId: string): Promise<LongRunningGoalGraphResponse> {
+    return this.req<LongRunningGoalGraphResponse>(`${this.goalPath(goalId)}/graph`);
+  }
+
+  /** List automation runs linked to a goal. */
+  async listGoalRuns(goalId: string): Promise<LongRunningGoalRunsResponse> {
+    return this.req<LongRunningGoalRunsResponse>(`${this.goalPath(goalId)}/runs`);
+  }
+
+  /** List durable runtime events for a goal. */
+  async listGoalEvents(
+    goalId: string,
+    options?: { cursor?: number; limit?: number }
+  ): Promise<LongRunningGoalEventsResponse> {
+    const params = new URLSearchParams();
+    if (options?.cursor !== undefined) params.set("cursor", String(options.cursor));
+    if (options?.limit !== undefined) params.set("limit", String(options.limit));
+    const query = params.toString();
+    return this.req<LongRunningGoalEventsResponse>(
+      `${this.goalPath(goalId)}/events${query ? `?${query}` : ""}`
+    );
+  }
+
+  /** Stream durable goal events after an optional store cursor. */
+  events(
+    goalId: string,
+    options?: { cursor?: number; signal?: AbortSignal }
+  ): AsyncGenerator<EngineEvent> {
+    const params = new URLSearchParams();
+    if (options?.cursor !== undefined) params.set("cursor", String(options.cursor));
+    const query = params.toString();
+    return streamSse(
+      `${this.baseUrl}${this.goalPath(goalId)}/events/stream${query ? `?${query}` : ""}`,
+      this.getToken(),
+      { signal: options?.signal }
+    );
+  }
+
+  /** List workflow handoffs emitted while advancing a goal. */
+  async listGoalHandoffs(goalId: string): Promise<LongRunningGoalHandoffsResponse> {
+    return this.req<LongRunningGoalHandoffsResponse>(`${this.goalPath(goalId)}/handoffs`);
+  }
+
+  /** Emit a governed transition handoff from the goal's active run. */
+  async emitGoalHandoff(goalId: string, input: EmitGoalHandoffInput): Promise<GoalHandoffTransitionResponse> {
+    return this.req<GoalHandoffTransitionResponse>(
+      `${this.goalPath(goalId)}/transitions`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          transition_key: input.transitionKey,
+          artifact: input.artifact,
+          idempotency_key: input.idempotencyKey,
+        }),
+      }
+    );
+  }
+
+  /** Approve or reject a pending goal handoff. */
+  async decideGoalHandoff(
+    goalId: string,
+    handoffId: string,
+    input: DecideGoalHandoffInput
+  ): Promise<GoalHandoffDecisionResponse> {
+    return this.req<GoalHandoffDecisionResponse>(
+      `${this.goalPath(goalId)}/handoffs/${encodeURIComponent(handoffId)}/decision`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          decision: input.decision,
+          ...(input.reason !== undefined ? { reason: input.reason } : {}),
+        }),
+      }
+    );
+  }
+
+  /** Settle the active workflow, optionally selecting its terminal transition. */
+  async settleGoalCompletion(
+    goalId: string,
+    input: SettleGoalCompletionInput = {}
+  ): Promise<GoalCompletionResponse> {
+    return this.req<GoalCompletionResponse>(`${this.goalPath(goalId)}/completion`, {
+      method: "POST",
+      body: JSON.stringify({
+        ...(input.transitionKey !== undefined ? { transition_key: input.transitionKey } : {}),
+        ...(input.finalArtifact !== undefined ? { final_artifact: input.finalArtifact } : {}),
+      }),
+    });
+  }
+
+  /** List durable waits owned by a goal. */
+  async listGoalWaits(goalId: string): Promise<LongRunningGoalWaitsResponse> {
+    return this.req<LongRunningGoalWaitsResponse>(`${this.goalPath(goalId)}/waits`);
+  }
+
+  /** Inspect one durable wait owned by a goal. */
+  async getGoalWait(goalId: string, waitId: string): Promise<LongRunningGoalWaitResponse> {
+    return this.req<LongRunningGoalWaitResponse>(
+      `${this.goalPath(goalId)}/waits/${encodeURIComponent(waitId)}`
+    );
+  }
+
+  /** Resolve an externally controlled goal wait idempotently. */
+  async resolveGoalWait(
+    goalId: string,
+    waitId: string,
+    input: ResolveGoalWaitInput
+  ): Promise<LongRunningGoalWaitResponse> {
+    return this.req<LongRunningGoalWaitResponse>(
+      `${this.goalPath(goalId)}/waits/${encodeURIComponent(waitId)}/resolve`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          idempotency_key: input.idempotencyKey,
+          ...(input.payload !== undefined ? { payload: input.payload } : {}),
+        }),
+      }
+    );
+  }
+
+  /** List handoff and final artifacts associated with a goal. */
+  async listGoalArtifacts(goalId: string): Promise<LongRunningGoalArtifactsResponse> {
+    return this.req<LongRunningGoalArtifactsResponse>(`${this.goalPath(goalId)}/artifacts`);
+  }
+
+  /** Get the goal's configured limits and current budget usage. */
+  async getGoalBudgets(goalId: string): Promise<LongRunningGoalBudgetsResponse> {
+    return this.req<LongRunningGoalBudgetsResponse>(`${this.goalPath(goalId)}/budgets`);
+  }
+
+  /** Cancel a goal and its active runtime resources. */
+  async cancelGoal(
+    goalId: string,
+    input: CancelLongRunningGoalInput = {}
+  ): Promise<CancelLongRunningGoalResponse> {
+    return this.req<CancelLongRunningGoalResponse>(`${this.goalPath(goalId)}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({
+        ...(input.reason !== undefined ? { reason: input.reason } : {}),
+      }),
+    });
+  }
+
+  /** Pause a goal. */
+  async pauseGoal(
+    goalId: string,
+    input: LongRunningGoalMutationInput = {}
+  ): Promise<PauseLongRunningGoalResponse> {
+    return this.setGoalPaused<PauseLongRunningGoalResponse>(goalId, "pause", input);
+  }
+
+  /** Resume a paused goal. */
+  async resumeGoal(
+    goalId: string,
+    input: LongRunningGoalMutationInput = {}
+  ): Promise<ResumeLongRunningGoalResponse> {
+    return this.setGoalPaused<ResumeLongRunningGoalResponse>(goalId, "resume", input);
+  }
+
+  private readonly goalsPath = "/goals";
+
+  private goalPath(goalId: string): string {
+    return `${this.goalsPath}/${encodeURIComponent(goalId)}`;
+  }
+
+  private setGoalPaused<T extends PauseLongRunningGoalResponse | ResumeLongRunningGoalResponse>(
+    goalId: string,
+    action: "pause" | "resume",
+    input: LongRunningGoalMutationInput
+  ): Promise<T> {
+    return this.req<T>(`${this.goalPath(goalId)}/${action}`, {
+      method: "POST",
+      body: JSON.stringify({
+        ...(input.reason !== undefined ? { reason: input.reason } : {}),
+      }),
     });
   }
 }
