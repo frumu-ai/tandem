@@ -61,6 +61,48 @@ pub enum WorkflowCompletionResult {
 }
 
 impl OrchestrationStateStore {
+    /// Returns the canonical result for a previously accepted idempotency key
+    /// before callers derive a new source or target from a goal that may have
+    /// advanced since the original request.
+    pub fn replay_existing_governed_transition(
+        &self,
+        orchestration: &OrchestrationSpec,
+        goal: &LongRunningGoal,
+        request: &GovernedTransitionRequest,
+        authority: &OrchestrationTransitionAuthority,
+    ) -> anyhow::Result<Option<GovernedTransitionResult>> {
+        if !authority.can_emit {
+            bail!("actor is not authorized to emit orchestration transitions");
+        }
+        let Some(existing) =
+            self.handoff_for_idempotency_key(&goal.goal_id, &request.idempotency_key)?
+        else {
+            return Ok(None);
+        };
+        validate_replayed_handoff(orchestration, goal, request, &existing)?;
+        match existing.status {
+            WorkflowHandoffStatus::Consumed => {
+                self.replay_committed_transition(&existing).map(Some)
+            }
+            WorkflowHandoffStatus::PendingApproval => {
+                let waiting_goal = self
+                    .get_goal(&goal.goal_id)?
+                    .context("pending handoff is missing its goal")?;
+                Ok(Some(GovernedTransitionResult::PendingApproval {
+                    handoff: existing,
+                    goal: waiting_goal,
+                }))
+            }
+            WorkflowHandoffStatus::Rejected | WorkflowHandoffStatus::DeadLettered => {
+                bail!("handoff is no longer eligible for consumption")
+            }
+            WorkflowHandoffStatus::Claimed => {
+                bail!("handoff is being claimed by another worker")
+            }
+            WorkflowHandoffStatus::Approved => Ok(None),
+        }
+    }
+
     pub fn settle_workflow_completion(
         &self,
         orchestration: &OrchestrationSpec,
@@ -165,8 +207,36 @@ impl OrchestrationStateStore {
         request: &GovernedTransitionRequest,
         authority: &OrchestrationTransitionAuthority,
     ) -> anyhow::Result<GovernedTransitionResult> {
-        if !authority.can_emit {
-            bail!("actor is not authorized to emit orchestration transitions");
+        if let Some(replayed) =
+            self.replay_existing_governed_transition(orchestration, goal, request, authority)?
+        {
+            return Ok(replayed);
+        }
+        let existing_handoff =
+            self.handoff_for_idempotency_key(&goal.goal_id, &request.idempotency_key)?;
+        if let Some(existing) = existing_handoff.as_ref() {
+            validate_replayed_handoff(orchestration, goal, request, existing)?;
+            match existing.status {
+                WorkflowHandoffStatus::Consumed => {
+                    return self.replay_committed_transition(existing);
+                }
+                WorkflowHandoffStatus::PendingApproval => {
+                    let waiting_goal = self
+                        .get_goal(&goal.goal_id)?
+                        .context("pending handoff is missing its goal")?;
+                    return Ok(GovernedTransitionResult::PendingApproval {
+                        handoff: existing.clone(),
+                        goal: waiting_goal,
+                    });
+                }
+                WorkflowHandoffStatus::Rejected | WorkflowHandoffStatus::DeadLettered => {
+                    bail!("handoff is no longer eligible for consumption")
+                }
+                WorkflowHandoffStatus::Claimed => {
+                    bail!("handoff is being claimed by another worker")
+                }
+                WorkflowHandoffStatus::Approved => {}
+            }
         }
         validate_goal_source(orchestration, goal, source_run)?;
         let source_node_id = goal
@@ -225,7 +295,7 @@ impl OrchestrationStateStore {
             &request.downstream_run_id(&goal.goal_id),
         )?;
 
-        let handoff = WorkflowHandoff {
+        let handoff = existing_handoff.unwrap_or_else(|| WorkflowHandoff {
             schema_version: 1,
             handoff_id: request.handoff_id(&goal.goal_id),
             idempotency_key: request.idempotency_key.clone(),
@@ -255,7 +325,7 @@ impl OrchestrationStateStore {
                 "actor": authority.actor,
                 "pinned_definition_hash": pinned_definition_hash,
             })),
-        };
+        });
 
         if handoff.status == WorkflowHandoffStatus::PendingApproval {
             let mut waiting_goal = goal.clone();
@@ -461,6 +531,70 @@ impl OrchestrationStateStore {
             Ok(())
         })
     }
+
+    fn handoff_for_idempotency_key(
+        &self,
+        goal_id: &str,
+        idempotency_key: &str,
+    ) -> anyhow::Result<Option<WorkflowHandoff>> {
+        self.with_connection(|connection| {
+            let payload = connection
+                .query_row(
+                    "SELECT handoff_json FROM workflow_handoffs
+                     WHERE goal_id = ?1 AND idempotency_key = ?2",
+                    params![goal_id, idempotency_key],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            payload
+                .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
+                .transpose()
+        })
+    }
+
+    fn replay_committed_transition(
+        &self,
+        handoff: &WorkflowHandoff,
+    ) -> anyhow::Result<GovernedTransitionResult> {
+        let downstream_run_id = handoff
+            .consumed_by_run_id
+            .as_deref()
+            .context("consumed handoff is missing its downstream run ID")?;
+        self.with_connection(|connection| {
+            let run_payload = connection
+                .query_row(
+                    "SELECT run_json FROM automation_runs WHERE run_id = ?1",
+                    [downstream_run_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .context("consumed handoff downstream run is missing")?;
+            let link_payload = connection
+                .query_row(
+                    "SELECT link_json FROM goal_run_links
+                     WHERE goal_id = ?1 AND triggering_handoff_id = ?2",
+                    params![handoff.goal_id, handoff.handoff_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .context("consumed handoff lineage link is missing")?;
+            let goal_payload = connection
+                .query_row(
+                    "SELECT goal_json FROM long_running_goals WHERE goal_id = ?1",
+                    [&handoff.goal_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .context("consumed handoff goal is missing")?;
+            Ok(GovernedTransitionResult::Committed {
+                commit: AtomicHandoffCommit::AlreadyCommitted,
+                handoff: handoff.clone(),
+                downstream_run: serde_json::from_str(&run_payload)?,
+                link: serde_json::from_str(&link_payload)?,
+                goal: serde_json::from_str(&goal_payload)?,
+            })
+        })
+    }
 }
 
 fn validate_goal_source(
@@ -506,6 +640,29 @@ fn validate_goal_source(
             }
         }
         _ => bail!("source run does not match the goal's current workflow node"),
+    }
+    Ok(())
+}
+
+fn validate_replayed_handoff(
+    orchestration: &OrchestrationSpec,
+    goal: &LongRunningGoal,
+    request: &GovernedTransitionRequest,
+    handoff: &WorkflowHandoff,
+) -> anyhow::Result<()> {
+    if handoff.handoff_id != request.handoff_id(&goal.goal_id)
+        || handoff.goal_id != goal.goal_id
+        || handoff.orchestration_id != goal.orchestration_id
+        || handoff.orchestration_version != goal.orchestration_version
+        || handoff.tenant_context != goal.tenant_context
+        || orchestration.orchestration_id != goal.orchestration_id
+        || orchestration.version != goal.orchestration_version
+        || orchestration.tenant_context != goal.tenant_context
+    {
+        bail!("idempotency key is bound to another orchestration transition");
+    }
+    if handoff.transition_key != request.transition_key || handoff.artifact != request.artifact {
+        bail!("idempotency key is bound to a different transition payload");
     }
     Ok(())
 }
@@ -939,10 +1096,11 @@ mod tests {
                 ..
             }
         ));
+        let replayed_goal = store.get_goal("goal-1").unwrap().unwrap();
         let second = store
             .commit_governed_transition(
                 &orchestration(false),
-                &goal,
+                &replayed_goal,
                 &source_run(),
                 &downstream,
                 &request,
@@ -956,6 +1114,18 @@ mod tests {
                 ..
             }
         ));
+        let mut conflicting_request = request.clone();
+        conflicting_request.artifact.value = Some(json!({"steps": ["rewrite"]}));
+        assert!(store
+            .commit_governed_transition(
+                &orchestration(false),
+                &replayed_goal,
+                &source_run(),
+                &downstream,
+                &conflicting_request,
+                &authority(false),
+            )
+            .is_err());
         let updated = store.get_goal("goal-1").unwrap().unwrap();
         assert_eq!(updated.hop_count, 1);
         assert_eq!(updated.total_tokens, 25);
@@ -998,6 +1168,8 @@ mod tests {
             pending,
             GovernedTransitionResult::PendingApproval { .. }
         ));
+        let waiting_goal = store.get_goal("goal-1").unwrap().unwrap();
+        assert_eq!(waiting_goal.status, LongRunningGoalStatus::Waiting);
         let approved = store
             .decide_pending_handoff(
                 &request.handoff_id("goal-1"),
@@ -1011,11 +1183,11 @@ mod tests {
         let committed = store
             .commit_governed_transition(
                 &orchestration(true),
-                &goal,
+                &waiting_goal,
                 &source_run(),
                 &downstream,
                 &request,
-                &authority(true),
+                &authority(false),
             )
             .unwrap();
         assert!(matches!(
@@ -1057,6 +1229,34 @@ mod tests {
                 &authority(false),
             )
             .is_err());
+    }
+
+    #[test]
+    fn stale_transition_cannot_revive_a_cancelled_goal() {
+        let (_directory, store) = store();
+        let goal = goal();
+        store.put_goal(&goal).unwrap();
+        let mut cancelled = goal.clone();
+        cancelled.status = LongRunningGoalStatus::Cancelled;
+        cancelled.active_run_id = None;
+        cancelled.finished_at_ms = Some(21);
+        store.put_goal(&cancelled).unwrap();
+        let request = request();
+
+        assert!(store
+            .commit_governed_transition(
+                &orchestration(false),
+                &goal,
+                &source_run(),
+                &downstream(&request),
+                &request,
+                &authority(false),
+            )
+            .is_err());
+        assert_eq!(
+            store.get_goal("goal-1").unwrap().unwrap().status,
+            LongRunningGoalStatus::Cancelled
+        );
     }
 
     #[test]

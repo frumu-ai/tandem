@@ -24,6 +24,11 @@ pub struct GoalCancellationResult {
     pub outcome: GoalControlOutcome,
     pub goal: LongRunningGoal,
     pub cancelled_run: Option<AutomationV2RunRecord>,
+    /// Session and instance handles captured before the durable run record was
+    /// cleared. The app layer uses them to stop in-flight execution after the
+    /// cancellation transaction commits.
+    pub cancelled_session_ids: Vec<String>,
+    pub cancelled_instance_ids: Vec<String>,
     pub cancelled_wait_ids: Vec<String>,
     pub dead_lettered_handoff_ids: Vec<String>,
     pub outbox_id: Option<String>,
@@ -62,6 +67,8 @@ impl OrchestrationStateStore {
                     outcome: GoalControlOutcome::AlreadyTerminal,
                     goal,
                     cancelled_run: None,
+                    cancelled_session_ids: Vec::new(),
+                    cancelled_instance_ids: Vec::new(),
                     cancelled_wait_ids: Vec::new(),
                     dead_lettered_handoff_ids: Vec::new(),
                     outbox_id: None,
@@ -69,11 +76,20 @@ impl OrchestrationStateStore {
             }
 
             let active_run_id = goal.cancel(now_ms);
-            let cancelled_run = active_run_id
+            let cancelled = active_run_id
                 .as_deref()
                 .map(|run_id| cancel_active_run(&transaction, run_id, reason, now_ms))
                 .transpose()?
                 .flatten();
+            let cancelled_session_ids = cancelled
+                .as_ref()
+                .map(|cancelled| cancelled.session_ids.clone())
+                .unwrap_or_default();
+            let cancelled_instance_ids = cancelled
+                .as_ref()
+                .map(|cancelled| cancelled.instance_ids.clone())
+                .unwrap_or_default();
+            let cancelled_run = cancelled.map(|cancelled| cancelled.run);
             let cancelled_wait_ids = active_run_id
                 .as_deref()
                 .map(|run_id| cancel_waits(&transaction, run_id, reason, now_ms))
@@ -134,6 +150,8 @@ impl OrchestrationStateStore {
                 outcome: GoalControlOutcome::Applied,
                 goal,
                 cancelled_run,
+                cancelled_session_ids,
+                cancelled_instance_ids,
                 cancelled_wait_ids,
                 dead_lettered_handoff_ids,
                 outbox_id,
@@ -142,12 +160,18 @@ impl OrchestrationStateStore {
     }
 }
 
+struct CancelledActiveRun {
+    run: AutomationV2RunRecord,
+    session_ids: Vec<String>,
+    instance_ids: Vec<String>,
+}
+
 fn cancel_active_run(
     transaction: &rusqlite::Transaction<'_>,
     run_id: &str,
     reason: &str,
     now_ms: u64,
-) -> anyhow::Result<Option<AutomationV2RunRecord>> {
+) -> anyhow::Result<Option<CancelledActiveRun>> {
     let payload = transaction
         .query_row(
             "SELECT run_json FROM automation_runs WHERE run_id = ?1",
@@ -165,8 +189,14 @@ fn cancel_active_run(
             | AutomationRunStatus::Failed
             | AutomationRunStatus::Cancelled
     ) {
-        return Ok(Some(run));
+        return Ok(Some(CancelledActiveRun {
+            session_ids: run.active_session_ids.clone(),
+            instance_ids: run.active_instance_ids.clone(),
+            run,
+        }));
     }
+    let session_ids = run.active_session_ids.clone();
+    let instance_ids = run.active_instance_ids.clone();
     run.status = AutomationRunStatus::Cancelled;
     run.updated_at_ms = now_ms;
     run.finished_at_ms = Some(now_ms);
@@ -178,7 +208,11 @@ fn cancel_active_run(
     run.active_instance_ids.clear();
     run.execution_claim = None;
     upsert_automation_run(transaction, &run)?;
-    Ok(Some(run))
+    Ok(Some(CancelledActiveRun {
+        run,
+        session_ids,
+        instance_ids,
+    }))
 }
 
 fn cancel_waits(
@@ -387,6 +421,9 @@ mod tests {
             "status": "running",
             "created_at_ms": 2,
             "updated_at_ms": 10,
+            "active_session_ids": ["session-1"],
+            "latest_session_id": "session-1",
+            "active_instance_ids": ["instance-1"],
             "checkpoint": {}
         }))
         .unwrap()
@@ -506,6 +543,8 @@ mod tests {
         assert_eq!(first.goal.status, LongRunningGoalStatus::Cancelled);
         assert_eq!(first.cancelled_wait_ids, vec!["wait-1"]);
         assert_eq!(first.dead_lettered_handoff_ids, vec!["handoff-1"]);
+        assert_eq!(first.cancelled_session_ids, vec!["session-1"]);
+        assert_eq!(first.cancelled_instance_ids, vec!["instance-1"]);
         assert_eq!(
             first.cancelled_run.as_ref().map(|run| &run.status),
             Some(&AutomationRunStatus::Cancelled)

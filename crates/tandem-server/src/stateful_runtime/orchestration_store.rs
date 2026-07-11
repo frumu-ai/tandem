@@ -8,8 +8,8 @@ use fs2::FileExt;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use tandem_automation::{
     validate_orchestration_spec, AutomationV2RunRecord, GoalRunLink, HandoffArtifact,
-    LongRunningGoal, OrchestrationSpec, OrchestrationStatus, WorkflowHandoff,
-    WorkflowHandoffStatus,
+    LongRunningGoal, LongRunningGoalStatus, OrchestrationSpec, OrchestrationStatus,
+    WorkflowHandoff, WorkflowHandoffStatus,
 };
 
 mod goal_control;
@@ -480,6 +480,7 @@ impl OrchestrationStateStore {
                     );
                 }
             }
+            ensure_current_goal_allows_handoff(&transaction, handoff)?;
 
             let mut consumed = handoff.clone();
             consumed.status = WorkflowHandoffStatus::Consumed;
@@ -913,6 +914,38 @@ fn validate_atomic_transition(
         || goal.orchestration_version != link.orchestration_version
     {
         bail!("handoff, lineage, and goal must use the same orchestration version");
+    }
+    Ok(())
+}
+
+fn ensure_current_goal_allows_handoff(
+    transaction: &rusqlite::Transaction<'_>,
+    handoff: &WorkflowHandoff,
+) -> anyhow::Result<()> {
+    let payload = transaction
+        .query_row(
+            "SELECT goal_json FROM long_running_goals WHERE goal_id = ?1",
+            [&handoff.goal_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(payload) = payload else {
+        return Ok(());
+    };
+    let goal: LongRunningGoal = serde_json::from_str(&payload)?;
+    if goal.tenant_context != handoff.tenant_context
+        || goal.orchestration_id != handoff.orchestration_id
+        || goal.orchestration_version != handoff.orchestration_version
+    {
+        bail!("handoff no longer matches the persisted goal")
+    }
+    if goal.status.is_terminal() || goal.status == LongRunningGoalStatus::Paused {
+        bail!("terminal or paused goals reject handoff consumption")
+    }
+    if goal.active_run_id.as_deref() != Some(handoff.source_run_id.as_str())
+        || goal.current_node_id.as_deref() != Some(handoff.source_node_id.as_str())
+    {
+        bail!("handoff source is no longer active for the persisted goal")
     }
     Ok(())
 }
