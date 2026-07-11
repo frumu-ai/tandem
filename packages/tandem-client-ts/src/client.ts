@@ -3629,9 +3629,17 @@ class Orchestrations {
   }
 
   /** Archive the mutable draft slot. */
-  async archive(orchestrationId: string): Promise<OrchestrationVersionResponse> {
+  async archive(
+    orchestrationId: string,
+    expectedUpdatedAtMs?: number
+  ): Promise<OrchestrationVersionResponse> {
     return this.req<OrchestrationVersionResponse>(`${this.orchestrationPath(orchestrationId)}/archive`, {
       method: "POST",
+      body: JSON.stringify(
+        expectedUpdatedAtMs !== undefined
+          ? { expected_updated_at_ms: expectedUpdatedAtMs }
+          : {}
+      ),
     });
   }
 
@@ -3646,10 +3654,20 @@ class Orchestrations {
   }
 
   /** Publish a validated draft as the next immutable version. */
-  async publish(orchestrationId: string): Promise<OrchestrationPublishResponse> {
+  async publish(
+    orchestrationId: string,
+    expectedUpdatedAtMs?: number
+  ): Promise<OrchestrationPublishResponse> {
     return this.req<OrchestrationPublishResponse>(
       `${this.orchestrationPath(orchestrationId)}/publish`,
-      { method: "POST" }
+      {
+        method: "POST",
+        body: JSON.stringify(
+          expectedUpdatedAtMs !== undefined
+            ? { expected_updated_at_ms: expectedUpdatedAtMs }
+            : {}
+        ),
+      }
     );
   }
 

@@ -4,6 +4,7 @@ export const ROUTES = [
   ["chat", "Chat", "message-square"],
   ["planner", "Planner", "compass"],
   ["workflows", "Workflows", "network"],
+  ["orchestrations", "Orchestrations", "route"],
   ["marketplace", "Marketplace", "globe"],
   ["studio", "Studio", "blocks"],
   ["automations", "Automations", "bot"],
@@ -36,6 +37,7 @@ const NAV_ROUTE_ORDER = [
   "chat",
   "planner",
   "workflows",
+  "orchestrations",
   "marketplace",
   "studio",
   "automations",
@@ -67,7 +69,10 @@ export const NAV_ROUTES = NAV_ROUTE_ORDER.map((routeId) => {
 // and clarifies overlapping surfaces (planner/orchestrator, workflows/studio).
 export const NAV_GROUPS = [
   { label: "Overview", routeIds: ["dashboard"] },
-  { label: "Build", routeIds: ["chat", "planner", "studio", "workflows", "automations"] },
+  {
+    label: "Build",
+    routeIds: ["chat", "planner", "studio", "workflows", "orchestrations", "automations"],
+  },
   { label: "Operate", routeIds: ["runs", "webhooks", "orchestrator", "coding", "incident-monitor"] },
   { label: "Govern", routeIds: ["approvals", "control-loop", "slack-receipts", "enterprise-admin"] },
   { label: "System", routeIds: ["agents", "memory", "files", "marketplace", "experiments", "settings"] },

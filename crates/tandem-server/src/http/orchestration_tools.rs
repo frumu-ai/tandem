@@ -371,6 +371,7 @@ impl OrchestrationTool {
                 let idempotency_key = require_idempotency(args)?;
                 let mut draft =
                     scoped_draft(&store, tenant, required_str(args, "orchestration_id")?)?;
+                let expected_draft_updated_at_ms = draft.updated_at_ms;
                 authorize_orchestration_owner(args, tenant, &draft, &actor)?;
                 if draft.status == OrchestrationStatus::Archived {
                     bail!("archived drafts cannot be published");
@@ -442,7 +443,7 @@ impl OrchestrationTool {
                     }),
                 );
                 draft.metadata = Some(metadata);
-                store.publish_orchestration_draft(&draft)?;
+                store.publish_orchestration_draft(&draft, Some(expected_draft_updated_at_ms))?;
                 let response = json!({
                     "orchestration": draft,
                     "orchestration_id": draft.orchestration_id,

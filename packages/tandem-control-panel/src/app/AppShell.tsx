@@ -15,6 +15,7 @@ const ROUTE_META: Record<string, { title: string; subtitle: string }> = {
   chat: { title: "Chat", subtitle: "Sessions, tools, and uploads" },
   planner: { title: "Planner", subtitle: "Long-horizon multi-agent planning" },
   workflows: { title: "Workflows", subtitle: "Build and run workflows" },
+  orchestrations: { title: "Orchestrations", subtitle: "Connect workflows into durable goals" },
   marketplace: { title: "Marketplace", subtitle: "Templates and starter packs" },
   studio: { title: "Studio", subtitle: "Template-first workflow builder" },
   automations: { title: "Automations", subtitle: "Schedules, library, and run history" },
@@ -42,6 +43,7 @@ const ROUTE_META: Record<string, { title: string; subtitle: string }> = {
 const FULL_HEIGHT_ROUTES = new Set([
   "chat",
   "automations",
+  "orchestrations",
   "webhooks",
   "approvals",
   "files",
@@ -204,13 +206,20 @@ export function AppShell({
       });
       return groupIndex > 0
         ? [
-            <span key={`rail-divider-${group.label}`} className="tcp-rail-divider" aria-hidden="true" />,
+            <span
+              key={`rail-divider-${group.label}`}
+              className="tcp-rail-divider"
+              aria-hidden="true"
+            />,
             ...buttons,
           ]
         : buttons;
     });
 
-  const renderContextNavButton = ([id, label, icon]: [string, string, IconName], mobile: boolean) => {
+  const renderContextNavButton = (
+    [id, label, icon]: [string, string, IconName],
+    mobile: boolean
+  ) => {
     const active = currentRoute === id;
     const locked = providerLocked && id !== "settings";
     const disabled = locked || navigationLocked;
@@ -385,7 +394,11 @@ export function AppShell({
         </button>
         <nav className="tcp-rail-nav">{renderIconRailItems()}</nav>
         <div className="tcp-rail-footer">
-          <IconButton aria-label="Command palette" onClick={onPaletteOpen} disabled={navigationLocked}>
+          <IconButton
+            aria-label="Command palette"
+            onClick={onPaletteOpen}
+            disabled={navigationLocked}
+          >
             <Icon name="search" />
           </IconButton>
           <IconButton aria-label="Cycle theme" onClick={onThemeCycle} disabled={navigationLocked}>
@@ -572,7 +585,7 @@ export function AppShell({
       </AnimatePresence>
 
       <AnimatePresence>
-        {navigationLock ? (
+        {navigationLock && navigationLock.showOverlay !== false ? (
           <motion.div
             className="tcp-confirm-overlay"
             style={{ zIndex: 180 }}

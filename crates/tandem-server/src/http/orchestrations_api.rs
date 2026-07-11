@@ -7,6 +7,8 @@
 
 use super::*;
 
+use axum::body::Bytes;
+
 use tandem_automation::{
     validate_orchestration_spec, GoalPolicy, OrchestrationEdgeSpec, OrchestrationNodeKind,
     OrchestrationNodeSpec, OrchestrationSpec, OrchestrationStatus, OrchestrationValidationIssue,
@@ -62,6 +64,30 @@ pub(super) struct OrchestrationDryRunPayload {
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct OrchestrationRefreshPayload {
     pub expected_updated_at_ms: u64,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct OrchestrationRevisionPayload {
+    #[serde(default)]
+    pub expected_updated_at_ms: Option<u64>,
+}
+
+fn revision_from_body(body: &Bytes) -> Result<Option<u64>, Response> {
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(None);
+    }
+    serde_json::from_slice::<Option<OrchestrationRevisionPayload>>(body)
+        .map(|payload| payload.and_then(|payload| payload.expected_updated_at_ms))
+        .map_err(|error| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "invalid_orchestration_revision",
+                    "detail": error.to_string(),
+                })),
+            )
+                .into_response()
+        })
 }
 
 fn definition_store(state: &AppState) -> Result<OrchestrationStateStore, Response> {
@@ -351,13 +377,22 @@ pub(super) async fn archive_orchestration_draft(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Path(orchestration_id): Path<String>,
+    body: Bytes,
 ) -> Response {
     let store = match definition_store(&state) {
         Ok(store) => store,
         Err(response) => return response,
     };
-    match store.archive_orchestration_draft(&tenant, &orchestration_id, crate::util::time::now_ms())
-    {
+    let expected = match revision_from_body(&body) {
+        Ok(expected) => expected,
+        Err(response) => return response,
+    };
+    match store.archive_orchestration_draft(
+        &tenant,
+        &orchestration_id,
+        expected,
+        crate::util::time::now_ms(),
+    ) {
         Ok(spec) => Json(spec_response(&spec)).into_response(),
         Err(error) => orchestration_error_response(&error),
     }
@@ -520,6 +555,7 @@ pub(super) async fn publish_orchestration(
     Extension(tenant): Extension<TenantContext>,
     Extension(principal): Extension<RequestPrincipal>,
     Path(orchestration_id): Path<String>,
+    body: Bytes,
 ) -> Response {
     let store = match definition_store(&state) {
         Ok(store) => store,
@@ -529,6 +565,17 @@ pub(super) async fn publish_orchestration(
         Ok(draft) => draft,
         Err(response) => return response,
     };
+    let expected = match revision_from_body(&body) {
+        Ok(expected) => expected,
+        Err(response) => return response,
+    };
+    if expected.is_some_and(|value| value != draft.updated_at_ms) {
+        return orchestration_error_response(&anyhow::anyhow!(
+            "{DRAFT_CONCURRENCY_CONFLICT}: stored updated_at_ms {}, expected {}",
+            draft.updated_at_ms,
+            expected.unwrap_or_default()
+        ));
+    }
     if draft.status == OrchestrationStatus::Archived {
         return (
             StatusCode::CONFLICT,
@@ -585,7 +632,7 @@ pub(super) async fn publish_orchestration(
     );
     candidate.metadata = Some(Value::Object(metadata));
 
-    match store.publish_orchestration_draft(&candidate) {
+    match store.publish_orchestration_draft(&candidate, expected) {
         Ok(()) => (StatusCode::CREATED, Json(spec_response(&candidate))).into_response(),
         Err(error) => orchestration_error_response(&error),
     }

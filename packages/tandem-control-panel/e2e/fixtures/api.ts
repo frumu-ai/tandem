@@ -120,6 +120,8 @@ function responseFor(path: string, method: string): unknown {
   if (path.includes("/incident-monitor/posts")) return { posts: [], items: [] };
   if (path.includes("/incident-monitor/intake/keys")) return { keys: [] };
   if (path === "/api/engine/workflows" || path === "/api/engine/automations/v2") return [];
+  if (path === "/api/engine/orchestrations") return { orchestrations: [], count: 0 };
+  if (path === "/api/engine/goals") return { goals: [], count: 0 };
   if (path.includes("/workflows/runs") || path.includes("/automations/v2/runs")) {
     return { runs: [], items: [] };
   }
@@ -165,46 +167,49 @@ async function fulfillApi(
 }
 
 export const test = base.extend<{ apiFixture: ApiFixture }>({
-  apiFixture: [async ({ page }, use) => {
-    const pending: PendingHold[] = [];
-    const overrides: ResponseOverride[] = [];
-    const requests: string[] = [];
-    await page.addInitScript(() => {
-      localStorage.clear();
-      sessionStorage.clear();
-      localStorage.setItem("tandem.navigationVisibility.v1", JSON.stringify({}));
-    });
-    await page.route("**/api/**", (route) => fulfillApi(route, pending, overrides, requests));
-    await use({
-      requests,
-      mockResponse(path, response, method) {
-        overrides.push({
-          matches: (candidate, candidateMethod) =>
-            (!method || candidateMethod === method) &&
-            (typeof path === "string" ? candidate === path : path.test(candidate)),
-          response,
-        });
-      },
-      holdNext(path, method) {
-        let releaseRequest!: () => void;
-        let markRequested!: () => void;
-        const wait = new Promise<void>((resolve) => (releaseRequest = resolve));
-        const requested = new Promise<void>((resolve) => (markRequested = resolve));
-        pending.push({
-          matches: (candidate, candidateMethod) =>
-            (!method || candidateMethod === method) &&
-            (typeof path === "string" ? candidate === path : path.test(candidate)),
-          requested: markRequested,
-          wait,
-        });
-        return {
-          path,
-          release: releaseRequest,
-          waitUntilRequested: () => requested,
-        };
-      },
-    });
-  }, { auto: true }],
+  apiFixture: [
+    async ({ page }, use) => {
+      const pending: PendingHold[] = [];
+      const overrides: ResponseOverride[] = [];
+      const requests: string[] = [];
+      await page.addInitScript(() => {
+        localStorage.clear();
+        sessionStorage.clear();
+        localStorage.setItem("tandem.navigationVisibility.v1", JSON.stringify({}));
+      });
+      await page.route("**/api/**", (route) => fulfillApi(route, pending, overrides, requests));
+      await use({
+        requests,
+        mockResponse(path, response, method) {
+          overrides.push({
+            matches: (candidate, candidateMethod) =>
+              (!method || candidateMethod === method) &&
+              (typeof path === "string" ? candidate === path : path.test(candidate)),
+            response,
+          });
+        },
+        holdNext(path, method) {
+          let releaseRequest!: () => void;
+          let markRequested!: () => void;
+          const wait = new Promise<void>((resolve) => (releaseRequest = resolve));
+          const requested = new Promise<void>((resolve) => (markRequested = resolve));
+          pending.push({
+            matches: (candidate, candidateMethod) =>
+              (!method || candidateMethod === method) &&
+              (typeof path === "string" ? candidate === path : path.test(candidate)),
+            requested: markRequested,
+            wait,
+          });
+          return {
+            path,
+            release: releaseRequest,
+            waitUntilRequested: () => requested,
+          };
+        },
+      });
+    },
+    { auto: true },
+  ],
 });
 
 export { expect };
@@ -214,7 +219,9 @@ export async function waitForRoute(page: Page, routeId: string) {
   await expect(marker).toHaveCount(1);
   await expect(page.getByTestId("route-outlet")).toHaveCount(1);
   await expect(page.getByText("Page failed to load", { exact: true })).toHaveCount(0);
-  await page.waitForFunction(() => new Promise((resolve) => requestAnimationFrame(() => resolve(true))));
+  await page.waitForFunction(
+    () => new Promise((resolve) => requestAnimationFrame(() => resolve(true)))
+  );
 }
 
 export async function blankIconDescriptions(page: Page) {

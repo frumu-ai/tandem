@@ -28,8 +28,7 @@
     --color-glass-border: rgba(255, 255, 255, 0.1);
     --font-sans: "Inter", system-ui, -apple-system, sans-serif;
     --font-display: "Rubik", "Inter", system-ui, -apple-system, sans-serif;
-    --font-mono:
-      "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
     --radius: 0px;
     /* Keep these eight tokens aligned with tailwind.config.js. */
     --font-size-micro: 0.625rem;
@@ -1183,6 +1182,393 @@ svg.lucide-loader-circle,
   svg.lucide-loader-circle,
   .tcp-spinner {
     animation: none !important;
+  }
+}
+
+/* Orchestration library and Studio */
+.orch-library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
+  gap: 12px;
+}
+.orch-library-card {
+  min-height: 178px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 6px;
+  background: var(--color-surface-elevated);
+  padding: 16px;
+  color: var(--color-text);
+  transition:
+    border-color 140ms ease,
+    background 140ms ease;
+}
+.orch-library-card:hover,
+.orch-library-card:focus-visible {
+  border-color: #3b82f6;
+  background: color-mix(in srgb, var(--color-surface-elevated) 92%, #2563eb 8%);
+  outline: none;
+}
+.orch-status,
+.orch-validation-state {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: var(--font-size-xs);
+  line-height: 1.25rem;
+  text-transform: capitalize;
+}
+.orch-status.draft {
+  color: #60a5fa;
+  border-color: color-mix(in srgb, #3b82f6 45%, transparent);
+}
+.orch-status.archived {
+  color: var(--color-text-subtle);
+}
+.orch-status.published,
+.orch-validation-state.valid {
+  color: #34d399;
+  border-color: color-mix(in srgb, #10b981 45%, transparent);
+}
+.orch-validation-state.invalid {
+  color: #fbbf24;
+  border-color: color-mix(in srgb, #f59e0b 45%, transparent);
+}
+.orch-validation-state.unchecked {
+  color: var(--color-text-subtle);
+}
+.orch-metric-label {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--color-text-subtle);
+  font-size: var(--font-size-xs);
+}
+.orch-filter-tabs,
+.orch-mode-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 6px;
+  background: var(--color-surface);
+  padding: 3px;
+}
+.orch-filter-tabs button,
+.orch-mode-tabs button {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 6px;
+  border-radius: 4px;
+  padding: 5px 10px;
+  color: var(--color-text-subtle);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+}
+.orch-filter-tabs button.active,
+.orch-mode-tabs button.active {
+  background: color-mix(in srgb, var(--color-surface-elevated) 88%, #2563eb 12%);
+  color: #60a5fa;
+}
+.orch-studio-page {
+  display: grid;
+  height: calc(100dvh - 4rem);
+  min-height: 620px;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 6px;
+  background: var(--color-surface);
+}
+.orch-studio-toolbar {
+  display: flex;
+  min-height: 64px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-elevated);
+  padding: 10px 14px;
+}
+.orch-title-input {
+  width: min(42vw, 460px);
+  min-width: 160px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--font-size-base);
+  font-weight: 650;
+  outline: none;
+}
+.orch-studio-grid {
+  display: grid;
+  min-height: 0;
+  grid-template-columns: 224px minmax(0, 1fr) 292px;
+}
+.orch-palette,
+.orch-inspector {
+  display: grid;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+  background: var(--color-surface-elevated);
+}
+.orch-palette {
+  border-right: 1px solid var(--color-border-subtle);
+}
+.orch-inspector {
+  border-left: 1px solid var(--color-border-subtle);
+}
+.orch-palette-heading {
+  padding: 4px 6px;
+  color: var(--color-text-subtle);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.orch-palette-item {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 7px 8px;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  text-align: left;
+}
+.orch-palette-item:hover,
+.orch-palette-item:focus-visible {
+  border-color: color-mix(in srgb, #3b82f6 45%, transparent);
+  background: color-mix(in srgb, var(--color-surface-elevated) 90%, #2563eb 10%);
+  outline: none;
+}
+.orch-mode-tabs {
+  position: absolute;
+  z-index: 5;
+  margin: 10px;
+  background: var(--color-surface-elevated);
+}
+.orch-canvas {
+  width: 100%;
+  height: 100%;
+  min-height: 420px;
+}
+.orch-node {
+  width: 210px;
+  min-height: 82px;
+  border: 1px solid var(--color-border);
+  border-left: 3px solid #3b82f6;
+  border-radius: 6px;
+  background: var(--color-surface-elevated);
+  padding: 11px 12px;
+  color: var(--color-text);
+  box-shadow: 0 8px 18px rgb(0 0 0 / 14%);
+}
+.orch-node.selected {
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 2px rgb(37 99 235 / 22%);
+}
+.orch-node-waiting {
+  border-left-color: #f59e0b;
+}
+.orch-node-complete {
+  border-left-color: #10b981;
+}
+.orch-node-failed {
+  border-left-color: #ef4444;
+}
+.orch-node-tag {
+  border-radius: 3px;
+  background: rgb(37 99 235 / 16%);
+  padding: 1px 5px;
+  color: #60a5fa;
+}
+.orch-node-tag.stale {
+  background: rgb(245 158 11 / 16%);
+  color: #fbbf24;
+}
+.orch-node-tag.loop {
+  background: rgb(245 158 11 / 16%);
+  color: #fbbf24;
+}
+.orch-issue-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #fbbf24;
+  font-size: var(--font-size-xs);
+}
+.orch-edge.selected path {
+  stroke: #60a5fa;
+  stroke-width: 2.5;
+}
+.orch-edge.loop path {
+  stroke: #f59e0b;
+  stroke-dasharray: 6 4;
+}
+.react-flow__handle {
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--color-surface-elevated);
+  background: #3b82f6;
+}
+.react-flow__edge-text {
+  fill: var(--color-text);
+  font-size: var(--font-size-xs);
+}
+.react-flow__edge-textbg {
+  fill: var(--color-surface-elevated);
+}
+.react-flow__controls,
+.react-flow__minimap {
+  overflow: hidden;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 5px;
+  background: var(--color-surface-elevated);
+}
+.react-flow__controls button {
+  border-color: var(--color-border-subtle);
+  background: var(--color-surface-elevated);
+  fill: var(--color-text);
+}
+.orch-outline {
+  height: 100%;
+  overflow-y: auto;
+  padding: 62px 18px 18px;
+}
+.orch-outline-row {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 5px;
+  background: var(--color-surface-elevated);
+  padding: 9px 12px;
+  color: var(--color-text);
+}
+.orch-outline-row.selected {
+  border-color: #60a5fa;
+  background: rgb(37 99 235 / 9%);
+}
+.orch-outline-index {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: 4px;
+  background: var(--color-surface);
+  color: var(--color-text-subtle);
+  font-size: var(--font-size-xs);
+}
+.orch-transition-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr auto;
+  gap: 8px;
+  border-top: 1px solid var(--color-border-subtle);
+  padding-top: 10px;
+}
+.orch-version-chip {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+.orch-bottom-panel {
+  max-height: 190px;
+  overflow-y: auto;
+  border-top: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-elevated);
+  padding: 12px 16px;
+}
+.orch-validation-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  border-radius: 4px;
+  padding: 5px 7px;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  text-align: left;
+}
+.orch-validation-row:hover {
+  background: rgb(245 158 11 / 10%);
+  color: #fbbf24;
+}
+.orch-conflict,
+.orch-error-state {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgb(245 158 11 / 35%);
+  background: rgb(245 158 11 / 10%);
+  padding: 9px 12px;
+  color: #fbbf24;
+  font-size: var(--font-size-xs);
+}
+.orch-conflict span,
+.orch-error-state span {
+  flex: 1;
+}
+
+@media (max-width: 1100px) {
+  .orch-studio-grid {
+    grid-template-columns: 190px minmax(0, 1fr) 260px;
+  }
+}
+
+@media (max-width: 820px) {
+  .orch-studio-page {
+    height: auto;
+    min-height: calc(100dvh - 4rem);
+    overflow: visible;
+  }
+  .orch-studio-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .orch-title-input {
+    width: min(75vw, 460px);
+  }
+  .orch-studio-grid {
+    grid-template-columns: 1fr;
+  }
+  .orch-palette,
+  .orch-inspector {
+    border: 0;
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+  .orch-palette {
+    max-height: 260px;
+  }
+  .orch-inspector {
+    max-height: 420px;
+    border-top: 1px solid var(--color-border-subtle);
+  }
+  .orch-canvas {
+    height: 62dvh;
+    min-height: 440px;
+  }
+  .orch-outline {
+    min-height: 520px;
+  }
+  .orch-transition-form {
+    grid-template-columns: 1fr;
+  }
+  .orch-bottom-panel {
+    max-height: none;
+  }
+  .orch-filter-tabs {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orch-library-card,
+  .orch-palette-item {
+    transition: none;
   }
 }
 

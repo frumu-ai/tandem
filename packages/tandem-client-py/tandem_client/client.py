@@ -2405,8 +2405,15 @@ class _Orchestrations:
         res.raise_for_status()
         return OrchestrationVersionResponse.model_validate(res.json())
 
-    async def archive(self, orchestration_id: str) -> OrchestrationVersionResponse:
-        res = await self._http.post(f"{self._path(orchestration_id)}/archive")
+    async def archive(
+        self, orchestration_id: str, *, expected_updated_at_ms: Optional[int] = None
+    ) -> OrchestrationVersionResponse:
+        payload = (
+            {"expected_updated_at_ms": expected_updated_at_ms}
+            if expected_updated_at_ms is not None
+            else {}
+        )
+        res = await self._http.post(f"{self._path(orchestration_id)}/archive", json=payload)
         res.raise_for_status()
         return OrchestrationVersionResponse.model_validate(res.json())
 
@@ -2418,9 +2425,14 @@ class _Orchestrations:
         return OrchestrationValidationResponse.model_validate(res.json())
 
     async def publish(
-        self, orchestration_id: str
+        self, orchestration_id: str, *, expected_updated_at_ms: Optional[int] = None
     ) -> OrchestrationPublishResponse:
-        res = await self._http.post(f"{self._path(orchestration_id)}/publish")
+        payload = (
+            {"expected_updated_at_ms": expected_updated_at_ms}
+            if expected_updated_at_ms is not None
+            else {}
+        )
+        res = await self._http.post(f"{self._path(orchestration_id)}/publish", json=payload)
         res.raise_for_status()
         return OrchestrationPublishResponse.model_validate(res.json())
 
