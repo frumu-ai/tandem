@@ -238,7 +238,7 @@ impl PostgresMemoryStore {
                             COUNT(*) FILTER (WHERE source_path IS NOT NULL)::bigint,
                             COALESCE(SUM(COALESCE(octet_length(data::text),octet_length(data_ciphertext))) FILTER (WHERE source_path IS NOT NULL),0)::bigint
                          FROM tandem_memory_chunks WHERE tenant_org_id=$1 AND tenant_workspace_id=$2
-                           AND tenant_deployment_id=$3 AND project_id=$4",
+                           AND tenant_deployment_id=$3 AND tier='project' AND project_id=$4",
                         &[
                             &scope.tenant.org_id,
                             &scope.tenant.workspace_id,

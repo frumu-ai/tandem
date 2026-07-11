@@ -592,6 +592,14 @@ impl PostgresMemoryStore {
                     &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&project_id]).await.map_err(|error| store_error("clear PostgreSQL file index", error, true))?;
                 client.execute("DELETE FROM tandem_memory_entities WHERE tenant_org_id=$1 AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND entity_type='import_index' AND key1=$4",
                     &[&scope.tenant.org_id,&scope.tenant.workspace_id,&deployment(&scope.tenant),&project_id]).await.map_err(|error| store_error("clear PostgreSQL import index", error, true))?;
+                if vacuum {
+                    client
+                        .batch_execute("VACUUM (ANALYZE) tandem_memory_chunks")
+                        .await
+                        .map_err(|error| {
+                            store_error("vacuum PostgreSQL file-index storage", error, true)
+                        })?;
+                }
                 Ok(MemoryStoreMutationResult::ClearFileIndex(
                     ClearFileIndexResult {
                         chunks_deleted: rows.len() as i64,

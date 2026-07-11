@@ -46,12 +46,18 @@ pub fn memory_decrypt_principal_from_verified_context(
         return None;
     }
     let allowed_source_binding_ids = source_binding_grants(strict, now_ms);
-    Some(MemoryDecryptPrincipal::retrieval_gateway(
-        principal_id,
-        tenant_scope,
-        allowed_data_classes,
-        allowed_source_binding_ids,
-    ))
+    let owner_subject = super::subject::verified_memory_subject(verified, None)
+        .ok()?
+        .subject;
+    Some(
+        MemoryDecryptPrincipal::retrieval_gateway(
+            principal_id,
+            tenant_scope,
+            allowed_data_classes,
+            allowed_source_binding_ids,
+        )
+        .with_owner_subjects(vec![owner_subject]),
+    )
 }
 
 /// The workspace-level memory-space resource that context (tree/layer) reads
@@ -233,6 +239,7 @@ mod tests {
             memory_decrypt_principal_from_verified_context(&base_verified(Some(strict)), 2_000)
                 .expect("hosted principal");
         assert_eq!(principal.tenant_scope.org_id, "acme");
+        assert_eq!(principal.allowed_owner_subjects, vec!["user-finance"]);
         assert_eq!(
             principal.tenant_scope.deployment_id.as_deref(),
             Some("prod")

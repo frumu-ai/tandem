@@ -881,6 +881,17 @@ async fn postgres_clear_operations_preserve_other_memory_tiers() {
         sessions,
         MemoryStoreReadResult::Chunks(rows) if rows.iter().any(|row| row.id == "cap-session")
     ));
+    let stats = store
+        .read(MemoryStoreReadRequest::ProjectStats {
+            scope: MemoryReadScope::tenant(tenant.clone()),
+            project_id: "project".to_string(),
+        })
+        .await
+        .expect("read project-tier stats");
+    assert!(matches!(
+        stats,
+        MemoryStoreReadResult::ProjectStats(stats) if stats.project_chunks == 1
+    ));
 
     let mut project_file = chunk("project-file", tenant.clone());
     project_file.source = "file".to_string();
@@ -903,14 +914,18 @@ async fn postgres_clear_operations_preserve_other_memory_tiers() {
             .await
             .expect("write file-clear fixture");
     }
-    store
+    let cleared = store
         .mutate(MemoryStoreMutationRequest::ClearProjectFileIndex {
             scope: MemoryReadScope::trusted_unrestricted(tenant.clone()),
             project_id: "project".to_string(),
-            vacuum: false,
+            vacuum: true,
         })
         .await
         .expect("clear project file index");
+    assert!(matches!(
+        cleared,
+        MemoryStoreMutationResult::ClearFileIndex(result) if result.did_vacuum
+    ));
     let client = store.client().await.expect("inspect file-clear rows");
     let ids = client
         .query(
