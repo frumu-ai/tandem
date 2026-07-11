@@ -40,6 +40,8 @@ impl PostgresMemoryStore {
                 owner_org_unit_id TEXT,
                 owner_subject TEXT,
                 tenant_shared BOOLEAN NOT NULL DEFAULT false,
+                data_class TEXT NOT NULL DEFAULT 'internal',
+                source_binding_id TEXT,
                 tier TEXT NOT NULL,
                 project_id TEXT,
                 session_id TEXT,
@@ -69,6 +71,8 @@ impl PostgresMemoryStore {
                 owner_org_unit_id TEXT,
                 owner_subject TEXT,
                 private BOOLEAN NOT NULL,
+                data_class TEXT NOT NULL DEFAULT 'internal',
+                source_binding_id TEXT,
                 user_id TEXT NOT NULL,
                 source_type TEXT NOT NULL,
                 content_hash TEXT NOT NULL,
@@ -132,11 +136,15 @@ impl PostgresMemoryStore {
                  ALTER TABLE tandem_memory_chunks ADD COLUMN IF NOT EXISTS data_policy_decision_id TEXT;
                  ALTER TABLE tandem_memory_chunks ADD COLUMN IF NOT EXISTS data_audit_id TEXT;
                  ALTER TABLE tandem_memory_chunks ADD COLUMN IF NOT EXISTS tenant_shared BOOLEAN NOT NULL DEFAULT false;
+                 ALTER TABLE tandem_memory_chunks ADD COLUMN IF NOT EXISTS data_class TEXT NOT NULL DEFAULT 'internal';
+                 ALTER TABLE tandem_memory_chunks ADD COLUMN IF NOT EXISTS source_binding_id TEXT;
                  ALTER TABLE tandem_memory_global_records ALTER COLUMN data DROP NOT NULL;
                  ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS data_ciphertext TEXT;
                  ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS data_envelope JSONB;
                  ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS data_policy_decision_id TEXT;
                  ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS data_audit_id TEXT;
+                 ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS data_class TEXT NOT NULL DEFAULT 'internal';
+                 ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS source_binding_id TEXT;
                  DO $$ BEGIN
                    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='tandem_memory_chunks_one_embedding') THEN
                      ALTER TABLE tandem_memory_chunks ADD CONSTRAINT tandem_memory_chunks_one_embedding

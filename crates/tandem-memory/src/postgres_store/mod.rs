@@ -10,7 +10,6 @@ use std::time::Duration;
 use async_trait::async_trait;
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use serde::{Deserialize, Serialize};
-use tandem_enterprise_contract::DataClass;
 use tokio_postgres::NoTls;
 
 use crate::crypto::MemoryCryptoProvider;
@@ -250,23 +249,32 @@ impl PostgresMemoryStore {
             .map_err(|error| store_error("acquire PostgreSQL connection", error, true))
     }
 
-    fn search_key_scope(
-        &self,
+    fn persisted_key_scope(
         tenant: &crate::types::MemoryTenantScope,
         org_unit: Option<String>,
         owner_subject: Option<String>,
-    ) -> MemoryKeyScope {
-        MemoryKeyScope::new(tenant, DataClass::Internal, None)
+        data_class: String,
+        source_binding_id: Option<String>,
+    ) -> MemoryStoreResult<MemoryKeyScope> {
+        let data_class = serde_json::from_value(serde_json::Value::String(data_class))
+            .map_err(|error| store_error("decode PostgreSQL memory data class", error, false))?;
+        Ok(MemoryKeyScope::new(tenant, data_class, source_binding_id)
             .with_org_unit(org_unit)
-            .with_owner_subject(owner_subject)
+            .with_owner_subject(owner_subject))
+    }
+
+    fn key_scope_columns(scope: &MemoryKeyScope) -> MemoryStoreResult<(String, Option<String>)> {
+        let data_class = serde_json::to_value(scope.data_class)
+            .ok()
+            .and_then(|value| value.as_str().map(ToOwned::to_owned))
+            .ok_or_else(|| MemoryStoreError::invalid("memory key scope has invalid data class"))?;
+        Ok((data_class, scope.source_binding_id.clone()))
     }
 
     fn encrypt_embedding(
         &self,
         embedding: &[f32],
-        tenant: &crate::types::MemoryTenantScope,
-        org_unit: Option<String>,
-        owner_subject: Option<String>,
+        key_scope: &MemoryKeyScope,
         row_id: &str,
     ) -> MemoryStoreResult<(String, Option<MemoryEnvelopeMetadata>, String, String)> {
         let policy_id = format!("memory-search-policy:{row_id}");
@@ -275,24 +283,16 @@ impl PostgresMemoryStore {
             .map_err(|error| store_error("serialize encrypted embedding", error, false))?;
         let (ciphertext, envelope) = self
             .crypto
-            .encrypt_field_scoped(
-                &plaintext,
-                &self.search_key_scope(tenant, org_unit, owner_subject),
-                &policy_id,
-                &audit_id,
-            )
+            .encrypt_field_scoped(&plaintext, key_scope, &policy_id, &audit_id)
             .map_err(MemoryStoreError::from)?;
         Ok((ciphertext, envelope, policy_id, audit_id))
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn decrypt_embedding(
         &self,
         ciphertext: &str,
         envelope: Option<&MemoryEnvelopeMetadata>,
-        tenant: &crate::types::MemoryTenantScope,
-        org_unit: Option<String>,
-        owner_subject: Option<String>,
+        key_scope: &MemoryKeyScope,
         policy_id: &str,
         audit_id: &str,
     ) -> MemoryStoreResult<Vec<f32>> {
@@ -302,16 +302,16 @@ impl PostgresMemoryStore {
             .unwrap_or("local-memory-runtime");
         let principal = MemoryDecryptPrincipal::retrieval_gateway(
             principal_id,
-            tenant.clone(),
-            vec![DataClass::Internal],
-            Vec::new(),
+            crate::types::MemoryTenantScope {
+                org_id: key_scope.org_id.clone(),
+                workspace_id: key_scope.workspace_id.clone(),
+                deployment_id: key_scope.deployment_id.clone(),
+            },
+            vec![key_scope.data_class],
+            key_scope.source_binding_id.clone().into_iter().collect(),
         )
-        .with_owner_subjects(owner_subject.clone().into_iter().collect());
-        let authority = MemoryEnvelopeAuthority::new(
-            self.search_key_scope(tenant, org_unit, owner_subject),
-            policy_id,
-            audit_id,
-        );
+        .with_owner_subjects(key_scope.owner_subject.clone().into_iter().collect());
+        let authority = MemoryEnvelopeAuthority::new(key_scope.clone(), policy_id, audit_id);
         let plaintext = self
             .crypto
             .decrypt_field_scoped_authorized(
@@ -329,9 +329,7 @@ impl PostgresMemoryStore {
     fn encode_payload<T: serde::Serialize>(
         &self,
         value: &T,
-        tenant: &crate::types::MemoryTenantScope,
-        org_unit: Option<String>,
-        owner_subject: Option<String>,
+        key_scope: &MemoryKeyScope,
         row_id: &str,
     ) -> MemoryStoreResult<EncodedPayload> {
         if self.search_surface_mode == PostgresSearchSurfaceMode::PlaintextPgvector {
@@ -343,12 +341,7 @@ impl PostgresMemoryStore {
             .map_err(|error| store_error("serialize encrypted memory payload", error, false))?;
         let (ciphertext, envelope) = self
             .crypto
-            .encrypt_field_scoped(
-                &plaintext,
-                &self.search_key_scope(tenant, org_unit, owner_subject),
-                &policy_id,
-                &audit_id,
-            )
+            .encrypt_field_scoped(&plaintext, key_scope, &policy_id, &audit_id)
             .map_err(MemoryStoreError::from)?;
         Ok((
             None,
@@ -359,15 +352,12 @@ impl PostgresMemoryStore {
         ))
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn decode_payload<T: serde::de::DeserializeOwned>(
         &self,
         plaintext: Option<serde_json::Value>,
         ciphertext: Option<String>,
         envelope: Option<serde_json::Value>,
-        tenant: &crate::types::MemoryTenantScope,
-        org_unit: Option<String>,
-        owner_subject: Option<String>,
+        key_scope: &MemoryKeyScope,
         policy_id: Option<String>,
         audit_id: Option<String>,
     ) -> MemoryStoreResult<T> {
@@ -399,16 +389,16 @@ impl PostgresMemoryStore {
             .unwrap_or("local-memory-runtime");
         let principal = MemoryDecryptPrincipal::retrieval_gateway(
             principal_id,
-            tenant.clone(),
-            vec![DataClass::Internal],
-            Vec::new(),
+            crate::types::MemoryTenantScope {
+                org_id: key_scope.org_id.clone(),
+                workspace_id: key_scope.workspace_id.clone(),
+                deployment_id: key_scope.deployment_id.clone(),
+            },
+            vec![key_scope.data_class],
+            key_scope.source_binding_id.clone().into_iter().collect(),
         )
-        .with_owner_subjects(owner_subject.clone().into_iter().collect());
-        let authority = MemoryEnvelopeAuthority::new(
-            self.search_key_scope(tenant, org_unit, owner_subject),
-            &policy_id,
-            &audit_id,
-        );
+        .with_owner_subjects(key_scope.owner_subject.clone().into_iter().collect());
+        let authority = MemoryEnvelopeAuthority::new(key_scope.clone(), &policy_id, &audit_id);
         let decoded = self
             .crypto
             .decrypt_field_scoped_authorized(
