@@ -504,6 +504,7 @@ impl PostgresMemoryStore {
                         None,
                         limit,
                         0,
+                        false,
                     )
                     .await?;
                 Ok(MemoryStoreQueryResult::GlobalSearchHits(
@@ -530,6 +531,7 @@ impl PostgresMemoryStore {
                     channel_tag.as_deref(),
                     limit,
                     offset,
+                    true,
                 )
                 .await?,
             )),
@@ -638,8 +640,10 @@ impl PostgresMemoryStore {
         channel_tag: Option<&str>,
         limit: i64,
         offset: i64,
+        include_demoted: bool,
     ) -> MemoryStoreResult<Vec<GlobalMemoryRecord>> {
         let client = self.client().await?;
+        let query = query.map(str::trim).filter(|query| !query.is_empty());
         let database_query =
             if self.search_surface_mode == PostgresSearchSurfaceMode::PlaintextPgvector {
                 query
@@ -660,14 +664,16 @@ impl PostgresMemoryStore {
                AND (owner_subject=$4 OR (private=false AND owner_org_unit_id IS NOT NULL)
                     OR (owner_subject IS NULL AND owner_org_unit_id IS NULL AND user_id=$5))
                AND ($6::text IS NULL OR owner_org_unit_id=$6)
-               AND demoted=false AND (expires_at_ms IS NULL OR expires_at_ms>$7)
-               AND ($8::text IS NULL OR project_tag=$8)
-               AND ($9::text IS NULL OR channel_tag=$9)
-               AND ($10::text IS NULL OR to_tsvector('simple', search_content) @@ plainto_tsquery('simple', $10))
-             ORDER BY created_at_ms DESC LIMIT $11 OFFSET $12",
+               AND ($7::boolean OR demoted=false)
+               AND (expires_at_ms IS NULL OR expires_at_ms>$8)
+               AND ($9::text IS NULL OR project_tag=$9)
+               AND ($10::text IS NULL OR channel_tag=$10)
+               AND ($11::text IS NULL OR to_tsvector('simple', search_content) @@ plainto_tsquery('simple', $11))
+             ORDER BY created_at_ms DESC LIMIT $12 OFFSET $13",
             &[&scope.tenant.org_id, &scope.tenant.workspace_id, &deployment(&scope.tenant),
-              &scope.subject, &user_id, &scope.org_unit, &chrono::Utc::now().timestamp_millis(),
-              &project_tag, &channel_tag, &database_query, &database_limit, &offset.max(0)]
+              &scope.subject, &user_id, &scope.org_unit, &include_demoted,
+              &chrono::Utc::now().timestamp_millis(), &project_tag, &channel_tag,
+              &database_query, &database_limit, &offset.max(0)]
         ).await.map_err(|error| store_error("query PostgreSQL global memory", error, true))?;
         let mut records = rows
             .into_iter()

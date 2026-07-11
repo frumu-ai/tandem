@@ -561,6 +561,48 @@ async fn postgres_shared_global_point_reads_and_chunk_upserts_match_contract() {
         result,
         MemoryStoreReadResult::GlobalRecord(Some(record)) if record.id == "tenant-wide-shared"
     ));
+    store
+        .mutate(MemoryStoreMutationRequest::UpdateGlobalRecordContext {
+            scope: MemoryReadScope::tenant(contract_tenant.clone()),
+            id: "tenant-wide-shared".to_string(),
+            visibility: "shared".to_string(),
+            demoted: true,
+            metadata: None,
+            provenance: None,
+        })
+        .await
+        .expect("demote tenant-wide shared global record");
+    let result = store
+        .query(MemoryStoreQueryRequest::ListGlobalRecords {
+            scope: MemoryReadScope::tenant(contract_tenant.clone()),
+            user_id: "legacy-user".to_string(),
+            query: Some("   ".to_string()),
+            project_tag: None,
+            channel_tag: None,
+            limit: 10,
+            offset: 0,
+        })
+        .await
+        .expect("list demoted record with blank query");
+    assert!(matches!(
+        result,
+        MemoryStoreQueryResult::GlobalRecords(records)
+            if records.iter().any(|record| record.id == "tenant-wide-shared" && record.demoted)
+    ));
+    let result = store
+        .query(MemoryStoreQueryRequest::SearchGlobalRecords {
+            scope: MemoryReadScope::tenant(contract_tenant.clone()),
+            user_id: "legacy-user".to_string(),
+            query: "tenant-wide".to_string(),
+            limit: 10,
+            project_tag: None,
+        })
+        .await
+        .expect("search excludes demoted records");
+    assert!(matches!(
+        result,
+        MemoryStoreQueryResult::GlobalSearchHits(records) if records.is_empty()
+    ));
 
     let mut original = chunk("scope-collision", contract_tenant.clone());
     original.content = "original payload".to_string();
