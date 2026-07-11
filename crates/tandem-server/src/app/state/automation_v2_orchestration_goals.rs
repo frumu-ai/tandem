@@ -14,8 +14,8 @@ use tandem_types::{PrincipalRef, TenantContext};
 
 use super::AppState;
 use crate::stateful_runtime::{
-    stable_definition_snapshot_hash, GoalPauseOutcome, GoalResumeOutcome, OrchestrationStateStore,
-    StartGoalOutcome,
+    automation_definition_snapshot_hash, stable_definition_snapshot_hash, GoalPauseOutcome,
+    GoalResumeOutcome, OrchestrationStateStore, StartGoalOutcome,
 };
 
 #[derive(Debug, Clone)]
@@ -101,13 +101,24 @@ impl AppState {
             .iter()
             .find(|node| node.node_id == orchestration.root_node_id)
             .context("published orchestration is missing its root node")?;
-        let OrchestrationNodeKind::Workflow { automation_id, .. } = &root_node.node else {
+        let OrchestrationNodeKind::Workflow {
+            automation_id,
+            pinned_definition_hash,
+            ..
+        } = &root_node.node
+        else {
             bail!("orchestration root node must reference a workflow");
         };
         let automation = self
             .get_automation_v2(automation_id)
             .await
             .context("root workflow definition not found")?;
+        let pinned_hash = pinned_definition_hash
+            .as_deref()
+            .context("published root workflow is missing its pinned definition hash")?;
+        if automation_definition_snapshot_hash(&automation) != pinned_hash {
+            bail!("root workflow definition changed after orchestration publication");
+        }
 
         let goal_id = request.goal_id();
         let root_run_id = request.root_run_id();

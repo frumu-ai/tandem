@@ -718,7 +718,15 @@ pub(super) async fn full_validation_report(
     tenant: &TenantContext,
     spec: &OrchestrationSpec,
 ) -> FullValidation {
-    let mut report = validate_orchestration_spec(spec);
+    let mut validation_spec;
+    let spec_for_validation = if spec.status == OrchestrationStatus::Draft && spec.version == 0 {
+        validation_spec = spec.clone();
+        validation_spec.version = 1;
+        &validation_spec
+    } else {
+        spec
+    };
+    let mut report = validate_orchestration_spec(spec_for_validation);
     let references = workflow_reference_states(state, tenant, spec).await;
     let mut stale = Vec::new();
     let mut hashes = serde_json::Map::new();

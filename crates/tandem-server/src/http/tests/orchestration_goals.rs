@@ -175,6 +175,19 @@ async fn draft_lifecycle_enforces_optimistic_concurrency() {
     assert_eq!(status, StatusCode::CREATED);
     let token = created["updated_at_ms"].as_u64().expect("draft token");
 
+    let (status, validation) = dispatch(
+        &app,
+        local_request("POST", "/orchestrations/orch-goals/validate", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{validation}");
+    assert_eq!(validation["report"]["valid"], json!(true));
+    assert!(!validation["report"]["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|issue| issue["code"] == json!("invalid_version")));
+
     // Updating without the concurrency token is rejected, not silently applied.
     let mut update = draft_payload(&planner_hash, &executor_hash);
     update["name"] = json!("Renamed");
@@ -216,6 +229,43 @@ async fn draft_lifecycle_enforces_optimistic_concurrency() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(archived["status"], json!("archived"));
+}
+
+#[tokio::test]
+async fn goal_start_rejects_a_stale_root_workflow_definition() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut state = test_state().await;
+    state.automation_v2_runs_path = directory.path().join("automation_v2_runs.json");
+    let app = app_router(state.clone());
+    publish_orchestration(&app, &state).await;
+
+    state
+        .put_automation_v2(
+            AutomationSpecBuilder::new("planner")
+                .name("Planner changed after publish")
+                .build(),
+        )
+        .await
+        .unwrap();
+    let (status, body) = dispatch(
+        &app,
+        local_request(
+            "POST",
+            "/goals",
+            Some(json!({
+                "orchestration_id": "orch-goals",
+                "objective": "Must not use a stale root",
+                "idempotency_key": "stale-root-start",
+            })),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("root workflow definition changed"));
 }
 
 #[tokio::test]
