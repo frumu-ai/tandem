@@ -7,9 +7,9 @@ use anyhow::{bail, Context};
 use fs2::FileExt;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use tandem_automation::{
-    validate_orchestration_spec, AutomationV2RunRecord, GoalRunLink, HandoffArtifact,
-    LongRunningGoal, LongRunningGoalStatus, OrchestrationSpec, OrchestrationStatus,
-    WorkflowHandoff, WorkflowHandoffStatus,
+    validate_orchestration_spec, AutomationV2RunRecord, GoalRunLink, LongRunningGoal,
+    LongRunningGoalStatus, OrchestrationSpec, OrchestrationStatus, WorkflowHandoff,
+    WorkflowHandoffStatus,
 };
 
 mod goal_control;
@@ -24,7 +24,7 @@ pub use transition::{
     WorkflowCompletionResult,
 };
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrchestrationStorePaths {
@@ -339,32 +339,13 @@ impl OrchestrationStateStore {
         handoff_root: &Path,
         imported_at_ms: u64,
     ) -> anyhow::Result<usize> {
-        let mut candidates = Vec::new();
-        collect_json_files(handoff_root, &mut candidates)?;
-        let mut handoffs = Vec::new();
-        for path in candidates {
-            let raw = std::fs::read_to_string(&path)
-                .with_context(|| format!("failed to read legacy handoff {}", path.display()))?;
-            let handoff: HandoffArtifact = serde_json::from_str(&raw)
-                .with_context(|| format!("invalid legacy handoff {}", path.display()))?;
-            let status = if handoff.consumed_by_run_id.is_some() {
-                "archived"
-            } else if path
-                .components()
-                .any(|part| part.as_os_str().to_string_lossy() == "approved")
-            {
-                "approved"
-            } else {
-                "inbox"
-            };
-            handoffs.push((path, handoff, status));
-        }
+        let handoffs = migration::load_legacy_handoffs(Some(handoff_root))?;
         let source = handoff_root.to_string_lossy().to_string();
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let mut imported = 0usize;
-            for (path, handoff, status) in &handoffs {
+            for (path, handoff, status) in &handoffs.imported {
                 imported += transaction.execute(
                     "INSERT INTO legacy_handoffs
                         (handoff_id, source_path, status, consumed_by_run_id, handoff_json,
@@ -387,6 +368,22 @@ impl OrchestrationStateStore {
                     ],
                 )?;
             }
+            for quarantine in &handoffs.quarantined {
+                transaction.execute(
+                    "INSERT INTO legacy_handoff_quarantine
+                        (source_path, source_digest, error, quarantined_at_ms)
+                     VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(source_path) DO UPDATE SET
+                        source_digest = excluded.source_digest, error = excluded.error,
+                        quarantined_at_ms = excluded.quarantined_at_ms",
+                    params![
+                        quarantine.source_path.to_string_lossy(),
+                        quarantine.source_digest,
+                        quarantine.error,
+                        imported_at_ms,
+                    ],
+                )?;
+            }
             transaction.execute(
                 "INSERT INTO migration_sources
                     (source_kind, source_path, imported_at_ms, record_count)
@@ -394,7 +391,11 @@ impl OrchestrationStateStore {
                  ON CONFLICT(source_kind, source_path) DO UPDATE SET
                     imported_at_ms = excluded.imported_at_ms,
                     record_count = excluded.record_count",
-                params![source, imported_at_ms, handoffs.len() as u64],
+                params![
+                    source,
+                    imported_at_ms,
+                    (handoffs.imported.len() + handoffs.quarantined.len()) as u64,
+                ],
             )?;
             transaction.commit()?;
             Ok(imported)
@@ -667,6 +668,12 @@ fn initialize_schema(connection: &mut Connection) -> anyhow::Result<()> {
             created_at_ms INTEGER NOT NULL,
             imported_at_ms INTEGER NOT NULL
          );
+         CREATE TABLE IF NOT EXISTS legacy_handoff_quarantine (
+            source_path TEXT PRIMARY KEY,
+            source_digest TEXT,
+            error TEXT NOT NULL,
+            quarantined_at_ms INTEGER NOT NULL
+         );
 
          CREATE TABLE IF NOT EXISTS goal_run_links (
             goal_id TEXT NOT NULL,
@@ -730,6 +737,10 @@ fn initialize_schema(connection: &mut Connection) -> anyhow::Result<()> {
         migrate_schema_v1_to_v2(connection)?;
         version = 2;
     }
+    if version == 2 {
+        migrate_schema_v2_to_v3(connection)?;
+        version = 3;
+    }
     if version != SCHEMA_VERSION {
         bail!(
             "unsupported orchestration store schema version {version}; expected {SCHEMA_VERSION}"
@@ -775,6 +786,21 @@ fn migrate_schema_v1_to_v2(connection: &mut Connection) -> anyhow::Result<()> {
     add_scope_columns(connection, "dead_letters")?;
     add_scope_columns(connection, "compensations")?;
     connection.execute("UPDATE schema_metadata SET schema_version = 2", [])?;
+    Ok(())
+}
+
+fn migrate_schema_v2_to_v3(connection: &mut Connection) -> anyhow::Result<()> {
+    connection.execute_batch(
+        "BEGIN IMMEDIATE;
+         CREATE TABLE IF NOT EXISTS legacy_handoff_quarantine (
+            source_path TEXT PRIMARY KEY,
+            source_digest TEXT,
+            error TEXT NOT NULL,
+            quarantined_at_ms INTEGER NOT NULL
+         );
+         UPDATE schema_metadata SET schema_version = 3;
+         COMMIT;",
+    )?;
     Ok(())
 }
 
