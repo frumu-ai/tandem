@@ -322,7 +322,7 @@ async fn matrix_distillation_output_scoped_to_writing_tenant() {
             .any(|hit| hit.record.content.contains("metric dashboards")),
         "writer recalls their distilled fact"
     );
-    // With no private opt-in, another subject in the same tenant also sees it.
+    // Without a verified department stamp, fail closed to the writing subject.
     let sibling = db
         .search_global_memory_for_tenant(
             "acme",
@@ -338,10 +338,8 @@ async fn matrix_distillation_output_scoped_to_writing_tenant() {
         .await
         .expect("sibling search");
     assert!(
-        sibling
-            .iter()
-            .any(|hit| hit.record.content.contains("metric dashboards")),
-        "non-private distilled facts are tenant-shared"
+        sibling.is_empty(),
+        "unstamped distilled facts must not widen to another subject"
     );
     // Another tenant does not.
     let foreign = db
