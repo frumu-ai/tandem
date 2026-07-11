@@ -251,7 +251,8 @@ impl PostgresMemoryStore {
                      ON CONFLICT (tenant_org_id,tenant_workspace_id,tenant_deployment_id,user_id,
                        source_type,content_hash,run_id,(COALESCE(session_id,'')),
                        (COALESCE(message_id,'')),(COALESCE(tool_name,'')),
-                       (COALESCE(owner_org_unit_id,'')),private,(COALESCE(owner_subject,'')))
+                       (COALESCE(owner_org_unit_id,'')),private,(COALESCE(owner_subject,'')),
+                       data_class,(COALESCE(source_binding_id,'')))
                      DO NOTHING RETURNING id",
                     &[&record.id,&tenant.org_id,&tenant.workspace_id,&deployment(&tenant),&owner_org,
                       &owner_subject,&owner_subject.is_some(),&data_class,&source_binding_id,
@@ -273,7 +274,8 @@ impl PostgresMemoryStore {
                          AND COALESCE(message_id,'')=COALESCE($9,'')
                          AND COALESCE(tool_name,'')=COALESCE($10,'')
                          AND COALESCE(owner_org_unit_id,'')=COALESCE($11,'')
-                         AND private=$12 AND COALESCE(owner_subject,'')=COALESCE($13,'') LIMIT 1",
+                         AND private=$12 AND COALESCE(owner_subject,'')=COALESCE($13,'')
+                         AND data_class=$14 AND COALESCE(source_binding_id,'')=COALESCE($15,'') LIMIT 1",
                             &[
                                 &tenant.org_id,
                                 &tenant.workspace_id,
@@ -288,6 +290,8 @@ impl PostgresMemoryStore {
                                 &owner_org,
                                 &owner_subject.is_some(),
                                 &owner_subject,
+                                &data_class,
+                                &source_binding_id,
                             ],
                         )
                         .await
@@ -1135,6 +1139,10 @@ impl PostgresMemoryStore {
                                 "global record ownership does not match the PostgreSQL write scope",
                             ));
                         }
+                        let key_scope =
+                            memory_key_scope_from_metadata(&tenant, record.metadata.as_ref())
+                                .with_owner_subject(owner_subject.clone());
+                        let (data_class, source_binding_id) = Self::key_scope_columns(&key_scope)?;
                         let existing = transaction.query_opt(
                             "SELECT id FROM tandem_memory_global_records WHERE tenant_org_id=$1
                              AND tenant_workspace_id=$2 AND tenant_deployment_id=$3 AND user_id=$4
@@ -1143,10 +1151,12 @@ impl PostgresMemoryStore {
                              AND COALESCE(message_id,'')=COALESCE($9,'')
                              AND COALESCE(tool_name,'')=COALESCE($10,'')
                              AND COALESCE(owner_org_unit_id,'')=COALESCE($11,'')
-                             AND private=$12 AND COALESCE(owner_subject,'')=COALESCE($13,'') LIMIT 1",
+                             AND private=$12 AND COALESCE(owner_subject,'')=COALESCE($13,'')
+                             AND data_class=$14 AND COALESCE(source_binding_id,'')=COALESCE($15,'') LIMIT 1",
                             &[&tenant.org_id,&tenant.workspace_id,&deployment(&tenant),&record.user_id,
                               &record.source_type,&record.content_hash,&record.run_id,&record.session_id,
-                              &record.message_id,&record.tool_name,&owner_org,&owner_subject.is_some(),&owner_subject]
+                              &record.message_id,&record.tool_name,&owner_org,&owner_subject.is_some(),&owner_subject,
+                              &data_class,&source_binding_id]
                         ).await.map_err(|error| store_error("dedupe atomic PostgreSQL global memory", error, false))?;
                         if let Some(row) = existing {
                             MemoryStoreBatchValue::Write(MemoryStoreWriteResult::GlobalRecord(
@@ -1157,11 +1167,6 @@ impl PostgresMemoryStore {
                                 },
                             ))
                         } else {
-                            let key_scope =
-                                memory_key_scope_from_metadata(&tenant, record.metadata.as_ref())
-                                    .with_owner_subject(owner_subject.clone());
-                            let (data_class, source_binding_id) =
-                                Self::key_scope_columns(&key_scope)?;
                             let (
                                 data,
                                 data_ciphertext,
@@ -1186,7 +1191,8 @@ impl PostgresMemoryStore {
                              ON CONFLICT (tenant_org_id,tenant_workspace_id,tenant_deployment_id,user_id,
                                source_type,content_hash,run_id,(COALESCE(session_id,'')),
                                (COALESCE(message_id,'')),(COALESCE(tool_name,'')),
-                               (COALESCE(owner_org_unit_id,'')),private,(COALESCE(owner_subject,'')))
+                               (COALESCE(owner_org_unit_id,'')),private,(COALESCE(owner_subject,'')),
+                               data_class,(COALESCE(source_binding_id,'')))
                              DO NOTHING RETURNING id",
                             &[&record.id,&tenant.org_id,&tenant.workspace_id,&deployment(&tenant),&owner_org,
                               &owner_subject,&owner_subject.is_some(),&data_class,&source_binding_id,
@@ -1207,10 +1213,12 @@ impl PostgresMemoryStore {
                                      AND COALESCE(message_id,'')=COALESCE($9,'')
                                      AND COALESCE(tool_name,'')=COALESCE($10,'')
                                      AND COALESCE(owner_org_unit_id,'')=COALESCE($11,'')
-                                     AND private=$12 AND COALESCE(owner_subject,'')=COALESCE($13,'') LIMIT 1",
+                                     AND private=$12 AND COALESCE(owner_subject,'')=COALESCE($13,'')
+                                     AND data_class=$14 AND COALESCE(source_binding_id,'')=COALESCE($15,'') LIMIT 1",
                                     &[&tenant.org_id,&tenant.workspace_id,&deployment(&tenant),&record.user_id,
                                       &record.source_type,&record.content_hash,&record.run_id,&record.session_id,
-                                      &record.message_id,&record.tool_name,&owner_org,&owner_subject.is_some(),&owner_subject]
+                                      &record.message_id,&record.tool_name,&owner_org,&owner_subject.is_some(),&owner_subject,
+                                      &data_class,&source_binding_id]
                                 ).await.map_err(|error| store_error("read atomic deduped PostgreSQL global memory", error, false))?;
                                 (row.get(0), false, true)
                             };

@@ -649,9 +649,10 @@ impl PostgresMemoryStore {
                     hits.truncate(limit.clamp(1, 1000) as usize);
                     return Ok(MemoryStoreQueryResult::SimilarChunks(hits));
                 }
+                let grants = current_principal_sql_grants(&scope.tenant);
                 let sql = format!(
                     "SELECT data,data_ciphertext,data_envelope,data_policy_decision_id,
-                            data_audit_id,owner_org_unit_id,owner_subject,data_class,source_binding_id,embedding {operator} $9 AS distance
+                            data_audit_id,owner_org_unit_id,owner_subject,data_class,source_binding_id,embedding {operator} $14 AS distance
                      FROM tandem_memory_chunks
                      WHERE tenant_org_id=$1 AND tenant_workspace_id=$2
                        AND tenant_deployment_id=$3 AND tier=$4
@@ -660,11 +661,15 @@ impl PostgresMemoryStore {
                        AND ($7::text IS NULL OR owner_org_unit_id=$7 OR tenant_shared=true)
                        AND (owner_subject IS NULL OR owner_subject=$8)
                        AND embedding IS NOT NULL
-                     ORDER BY embedding {operator} $9 LIMIT $10",
+                       AND ($9::boolean OR ($10::boolean
+                            AND data_class=ANY($11::text[])
+                            AND (source_binding_id IS NULL OR source_binding_id=ANY($12::text[]))
+                            AND (owner_subject IS NULL OR owner_subject=ANY($13::text[]))))
+                     ORDER BY embedding {operator} $14 LIMIT $15",
                     operator = self.distance_metric.operator()
                 );
                 let vector = Vector::from(query_embedding);
-                let params: [&(dyn ToSql + Sync); 10] = [
+                let params: [&(dyn ToSql + Sync); 15] = [
                     &scope.tenant.org_id,
                     &scope.tenant.workspace_id,
                     &deployment(&scope.tenant),
@@ -673,6 +678,11 @@ impl PostgresMemoryStore {
                     &selector.session_id,
                     &scope.org_unit,
                     &scope.subject,
+                    &grants.bypass,
+                    &grants.tenant_matches,
+                    &grants.data_classes,
+                    &grants.source_binding_ids,
+                    &grants.owner_subjects,
                     &vector,
                     &limit.clamp(1, 1000),
                 ];
@@ -681,6 +691,14 @@ impl PostgresMemoryStore {
                 })?;
                 let hits = rows
                     .into_iter()
+                    .filter(|row| {
+                        current_principal_allows_row(
+                            &scope.tenant,
+                            row.get::<_, Option<String>>(6).as_deref(),
+                            &row.get::<_, String>(7),
+                            row.get::<_, Option<String>>(8).as_deref(),
+                        )
+                    })
                     .map(|row| {
                         let key_scope = Self::persisted_key_scope(
                             &scope.tenant,

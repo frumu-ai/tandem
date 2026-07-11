@@ -198,3 +198,16 @@ async fn memory_demote_audit_failure_leaves_record_unchanged() {
         .expect("serialize memory after demotion");
     assert_eq!(after, before);
 }
+
+#[tokio::test]
+async fn global_memory_store_is_reused_for_the_application_state() {
+    let state = test_state().await;
+    let first = super::super::skills_memory::open_global_memory_store_for_state(&state)
+        .await
+        .expect("open first memory store");
+    let second = super::super::skills_memory::open_global_memory_store_for_state(&state)
+        .await
+        .expect("reuse memory store");
+
+    assert!(std::sync::Arc::ptr_eq(&first, &second));
+}

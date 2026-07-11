@@ -153,6 +153,49 @@ async fn postgres_scopes_candidates_before_vector_top_k() {
     assert_eq!(hits.len(), 2);
     assert_eq!(hits[0].0.id, "target");
     assert!(hits[0].1 < hits[1].1, "best match must have lower distance");
+
+    for (id, binding, embedding) in [
+        ("denied-nearest", "drive-legal", vec![1.0, 0.0, 0.0]),
+        ("allowed-near", "drive-finance", vec![0.9, 0.1, 0.0]),
+    ] {
+        let mut governed = chunk(id, tenant.clone());
+        governed.metadata = Some(serde_json::json!({
+            "enterprise_source_binding": {
+                "binding_id": binding,
+                "data_class": "confidential"
+            }
+        }));
+        store
+            .write(MemoryStoreWriteRequest::Chunk {
+                scope: MemoryWriteScope::tenant(tenant.clone()),
+                chunk: governed,
+                embedding,
+            })
+            .await
+            .expect("write governed plaintext-search chunk");
+    }
+    let principal = crate::MemoryDecryptPrincipal::retrieval_gateway(
+        "finance-reader",
+        tenant.clone(),
+        vec![tandem_enterprise_contract::DataClass::Confidential],
+        vec!["drive-finance".to_string()],
+    );
+    let result = crate::decrypt_context::with_decrypt_principal(
+        principal,
+        store.query(MemoryStoreQueryRequest::SimilarChunks {
+            scope: MemoryReadScope::tenant(tenant),
+            selector: MemoryChunkSelector::project("project"),
+            query_embedding: vec![1.0, 0.0, 0.0],
+            limit: 1,
+        }),
+    )
+    .await
+    .expect("run grant-filtered plaintext pgvector query");
+    assert!(matches!(
+        result,
+        MemoryStoreQueryResult::SimilarChunks(hits)
+            if hits.len() == 1 && hits[0].0.id == "allowed-near"
+    ));
 }
 
 #[tokio::test]
@@ -1051,6 +1094,49 @@ async fn postgres_shared_global_point_reads_and_chunk_upserts_match_contract() {
         result,
         MemoryStoreQueryResult::GlobalSearchHits(records) if records.is_empty()
     ));
+
+    let mut finance_record = global_record("governed-finance", &contract_tenant);
+    finance_record.content_hash = "shared-governed-hash".to_string();
+    finance_record.message_id = Some("shared-governed-message".to_string());
+    finance_record.metadata = Some(serde_json::json!({
+        "enterprise_source_binding": {
+            "binding_id": "drive-finance",
+            "data_class": "confidential"
+        }
+    }));
+    let mut legal_record = finance_record.clone();
+    legal_record.id = "governed-legal".to_string();
+    legal_record.metadata = Some(serde_json::json!({
+        "enterprise_source_binding": {
+            "binding_id": "drive-legal",
+            "data_class": "financial"
+        }
+    }));
+    for record in [finance_record, legal_record] {
+        let result = store
+            .write(MemoryStoreWriteRequest::GlobalRecord {
+                scope: MemoryWriteScope::tenant(contract_tenant.clone()),
+                record,
+            })
+            .await
+            .expect("write governed dedupe record");
+        assert!(matches!(
+            result,
+            MemoryStoreWriteResult::GlobalRecord(result) if result.stored && !result.deduped
+        ));
+    }
+    let governed_count: i64 = store
+        .client()
+        .await
+        .expect("inspect governed dedupe records")
+        .query_one(
+            "SELECT COUNT(*) FROM tandem_memory_global_records WHERE content_hash='shared-governed-hash'",
+            &[],
+        )
+        .await
+        .expect("count governed dedupe records")
+        .get(0);
+    assert_eq!(governed_count, 2);
 
     let mut original = chunk("scope-collision", contract_tenant.clone());
     original.content = "original payload".to_string();

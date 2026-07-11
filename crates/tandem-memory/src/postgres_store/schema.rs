@@ -103,7 +103,8 @@ impl PostgresMemoryStore {
                     tenant_org_id, tenant_workspace_id, tenant_deployment_id, user_id,
                     source_type, content_hash, run_id, COALESCE(session_id, ''),
                     COALESCE(message_id, ''), COALESCE(tool_name, ''),
-                    COALESCE(owner_org_unit_id, ''), private, COALESCE(owner_subject, ''));
+                    COALESCE(owner_org_unit_id, ''), private, COALESCE(owner_subject, ''),
+                    data_class, COALESCE(source_binding_id, ''));
             CREATE TABLE IF NOT EXISTS tandem_memory_entities (
                 tenant_org_id TEXT NOT NULL,
                 tenant_workspace_id TEXT NOT NULL,
@@ -152,6 +153,14 @@ impl PostgresMemoryStore {
                  ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS data_audit_id TEXT;
                  ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS data_class TEXT NOT NULL DEFAULT 'internal';
                  ALTER TABLE tandem_memory_global_records ADD COLUMN IF NOT EXISTS source_binding_id TEXT;
+                 DROP INDEX IF EXISTS tandem_memory_global_dedupe_idx;
+                 CREATE UNIQUE INDEX tandem_memory_global_dedupe_idx
+                   ON tandem_memory_global_records (
+                     tenant_org_id, tenant_workspace_id, tenant_deployment_id, user_id,
+                     source_type, content_hash, run_id, COALESCE(session_id, ''),
+                     COALESCE(message_id, ''), COALESCE(tool_name, ''),
+                     COALESCE(owner_org_unit_id, ''), private, COALESCE(owner_subject, ''),
+                     data_class, COALESCE(source_binding_id, ''));
                  ALTER TABLE tandem_memory_entities ALTER COLUMN data DROP NOT NULL;
                  ALTER TABLE tandem_memory_entities ADD COLUMN IF NOT EXISTS data_ciphertext TEXT;
                  ALTER TABLE tandem_memory_entities ADD COLUMN IF NOT EXISTS data_envelope JSONB;

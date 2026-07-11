@@ -32,7 +32,7 @@ pub(super) async fn global_health(State(state): State<AppState>) -> impl IntoRes
     let browser = state.browser_health_summary().await;
     let memory_context_policy =
         crate::memory::policy_status::current_memory_context_policy_status();
-    let memory_storage = match tandem_memory::open_memory_store(&state.memory_db_path).await {
+    let memory_storage = match state.memory_store().await {
         Ok(store) => match store
             .backend_health(tandem_memory::MemoryBackendHealthRequest { repair: false })
             .await

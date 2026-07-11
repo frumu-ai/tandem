@@ -635,12 +635,7 @@ pub(super) async fn open_global_memory_db_for_state(state: &AppState) -> Option<
 pub(super) async fn open_global_memory_store_for_state(
     state: &AppState,
 ) -> Option<std::sync::Arc<dyn tandem_memory::MemoryStore>> {
-    if let Some(parent) = state.memory_db_path.parent() {
-        let _ = tokio::fs::create_dir_all(parent).await;
-    }
-    tandem_memory::open_memory_store(&state.memory_db_path)
-        .await
-        .ok()
+    state.memory_store().await.ok()
 }
 
 pub(super) async fn with_verified_memory_decrypt_principal<F, T>(

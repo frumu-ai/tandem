@@ -210,6 +210,18 @@ async fn validate_incident_monitor_monitored_projects(
 }
 
 impl AppState {
+    pub(crate) async fn memory_store(
+        &self,
+    ) -> Result<std::sync::Arc<dyn tandem_memory::MemoryStore>, tandem_memory::MemoryStoreError> {
+        if let Some(parent) = self.memory_db_path.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        self.memory_store
+            .get_or_try_init(|| tandem_memory::open_memory_store(&self.memory_db_path))
+            .await
+            .cloned()
+    }
+
     pub fn new_starting(attempt_id: String, in_process: bool) -> Self {
         #[cfg(feature = "premium-governance")]
         let governance_engine: Arc<
@@ -236,6 +248,7 @@ impl AppState {
             run_stale_ms: config::env::resolve_run_stale_ms(),
             memory_records: Arc::new(RwLock::new(std::collections::HashMap::new())),
             memory_audit_log: Arc::new(RwLock::new(Vec::new())),
+            memory_store: Arc::new(tokio::sync::OnceCell::new()),
             memory_db_path: tandem_core::resolve_memory_db_path()
                 .unwrap_or_else(|_| std::path::PathBuf::from("memory.sqlite")),
             memory_audit_path: config::paths::resolve_memory_audit_path(),

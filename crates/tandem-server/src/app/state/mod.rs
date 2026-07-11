@@ -145,6 +145,7 @@ pub struct AppState {
     pub run_stale_ms: u64,
     pub memory_records: Arc<RwLock<std::collections::HashMap<String, GovernedMemoryRecord>>>,
     pub memory_audit_log: Arc<RwLock<Vec<MemoryAuditEvent>>>,
+    pub(crate) memory_store: Arc<tokio::sync::OnceCell<Arc<dyn tandem_memory::MemoryStore>>>,
     pub memory_db_path: PathBuf,
     pub memory_audit_path: PathBuf,
     pub protected_audit_path: PathBuf,

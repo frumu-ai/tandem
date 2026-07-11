@@ -573,12 +573,12 @@ pub async fn serve_with_route_extensions(
         approval_outbound_cancel_for_task,
     ));
     let shutdown_state = state.clone();
+    let hygiene_state = state.clone();
     let shutdown_timeout_secs = crate::config::env::resolve_scheduler_shutdown_timeout_secs();
     let approval_outbound_cancel_for_shutdown = approval_outbound_cancel.clone();
 
     // --- Memory hygiene background task (runs every 12 hours) ---
-    // Opens a fresh connection to memory.sqlite each cycle â€” safe because WAL
-    // mode allows concurrent readers alongside the main engine connection.
+    // Reuses the process-wide memory backend and its configured connection pool.
     // run_hygiene_all_tenants runs the full reaper (session retention, expired
     // memory_records, exchange retention, per-project chunk caps, and opt-in
     // global-tier retention) once per tenant scope present in the database, so
@@ -594,23 +594,20 @@ pub async fn serve_with_route_extensions(
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(30);
             if retention_days > 0 {
-                match tandem_core::resolve_shared_paths() {
-                    Ok(paths) => {
-                        match tandem_memory::open_memory_store(&paths.memory_db_path).await {
-                            Ok(store) => {
-                                if let Err(e) = store
-                                    .mutate(tandem_memory::MemoryStoreMutationRequest::RunHygieneAllTenants {
-                                        retention_days,
-                                    })
-                                    .await
-                                {
-                                    tracing::warn!("memory hygiene failed: {}", e);
-                                }
-                            }
-                            Err(e) => tracing::warn!("memory hygiene: could not open DB: {}", e),
+                match hygiene_state.memory_store().await {
+                    Ok(store) => {
+                        if let Err(e) = store
+                            .mutate(
+                                tandem_memory::MemoryStoreMutationRequest::RunHygieneAllTenants {
+                                    retention_days,
+                                },
+                            )
+                            .await
+                        {
+                            tracing::warn!("memory hygiene failed: {}", e);
                         }
                     }
-                    Err(e) => tracing::warn!("memory hygiene: could not resolve paths: {}", e),
+                    Err(e) => tracing::warn!("memory hygiene: could not open DB: {}", e),
                 }
             }
             tokio::time::sleep(Duration::from_secs(12 * 60 * 60)).await;
