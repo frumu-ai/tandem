@@ -29,7 +29,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 tandem-core = { path = "../tandem-core", version = "0.6.8" }
 tandem-enterprise-contract = { path = "../tandem-enterprise-contract", version = "0.6.8" }
 tandem-memory = { path = "../tandem-memory", version = "0.6.8" }
-tandem-server = { path = "../tandem-server", version = "0.6.8", default-features = false }
+tandem-server = { path = "../tandem-server", version = "0.6.8", default-features = false, features = ["storage-sqlite"] }
 
 [dev-dependencies]
 serial_test = "3"
@@ -38,4 +38,4 @@ chrono = { version = "0.4", features = ["serde"] }
 tandem-types = { path = "../tandem-types", version = "0.6.8" }
 # Enables tandem-server's test_support seam for the integration tests below
 # (test-only feature union; not active in normal builds).
-tandem-server = { path = "../tandem-server", version = "0.6.8", default-features = false, features = ["test-support"] }
+tandem-server = { path = "../tandem-server", version = "0.6.8", default-features = false, features = ["test-support", "storage-sqlite"] }

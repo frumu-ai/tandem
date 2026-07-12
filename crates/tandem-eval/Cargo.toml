@@ -32,7 +32,7 @@ tandem-observability = { path = "../tandem-observability", version = "0.6.8" }
 tandem-orchestrator = { path = "../tandem-orchestrator", version = "0.6.8" }
 tandem-providers = { path = "../tandem-providers", version = "0.6.8" }
 tandem-runtime = { path = "../tandem-runtime", version = "0.6.8" }
-tandem-server = { path = "../tandem-server", version = "0.6.8", default-features = false }
+tandem-server = { path = "../tandem-server", version = "0.6.8", default-features = false, features = ["storage-sqlite"] }
 tandem-tools = { path = "../tandem-tools", version = "0.6.8" }
 tandem-types = { path = "../tandem-types", version = "0.6.8" }
 
